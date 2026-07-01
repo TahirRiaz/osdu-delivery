@@ -1,0 +1,153 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using SqlFlow.Catalog;
+using SqlFlow.ControlPlane.Configuration;
+using SqlFlow.Core.Secrets;
+
+namespace SqlFlow.ControlPlane.Background;
+
+/// <summary>
+/// Scans the catalog for due schedules and fires them by enqueuing a run onto the durable queue (the exact path a
+/// manual trigger takes, so a scheduled run is in no way special). A schedule is fired by atomically advancing its
+/// next-fire time, so when more than one control-plane node runs this service the compare-and-swap guarantees each
+/// occurrence is enqueued exactly once. Missed occurrences (the host was down) are not backfilled: the next fire is
+/// computed strictly after now, so a schedule fires once and resumes its cadence.
+/// </summary>
+/// <remarks>
+/// Robustness: a bad cron / time zone on one schedule is logged and that schedule is parked (its next fire is
+/// cleared) rather than re-scanned forever or stopping the loop; a tick error (a transient database outage) is
+/// logged and retried next tick; an inactive or removed pipeline is skipped, not enqueued. All diagnostics are
+/// secret-redacted.
+/// </remarks>
+public sealed partial class SchedulerService : BackgroundService
+{
+    private const int MaxPerTick = 200;
+
+    private readonly IServiceProvider _services;
+    private readonly IRunDispatcher _dispatcher;
+    private readonly TimeProvider _clock;
+    private readonly TimeSpan _pollInterval;
+    private readonly ILogger<SchedulerService> _logger;
+
+    public SchedulerService(
+        IServiceProvider services,
+        IRunDispatcher dispatcher,
+        TimeProvider clock,
+        IOptions<ControlPlaneOptions> options,
+        ILogger<SchedulerService> logger)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(logger);
+        _services = services;
+        _dispatcher = dispatcher;
+        _clock = clock;
+        _pollInterval = TimeSpan.FromSeconds(Math.Max(1, options.Value.Scheduler.PollSeconds));
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await TickAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                LogTickError(SecretHygiene.RedactedMessage(ex.Message));
+            }
+
+            try
+            {
+                await Task.Delay(_pollInterval, stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task TickAsync(CancellationToken ct)
+    {
+        var now = _clock.GetUtcNow().UtcDateTime;
+        await using var scope = _services.CreateAsyncScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+
+        var due = await ScheduleStore.ListDueAsync(catalog, now, MaxPerTick, ct).ConfigureAwait(false);
+        foreach (var schedule in due)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            await FireAsync(catalog, schedule, now, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task FireAsync(CatalogDbContext catalog, CatalogSchedule schedule, DateTime now, CancellationToken ct)
+    {
+        if (schedule.NextFireUtc is not { } observed)
+        {
+            return; // not actually due (defensive against a concurrent change)
+        }
+
+        var next = ScheduleClock.NextFire(schedule.Cron, schedule.IntervalSeconds, schedule.Timezone, now);
+
+        // Claim this occurrence by advancing the next-fire from the value we observed. Only the winner proceeds.
+        var won = await ScheduleStore.TryClaimFireAsync(catalog, schedule.Id, observed, next, now, ct).ConfigureAwait(false);
+        if (!won)
+        {
+            return;
+        }
+
+        if (next is null)
+        {
+            // No computable next fire (a malformed cron/time zone, or a cron with no further occurrence): the claim
+            // above advanced the schedule to null, so it is parked and not scanned again, and this occurrence is not
+            // enqueued.
+            LogParked(schedule.Id, schedule.FlowName);
+            return;
+        }
+
+        // The flow must still exist and be active; a schedule for a removed/deactivated flow is skipped (its next
+        // fire has already advanced, so it simply tries again on its next occurrence).
+        var pipeline = await catalog.Pipelines.AsNoTracking()
+            .Where(p => p.Id == schedule.PipelineId && p.RepoId == schedule.RepoId)
+            .Select(p => new { p.Active, p.Kind })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (pipeline is not { Active: true })
+        {
+            LogPipelineInactive(schedule.Id, schedule.FlowName);
+            return;
+        }
+
+        // Scheduled runs are untargeted (any node) and unpinned for now; pool-routed / SHA-pinned schedules are a
+        // later addition.
+        var runId = await _dispatcher.EnqueueAsync(
+            catalog, new RunEnqueueRequest(schedule.RepoId, schedule.FlowName, pipeline.Kind), ct).ConfigureAwait(false);
+        await ScheduleStore.SetLastRunAsync(catalog, schedule.Id, runId, now, ct).ConfigureAwait(false);
+        LogFired(schedule.Id, schedule.FlowName, runId);
+    }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} fired: enqueued run {RunId} for flow '{FlowName}'.")]
+    private partial void LogFired(Guid scheduleId, string flowName, Guid runId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} for flow '{FlowName}' has no computable next fire (invalid cron/timezone or exhausted) and was parked.")]
+    private partial void LogParked(Guid scheduleId, string flowName);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: flow '{FlowName}' is inactive or removed; not enqueued this occurrence.")]
+    private partial void LogPipelineInactive(Guid scheduleId, string flowName);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Scheduler tick error: {Error}")]
+    private partial void LogTickError(string error);
+}

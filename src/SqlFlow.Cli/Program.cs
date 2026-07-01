@@ -1,0 +1,2437 @@
+﻿using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using SqlFlow.Core;
+using SqlFlow.Core.Abstractions;
+using SqlFlow.Core.Batch;
+using SqlFlow.Core.Catalog;
+using SqlFlow.Core.Connections;
+using SqlFlow.Core.Engine;
+using SqlFlow.Core.Export;
+using SqlFlow.Core.HealthChecks;
+using SqlFlow.Core.Identity;
+using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Invoke;
+using SqlFlow.Core.Lineage;
+using SqlFlow.Core.Model;
+using SqlFlow.Core.Profiling;
+using SqlFlow.Core.Runs;
+using SqlFlow.Core.Secrets;
+using SqlFlow.Core.SourceControl;
+using SqlFlow.Core.State;
+using SqlFlow.Core.StoredProcedures;
+using SqlFlow.Azure;
+using SqlFlow.Catalog;
+using SqlFlow.DuckDb;
+using SqlFlow.Execution;
+using SqlFlow.HealthCheck;
+using SqlFlow.Lineage;
+using SqlFlow.Node;
+using SqlFlow.Orchestration;
+using SqlFlow.Providers;
+using SqlFlow.SourceControl;
+using SqlFlow.Sources;
+using SqlFlow.SqlServer;
+using SqlFlow.SqlServer.Catalog;
+using SqlFlow.SqlServer.Export;
+using SqlFlow.SqlServer.Ingestion;
+using SqlFlow.SqlServer.Profiling;
+using SqlFlow.SqlServer.StoredProcedures;
+using SqlFlow.Yaml;
+
+namespace SqlFlow.Cli;
+
+internal static class Program
+{
+    private static async Task<int> Main(string[] args)
+    {
+        var verbose = args.Any(a => a is "-v" or "--verbose");
+        var positional = PositionalArguments(args);
+
+        // 'healthcheck' addresses its table through --source/--object, 'auth' is a pure environment check, and 'db'
+        // takes a subcommand (migrate/sync/status); none take a pipeline file.
+        var command = positional.Length > 0 ? positional[0].ToLowerInvariant() : string.Empty;
+        var needsFile = command is not ("healthcheck" or "auth" or "db" or "detect-unique-key");
+        if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
+        {
+            PrintUsage();
+            return positional.Length < (needsFile ? 2 : 1) ? 1 : 0;
+        }
+
+        var file = positional.Length > 1 ? positional[1] : string.Empty;
+
+        // The git-ignored .sqlflow/env file supplies local-development secrets for the ${env:...} references
+        // and bare-alias conventions in flow documents; the process environment (CI, Kubernetes, the
+        // scheduler) always wins. Searched from the flow document's directory upward, before anything
+        // resolves, for every command.
+        try
+        {
+            // The positional may be a pipeline FILE (validate/run) or a flow FOLDER (lineage); the env file
+            // anchors to whichever directory that is.
+            var envAnchor = file.Length > 0 && File.Exists(file)
+                ? Path.GetDirectoryName(Path.GetFullPath(file)) ?? Directory.GetCurrentDirectory()
+                : file.Length > 0 && Directory.Exists(file)
+                    ? Path.GetFullPath(file)
+                    : Directory.GetCurrentDirectory();
+            var (appliedEnv, envFile) = LocalEnvFile.ApplyNearest(envAnchor);
+            if (envFile is not null && verbose)
+            {
+                Console.Error.WriteLine($"env: applied {appliedEnv.Count} variable(s) from {envFile}");
+            }
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+
+        using var provider = BuildServiceProvider(verbose);
+        var loader = provider.GetRequiredService<YamlFlowLoader>();
+        var documents = provider.GetRequiredService<YamlDocumentLoader>();
+        var runner = provider.GetRequiredService<FlowRunner>();
+
+        try
+        {
+            switch (command)
+            {
+                case "validate":
+                {
+                    switch (DocumentLoader.Load(documents, file, Console.Error.WriteLine))
+                    {
+                        case FileFlowDocument doc:
+                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (source: {doc.Flow.Source.Type}, target: {doc.Flow.Target.QualifiedName}).");
+                            return 0;
+                        case IngestionFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            Console.WriteLine($"OK  '{flow.SysAlias ?? flow.Target.Table.Name}' is valid (ingestion: {flow.Source.Table.QualifiedName} -> {flow.Target.Table.QualifiedName}).");
+                            return 0;
+                        }
+
+                        case ExportFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            Console.WriteLine($"OK  '{flow.SysAlias}' is valid (export: {flow.Source.QualifiedName} -> {flow.TrgPath} as {flow.TrgFiletype}).");
+                            return 0;
+                        }
+
+                        case StoredProcedureFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            Console.WriteLine($"OK  '{flow.SysAlias}' is valid (stored procedure: EXEC {flow.Procedure.QualifiedName} on '{flow.Server}').");
+                            return 0;
+                        }
+
+                        case InvokeFlowDocument doc:
+                        {
+                            var definition = doc.Document.Definition;
+                            Console.WriteLine($"OK  '{definition.InvokeAlias}' is valid (invoke: {definition.FlowType} {definition.PipelineName ?? definition.RunbookName}).");
+                            return 0;
+                        }
+
+                        case HealthCheckFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            var metricNames = string.Join(", ", flow.Metrics.Select(m => m.Name));
+                            Console.WriteLine($"OK  '{flow.SysAlias}' is valid (health check: {flow.Metrics.Count} metric(s) [{metricNames}] per {flow.DateColumn} on {flow.Target.QualifiedName}).");
+                            return 0;
+                        }
+
+                        case SourceControlFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            var target = flow.Repository.Remote is { } remote ? remote : "(local history only)";
+                            Console.WriteLine($"OK  '{flow.SysAlias}' is valid (source control: database on '{flow.Server}' -> {target} [{flow.Repository.Branch}]).");
+                            return 0;
+                        }
+
+                        case BatchFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            Console.WriteLine(
+                                $"OK  '{flow.SysAlias}' is valid (batch: include {string.Join(", ", flow.Include)}; onError {flow.OnError.ToString().ToLowerInvariant()}; " +
+                                $"maxParallel {(flow.MaxParallel <= 0 ? "unbounded" : flow.MaxParallel.ToString(System.Globalization.CultureInfo.InvariantCulture))}).");
+                            return 0;
+                        }
+
+                        default:
+                            throw new SqlFlowException("Unhandled document kind.");
+                    }
+                }
+
+                case "plan":
+                {
+                    if (DocumentLoader.Load(documents, file, Console.Error.WriteLine) is not FileFlowDocument doc)
+                    {
+                        Console.Error.WriteLine("ERROR  'plan' supports file flows; ingestion, export, and stored-procedure work is determined at run time against the live source.");
+                        return 1;
+                    }
+
+                    var plan = await runner.PlanAsync(doc.Flow).ConfigureAwait(false);
+                    PrintPlan(plan);
+                    return 0;
+                }
+
+                case "run":
+                {
+                    var json = args.Contains("--json");
+                    var loaded = DocumentLoader.Load(documents, file, Console.Error.WriteLine);
+                    if (loaded is BatchFlowDocument batch)
+                    {
+                        return await RunBatchAsync(provider, batch.Document.Flow, file, args, json).ConfigureAwait(false);
+                    }
+
+                    var options = new DocumentExecutionOptions
+                    {
+                        LogLevel = ParseLogLevel(GetOption(args, "--log-level")),
+                        Retrain = args.Contains("--retrain"),
+                        ScmDryRun = args.Contains("--dry-run"),
+                        ScmPush = !args.Contains("--no-push"),
+                        Echo = json ? null : Console.WriteLine,
+                    };
+
+                    var exec = await provider.GetRequiredService<DocumentExecutor>()
+                        .ExecuteAsync(loaded, file, options).ConfigureAwait(false);
+
+                    if (json)
+                    {
+                        Console.WriteLine(JsonSerializer.Serialize(exec.Result, ExecutionJson.Options));
+                    }
+                    else
+                    {
+                        PrintExecution(loaded, exec);
+                    }
+
+                    if (args.Contains("--show-sql") && exec.SqlTraceText.Length > 0)
+                    {
+                        Console.WriteLine(exec.SqlTraceText);
+                    }
+
+                    await RecordRunsInCatalogAsync(provider, args, json, file, [(file, exec.RunDirectory)]).ConfigureAwait(false);
+
+                    return ExitCodeForExecution(loaded, exec, args);
+                }
+
+                case "infer":
+                {
+                    var request = provider.GetRequiredService<InferSpecLoader>().LoadFile(file);
+                    var inference = provider.GetRequiredService<IInferenceService>();
+                    // The table is already loaded, so validate by default: the report then carries the
+                    // transform SELECT plus the per-column fit/silent-null status. --no-validate skips it.
+                    var report = args.Contains("--no-validate")
+                        ? await inference.InferAsync(request).ConfigureAwait(false)
+                        : await inference.ValidateAsync(request).ConfigureAwait(false);
+                    var json = JsonSerializer.Serialize(report, ExecutionJson.Options);
+
+                    var outPath = GetOption(args, "--out", "-o");
+                    if (outPath is not null)
+                    {
+                        await File.WriteAllTextAsync(outPath, json).ConfigureAwait(false);
+                        Console.WriteLine($"Wrote inference report to {outPath}");
+                    }
+                    else
+                    {
+                        Console.WriteLine(json);
+                    }
+
+                    return 0;
+                }
+
+                case "discover":
+                {
+                    var flow = LoadFlow(loader, file);
+                    var introspector = IntrospectorFor(provider, flow.Source.Type);
+                    if (introspector is null)
+                    {
+                        Console.Error.WriteLine($"ERROR  'discover' supports JSON and XML sources; '{flow.Source.Type}' is not one.");
+                        return 1;
+                    }
+
+                    var introspection = await introspector.IntrospectAsync(flow.Source,
+                        ParseIntOption(args, 100, "--max-files"), ParseIntOption(args, 0, "--max-records"), ParseIntOption(args, 10, "--max-depth")).ConfigureAwait(false);
+                    PrintDiscovery(flow.Name, introspection);
+                    return 0;
+                }
+
+                case "paths":
+                {
+                    // 'paths' points straight at a JSON or XML file/folder (no pipeline YAML needed) and lists
+                    // every addressable path in it.
+                    var source = SourceFromPath(file, args);
+                    var introspector = IntrospectorFor(provider, source.Type);
+                    if (introspector is null)
+                    {
+                        Console.Error.WriteLine($"ERROR  'paths' supports JSON and XML; '{source.Type}' is not one.");
+                        return 1;
+                    }
+
+                    var introspection = await introspector.IntrospectAsync(source,
+                        ParseIntOption(args, 100, "--max-files"), ParseIntOption(args, 0, "--max-records"), ParseIntOption(args, 20, "--max-depth")).ConfigureAwait(false);
+                    PrintInventory(introspection, args.Contains("--values"));
+                    return 0;
+                }
+
+                case "flatten":
+                {
+                    // 'flatten' points straight at a JSON or XML file/folder. By default it emits the flatten
+                    // "formula": a runnable flow stub with the resolved column schema (collisions fixed so it
+                    // is lossless). With --data it instead dumps the flattened rows as CSV.
+                    if (args.Contains("--data"))
+                    {
+                        var dataSource = SourceFromPath(file, args, withFlatten: true, suppressProvenance: !args.Contains("--provenance"));
+                        var reader = provider.GetServices<ISourceReader>().FirstOrDefault(r => r.CanHandle(dataSource.Type));
+                        if (reader is null)
+                        {
+                            Console.Error.WriteLine($"ERROR  no reader handles '{dataSource.Type}'.");
+                            return 1;
+                        }
+
+                        await FlattenToCsvAsync(reader, dataSource, args).ConfigureAwait(false);
+                        return 0;
+                    }
+
+                    var source = SourceFromPath(file, args, withFlatten: true);
+                    var introspector = IntrospectorFor(provider, source.Type);
+                    if (introspector is null)
+                    {
+                        Console.Error.WriteLine($"ERROR  'flatten' supports JSON and XML; '{source.Type}' is not one.");
+                        return 1;
+                    }
+
+                    var introspection = await introspector.IntrospectAsync(source,
+                        ParseIntOption(args, 100, "--max-files"), ParseIntOption(args, 0, "--max-records"), ParseIntOption(args, 20, "--max-depth")).ConfigureAwait(false);
+                    await WriteFormulaAsync(source, introspection, args).ConfigureAwait(false);
+                    return 0;
+                }
+
+                case "catalog":
+                    return await RunCatalogAsync(provider, args).ConfigureAwait(false);
+
+                case "detect-unique-key":
+                    return await RunDetectUniqueKeyAsync(provider, args).ConfigureAwait(false);
+
+                case "healthcheck":
+                    return await RunAdHocHealthCheckAsync(provider, args).ConfigureAwait(false);
+
+                case "lineage":
+                    return await RunLineageAsync(provider, file, args).ConfigureAwait(false);
+
+                case "auth":
+                    return await RunAuthCheckAsync(provider, args).ConfigureAwait(false);
+
+                case "db":
+                    return await RunDbAsync(provider, positional, args).ConfigureAwait(false);
+
+                case "worker":
+                    return await RunWorkerAsync(provider, args, verbose).ConfigureAwait(false);
+
+                default:
+                    Console.Error.WriteLine($"Unknown command '{command}'.");
+                    PrintUsage();
+                    return 1;
+            }
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Verifies Azure authentication end to end: 'sqlflow auth [--scope storage|keyvault|arm|&lt;uri&gt;]'. It reports
+    /// the resolved mode (from SQLFLOW_AZURE_AUTH) and actually acquires a token for the chosen scope through the
+    /// one credential factory every Azure path uses, so an operator can confirm service principal / managed
+    /// identity / az-login works in THIS environment before running a cloud flow. Exit 0 on a token, 1 otherwise.
+    /// </summary>
+    private static async Task<int> RunAuthCheckAsync(IServiceProvider provider, string[] args)
+    {
+        var scopeArg = (GetOption(args, "--scope") ?? "storage").Trim();
+        var scope = scopeArg.ToLowerInvariant() switch
+        {
+            "storage" or "adls" or "blob" => "https://storage.azure.com/.default",
+            "keyvault" or "vault" => "https://vault.azure.net/.default",
+            "arm" or "management" => "https://management.azure.com/.default",
+            _ => scopeArg, // a verbatim scope URI
+        };
+
+        // Show both what the operator set and the mode it resolves to (normalized via the one resolver every Azure
+        // path uses), plus whether managed identity is in play (the dev-PC vs in-Azure distinction).
+        var raw = Environment.GetEnvironmentVariable("SQLFLOW_AZURE_AUTH");
+        var resolved = AzureAuth.Mode();
+        var resolvedLabel = resolved == CloudAuthMode.DefaultChain
+            ? $"default chain ({(AzureEnvironment.IsRunningInAzure() ? "managed identity -> az CLI -> env" : "az CLI -> env; managed identity excluded off-cloud")})"
+            : resolved.ToString();
+        Console.WriteLine($"SQLFLOW_AZURE_AUTH: {(string.IsNullOrWhiteSpace(raw) ? "(unset)" : raw)} -> {resolvedLabel}");
+        Console.WriteLine($"Acquiring a token for scope: {scope}");
+
+        try
+        {
+            var credential = provider.GetRequiredService<IAzureCredentialFactory>().Create();
+            var token = await credential.GetTokenAsync(new global::Azure.Core.TokenRequestContext([scope]), CancellationToken.None).ConfigureAwait(false);
+            Console.WriteLine($"OK   acquired a token (expires {token.ExpiresOn:u} UTC). Azure auth works.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            // A diagnostic verb: any failure to acquire a token is the answer the operator asked for, surfaced
+            // with the underlying cause rather than a stack trace.
+            Console.Error.WriteLine($"FAIL could not acquire a token: {ex.Message}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Runs this host as a self-hosted compute node: <c>sqlflow worker [--db &lt;ref&gt;] [--poll-seconds N]</c>. It
+    /// drains the durable run queue in the shadow catalog - atomically claiming queued runs, executing them through
+    /// the same engine a direct CLI run uses, and recording each outcome under the id the trigger returned - so a
+    /// node inside a private network runs the flows the control plane queued without the control plane ever reaching
+    /// the node. The queue's atomic claim makes any number of workers safe to run at once. Every credential is
+    /// resolved from THIS node's own environment, so nothing sensitive travels through the queue. Runs until Ctrl+C,
+    /// finishing the in-flight run.
+    /// </summary>
+    private static async Task<int> RunWorkerAsync(IServiceProvider provider, string[] args, bool verbose)
+    {
+        var reference = GetOption(args, "--db") ?? "${env:SQLFLOW_CATALOG_DB}";
+        string catalogConnection;
+        try
+        {
+            catalogConnection = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+
+        var pollSeconds = Math.Max(1, ParseIntOption(args, 5, "--poll-seconds"));
+        // The pools this node serves (comma-separated). Empty means it drains only untargeted runs.
+        var pools = (GetOption(args, "--pool") ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        // A dedicated host for the node: the shared engine (so a worker run is byte-for-byte a CLI run), a scoped
+        // catalog context per claim, and the shared RunWorker drain loop. The DocumentExecutor gets the stderr
+        // warning sink exactly as the CLI's own runs do (a later registration wins over the engine's sink-less one).
+        var services = new ServiceCollection();
+        services.AddLogging(builder => builder
+            .AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.TimestampFormat = "HH:mm:ss ";
+                options.IncludeScopes = true;
+            })
+            .SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information));
+        services.AddSqlFlowEngine();
+        services.AddSingleton(sp => new DocumentExecutor(sp, Console.Error.WriteLine));
+        services.AddSingleton(TimeProvider.System);
+        services.AddScoped(_ => CatalogDatabase.Create(catalogConnection));
+        services.AddSingleton<RunWorker>();
+        await using var workerProvider = services.BuildServiceProvider();
+
+        var worker = workerProvider.GetRequiredService<RunWorker>();
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true; // intercept Ctrl+C: drain to a clean stop rather than killing the process
+            cts.Cancel();
+        };
+
+        var poolLabel = pools.Length > 0 ? string.Join(", ", pools) : "untargeted runs only";
+        Console.WriteLine($"SQLFlow worker '{worker.NodeName}' draining the run queue (poll {pollSeconds}s, pools: {poolLabel}). Press Ctrl+C to stop.");
+        try
+        {
+            await worker.RunAsync(TimeSpan.FromSeconds(pollSeconds), pools, (timeout, ct) => Task.Delay(timeout, ct), cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ctrl+C: a clean stop.
+        }
+
+        Console.WriteLine("SQLFlow worker stopped.");
+        return 0;
+    }
+
+    /// <summary>
+    /// The shadow-catalog (database mode) operations: <c>sqlflow db migrate|sync|status [path] [--db &lt;ref&gt;]</c>.
+    /// The catalog is an EF-managed read-model of the git/YAML estate and the on-disk run history; git stays the
+    /// source of truth. <c>migrate</c> bootstraps an empty database and upgrades an existing one to the current
+    /// schema version; <c>sync</c> projects the estate + run.json artifacts into it (migrating first); <c>status</c>
+    /// reports applied vs pending migrations. The connection is a reference (default <c>${env:SQLFLOW_CATALOG_DB}</c>),
+    /// never an embedded secret.
+    /// </summary>
+    private static async Task<int> RunDbAsync(IServiceProvider provider, string[] positional, string[] args)
+    {
+        var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+        var reference = GetOption(args, "--db") ?? "${env:SQLFLOW_CATALOG_DB}";
+        if (SecretHygiene.LooksLikeEmbeddedSecret(reference))
+        {
+            Console.Error.WriteLine(
+                "WARN  --db embeds a credential on the command line (it lands in shell history). Prefer the canonical " +
+                "${env:SQLFLOW_CATALOG_DB}, an explicit ${env:NAME} or ${keyvault:vault/secret} reference, with local " +
+                "values in the git-ignored .sqlflow/env file.");
+        }
+
+        string connectionString;
+        try
+        {
+            connectionString = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+
+        // The catalog operations talk to SQL Server through EF Core, which throws SqlException / DbUpdateException
+        // / InvalidOperationException (none are SqlFlowException) on a bad connection, missing permission, or a
+        // failed migration. Catch them here so the verb reports a clean, redacted message instead of crashing.
+        try
+        {
+            switch (sub)
+            {
+                case "migrate":
+                {
+                    await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+                    var (applied, pending) = await CatalogDatabase.StatusAsync(connectionString).ConfigureAwait(false);
+                    Console.WriteLine(
+                        $"OK   catalog database current at '{(applied.Count > 0 ? applied[^1] : "(none)")}' " +
+                        $"({applied.Count} migration(s) applied, {pending.Count} pending).");
+                    return 0;
+                }
+
+                case "status":
+                {
+                    var (applied, pending) = await CatalogDatabase.StatusAsync(connectionString).ConfigureAwait(false);
+                    Console.WriteLine($"catalog: {applied.Count} migration(s) applied, {pending.Count} pending.");
+                    foreach (var migration in pending)
+                    {
+                        Console.WriteLine($"  pending: {migration}");
+                    }
+
+                    return pending.Count == 0 ? 0 : 2;
+                }
+
+                case "sync":
+                {
+                    var directory = positional.Length > 2 ? positional[2] : Directory.GetCurrentDirectory();
+                    var repoName = GetOption(args, "--repo") is { Length: > 0 } r
+                        ? r
+                        : (new DirectoryInfo(Path.GetFullPath(directory)).Name is { Length: > 0 } folder ? folder : "default");
+                    var repoUrl = GetOption(args, "--repo-url");
+                    // --connect adds the derived lineage tier: object metadata is fetched from the live database
+                    // (catalog + sys.sql_modules), which links flows across repos through the shared objects.
+                    var connect = args.Contains("--connect");
+                    // Bootstrap/upgrade the schema first, so a sync against a fresh server just works.
+                    await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+                    await using var context = CatalogDatabase.Create(connectionString);
+                    var result = await new CatalogSync().SyncAsync(
+                        context, directory, repoName, repoUrl, DateTime.UtcNow,
+                        includeDerived: connect, secrets: provider.GetRequiredService<ISecretResolver>()).ConfigureAwait(false);
+                    Console.WriteLine(
+                        $"OK   synced '{directory}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
+                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated; runs +{result.RunsAdded} added " +
+                        $"({result.RunFilesAdded} files, {result.RunAssertionsAdded} assertions, {result.RunStatementsAdded} statements, " +
+                        $"{result.RunSurrogateKeysAdded} surrogate-keys, {result.RunHealthCheckMetricsAdded} hc-metrics), " +
+                        $"{result.RunsSkipped} known, {result.RunsFailed} unreadable; " +
+                        $"lineage {result.ObjectsUpserted} objects, {result.ObjectColumns} columns, {result.LineageEdges} edges, " +
+                        $"{result.Waves} waves, {result.FlowDependencies} dependencies" +
+                        $"{(result.LineageConnected ? " (connected)" : "")}.");
+                    foreach (var warning in result.Warnings.Take(20))
+                    {
+                        Console.Error.WriteLine($"WARN  {warning}");
+                    }
+
+                    return 0;
+                }
+
+                default:
+                    Console.Error.WriteLine("Usage: sqlflow db <migrate|sync|status> [path] [--db <conn-ref>]");
+                    return 1;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.Error.WriteLine($"ERROR  catalog '{sub}' failed: {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// The self-maintaining shadow: after a flow run, when a catalog database is configured (<c>--db</c> or
+    /// <c>SQLFLOW_CATALOG_DB</c>), record the produced run(s) and their pipeline(s) into it automatically so
+    /// database mode stays current without a manual <c>db sync</c>. Opt out with <c>--no-db-sync</c>. Best-effort:
+    /// a write-back failure is reported as a warning and never changes the run's own exit code. Lineage and
+    /// execution waves are NOT recomputed here (that remains <c>db sync</c>'s job); this records the pipeline row
+    /// and each run with its drill-down detail. The repo is <c>--repo</c> / <c>SQLFLOW_REPO</c> / the primary
+    /// flow's folder name. A direct run passes one entry; a batch passes the batch document plus each member.
+    /// </summary>
+    private static async Task RecordRunsInCatalogAsync(
+        IServiceProvider provider, string[] args, bool json, string primaryFlowFile,
+        IReadOnlyList<(string FlowFile, string? RunDirectory)> runs)
+    {
+        if (args.Contains("--no-db-sync"))
+        {
+            return;
+        }
+
+        // In play ONLY when --db is passed or SQLFLOW_CATALOG_DB is set; otherwise the run is a pure file/YAML
+        // operation and the catalog is simply absent (no error, no output).
+        var reference = GetOption(args, "--db")
+            ?? (Environment.GetEnvironmentVariable("SQLFLOW_CATALOG_DB") is { Length: > 0 } ? "${env:SQLFLOW_CATALOG_DB}" : null);
+        if (reference is null)
+        {
+            return;
+        }
+
+        // Everything below (including path resolution) is inside the catch, so a write-back can never affect the
+        // run's own outcome.
+        try
+        {
+            var candidates = runs
+                .Where(r => r.RunDirectory is not null)
+                .Select(r => (r.FlowFile, RunJson: Path.Combine(r.RunDirectory!, "run.json")))
+                .Where(r => File.Exists(r.RunJson))
+                .ToList();
+            if (candidates.Count == 0)
+            {
+                return;
+            }
+
+            var repoName = GetOption(args, "--repo")
+                ?? (Environment.GetEnvironmentVariable("SQLFLOW_REPO") is { Length: > 0 } configured
+                    ? configured
+                    : new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(primaryFlowFile)) ?? ".").Name is { Length: > 0 } folder
+                        ? folder
+                        : "default");
+            var repoUrl = GetOption(args, "--repo-url");
+
+            var connectionString = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
+            // Bootstrap/upgrade the schema once, so the first configured run just works.
+            await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+
+            var sync = new CatalogSync();
+            var recorded = 0;
+            var warnings = new List<string>();
+            foreach (var (flowFile, runJson) in candidates)
+            {
+                // A fresh context per run keeps the change tracker clean across a batch's many members.
+                await using var context = CatalogDatabase.Create(connectionString);
+                var result = await sync.RecordRunAsync(context, flowFile, runJson, repoName, repoUrl, DateTime.UtcNow).ConfigureAwait(false);
+                if (result.RunRecorded)
+                {
+                    recorded++;
+                }
+
+                warnings.AddRange(result.Warnings);
+            }
+
+            if (!json)
+            {
+                Console.WriteLine($"  catalog: {recorded} of {candidates.Count} run(s) recorded into [{repoName}].");
+            }
+
+            foreach (var warning in warnings.Take(10))
+            {
+                Console.Error.WriteLine($"WARN  {warning}");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.Error.WriteLine(
+                $"WARN  catalog write-back skipped ({SecretHygiene.RedactedMessage(ex.Message)}); the run itself is unaffected. Run 'sqlflow db sync' to backfill.");
+        }
+    }
+
+    /// <summary>
+    /// The zero-configuration health check: 'sqlflow healthcheck --source &lt;ref&gt; --object schema.table'.
+    /// No pipeline file, no registration, no SQLFlow adoption required: the date column is auto-detected from
+    /// the catalog (pin --date-column to override), the metric defaults to COUNT(*), and models stay in
+    /// memory unless --state-dir persists them between runs. The exact same runner as flow documents, so the
+    /// detection stack (trend, AutoML calendar, ESD, PELT, maturity, quality probes) is identical.
+    /// </summary>
+    private static async Task<int> RunAdHocHealthCheckAsync(IServiceProvider provider, string[] args)
+    {
+        // The canonical default: SQLFLOW_SOURCE. Zero flags against the usual estate; the resolver's error
+        // names the variable when it is not set.
+        var source = GetOption(args, "--source") ?? "${env:SQLFLOW_SOURCE}";
+        if (SecretHygiene.LooksLikeEmbeddedSecret(source))
+        {
+            Console.Error.WriteLine(
+                "WARN  --source embeds a credential on the command line (it lands in shell history). Prefer the " +
+                "canonical ${env:SQLFLOW_SOURCE}, an explicit ${env:NAME} or ${keyvault:vault/secret} reference, " +
+                "with local values in the git-ignored .sqlflow/env file.");
+        }
+
+        var kind = ParseProviderOption(GetOption(args, "--provider"));
+        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL)
+        {
+            Console.Error.WriteLine("ERROR  healthcheck runs T-SQL on the monitored table; --provider must be mssql or azdb.");
+            return 1;
+        }
+
+        var objectName = RequireObject(args);
+        var json = args.Contains("--json");
+        void Note(string message)
+        {
+            // Keep stdout clean JSON when --json is set; the notes still reach the operator on stderr.
+            if (json)
+            {
+                Console.Error.WriteLine(message);
+            }
+            else
+            {
+                Console.WriteLine(message);
+            }
+        }
+
+        // A two-part object resolves its database from the connection's default catalog.
+        var database = objectName.Database;
+        if (database is null)
+        {
+            var resolved = await provider.GetRequiredService<IConnectionResolver>()
+                .ResolveAsync(source, ConnectionRole.Target, kind).ConfigureAwait(false);
+            database = await ScalarStringAsync(resolved.CanonicalString, "SELECT DB_NAME();").ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(database))
+            {
+                Console.Error.WriteLine("ERROR  the connection has no default database; use a three-part --object database.schema.table.");
+                return 1;
+            }
+        }
+
+        // The date column: pinned, or auto-detected from the catalog with the reasoning shown.
+        var dateColumn = GetOption(args, "--date-column");
+        if (dateColumn is null)
+        {
+            var catalog = provider.GetRequiredService<CatalogService>();
+            var obj = await catalog.IntrospectAsync(source, objectName, kind).ConfigureAwait(false);
+            if (obj is null)
+            {
+                Console.Error.WriteLine($"ERROR  object {objectName.QualifiedName} was not found.");
+                return 1;
+            }
+
+            var choice = DateColumnSelector.Choose(obj.Columns.Select(c => (c.Name, c.NativeType)).ToList());
+            if (choice.Column is null)
+            {
+                Console.Error.WriteLine($"ERROR  could not auto-detect a date column: {choice.Reasoning}. Pass --date-column <name>.");
+                return 1;
+            }
+
+            dateColumn = choice.Column;
+            Note($"date column: {choice.Reasoning}");
+        }
+
+        var expression = GetOption(args, "--base-value") ?? "COUNT(*)";
+        var stateDir = GetOption(args, "--state-dir");
+        var flowName = $"{database}.{objectName.Schema}.{objectName.Name}";
+        var flow = new HealthCheckFlow
+        {
+            FlowId = BitConverter.ToInt32(FlowIdentity.FromName(flowName).ToByteArray(), 0) & 0x7FFFFFFF,
+            SysAlias = flowName,
+            Server = "adhoc",
+            Target = RelationalObject.Parse($"[{database}].[{objectName.Schema}].[{objectName.Name}]"),
+            DateColumn = dateColumn,
+            Metrics = [new HealthCheckMetric { Name = HealthCheckMetric.DefaultName(expression), Expression = expression }],
+            FilterCriteria = GetOption(args, "--filter"),
+            // An ephemeral run retrains every time, so the default budget stays snappy; a persisted state
+            // dir gets the full document-mode budget because the model is reused afterwards.
+            MaxExperimentSeconds = ParseIntOption(args, stateDir is null ? 30 : 120, "--budget"),
+            AnomalyThreshold = ParseDoubleOption(args, 2.0, "--threshold"),
+            EsdAlpha = ParseDoubleOption(args, 0.025, "--alpha"),
+            MaturityDays = ParseIntOption(args, 1, "--maturity"),
+            Training = args.Contains("--retrain") ? HealthCheckTraining.Always : HealthCheckTraining.Auto,
+        };
+
+        IHealthCheckModelStore store = stateDir is null
+            ? new EphemeralHealthCheckModelStore()
+            : new HealthCheckModelStore(Path.GetFullPath(stateDir));
+        var runner = WithoutDatabaseHealthCheck.BuildRunner(
+            [
+                new DataSource
+                {
+                    Alias = "adhoc",
+                    Kind = kind ?? DataSourceKind.MSSQL,
+                    ConnectionRef = source,
+                    Credential = new CredentialProfile { Mode = CredentialMode.InlineConnectionString },
+                },
+            ],
+            store,
+            provider.GetRequiredService<ISecretResolver>());
+
+        var runLogger = new RunLogger(ParseLogLevel(GetOption(args, "--log-level")), echo: json ? null : Console.WriteLine);
+        var outcome = await runner
+            .RunAsync(flow, new IngestionRunOptions { ExecMode = "cli-adhoc", Events = runLogger })
+            .ConfigureAwait(false);
+        var result = outcome.Result;
+
+        // With a state dir the run leaves the canonical artifact set there, exactly like a flow document.
+        if (stateDir is not null)
+        {
+            var runDirectory = RunHistory.WriteAt(Path.GetFullPath(stateDir), flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["run.json"] = JsonSerializer.Serialize(new RunArtifact
+                {
+                    FlowKind = "hc",
+                    FlowName = flowName,
+                    RunId = result.RunId,
+                    Success = result.Success,
+                    WrittenUtc = DateTime.UtcNow,
+                    Error = result.Error,
+                    Result = result,
+                }, ExecutionJson.Options),
+                ["run.log"] = runLogger.Render(),
+                ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
+                ["healthcheck.json"] = outcome.Report is null ? string.Empty : JsonSerializer.Serialize(outcome.Report, ExecutionJson.Options),
+            }, Console.Error.WriteLine);
+            if (runDirectory is not null && !json)
+            {
+                Console.WriteLine($"  run log: {runDirectory}");
+            }
+        }
+
+        if (GetOption(args, "--out", "-o") is { } outPath)
+        {
+            await File.WriteAllTextAsync(outPath,
+                outcome.Report is null ? string.Empty : JsonSerializer.Serialize(outcome.Report, ExecutionJson.Options)).ConfigureAwait(false);
+            Note($"Wrote the scored report to {outPath}");
+        }
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(outcome, ExecutionJson.Options));
+        }
+        else
+        {
+            PrintHealthCheckResult(result, outcome.Report);
+        }
+
+        if (args.Contains("--show-sql"))
+        {
+            Console.WriteLine(SqlTrace.Render(result.SqlTrace));
+        }
+
+        return HealthCheckExitCode(result, args.Contains("--fail-on-anomaly"));
+    }
+
+    /// <summary>
+    /// 'sqlflow lineage &lt;folder&gt;': the three-phase lineage computation over a flow estate. Offline by
+    /// default (declared documents + observed run artifacts); --connect adds the derived tier (catalog and
+    /// module expansion). The canonical lineage.json lands under the folder's .sqlflow/lineage/; --of walks
+    /// impact (--down, default) or dependencies (--up) from an object or flow. --strict exits 2 on cycles.
+    /// </summary>
+    private static async Task<int> RunLineageAsync(IServiceProvider provider, string folder, string[] args)
+    {
+        var computation = await LineageService.ComputeDetailedAsync(new LineageOptions
+        {
+            FlowDirectory = folder,
+            IncludeObserved = !args.Contains("--no-observed"),
+            IncludeDerived = args.Contains("--connect"),
+            Secrets = provider.GetRequiredService<ISecretResolver>(),
+        }).ConfigureAwait(false);
+        var report = computation.Report;
+
+        // The canonical artifact: always written, like every other run product; the summary only points at
+        // it when the write actually succeeded. With --dump-facts the raw pre-merge facts land beside it.
+        string? artifactPath = null;
+        string? factsPath = null;
+        try
+        {
+            var lineageDirectory = Path.Combine(Path.GetFullPath(folder), ".sqlflow", "lineage");
+            Directory.CreateDirectory(lineageDirectory);
+            var candidate = Path.Combine(lineageDirectory, "lineage.json");
+            await File.WriteAllTextAsync(candidate, JsonSerializer.Serialize(report, ExecutionJson.Options)).ConfigureAwait(false);
+            artifactPath = candidate;
+
+            if (args.Contains("--dump-facts"))
+            {
+                var factsCandidate = Path.Combine(lineageDirectory, "facts.json");
+                await File.WriteAllTextAsync(factsCandidate, JsonSerializer.Serialize(computation.Facts, ExecutionJson.Options)).ConfigureAwait(false);
+                factsPath = factsCandidate;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"WARN  could not write lineage artifacts: {ex.Message}");
+        }
+
+        if (GetOption(args, "--out", "-o") is { } outPath)
+        {
+            await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(report, ExecutionJson.Options)).ConfigureAwait(false);
+        }
+
+        var json = args.Contains("--json");
+        if (json && GetOption(args, "--of") is null && GetOption(args, "--explain") is null)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(report, ExecutionJson.Options));
+            return LineageExitCode(report, args.Contains("--strict"));
+        }
+
+        if (!json)
+        {
+            Console.WriteLine(
+                $"Lineage over {report.Flows.Count} flow(s), {report.Objects.Count} object(s), {report.Edges.Count} edge(s) " +
+                $"({string.Join("+", report.TiersUsed).ToLowerInvariant()})");
+        }
+
+        if (GetOption(args, "--explain") is { } explainFlow)
+        {
+            var explanation = LineageService.ExplainFlow(report, explainFlow);
+            if (explanation is null)
+            {
+                Console.Error.WriteLine($"ERROR  '{explainFlow}' is not a flow in the graph (use --of for an object's impact walk).");
+                return 1;
+            }
+
+            if (json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(explanation, ExecutionJson.Options));
+            }
+            else
+            {
+                PrintExplanation(explanation);
+                if (factsPath is not null)
+                {
+                    Console.WriteLine($"  facts: {factsPath}");
+                }
+            }
+
+            return LineageExitCode(report, args.Contains("--strict"));
+        }
+
+        if (GetOption(args, "--of") is { } subject)
+        {
+            var resolved = LineageService.ResolveSubject(report, subject);
+            if (resolved.Count == 0)
+            {
+                Console.Error.WriteLine($"ERROR  '{subject}' matches nothing in the graph.");
+                return 1;
+            }
+
+            if (resolved.Count > 1)
+            {
+                Console.Error.WriteLine($"ERROR  '{subject}' is ambiguous: {string.Join(", ", resolved)}. Use the full key.");
+                return 1;
+            }
+
+            // Direction is downstream (impact) by default; --down states that default explicitly and --up flips
+            // it. Both at once is a contradiction, rejected rather than silently preferring one.
+            var up = args.Contains("--up");
+            if (up && args.Contains("--down"))
+            {
+                Console.Error.WriteLine("ERROR  choose either --up (dependencies) or --down (impact), not both.");
+                return 1;
+            }
+
+            var reached = up ? LineageService.Upstream(report, resolved[0]) : LineageService.Downstream(report, resolved[0]);
+            if (json)
+            {
+                // Machine-readable impact walk: the artifact already carries the full report.
+                Console.WriteLine(JsonSerializer.Serialize(
+                    new { Subject = resolved[0], Direction = up ? "upstream" : "downstream", Nodes = reached }, ExecutionJson.Options));
+                return LineageExitCode(report, args.Contains("--strict"));
+            }
+
+            Console.WriteLine($"  {(up ? "upstream of" : "downstream of")} {resolved[0]}: {reached.Count} node(s)");
+            foreach (var node in reached)
+            {
+                Console.WriteLine($"    {node}");
+            }
+        }
+        else
+        {
+            foreach (var wave in report.ExecutionPlan.Waves)
+            {
+                var marker = report.ExecutionPlan.Unordered.Count > 0 && wave.Wave == report.ExecutionPlan.Waves.Count
+                             && wave.Flows.All(report.ExecutionPlan.Unordered.Contains)
+                    ? " (fallback: unresolved order)"
+                    : string.Empty;
+                Console.WriteLine($"  wave {wave.Wave}{marker}: {string.Join(", ", wave.Flows)}");
+            }
+
+            foreach (var cycle in report.Cycles)
+            {
+                Console.WriteLine($"  CYCLE  {string.Join(" -> ", cycle.Flows)} via {string.Join(", ", cycle.ViaObjects)}");
+            }
+        }
+
+        foreach (var warning in report.Warnings)
+        {
+            Console.WriteLine($"  WARN  {warning}");
+        }
+
+        if (artifactPath is not null)
+        {
+            Console.WriteLine($"  lineage: {artifactPath}");
+        }
+
+        if (factsPath is not null)
+        {
+            Console.WriteLine($"  facts: {factsPath}");
+        }
+
+        return LineageExitCode(report, args.Contains("--strict"));
+    }
+
+    /// <summary>Prints the traced rationale for one flow's wave placement: its dependencies (with the mediating
+    /// objects and their waves), what it reads and writes by tier, and the flows that depend on it.</summary>
+    private static void PrintExplanation(FlowExplanation x)
+    {
+        Console.WriteLine($"  flow '{x.Flow}' ({x.Kind}): wave {x.Wave}{(x.InCycle ? " (in a dependency cycle)" : string.Empty)}");
+
+        if (x.DependsOn.Count == 0)
+        {
+            Console.WriteLine("    depends on: (nothing in the set; a wave-1 root)");
+        }
+        else
+        {
+            Console.WriteLine("    depends on:");
+            foreach (var dependency in x.DependsOn)
+            {
+                Console.WriteLine($"      {dependency.Flow} (wave {dependency.Wave}) via {string.Join(", ", dependency.ViaObjects)}");
+            }
+        }
+
+        foreach (var edge in x.Reads)
+        {
+            Console.WriteLine($"    reads   [{edge.Tier.ToString().ToLowerInvariant()}] {edge.ObjectName}{ObservedSuffix(edge)}");
+        }
+
+        foreach (var edge in x.Writes)
+        {
+            Console.WriteLine($"    {edge.Relation.ToString().ToLowerInvariant(),-7} [{edge.Tier.ToString().ToLowerInvariant()}] {edge.ObjectName}{ObservedSuffix(edge)}");
+        }
+
+        if (x.RequiredBy.Count > 0)
+        {
+            Console.WriteLine($"    required by: {string.Join(", ", x.RequiredBy.Select(d => $"{d.Flow} (wave {d.Wave})"))}");
+        }
+
+        static string ObservedSuffix(ExplainEdge edge)
+            => edge.ObservedRunId is { } runId ? $"  (run {runId.ToString("N")[..8]}{(edge.Step is null ? string.Empty : $", {edge.Step}")})" : string.Empty;
+    }
+
+    private static int LineageExitCode(Core.Lineage.LineageReport report, bool strict)
+        => strict && report.Cycles.Count > 0 ? 2 : 0;
+
+    private static async Task<string?> ScalarStringAsync(string connectionString, string sql)
+    {
+        await using var connection = new Microsoft.Data.SqlClient.SqlConnection(connectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        await using var command = new Microsoft.Data.SqlClient.SqlCommand(sql, connection);
+        return await command.ExecuteScalarAsync().ConfigureAwait(false) as string;
+    }
+
+    private static double ParseDoubleOption(string[] args, double fallback, params string[] names)
+    {
+        var value = GetOption(args, names);
+        return value is not null
+               && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+               && double.IsFinite(parsed) && parsed > 0
+            ? parsed
+            : fallback;
+    }
+
+    private static async Task<int> RunCatalogAsync(IServiceProvider provider, string[] args)
+    {
+        var positional = PositionalArguments(args);
+        var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+
+        var source = GetOption(args, "--source");
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            Console.Error.WriteLine("ERROR  catalog commands require --source <@alias | ${ref} | connection string>.");
+            return 1;
+        }
+
+        var service = provider.GetRequiredService<CatalogService>();
+        var json = args.Contains("--json");
+        var database = GetOption(args, "--database");
+        var kind = ParseProviderOption(GetOption(args, "--provider"));
+        var query = new CatalogQuery
+        {
+            NameLike = GetOption(args, "--like"),
+            IncludeSystem = args.Contains("--system"),
+            IncludeViews = !args.Contains("--no-views"),
+            IncludeTables = !args.Contains("--no-tables"),
+            Offset = ParseIntOption(args, 0, "--offset"),
+            Limit = ParseIntOption(args, 200, "--limit"),
+        };
+
+        switch (sub)
+        {
+            case "databases":
+                Output(json, await service.DatabasesAsync(source, query, kind).ConfigureAwait(false),
+                    d => d.Collation is null ? d.Name : $"{d.Name}  ({d.Collation})");
+                return 0;
+
+            case "schemas":
+                Output(json, await service.SchemasAsync(source, database, query, kind).ConfigureAwait(false), s => s.Name);
+                return 0;
+
+            case "tables":
+            {
+                var page = await service.ObjectsAsync(source, new ObjectScope { Database = database, Schema = GetOption(args, "--schema") }, query, kind).ConfigureAwait(false);
+                if (json)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(page, ExecutionJson.Options));
+                }
+                else
+                {
+                    foreach (var o in page.Items)
+                    {
+                        Console.WriteLine($"{o.Schema}.{o.Name}  {o.Type}  ~{o.ApproxRows} row(s)");
+                    }
+
+                    Console.WriteLine($"({page.Items.Count} of {page.Total})");
+                }
+
+                return 0;
+            }
+
+            case "search":
+            {
+                var term = GetOption(args, "--term");
+                if (string.IsNullOrWhiteSpace(term))
+                {
+                    Console.Error.WriteLine("ERROR  catalog search requires --term <text>.");
+                    return 1;
+                }
+
+                Output(json, await service.SearchAsync(source, database, term, kind).ConfigureAwait(false), m => $"{m.Schema}.{m.Name}  ({m.Type})");
+                return 0;
+            }
+
+            case "columns":
+            {
+                var name = RequireObject(args);
+                var obj = await service.IntrospectAsync(source, name, kind).ConfigureAwait(false);
+                if (obj is null)
+                {
+                    Console.Error.WriteLine($"ERROR  object {name.QualifiedName} was not found.");
+                    return 1;
+                }
+
+                if (json)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(obj, ExecutionJson.Options));
+                }
+                else
+                {
+                    foreach (var c in obj.Columns)
+                    {
+                        Console.WriteLine($"{c.Name}  {c.NativeType}  {(c.IsNullable ? "NULL" : "NOT NULL")}");
+                    }
+                }
+
+                return 0;
+            }
+
+            case "scaffold":
+            {
+                var name = RequireObject(args);
+                var targetObject = GetOption(args, "--target-object");
+                if (string.IsNullOrWhiteSpace(targetObject))
+                {
+                    Console.Error.WriteLine("ERROR  catalog scaffold requires --target-object <schema.table>.");
+                    return 1;
+                }
+
+                var obj = await service.IntrospectAsync(source, name, kind).ConfigureAwait(false);
+                if (obj is null)
+                {
+                    Console.Error.WriteLine($"ERROR  object {name.QualifiedName} was not found.");
+                    return 1;
+                }
+
+                var keys = (GetOption(args, "--keys") ?? string.Empty)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                // --detect-keys fills keyColumns from live unique-key detection when the operator did not pin --keys,
+                // feeding the same detector the standalone verb uses. Notes go to stderr so stdout stays clean YAML.
+                if (keys.Length == 0 && args.Contains("--detect-keys"))
+                {
+                    keys = await DetectTopKeyAsync(provider, source, kind, name, obj.Columns.Select(c => c.Name).ToList(), SampleOption(args)).ConfigureAwait(false);
+                    Console.Error.WriteLine(keys.Length > 0
+                        ? $"  detected key: {string.Join(", ", keys)}"
+                        : "  no unique key detected; scaffolding without keyColumns.");
+                }
+
+                var yaml = CatalogScaffolder.ToIngestionYaml(obj, ScaffoldOptionsFor(args, source, kind, targetObject, GetOption(args, "--name"), keys));
+
+                var outPath = GetOption(args, "--out", "-o");
+                if (outPath is not null)
+                {
+                    await File.WriteAllTextAsync(outPath, yaml).ConfigureAwait(false);
+                    Console.WriteLine($"Wrote ingestion-flow scaffold to {outPath}");
+                }
+                else
+                {
+                    Console.Write(yaml);
+                }
+
+                return 0;
+            }
+
+            case "scaffold-all":
+            {
+                var outDir = GetOption(args, "--out", "-o");
+                if (string.IsNullOrWhiteSpace(outDir))
+                {
+                    Console.Error.WriteLine("ERROR  catalog scaffold-all requires --out <directory> for the generated flow files.");
+                    return 1;
+                }
+
+                var targetSchema = GetOption(args, "--target-schema");
+                var scope = new ObjectScope { Database = database, Schema = GetOption(args, "--schema") };
+                var bulkQuery = query with { Limit = ParseIntOption(args, 1000, "--limit") };
+                var page = await service.ObjectsAsync(source, scope, bulkQuery, kind).ConfigureAwait(false);
+                if (page.Items.Count == 0)
+                {
+                    Console.Error.WriteLine("ERROR  no tables or views matched (check --schema/--like and the connection).");
+                    return 1;
+                }
+
+                Directory.CreateDirectory(outDir);
+                var written = 0;
+                foreach (var item in page.Items)
+                {
+                    var obj = await service.IntrospectAsync(source, new ThreePartName { Database = database, Schema = item.Schema, Name = item.Name }, kind).ConfigureAwait(false);
+                    if (obj is null)
+                    {
+                        Console.Error.WriteLine($"WARN  {item.Schema}.{item.Name} disappeared during scaffolding; skipped.");
+                        continue;
+                    }
+
+                    var targetObject = $"{targetSchema ?? item.Schema}.{item.Name}";
+                    var yaml = CatalogScaffolder.ToIngestionYaml(obj, ScaffoldOptionsFor(args, source, kind, targetObject, flowName: null, keys: []));
+                    var file = Path.Combine(outDir, SafeFileName($"{item.Schema}.{item.Name}") + ".flow.yaml");
+                    await File.WriteAllTextAsync(file, yaml).ConfigureAwait(false);
+                    Console.WriteLine($"  {file}");
+                    written++;
+                }
+
+                Console.WriteLine($"Scaffolded {written} flow file(s) of {page.Total} matching object(s){(page.HasMore ? " (raise --limit for the rest)" : string.Empty)}.");
+                return 0;
+            }
+
+            default:
+                Console.Error.WriteLine(
+                    "Usage: sqlflow catalog <databases|schemas|tables|search|columns|scaffold|scaffold-all> --source <ref> [--provider mysql|postgres] [options]");
+                return 1;
+        }
+    }
+
+    /// <summary>
+    /// <c>sqlflow detect-unique-key --source &lt;ref&gt; --object [db.]schema.table [--sample N] [--max-columns K]</c>:
+    /// finds the minimal column set(s) that uniquely identify the table's rows, with no prior knowledge of its keys.
+    /// Columns are ranked by how identifying they are; an already-unique single column wins outright, else a composite
+    /// is grown greedily and reduced to a minimal key. A <c>--sample</c> run profiles a slice for speed and then
+    /// verifies each surviving candidate against the whole table, so a reported key is never merely sample-based. The
+    /// profiling is T-SQL, so the source must be SQL Server / Azure SQL. Exit 0 when a unique key is found, 2 when not.
+    /// </summary>
+    private static async Task<int> RunDetectUniqueKeyAsync(IServiceProvider provider, string[] args)
+    {
+        var source = GetOption(args, "--source") ?? "${env:SQLFLOW_SOURCE}";
+        if (SecretHygiene.LooksLikeEmbeddedSecret(source))
+        {
+            Console.Error.WriteLine(
+                "WARN  --source embeds a credential on the command line (it lands in shell history). Prefer the " +
+                "canonical ${env:SQLFLOW_SOURCE}, an explicit ${env:NAME} or ${keyvault:vault/secret} reference, " +
+                "with local values in the git-ignored .sqlflow/env file.");
+        }
+
+        var kind = ParseProviderOption(GetOption(args, "--provider"));
+        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL)
+        {
+            Console.Error.WriteLine("ERROR  detect-unique-key profiles with T-SQL; --provider must be mssql or azdb.");
+            return 1;
+        }
+
+        var name = RequireObject(args);
+        var json = args.Contains("--json");
+
+        // The columns come from the same catalog introspection every other command uses; the live measurement then
+        // runs on the resolved connection, so both see one source of truth.
+        var obj = await provider.GetRequiredService<CatalogService>().IntrospectAsync(source, name, kind).ConfigureAwait(false);
+        if (obj is null)
+        {
+            Console.Error.WriteLine($"ERROR  object {name.QualifiedName} was not found.");
+            return 1;
+        }
+
+        var columns = obj.Columns.Select(c => c.Name).ToList();
+        if (columns.Count == 0)
+        {
+            Console.Error.WriteLine($"ERROR  object {name.QualifiedName} has no columns to profile.");
+            return 1;
+        }
+
+        var options = new UniqueKeyOptions
+        {
+            MaxKeyColumns = Math.Max(1, ParseIntOption(args, 4, "--max-columns")),
+            MaxCandidates = Math.Max(1, ParseIntOption(args, 5, "--max-candidates")),
+            Verify = !args.Contains("--no-verify"),
+        };
+
+        var resolved = await provider.GetRequiredService<IConnectionResolver>()
+            .ResolveAsync(source, ConnectionRole.Source, kind).ConfigureAwait(false);
+
+        await using var probe = await SqlServerUniquenessProbe
+            .CreateAsync(resolved.CanonicalString, name.QualifiedName, columns, SampleOption(args))
+            .ConfigureAwait(false);
+        var report = (await UniqueKeyDetector.DetectAsync(probe, columns, options).ConfigureAwait(false)) with { ObjectName = name.QualifiedName };
+
+        if (GetOption(args, "--out", "-o") is { } outPath)
+        {
+            await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(report, ExecutionJson.Options)).ConfigureAwait(false);
+            if (!json)
+            {
+                Console.WriteLine($"Wrote unique-key report to {outPath}");
+            }
+        }
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(report, ExecutionJson.Options));
+        }
+        else
+        {
+            PrintUniqueKeyReport(report);
+        }
+
+        return report.Candidates.Any(c => c.IsUnique) ? 0 : 2;
+    }
+
+    private static void PrintUniqueKeyReport(UniqueKeyReport report)
+    {
+        var scope = report.Sampled
+            ? $"{report.TotalRows} row(s), profiled on a sample of {report.ScannedRows}"
+            : $"{report.TotalRows} row(s)";
+        Console.WriteLine($"{report.ObjectName}: {scope}");
+
+        if (report.Candidates.Count == 0)
+        {
+            Console.WriteLine("  no candidate keys.");
+        }
+        else
+        {
+            Console.WriteLine("  candidates (most trustworthy first):");
+            var rank = 1;
+            foreach (var candidate in report.Candidates)
+            {
+                var approx = candidate.Estimated ? "~" : string.Empty;
+                var status = candidate.IsUnique
+                    ? candidate.Verified ? "UNIQUE" : "unique on the sample (unverified)"
+                    : $"not unique ({approx}{candidate.Duplicates} duplicate row(s)"
+                      + (candidate.Nulls > 0 ? $", {approx}{candidate.Nulls} null row(s)" : string.Empty)
+                      + (candidate.Estimated ? ", sample estimate" : string.Empty) + ")";
+                Console.WriteLine(
+                    $"   {rank++}. [{string.Join(", ", candidate.Columns)}]  {status}  selectivity {approx}{candidate.Selectivity.ToString("0.####", CultureInfo.InvariantCulture)}");
+            }
+        }
+
+        if (report.Note is not null)
+        {
+            Console.WriteLine($"  note: {report.Note}");
+        }
+    }
+
+    /// <summary>Runs unique-key detection for scaffolding and returns the top confirmed key's columns (empty when
+    /// none is found, or the source is not SQL Server). Shares the detector and probe the standalone verb uses.</summary>
+    private static async Task<string[]> DetectTopKeyAsync(
+        IServiceProvider provider, string source, DataSourceKind? kind, ThreePartName name, IReadOnlyList<string> columns, int? sample)
+    {
+        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL || columns.Count == 0)
+        {
+            return [];
+        }
+
+        var resolved = await provider.GetRequiredService<IConnectionResolver>()
+            .ResolveAsync(source, ConnectionRole.Source, kind).ConfigureAwait(false);
+        await using var probe = await SqlServerUniquenessProbe
+            .CreateAsync(resolved.CanonicalString, name.QualifiedName, columns, sample).ConfigureAwait(false);
+        var report = await UniqueKeyDetector.DetectAsync(probe, columns, new UniqueKeyOptions()).ConfigureAwait(false);
+
+        return report.Candidates.FirstOrDefault(c => c.IsUnique && c.Verified)?.Columns.ToArray() ?? [];
+    }
+
+    /// <summary>The <c>--sample</c> option as a nullable size: absent means auto-sample (large tables only), a value
+    /// (0 for a full scan, or a positive count) is used verbatim.</summary>
+    private static int? SampleOption(string[] args)
+    {
+        var raw = GetOption(args, "--sample");
+        if (raw is null)
+        {
+            return null;
+        }
+
+        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value >= 0 ? value : null;
+    }
+
+    /// <summary>Builds the scaffold options with the no-secret embedding rule: a whole <c>${...}</c> reference
+    /// is embedded verbatim; anything else (a literal connection string, an @alias) becomes an env-var
+    /// placeholder the operator fills in, so a secret can never leak into a generated file.</summary>
+    private static ScaffoldOptions ScaffoldOptionsFor(string[] args, string source, DataSourceKind? kind, string targetObject, string? flowName, IReadOnlyList<string> keys)
+    {
+        var target = GetOption(args, "--target");
+        return new ScaffoldOptions
+        {
+            SourceConnection = EmbeddableReference(source, "${env:SQLFLOW_SOURCE}"),
+            SourceProvider = kind switch
+            {
+                DataSourceKind.MySQL => "mysql",
+                DataSourceKind.PostgreSQL => "postgres",
+                DataSourceKind.AZDB => "azdb",
+                _ => null,
+            },
+            TargetConnection = EmbeddableReference(target, "${env:SQLFLOW_DW}"),
+            TargetObject = targetObject,
+            FlowName = flowName,
+            KeyColumns = keys,
+        };
+    }
+
+    private static string EmbeddableReference(string? reference, string placeholder)
+        => reference is not null && reference.StartsWith("${", StringComparison.Ordinal) && reference.EndsWith('}')
+            ? reference
+            : placeholder;
+
+    private static DataSourceKind? ParseProviderOption(string? provider) => provider?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "mssql" or "sqlserver" => null,
+        "azdb" => DataSourceKind.AZDB,
+        "mysql" => DataSourceKind.MySQL,
+        "postgres" or "postgresql" => DataSourceKind.PostgreSQL,
+        _ => throw new SqlFlowException($"Unknown --provider '{provider}'. Allowed: mssql, azdb, mysql, postgres."),
+    };
+
+    private static string SafeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+    }
+
+    private static void Output<T>(bool json, IReadOnlyList<T> items, Func<T, string> line)
+    {
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(items, ExecutionJson.Options));
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            Console.WriteLine(line(item));
+        }
+    }
+
+    private static ThreePartName RequireObject(string[] args)
+    {
+        var raw = GetOption(args, "--object");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            throw new SqlFlowException("This command requires --object <schema.object | database.schema.object>.");
+        }
+
+        var parts = new List<string>();
+        var token = new StringBuilder();
+        var inBracket = false;
+        foreach (var c in raw)
+        {
+            if (!inBracket && c == '.')
+            {
+                parts.Add(Unbracket(token.ToString()));
+                token.Clear();
+            }
+            else
+            {
+                if (c == '[' && !inBracket)
+                {
+                    inBracket = true;
+                }
+                else if (c == ']' && inBracket)
+                {
+                    inBracket = false;
+                }
+
+                token.Append(c);
+            }
+        }
+
+        parts.Add(Unbracket(token.ToString()));
+        parts = parts.Where(p => p.Length > 0).ToList();
+
+        return parts.Count switch
+        {
+            >= 3 => new ThreePartName { Database = parts[^3], Schema = parts[^2], Name = parts[^1] },
+            2 => new ThreePartName { Schema = parts[0], Name = parts[1] },
+            _ => throw new SqlFlowException($"--object must be 'schema.object' or 'database.schema.object'; got '{raw}'."),
+        };
+
+        static string Unbracket(string value)
+        {
+            var trimmed = value.Trim();
+            return trimmed.Length >= 2 && trimmed[0] == '[' && trimmed[^1] == ']' ? trimmed[1..^1] : trimmed;
+        }
+    }
+
+    private static ServiceProvider BuildServiceProvider(bool verbose)
+    {
+        var services = new ServiceCollection();
+
+        services.AddLogging(builder => builder
+            .AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.TimestampFormat = "HH:mm:ss ";
+                options.IncludeScopes = true;
+            })
+            .SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information));
+
+        // The engine is wired once in SqlFlow.Execution and shared by every host (CLI, control plane, workers),
+        // so there is a single engine composition to maintain. The CLI then overrides the DocumentExecutor
+        // registration so its hygiene/history warnings reach standard error (the extension registers it with no
+        // sink); a later registration of the same service wins.
+        services.AddSqlFlowEngine();
+        services.AddSingleton(sp => new DocumentExecutor(sp, Console.Error.WriteLine));
+
+        return services.BuildServiceProvider();
+    }
+
+    private static void PrintPlan(FlowPlan plan)
+    {
+        Console.WriteLine($"Plan for '{plan.Flow.Name}' -> {plan.Flow.Target.QualifiedName}");
+        Console.WriteLine(plan.Actual is null ? "  target : does not exist (will create)" : "  target : exists");
+        Console.WriteLine($"  columns to add : {plan.Delta.ColumnsToAdd.Count}");
+        Console.WriteLine($"  load mode      : {plan.Flow.Load.Mode}");
+
+        if (plan.DdlStatements.Count == 0)
+        {
+            Console.WriteLine("  generated DDL  : (none)");
+        }
+        else
+        {
+            Console.WriteLine("  generated DDL  :");
+            foreach (var statement in plan.DdlStatements)
+            {
+                foreach (var line in statement.Split('\n'))
+                {
+                    Console.WriteLine($"    {line.TrimEnd('\r')}");
+                }
+            }
+        }
+
+        PrintTrace(plan.Trace, totalMs: null);
+    }
+
+    private static void PrintResult(FlowResult result)
+    {
+        var status = result.Status == FlowStatus.Success ? "OK" : "FAILED";
+        Console.WriteLine($"{status}  '{result.FlowName}': {result.RowsLoaded} row(s) loaded; {result.DdlExecuted.Count} DDL statement(s).");
+        if (result.Error is not null)
+        {
+            Console.WriteLine($"  error: {result.Error}");
+        }
+
+        PrintTrace(result.Trace, result.TotalMs);
+    }
+
+    private static void PrintTrace(IReadOnlyList<TraceEntry> trace, double? totalMs)
+    {
+        if (trace.Count == 0)
+        {
+            return;
+        }
+
+        Console.WriteLine("  trace:");
+        foreach (var entry in trace)
+        {
+            var marker = entry.Succeeded ? "ok  " : "FAIL";
+            var rows = entry.Rows is { } r ? $"  ({r} rows)" : string.Empty;
+            var detail = entry.Detail is not null ? $"  {entry.Detail}" : string.Empty;
+            Console.WriteLine($"    {marker}  {entry.Operation,-22} {entry.ElapsedMs,8:F1} ms{rows}{detail}");
+        }
+
+        if (totalMs is { } total)
+        {
+            Console.WriteLine($"          {"TOTAL",-22} {total,8:F1} ms");
+        }
+    }
+
+    private static void PrintUsage()
+    {
+        Console.WriteLine(
+            """
+            sqlflow - metadata-driven ETL for SQL Server
+
+            Usage:
+              sqlflow validate <pipeline.yaml>   Validate a pipeline definition
+              sqlflow plan     <pipeline.yaml>   Show the SQL that would run (changes nothing; file flows)
+              sqlflow run      <pipeline.yaml>   Execute the pipeline
+              sqlflow infer    <pipeline.yaml>   Profile the loaded table and output inferred types (JSON)
+              sqlflow discover <pipeline.yaml>   Scan a JSON/XML source and report its path structure
+              sqlflow paths    <file|folder>     List every path in a JSON/NDJSON/XML file or folder
+              sqlflow flatten  <file|folder>     Emit the flatten formula (a runnable flow stub); --data dumps CSV
+              sqlflow healthcheck --object [db.]schema.table [--source <ref>]
+                                                 ML anomaly check against ANY table, no pipeline file: auto-detects
+                                                 the date column, learns the expected per-date metric (trend +
+                                                 calendar via AutoML), and reports missing data, anomalies (robust
+                                                 generalized-ESD), level shifts (PELT), and date-quality issues
+                                                 (--source defaults to the canonical ${env:SQLFLOW_SOURCE})
+              sqlflow detect-unique-key --object [db.]schema.table [--source <ref>] [--sample N] [--max-columns K]
+                                                 Find the minimal column set(s) that uniquely identify a table's
+                                                 rows, with no prior key knowledge: ranks columns, takes an
+                                                 already-unique single column or grows a minimal composite. The
+                                                 whole search runs in one pass per step against a sample (large
+                                                 tables auto-sample; --sample N sets the size, --sample 0 forces a
+                                                 full scan), then each finalist is confirmed against the whole table
+                                                 with a short-circuiting duplicate probe (--no-verify skips that and
+                                                 returns fast, sample-only candidates). T-SQL source. Exit 0 when a
+                                                 unique key is found, 2 when none is.
+              sqlflow lineage  <folder>          AST-based lineage over a flow estate: declared (YAML) plus
+                                                 observed (run artifacts) offline; --connect adds the derived tier
+                                                 (catalog + sys.sql_modules parsed with ScriptDom: views and proc
+                                                 bodies expand). Computes the execution plan: waves of flows that
+                                                 can run concurrently, cycles traced into a fallback wave. Writes
+                                                 the canonical .sqlflow/lineage/lineage.json. --of <object|flow>
+                                                 walks impact (--down, default) or dependencies (--up);
+                                                 --explain <flow> traces why a flow is in its wave (its
+                                                 dependencies, reads/writes, and tier provenance); --dump-facts
+                                                 writes the raw pre-merge facts to .sqlflow/lineage/facts.json
+                                                 (what each tier contributed); --strict exits 2 on cycles
+              sqlflow auth     [--scope storage|keyvault|arm|<uri>]
+                                                 Verify Azure auth in THIS environment: reports the resolved mode
+                                                 (SQLFLOW_AZURE_AUTH: sp / mi / cli / default chain) and actually
+                                                 acquires a token for the scope (default storage), through the one
+                                                 credential factory Key Vault, invoke, and DuckDB cloud reads all
+                                                 use. Exit 0 on a token, 1 on failure.
+              sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--repo name] [--repo-url url] [--connect]
+                                                 Database mode: the EF-managed shadow catalog (a read-model of the
+                                                 git/YAML estate + on-disk run history + lineage, for the GUI).
+                                                 Each YAML flow is mapped into a row (kind, source/target, the full
+                                                 definition as queryable JSON) and lineage objects/edges, so you can
+                                                 query across files and repos. 'migrate' bootstraps an empty database
+                                                 and upgrades an existing one to the current schema version; 'sync'
+                                                 projects the estate, run.json detail, and lineage under [path] into
+                                                 it (migrating first), attributed to --repo (default: the folder
+                                                 name); --connect adds the derived lineage tier (fetches object
+                                                 metadata from the live database, linking flows across repos through
+                                                 shared objects); 'status' lists applied vs pending migrations.
+                                                 --db defaults to ${env:SQLFLOW_CATALOG_DB}.
+              sqlflow worker   [--db <conn-ref>] [--poll-seconds N] [--pool a,b]
+                                                 Run as a self-hosted compute node: drain the shadow catalog's
+                                                 durable run queue, executing queued/scheduled runs through the same
+                                                 engine on THIS host (resolving every credential from this node's own
+                                                 environment) and recording each outcome. The atomic claim makes any
+                                                 number of workers safe at once; runs until Ctrl+C. --pool sets the
+                                                 pools this node serves (it always drains untargeted runs; with
+                                                 --pool it also drains runs routed to those pools). --db defaults to
+                                                 ${env:SQLFLOW_CATALOG_DB}.
+
+            Six pipeline kinds share validate/run, discriminated by the document's flowType key:
+              (none)         a file flow: CSV/JSON/XML/XLS/Parquet into SQL Server (the default)
+              flowType: ing  table-to-table ingestion: staged copy with dynamic schema evolution, keyed
+                             upsert, incremental loading (scaffold one with 'catalog scaffold')
+              flowType: exp  file export: a SQL Server table/view to CSV or Parquet files, optionally
+                             chunked by day/month/key windows
+              flowType: sp   stored procedure: EXEC one existing procedure on a resolved server
+              flowType: inv  invoke: trigger an Azure Data Factory pipeline or Automation runbook and
+                             wait for it (ing/exp/sp flows reference the same 'invokes:' as hooks)
+              flowType: hc   ML health check: one or more metrics (COUNT(*), SUM(...), ...) learned per
+                             date (Theil-Sen trend + AutoML calendar model) and judged by robust
+                             generalized-ESD, with PELT level shifts, missing-data and trailing-gap
+                             detection, and data-quality probes (models kept in .sqlflow/state)
+              flowType: scm  source control: scripts a managed SQL Server database's objects with SMO into a
+                             git working tree (one folder per object type, the legacy layout) and commits the
+                             snapshot, pushing to a BitBucket or GitHub remote over HTTPS. Re-running over time
+                             is what records the schema's change history. The git credential is a ${env:...}
+                             reference (a BitBucket app password or a GitHub token), never in the document.
+                             --dry-run scripts and writes the tree without committing; --no-push commits locally
+              flowType: batch  ordered multi-flow run: lineage computes concurrency waves over the member flows
+                             (members.include/exclude globs), each wave runs concurrently (maxParallel), and the
+                             whole wave finishes before the next starts. onError stop|continue controls failure
+                             handling; ignoreErrors lists members allowed to fail; members.inactive deactivates
+                             a member for the run. connect auto|always|never picks the lineage tier for ordering
+            Every run writes its artifacts to a .sqlflow/runs/<flow>/ folder next to the pipeline file:
+            run.json (the result), run.log (the canonical step-by-step log), trace.sql (the generated SQL);
+            an hc run adds healthcheck.json (the full scored series). --show-sql prints the generated SQL
+            to the console after any run; --log-level info|debug|trace sets the run.log detail for
+            ing/exp/sp/hc runs (trace weaves every statement into the timeline).
+
+            Secrets never live in pipeline files. Documents carry references (${env:NAME},
+            ${keyvault:vault/secret}) or just a bare connection name, which resolves the canonical
+            ${env:SQLFLOW_CONN_<NAME>}. Local development values go in the git-ignored .sqlflow/env file
+            (KEY=VALUE, found next to the document or in any parent folder); the process environment always
+            wins, on every OS .NET runs on. See docs/environment-variables.md.
+
+            paths/flatten/discover work for JSON and XML; the format is taken from the file extension
+            (or --pattern for a folder). Flatten rule flags map to each format's option keys.
+
+            Source discovery and replication scaffolding (SQL Server, MySQL, PostgreSQL):
+              sqlflow catalog tables       --source ${env:SRC} [--provider mysql|postgres] [--schema s] [--like x]
+              sqlflow catalog databases|schemas|search|columns ... same flags
+              sqlflow catalog scaffold     --source ... --object schema.table --target ${env:DW} --target-object raw.table
+              sqlflow catalog scaffold-all --source ... --target ${env:DW} --out ./flows [--schema s] [--target-schema raw]
+            scaffold/scaffold-all generate RUNNABLE flow files: keys come from the primary key, incremental
+            candidates are suggested, and secrets are never embedded (non-${...} references become placeholders).
+
+            Options:
+              -v, --verbose                      Emit per-stage debug timing
+              -o, --out <file>                   Write output to a file (infer/flatten)
+                  --json                         Output the result as JSON (run/catalog)
+                  --show-sql                     Print the generated SQL after a run
+                  --log-level <info|debug|trace> run.log detail for ing/exp/sp/hc runs (default info)
+                  --dry-run                      scm: script and write the working tree without committing
+                  --no-push                      scm: commit locally but do not push to the remote
+                  --retrain                      Train fresh health-check models this run (hc/healthcheck)
+                  --fail-on-anomaly              Exit 2 when a health check finds anomalies (CI gating)
+                  --date-column <name>           healthcheck: the date column (omit to auto-detect)
+                  --base-value <expr>            healthcheck: the aggregate to monitor (default COUNT(*))
+                  --filter <bool expr>           healthcheck: ANDed into the series query
+                  --threshold <sigma>            healthcheck: severity floor in robust sigmas (default 2.0)
+                  --alpha <p>                    healthcheck: ESD significance level (default 0.025)
+                  --budget <seconds>             healthcheck: AutoML budget (default 30; 120 with --state-dir)
+                  --maturity <days>              healthcheck: trailing days still arriving (default 1)
+                  --state-dir <dir>              healthcheck: persist models + run history here (else in-memory)
+                  --values                       List only value paths, one per line (paths)
+                  --data                         Output the flattened rows as CSV instead of the formula (flatten)
+                  --provenance                   Keep the _DW provenance columns in --data output (flatten)
+                  --root <path>                  Records under this path (rootPath for JSON, rowXPath for XML)
+                  --include / --exclude / --explode <paths>   Flatten rules, comma-separated (flatten)
+                  --keep <paths>                 Keep subtrees as a string column (jsonPaths / xmlPaths)
+                  --aliases <col=/a|/b; ...>     Schema-evolution aliases: many paths to one column (flatten)
+                  --array <to_json|first_element|join|count|skip|explode>   JSON array handling (flatten)
+                  --repeat <to_xml|first_element|last_element|join|count|skip|explode>   XML repeat handling
+                  --separator <s>                Column-name separator (flatten; default _)
+                  --map <path=col;...>           Column-name overrides (flatten)
+                  --pattern <glob>               File glob when the target is a folder (default *.json / *.xml)
+                  -r, --recursive                Recurse into sub-folders (paths/flatten)
+                  --max-files <n>                Files to scan (default 100)
+                  --max-records <n>              Records to scan, 0 = all (default 0)
+                  --max-depth <n>                Max nesting depth to inspect (discover 10, paths/flatten 20)
+              -h, --help                         Show this help
+            """);
+    }
+
+    private static readonly string[] ProvenanceOptionKeys =
+    [
+        "includeFileName", "includeFileDate", "includeFileRowDate",
+        "includeFileSize", "includeDataSet", "includeRowNumber",
+    ];
+
+    private static IFlattenIntrospector? IntrospectorFor(IServiceProvider provider, string type)
+        => provider.GetServices<ISourceReader>().OfType<IFlattenIntrospector>().FirstOrDefault(r => r.CanHandle(type));
+
+    /// <summary>
+    /// Synthesizes a JSON or XML source from a bare file or folder path for the path-only commands. The type
+    /// is taken from the file extension (or the --pattern for a folder). With <paramref name="withFlatten"/>
+    /// it threads the flatten options (mapped to the format's option keys); with
+    /// <paramref name="suppressProvenance"/> the _DW columns are turned off for a clean data preview.
+    /// </summary>
+    private static SourceSpec SourceFromPath(string path, string[] args, bool withFlatten = false, bool suppressProvenance = false)
+    {
+        var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        string type;
+
+        if (Directory.Exists(path))
+        {
+            var pattern = GetOption(args, "--pattern");
+            type = pattern is not null && pattern.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ? "xml" : "json";
+            options["srcFile"] = pattern ?? (type == "xml" ? "*.xml" : "*.json");
+            if (args.Any(a => a is "--recursive" or "-r"))
+            {
+                options["searchSubDirectories"] = "true";
+            }
+        }
+        else
+        {
+            var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+            type = ext switch { "xml" => "xml", "ndjson" or "jsonl" => ext, _ => "json" };
+        }
+
+        var isXml = type == "xml";
+        if (GetOption(args, "--root") is { } root)
+        {
+            options[isXml ? "rowXPath" : "rootPath"] = root;
+        }
+
+        if (withFlatten)
+        {
+            MapOption(options, args, "--include", "includePaths");
+            MapOption(options, args, "--exclude", "excludePaths");
+            MapOption(options, args, "--explode", "explodePaths");
+            MapOption(options, args, "--aliases", "pathAliases");
+            MapOption(options, args, "--separator", "separator");
+            MapOption(options, args, "--join-separator", "joinSeparator");
+            MapOption(options, args, "--map", "columnMappings");
+
+            // Keep-as-string and array/repeat handling are named per format.
+            if (GetOption(args, "--keep") is { } keep)
+            {
+                options[isXml ? "xmlPaths" : "jsonPaths"] = keep;
+            }
+
+            MapOption(options, args, "--json", "jsonPaths");
+            MapOption(options, args, "--xml", "xmlPaths");
+            MapOption(options, args, "--array", "arrayHandling");
+            MapOption(options, args, "--repeat", "repeatHandling");
+        }
+
+        if (suppressProvenance)
+        {
+            foreach (var key in ProvenanceOptionKeys)
+            {
+                options[key] = "false";
+            }
+        }
+
+        return new SourceSpec { Type = type, Location = path, Options = options };
+    }
+
+    internal static void MapOption(Dictionary<string, string?> options, string[] args, string flag, string key)
+    {
+        if (GetOption(args, flag) is { } value)
+        {
+            options[key] = value;
+        }
+    }
+
+    private static async Task WriteFormulaAsync(SourceSpec source, FlattenIntrospection introspection, string[] args)
+    {
+        var formula = introspection.Formula;
+        var inventory = introspection.Inventory;
+        var name = SanitizeFlowName(Path.GetFileNameWithoutExtension(source.Location ?? "flow"));
+        var userMappings = introspection.Options.FirstOrDefault(o => o.Key == "columnMappings").Value;
+        var mappings = MergeMappings(userMappings, formula.CollisionMappings);
+
+        var sb = new StringBuilder();
+        sb.Append("# Flatten formula for ").Append(Path.GetFileName(source.Location ?? "?"))
+          .Append(" - ").Append(formula.Columns.Count).Append(" column(s), ")
+          .Append(inventory.RecordsScanned).Append(" record(s), ")
+          .Append(inventory.FilesScanned).AppendLine(" file(s).");
+        sb.AppendLine("# Generated by 'sqlflow flatten'. Set target.connection, then 'sqlflow run' this file.");
+        sb.Append("name: ").AppendLine(name);
+        sb.AppendLine("source:");
+        sb.Append("  type: ").AppendLine(introspection.SourceType);
+        sb.Append("  location: ").AppendLine(source.Location);
+        sb.AppendLine("  options:");
+        foreach (var (key, value) in introspection.Options)
+        {
+            if (key != "columnMappings")
+            {
+                AppendOptionLine(sb, key, value);
+            }
+        }
+
+        AppendOptionLine(sb, "columnMappings", mappings.Length == 0 ? null : mappings);
+        sb.AppendLine("target:");
+        sb.AppendLine("  connection: ${env:SQLFlowSinkConStr}");
+        sb.AppendLine("  schema: dbo");
+        sb.Append("  table: ").AppendLine(name);
+        sb.AppendLine("schema:");
+        sb.AppendLine("  defaultColumnType: nvarchar(4000)");
+
+        // Columns that hold whole-array / kept-subtree text can be arbitrarily large, so type them as
+        // nvarchar(max) rather than letting them overflow the scalar default.
+        var largeTextColumns = formula.Columns.Where(c => c.IsLargeText).ToList();
+        if (largeTextColumns.Count > 0)
+        {
+            sb.AppendLine("  overrides:");
+            foreach (var column in largeTextColumns)
+            {
+                sb.Append("    ").Append(column.Name).AppendLine(":");
+                sb.AppendLine("      type: nvarchar(max)");
+            }
+        }
+
+        sb.AppendLine("load:");
+        sb.AppendLine("  mode: truncate-load");
+        sb.AppendLine("# columns (column <- source path):");
+        foreach (var column in formula.Columns)
+        {
+            sb.Append("#   ").Append(column.Name.PadRight(34)).Append(" <- ").AppendLine(column.SourcePath);
+        }
+
+        if (formula.CollisionMappings.Count > 0)
+        {
+            sb.Append("# ").Append(formula.CollisionMappings.Count)
+              .AppendLine(" name collision(s) auto-resolved via columnMappings above (kept lossless).");
+        }
+
+        var text = sb.ToString();
+        var outPath = GetOption(args, "--out", "-o");
+        if (outPath is not null)
+        {
+            await File.WriteAllTextAsync(outPath, text).ConfigureAwait(false);
+            Console.WriteLine($"Wrote flatten formula ({formula.Columns.Count} column(s)) to {outPath}");
+        }
+        else
+        {
+            Console.Write(text);
+        }
+    }
+
+    private static void AppendOptionLine(StringBuilder sb, string key, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            sb.Append("    ").Append(key).Append(": \"").Append(value).AppendLine("\"");
+        }
+    }
+
+    private static string MergeMappings(string? existing, IReadOnlyDictionary<string, string> collisions)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            parts.Add(existing.Trim().TrimEnd(';').Trim());
+        }
+
+        foreach (var (path, column) in collisions)
+        {
+            parts.Add($"{path}={column}");
+        }
+
+        return string.Join("; ", parts);
+    }
+
+    private static string SanitizeFlowName(string raw)
+    {
+        var chars = raw.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray();
+        var cleaned = new string(chars).Trim('_');
+        if (cleaned.Length == 0 || char.IsAsciiDigit(cleaned[0]))
+        {
+            cleaned = "_" + cleaned;
+        }
+
+        return cleaned;
+    }
+
+    private static async Task FlattenToCsvAsync(ISourceReader reader, SourceSpec source, string[] args)
+    {
+        var columns = await reader.GetColumnsAsync(source).ConfigureAwait(false);
+        var read = await reader.OpenAsync(source, columns).ConfigureAwait(false);
+        await using var data = read.Reader;
+
+        var maxRecords = ParseIntOption(args, 0, "--max-records");
+        var outPath = GetOption(args, "--out", "-o");
+        var toFile = outPath is not null;
+        TextWriter writer = toFile ? new StreamWriter(outPath!, append: false) : Console.Out;
+
+        try
+        {
+            await writer.WriteLineAsync(string.Join(",", columns.Select(c => CsvEscape(c.Name)))).ConfigureAwait(false);
+
+            long rows = 0;
+            while (await data.ReadAsync().ConfigureAwait(false))
+            {
+                if (maxRecords > 0 && rows >= maxRecords)
+                {
+                    break;
+                }
+
+                var cells = new string[columns.Count];
+                for (var i = 0; i < columns.Count; i++)
+                {
+                    cells[i] = data.IsDBNull(i)
+                        ? string.Empty
+                        : CsvEscape(Convert.ToString(data.GetValue(i), CultureInfo.InvariantCulture) ?? string.Empty);
+                }
+
+                await writer.WriteLineAsync(string.Join(",", cells)).ConfigureAwait(false);
+                rows++;
+            }
+
+            if (toFile)
+            {
+                Console.WriteLine($"Wrote {rows} row(s), {columns.Count} column(s) to {outPath}");
+            }
+        }
+        finally
+        {
+            if (toFile)
+            {
+                await writer.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static string CsvEscape(string value)
+        => value.IndexOfAny([',', '"', '\n', '\r']) >= 0
+            ? "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
+            : value;
+
+    private static void PrintInventory(FlattenIntrospection introspection, bool valuesOnly)
+    {
+        var inventory = introspection.Inventory;
+        if (valuesOnly)
+        {
+            foreach (var info in inventory.Paths.Where(p => p.Kind == SchemaPathKind.Value))
+            {
+                Console.WriteLine(info.Path);
+            }
+
+            return;
+        }
+
+        Console.WriteLine(
+            $"{inventory.Paths.Count} path(s) across {inventory.RecordsScanned} record(s) in {inventory.FilesScanned} file(s).");
+
+        if (inventory.Paths.Count == 0)
+        {
+            Console.WriteLine("  (no records found - check the path, file pattern, and --root)");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  {"PATH",-50} {"KIND",-10} {"COLUMN",-28} PRESENCE");
+        foreach (var info in inventory.Paths)
+        {
+            var kind = info.Kind switch
+            {
+                SchemaPathKind.Value => "value",
+                SchemaPathKind.Repeating => "repeating",
+                _ => "container",
+            };
+            var column = info.Kind == SchemaPathKind.Container ? "-" : info.Column;
+            var presence = info.RecordCount >= inventory.RecordsScanned
+                ? "all"
+                : $"{info.RecordCount}/{inventory.RecordsScanned}";
+            Console.WriteLine($"  {Truncate(info.Path, 50),-50} {kind,-10} {Truncate(column, 28),-28} {presence}");
+        }
+
+        // Two different paths can fold onto the same column name; under the default flatten the later one
+        // silently overwrites the earlier. Surfacing it lets the author add a columnMapping to disambiguate.
+        var collisions = inventory.Paths
+            .Where(p => p.Kind != SchemaPathKind.Container && p.Column.Length > 0 && !p.Path.Contains("[*]", StringComparison.Ordinal))
+            .GroupBy(p => p.Column, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .ToList();
+
+        if (collisions.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  {collisions.Count} column-name collision(s) under the default flatten (last value wins):");
+            foreach (var group in collisions)
+            {
+                Console.WriteLine($"    {group.Key} <- {string.Join(", ", group.Select(p => p.Path))}");
+            }
+
+            Console.WriteLine("    disambiguate with columnMappings or a different separator.");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  value paths become columns; container/repeating paths are targets for root, keep-as-string,");
+        Console.WriteLine("  exclude, or explode. A [*] path becomes a column when its repeat is exploded (one row per");
+        Console.WriteLine("  element). Use --values to list only the column paths (one per line).");
+    }
+
+    private static string Truncate(string value, int width)
+        => value.Length <= width ? value : value[..(width - 3)] + "...";
+
+    private static void PrintDiscovery(string name, FlattenIntrospection introspection)
+    {
+        var inventory = introspection.Inventory;
+
+        Console.WriteLine(
+            $"Discovered {inventory.Paths.Count} path(s) for '{name}' across {inventory.RecordsScanned} record(s) in {inventory.FilesScanned} file(s).");
+
+        var drift = inventory.Paths.Any(p => p.RecordCount < inventory.RecordsScanned);
+        if (drift)
+        {
+            Console.WriteLine("  schema drift: a path missing from a file becomes NULL for that file's rows (reconcile renames with pathAliases).");
+        }
+
+        if (inventory.Paths.Count == 0)
+        {
+            Console.WriteLine("  (no records found - check the location, file pattern, and the row path)");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  {"PATH",-50} {"COLUMN",-28} PRESENCE");
+        foreach (var info in inventory.Paths)
+        {
+            var column = info.Kind == SchemaPathKind.Container ? "-" : info.Column;
+            var presence = info.RecordCount >= inventory.RecordsScanned ? "all" : $"{info.RecordCount}/{inventory.RecordsScanned}";
+            Console.WriteLine($"  {Truncate(info.Path, 50),-50} {Truncate(column, 28),-28} {presence}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  Starter flatten config (paste under source.options):");
+        foreach (var (key, value) in introspection.Options)
+        {
+            Console.WriteLine($"    {key}: \"{value}\"");
+        }
+    }
+
+    /// <summary>
+    /// Loads a flow and resolves a relative source location against the pipeline file's own directory, so
+    /// a sample's <c>./data/x.json</c> works no matter which directory the command is run from (paths in a
+    /// config file are naturally relative to that file). Absolute locations and non-file sources are left
+    /// untouched.
+    /// </summary>
+    private static FlowDefinition LoadFlow(YamlFlowLoader loader, string file)
+    {
+        var flow = loader.LoadFile(file);
+        return DocumentLoader.ResolveRelativeLocation(flow, file);
+    }
+
+    /// <summary>Runs a batch document: the orchestrator computes lineage waves over the members and runs them
+    /// through the same <see cref="DocumentExecutor"/> a direct run uses. Writes the canonical batch artifacts
+    /// (run.json, run.log, batch.json) and prints the per-wave outcome.</summary>
+    private static async Task<int> RunBatchAsync(IServiceProvider provider, BatchFlow flow, string file, string[] args, bool json)
+    {
+        var orchestrator = new BatchOrchestrator(provider.GetRequiredService<DocumentExecutor>());
+        var memberOptions = new DocumentExecutionOptions
+        {
+            LogLevel = ParseLogLevel(GetOption(args, "--log-level")),
+            ScmPush = !args.Contains("--no-push"),
+            ScmDryRun = args.Contains("--dry-run"),
+            // Members log to their own run folders; the console stays readable under concurrency.
+            Echo = null,
+        };
+
+        var result = await orchestrator
+            .RunAsync(flow, file, provider.GetRequiredService<ISecretResolver>(), memberOptions)
+            .ConfigureAwait(false);
+
+        var runDirectory = RunHistory.Write(file, flow.SysAlias, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["run.json"] = JsonSerializer.Serialize(new RunArtifact
+            {
+                FlowKind = "batch",
+                FlowName = flow.SysAlias,
+                RunId = result.RunId,
+                Success = result.Success,
+                WrittenUtc = DateTime.UtcNow,
+                Error = result.Error,
+                Result = result,
+            }, ExecutionJson.Options),
+            ["run.log"] = RunLogRenderer.RenderBatchLog(result),
+            // A batch generates no SQL of its own; each member's trace is in its own run folder.
+            ["trace.sql"] = string.Empty,
+            ["batch.json"] = JsonSerializer.Serialize(result, ExecutionJson.Options),
+        }, Console.Error.WriteLine);
+
+        // Self-maintaining shadow: record the batch run AND each member run that executed (members carry their
+        // own run.json under their folders); member.File is relative to the batch document's directory.
+        var batchDir = Path.GetDirectoryName(Path.GetFullPath(file)) ?? ".";
+        var runs = result.Members
+            .Where(m => m.RunDirectory is not null)
+            .Select(m => (FlowFile: Path.Combine(batchDir, m.File), m.RunDirectory))
+            .Append((FlowFile: file, RunDirectory: runDirectory))
+            .ToList();
+        await RecordRunsInCatalogAsync(provider, args, json, file, runs).ConfigureAwait(false);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(result, ExecutionJson.Options));
+        }
+        else
+        {
+            PrintBatchResult(result);
+            if (runDirectory is not null)
+            {
+                Console.WriteLine($"  run log: {runDirectory}");
+            }
+        }
+
+        return result.Success ? 0 : 1;
+    }
+
+    /// <summary>Prints the per-kind summary of one executed document, then its run-log location.</summary>
+    private static void PrintExecution(FlowDocument document, DocumentExecutionResult exec)
+    {
+        switch (document)
+        {
+            case FileFlowDocument:
+                PrintResult((FlowResult)exec.Result);
+                break;
+            case IngestionFlowDocument doc:
+                PrintIngestionResult(doc.Document.Flow, (IngestionRunResult)exec.Result);
+                break;
+            case ExportFlowDocument:
+                PrintExportResult((ExportRunResult)exec.Result);
+                break;
+            case StoredProcedureFlowDocument doc:
+            {
+                var result = (StoredProcedureRunResult)exec.Result;
+                Console.WriteLine(result.Success
+                    ? $"OK  EXEC {doc.Document.Flow.Procedure.QualifiedName} completed in {result.DurationSeconds}s"
+                    : $"FAILED  {result.Error}");
+                break;
+            }
+
+            case HealthCheckFlowDocument:
+                PrintHealthCheckResult((HealthCheckRunResult)exec.Result, exec.HealthCheckReport);
+                break;
+            case InvokeFlowDocument:
+            {
+                var result = (InvokeResult)exec.Result;
+                Console.WriteLine(result.Success
+                    ? $"OK  invoke '{result.InvokeAlias}' completed in {result.DurationSeconds}s ({result.StandardOutput})"
+                    : $"FAILED  {result.Error}");
+                break;
+            }
+
+            case SourceControlFlowDocument:
+                PrintSourceControlResult((SourceControlResult)exec.Result);
+                break;
+        }
+
+        // The file flow already prints its own trace via PrintResult; every other kind points at its run folder.
+        if (exec.RunDirectory is not null && document is not FileFlowDocument)
+        {
+            Console.WriteLine($"  run log: {exec.RunDirectory}");
+        }
+    }
+
+    private static int ExitCodeForExecution(FlowDocument document, DocumentExecutionResult exec, string[] args)
+        => document is HealthCheckFlowDocument
+            ? HealthCheckExitCode((HealthCheckRunResult)exec.Result, args.Contains("--fail-on-anomaly"))
+            : exec.Success ? 0 : 1;
+
+    private static void PrintBatchResult(BatchRunResult result)
+    {
+        if (result.Error is not null && result.Waves.Count == 0)
+        {
+            Console.WriteLine($"FAILED  {result.Error}");
+            return;
+        }
+
+        var status = result.Success ? "OK" : "FAILED";
+        Console.WriteLine(
+            $"{status}  batch '{result.BatchName}': {result.Waves.Count} wave(s); " +
+            $"{result.Succeeded} succeeded, {result.Failed} failed, {result.Skipped} skipped, {result.Inactive} inactive (onError {result.OnError.ToLowerInvariant()}) in {result.DurationSeconds}s.");
+
+        foreach (var wave in result.Waves)
+        {
+            Console.WriteLine($"  wave {wave.Wave}: {string.Join(", ", wave.Members)}");
+        }
+
+        foreach (var member in result.Members.Where(m => m.Status is BatchMemberStatus.Failed or BatchMemberStatus.FailedIgnored or BatchMemberStatus.Skipped))
+        {
+            var label = member.Status switch
+            {
+                BatchMemberStatus.Failed => "FAILED",
+                BatchMemberStatus.FailedIgnored => "FAILED (ignored)",
+                _ => "SKIPPED",
+            };
+            Console.WriteLine($"  {label}  {member.FlowName}{(member.Error is null ? string.Empty : $": {member.Error}")}");
+        }
+
+        foreach (var warning in result.Warnings)
+        {
+            Console.WriteLine($"  WARN  {warning}");
+        }
+    }
+
+    private static void PrintSourceControlResult(SourceControlResult result)
+    {
+        if (!result.Success)
+        {
+            Console.WriteLine($"FAILED  {result.Error}");
+            return;
+        }
+
+        var commit = result.DryRun
+            ? "dry run (no commit)"
+            : result.Committed
+                ? $"committed {result.CommitSha?[..Math.Min(10, result.CommitSha.Length)]}{(result.Pushed ? " and pushed" : string.Empty)}"
+                : "no change to commit";
+        Console.WriteLine(
+            $"OK  '{result.DatabaseName}': {result.ObjectsScripted} object(s) scripted; " +
+            $"{result.Added} added, {result.Changed} changed, {result.Deleted} deleted ({commit}) in {result.DurationSeconds}s.");
+        Console.WriteLine($"  repository: {result.WorkingDirectory} [{result.Branch}]{(result.Remote is null ? string.Empty : $" -> {result.Remote}")}");
+
+        foreach (var warning in result.Warnings)
+        {
+            Console.WriteLine($"  WARN  {warning}");
+        }
+    }
+
+    private static RunLogLevel ParseLogLevel(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "info" => RunLogLevel.Info,
+        "debug" => RunLogLevel.Debug,
+        "trace" => RunLogLevel.Trace,
+        _ => throw new SqlFlowException($"Unknown --log-level '{value}'. Allowed: info, debug, trace."),
+    };
+
+    /// <summary>0 on success, 1 on failure, 2 when --fail-on-anomaly was set and a mature anomaly exists
+    /// (the CI gate: distinguishable from a broken run).</summary>
+    private static int HealthCheckExitCode(HealthCheckRunResult result, bool failOnAnomaly)
+        => !result.Success ? 1 : failOnAnomaly && result.TotalAnomalies > 0 ? 2 : 0;
+
+    private static void PrintHealthCheckResult(HealthCheckRunResult result, HealthCheckReport? report)
+    {
+        Console.WriteLine(result.Success
+            ? $"OK  {result.TotalAnomalies} anomalies across {result.MetricResults.Count} metric(s) ({result.Frequency}) in {result.DurationSeconds}s"
+            : $"FAILED  {result.Error}");
+
+        if (result.DataQuality is { } q && (q.FutureDatedRows > 0 || q.SentinelDatedRows > 0 || q.NullDatedRows > 0))
+        {
+            Console.WriteLine($"  data quality: {q.FutureDatedRows} future-dated, {q.SentinelDatedRows} sentinel-dated, {q.NullDatedRows} NULL-dated row(s)");
+        }
+
+        foreach (var metric in result.MetricResults)
+        {
+            if (metric.Error is not null)
+            {
+                Console.WriteLine($"  {metric.Name}: ERROR  {metric.Error}");
+                continue;
+            }
+
+            Console.WriteLine(
+                $"  {metric.Name}: {metric.Anomalies} anomalies in {metric.SeriesPoints} point(s) " +
+                $"({metric.ImputedPoints} imputed, {metric.ImmaturePoints} immature)" +
+                $"{(metric.LevelShifts > 0 ? $", {metric.LevelShifts} level shift(s)" : string.Empty)}" +
+                $"; model {metric.ModelTrainer} ({(metric.ModelTrained ? "trained" : "reused")})" +
+                (metric.Fit is { } fit ? $", R2 {fit.RSquared:0.###}" : string.Empty));
+        }
+
+        if (report is null)
+        {
+            return;
+        }
+
+        // The findings themselves, worst first: this is the part an operator acts on.
+        foreach (var metric in report.Metrics)
+        {
+            foreach (var shift in metric.LevelShifts)
+            {
+                Console.WriteLine(
+                    $"  SHIFT    {metric.Name} {shift.Date:yyyy-MM-dd}: level {shift.MedianBefore:0.##} -> {shift.MedianAfter:0.##} ({shift.MagnitudeSigma:0.#} sigma)");
+            }
+
+            foreach (var point in metric.Series
+                         .Where(p => p.Anomaly)
+                         .OrderByDescending(p => p.Severity)
+                         .Take(10))
+            {
+                Console.WriteLine(
+                    $"  ANOMALY  {metric.Name} {point.Date:yyyy-MM-dd}: actual {point.Actual:0.##}, expected {point.Predicted:0.##} " +
+                    $"({point.AnomalyReason}, severity {point.Severity:0.#})");
+            }
+
+            var hidden = metric.AnomalySummary.Total - Math.Min(10, metric.AnomalySummary.Total);
+            if (hidden > 0)
+            {
+                Console.WriteLine($"           {metric.Name}: {hidden} more anomalies in healthcheck.json");
+            }
+        }
+    }
+
+    private static void PrintExportResult(ExportRunResult result)
+    {
+        Console.WriteLine(result.Success
+            ? $"OK  exported {result.TotalRows} row(s) to {result.Files.Count} file(s) in {result.DurationSeconds}s"
+            : $"FAILED  {result.Error}");
+        foreach (var exported in result.Files)
+        {
+            Console.WriteLine($"  {exported.Path}  {exported.Rows} row(s), {exported.Bytes} byte(s)");
+        }
+    }
+
+    private static void PrintIngestionResult(IngestionFlow flow, IngestionRunResult result)
+    {
+        var status = result.Success ? "OK" : "FAILED";
+        var name = flow.SysAlias ?? flow.Target.Table.Name;
+        Console.WriteLine(
+            $"{status}  '{name}': {result.RowsStaged} row(s) staged, {result.RowsInserted} inserted, {result.RowsUpdated} updated in {result.DurationSeconds}s ({result.FlowRate:0.#} rows/s).");
+        if (result.Error is not null)
+        {
+            Console.WriteLine($"  error: {result.Error}");
+        }
+
+        if (result.SourceWhere.Length > 0)
+        {
+            Console.WriteLine($"  incremental: WHERE 1=1{result.SourceWhere}");
+        }
+
+        if (result.StagingRetained)
+        {
+            Console.WriteLine($"  staging kept: {result.StagingTable}");
+        }
+
+        foreach (var action in result.IndexActions)
+        {
+            Console.WriteLine($"  index {action.IndexName}: {action.Kind}{(action.Detail is null ? string.Empty : $" ({action.Detail})")}");
+        }
+
+        foreach (var assertion in result.Assertions)
+        {
+            var outcome = assertion.Error is not null ? $"error: {assertion.Error}"
+                : assertion.Evaluated ? $"result: {assertion.Result}"
+                : "skipped";
+            Console.WriteLine($"  assertion {assertion.Name}: {outcome}");
+        }
+
+        foreach (var key in result.SurrogateKeys)
+        {
+            var outcome = key.Error is not null ? $"error: {key.Error}"
+                : $"{key.KeysGenerated} key(s) generated, {key.RowsStamped} row(s) stamped";
+            Console.WriteLine($"  surrogate key {key.SurrogateTable}: {outcome}");
+        }
+    }
+
+    /// <summary>Every option that consumes the next token as its value. Kept in sync with the GetOption /
+    /// ParseIntOption / MapOption call sites so an option's value is never mistaken for a positional argument
+    /// (the command and the file), regardless of where the user places the option.</summary>
+    internal static readonly HashSet<string> ValueTakingOptions = new(StringComparer.Ordinal)
+    {
+        "-o", "--out", "--log-level",
+        "--max-files", "--max-records", "--max-depth",
+        "--source", "--target", "--database", "--schema", "--target-schema", "--provider",
+        "--like", "--offset", "--limit", "--term", "--object", "--target-object", "--keys", "--name",
+        "--pattern", "--root", "--keep", "--include", "--exclude", "--explode", "--aliases",
+        "--separator", "--join-separator", "--map", "--array", "--repeat", "--xml",
+        "--date-column", "--base-value", "--filter", "--threshold", "--alpha", "--budget", "--maturity", "--state-dir",
+        "--of", "--explain",
+        "--db", "--repo", "--repo-url",
+    };
+
+    internal static string[] PositionalArguments(string[] args)
+    {
+        var positional = new List<string>();
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i].StartsWith('-'))
+            {
+                if (ValueTakingOptions.Contains(args[i]))
+                {
+                    i++;
+                }
+
+                continue;
+            }
+
+            positional.Add(args[i]);
+        }
+
+        return [.. positional];
+    }
+
+    private static string? GetOption(string[] args, params string[] names)
+    {
+        var index = Array.FindIndex(args, a => names.Contains(a));
+        if (index < 0 || index + 1 >= args.Length)
+        {
+            return null;
+        }
+
+        // A value-taking flag with no value would otherwise swallow the next flag (e.g. `--explode --data`
+        // setting explodePaths to "--data"). A lone "-" is still allowed (e.g. a separator).
+        var value = args[index + 1];
+        return value.Length > 1 && value[0] == '-' ? null : value;
+    }
+
+    private static int ParseIntOption(string[] args, int fallback, params string[] names)
+    {
+        var value = GetOption(args, names);
+        return value is not null && int.TryParse(value, out var parsed) && parsed >= 0 ? parsed : fallback;
+    }
+}

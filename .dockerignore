@@ -1,0 +1,13 @@
+# Keep the build context small and reproducible: never copy build outputs, the git history, or IDE state into the
+# image build (the publish rebuilds from source inside the SDK stage).
+**/bin/
+**/obj/
+**/.vs/
+.git/
+.github/
+**/*.user
+artifacts/
+TestResults/
+**/.sqlflow/
+docs/
+*.md

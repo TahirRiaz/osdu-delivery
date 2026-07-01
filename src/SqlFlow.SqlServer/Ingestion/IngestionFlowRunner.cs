@@ -1,0 +1,1144 @@
+using System.Data.Common;
+using System.Globalization;
+using Microsoft.Data.SqlClient;
+using SqlFlow.Core;
+using SqlFlow.Core.Abstractions;
+using SqlFlow.Core.Catalog;
+using SqlFlow.Core.Connections;
+using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Invoke;
+using SqlFlow.Core.Model;
+using SqlFlow.Core.Runs;
+using SqlFlow.SqlServer.Schema;
+
+namespace SqlFlow.SqlServer.Ingestion;
+
+/// <summary>The outcome of one ingestion run.</summary>
+public sealed record IngestionRunResult
+{
+    public required Guid RunId { get; init; }
+
+    public required bool Success { get; init; }
+
+    /// <summary>Rows bulk-copied from the source into staging.</summary>
+    public long RowsStaged { get; init; }
+
+    /// <summary>The two-part name of the run-scoped staging table.</summary>
+    public required string StagingTable { get; init; }
+
+    /// <summary>True when the staging table was left in place (always on failure; on success when the flow
+    /// opted to keep it).</summary>
+    public bool StagingRetained { get; init; }
+
+    /// <summary>The incremental WHERE fragment appended to the source read after <c>WHERE 1=1</c> (begins
+    /// with <c>" AND "</c>, or empty for a full read). Surfaced for observability and tests.</summary>
+    public string SourceWhere { get; init; } = string.Empty;
+
+    /// <summary>True when the run took the full-load / insert-all apply path (empty or absent target, or a
+    /// keyless flow) rather than the keyed upsert.</summary>
+    public bool RunFullLoad { get; init; }
+
+    /// <summary>The outcome of applying the declared (trgDesiredIndex) indexes, empty when none were declared
+    /// or the target was not created this run.</summary>
+    public IReadOnlyList<IndexAction> IndexActions { get; init; } = [];
+
+    public DateTime StartTimeUtc { get; init; }
+
+    public DateTime EndTimeUtc { get; init; }
+
+    public int DurationSeconds { get; init; }
+
+    /// <summary>Rows the keyed upsert (or insert-all) inserted into the target.</summary>
+    public long RowsInserted { get; init; }
+
+    /// <summary>Rows the keyed upsert updated in the target.</summary>
+    public long RowsUpdated { get; init; }
+
+    public long RowsDeleted { get; init; }
+
+    /// <summary>Rows per second over the run (0 for a sub-second run).</summary>
+    public decimal FlowRate { get; init; }
+
+    /// <summary>Data-quality assertion outcomes (empty in without-database mode or when none are declared).</summary>
+    public IReadOnlyList<AssertionResult> Assertions { get; init; } = [];
+
+    /// <summary>Surrogate-key generation outcomes (empty in without-database mode or when none are declared).</summary>
+    public IReadOnlyList<SurrogateKeyResult> SurrogateKeys { get; init; } = [];
+
+    /// <summary>Every SQL statement the run generated, in execution order, populated on success AND failure
+    /// (the trace captured up to the failure point). This is the run's debugging surface.</summary>
+    public IReadOnlyList<SqlTraceEntry> SqlTrace { get; init; } = [];
+
+    /// <summary>The failure message (already redacted of any secret), or null on success.</summary>
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// Runs one relational (SQL to SQL Server) ingestion flow end to end, the V3 execution of a flw.Ingestion row:
+/// resolve the source and target connections through the registry, introspect and shape the source columns,
+/// create a run-scoped staging table, stream the source into it with SqlBulkCopy, evolve the target schema,
+/// then apply staging to the target with the two-step keyed upsert (or an insert-all when there is no key).
+/// The staging table is per-execution (its name carries the flow id, a UTC timestamp, and a run token) and is
+/// dropped on success unless the flow opts to keep it; a failed run always keeps it for debugging. There is a
+/// single execution path: file flows use FlowRunner, relational flows use this runner, and both share the
+/// schema-evolution and upsert machinery.
+/// </summary>
+public sealed class IngestionFlowRunner
+{
+    private static readonly IReadOnlySet<string> NoKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    private readonly IConnectionResolver _resolver;
+    private readonly IConnectionFactory _factory;
+    private readonly ICatalogReaderFactory _catalogs;
+    private readonly IReadOnlyList<ISourceSqlDialect> _dialects;
+    private readonly IReadOnlyList<ISourceTypeMapper> _typeMappers;
+    private readonly IDesiredIndexManager _desiredIndexes;
+    private readonly IIngestionRunLog _runLog;
+    private readonly IAssertionRunner _assertions;
+    private readonly ISurrogateKeyExecutor _surrogateKeys;
+    private readonly IInvokeRunner _invoke;
+
+    public IngestionFlowRunner(
+        IConnectionResolver resolver,
+        IConnectionFactory factory,
+        ICatalogReaderFactory catalogs,
+        IDesiredIndexManager? desiredIndexes = null,
+        IIngestionRunLog? runLog = null,
+        IAssertionRunner? assertions = null,
+        ISurrogateKeyExecutor? surrogateKeys = null,
+        IInvokeRunner? invoke = null,
+        IReadOnlyList<ISourceSqlDialect>? sourceDialects = null,
+        IReadOnlyList<ISourceTypeMapper>? sourceTypeMappers = null)
+    {
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(factory);
+        ArgumentNullException.ThrowIfNull(catalogs);
+
+        _resolver = resolver;
+        _factory = factory;
+        _catalogs = catalogs;
+
+        // The SQL Server dialect/mapper are the default set; provider registries append MySQL/PostgreSQL.
+        _dialects = sourceDialects is { Count: > 0 } ? sourceDialects : [new SqlServerSourceDialect()];
+        _typeMappers = sourceTypeMappers is { Count: > 0 } ? sourceTypeMappers : [new SqlServerSourceTypeMapper()];
+        _desiredIndexes = desiredIndexes ?? new SqlServerDesiredIndexManager();
+
+        // Without-database (YAML) mode logs nothing, asserts nothing, generates no surrogate keys, and has no
+        // invoke registry; with-database mode injects the SQL-backed run log, assertion runner, surrogate-key
+        // executor, and invoke runner. With no invoke runner wired, a set Pre/PostInvokeAlias is surfaced as a
+        // clear error by NullInvokeRunner rather than silently skipped.
+        _runLog = runLog ?? NullIngestionRunLog.Instance;
+        _assertions = assertions ?? NullAssertionRunner.Instance;
+        _surrogateKeys = surrogateKeys ?? NullSurrogateKeyExecutor.Instance;
+        _invoke = invoke ?? NullInvokeRunner.Instance;
+    }
+
+    public async Task<IngestionRunResult> RunAsync(IngestionFlow flow, IngestionRunOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        options ??= new IngestionRunOptions();
+
+        var runId = options.RunId ?? Guid.NewGuid();
+        var startUtc = DateTime.UtcNow;
+        var runToken = runId.ToString("N", CultureInfo.InvariantCulture)[..8];
+        var stamp = startUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture);
+        var staging = new RelationalObject
+        {
+            Database = flow.Target.Table.Database,
+            Schema = flow.Target.Table.Schema,
+            Name = $"stg_{flow.FlowId}_{stamp}_{runToken}",
+        };
+        var applyOptions = new SchemaApplyOptions();
+
+        var resolvedSource = await _resolver.ResolveAsync(flow.Source.ConnectionReference, ConnectionRole.Source, ct: ct).ConfigureAwait(false);
+        var resolvedTarget = await _resolver.ResolveAsync(flow.Target.ConnectionReference, ConnectionRole.Target, ct: ct).ConfigureAwait(false);
+        var targetConnectionString = resolvedTarget.CanonicalString;
+
+        // Per-source provider pieces: the catalog reader, SQL dialect, and type mapper for the source's kind.
+        // The target is always SQL Server; its reader drives schema evolution and the target-side watermark
+        // probe, both constructed per run (they are cheap and stateless).
+        var sourceCatalog = _catalogs.ReaderFor(resolvedSource);
+        var sourceDialect = _dialects.FirstOrDefault(d => d.CanHandle(resolvedSource.Kind))
+            ?? throw new SqlFlowException(
+                $"No source SQL dialect is registered for data source kind '{resolvedSource.Kind}'. Register the matching provider (for example from SqlFlow.Providers).");
+        var sourceTypeMapper = _typeMappers.FirstOrDefault(m => m.CanHandle(resolvedSource.Kind))
+            ?? throw new SqlFlowException(
+                $"No source type mapper is registered for data source kind '{resolvedSource.Kind}'. Register the matching provider (for example from SqlFlow.Providers).");
+        var targetCatalog = _catalogs.ReaderFor(resolvedTarget);
+        var schemaSync = new SchemaSyncService(targetCatalog);
+        var incremental = new IncrementalWindowResolver(targetCatalog, _factory);
+
+        // The run's ordered SQL trace: every statement the engine generates is captured here, on success and
+        // (especially) on failure, because the generated SQL is the debugging surface of a metadata-driven run.
+        // Each captured statement is also emitted to the canonical run log at Trace level, so one call site
+        // feeds both the trace.sql artifact and the timeline.
+        var events = options.Events ?? NullRunEventSink.Instance;
+        void Info(string step, string message) => events.Log(RunLogLevel.Info, step, message);
+        void Dbg(string step, string message) => events.Log(RunLogLevel.Debug, step, message);
+        var trace = new List<SqlTraceEntry>();
+        void Trace(string step, string? sql)
+        {
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                trace.Add(new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql });
+                events.Log(RunLogLevel.Trace, step, sql);
+            }
+        }
+
+        try
+        {
+            // Fail fast on flags that are accepted by the loaders but not yet implemented by the engine, so a
+            // flow can never silently believe it got temporal history or an unknown-member row. These are guarded
+            // here (the universal path for YAML, control-DB, and legacy sources) rather than silently ignored.
+            EnsureSupportedFeatures(flow);
+
+            Info("run.start",
+                $"ingestion '{flow.SysAlias ?? flow.Target.Table.Name}' (flow {flow.FlowId}, run {runToken}): " +
+                $"{flow.Source.Table.QualifiedName} -> {flow.Target.Table.QualifiedName}, staging {SchemaQualified(staging)}");
+            // 0. PreInvokeAlias: run the named flw.Invoke flow before any data work (a prerequisite hook). The
+            //    invoke runner resolves the alias and dispatches it; a failure the invoke does not tolerate is
+            //    raised here and fails the flow. Without an invoke runner wired (without-database mode), a set
+            //    alias is surfaced as a clear error by NullInvokeRunner.
+            if (!string.IsNullOrWhiteSpace(flow.Process.PreInvokeAlias))
+            {
+                Info("invoke.pre", $"running pre-invoke '{flow.Process.PreInvokeAlias.Trim()}'");
+                await _invoke.RunByAliasAsync(flow.Process.PreInvokeAlias!.Trim(), ct).ConfigureAwait(false);
+            }
+
+            // 1. Introspect the source object and shape its columns: drop ignored columns and clear the
+            //    source identity/primary-key facts so staging and target do not inherit them.
+            IReadOnlyList<SqlColumn> sourceColumns;
+            await using (var sourceConnection = await _factory.OpenAsync(resolvedSource, ct).ConfigureAwait(false))
+            {
+                var introspected = await sourceCatalog.IntrospectObjectAsync(sourceConnection, ToName(flow.Source.Table), ct).ConfigureAwait(false)
+                    ?? throw new SqlFlowException($"Source object {flow.Source.Table.QualifiedName} was not found.");
+
+                sourceColumns = CatalogSchemaAdapter.ToColumns(introspected, sourceTypeMapper)
+                    .Where(c => !flow.Source.IgnoreColumns.Contains(c.Name, StringComparer.OrdinalIgnoreCase))
+                    .Select(c => c with { IsIdentity = false, IsPrimaryKey = false })
+                    .ToList();
+            }
+
+            if (sourceColumns.Count == 0)
+            {
+                throw new SqlFlowException($"Source object {flow.Source.Table.QualifiedName} exposes no columns to ingest.");
+            }
+
+            // 2. Build the desired target schema (data + system + hash + identity) and the bulk-copy name map.
+            var targetSchema = new IngestionSchemaBuilder(new DefaultColumnNameCleaner()).Build(sourceColumns, flow, forStaging: false);
+            var nameMap = targetSchema.SourceToTargetNames;
+            var byName = sourceColumns.ToDictionary(c => c.Name, StringComparer.OrdinalIgnoreCase);
+            var bulkColumns = sourceColumns
+                .Where(c => nameMap.ContainsKey(c.Name))
+                .Select(c => (Source: c.Name, Target: nameMap[c.Name]))
+                .ToList();
+            var dataColumnNames = bulkColumns.Select(c => c.Target).ToList();
+            var stagingColumns = bulkColumns.Select(c => byName[c.Source] with { Name = c.Target }).ToList();
+
+            Info("source.introspect", $"{sourceColumns.Count} source column(s), {bulkColumns.Count} bulk-copied"
+                + (flow.Source.IgnoreColumns.Count > 0 ? $", {flow.Source.IgnoreColumns.Count} ignored" : string.Empty));
+            Dbg("source.introspect", "column map: " + string.Join(", ", bulkColumns.Select(c =>
+                string.Equals(c.Source, c.Target, StringComparison.Ordinal) ? c.Source : $"{c.Source} -> {c.Target}")));
+
+            // 2b. PreProcessOnTarget: raw T-SQL on the target, before any new data is staged or loaded (so it
+            //     sees the old/absent target). On a first-ever run the target does not exist yet, so a pre-hook
+            //     that touches the target must guard itself with IF OBJECT_ID(...) IS NOT NULL (legacy contract).
+            if (TargetProcessHooks.ShouldRun(flow.Process.PreProcessOnTarget))
+            {
+                Info("target.preprocess", "running the pre-process hook on the target");
+                Trace("target.preprocess", flow.Process.PreProcessOnTarget!.Trim());
+                await TargetProcessHooks.RunAsync(targetConnectionString, flow.Process.PreProcessOnTarget!.Trim(), ct).ConfigureAwait(false);
+            }
+
+            // 3. Create the run-scoped staging table (data columns only; fresh per execution).
+            var stagingOutcome = await schemaSync.EvolveAsync(targetConnectionString, staging, stagingColumns, NoKeys, allowTableRewrite: false, applyOptions, ct).ConfigureAwait(false);
+            Info("staging.create", $"staging table {SchemaQualified(staging)} created");
+            foreach (var statement in stagingOutcome.AppliedStatements)
+            {
+                Trace("staging.create", statement.Text);
+            }
+
+            // 3.5 / 4. Fill staging. An InitLoad backfill chunks the source by date/key (ignoring the
+            //          incremental watermark, exactly as legacy); otherwise the incremental window bounds a
+            //          single read. Both paths feed the SAME staging table, so steps 5-8 are unchanged.
+            IncrementalWindow window;
+            string? sourceSelect;
+            long rowsStaged;
+            if (flow.InitLoad.Enabled)
+            {
+                window = new IncrementalWindow { SourceWhere = string.Empty, RunFullLoad = true };
+                var segments = InitLoadPlanner.Plan(flow, flow.Source.Table, bulkColumns.Select(c => c.Source).ToList(), sourceDialect);
+                sourceSelect = segments.Count > 0 ? segments[0].Sql : null;
+                Info("source.initload", $"init-load backfill: {segments.Count} segment(s), {Math.Max(1, flow.Load.Threads ?? 1)} concurrent");
+                foreach (var segment in segments)
+                {
+                    Trace("source.select.segment", segment.Sql);
+                }
+
+                rowsStaged = await BulkCopyInitLoadAsync(resolvedSource, targetConnectionString, staging, bulkColumns, segments, flow.Load, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                window = await incremental.ResolveAsync(flow, resolvedSource, targetConnectionString, sourceColumns, sourceDialect, ct).ConfigureAwait(false);
+                Info("incremental.window", window.RunFullLoad
+                    ? "full load (no usable watermark)"
+                    : window.SourceWhere.Length > 0 ? $"incremental read: WHERE 1=1{window.SourceWhere}" : "full read (no incremental bound)");
+                Trace("incremental.max-probe", window.TargetMaxProbeSql);
+                Trace("incremental.min-probe", window.SourceMinProbeSql);
+                sourceSelect = BuildSourceSelect(flow.Source.Table, bulkColumns, window.SourceWhere, sourceDialect);
+                Trace("source.select", sourceSelect);
+                rowsStaged = await BulkCopyAsync(resolvedSource, sourceSelect, targetConnectionString, staging, bulkColumns, flow.Load, ct).ConfigureAwait(false);
+            }
+
+            Info("stage.copy", $"{rowsStaged} row(s) staged");
+
+            // 5. Evolve the target to the desired schema when schema sync is enabled. Capture whether the
+            //    target was created this run, so the create-time index steps fire exactly once.
+            var targetCreated = false;
+            string? createCmd = null;
+            if (flow.SchemaSync.Sync)
+            {
+                var targetOutcome = await schemaSync.EvolveAsync(
+                    targetConnectionString,
+                    flow.Target.Table,
+                    targetSchema.Columns,
+                    KeySet(EffectiveKeyColumns(flow)),
+                    flow.SchemaSync.AllowTableRewrite,
+                    applyOptions,
+                    ct).ConfigureAwait(false);
+                targetCreated = targetOutcome.Plan.CreateTable;
+                createCmd = targetOutcome.AppliedStatements.FirstOrDefault(s => s.IsCreateTable)?.Text;
+                Info("target.evolve", targetCreated
+                    ? $"target {flow.Target.Table.QualifiedName} created"
+                    : targetOutcome.AppliedStatements.Count > 0
+                        ? $"target schema evolved: {targetOutcome.AppliedStatements.Count} change(s) applied"
+                        : "target schema up to date");
+                foreach (var statement in targetOutcome.AppliedStatements)
+                {
+                    Trace("target.evolve", statement.Text);
+                }
+            }
+
+            // 5.5. On the run that created the target, add the canonical indexes on the still-empty table
+            //      (key/date/dataset/UpdatedDate_DW, optional clustered columnstore), using mapped target names.
+            if (targetCreated)
+            {
+                var canonical = CanonicalIndexPlanner.Plan(
+                    flow.Target.Table,
+                    EffectiveKeyColumns(flow).Select(k => MapName(nameMap, k)).ToList(),
+                    MapNameOrNull(nameMap, flow.Incremental.DateColumn),
+                    MapNameOrNull(nameMap, flow.Source.DataSetColumn),
+                    hasUpdatedDateColumn: HasColumn(targetSchema.Columns, "UpdatedDate_DW"),
+                    flow.Target.ColumnStoreIndex,
+                    hasIdentityPrimaryKey: targetSchema.Columns.Any(c => c.IsPrimaryKey),
+                    scd2Enabled: flow.Versioning.Scd2.Enabled);
+                Info("target.index.canonical", $"{canonical.Count} canonical index(es) on the new target");
+                foreach (var statement in canonical)
+                {
+                    Trace("target.index.canonical", statement);
+                    await ExecuteAsync(targetConnectionString, statement, ct).ConfigureAwait(false);
+                }
+            }
+
+            // 5.6. SCD2 key index: the business key is unique only among CURRENT rows, so the key index is a
+            //      filtered unique index. This runs whenever SCD2 is on (any table state), so enabling SCD2 on
+            //      a pre-existing table migrates its plain unique key index to the filtered form before the
+            //      load inserts a second version for a key. It is guarded, so it is a no-op once in place.
+            if (flow.Versioning.Scd2.Enabled)
+            {
+                var scd2Indexes = CanonicalIndexPlanner.Scd2KeyIndexStatements(
+                    flow.Target.Table,
+                    EffectiveKeyColumns(flow).Select(k => MapName(nameMap, k)).ToList(),
+                    flow.Versioning.Scd2.CurrentFlagColumn);
+                foreach (var statement in scd2Indexes)
+                {
+                    Trace("target.index.scd2", statement);
+                    await ExecuteAsync(targetConnectionString, statement, ct).ConfigureAwait(false);
+                }
+            }
+
+            // 6. Optional full-reload truncate.
+            if (flow.Target.TruncateBeforeLoad)
+            {
+                var truncateSql = $"TRUNCATE TABLE {SchemaQualified(flow.Target.Table)};";
+                Info("target.truncate", $"target {flow.Target.Table.QualifiedName} truncated before load");
+                Trace("target.truncate", truncateSql);
+                await ExecuteAsync(targetConnectionString, truncateSql, ct).ConfigureAwait(false);
+            }
+
+            // 7. Apply staging to the target: the keyed two-step upsert (anti-join safe), or a blind
+            //    insert-all for a keyless flow. The default runs in one transaction; the batched
+            //    (lock-escalation-avoiding) apply commits per key window. Counts attribute by statement kind.
+            var loadStatements = BuildLoadStatements(flow, staging, dataColumnNames, stagingColumns, nameMap, events);
+            foreach (var statement in loadStatements)
+            {
+                Trace(statement.Kind switch
+                {
+                    LoadKind.Update => "upsert.update",
+                    LoadKind.Insert => "upsert.insert",
+                    LoadKind.UpsertLoop => "upsert.dataset-loop",
+                    _ => "upsert.insert-all",
+                }, statement.Sql);
+            }
+
+            Dbg("upsert.apply", (string.IsNullOrWhiteSpace(flow.Load.DataSetColumn), flow.Load.BatchUpsertToAvoidLockEscalation) switch
+            {
+                (false, true) => $"dataset-partitioned loop by [{flow.Load.DataSetColumn}], batched in key windows of {flow.Load.BatchUpsertRowCount} row(s)",
+                (false, false) => $"dataset-partitioned loop by [{flow.Load.DataSetColumn}], one transaction",
+                (true, true) => $"batched apply: key windows of {flow.Load.BatchUpsertRowCount} row(s), per-window commits (no enclosing transaction)",
+                _ => "single-transaction apply",
+            });
+            var (rowsInserted, rowsUpdated) = await ApplyLoadAsync(
+                targetConnectionString, loadStatements, useTransaction: !flow.Load.BatchUpsertToAvoidLockEscalation, ct).ConfigureAwait(false);
+            Info("upsert.apply", $"{rowsInserted} inserted, {rowsUpdated} updated");
+            var insertCmd = loadStatements.FirstOrDefault(s => s.Kind != LoadKind.Update)?.Sql;
+            var updateCmd = loadStatements.FirstOrDefault(s => s.Kind == LoadKind.Update)?.Sql;
+
+            // 7a. PostProcessOnTarget: raw T-SQL on the target, after the load commits, outside the load
+            //     transaction (a failure here does not roll back the committed load) and before staging is
+            //     dropped (so a failure keeps staging for debugging).
+            if (TargetProcessHooks.ShouldRun(flow.Process.PostProcessOnTarget))
+            {
+                Info("target.postprocess", "running the post-process hook on the target");
+                Trace("target.postprocess", flow.Process.PostProcessOnTarget!.Trim());
+                await TargetProcessHooks.RunAsync(targetConnectionString, flow.Process.PostProcessOnTarget!.Trim(), ct).ConfigureAwait(false);
+            }
+
+            // 7b. Generate surrogate keys for the loaded target and write them back (post-commit, log-only:
+            //     a per-spec failure is surfaced on the result, never a rollback of the committed load).
+            var surrogateResults = await _surrogateKeys.RunAsync(flow, targetConnectionString, ct).ConfigureAwait(false);
+            foreach (var surrogate in surrogateResults)
+            {
+                Info($"surrogate-key", surrogate.Error is not null
+                    ? $"{surrogate.SurrogateTable}: FAILED - {surrogate.Error}"
+                    : $"{surrogate.SurrogateTable}: {surrogate.KeysGenerated} key(s) generated, {surrogate.RowsStamped} row(s) stamped{(surrogate.IsRemote ? " (remote)" : string.Empty)}");
+                foreach (var statement in surrogate.Statements)
+                {
+                    Trace($"surrogate-key.{surrogate.SurrogateTable}", statement);
+                }
+            }
+
+            // 7b2. Key match (deleted-row detection): land the full distinct SOURCE key set in a run-scoped
+            //      key table on the target, then tag or delete target rows whose keys vanished from the
+            //      source. Runs after the load and the surrogate keys (legacy order) on EVERY run, including
+            //      incremental ones: the key fetch never uses the incremental window, so a row deleted outside
+            //      the window is still detected. The threshold guard skips a suspicious mass delete loudly.
+            long rowsDeleted = 0;
+            RelationalObject? matchKeyTable = null;
+            if (flow.Load.MatchKeysInSourceAndTarget)
+            {
+                matchKeyTable = new RelationalObject
+                {
+                    Database = flow.Target.Table.Database,
+                    Schema = flow.Target.Table.Schema,
+                    Name = $"mkey_{flow.FlowId}_{stamp}_{runToken}",
+                };
+                rowsDeleted = await RunMatchKeysAsync(
+                    flow, resolvedSource, targetConnectionString, matchKeyTable, nameMap, sourceDialect, Info, Dbg, Trace, ct).ConfigureAwait(false);
+            }
+
+            // 7.5. Apply the declared (trgDesiredIndex) indexes, only on the run that created the target (the
+            //      create-only manager would fail a duplicate CREATE on a later run). A malformed script is
+            //      surfaced as a failed action rather than rolling back the committed load (legacy continues).
+            IReadOnlyList<IndexAction> indexActions = [];
+            if (targetCreated && !string.IsNullOrWhiteSpace(flow.Target.DesiredIndexes))
+            {
+                try
+                {
+                    indexActions = await _desiredIndexes.ApplyAsync(targetConnectionString, flow.Target.DesiredIndexes!, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // The load already committed; a declared-index failure (a parse error, or the manager's
+                    // own connection/SQL failure) is surfaced as a failed action, never a rollback of a good
+                    // load. Legacy logs and continues here too.
+                    indexActions = [new IndexAction { IndexName = "(desired-index)", Table = flow.Target.Table.Name, Kind = IndexActionKind.Failed, Detail = ex.Message }];
+                }
+            }
+
+            foreach (var action in indexActions)
+            {
+                Info("target.index.desired", $"{action.IndexName}: {action.Kind}{(action.Detail is null ? string.Empty : $" ({action.Detail})")}");
+                Trace("target.index.desired", action.Sql);
+            }
+
+            // 7c. Run data-quality assertions against the loaded target. Legacy parity: log-only and
+            //     non-blocking, so Success is unaffected; one assertion failing does not stop the others.
+            var assertionResults = await _assertions.RunAsync(flow, targetConnectionString, ct).ConfigureAwait(false);
+            foreach (var assertion in assertionResults)
+            {
+                Info($"assertion", assertion.Error is not null
+                    ? $"{assertion.Name}: FAILED - {assertion.Error}"
+                    : assertion.Evaluated ? $"{assertion.Name}: result {assertion.Result}" : $"{assertion.Name}: skipped");
+                Trace($"assertion.{assertion.Name}", assertion.MaterializedSql);
+            }
+
+            // 7d. PostInvokeAlias: run the named flw.Invoke flow after the load commits and before staging is
+            //     dropped (a failure keeps staging for debugging). A failure the invoke does not tolerate is
+            //     raised; the data is already committed, so the run is reported as failed but the load stands.
+            if (!string.IsNullOrWhiteSpace(flow.Process.PostInvokeAlias))
+            {
+                Info("invoke.post", $"running post-invoke '{flow.Process.PostInvokeAlias.Trim()}'");
+                await _invoke.RunByAliasAsync(flow.Process.PostInvokeAlias!.Trim(), ct).ConfigureAwait(false);
+            }
+
+            // 8. Drop the run-scoped staging and key-match tables on success unless the flow asked to keep
+            //    them (a failure keeps both for debugging, like staging always has been).
+            if (!flow.Load.KeepStagingTable)
+            {
+                var dropSql = $"DROP TABLE IF EXISTS {SchemaQualified(staging)};";
+                Info("staging.drop", $"staging {SchemaQualified(staging)} dropped");
+                Trace("staging.drop", dropSql);
+                await ExecuteAsync(targetConnectionString, dropSql, ct).ConfigureAwait(false);
+
+                if (matchKeyTable is not null)
+                {
+                    var dropKeysSql = $"DROP TABLE IF EXISTS {SchemaQualified(matchKeyTable)};";
+                    Trace("matchkeys.keytable.drop", dropKeysSql);
+                    await ExecuteAsync(targetConnectionString, dropKeysSql, ct).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                // The staging table is kept (for inspection or reuse). TruncatePreTableOnCompletion empties it
+                // after a successful load so the kept table carries structure without the run's data; without it
+                // the kept table retains its rows. A dropped staging (the default branch above) is the stronger
+                // cleanup, so the flag only bites when the table is deliberately kept.
+                if (flow.Load.TruncatePreTableOnCompletion)
+                {
+                    var truncateSql = $"TRUNCATE TABLE {SchemaQualified(staging)};";
+                    Info("staging.truncate", $"staging {SchemaQualified(staging)} kept and truncated (truncateStagingOnCompletion)");
+                    Trace("staging.truncate", truncateSql);
+                    await ExecuteAsync(targetConnectionString, truncateSql, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    Info("staging.drop", $"staging {SchemaQualified(staging)} kept (keepStagingTable)");
+                }
+            }
+
+            // 9. Record the run. A write failure on a SUCCESSFUL run surfaces (logging is part of the contract
+            //    in with-database mode); in without-database mode the no-op log never throws.
+            var endUtc = DateTime.UtcNow;
+            var duration = DurationSeconds(startUtc, endUtc);
+            var flowRate = FlowRateOf(rowsStaged, duration);
+            Info("run.end", $"SUCCESS in {duration}s ({flowRate:0.#} rows/s)");
+            await _runLog.WriteAsync(
+                BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, rowsStaged, rowsInserted, rowsUpdated, rowsDeleted, success: true, error: null, sourceSelect, insertCmd, updateCmd, createCmd, flowRate, SqlTrace.Render(trace)),
+                ct).ConfigureAwait(false);
+
+            return new IngestionRunResult
+            {
+                RunId = runId,
+                Success = true,
+                RowsStaged = rowsStaged,
+                StagingTable = SchemaQualified(staging),
+                StagingRetained = flow.Load.KeepStagingTable,
+                SourceWhere = window.SourceWhere,
+                RunFullLoad = window.RunFullLoad,
+                IndexActions = indexActions,
+                StartTimeUtc = startUtc,
+                EndTimeUtc = endUtc,
+                DurationSeconds = duration,
+                RowsInserted = rowsInserted,
+                RowsUpdated = rowsUpdated,
+                RowsDeleted = rowsDeleted,
+                FlowRate = flowRate,
+                Assertions = assertionResults,
+                SurrogateKeys = surrogateResults,
+                SqlTrace = trace,
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Keep the staging table on failure: it holds the data needed to debug what went wrong. The SQL
+            // trace captured so far rides along; the failure case is where it matters most.
+            var endUtc = DateTime.UtcNow;
+            var duration = DurationSeconds(startUtc, endUtc);
+            Info("run.end", $"FAILED after {duration}s: {ex.Message} (staging {SchemaQualified(staging)} kept)");
+            try
+            {
+                await _runLog.WriteAsync(
+                    BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, 0, 0, 0, 0, success: false, error: ex.Message, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
+                    ct).ConfigureAwait(false);
+            }
+            catch (Exception logEx) when (logEx is not OperationCanceledException)
+            {
+                // Best-effort: a run-log write failure must not mask the real run error, which is returned below.
+            }
+
+            return new IngestionRunResult
+            {
+                RunId = runId,
+                Success = false,
+                StagingTable = SchemaQualified(staging),
+                StagingRetained = true,
+                Error = ex.Message,
+                StartTimeUtc = startUtc,
+                EndTimeUtc = endUtc,
+                DurationSeconds = duration,
+                SqlTrace = trace,
+            };
+        }
+    }
+
+    // Type families that cannot participate in the CONCAT-based change checksum (the legacy
+    // InvalidChecksumDataTypes rule, extended with geography's sibling geometry and the binary family);
+    // such a column would raise "Argument data type ... is invalid" at run time.
+    private static readonly IReadOnlySet<string> NonChecksumTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "xml", "geography", "geometry", "hierarchyid", "image", "text", "ntext",
+        "varbinary", "binary", "rowversion", "timestamp", "sql_variant",
+    };
+
+    // Type families that cannot participate in SELECT DISTINCT (no comparison support), which suppresses the
+    // staged-row dedupe exactly as legacy suppressed it for image types.
+    private static readonly IReadOnlySet<string> NonComparableTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "xml", "geography", "geometry", "image", "text", "ntext",
+    };
+
+    // The key-match pass (legacy MatchKeysInSrcTrg, re-engineered): the comparison runs in SQL on the target
+    // (an anti-join against the landed source key set), not in a client-side stream, so it cannot misalign.
+    private async Task<long> RunMatchKeysAsync(
+        IngestionFlow flow,
+        ResolvedConnection resolvedSource,
+        string targetConnectionString,
+        RelationalObject keyTable,
+        IReadOnlyDictionary<string, string> nameMap,
+        ISourceSqlDialect sourceDialect,
+        Action<string, string> info,
+        Action<string, string> dbg,
+        Action<string, string?> traceSql,
+        CancellationToken ct)
+    {
+        var policy = flow.MatchKeys;
+        var sourceKeys = EffectiveKeyColumns(flow);
+        if (sourceKeys.Count == 0)
+        {
+            throw new SqlFlowException(
+                "MatchKeysInSourceAndTarget is on, but the flow has no key columns (set load.keyColumns or matchKeys.keyColumns).");
+        }
+
+        if (policy.Action == MatchKeyAction.Tag && !flow.SystemColumns.DeletedDate)
+        {
+            throw new SqlFlowException(
+                "MatchKeys Tag mode soft-deletes by stamping DeletedDate_DW; enable the DeletedDate_DW system column.");
+        }
+
+        string? windowDateColumn = null;
+        if (policy.IgnoreDeletedRowsAfterMonths is not null)
+        {
+            var declared = policy.DateColumn ?? flow.Incremental.DateColumn
+                ?? throw new SqlFlowException(
+                    "matchKeys.ignoreDeletedRowsAfterMonths requires matchKeys.dateColumn (or an incremental dateColumn).");
+            windowDateColumn = MapName(nameMap, declared);
+        }
+
+        var keyPairs = sourceKeys.Select(k => (Source: k, Target: MapName(nameMap, k))).ToList();
+        var targetKeys = keyPairs.Select(p => p.Target).ToList();
+
+        // The run-scoped key table clones the target key columns' exact types and collations, indexed for the
+        // anti-join.
+        var keyColumnList = string.Join(", ", targetKeys.Select(k => $"[{Escape(k)}]"));
+        var createSql =
+            $"SELECT TOP (0) {keyColumnList} INTO {SchemaQualified(keyTable)} FROM {SchemaQualified(flow.Target.Table)}; " +
+            $"CREATE CLUSTERED INDEX [IX_{Escape(keyTable.Name)}] ON {SchemaQualified(keyTable)} ({keyColumnList});";
+        traceSql("matchkeys.keytable", createSql);
+        await ExecuteAsync(targetConnectionString, createSql, ct).ConfigureAwait(false);
+
+        // The full distinct source key set, bounded only by the static filter, never the incremental window
+        // (a row deleted outside the window must still be detected). An explicit matchKeys.sourceFilter wins;
+        // the default is the flow's own source filter, so rows the load never reads are not treated as
+        // deleted (the legacy default of no filter deleted them).
+        var filter = !string.IsNullOrWhiteSpace(policy.SourceFilter) ? policy.SourceFilter : flow.Source.Filter;
+        var staticWhere = string.IsNullOrWhiteSpace(filter) ? string.Empty : " " + filter.Trim();
+        var keySelect =
+            $"SELECT DISTINCT {string.Join(", ", keyPairs.Select(p => sourceDialect.QuoteIdentifier(p.Source)))} " +
+            $"FROM {sourceDialect.QualifyObject(flow.Source.Table)} WHERE 1=1{staticWhere}";
+        traceSql("matchkeys.source-keys", keySelect);
+        var keysCopied = await BulkCopyAsync(resolvedSource, keySelect, targetConnectionString, keyTable, keyPairs, flow.Load, ct).ConfigureAwait(false);
+        dbg("matchkeys", $"{keysCopied} distinct source key(s) landed in {SchemaQualified(keyTable)}");
+
+        var script = MatchKeyGenerator.Generate(flow.Target.Table, keyTable, new MatchKeyScriptOptions
+        {
+            KeyColumns = targetKeys,
+            Action = policy.Action,
+            ActionThresholdPercent = policy.ActionThresholdPercent,
+            IgnoreDeletedRowsAfterMonths = policy.IgnoreDeletedRowsAfterMonths,
+            DateColumn = windowDateColumn,
+            TargetFilter = policy.TargetFilter,
+            DeletedDateColumn = flow.SystemColumns.DeletedDate ? "DeletedDate_DW" : null,
+            RowStatusColumn = flow.SystemColumns.RowStatus ? "RowStatus_DW" : null,
+        });
+        traceSql("matchkeys.apply", script);
+
+        var counters = await ExecuteMatchKeyScriptAsync(targetConnectionString, script, ct).ConfigureAwait(false);
+        var verb = policy.Action == MatchKeyAction.Delete ? "deleted" : "tagged deleted";
+        var resurrected = policy.Action == MatchKeyAction.Tag ? $", {counters.ResurrectedRows} resurrected" : string.Empty;
+        if (counters.ThresholdBreached)
+        {
+            var percent = counters.TotalRows > 0 ? counters.CandidateRows * 100.0 / counters.TotalRows : 0;
+            info("matchkeys",
+                $"WARNING: action SKIPPED - {counters.CandidateRows} of {counters.TotalRows} target row(s) ({percent:0.#}%) " +
+                $"would be {verb}, above the {policy.ActionThresholdPercent}% threshold{resurrected}. A mass key " +
+                "disappearance is usually a broken source read; raise matchKeys.thresholdPercent to proceed.");
+        }
+        else
+        {
+            info("matchkeys", $"{counters.AffectedRows} row(s) {verb} ({counters.CandidateRows} candidate(s) of {counters.TotalRows}){resurrected}");
+        }
+
+        return counters.AffectedRows;
+    }
+
+    private static async Task<MatchKeyCounters> ExecuteMatchKeyScriptAsync(string connectionString, string script, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new SqlCommand(script, connection) { CommandTimeout = 0 };
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            throw new SqlFlowException("The key-match script returned no counter row.");
+        }
+
+        return new MatchKeyCounters
+        {
+            TotalRows = reader.GetInt64(0),
+            CandidateRows = reader.GetInt64(1),
+            AffectedRows = reader.GetInt64(2),
+            ResurrectedRows = reader.GetInt64(3),
+            ThresholdBreached = reader.GetBoolean(4),
+        };
+    }
+
+    /// <summary>
+    /// The business key for the whole apply. When the key-match pass is active and matchKeys declares its own
+    /// columns, those override the load keys (legacy flw.MatchKey.KeyColumns), so the target's unique index, the
+    /// upsert match, and the delete-detection all key on the same columns. Otherwise the load keys are used.
+    /// </summary>
+    private static IReadOnlyList<string> EffectiveKeyColumns(IngestionFlow flow)
+        => flow.Load.MatchKeysInSourceAndTarget && flow.MatchKeys.KeyColumns.Count > 0
+            ? flow.MatchKeys.KeyColumns
+            : flow.Load.KeyColumns;
+
+    // Flags the loaders accept for fidelity but the engine does not yet implement. They are rejected with a
+    // clear, actionable message so a flow fails fast instead of silently doing nothing (and believing it did):
+    //   - temporalHistory (SQL Server system-versioned tables) fights the monotonic schema-evolution engine and
+    //     is a dedicated feature; versioning.scd2 provides application-managed dimension history today.
+    //   - insertUnknownDimensionRow needs a defined sentinel-key convention plus exemption from the match-key
+    //     delete pass and the upsert's key match, so it is a designed feature, not a silent best-effort insert.
+    private static void EnsureSupportedFeatures(IngestionFlow flow)
+    {
+        if (flow.Versioning.TemporalHistory)
+        {
+            throw new SqlFlowException(
+                "versioning.temporalHistory (SQL Server system-versioned history) is not yet implemented. Use " +
+                "versioning.scd2 for engine-managed dimension history, which works on an existing populated target.");
+        }
+
+        if (flow.Versioning.InsertUnknownDimensionRow)
+        {
+            throw new SqlFlowException(
+                "insertUnknownDimensionRow is not yet implemented. Remove the flag; an unknown-member row must be " +
+                "seeded explicitly for now (a designed implementation with match-key exemption is pending).");
+        }
+    }
+
+    private static IReadOnlyList<LoadStatement> BuildLoadStatements(
+        IngestionFlow flow,
+        RelationalObject staging,
+        IReadOnlyList<string> dataColumnNames,
+        IReadOnlyList<SqlColumn> stagingColumns,
+        IReadOnlyDictionary<string, string> nameMap,
+        IRunEventSink events)
+    {
+        if (EffectiveKeyColumns(flow).Count == 0)
+        {
+            // Keyless flow: there is no key to match on, so append every staged row (the legacy keyless
+            // insert-all). A keyless flow is append-only by nature, exactly as legacy.
+            return [new LoadStatement(LoadKind.InsertAll, BuildInsertAll(flow.Target.Table, staging, dataColumnNames, flow.SystemColumns))];
+        }
+
+        // Change-detection exclusions: the flow's declared IgnoreColumnsInHash (source names mapped to target
+        // names) plus every column whose type cannot be concatenated into the checksum. Excluded columns are
+        // still copied by the upsert; they just do not count as "changed".
+        var excludeFromChecksum = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var ignored in flow.Change.IgnoreColumnsInHash)
+        {
+            if (MapNameOrNull(nameMap, ignored) is { } mapped)
+            {
+                excludeFromChecksum.Add(mapped);
+            }
+        }
+
+        foreach (var column in stagingColumns)
+        {
+            if (NonChecksumTypes.Contains(column.DataType.BaseType))
+            {
+                excludeFromChecksum.Add(column.Name);
+            }
+        }
+
+        var deduplicate = !stagingColumns.Any(c => NonComparableTypes.Contains(c.DataType.BaseType));
+        if (excludeFromChecksum.Count > 0)
+        {
+            events.Log(RunLogLevel.Debug, "upsert.plan", "excluded from change detection: " + string.Join(", ", excludeFromChecksum.Order(StringComparer.OrdinalIgnoreCase)));
+        }
+
+        if (!deduplicate)
+        {
+            events.Log(RunLogLevel.Debug, "upsert.plan", "staged-row dedupe (DISTINCT) suppressed: a column type does not support comparison");
+        }
+
+        // SCD2 tracked attributes are declared with SOURCE names; map them to target names like the hash
+        // exclusions. Empty means "every comparable non-key column" (the generator's default).
+        var scd2 = flow.Versioning.Scd2;
+        var scd2Tracked = scd2.Enabled
+            ? scd2.TrackedColumns.Select(c => MapNameOrNull(nameMap, c)).Where(c => c is not null).Select(c => c!).ToList()
+            : (IReadOnlyList<string>)[];
+
+        // Keyed flow: always apply through the two-step upsert (or the SCD2 close+insert when versioning is on).
+        // Its INSERT is an anti-join (WHERE NOT EXISTS on the keys), so it can never duplicate an existing row
+        // regardless of target state (empty, partially loaded, or a full reload over a NULL watermark) while
+        // still reconciling changed rows. This deliberately improves on the legacy full-load branch, which did
+        // a blind insert that duplicated rows when the target watermark was NULL.
+        return UpsertGenerator.GenerateStatements(flow.Target.Table, staging, new UpsertOptions
+        {
+            DataColumns = dataColumnNames,
+            KeyColumns = EffectiveKeyColumns(flow),
+            SkipUpdate = flow.Load.SkipUpdateExisting,
+            SkipInsert = flow.Load.SkipInsertNew,
+            HashAlgorithm = string.IsNullOrWhiteSpace(flow.Change.HashType) ? HashKey.DefaultAlgorithm : flow.Change.HashType!,
+            InsertedDateColumn = flow.SystemColumns.InsertedDate ? "InsertedDate_DW" : null,
+            UpdatedDateColumn = flow.SystemColumns.UpdatedDate ? "UpdatedDate_DW" : null,
+            RowStatusColumn = flow.SystemColumns.RowStatus ? "RowStatus_DW" : null,
+            ExcludeFromChecksum = excludeFromChecksum,
+            DeduplicateStagedRows = deduplicate,
+            BatchToAvoidLockEscalation = flow.Load.BatchUpsertToAvoidLockEscalation,
+            BatchRowCount = flow.Load.BatchUpsertRowCount,
+            Scd2Enabled = scd2.Enabled,
+            Scd2ValidFromColumn = scd2.Enabled ? scd2.ValidFromColumn : null,
+            Scd2ValidToColumn = scd2.Enabled ? scd2.ValidToColumn : null,
+            Scd2CurrentFlagColumn = scd2.Enabled ? scd2.CurrentFlagColumn : null,
+            Scd2TrackedColumns = scd2Tracked,
+            Scd2AsOfLiteral = scd2.Enabled ? DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) : null,
+            DataSetColumn = string.IsNullOrWhiteSpace(flow.Load.DataSetColumn)
+                ? null
+                : MapNameOrNull(nameMap, flow.Load.DataSetColumn!) ?? flow.Load.DataSetColumn,
+        })
+        .Select(s => new LoadStatement(
+            s.Kind switch
+            {
+                UpsertStatementKind.Update => LoadKind.Update,
+                UpsertStatementKind.Combined => LoadKind.UpsertLoop,
+                _ => LoadKind.Insert,
+            },
+            s.Sql,
+            s.CountFromScalar,
+            s.CountFromResultSet))
+        .ToList();
+    }
+
+    private static string BuildInsertAll(RelationalObject target, RelationalObject staging, IReadOnlyList<string> dataColumns, SystemColumnsPolicy system)
+    {
+        var insertColumns = dataColumns.Select(c => $"[{Escape(c)}]").ToList();
+        var selectColumns = dataColumns.Select(c => $"src.[{Escape(c)}]").ToList();
+        if (system.InsertedDate)
+        {
+            insertColumns.Add("[InsertedDate_DW]");
+            selectColumns.Add("SYSUTCDATETIME()");
+        }
+
+        return $"INSERT INTO {SchemaQualified(target)} ({string.Join(", ", insertColumns)}) " +
+               $"SELECT {string.Join(", ", selectColumns)} FROM {SchemaQualified(staging)} AS src;";
+    }
+
+    private async Task<long> BulkCopyAsync(
+        ResolvedConnection source,
+        string sourceSelect,
+        string targetConnectionString,
+        RelationalObject staging,
+        IReadOnlyList<(string Source, string Target)> columns,
+        IngestionLoadPolicy load,
+        CancellationToken ct)
+    {
+        await using var sourceConnection = await _factory.OpenAsync(source, ct).ConfigureAwait(false);
+        return await StreamSelectToStagingAsync(sourceConnection, sourceSelect, targetConnectionString, staging, columns, load, ct).ConfigureAwait(false);
+    }
+
+    // InitLoad fills the SAME staging table with one chunked SELECT per segment, fanned out under a
+    // concurrency cap. Each segment uses its own source and target connection (SqlBulkCopy is safe concurrently
+    // into one heap). The exact SqlBulkCopy.RowsCopied sum is the staged count (no estimated COUNT needed).
+    private async Task<long> BulkCopyInitLoadAsync(
+        ResolvedConnection source,
+        string targetConnectionString,
+        RelationalObject staging,
+        IReadOnlyList<(string Source, string Target)> columns,
+        IReadOnlyList<InitLoadSegment> segments,
+        IngestionLoadPolicy load,
+        CancellationToken ct)
+    {
+        if (segments.Count == 0)
+        {
+            return 0;
+        }
+
+        var maxDegree = Math.Max(1, load.Threads ?? 1);
+        using var gate = new SemaphoreSlim(maxDegree, maxDegree);
+        long total = 0;
+
+        var tasks = segments.Select(async segment =>
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await using var sourceConnection = await _factory.OpenAsync(source, ct).ConfigureAwait(false);
+                var copied = await StreamSelectToStagingAsync(sourceConnection, segment.Sql, targetConnectionString, staging, columns, load, ct).ConfigureAwait(false);
+                Interlocked.Add(ref total, copied);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        return total;
+    }
+
+    private static async Task<long> StreamSelectToStagingAsync(
+        DbConnection sourceConnection,
+        string sourceSelect,
+        string targetConnectionString,
+        RelationalObject staging,
+        IReadOnlyList<(string Source, string Target)> columns,
+        IngestionLoadPolicy load,
+        CancellationToken ct)
+    {
+        await using var sourceCommand = sourceConnection.CreateCommand();
+        sourceCommand.CommandText = sourceSelect;
+        sourceCommand.CommandTimeout = 0;
+        await using var reader = await sourceCommand.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+        await using var targetConnection = new SqlConnection(BulkTuning.ForBulk(targetConnectionString));
+        await targetConnection.OpenAsync(ct).ConfigureAwait(false);
+
+        // TABLOCK + a heap staging table + one batch (BatchSize 0) is the minimally-logged bulk path; the bulk
+        // update lock it takes is mutually compatible, so the parallel segment streams above load the same
+        // run-private staging table concurrently without row/page-lock contention. The BatchUpsertRowCount knob
+        // belongs to the APPLY step's key windows, not the staging load.
+        using var bulkCopy = new SqlBulkCopy(targetConnection, SqlBulkCopyOptions.TableLock, externalTransaction: null)
+        {
+            DestinationTableName = SchemaQualified(staging),
+            BulkCopyTimeout = 0,
+            EnableStreaming = true,
+            BatchSize = 0,
+        };
+        foreach (var (sourceName, targetName) in columns)
+        {
+            bulkCopy.ColumnMappings.Add(sourceName, targetName);
+        }
+
+        await bulkCopy.WriteToServerAsync(reader, ct).ConfigureAwait(false);
+        return bulkCopy.RowsCopied;
+    }
+
+    // The source read always uses a `WHERE 1=1` base so the incremental and filter fragments (each beginning
+    // with " AND ", per the legacy raw-append contract) compose onto it. The text executes on the SOURCE, so
+    // its identifiers come from the source dialect.
+    private static string BuildSourceSelect(RelationalObject sourceTable, IReadOnlyList<(string Source, string Target)> columns, string sourceWhere, ISourceSqlDialect dialect)
+    {
+        var columnList = string.Join(", ", columns.Select(c => dialect.QuoteIdentifier(c.Source)));
+        return $"SELECT {columnList} FROM {dialect.QualifyObject(sourceTable)} WHERE 1=1{sourceWhere}";
+    }
+
+    // The default apply wraps both statements in one transaction (all-or-nothing). The batched apply runs
+    // WITHOUT an enclosing transaction by design: its whole purpose is that each key window commits and
+    // releases its locks on its own, trading atomicity for lock friendliness (the legacy contract of
+    // BatchUpsertToAvoidLockEscalation). A batched script reports its total as a scalar result.
+    private static async Task<(long Inserted, long Updated)> ApplyLoadAsync(
+        string connectionString, IReadOnlyList<LoadStatement> statements, bool useTransaction, CancellationToken ct)
+    {
+        if (statements.Count == 0)
+        {
+            return (0, 0);
+        }
+
+        long inserted = 0;
+        long updated = 0;
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        var transaction = useTransaction
+            ? (SqlTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false)
+            : null;
+        try
+        {
+            foreach (var statement in statements)
+            {
+                await using var command = new SqlCommand(statement.Sql, connection, transaction) { CommandTimeout = 0 };
+
+                // The dataset-partitioned loop reports both totals as one row with Inserts and Updates columns.
+                if (statement.CountFromResultSet)
+                {
+                    await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                    if (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    {
+                        inserted += Convert.ToInt64(reader["Inserts"], CultureInfo.InvariantCulture);
+                        updated += Convert.ToInt64(reader["Updates"], CultureInfo.InvariantCulture);
+                    }
+
+                    continue;
+                }
+
+                long affected;
+                if (statement.CountFromScalar)
+                {
+                    var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                    affected = scalar is null or DBNull ? 0 : Convert.ToInt64(scalar, CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+
+                if (statement.Kind == LoadKind.Update)
+                {
+                    updated += affected;
+                }
+                else
+                {
+                    inserted += affected;
+                }
+            }
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+            }
+        }
+        catch when (transaction is not null)
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            if (transaction is not null)
+            {
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        return (inserted, updated);
+    }
+
+    private static async Task ExecuteAsync(string connectionString, string sql, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    private static Task DropStagingAsync(string connectionString, RelationalObject staging, CancellationToken ct)
+        => ExecuteAsync(connectionString, $"DROP TABLE IF EXISTS {SchemaQualified(staging)};", ct);
+
+    // The connection is already on the source database, so introspection uses the current-database OBJECT_ID
+    // path (Database left null) rather than switching context.
+    private static ThreePartName ToName(RelationalObject relationalObject)
+        => new() { Database = null, Schema = relationalObject.Schema, Name = relationalObject.Name };
+
+    private static IReadOnlySet<string> KeySet(IReadOnlyList<string> keys)
+        => new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+
+    // Canonical indexes reference the cleaned TARGET column names; the flow declares SOURCE names, so map
+    // through the bulk-copy name map (identity when column cleaning is off). A required key column that is
+    // not a bulk-copied target column (because it is ignored or virtual) is a contradictory configuration and
+    // fails fast with a clear message rather than emitting an index on a phantom column.
+    private static string MapName(IReadOnlyDictionary<string, string> nameMap, string source)
+        => nameMap.TryGetValue(source, out var target)
+            ? target
+            : throw new SqlFlowException(
+                $"Key column '{source}' is not a bulk-copied target column (is it in IgnoreColumns or a virtual column?).");
+
+    // For an OPTIONAL canonical index (date / dataset), a column that is not a real bulk-copied target column
+    // simply yields no index, rather than failing the run.
+    private static string? MapNameOrNull(IReadOnlyDictionary<string, string> nameMap, string? source)
+        => !string.IsNullOrWhiteSpace(source) && nameMap.TryGetValue(source, out var target) ? target : null;
+
+    private static bool HasColumn(IReadOnlyList<SqlColumn> columns, string name)
+        => columns.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private static string SchemaQualified(RelationalObject relationalObject)
+        => $"[{Escape(relationalObject.Schema)}].[{Escape(relationalObject.Name)}]";
+
+    private static string Escape(string identifier) => identifier.Replace("]", "]]", StringComparison.Ordinal);
+
+    private static int DurationSeconds(DateTime startUtc, DateTime endUtc)
+        => (int)Math.Max(0, (endUtc - startUtc).TotalSeconds);
+
+    private static decimal FlowRateOf(long rowsFetched, int durationSeconds)
+        => durationSeconds > 0 ? Math.Round((decimal)rowsFetched / durationSeconds, 2) : 0m;
+
+    private static IngestionRunRecord BuildRunRecord(
+        IngestionFlow flow,
+        IngestionRunOptions options,
+        Guid runId,
+        DateTime startUtc,
+        DateTime endUtc,
+        int durationSeconds,
+        long rowsFetched,
+        long rowsInserted,
+        long rowsUpdated,
+        long rowsDeleted,
+        bool success,
+        string? error,
+        string? selectCmd,
+        string? insertCmd,
+        string? updateCmd,
+        string? createCmd,
+        decimal flowRate,
+        string? traceLog)
+        => new()
+        {
+            RunId = runId,
+            FlowId = flow.FlowId,
+            FlowType = flow.FlowType,
+            Process = $"{flow.Source.Server}.{flow.Source.Table.QualifiedName}-->{flow.Target.Server}.{flow.Target.Table.QualifiedName}",
+            Batch = flow.Batch,
+            SysAlias = flow.SysAlias,
+            ExecMode = options.ExecMode,
+            StartTimeUtc = startUtc,
+            EndTimeUtc = endUtc,
+            DurationSeconds = durationSeconds,
+            RowsFetched = rowsFetched,
+            RowsInserted = rowsInserted,
+            RowsUpdated = rowsUpdated,
+            RowsDeleted = rowsDeleted,
+            FlowRate = flowRate,
+            Success = success,
+            Threads = flow.Load.Threads,
+            SelectCmd = selectCmd,
+            InsertCmd = insertCmd,
+            UpdateCmd = updateCmd,
+            CreateCmd = createCmd,
+            TraceLog = string.IsNullOrEmpty(traceLog) ? null : traceLog,
+            Error = error,
+        };
+
+    private enum LoadKind
+    {
+        Update,
+        Insert,
+        InsertAll,
+
+        /// <summary>The dataset-partitioned loop: one script doing both branches, reporting its Inserts/Updates
+        /// totals as a single result-set row.</summary>
+        UpsertLoop,
+    }
+
+    private sealed record LoadStatement(LoadKind Kind, string Sql, bool CountFromScalar = false, bool CountFromResultSet = false);
+}

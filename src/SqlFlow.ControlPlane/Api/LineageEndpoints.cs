@@ -1,0 +1,238 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
+using SqlFlow.Catalog;
+
+namespace SqlFlow.ControlPlane.Api;
+
+/// <summary>A lineage object as it appears in lists: the canonical identity and metadata, without the heavy module
+/// body (<c>Definition</c>). Keyed by <see cref="Key"/>, the global identity that joins the same physical object
+/// across every repo.</summary>
+public sealed record ObjectDto(
+    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind,
+    DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>A single lineage object with its full module body (<c>Definition</c>) for the detail view; the
+/// definition is null for plain tables, an unconnected sync, or an encrypted module.</summary>
+public sealed record ObjectDetailDto(
+    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind,
+    string? Definition, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>One column of a lineage object, captured by the derived (connected) tier.</summary>
+public sealed record ObjectColumnDto(int Ordinal, string Name, string? DataType, bool Nullable);
+
+/// <summary>One attributed lineage fact: a flow (or a module body) relating to an object.</summary>
+public sealed record EdgeDto(
+    long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule,
+    string Relation, string ObjectKey, string ObjectName, string Tier);
+
+/// <summary>One flow-level dependency in a repo's execution plan: <c>ToFlow</c> waits for <c>FromFlow</c>.</summary>
+public sealed record FlowDependencyDto(
+    long Id, Guid RepoId, string FromFlow, string ToFlow, Guid FromPipelineId, Guid ToPipelineId, string ViaObjects);
+
+/// <summary>One execution wave: the active pipelines that share a wave have no dependency between them and run
+/// together; a later wave runs only after every earlier wave finishes. Wave -1 means lineage has not been computed
+/// for those pipelines yet.</summary>
+public sealed record WaveDto(int Wave, IReadOnlyList<WavePipelineDto> Pipelines);
+
+/// <summary>One pipeline within a wave: its stable id and name.</summary>
+public sealed record WavePipelineDto(Guid Id, string Name, string Kind);
+
+/// <summary>
+/// The read API over the shadow catalog's lineage graph: objects (with their columns and module bodies), the
+/// attributed lineage edges, the per-repo flow dependencies, and the computed execution waves. Every query is
+/// read-only (<see cref="EntityFrameworkQueryableExtensions.AsNoTracking"/>), projected to DTOs (the raw EF
+/// entities never leave the host), and the listing endpoints are bounded by page size. The repo-scoped endpoints
+/// first verify the repo exists and return 404 when it does not, so an unknown repo is reported (rather than
+/// silently returning an empty result a caller could not distinguish from a real repo with no lineage yet).
+/// </summary>
+public static class LineageEndpoints
+{
+    public static RouteGroupBuilder MapLineageEndpoints(this RouteGroupBuilder group)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+
+        var lineage = group.MapGroup("/lineage").WithTags("Lineage");
+        lineage.MapGet("/objects", ListObjectsAsync).WithName("ListLineageObjects");
+        lineage.MapGet("/objects/detail", GetObjectAsync).WithName("GetLineageObject");
+        lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
+
+        var repos = group.MapGroup("/repos").WithTags("Lineage");
+        repos.MapGet("/{repoId:guid}/lineage/edges", ListEdgesAsync).WithName("ListLineageEdges");
+        repos.MapGet("/{repoId:guid}/waves", GetWavesAsync).WithName("GetExecutionWaves");
+        repos.MapGet("/{repoId:guid}/dependencies", GetDependenciesAsync).WithName("GetFlowDependencies");
+
+        return group;
+    }
+
+    private static async Task<Ok<PagedResult<ObjectDto>>> ListObjectsAsync(
+        CatalogDbContext db, string? name, string? serverRef, string? kind, int? page, int? pageSize, CancellationToken ct)
+    {
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+
+        var query = db.Objects.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            query = query.Where(o => o.Name.Contains(name));
+        }
+
+        if (!string.IsNullOrWhiteSpace(serverRef))
+        {
+            query = query.Where(o => o.ServerRef == serverRef);
+        }
+
+        if (!string.IsNullOrWhiteSpace(kind))
+        {
+            query = query.Where(o => o.Kind == kind);
+        }
+
+        var ordered = query.OrderBy(o => o.Name).ThenBy(o => o.Key);
+        var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
+        var items = await ordered
+            .Skip((p - 1) * size).Take(size)
+            .Select(o => new ObjectDto(
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.FirstSeenUtc, o.LastSeenUtc))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<ObjectDto>(items, p, size, total));
+    }
+
+    private static async Task<Results<Ok<ObjectDetailDto>, ProblemHttpResult>> GetObjectAsync(
+        string key, CatalogDbContext db, CancellationToken ct)
+    {
+        var dto = await db.Objects.AsNoTracking().Where(o => o.Key == key)
+            .Select(o => new ObjectDetailDto(
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Definition, o.FirstSeenUtc, o.LastSeenUtc))
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return dto is null ? NotFound("object", key) : TypedResults.Ok(dto);
+    }
+
+    private static async Task<Results<Ok<PagedResult<ObjectColumnDto>>, ProblemHttpResult>> GetObjectColumnsAsync(
+        string key, CatalogDbContext db, int? page, int? pageSize, CancellationToken ct)
+    {
+        var exists = await db.Objects.AsNoTracking().AnyAsync(o => o.Key == key, ct).ConfigureAwait(false);
+        if (!exists)
+        {
+            return NotFound("object", key);
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        // A wide table's column list can be large, so it is paged; ordered by the captured ordinal, then name as a
+        // stable secondary key so a page boundary is deterministic.
+        var ordered = db.ObjectColumns.AsNoTracking()
+            .Where(c => c.ObjectKey == key)
+            .OrderBy(c => c.Ordinal).ThenBy(c => c.Name);
+        var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
+        var columns = await ordered
+            .Skip((p - 1) * size).Take(size)
+            .Select(c => new ObjectColumnDto(c.Ordinal, c.Name, c.DataType, c.Nullable))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<ObjectColumnDto>(columns, p, size, total));
+    }
+
+    private static async Task<Results<Ok<PagedResult<EdgeDto>>, ProblemHttpResult>> ListEdgesAsync(
+        Guid repoId, CatalogDbContext db, Guid? pipelineId, string? objectKey, string? relation, string? tier,
+        int? page, int? pageSize, CancellationToken ct)
+    {
+        if (!await RepoExistsAsync(db, repoId, ct).ConfigureAwait(false))
+        {
+            return NotFound("repo", repoId);
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+
+        var query = db.LineageEdges.AsNoTracking().Where(e => e.RepoId == repoId);
+        if (pipelineId is { } pid)
+        {
+            query = query.Where(e => e.PipelineId == pid);
+        }
+
+        if (!string.IsNullOrWhiteSpace(objectKey))
+        {
+            query = query.Where(e => e.ObjectKey == objectKey);
+        }
+
+        if (!string.IsNullOrWhiteSpace(relation))
+        {
+            query = query.Where(e => e.Relation == relation);
+        }
+
+        if (!string.IsNullOrWhiteSpace(tier))
+        {
+            query = query.Where(e => e.Tier == tier);
+        }
+
+        var ordered = query.OrderBy(e => e.ObjectName).ThenBy(e => e.Id);
+        var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
+        var items = await ordered
+            .Skip((p - 1) * size).Take(size)
+            .Select(e => new EdgeDto(
+                e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName, e.Tier))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<EdgeDto>(items, p, size, total));
+    }
+
+    private static async Task<Results<Ok<IReadOnlyList<WaveDto>>, ProblemHttpResult>> GetWavesAsync(
+        Guid repoId, CatalogDbContext db, CancellationToken ct)
+    {
+        if (!await RepoExistsAsync(db, repoId, ct).ConfigureAwait(false))
+        {
+            return NotFound("repo", repoId);
+        }
+
+        // The whole execution plan is returned in one response (no paging): both the wave count and the pipelines
+        // within them are bounded by the repo's active pipeline count, which is the same set listed elsewhere, so
+        // this cannot grow without bound for a given repo.
+        var rows = await db.Pipelines.AsNoTracking()
+            .Where(x => x.RepoId == repoId && x.Active)
+            .OrderBy(x => x.Wave).ThenBy(x => x.Name).ThenBy(x => x.Id)
+            .Select(x => new { x.Wave, x.Id, x.Name, x.Kind })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var waves = rows
+            .GroupBy(x => x.Wave)
+            .Select(g => new WaveDto(
+                g.Key,
+                g.Select(x => new WavePipelineDto(x.Id, x.Name, x.Kind)).ToList()))
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<WaveDto>>(waves);
+    }
+
+    private static async Task<Results<Ok<PagedResult<FlowDependencyDto>>, ProblemHttpResult>> GetDependenciesAsync(
+        Guid repoId, CatalogDbContext db, int? page, int? pageSize, CancellationToken ct)
+    {
+        if (!await RepoExistsAsync(db, repoId, ct).ConfigureAwait(false))
+        {
+            return NotFound("repo", repoId);
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        // A dense estate can have many flow-to-flow dependencies, so this list is paged; ordered by the flow pair,
+        // then row id as a stable secondary key so a page boundary is deterministic.
+        var ordered = db.FlowDependencies.AsNoTracking()
+            .Where(d => d.RepoId == repoId)
+            .OrderBy(d => d.FromFlow).ThenBy(d => d.ToFlow).ThenBy(d => d.Id);
+        var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
+        var deps = await ordered
+            .Skip((p - 1) * size).Take(size)
+            .Select(d => new FlowDependencyDto(
+                d.Id, d.RepoId, d.FromFlow, d.ToFlow, d.FromPipelineId, d.ToPipelineId, d.ViaObjects))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<FlowDependencyDto>(deps, p, size, total));
+    }
+
+    private static Task<bool> RepoExistsAsync(CatalogDbContext db, Guid repoId, CancellationToken ct)
+        => db.Repos.AsNoTracking().AnyAsync(r => r.Id == repoId, ct);
+
+    private static ProblemHttpResult NotFound(string resource, string key)
+        => TypedResults.Problem(
+            detail: $"No {resource} with key '{key}'.",
+            statusCode: StatusCodes.Status404NotFound,
+            title: "Not found");
+
+    private static ProblemHttpResult NotFound(string resource, Guid id)
+        => TypedResults.Problem(
+            detail: $"No {resource} with id '{id}'.",
+            statusCode: StatusCodes.Status404NotFound,
+            title: "Not found");
+}

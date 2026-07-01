@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.ControlPlane</RootNamespace>
+    <Description>The SQLFlow control plane: the enterprise API and coordination host over the EF-managed shadow catalog. Read API, JWT auth, run trigger, scheduling, multi-node fleet, managed sync, and identity. The catalog (and EF) stay in SqlFlow.Catalog; this host consumes them.</Description>
+    <!-- A test project drives the host through WebApplicationFactory. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
+    <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
+    <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />
+    <ProjectReference Include="..\SqlFlow.Node\SqlFlow.Node.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlFlow.ControlPlane.Tests" />
+  </ItemGroup>
+
+</Project>
