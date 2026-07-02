@@ -208,6 +208,27 @@ public static class LineageGraphBuilder
                 relations.Add((fact.Relation, KeyOf(fact)));
             }
 
+            // A flow that EXECUTES a procedure is the parent of what that procedure does: attribute the proc's
+            // derived reads/writes/creates to the flow as flow-attributed derived edges (in addition to the
+            // module-attributed ones), so a table a stored-procedure flow builds traces back to the FLOW that
+            // runs it - not only to the procedure module. 'relations' here is still the flow's own facts, so the
+            // starting Requires references are the flow's direct proc executions.
+            foreach (var (relation, key, viaModule) in InheritedProcedureEdges(relations, moduleRelations))
+            {
+                var identity = ((string?)flow.Node.Name, (string?)viaModule, relation, key, LineageTier.Derived);
+                if (!edges.ContainsKey(identity))
+                {
+                    edges[identity] = new LineageEdge
+                    {
+                        Flow = flow.Node.Name,
+                        ViaModule = viaModule,
+                        Relation = relation,
+                        ObjectKey = key,
+                        Tier = LineageTier.Derived,
+                    };
+                }
+            }
+
             InheritModuleRelations(relations, moduleRelations, warnings, flow.Node.Name);
             effectiveRelations[flow.Node.Name] = relations;
         }
@@ -235,6 +256,54 @@ public static class LineageGraphBuilder
             DuplicateFlowNames = duplicateFlowNames,
             Warnings = warnings.Distinct(StringComparer.Ordinal).OrderBy(w => w, StringComparer.Ordinal).ToList(),
         };
+    }
+
+    /// <summary>
+    /// The data relations a flow inherits by EXECUTING a procedure, for flow-attributed edge emission (distinct
+    /// from <see cref="InheritModuleRelations"/>, which folds every module reference into a flow's scheduling
+    /// relations). Starts only from the flow's own <c>Requires</c> references to a module (a proc execution), so
+    /// a flow that merely reads a view is unchanged; walks transitively through the modules that proc references
+    /// (a proc reading a view inherits the view's reads), depth-guarded; and yields each read/write/create with
+    /// the module it belongs to as provenance. The output tables of a stored-procedure flow therefore trace back
+    /// to the flow, which is what a data-flow view needs.
+    /// </summary>
+    private static IEnumerable<(LineageRelation Relation, string Key, string ViaModule)> InheritedProcedureEdges(
+        IEnumerable<(LineageRelation Relation, string Key)> ownRelations,
+        IReadOnlyDictionary<string, List<(LineageRelation Relation, string Key)>> moduleRelations)
+    {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<(string Key, int Depth)>();
+        foreach (var (relation, key) in ownRelations)
+        {
+            if (relation == LineageRelation.Requires && moduleRelations.ContainsKey(key))
+            {
+                queue.Enqueue((key, 1));
+            }
+        }
+
+        while (queue.Count > 0)
+        {
+            var (moduleKey, depth) = queue.Dequeue();
+            if (!visited.Add(moduleKey) || depth > MaxModuleDepth || !moduleRelations.TryGetValue(moduleKey, out var inherited))
+            {
+                continue;
+            }
+
+            foreach (var (relation, key) in inherited)
+            {
+                if (relation is LineageRelation.Reads or LineageRelation.Writes or LineageRelation.Creates)
+                {
+                    yield return (relation, key, moduleKey);
+                }
+
+                // Follow the proc's own reads/requires into further modules (a proc reading a view, or calling
+                // another proc), so a table two hops down still traces to the executing flow.
+                if (relation is LineageRelation.Reads or LineageRelation.Requires)
+                {
+                    queue.Enqueue((key, depth + 1));
+                }
+            }
+        }
     }
 
     /// <summary>A flow reading a view (or requiring a procedure) inherits the module's derived relations,

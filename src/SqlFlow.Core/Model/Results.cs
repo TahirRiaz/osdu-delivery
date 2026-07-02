@@ -51,4 +51,28 @@ public sealed record FlowResult
     public IReadOnlyList<TraceEntry> Trace { get; init; } = [];
     public double TotalMs { get; init; }
     public string? Error { get; init; }
+
+    /// <summary>
+    /// The typed transformation view generated over the loaded table as the run's post-process (null when the
+    /// flow does not generate one). Carries the resolved per-column projection - the detected/declared transforms
+    /// the catalog records for the pipeline - and the exact DDL that ran.
+    /// </summary>
+    public TransformViewResult? TransformView { get; init; }
+}
+
+/// <summary>
+/// The outcome of the transformation-view post-process: the view refreshed over the flow's loaded table and the
+/// resolved column projection it exposes (authored transforms merged with inferred types; the downstream chained
+/// flow reads this view to get correctly-typed data).
+/// </summary>
+public sealed record TransformViewResult
+{
+    /// <summary>The view's unqualified name (<c>v&lt;Table&gt;</c>), in the loaded table's schema and database.</summary>
+    public required string ViewName { get; init; }
+
+    /// <summary>The exact <c>CREATE OR ALTER VIEW</c> statement the run executed.</summary>
+    public required string Ddl { get; init; }
+
+    /// <summary>The resolved, ordered projection the view exposes (one entry per output column).</summary>
+    public required IReadOnlyList<InferredColumn> Columns { get; init; }
 }

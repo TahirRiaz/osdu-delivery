@@ -91,6 +91,82 @@ public sealed record TypeInferencePolicy
     /// numeric interpretation; null means use the locale configured on the server.
     /// </summary>
     public string? Culture { get; init; }
+
+    /// <summary>
+    /// Generate the typed transformation view (<c>[schema].[v&lt;Table&gt;]</c>) over the flow's just-loaded
+    /// table as a post-process of the load - the V3 form of the SQLFlow pre-ingestion transform view. The
+    /// downstream (chained) ingestion flow reads the view as its source, which is how the raw/target tables get
+    /// correct data types and how dynamic schema evolution propagates. On by default; set
+    /// <c>transform.generateView: false</c> to skip it. Generates nothing when neither <see cref="Enabled"/> nor
+    /// <see cref="Columns"/> asks for any typing.
+    /// </summary>
+    public bool GenerateView { get; init; } = true;
+
+    /// <summary>True when the flow actually generates the transformation view this run: the post-process is
+    /// enabled AND there is something to project (inference on, or authored transforms declared).</summary>
+    public bool GeneratesView => GenerateView && (Enabled || Columns.Count > 0);
+
+    /// <summary>
+    /// Explicit per-column transforms authored in YAML (the source of truth), one entry per column that is cast,
+    /// renamed, computed, or dropped. A faithful port of the legacy <c>flw.PreIngestionTransform</c> rows: an
+    /// authored transform overrides what inference would pick for the same column, and inference (when
+    /// <see cref="Enabled"/>) fills in the columns no entry names. Empty means "infer everything or pass through".
+    /// </summary>
+    public IReadOnlyList<ColumnTransform> Columns { get; init; } = [];
+}
+
+/// <summary>
+/// One authored column transform in the pre-ingestion transformation view - a modernized port of a
+/// <c>flw.PreIngestionTransform</c> row. The transform applies to a single raw column (or, when
+/// <see cref="Virtual"/>, produces a computed column that has no raw counterpart). YAML is the source of truth
+/// for these; the same shape is projected into the catalog so the estate can be queried for "which
+/// transformations are set on a pipeline".
+/// </summary>
+public sealed record ColumnTransform
+{
+    /// <summary>
+    /// The raw source column the transform applies to (legacy <c>ColumnName</c>). For a <see cref="Virtual"/>
+    /// column there is no source column, so this is the name of the computed column itself.
+    /// </summary>
+    public required string Name { get; init; }
+
+    /// <summary>
+    /// The SQL expression producing the value (legacy <c>SelectExp</c>). The token <c>@ColName</c>
+    /// (case-insensitive) is substituted with the quoted reference to <see cref="Name"/>, so a rename of the
+    /// source column only touches <see cref="Name"/>. Optional for a plain typed column (then the transform is
+    /// <c>CAST(@ColName AS <see cref="Type"/>)</c>); required for a <see cref="Virtual"/> column.
+    /// </summary>
+    public string? Expression { get; init; }
+
+    /// <summary>
+    /// The output column name in the view (legacy <c>ColumnAlias</c>). Null keeps <see cref="Name"/>. A rename:
+    /// the raw table keeps <see cref="Name"/>, the typed view/target exposes the alias.
+    /// </summary>
+    public string? Alias { get; init; }
+
+    /// <summary>
+    /// The declared target SQL type (legacy <c>DataType</c>, e.g. <c>varchar(50)</c>, <c>decimal(18,2)</c>). When
+    /// set without an <see cref="Expression"/>, the transform is <c>CAST(@ColName AS Type)</c>; when both are set
+    /// the expression is used verbatim and the type is recorded as its declared result type.
+    /// </summary>
+    public string? Type { get; init; }
+
+    /// <summary>The column's position in the generated view (legacy <c>ColumnSortOrder</c>). Lower first; entries
+    /// without a sort order keep declaration order after the ordered ones.</summary>
+    public int? SortOrder { get; init; }
+
+    /// <summary>
+    /// A computed column with no raw source counterpart (legacy <c>Virtual</c> indicator). Requires an
+    /// <see cref="Expression"/>; <c>@ColName</c> has no meaning in a virtual expression (there is no source
+    /// column) and is rejected by validation.
+    /// </summary>
+    public bool Virtual { get; init; }
+
+    /// <summary>
+    /// Compute the column so other expressions can reference it, but drop it from the view's final projection
+    /// (legacy <c>ExcludeFromView</c>). Useful for an intermediate value that feeds a virtual column.
+    /// </summary>
+    public bool ExcludeFromView { get; init; }
 }
 
 /// <summary>One date-style candidate the profiler counted, in locale-preferred priority order.</summary>

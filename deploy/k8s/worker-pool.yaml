@@ -1,0 +1,79 @@
+# Compute: `sqlflow worker` pods scaled on QUEUE DEPTH by KEDA, not on traffic (workers expose nothing and never
+# sit behind the ingress). This manifest is the template for ONE pool: copy it per pool, set SQLFLOW_WORKER_POOL
+# and the ScaledObject query's pool predicate. The pin-to-synced-commit default means a freshly scaled pod needs
+# no pre-synced state: it claims, materializes the pinned commit from git, executes, and reports back.
+#
+# Requires KEDA installed in the cluster (https://keda.sh): the mssql scaler polls the catalog for queued runs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqlflow-worker-default
+  namespace: sqlflow
+  labels:
+    app: sqlflow-worker-default
+spec:
+  replicas: 1 # KEDA overrides this between minReplicaCount and maxReplicaCount
+  selector:
+    matchLabels:
+      app: sqlflow-worker-default
+  template:
+    metadata:
+      labels:
+        app: sqlflow-worker-default
+    spec:
+      terminationGracePeriodSeconds: 600 # let an in-flight run finish; an interrupted one is requeued anyway
+      containers:
+        - name: worker
+          image: sqlflow-worker:latest # replace with your registry tag
+          env:
+            - name: SQLFLOW_CATALOG_DB
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: catalog-connection }
+            # Empty = untargeted runs only. For a pooled worker set the pool name(s) here AND in the
+            # ScaledObject query below.
+            - name: SQLFLOW_WORKER_POOL
+              value: ""
+            - name: SQLFLOW_GIT_TOKEN
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: git-token }
+            # Every ${env:...} reference the pool's flows use resolves HERE, on the node, never in the control
+            # plane. Mount one entry per reference; sink-connection covers the samples' SQLFlowSinkConStr.
+            - name: SQLFlowSinkConStr
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: sink-connection }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: sqlflow-catalog-auth
+  namespace: sqlflow
+spec:
+  secretTargetRef:
+    - parameter: connectionString
+      name: sqlflow-secrets
+      key: catalog-connection
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sqlflow-worker-default
+  namespace: sqlflow
+spec:
+  scaleTargetRef:
+    name: sqlflow-worker-default
+  minReplicaCount: 0   # scale to zero when the queue is dry
+  maxReplicaCount: 10
+  cooldownPeriod: 300  # keep a warm worker for five minutes after the queue drains
+  pollingInterval: 15
+  triggers:
+    - type: mssql
+      metadata:
+        # One queued run per worker: scale out 1:1 with queue depth up to the max. For a pooled copy of this
+        # manifest change the predicate to: [TargetPool] = '<pool-name>'.
+        query: "SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = 'queued' AND [TargetPool] IS NULL"
+        targetValue: "1"
+      authenticationRef:
+        name: sqlflow-catalog-auth

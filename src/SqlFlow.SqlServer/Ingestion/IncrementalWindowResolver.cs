@@ -5,6 +5,7 @@ using SqlFlow.Core;
 using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 using SqlFlow.SqlServer.Schema;
 
 namespace SqlFlow.SqlServer.Ingestion;
@@ -57,14 +58,64 @@ public sealed class IncrementalWindowResolver
         string targetConnectionString,
         IReadOnlyList<SqlColumn> sourceColumns,
         ISourceSqlDialect? sourceDialect = null,
+        RunParameters? parameters = null,
         CancellationToken ct = default)
     {
         sourceDialect ??= new SqlServerSourceDialect();
+        parameters ??= RunParameters.None;
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(sourceColumns);
 
         var keyless = flow.Load.KeyColumns.Count == 0;
+
+        // Per-run substitution parameters replace the probed watermark entirely: an explicit operator bound is
+        // authoritative, so no probe runs and the target's state never narrows it. The legacy filter precedence
+        // in AssembleWhere still applies (a replace-filter wins even over an external window, matching how the
+        // FullLoad flag has always behaved).
+        if (parameters.FullLoad)
+        {
+            return new IncrementalWindow
+            {
+                SourceWhere = AssembleWhere(flow.Source, fullLoadFlag: true, string.Empty, string.Empty, targetEmpty: true),
+                // Keyed flows still take the upsert apply (idempotent reload); only a keyless full read is the
+                // insert-all path, exactly as an empty-target full load behaves.
+                RunFullLoad = keyless,
+            };
+        }
+
+        if (parameters.BackfillFrom is { } externalFrom)
+        {
+            var dateColumn = flow.Incremental.DateColumn;
+            if (string.IsNullOrWhiteSpace(dateColumn))
+            {
+                throw new SqlFlowException(
+                    "A backfill window needs incremental.dateColumn on the flow, so the engine knows which column to bound.");
+            }
+
+            var types = sourceColumns.ToDictionary(c => c.Name, c => c.DataType, StringComparer.OrdinalIgnoreCase);
+            var columnType = TypeFor(types, dateColumn);
+            if (columnType.BaseType.ToLowerInvariant() is not ("date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset"))
+            {
+                throw new SqlFlowException(
+                    $"A backfill window bounds incremental.dateColumn '{dateColumn}', but its source type is '{columnType.BaseType}', not a date type.");
+            }
+
+            var quoted = sourceDialect.QuoteIdentifier(dateColumn);
+            // The bound is formatted directly through the source dialect's temporal literal, so it never depends
+            // on the parameter value's CLR type (unlike the watermark path, which formats an introspected value).
+            var predicate = $" AND {quoted} >= {BackfillLiteral(externalFrom, columnType.BaseType, sourceDialect)}";
+            if (parameters.BackfillTo is { } externalTo)
+            {
+                predicate += $" AND {quoted} < {BackfillLiteral(externalTo, columnType.BaseType, sourceDialect)}";
+            }
+
+            return new IncrementalWindow
+            {
+                SourceWhere = AssembleWhere(flow.Source, fullLoadFlag: false, string.Empty, predicate, targetEmpty: false),
+                RunFullLoad = false,
+            };
+        }
         var incExp = string.Empty;
         var dateExp = string.Empty;
         bool targetEmpty;
@@ -326,6 +377,22 @@ public sealed class IncrementalWindowResolver
 
     private static bool IsNumeric(object value)
         => value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
+
+    /// <summary>Formats a backfill window bound (always a UTC <see cref="DateTime"/>) as a temporal literal for
+    /// the date column's declared type, through the source dialect. Kept separate from
+    /// <see cref="FormatLiteral"/>, which formats an introspected watermark value by its runtime CLR type.</summary>
+    private static string BackfillLiteral(DateTime bound, string baseType, ISourceSqlDialect dialect)
+    {
+        var utc = DateTime.SpecifyKind(bound, DateTimeKind.Utc);
+        var lower = baseType.ToLowerInvariant();
+        var rendered = lower switch
+        {
+            "date" => utc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            "datetimeoffset" => utc.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture),
+            _ => utc.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture),
+        };
+        return dialect.FormatTemporalLiteral(lower, rendered);
+    }
 
     private static string FormatLiteral(object value, SqlDataType type, ISourceSqlDialect dialect)
     {

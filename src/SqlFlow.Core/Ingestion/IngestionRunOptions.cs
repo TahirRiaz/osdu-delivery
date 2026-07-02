@@ -23,4 +23,9 @@ public sealed record IngestionRunOptions
     /// run under that exact id for <c>GET /runs/{id}</c> to resolve. Null mints a fresh id, which is what every
     /// direct CLI run does, so the existing behavior is unchanged.</summary>
     public Guid? RunId { get; init; }
+
+    /// <summary>Per-run substitution parameters (full load, backfill window): trigger-time overrides of the
+    /// incremental window, applied for this run only. Defaults to <see cref="RunParameters.None"/> (no change).
+    /// <see cref="RunParameters.FilePattern"/> is a file-flow concern and is ignored here.</summary>
+    public RunParameters Parameters { get; init; } = RunParameters.None;
 }

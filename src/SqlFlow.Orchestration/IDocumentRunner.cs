@@ -27,6 +27,11 @@ public sealed record DocumentExecutionOptions
     /// <c>GET /api/v1/runs/{id}</c>. Null mints a fresh id (every direct CLI run), so existing behavior is
     /// unchanged. Threaded into each kind's runner through the single execution path.</summary>
     public Guid? RunId { get; init; }
+
+    /// <summary>Per-run substitution parameters (full load, backfill window, file pattern): trigger-time
+    /// operational overrides applied by the engine for this run only. Defaults to
+    /// <see cref="RunParameters.None"/>, which changes nothing.</summary>
+    public RunParameters Parameters { get; init; } = RunParameters.None;
 }
 
 /// <summary>The uniform outcome of running one flow document, whatever its kind. The batch needs only the

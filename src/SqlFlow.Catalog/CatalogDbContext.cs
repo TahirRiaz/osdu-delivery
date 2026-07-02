@@ -40,6 +40,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogObjectColumn> ObjectColumns => Set<CatalogObjectColumn>();
 
+    public DbSet<CatalogPipelineColumn> PipelineColumns => Set<CatalogPipelineColumn>();
+
     public DbSet<CatalogSchedule> Schedules => Set<CatalogSchedule>();
 
     public DbSet<CatalogNode> Nodes => Set<CatalogNode>();
@@ -95,6 +97,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.ClaimedByNode).HasMaxLength(256);
             entity.Property(r => r.TargetPool).HasMaxLength(128);
             entity.Property(r => r.CommitSha).HasMaxLength(64);
+            entity.Property(r => r.FilePattern).HasMaxLength(200);
             entity.Property(r => r.Host).HasMaxLength(256);
             // PipelineId is a soft link (no FK): a run can outlive its pipeline being removed from git, so the
             // history stays even when the Pipeline row is gone. The GUI left-joins on it; it is indexed for that.
@@ -214,6 +217,26 @@ public sealed class CatalogDbContext : DbContext
             // object) and the idempotency backstop for the sync's delete-by-key + re-insert. The composite also
             // serves the "an object's columns, in order" drill-down (ObjectKey is the leftmost prefix).
             entity.HasIndex(c => new { c.ObjectKey, c.Ordinal }).IsUnique();
+        });
+
+        modelBuilder.Entity<CatalogPipelineColumn>(entity =>
+        {
+            entity.ToTable("PipelineColumn");
+            entity.HasKey(c => c.Id);
+            entity.Property(c => c.Kind).HasMaxLength(16).IsRequired();
+            entity.Property(c => c.ColumnName).HasMaxLength(512).IsRequired();
+            entity.Property(c => c.SourceColumn).HasMaxLength(512);
+            // The expression and type are authored/generated SQL: bounded generously, never a blob, but wide
+            // enough for a real CAST/CASE expression.
+            entity.Property(c => c.Expression).HasMaxLength(4000);
+            entity.Property(c => c.DataType).HasMaxLength(128);
+            // A pipeline's transforms, in order, for the drill-down; and column-by-name search across the estate.
+            entity.HasIndex(c => c.PipelineId);
+            entity.HasIndex(c => c.RepoId);
+            entity.HasIndex(c => c.ColumnName);
+            // One row per column position per (pipeline, kind): the idempotency backstop for the sync/run's
+            // delete-by-(pipeline, kind) + re-insert, and the "a pipeline's declared columns, in order" drill-down.
+            entity.HasIndex(c => new { c.PipelineId, c.Kind, c.Ordinal }).IsUnique();
         });
 
         modelBuilder.Entity<CatalogSchedule>(entity =>

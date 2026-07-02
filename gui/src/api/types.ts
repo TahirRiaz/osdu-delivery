@@ -96,6 +96,21 @@ export interface PipelineDetail extends PipelineSummary {
   definitionJson: string;
 }
 
+/** One resolved column of a pipeline's pre-ingestion transformation view: "declared" rows come from the flow
+ * YAML (the source of truth), "detected" rows from the latest run's generated view. */
+export interface PipelineColumn {
+  kind: "declared" | "detected";
+  ordinal: number;
+  columnName: string;
+  sourceColumn: string | null;
+  expression: string | null;
+  dataType: string | null;
+  sortOrder: number | null;
+  isVirtual: boolean;
+  excludeFromView: boolean;
+  converted: boolean;
+}
+
 // ---- Runs -----------------------------------------------------------------------------------------------------------
 
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -106,6 +121,10 @@ export interface RunSummary {
   repoId: string | null;
   flowName: string;
   flowKind: string;
+  /** The batch label joined from the pipeline row; a flow with no YAML batch reports under "default". */
+  batch: string;
+  /** The lineage execution step (wave) joined from the pipeline row; -1 until lineage has been computed. */
+  wave: number;
   status: RunStatus;
   success: boolean;
   targetPool: string | null;
@@ -126,6 +145,10 @@ export interface RunDetail extends RunSummary {
   endUtc: string | null;
   error: string | null;
   host: string | null;
+  fullLoad: boolean;
+  backfillFrom: string | null;
+  backfillTo: string | null;
+  filePattern: string | null;
 }
 
 export interface RunFile {
@@ -193,6 +216,11 @@ export interface RunTriggerRequest {
   flowName: string;
   pool?: string | null;
   commitSha?: string | null;
+  // The built-in backfill: per-run substitution parameters, all optional and audited on the run.
+  fullLoad?: boolean;
+  backfillFrom?: string | null;
+  backfillTo?: string | null;
+  filePattern?: string | null;
 }
 
 export interface RunTriggerAccepted {

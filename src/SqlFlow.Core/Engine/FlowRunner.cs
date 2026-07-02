@@ -28,6 +28,7 @@ public sealed class FlowRunner
     private readonly IStateStore _state;
     private readonly IFlowEventSink _events;
     private readonly ISecretResolver _secrets;
+    private readonly IInferenceService _inference;
     private readonly ILogger<FlowRunner> _logger;
 
     public FlowRunner(
@@ -42,6 +43,7 @@ public sealed class FlowRunner
         IStateStore state,
         IFlowEventSink events,
         ISecretResolver secrets,
+        IInferenceService inference,
         ILogger<FlowRunner> logger)
     {
         ArgumentNullException.ThrowIfNull(sources);
@@ -56,6 +58,7 @@ public sealed class FlowRunner
         _state = state;
         _events = events;
         _secrets = secrets;
+        _inference = inference;
         _logger = logger;
     }
 
@@ -178,6 +181,22 @@ public sealed class FlowRunner
 
             await StageAsync("source.complete", context, () => reader.CompleteAsync(effectiveFlow.Source, ct)).ConfigureAwait(false);
 
+            // Pre-ingestion transform view: refresh the typed view over the just-loaded table (the V2 post-process
+            // that downstream chained flows read for correct data types). Runs after source.complete so a view
+            // failure never leaves the files un-finalized: the load stands, the files are marked ingested, and a
+            // re-run regenerates the view (CREATE OR ALTER is idempotent) without re-reading anything. A failure
+            // here still fails the run - downstream flows read this view, so a stale one must be loud.
+            TransformViewResult? transformView = null;
+            if (flow.Inference.GeneratesView)
+            {
+                transformView = await StageAsync("transform.view", context,
+                    () => GenerateTransformViewAsync(flow, connectionString, ct), r => r.Columns.Count).ConfigureAwait(false);
+                Emit(context,
+                    $"transformation view [{flow.Target.Schema}].[{transformView.ViewName}] refreshed "
+                    + $"({transformView.Columns.Count} column(s), {transformView.Columns.Count(c => c.Converted)} typed)",
+                    stage: "transform.view");
+            }
+
             var totalMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
             activity?.SetTag("rows.loaded", rows);
 
@@ -201,6 +220,7 @@ public sealed class FlowRunner
                 ProcessedFiles = read.ProcessedFiles,
                 Trace = context.Trace,
                 TotalMs = totalMs,
+                TransformView = transformView,
             };
         }
         catch (NoSourceFilesException ex) when (flow.Incremental is { FullLoad: false })
@@ -344,6 +364,50 @@ public sealed class FlowRunner
         var kindName = source.Options.TryGetValue(WatermarkPredicate.KindOption, out var k) ? k : null;
         var kind = WatermarkPredicate.ParseKind(kindName!);
         return new WatermarkFilteringDataReader(reader, column, value, kind);
+    }
+
+    /// <summary>
+    /// The pre-ingestion transform post-process: introspects the just-loaded table (fresh, so evolved columns are
+    /// included), profiles it when inference is on, merges the authored transforms over the inferred columns, and
+    /// refreshes <c>[schema].[v&lt;Table&gt;]</c> with the resolved projection. The view is what the downstream
+    /// chained flow reads, so the resolved columns ride back on the result for the run log and the catalog.
+    /// </summary>
+    private async Task<TransformViewResult> GenerateTransformViewAsync(FlowDefinition flow, string connectionString, CancellationToken ct)
+    {
+        var table = await _schema.GetTableSchemaAsync(connectionString, flow.Target.Schema, flow.Target.Table, ct).ConfigureAwait(false)
+            ?? throw new SqlFlowException(
+                $"The transformation view cannot be generated: {flow.Target.QualifiedName} was not found after the load.");
+        var tableColumns = table.Columns.Select(c => c.Name).ToList();
+
+        IReadOnlyList<InferredColumn> inferred = [];
+        if (flow.Inference.Enabled)
+        {
+            // The inference service resolves the connection reference itself (same secret path as the load).
+            var report = await _inference.InferAsync(new InferenceRequest
+            {
+                Connection = flow.Target.Connection,
+                Schema = flow.Target.Schema,
+                Table = flow.Target.Table,
+                Policy = flow.Inference,
+            }, ct).ConfigureAwait(false);
+
+            inferred = report.Columns.Select(c => new InferredColumn
+            {
+                ColumnName = c.ColumnName,
+                DataType = c.DataType,
+                SelectExpression = c.SelectExpression,
+                Converted = c.Converted,
+                Style = c.Style,
+                NumericFormat = Enum.TryParse<NumericFormat>(c.NumericFormat, out var format) ? format : null,
+            }).ToList();
+        }
+
+        var resolved = ColumnTransformResolver.Resolve(tableColumns, flow.Inference, inferred);
+        var viewName = $"v{flow.Target.Table}";
+        var ddl = TransformViewBuilder.Build(flow.Target.Schema, viewName, flow.Target.Schema, flow.Target.Table, resolved);
+        await _schema.ExecuteDdlAsync(connectionString, [ddl], ct).ConfigureAwait(false);
+
+        return new TransformViewResult { ViewName = viewName, Ddl = ddl, Columns = resolved };
     }
 
     private async Task<FlowPlan> PlanCoreAsync(FlowDefinition flow, RunContext context, CancellationToken ct)

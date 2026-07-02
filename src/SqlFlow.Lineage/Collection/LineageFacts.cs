@@ -117,6 +117,13 @@ public sealed class CollectionResult
     /// stay distinct servers by construction; connected, the proof merges them.</summary>
     public Dictionary<string, string> ServerAliases { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>The default database of each server identity's connection, when known: DB_NAME() recorded by
+    /// the connected tier, or the reference's Initial Catalog resolved offline. The builder completes a
+    /// database-less fact (a two-part reference) against this map, mirroring how the engine itself resolves
+    /// such a name at execution time; engines without a database concept never appear here, so their
+    /// identities keep the empty segment by design.</summary>
+    public Dictionary<string, string> ServerDefaultDatabases { get; } = new(StringComparer.Ordinal);
+
     public List<string> Warnings { get; } = [];
 
     /// <summary>Folds another collector's result into this one.</summary>
@@ -136,6 +143,11 @@ public sealed class CollectionResult
         foreach (var (alias, canonical) in other.ServerAliases)
         {
             ServerAliases.TryAdd(alias, canonical);
+        }
+
+        foreach (var (serverRef, database) in other.ServerDefaultDatabases)
+        {
+            ServerDefaultDatabases.TryAdd(serverRef, database);
         }
     }
 }

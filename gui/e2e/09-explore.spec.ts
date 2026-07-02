@@ -31,7 +31,7 @@ test.describe("explore", () => {
     await expect(adminPage.getByTestId("graph-empty")).toBeVisible();
   });
 
-  test("the dependency graph renders for the seeded repo (nodes or the no-lineage state)", async ({ adminPage }) => {
+  test("the flows graph focuses on click and opens the pipeline from the panel", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
     await adminPage.getByTestId("open-lineage-graph").click();
     await adminPage.getByTestId("graph-repo-select").click();
@@ -43,9 +43,48 @@ test.describe("explore", () => {
 
     if (await node.isVisible()) {
       await expect(adminPage.getByTestId("wave-list")).toBeVisible();
-      // A node click navigates to the pipeline behind it.
+
+      // Click focuses (upstream/downstream trace) instead of leaving the page; the panel opens the pipeline.
       await node.click();
+      await expect(adminPage.getByTestId("graph-focus-panel")).toBeVisible();
+      await expect(adminPage.getByTestId("graph-focus-panel")).toContainText("upstream");
+
+      await adminPage.getByTestId("graph-clear-focus").click();
+      await expect(adminPage.getByTestId("graph-focus-panel")).toHaveCount(0);
+
+      // The node search finds and focuses a node by name. Exact match: the flows view also lists a pipeline's
+      // terminal output tables as nodes (e.g. Csv_Basic_E2E_*), so a substring match would be ambiguous.
+      await adminPage.getByTestId("graph-node-search").fill("Csv");
+      await adminPage.getByRole("option", { name: "Csv_Basic", exact: true }).click();
+      await expect(adminPage.getByTestId("graph-focus-panel")).toBeVisible();
+
+      await adminPage.getByTestId("graph-open-selected").click();
       await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible({ timeout: 15_000 });
+    }
+  });
+
+  test("the objects view draws the data flow between file and table, colored per flow", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-lineage").click();
+    await adminPage.getByTestId("open-lineage-graph").click();
+    await adminPage.getByTestId("graph-repo-select").click();
+    await adminPage.getByRole("option", { name: "e2e-repo" }).click();
+    await adminPage.getByTestId("graph-view-objects").click();
+
+    // The seeded csv flow reads a file object and writes a table object: at least two nodes and an edge.
+    const node = adminPage.locator(".react-flow__node").first();
+    const noLineage = adminPage.getByTestId("graph-no-lineage");
+    await expect(node.or(noLineage)).toBeVisible({ timeout: 60_000 });
+
+    if (await node.isVisible()) {
+      expect(await adminPage.locator(".react-flow__node").count()).toBeGreaterThanOrEqual(2);
+      await expect(adminPage.locator(".react-flow__edge").first()).toBeVisible();
+      await expect(adminPage.getByTestId("graph-flow-legend")).toContainText("Csv_Basic");
+
+      // Focusing an object shows its trace and deep-links into the explorer.
+      await node.click();
+      await expect(adminPage.getByTestId("graph-focus-panel")).toBeVisible();
+      await adminPage.getByTestId("graph-open-selected").click();
+      await expect(adminPage.getByTestId("page-lineage")).toBeVisible({ timeout: 15_000 });
     }
   });
 

@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using SqlFlow.Core.Engine;
 using SqlFlow.Core.Lineage;
+using SqlFlow.Core.Model;
 using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.Catalog;
@@ -38,6 +40,97 @@ public static class CatalogProjection
             FirstSeenUtc = nowUtc,
             LastSeenUtc = nowUtc,
         };
+    }
+
+    /// <summary>
+    /// Projects the authored (YAML) column transforms of a flow into declared pipeline-column rows: one per
+    /// authored <see cref="ColumnTransform"/>, in declaration order, with the <c>@ColName</c> placeholder resolved
+    /// to the source column reference so the stored expression is the exact SQL the view uses. Pure - no database,
+    /// no connection - so the estate's "which transforms are set" is queryable straight from the source of truth.
+    /// A flow with no authored transforms yields no rows.
+    /// </summary>
+    public static IReadOnlyList<CatalogPipelineColumn> PipelineColumnsDeclared(
+        Guid repoId, Guid pipelineId, TypeInferencePolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        var rows = new List<CatalogPipelineColumn>(policy.Columns.Count);
+        var ordinal = 0;
+        foreach (var transform in policy.Columns)
+        {
+            ordinal++;
+            var reference = $"[{transform.Name.Replace("]", "]]", StringComparison.Ordinal)}]";
+            var expression = transform.Virtual
+                ? transform.Expression
+                : transform.Expression is not null
+                    ? ColumnTransformExpression.Substitute(transform.Expression, reference)
+                    : transform.Type is not null
+                        ? $"CAST({reference} AS {transform.Type})"
+                        : null;
+
+            rows.Add(new CatalogPipelineColumn
+            {
+                RepoId = repoId,
+                PipelineId = pipelineId,
+                Kind = PipelineColumnKinds.Declared,
+                Ordinal = ordinal,
+                ColumnName = string.IsNullOrWhiteSpace(transform.Alias) ? transform.Name : transform.Alias!,
+                SourceColumn = transform.Virtual ? null : transform.Name,
+                Expression = expression,
+                DataType = transform.Type,
+                SortOrder = transform.SortOrder,
+                IsVirtual = transform.Virtual,
+                ExcludeFromView = transform.ExcludeFromView,
+                Converted = transform.Expression is not null || transform.Type is not null,
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Projects a run's generated transformation view into detected pipeline-column rows, read best-effort from
+    /// the run.json result (<c>result.transformView.columns</c>: the resolved projection the run refreshed the
+    /// view with). One row per view column, in view order, carrying the resolved type and SELECT expression, so
+    /// the catalog records exactly what the engine detected/applied, distinct from what the YAML declared. A run
+    /// that generated no view yields no rows.
+    /// </summary>
+    public static IReadOnlyList<CatalogPipelineColumn> PipelineColumnsDetected(
+        JsonElement root, Guid repoId, Guid pipelineId)
+    {
+        if (Prop(root, "result") is not { } result
+            || Prop(result, "transformView") is not { ValueKind: JsonValueKind.Object } view
+            || Prop(view, "columns") is not { ValueKind: JsonValueKind.Array } columns)
+        {
+            return [];
+        }
+
+        var rows = new List<CatalogPipelineColumn>();
+        foreach (var column in columns.EnumerateArray())
+        {
+            var name = Str(column, "columnName");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            rows.Add(new CatalogPipelineColumn
+            {
+                RepoId = repoId,
+                PipelineId = pipelineId,
+                Kind = PipelineColumnKinds.Detected,
+                Ordinal = rows.Count + 1,
+                ColumnName = name,
+                SourceColumn = null,
+                Expression = NullIfBlank(Str(column, "selectExpression")),
+                DataType = NullIfBlank(Str(column, "dataType")),
+                SortOrder = null,
+                IsVirtual = false,
+                ExcludeFromView = false,
+                Converted = Bool(column, "converted") ?? false,
+            });
+        }
+
+        return rows;
     }
 
     /// <summary>The lowercase hex SHA-256 of a text, for change detection of a flow document.</summary>

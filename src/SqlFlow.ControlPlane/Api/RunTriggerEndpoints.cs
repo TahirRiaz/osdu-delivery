@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Background;
+using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -12,8 +14,15 @@ namespace SqlFlow.ControlPlane.Api;
 /// host's own environment. <c>pool</c> routes the run to a node serving that pool (omit for any node);
 /// <c>commitSha</c> pins the run to an exact git version the node materializes. Omitting it pins the run to the
 /// repo's last synced commit (so any node can execute it, and the executed version always matches what the catalog
-/// shows); only a repo with no resolvable synced commit runs unpinned from the node's local copy.</summary>
-public sealed record RunTriggerRequest(Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null);
+/// shows); only a repo with no resolvable synced commit runs unpinned from the node's local copy.
+/// <para>The built-in backfill lives here as per-run substitution parameters, all optional and all audited on the
+/// run: <c>fullLoad</c> ignores the watermark and reads everything the definition selects; <c>backfillFrom</c> /
+/// <c>backfillTo</c> is an externally-bounded window (file dates for file flows, the incremental date column for
+/// ingestion flows, the chunk plan for exports and InitLoads); <c>filePattern</c> narrows a file flow to one glob
+/// for this run. None of them touches the definition in git.</para></summary>
+public sealed record RunTriggerRequest(
+    Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
+    bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null);
 
 /// <summary>The accepted-run acknowledgement: the minted run id and its queued status. The run executes
 /// asynchronously; poll <c>GET /api/v1/runs/{runId}</c> (the <c>Location</c> header) for the outcome.</summary>
@@ -66,6 +75,25 @@ public static class RunTriggerEndpoints
                 title: "Invalid request");
         }
 
+        // The substitution parameters are validated at this trust boundary, so a run no engine path could honor
+        // (an inverted window, a control character in a glob) is refused before it is ever queued.
+        var parameters = new RunParameters
+        {
+            FullLoad = request.FullLoad,
+            BackfillFrom = request.BackfillFrom,
+            BackfillTo = request.BackfillTo,
+            FilePattern = string.IsNullOrWhiteSpace(request.FilePattern) ? null : request.FilePattern.Trim(),
+        };
+        try
+        {
+            parameters.Validate();
+        }
+        catch (SqlFlowException ex)
+        {
+            return TypedResults.Problem(
+                detail: ex.Message, statusCode: StatusCodes.Status400BadRequest, title: "Invalid run parameters");
+        }
+
         var flowName = request.FlowName.Trim();
         var pipelineId = CatalogIdentity.Pipeline(request.RepoId, flowName);
 
@@ -84,7 +112,7 @@ public static class RunTriggerEndpoints
         }
 
         var runId = await dispatcher.EnqueueAsync(
-            db, new RunEnqueueRequest(request.RepoId, flowName, pipeline.Kind, request.Pool, request.CommitSha), ct).ConfigureAwait(false);
+            db, new RunEnqueueRequest(request.RepoId, flowName, pipeline.Kind, request.Pool, request.CommitSha, parameters), ct).ConfigureAwait(false);
 
         // 202 with the canonical run-detail location: GET /api/v1/runs/{runId} reflects the run from the moment it
         // is queued (status "queued"), through running, to its terminal state.

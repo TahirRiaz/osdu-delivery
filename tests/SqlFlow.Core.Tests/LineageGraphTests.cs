@@ -269,6 +269,36 @@ public sealed class LineageGraphTests
 
         // The sp flow inherits the body's write, so the mart's reader waits for it.
         Assert.Equal([["runner"], ["consumer"]], Waves(report));
+
+        // The procedure's derived writes AND reads are also attributed to the FLOW that executes it (in addition
+        // to the module), so the mart traces back to the sp flow as its parent - what a data-flow view needs.
+        var martKey = NodeKey.For("@dwh", "DW", "dbo", "Mart");
+        var factKey = NodeKey.For("@dwh", "DW", "dbo", "Fact1");
+        Assert.Contains(report.Edges, e =>
+            e.Flow == "runner" && e.Relation == LineageRelation.Writes && e.ObjectKey == martKey
+            && e.Tier == LineageTier.Derived && e.ViaModule == procedure);
+        Assert.Contains(report.Edges, e =>
+            e.Flow == "runner" && e.Relation == LineageRelation.Reads && e.ObjectKey == factKey
+            && e.Tier == LineageTier.Derived && e.ViaModule == procedure);
+        // The module-attributed edges (no flow) still exist too: the two provenances coexist.
+        Assert.Contains(report.Edges, e => e.Flow is null && e.ViaModule == procedure && e.ObjectKey == martKey);
+    }
+
+    [Fact]
+    public void ProcedureExpansion_LeavesAViewReadingFlowUnattributed()
+    {
+        // A flow that merely READS a view (not Requires a proc) is NOT given the view's derived reads as its own
+        // edges: only procedure execution attributes a module's data relations to the flow.
+        var collected = Estate(
+            ("loader", LineageRelation.Writes, "Orders"),
+            ("reporter", LineageRelation.Reads, "vw_Orders"));
+        collected.Facts.Add(Fact(null, LineageRelation.Reads, "Orders",
+            viaModule: NodeKey.For("@dwh", "DW", "dbo", "vw_Orders"), tier: LineageTier.Derived));
+
+        var report = Build(collected);
+
+        var ordersKey = NodeKey.For("@dwh", "DW", "dbo", "Orders");
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "reporter" && e.ObjectKey == ordersKey);
     }
 
     // ---- Identity, synonyms, determinism --------------------------------------------------------------------

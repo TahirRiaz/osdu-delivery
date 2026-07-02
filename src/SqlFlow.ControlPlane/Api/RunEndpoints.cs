@@ -7,19 +7,29 @@ using SqlFlow.Catalog;
 namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>A run as it appears in lists: the lifecycle status, header dimensions, and headline row counts, without
-/// the drill-down detail. Ordered newest-first by <see cref="WrittenUtc"/>.</summary>
+/// the drill-down detail. Ordered newest-first by <see cref="WrittenUtc"/>. <see cref="Batch"/> and
+/// <see cref="Wave"/> are joined in from the run's pipeline row at query time, the same way the batch report
+/// combines the run log with the batch label and the lineage step: a flow whose YAML declares no batch, or a run
+/// whose pipeline row left the catalog, reports under <see cref="CatalogPipeline.DefaultBatch"/>; a wave of -1
+/// means lineage has not been computed for the repo (or the pipeline row is gone).</summary>
 public sealed record RunSummaryDto(
-    Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Status, bool Success,
+    Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
+    string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted);
 
 /// <summary>One run with its full header for the detail view: the summary plus the lifecycle fields (status, when it
-/// was enqueued, the node that claimed it), the schema version, the start/end window, the host, and the error.</summary>
+/// was enqueued, the node that claimed it), the schema version, the start/end window, the host, the error, and the
+/// run's substitution parameters (the built-in backfill's audit trail: full load, window, file pattern).
+/// <see cref="Batch"/> and <see cref="Wave"/> follow the same pipeline-join semantics as
+/// <see cref="RunSummaryDto"/>.</summary>
 public sealed record RunDetailDto(
-    Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Status, bool Success,
+    Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
+    string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
-    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host);
+    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
+    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern);
 
 /// <summary>One file a run processed (file flows): a drill-down row under a run.</summary>
 public sealed record RunFileDto(
@@ -70,7 +80,7 @@ public static class RunEndpoints
 
     private static async Task<Ok<PagedResult<RunSummaryDto>>> ListRunsAsync(
         CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? flowKind, string? status, bool? success,
-        string? flowName, int? page, int? pageSize, CancellationToken ct)
+        string? flowName, string? batch, bool? latest, int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -90,6 +100,24 @@ public static class RunEndpoints
             query = query.Where(x => x.FlowKind == flowKind);
         }
 
+        if (!string.IsNullOrWhiteSpace(flowName))
+        {
+            query = query.Where(x => x.FlowName.Contains(flowName));
+        }
+
+        // latest=true keeps only each pipeline's newest run: the batch status board ("what is red right now"),
+        // one row per pipeline, versus the full history the flat inbox and the pipeline detail show. It is a
+        // correlated not-exists over ALL of the pipeline's runs (RunId breaks WrittenUtc ties, any deterministic
+        // order works since both sides evaluate in SQL), and it applies BEFORE the lifecycle filters below so
+        // status=failed means "currently failed", not "ever failed".
+        if (latest == true)
+        {
+            query = query.Where(x => !db.Runs.Any(newer =>
+                newer.PipelineId == x.PipelineId
+                && (newer.WrittenUtc > x.WrittenUtc
+                    || (newer.WrittenUtc == x.WrittenUtc && newer.RunId > x.RunId))));
+        }
+
         // Lifecycle filter (queued / running / succeeded / failed / cancelled): the GUI's "active runs" and
         // "failures" views. Normalized to lower case so the query is case-insensitive on the stored value.
         if (!string.IsNullOrWhiteSpace(status))
@@ -103,19 +131,40 @@ public static class RunEndpoints
             query = query.Where(x => x.Success == s);
         }
 
-        if (!string.IsNullOrWhiteSpace(flowName))
+        // The batch label and the lineage wave live on the pipeline row (git/YAML is their source of truth), so
+        // they are joined in at query time rather than denormalized onto every run: one source, always current,
+        // and a run whose pipeline left the estate still lists (left join) under the default batch. A missing
+        // label coalesces to CatalogPipeline.DefaultBatch so every run belongs to a batch group.
+        var joined =
+            from run in query
+            join pipeline in db.Pipelines.AsNoTracking() on run.PipelineId equals pipeline.Id into pipelines
+            from pipeline in pipelines.DefaultIfEmpty()
+            select new
+            {
+                Run = run,
+                Batch = pipeline != null && pipeline.Batch != null ? pipeline.Batch : CatalogPipeline.DefaultBatch,
+                Wave = pipeline != null ? pipeline.Wave : -1,
+            };
+
+        if (!string.IsNullOrWhiteSpace(batch))
         {
-            query = query.Where(x => x.FlowName.Contains(flowName));
+            var batchFilter = batch.Trim();
+            joined = joined.Where(x => x.Batch.Contains(batchFilter));
         }
 
-        var ordered = query.OrderByDescending(x => x.WrittenUtc).ThenBy(x => x.RunId);
+        // The history inbox reads newest-first; the status board (latest=true) reads in report order, batch then
+        // lineage step then flow, so each batch lists once, its steps ascending, exactly like the batch report.
+        var ordered = latest == true
+            ? joined.OrderBy(x => x.Batch).ThenBy(x => x.Wave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId)
+            : joined.OrderByDescending(x => x.Run.WrittenUtc).ThenBy(x => x.Run.RunId);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
             .Select(x => new RunSummaryDto(
-                x.RunId, x.PipelineId, x.RepoId, x.FlowName, x.FlowKind, x.Status, x.Success,
-                x.TargetPool, x.CommitSha, x.WrittenUtc, x.EnqueuedUtc, x.DurationSeconds,
-                x.RowsLoaded, x.RowsInserted, x.RowsUpdated, x.RowsDeleted))
+                x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
+                x.Run.Status, x.Run.Success,
+                x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
+                x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunSummaryDto>(items, p, size, total));
     }
@@ -123,12 +172,20 @@ public static class RunEndpoints
     private static async Task<Results<Ok<RunDetailDto>, ProblemHttpResult>> GetRunAsync(
         Guid runId, CatalogDbContext db, CancellationToken ct)
     {
-        var dto = await db.Runs.AsNoTracking().Where(x => x.RunId == runId)
-            .Select(x => new RunDetailDto(
-                x.RunId, x.PipelineId, x.RepoId, x.FlowName, x.FlowKind, x.Status, x.Success,
-                x.TargetPool, x.CommitSha, x.EnqueuedUtc, x.ClaimedByNode,
-                x.SchemaVersion, x.WrittenUtc, x.StartUtc, x.EndUtc, x.DurationSeconds,
-                x.RowsLoaded, x.RowsInserted, x.RowsUpdated, x.RowsDeleted, x.Error, x.Host))
+        var dto = await (
+                from run in db.Runs.AsNoTracking()
+                where run.RunId == runId
+                join pipeline in db.Pipelines.AsNoTracking() on run.PipelineId equals pipeline.Id into pipelines
+                from pipeline in pipelines.DefaultIfEmpty()
+                select new RunDetailDto(
+                    run.RunId, run.PipelineId, run.RepoId, run.FlowName, run.FlowKind,
+                    pipeline != null && pipeline.Batch != null ? pipeline.Batch : CatalogPipeline.DefaultBatch,
+                    pipeline != null ? pipeline.Wave : -1,
+                    run.Status, run.Success,
+                    run.TargetPool, run.CommitSha, run.EnqueuedUtc, run.ClaimedByNode,
+                    run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
+                    run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host,
+                    run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("run", runId) : TypedResults.Ok(dto);
     }

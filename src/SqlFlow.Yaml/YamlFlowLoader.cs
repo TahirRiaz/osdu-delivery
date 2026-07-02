@@ -1,4 +1,5 @@
 using SqlFlow.Core;
+using SqlFlow.Core.Engine;
 using SqlFlow.Core.Identity;
 using SqlFlow.Core.Model;
 using YamlDotNet.Core;
@@ -65,6 +66,7 @@ public sealed class YamlFlowLoader
         return new FlowDefinition
         {
             Name = name,
+            Batch = YamlDocumentParts.NullIfBlank(y.Batch),
             Source = new SourceSpec
             {
                 Type = Required(src.Type, "source.type", source),
@@ -137,7 +139,9 @@ public sealed class YamlFlowLoader
         };
     }
 
-    private static TypeInferencePolicy MapInference(TransformYaml? y, string source)
+    /// <summary>Maps the shared <c>transform:</c> block (also used by the relational ingestion loader, so both
+    /// flow kinds carry the same policy shape and validation).</summary>
+    internal static TypeInferencePolicy MapInference(TransformYaml? y, string source)
     {
         if (y is null)
         {
@@ -151,7 +155,78 @@ public sealed class YamlFlowLoader
             Threshold = y.Threshold ?? 1.0,
             SampleSize = y.Sample ?? 0,
             PreserveLeadingZeros = y.PreserveLeadingZeros ?? true,
+            GenerateView = y.GenerateView ?? true,
+            Columns = MapTransformColumns(y.Columns, source),
         };
+    }
+
+    /// <summary>
+    /// Maps the authored per-column transforms, validating each so a malformed transform section fails the load
+    /// with a clear message rather than emitting a broken view at run time. Names must be present and unique
+    /// (case-insensitive); a virtual column needs an expression and cannot use the <c>@ColName</c> token; a plain
+    /// column needs either an expression or a type (otherwise it is a no-op the author almost certainly did not
+    /// intend).
+    /// </summary>
+    private static IReadOnlyList<ColumnTransform> MapTransformColumns(List<TransformColumnYaml>? columns, string source)
+    {
+        if (columns is null || columns.Count == 0)
+        {
+            return [];
+        }
+
+        var mapped = new List<ColumnTransform>(columns.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < columns.Count; i++)
+        {
+            var c = columns[i];
+            var name = c.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw new FlowValidationException($"{source}: transform.columns[{i}] is missing 'name'.");
+            }
+
+            if (!seen.Add(name))
+            {
+                throw new FlowValidationException($"{source}: transform.columns has a duplicate column '{name}'.");
+            }
+
+            var expression = string.IsNullOrWhiteSpace(c.Expr) ? null : c.Expr.Trim();
+            var type = string.IsNullOrWhiteSpace(c.Type) ? null : c.Type.Trim();
+            var alias = string.IsNullOrWhiteSpace(c.As) ? null : c.As.Trim();
+            var isVirtual = c.Virtual ?? false;
+
+            if (isVirtual)
+            {
+                if (expression is null)
+                {
+                    throw new FlowValidationException($"{source}: transform.columns['{name}'] is virtual and must declare an 'expr'.");
+                }
+
+                if (ColumnTransformExpression.ReferencesColumnToken(expression))
+                {
+                    throw new FlowValidationException(
+                        $"{source}: transform.columns['{name}'] is virtual, so its 'expr' cannot use @ColName (there is no source column); reference other columns by name.");
+                }
+            }
+            else if (expression is null && type is null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: transform.columns['{name}'] does nothing - declare an 'expr', a 'type' (to cast), or mark it 'virtual'.");
+            }
+
+            mapped.Add(new ColumnTransform
+            {
+                Name = name,
+                Expression = expression,
+                Alias = alias,
+                Type = type,
+                SortOrder = c.Order,
+                Virtual = isVirtual,
+                ExcludeFromView = c.ExcludeFromView ?? false,
+            });
+        }
+
+        return mapped;
     }
 
     private static string ResolveDefaultColumnType(SchemaYaml? schema, SourceYaml src)

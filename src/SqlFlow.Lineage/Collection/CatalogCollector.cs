@@ -98,6 +98,10 @@ public sealed class CatalogCollector
             var database = (string?)await Scalar(connection, "SELECT DB_NAME();", ct).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("the connection has no default database");
 
+            // The connected default catalog is node-identity ground truth: the builder completes this
+            // server's two-part identities (database-less facts) against it.
+            result.ServerDefaultDatabases[serverRef] = database;
+
             await InventoryAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
             await SynonymsAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
             await ModulesAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);

@@ -23,6 +23,11 @@ internal sealed class IngestionYaml
     public IngestionIncrementalYaml? Incremental { get; set; }
     public IngestionInitLoadYaml? InitLoad { get; set; }
     public IngestionVersioningYaml? Versioning { get; set; }
+
+    /// <summary>The pre-ingestion transform block, shared shape with the file flow's (see
+    /// <see cref="TransformYaml"/>): inference + authored per-column transforms + the view toggle.</summary>
+    public TransformYaml? Transform { get; set; }
+
     public string? PreProcess { get; set; }
     public string? PostProcess { get; set; }
     public string? PreInvoke { get; set; }

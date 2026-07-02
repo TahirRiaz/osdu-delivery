@@ -186,6 +186,7 @@ public sealed class YamlIngestionFlowLoader
             VirtualColumns = MapVirtualColumns(y.VirtualColumns, source),
             SurrogateKeys = MapSurrogateKeys(y.SurrogateKeys, connections, source),
             Assertions = assertionNames,
+            Transform = YamlFlowLoader.MapInference(y.Transform, source),
         };
 
         return new IngestionDocument

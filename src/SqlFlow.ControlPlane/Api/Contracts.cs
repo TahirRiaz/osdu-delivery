@@ -30,6 +30,12 @@ public sealed record PipelineDetailDto(
     string? SourceServer, string? TargetServer, string RelativePath, string ContentHash,
     string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
+/// <summary>One resolved column of a pipeline's pre-ingestion transformation view: <c>declared</c> rows come
+/// from the flow YAML (the source of truth), <c>detected</c> rows from the latest run's generated view.</summary>
+public sealed record PipelineColumnDto(
+    string Kind, int Ordinal, string ColumnName, string? SourceColumn, string? Expression, string? DataType,
+    int? SortOrder, bool IsVirtual, bool ExcludeFromView, bool Converted);
+
 /// <summary>The bootstrap token request body (only honored when a bootstrap secret is configured).</summary>
 public sealed record TokenRequest(string Secret, string? Subject, IReadOnlyList<string>? Scopes);
 

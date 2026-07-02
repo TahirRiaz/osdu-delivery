@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 using SqlFlow.Core;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Catalog;
+using SqlFlow.Core.Engine;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Invoke;
@@ -69,6 +70,10 @@ public sealed record IngestionRunResult
     /// (the trace captured up to the failure point). This is the run's debugging surface.</summary>
     public IReadOnlyList<SqlTraceEntry> SqlTrace { get; init; } = [];
 
+    /// <summary>The typed transformation view refreshed over the target as the run's post-process, with its
+    /// resolved column projection; null when the flow does not generate one (the native SQL-to-SQL default).</summary>
+    public TransformViewResult? TransformView { get; init; }
+
     /// <summary>The failure message (already redacted of any secret), or null on success.</summary>
     public string? Error { get; init; }
 }
@@ -97,6 +102,7 @@ public sealed class IngestionFlowRunner
     private readonly IAssertionRunner _assertions;
     private readonly ISurrogateKeyExecutor _surrogateKeys;
     private readonly IInvokeRunner _invoke;
+    private readonly IInferenceService? _inference;
 
     public IngestionFlowRunner(
         IConnectionResolver resolver,
@@ -108,7 +114,8 @@ public sealed class IngestionFlowRunner
         ISurrogateKeyExecutor? surrogateKeys = null,
         IInvokeRunner? invoke = null,
         IReadOnlyList<ISourceSqlDialect>? sourceDialects = null,
-        IReadOnlyList<ISourceTypeMapper>? sourceTypeMappers = null)
+        IReadOnlyList<ISourceTypeMapper>? sourceTypeMappers = null,
+        IInferenceService? inference = null)
     {
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(factory);
@@ -131,6 +138,11 @@ public sealed class IngestionFlowRunner
         _assertions = assertions ?? NullAssertionRunner.Instance;
         _surrogateKeys = surrogateKeys ?? NullSurrogateKeyExecutor.Instance;
         _invoke = invoke ?? NullInvokeRunner.Instance;
+
+        // Without an inference service wired, authored (declared) transforms still project into the view; a flow
+        // that asks for type INFERENCE is surfaced as a clear error at the point of use rather than silently
+        // skipped (same contract as the invoke runner above).
+        _inference = inference;
     }
 
     public async Task<IngestionRunResult> RunAsync(IngestionFlow flow, IngestionRunOptions? options = null, CancellationToken ct = default)
@@ -266,8 +278,26 @@ public sealed class IngestionFlowRunner
             long rowsStaged;
             if (flow.InitLoad.Enabled)
             {
+                // Per-run substitution: a trigger-time backfill window re-windows the chunk plan for THIS run,
+                // so one InitLoad definition serves any historical slice without a YAML edit.
+                var initFlow = flow;
+                if (options.Parameters.BackfillFrom is { } chunkFrom)
+                {
+                    initFlow = flow with
+                    {
+                        InitLoad = flow.InitLoad with
+                        {
+                            FromDate = DateOnly.FromDateTime(chunkFrom),
+                            ToDate = options.Parameters.BackfillTo is { } chunkTo
+                                ? DateOnly.FromDateTime(chunkTo)
+                                : flow.InitLoad.ToDate,
+                        },
+                    };
+                    Info("source.initload", $"init-load window overridden by run parameters: {options.Parameters.Describe()}");
+                }
+
                 window = new IncrementalWindow { SourceWhere = string.Empty, RunFullLoad = true };
-                var segments = InitLoadPlanner.Plan(flow, flow.Source.Table, bulkColumns.Select(c => c.Source).ToList(), sourceDialect);
+                var segments = InitLoadPlanner.Plan(initFlow, initFlow.Source.Table, bulkColumns.Select(c => c.Source).ToList(), sourceDialect);
                 sourceSelect = segments.Count > 0 ? segments[0].Sql : null;
                 Info("source.initload", $"init-load backfill: {segments.Count} segment(s), {Math.Max(1, flow.Load.Threads ?? 1)} concurrent");
                 foreach (var segment in segments)
@@ -279,7 +309,12 @@ public sealed class IngestionFlowRunner
             }
             else
             {
-                window = await incremental.ResolveAsync(flow, resolvedSource, targetConnectionString, sourceColumns, sourceDialect, ct).ConfigureAwait(false);
+                window = await incremental.ResolveAsync(flow, resolvedSource, targetConnectionString, sourceColumns, sourceDialect, options.Parameters, ct).ConfigureAwait(false);
+                if (!options.Parameters.IsDefault)
+                {
+                    Info("incremental.window", $"run parameters applied: {options.Parameters.Describe()}");
+                }
+
                 Info("incremental.window", window.RunFullLoad
                     ? "full load (no usable watermark)"
                     : window.SourceWhere.Length > 0 ? $"incremental read: WHERE 1=1{window.SourceWhere}" : "full read (no incremental bound)");
@@ -517,6 +552,20 @@ public sealed class IngestionFlowRunner
                 }
             }
 
+            // 8b. Pre-ingestion transform view: refresh the typed view over the loaded target (the external-DB
+            //     landing contract: the flow's target is the pre/staging table, and the downstream chained flow
+            //     reads [schema].[v<Table>] for correctly-typed data). Native SQL-to-SQL flows leave the policy
+            //     at its default and generate nothing. A failure here fails the run (a stale view must be loud);
+            //     the committed load stands, and CREATE OR ALTER makes the re-run idempotent.
+            TransformViewResult? transformView = null;
+            if (flow.Transform.GeneratesView)
+            {
+                transformView = await GenerateTransformViewAsync(flow, targetConnectionString, targetSchema.Columns, ct).ConfigureAwait(false);
+                Info("transform.view", $"transformation view [{flow.Target.Table.Schema}].[{transformView.ViewName}] refreshed "
+                    + $"({transformView.Columns.Count} column(s), {transformView.Columns.Count(c => c.Converted)} typed)");
+                Trace("transform.view", transformView.Ddl);
+            }
+
             // 9. Record the run. A write failure on a SUCCESSFUL run surfaces (logging is part of the contract
             //    in with-database mode); in without-database mode the no-op log never throws.
             var endUtc = DateTime.UtcNow;
@@ -547,6 +596,7 @@ public sealed class IngestionFlowRunner
                 Assertions = assertionResults,
                 SurrogateKeys = surrogateResults,
                 SqlTrace = trace,
+                TransformView = transformView,
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -711,6 +761,52 @@ public sealed class IngestionFlowRunner
             ResurrectedRows = reader.GetInt64(3),
             ThresholdBreached = reader.GetBoolean(4),
         };
+    }
+
+    /// <summary>
+    /// The pre-ingestion transform post-process for the relational path: profiles the loaded target when
+    /// inference is on (authored transforms alone need no profiling), merges the authored transforms over the
+    /// inferred columns, and refreshes <c>[schema].[v&lt;Table&gt;]</c> with the resolved projection. The target's
+    /// just-applied desired columns are the projection base, so evolved columns are included.
+    /// </summary>
+    private async Task<TransformViewResult> GenerateTransformViewAsync(
+        IngestionFlow flow, string targetConnectionString, IReadOnlyList<SqlColumn> targetColumns, CancellationToken ct)
+    {
+        IReadOnlyList<InferredColumn> inferred = [];
+        if (flow.Transform.Enabled)
+        {
+            if (_inference is null)
+            {
+                throw new SqlFlowException(
+                    "transform.inferTypes is on, but no inference service is wired into this runner. Register one "
+                    + "(the engine host does by default), or declare the transforms explicitly under transform.columns.");
+            }
+
+            var report = await _inference.InferAsync(new InferenceRequest
+            {
+                Connection = targetConnectionString,
+                Schema = flow.Target.Table.Schema,
+                Table = flow.Target.Table.Name,
+                Policy = flow.Transform,
+            }, ct).ConfigureAwait(false);
+
+            inferred = report.Columns.Select(c => new InferredColumn
+            {
+                ColumnName = c.ColumnName,
+                DataType = c.DataType,
+                SelectExpression = c.SelectExpression,
+                Converted = c.Converted,
+                Style = c.Style,
+                NumericFormat = Enum.TryParse<NumericFormat>(c.NumericFormat, out var format) ? format : null,
+            }).ToList();
+        }
+
+        var resolved = ColumnTransformResolver.Resolve(targetColumns.Select(c => c.Name).ToList(), flow.Transform, inferred);
+        var viewName = $"v{flow.Target.Table.Name}";
+        var ddl = TransformViewBuilder.Build(flow.Target.Table.Schema, viewName, flow.Target.Table.Schema, flow.Target.Table.Name, resolved);
+        await ExecuteAsync(targetConnectionString, ddl, ct).ConfigureAwait(false);
+
+        return new TransformViewResult { ViewName = viewName, Ddl = ddl, Columns = resolved };
     }
 
     /// <summary>

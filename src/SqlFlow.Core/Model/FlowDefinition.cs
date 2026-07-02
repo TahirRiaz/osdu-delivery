@@ -14,6 +14,11 @@ public sealed record FlowDefinition
     /// </summary>
     public Guid FlowId => FlowIdentity.FromName(Name);
 
+    /// <summary>The batch (source system) this flow belongs to, the grouping label under which its runs report
+    /// and its estate siblings execute jointly. Optional in YAML; a flow without one reports under the catalog's
+    /// default batch.</summary>
+    public string? Batch { get; init; }
+
     public required SourceSpec Source { get; init; }
     public required TargetSpec Target { get; init; }
     public SchemaPolicy Schema { get; init; } = new();

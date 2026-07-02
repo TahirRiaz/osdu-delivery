@@ -87,6 +87,10 @@ public sealed class CatalogSync
 
     private readonly FlowSetCollector _estate = new();
 
+    private readonly YamlFlowLoader _flowLoader = new();
+
+    private readonly YamlIngestionFlowLoader _ingestionLoader = new();
+
     private readonly YamlDocumentLoader _documents = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
@@ -286,7 +290,72 @@ public sealed class CatalogSync
 
         await ScheduleStore.StageRemoveYamlSchedulesNotInAsync(context, repoId, scheduleKeep, ct).ConfigureAwait(false);
 
+        // Project the authored per-column transforms of every present flow into the declared pipeline-column rows
+        // (the source of truth for "which transforms are set"). Refreshed wholesale for this repo so a removed or
+        // edited transform does not linger; detected rows (from runs) are a different kind and are left untouched.
+        await RefreshDeclaredColumnsAsync(context, root, repoId, collected.Flows, present, ct).ConfigureAwait(false);
+
         return (added, updated, unchanged, deactivated);
+    }
+
+    /// <summary>
+    /// Replaces this repo's declared pipeline-column rows from the authored YAML transforms of every present flow.
+    /// Declared rows are the source-of-truth projection, so they are rebuilt wholesale (delete this repo's declared
+    /// rows, re-insert) each full sync; detected rows (a different <see cref="PipelineColumnKinds"/>) are produced
+    /// by runs and are never touched here. Only file flows carry authored transforms today (a FlowDefinition); a
+    /// flow of any other kind contributes nothing.
+    /// </summary>
+    private async Task RefreshDeclaredColumnsAsync(
+        CatalogDbContext context, string root, Guid repoId,
+        IReadOnlyList<CollectedFlow> flows, HashSet<Guid> present, CancellationToken ct)
+    {
+        await context.PipelineColumns
+            .Where(c => c.RepoId == repoId && c.Kind == PipelineColumnKinds.Declared)
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+
+        var done = new HashSet<Guid>();
+        foreach (var flow in flows)
+        {
+            var pipelineId = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
+            if (!present.Contains(pipelineId) || !done.Add(pipelineId))
+            {
+                continue;
+            }
+
+            var fullPath = Path.GetFullPath(Path.Combine(root, flow.Node.File));
+            foreach (var column in ProjectDeclaredColumns(flow.Node.Kind, fullPath, repoId, pipelineId))
+            {
+                context.PipelineColumns.Add(column);
+            }
+        }
+    }
+
+    /// <summary>Loads a flow's transform policy and projects its authored transforms into declared column rows.
+    /// File and relational (ing) flows carry the shared transform block; any other kind, or a document that fails
+    /// to parse, contributes none (the pipeline projection already warned about a parse failure; declared columns
+    /// are an enrichment, never a reason to fail the sync).</summary>
+    private IReadOnlyList<CatalogPipelineColumn> ProjectDeclaredColumns(string kind, string fullPath, Guid repoId, Guid pipelineId)
+    {
+        try
+        {
+            var policy = kind switch
+            {
+                "file" => _flowLoader.LoadFile(fullPath).Inference,
+                "ing" => _ingestionLoader.LoadFile(fullPath).Flow.Transform,
+                _ => null,
+            };
+
+            if (policy is { Columns.Count: > 0 })
+            {
+                return CatalogProjection.PipelineColumnsDeclared(repoId, pipelineId, policy);
+            }
+        }
+        catch (Exception ex) when (ex is SqlFlow.Core.SqlFlowException or IOException)
+        {
+            // A malformed document was already warned about by the pipeline projection.
+        }
+
+        return [];
     }
 
     private static async Task<RunSyncTally> SyncRunsAsync(
@@ -304,6 +373,10 @@ public sealed class CatalogSync
         var statements = 0;
         var surrogateKeys = 0;
         var metrics = 0;
+
+        // The newest transform-view projection seen per pipeline this pass: the detected pipeline columns are a
+        // "latest run wins" snapshot, so only the most recent run's view columns are applied after the loop.
+        var detectedCandidates = new Dictionary<Guid, (DateTime WrittenUtc, IReadOnlyList<CatalogPipelineColumn> Rows)>();
 
         foreach (var file in EnumerateRunArtifacts(root))
         {
@@ -342,11 +415,38 @@ public sealed class CatalogSync
                 statements += detail.Statements;
                 surrogateKeys += detail.SurrogateKeys;
                 metrics += detail.Metrics;
+
+                var detected = CatalogProjection.PipelineColumnsDetected(document.RootElement, repoId, run.PipelineId);
+                if (detected.Count > 0
+                    && (!detectedCandidates.TryGetValue(run.PipelineId, out var current) || run.WrittenUtc > current.WrittenUtc))
+                {
+                    detectedCandidates[run.PipelineId] = (run.WrittenUtc, detected);
+                }
             }
             catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
             {
                 warnings.Add($"run artifact '{file}' could not be read ({SecretHygiene.RedactedMessage(ex.Message)}); skipped.");
                 failed++;
+            }
+        }
+
+        // Apply the newest detected view projection per pipeline, but never over a run the catalog already knows
+        // that is newer than this pass's candidate (an old artifact synced late must not regress the snapshot).
+        foreach (var (pipelineId, candidate) in detectedCandidates)
+        {
+            var newerKnown = await context.Runs
+                .AnyAsync(r => r.PipelineId == pipelineId && r.WrittenUtc > candidate.WrittenUtc, ct).ConfigureAwait(false);
+            if (newerKnown)
+            {
+                continue;
+            }
+
+            await context.PipelineColumns
+                .Where(c => c.PipelineId == pipelineId && c.Kind == PipelineColumnKinds.Detected)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            foreach (var row in candidate.Rows)
+            {
+                context.PipelineColumns.Add(row);
             }
         }
 
@@ -455,6 +555,26 @@ public sealed class CatalogSync
                         context.Runs.Add(run);
                         runRecorded = true;
                         detail = AddRunDetail(context, document.RootElement, run.RunId, repoId);
+
+                        // Refresh the pipeline's detected view projection from this run ("latest run wins"),
+                        // unless the catalog already knows a newer run for the pipeline (a stale artifact
+                        // recorded late must not regress the snapshot).
+                        var detected = CatalogProjection.PipelineColumnsDetected(document.RootElement, repoId, run.PipelineId);
+                        if (detected.Count > 0)
+                        {
+                            var newerKnown = await context.Runs
+                                .AnyAsync(r => r.PipelineId == run.PipelineId && r.WrittenUtc > run.WrittenUtc, ct).ConfigureAwait(false);
+                            if (!newerKnown)
+                            {
+                                await context.PipelineColumns
+                                    .Where(c => c.PipelineId == run.PipelineId && c.Kind == PipelineColumnKinds.Detected)
+                                    .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                                foreach (var row in detected)
+                                {
+                                    context.PipelineColumns.Add(row);
+                                }
+                            }
+                        }
                     }
 
                     // else: already recorded (a prior full sync or write-back); a run is immutable, so nothing to do.
@@ -509,6 +629,17 @@ public sealed class CatalogSync
         var hash = CatalogProjection.Hash(yaml);
         var id = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
         var row = await context.Pipelines.FindAsync([id], ct).ConfigureAwait(false);
+
+        // Refresh this one pipeline's declared columns from its YAML on every write-back: declared columns are the
+        // source-of-truth projection, cheap to rebuild for a single flow, and this keeps a run-only node's catalog
+        // current with authored transforms without waiting for a full sync. Replaced by (pipeline, declared).
+        await context.PipelineColumns
+            .Where(c => c.PipelineId == id && c.Kind == PipelineColumnKinds.Declared)
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        foreach (var column in ProjectDeclaredColumns(flow.Node.Kind, fullFlowPath, repoId, id))
+        {
+            context.PipelineColumns.Add(column);
+        }
 
         if (row is not null && string.Equals(row.ContentHash, hash, StringComparison.Ordinal))
         {

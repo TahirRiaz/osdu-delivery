@@ -30,7 +30,12 @@ import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { pollingInterval } from "../../hooks/usePolling";
-import { formatBytes, formatDurationSeconds } from "../../lib/time";
+import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
+
+/** A compact UTC stamp for a backfill window bound (the API sends UTC timestamps). */
+function fmtBound(value: string): string {
+  return parseUtc(value).toISOString().replace("T", " ").replace(/:\d\d\.\d+Z$/, "");
+}
 
 function YesNo({ value }: { value: boolean }) {
   return value
@@ -170,6 +175,7 @@ function RunDetailContent({ runId }: { runId: string }) {
             <RunStatusBadge status={run.status} />
             <Typography variant="h5">{run.flowName}</Typography>
             <Chip size="small" label={run.flowKind} variant="outlined" data-testid="run-kind" />
+            <Chip size="small" label={`batch: ${run.batch}`} variant="outlined" data-testid="run-batch" />
             <Box sx={{ flexGrow: 1 }} />
             {run.status === "queued" && (
               <Button color="error" variant="outlined" onClick={() => setConfirmOpen(true)} data-testid="cancel-run">
@@ -194,6 +200,8 @@ function RunDetailContent({ runId }: { runId: string }) {
                 {run.pipelineId}
               </Link>
             </Field>
+            <Field label="Batch">{run.batch}</Field>
+            <Field label="Step">{run.wave >= 0 ? run.wave : "-"}</Field>
             <Field label="Enqueued"><RelativeTime value={run.enqueuedUtc} /></Field>
             <Field label="Started"><RelativeTime value={run.startUtc} /></Field>
             <Field label="Ended"><RelativeTime value={run.endUtc} /></Field>
@@ -217,6 +225,24 @@ function RunDetailContent({ runId }: { runId: string }) {
           </Stack>
         </CardContent>
       </Card>
+
+      {(run.fullLoad || run.backfillFrom || run.filePattern) && (
+        <Alert severity="info" icon={false} sx={{ mb: 2 }} data-testid="run-backfill">
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+            <Typography variant="body2" fontWeight={600}>Backfill:</Typography>
+            {run.fullLoad && <Chip size="small" label="full load" color="warning" />}
+            {run.backfillFrom && (
+              <Chip
+                size="small"
+                label={run.backfillTo
+                  ? `window ${fmtBound(run.backfillFrom)} .. ${fmtBound(run.backfillTo)}`
+                  : `from ${fmtBound(run.backfillFrom)}`}
+              />
+            )}
+            {run.filePattern && <Chip size="small" label={`files '${run.filePattern}'`} />}
+          </Stack>
+        </Alert>
+      )}
 
       <Tabs
         value={tab}

@@ -39,6 +39,18 @@ public static class WithoutDatabaseIngestion
         var factory = new CompositeConnectionFactory(registry.ConnectionFactories);
         var catalogs = new CompositeCatalogReaderFactory(registry.CatalogReaders);
 
+        // The pre-ingestion transform's type inference profiles the (SQL Server) target the runner just loaded;
+        // the runner hands it an already-resolved connection string, so the secret resolver is a pass-through
+        // for it (kept consistent with the rest of the without-database composition).
+        static Core.Abstractions.IInferenceService BuildInferenceService(ISecretResolver? secrets)
+            => new Core.Engine.InferenceService(
+                new SqlServerSchemaProvider(),
+                new SqlServerColumnProfiler(),
+                new Core.Engine.TypeInferencer(),
+                new SqlServerInferenceValidator(),
+                new SqlServerLocaleProvider(),
+                secrets ?? new SecretResolver([new EnvSecretProvider()]));
+
         // The surrogate-key executor introspects the TARGET (always SQL Server), so it keeps a direct reader.
         var targetCatalog = new Catalog.SqlServerCatalogReader();
 
@@ -50,6 +62,7 @@ public static class WithoutDatabaseIngestion
             surrogateKeys: new SurrogateKeyExecutor(resolver, targetCatalog),
             invoke: WithoutDatabaseInvokeRunner.Build(invokes, invokeExecutors),
             sourceDialects: registry.Dialects,
-            sourceTypeMappers: registry.TypeMappers);
+            sourceTypeMappers: registry.TypeMappers,
+            inference: BuildInferenceService(secrets));
     }
 }

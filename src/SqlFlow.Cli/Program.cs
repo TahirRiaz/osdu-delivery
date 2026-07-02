@@ -183,6 +183,17 @@ internal static class Program
                         return await RunBatchAsync(provider, batch.Document.Flow, file, args, json).ConfigureAwait(false);
                     }
 
+                    RunParameters parameters;
+                    try
+                    {
+                        parameters = ParseRunParameters(args);
+                    }
+                    catch (SqlFlowException ex)
+                    {
+                        Console.Error.WriteLine($"ERROR  {ex.Message}");
+                        return 1;
+                    }
+
                     var options = new DocumentExecutionOptions
                     {
                         LogLevel = ParseLogLevel(GetOption(args, "--log-level")),
@@ -190,6 +201,7 @@ internal static class Program
                         ScmDryRun = args.Contains("--dry-run"),
                         ScmPush = !args.Contains("--no-push"),
                         Echo = json ? null : Console.WriteLine,
+                        Parameters = parameters,
                     };
 
                     var exec = await provider.GetRequiredService<DocumentExecutor>()
@@ -1572,6 +1584,11 @@ internal static class Program
               sqlflow validate <pipeline.yaml>   Validate a pipeline definition
               sqlflow plan     <pipeline.yaml>   Show the SQL that would run (changes nothing; file flows)
               sqlflow run      <pipeline.yaml>   Execute the pipeline
+                               [--full]          Backfill: ignore the watermark, read everything the flow selects
+                               [--from <date>]   Backfill: externally-bounded window low bound (file date /
+                                                 incremental date column / export or init-load chunk plan)
+                               [--to <date>]     Backfill: the window's high bound (requires --from)
+                               [--file-pattern <glob>]  Backfill: narrow a file flow to one glob this run
               sqlflow infer    <pipeline.yaml>   Profile the loaded table and output inferred types (JSON)
               sqlflow discover <pipeline.yaml>   Scan a JSON/XML source and report its path structure
               sqlflow paths    <file|folder>     List every path in a JSON/NDJSON/XML file or folder
@@ -2086,6 +2103,17 @@ internal static class Program
     /// (run.json, run.log, batch.json) and prints the per-wave outcome.</summary>
     private static async Task<int> RunBatchAsync(IServiceProvider provider, BatchFlow flow, string file, string[] args, bool json)
     {
+        RunParameters parameters;
+        try
+        {
+            parameters = ParseRunParameters(args);
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {ex.Message}");
+            return 1;
+        }
+
         var orchestrator = new BatchOrchestrator(provider.GetRequiredService<DocumentExecutor>());
         var memberOptions = new DocumentExecutionOptions
         {
@@ -2094,6 +2122,8 @@ internal static class Program
             ScmDryRun = args.Contains("--dry-run"),
             // Members log to their own run folders; the console stays readable under concurrency.
             Echo = null,
+            // The backfill parameters apply to EVERY member: a batch backfill is one command, not N YAML edits.
+            Parameters = parameters,
         };
 
         var result = await orchestrator
@@ -2262,6 +2292,41 @@ internal static class Program
         "trace" => RunLogLevel.Trace,
         _ => throw new SqlFlowException($"Unknown --log-level '{value}'. Allowed: info, debug, trace."),
     };
+
+    /// <summary>
+    /// The built-in backfill's CLI surface: <c>--full</c> ignores the watermark, <c>--from</c>/<c>--to</c> is an
+    /// externally-bounded window, <c>--file-pattern</c> narrows a file flow to one glob. Parsed and validated
+    /// here (dates are invariant-culture, e.g. <c>2023-01-15</c> or <c>2023-01-15 06:00:00</c>), the same
+    /// <see cref="RunParameters"/> contract the control-plane trigger validates, so both entry points refuse
+    /// exactly the same nonsense. A batch run passes them to every member.
+    /// </summary>
+    private static RunParameters ParseRunParameters(string[] args)
+    {
+        static DateTime? ParseDate(string? value, string flag)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            if (DateTime.TryParse(value.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+            {
+                return parsed;
+            }
+
+            throw new SqlFlowException($"{flag} '{value}' is not a date; use e.g. 2023-01-15 or '2023-01-15 06:00:00'.");
+        }
+
+        var parameters = new RunParameters
+        {
+            FullLoad = args.Contains("--full"),
+            BackfillFrom = ParseDate(GetOption(args, "--from"), "--from"),
+            BackfillTo = ParseDate(GetOption(args, "--to"), "--to"),
+            FilePattern = GetOption(args, "--file-pattern"),
+        };
+        parameters.Validate();
+        return parameters;
+    }
 
     /// <summary>0 on success, 1 on failure, 2 when --fail-on-anomaly was set and a mature anomaly exists
     /// (the CI gate: distinguishable from a broken run).</summary>

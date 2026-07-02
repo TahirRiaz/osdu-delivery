@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -58,9 +59,13 @@ builder.Services.AddSingleton<RunQueueSignal>();
 builder.Services.AddSingleton<InProcessRunDispatcher>();
 builder.Services.AddSingleton<IRunDispatcher>(sp => sp.GetRequiredService<InProcessRunDispatcher>());
 // The shared node runtime (also run standalone by `sqlflow worker`); hosted here as a background service that
-// idles on the in-process nudge.
+// idles on the in-process nudge. API-only replicas (Worker:Enabled=false) skip hosting it so the HTTP tier can
+// scale on request load behind an ingress while compute scales on queue depth as separate worker processes.
 builder.Services.AddSingleton<RunWorker>();
-builder.Services.AddHostedService<RunExecutionWorker>();
+if (options.Worker.Enabled)
+{
+    builder.Services.AddHostedService<RunExecutionWorker>();
+}
 
 // ---- Scheduler: scans the catalog for due cron/interval schedules and fires them by enqueuing onto the same
 // queue (one run path). Schedules come from git (YAML, synced) and the API (ad-hoc / pause-resume); firing
@@ -155,6 +160,32 @@ if (hasCors)
 var app = builder.Build();
 
 // ---- Pipeline ------------------------------------------------------------------------------------------------
+// Forwarded headers run FIRST: everything downstream (the rate limiter's per-IP partition, the login throttle,
+// diagnostics) must see the real client address, not the ingress's. Only the configured proxies are trusted, so
+// the header is never honored from an arbitrary client.
+if (options.Proxy.Enabled)
+{
+    var forwarded = new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+        ForwardLimit = options.Proxy.ForwardLimit,
+    };
+    forwarded.KnownNetworks.Clear();
+    forwarded.KnownProxies.Clear();
+    foreach (var cidr in options.Proxy.KnownNetworks)
+    {
+        var (prefix, length) = ProxyOptions.ParseNetwork(cidr);
+        forwarded.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(prefix, length));
+    }
+
+    foreach (var proxy in options.Proxy.KnownProxies)
+    {
+        forwarded.KnownProxies.Add(System.Net.IPAddress.Parse(proxy));
+    }
+
+    app.UseForwardedHeaders(forwarded);
+}
+
 app.UseExceptionHandler();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseResponseCompression();

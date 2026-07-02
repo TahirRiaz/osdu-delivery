@@ -52,11 +52,29 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
 
+  // The sidebar wears the brand navy (see branding.css chrome tokens); every piece inherits its light text so
+  // MUI's paper-oriented defaults never bleed through.
   const renderGroup = (title: string, items: NavItem[]) => (
     <List
       key={title}
       dense
-      subheader={<ListSubheader component="div" disableSticky>{title}</ListSubheader>}
+      subheader={(
+        <ListSubheader
+          component="div"
+          disableSticky
+          sx={{
+            bgcolor: "transparent",
+            color: "var(--sf-sidenav-muted)",
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            lineHeight: "32px",
+          }}
+        >
+          {title}
+        </ListSubheader>
+      )}
     >
       {items.map((item) => {
         const selected = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
@@ -69,9 +87,26 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
               onNavigate?.();
             }}
             data-testid={item.testId}
+            sx={{
+              mx: 1,
+              my: 0.25,
+              borderRadius: 1.5,
+              color: "var(--sf-sidenav-text)",
+              "&:hover": { bgcolor: "rgba(255, 255, 255, 0.06)" },
+              "&.Mui-selected": {
+                bgcolor: "var(--sf-sidenav-selected)",
+                boxShadow: "inset 3px 0 0 var(--sf-sidenav-accent)",
+                "&:hover": { bgcolor: "var(--sf-sidenav-selected)" },
+              },
+            }}
           >
-            <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
-            <ListItemText primary={item.label} />
+            <ListItemIcon sx={{ minWidth: 36, color: "inherit", opacity: selected ? 1 : 0.8 }}>
+              {item.icon}
+            </ListItemIcon>
+            <ListItemText
+              primary={item.label}
+              primaryTypographyProps={{ fontWeight: selected ? 600 : 500 }}
+            />
           </ListItemButton>
         );
       })}

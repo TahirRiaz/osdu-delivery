@@ -312,6 +312,71 @@ namespace SqlFlow.Catalog.Migrations
                     b.ToTable("Pipeline", "catalog");
                 });
 
+            modelBuilder.Entity("SqlFlow.Catalog.CatalogPipelineColumn", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ColumnName")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<bool>("Converted")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("DataType")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("ExcludeFromView")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Expression")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<bool>("IsVirtual")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("PipelineId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RepoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SourceColumn")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ColumnName");
+
+                    b.HasIndex("PipelineId");
+
+                    b.HasIndex("RepoId");
+
+                    b.HasIndex("PipelineId", "Kind", "Ordinal")
+                        .IsUnique();
+
+                    b.ToTable("PipelineColumn", "catalog");
+                });
+
             modelBuilder.Entity("SqlFlow.Catalog.CatalogRepo", b =>
                 {
                     b.Property<Guid>("Id")
@@ -430,6 +495,12 @@ namespace SqlFlow.Catalog.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("BackfillFrom")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("BackfillTo")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("ClaimedByNode")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
@@ -450,6 +521,10 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<string>("Error")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("FilePattern")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<string>("FlowKind")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -459,6 +534,9 @@ namespace SqlFlow.Catalog.Migrations
                         .IsRequired()
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
+
+                    b.Property<bool>("FullLoad")
+                        .HasColumnType("bit");
 
                     b.Property<string>("Host")
                         .HasMaxLength(256)

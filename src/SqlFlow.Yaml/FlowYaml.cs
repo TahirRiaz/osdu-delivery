@@ -6,6 +6,7 @@ namespace SqlFlow.Yaml;
 internal sealed class FlowYaml
 {
     public string? Name { get; set; }
+    public string? Batch { get; set; }
     public SourceYaml? Source { get; set; }
     public TargetYaml? Target { get; set; }
     public SchemaYaml? Schema { get; set; }
@@ -34,6 +35,19 @@ internal sealed class TransformYaml
     public double? Threshold { get; set; }
     public int? Sample { get; set; }
     public bool? PreserveLeadingZeros { get; set; }
+    public bool? GenerateView { get; set; }
+    public List<TransformColumnYaml>? Columns { get; set; }
+}
+
+internal sealed class TransformColumnYaml
+{
+    public string? Name { get; set; }
+    public string? Expr { get; set; }
+    public string? As { get; set; }
+    public string? Type { get; set; }
+    public int? Order { get; set; }
+    public bool? Virtual { get; set; }
+    public bool? ExcludeFromView { get; set; }
 }
 
 internal sealed class SourceYaml

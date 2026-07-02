@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Core;
@@ -121,7 +122,7 @@ public sealed class DocumentExecutor : IDocumentRunner
 
         return document switch
         {
-            FileFlowDocument doc => await ExecuteFileAsync(doc, flowFile, options.RunId, ct).ConfigureAwait(false),
+            FileFlowDocument doc => await ExecuteFileAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             IngestionFlowDocument doc => await ExecuteIngestionAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             ExportFlowDocument doc => await ExecuteExportAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             StoredProcedureFlowDocument doc => await ExecuteStoredProcedureAsync(doc, flowFile, options, ct).ConfigureAwait(false),
@@ -132,10 +133,11 @@ public sealed class DocumentExecutor : IDocumentRunner
         };
     }
 
-    private async Task<DocumentExecutionResult> ExecuteFileAsync(FileFlowDocument doc, string flowFile, Guid? assignedRunId, CancellationToken ct)
+    private async Task<DocumentExecutionResult> ExecuteFileAsync(FileFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         var runner = _provider.GetRequiredService<FlowRunner>();
-        var result = await runner.RunAsync(doc.Flow, assignedRunId, ct).ConfigureAwait(false);
+        var flow = ApplyFileRunParameters(doc.Flow, options.Parameters);
+        var result = await runner.RunAsync(flow, options.RunId, ct).ConfigureAwait(false);
         var trace = string.Join(Environment.NewLine + Environment.NewLine, result.DdlExecuted);
 
         var runDirectory = RunHistory.Write(flowFile, doc.Flow.Name, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
@@ -159,6 +161,66 @@ public sealed class DocumentExecutor : IDocumentRunner
         };
     }
 
+    /// <summary>A run-log notice for flow kinds that have no window/selection surface, so supplied parameters
+    /// are visibly acknowledged rather than silently dropped (the run detail's log answers "did my backfill
+    /// apply?" definitively).</summary>
+    private static void NoteInapplicableParameters(RunLogger runLogger, RunParameters parameters, string flowKind)
+    {
+        if (!parameters.IsDefault)
+        {
+            runLogger.Log(RunLogLevel.Info, "parameters",
+                $"run parameters '{parameters.Describe()}' do not apply to flowType '{flowKind}'; the flow runs as defined.");
+        }
+    }
+
+    /// <summary>
+    /// Applies the per-run substitution parameters to a file flow by rewriting the SAME knobs the definition
+    /// itself uses (the source options and the incremental spec), so the engine needs no second code path:
+    /// <list type="bullet">
+    /// <item>a backfill window becomes the init file-date window (<c>initFromFileDate</c>/<c>initToFileDate</c>),
+    /// the engine's native externally-bounded selection;</item>
+    /// <item><c>FilePattern</c> becomes <c>srcFile</c>, narrowing discovery to the requested glob;</item>
+    /// <item>full load, or an explicit window, suppresses the watermark probe (<c>Incremental.FullLoad</c>),
+    /// because an explicit bound must never be narrowed further by the target's state.</item>
+    /// </list>
+    /// A run with default parameters returns the flow unchanged.
+    /// </summary>
+    private static FlowDefinition ApplyFileRunParameters(FlowDefinition flow, RunParameters parameters)
+    {
+        if (parameters.IsDefault)
+        {
+            return flow;
+        }
+
+        var options = new Dictionary<string, string?>(flow.Source.Options, StringComparer.OrdinalIgnoreCase);
+        if (parameters.BackfillFrom is { } from)
+        {
+            options["initFromFileDate"] = from.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+
+        if (parameters.BackfillTo is { } to)
+        {
+            options["initToFileDate"] = to.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+
+        if (!string.IsNullOrWhiteSpace(parameters.FilePattern))
+        {
+            options["srcFile"] = parameters.FilePattern;
+        }
+
+        var incremental = flow.Incremental;
+        if (incremental is not null && (parameters.FullLoad || parameters.BackfillFrom is not null))
+        {
+            incremental = incremental with { FullLoad = true };
+        }
+
+        return flow with
+        {
+            Source = flow.Source with { Options = options },
+            Incremental = incremental,
+        };
+    }
+
     private async Task<DocumentExecutionResult> ExecuteIngestionAsync(IngestionFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         var runLogger = new RunLogger(options.LogLevel, options.Echo);
@@ -169,7 +231,10 @@ public sealed class DocumentExecutor : IDocumentRunner
             SqlFlowSourceProviders.CreateRegistry(),
             doc.Document.Invokes,
             InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals));
-        var result = await runner.RunAsync(doc.Document.Flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(
+            doc.Document.Flow,
+            new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, Parameters = options.Parameters },
+            ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias ?? doc.Document.Flow.Target.Table.Name;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
@@ -201,7 +266,27 @@ public sealed class DocumentExecutor : IDocumentRunner
             _provider.GetRequiredService<ISecretResolver>(),
             doc.Document.Invokes,
             InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals));
-        var result = await runner.RunAsync(doc.Document.Flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct).ConfigureAwait(false);
+
+        // Per-run substitution: a backfill window re-windows the export's chunk plan (its native FromDate/ToDate
+        // bounds) for THIS run only. FullLoad has no export meaning (the planner's window IS the selection), and
+        // a file pattern is a source concern, so both are surfaced as an explicit notice rather than ignored.
+        var exportFlow = doc.Document.Flow;
+        if (options.Parameters.BackfillFrom is { } exportFrom)
+        {
+            exportFlow = exportFlow with
+            {
+                FromDate = DateOnly.FromDateTime(exportFrom),
+                ToDate = options.Parameters.BackfillTo is { } exportTo ? DateOnly.FromDateTime(exportTo) : exportFlow.ToDate,
+            };
+            runLogger.Log(RunLogLevel.Info, "parameters", $"export window overridden by run parameters: {options.Parameters.Describe()}");
+        }
+        else if (!options.Parameters.IsDefault)
+        {
+            runLogger.Log(RunLogLevel.Info, "parameters",
+                $"run parameters '{options.Parameters.Describe()}' do not apply to an export flow (only a backfill window does); running as defined.");
+        }
+
+        var result = await runner.RunAsync(exportFlow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
@@ -228,6 +313,7 @@ public sealed class DocumentExecutor : IDocumentRunner
     private async Task<DocumentExecutionResult> ExecuteStoredProcedureAsync(StoredProcedureFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         var runLogger = new RunLogger(options.LogLevel, options.Echo);
+        NoteInapplicableParameters(runLogger, options.Parameters, "sp");
         var runner = WithoutDatabaseStoredProcedure.BuildRunner(
             doc.Document.Connections,
             _provider.GetRequiredService<ISecretResolver>(),
@@ -260,6 +346,7 @@ public sealed class DocumentExecutor : IDocumentRunner
     private async Task<DocumentExecutionResult> ExecuteHealthCheckAsync(HealthCheckFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         var runLogger = new RunLogger(options.LogLevel, options.Echo);
+        NoteInapplicableParameters(runLogger, options.Parameters, "hc");
         var anchor = Path.GetDirectoryName(Path.GetFullPath(flowFile)) ?? Directory.GetCurrentDirectory();
         var runner = WithoutDatabaseHealthCheck.BuildRunner(
             doc.Document.Connections, anchor, _provider.GetRequiredService<ISecretResolver>());
@@ -295,6 +382,7 @@ public sealed class DocumentExecutor : IDocumentRunner
     private async Task<DocumentExecutionResult> ExecuteInvokeAsync(InvokeFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         var runLogger = new RunLogger(options.LogLevel, options.Echo);
+        NoteInapplicableParameters(runLogger, options.Parameters, "inv");
         var runner = WithoutDatabaseInvoke.BuildRunner(
             AzureInvokeExecutors.Create(
                 new SqlFlow.Core.Connections.InMemoryServicePrincipalStore(doc.Document.ServicePrincipals),

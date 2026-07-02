@@ -50,14 +50,19 @@ export default function AppShell() {
   };
 
   const drawerContent = (
-    <Box sx={{ overflowY: "auto" }}>
-      <Toolbar>
-        <Typography variant="h6" sx={{ fontWeight: 700 }}>SQLFlow</Typography>
-      </Toolbar>
-      <Divider />
+    <Box sx={{ overflowY: "auto", height: "100%" }}>
+      <Toolbar /> {/* spacer under the fixed app bar, which carries the brand */}
       <SidebarNav onNavigate={isDesktop ? undefined : () => setMobileOpen(false)} />
     </Box>
   );
+
+  const drawerPaperSx = {
+    width: drawerWidth,
+    boxSizing: "border-box",
+    bgcolor: "var(--sf-sidenav-bg)",
+    color: "var(--sf-sidenav-text)",
+    borderRight: "none",
+  } as const;
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
@@ -68,9 +73,17 @@ export default function AppShell() {
               <MenuIcon />
             </IconButton>
           )}
-          <Typography variant="h6" noWrap sx={{ display: { xs: "none", sm: "block" } }}>
-            Control plane
-          </Typography>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, minWidth: { md: drawerWidth - 40 } }}>
+            <Box
+              component="img"
+              src="/brand/logo-white.png"
+              alt=""
+              sx={{ width: 28, height: 28, objectFit: "contain" }}
+            />
+            <Typography variant="h6" noWrap sx={{ fontWeight: 700, display: { xs: "none", sm: "block" } }}>
+              SQLFlow
+            </Typography>
+          </Box>
           <Box
             component="form"
             onSubmit={submitSearch}
@@ -128,7 +141,7 @@ export default function AppShell() {
       {isDesktop ? (
         <Drawer
           variant="permanent"
-          sx={{ width: drawerWidth, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: drawerWidth, boxSizing: "border-box" } }}
+          sx={{ width: drawerWidth, flexShrink: 0, [`& .MuiDrawer-paper`]: drawerPaperSx }}
         >
           {drawerContent}
         </Drawer>
@@ -137,7 +150,7 @@ export default function AppShell() {
           variant="temporary"
           open={mobileOpen}
           onClose={() => setMobileOpen(false)}
-          sx={{ [`& .MuiDrawer-paper`]: { width: drawerWidth } }}
+          sx={{ [`& .MuiDrawer-paper`]: drawerPaperSx }}
         >
           {drawerContent}
         </Drawer>

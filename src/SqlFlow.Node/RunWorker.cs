@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Execution;
 using SqlFlow.Orchestration;
@@ -222,7 +223,21 @@ public sealed partial class RunWorker
 
             // The claimed run id is the orchestrator-assigned id: the engine stamps it on the run and its artifact,
             // so the run records under exactly the id the trigger returned. Run-log echo stays null (server side).
-            var options = new DocumentExecutionOptions { RunId = runId, Echo = null };
+            // The run's substitution parameters (the built-in backfill) travel from the queue row into the engine
+            // here: the one handoff point, shared by every flow kind.
+            var parameters = new RunParameters
+            {
+                FullLoad = run.FullLoad,
+                BackfillFrom = run.BackfillFrom,
+                BackfillTo = run.BackfillTo,
+                FilePattern = run.FilePattern,
+            };
+            if (!parameters.IsDefault)
+            {
+                LogParameters(runId, parameters.Describe());
+            }
+
+            var options = new DocumentExecutionOptions { RunId = runId, Echo = null, Parameters = parameters };
             var exec = await _executor.ExecuteAsync(document, flowFile, options, ct).ConfigureAwait(false);
 
             var now = _clock.GetUtcNow().UtcDateTime;
@@ -281,6 +296,9 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: materialized repo '{Repo}' at commit {CommitSha}.")]
     private partial void LogMaterialized(Guid runId, string repo, string commitSha);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: substitution parameters applied: {Parameters}.")]
+    private partial void LogParameters(Guid runId, string parameters);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId} starting: flow '{FlowName}' in repo '{Repo}'.")]
     private partial void LogStarting(Guid runId, string flowName, string repo);

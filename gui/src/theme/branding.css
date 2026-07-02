@@ -1,20 +1,25 @@
 /*
   SQLFlow branding tokens: the single source of truth for the GUI's colors.
 
-  The palette carries over the color base of the previous SQLFlow GUI (Radzen Material 3 theme:
-  material3-base.css / material3-dark-base.css), so the product stays visually recognizable across
-  generations. The MUI theme is BUILT FROM these custom properties at runtime (see ThemeModeContext.tsx),
-  and non-MUI surfaces (React Flow nodes, scrollbars, Monaco chrome) reference them directly, so changing
-  a brand color here restyles the whole application.
+  The identity is anchored on the SQLFlow logo (public/brand/): deep navy #283E56 with a warm cream #FDF3E7
+  mark, carried over from the previous SQLFlow GUI together with its Radzen Material 3 accent and series
+  palette. The MUI theme is BUILT FROM these custom properties at runtime (see ThemeModeContext.tsx), and
+  non-MUI surfaces (React Flow nodes, scrollbars, the sidebar) reference them directly, so changing a brand
+  color here restyles the whole application.
 
   Dark mode is keyed on the data-sf-theme attribute the theme provider sets on <html>.
 */
 
 :root {
+  /* Identity (from the logo) */
+  --sf-brand-navy: #283e56;
+  --sf-brand-navy-deep: #1b2c40;
+  --sf-brand-cream: #fdf3e7;
+
   /* Brand */
-  --sf-primary: #3481e5;
+  --sf-primary: #2f6fce;
   --sf-primary-light: #bcd8ff;
-  --sf-primary-dark: #375a8b;
+  --sf-primary-dark: #234f92;
   --sf-primary-contrast: #ffffff;
   --sf-secondary: #5b6371;
   --sf-secondary-light: #c2ccdc;
@@ -22,28 +27,37 @@
   --sf-secondary-contrast: #ffffff;
 
   /* Semantic */
-  --sf-info: #085786;
+  --sf-info: #0a6aa3;
   --sf-info-light: #aadaff;
   --sf-info-dark: #086791;
-  --sf-success: #3e9108;
+  --sf-success: #2e7d32;
   --sf-success-light: #c6ffaa;
   --sf-success-dark: #1e4100;
-  --sf-warning: #918908;
+  --sf-warning: #9a7d0a;
   --sf-warning-light: #f9ffaa;
   --sf-warning-dark: #413d00;
-  --sf-danger: #d35153;
+  --sf-danger: #c62f32;
   --sf-danger-light: #ffaeaa;
   --sf-danger-dark: #910813;
 
   /* Surfaces and text */
-  --sf-background: #f3f6f9;
+  --sf-background: #f4f6f9;
   --sf-paper: #ffffff;
   --sf-surface-muted: #dfe5ec;
-  --sf-text-primary: #1b1d20;
-  --sf-text-secondary: #45494f;
-  --sf-divider: #dfe5ec;
+  --sf-text-primary: #1d2733;
+  --sf-text-secondary: #4d5a6a;
+  --sf-divider: #e2e8f0;
 
-  /* Chart series (the old GUI's Radzen series palette) */
+  /* Chrome: the top bar and the sidebar wear the brand navy in both modes */
+  --sf-appbar: var(--sf-brand-navy);
+  --sf-appbar-text: #ffffff;
+  --sf-sidenav-bg: var(--sf-brand-navy);
+  --sf-sidenav-text: #e8edf4;
+  --sf-sidenav-muted: #9fb0c4;
+  --sf-sidenav-selected: rgba(253, 243, 231, 0.1);
+  --sf-sidenav-accent: #7db2f5;
+
+  /* Chart series (the previous GUI's Radzen series palette) */
   --sf-series-1: #75abf0;
   --sf-series-2: #9c75f0;
   --sf-series-3: #f075e8;
@@ -59,7 +73,7 @@
   --sf-primary: #94c1ff;
   --sf-primary-light: #bcd7ff;
   --sf-primary-dark: #37598b;
-  --sf-primary-contrast: #001f5d;
+  --sf-primary-contrast: #0f2440;
   --sf-secondary: #c2ccdc;
   --sf-secondary-light: #dfe5ec;
   --sf-secondary-dark: #5b6371;
@@ -79,13 +93,22 @@
   --sf-danger-light: #ffc4c1;
   --sf-danger-dark: #d35153;
 
-  /* Surfaces and text */
-  --sf-background: #121518;
-  --sf-paper: #1b1d20;
-  --sf-surface-muted: #45494f;
-  --sf-text-primary: #f3f6f9;
-  --sf-text-secondary: #c2ccdc;
-  --sf-divider: #45494f;
+  /* Surfaces and text: navy-family darks, not neutral gray */
+  --sf-background: #101823;
+  --sf-paper: #182434;
+  --sf-surface-muted: #33465e;
+  --sf-text-primary: #eef3f9;
+  --sf-text-secondary: #b7c4d4;
+  --sf-divider: #2c3d52;
+
+  /* Chrome stays the brand navy, one shade deeper than the paper */
+  --sf-appbar: var(--sf-brand-navy-deep);
+  --sf-appbar-text: #ffffff;
+  --sf-sidenav-bg: var(--sf-brand-navy-deep);
+  --sf-sidenav-text: #e8edf4;
+  --sf-sidenav-muted: #8fa2b8;
+  --sf-sidenav-selected: rgba(253, 243, 231, 0.08);
+  --sf-sidenav-accent: #94c1ff;
 }
 
 /* Branded scrollbars on the app's own chrome (WebKit + Firefox). */
@@ -110,7 +133,7 @@
 
 ::selection {
   background: var(--sf-primary-light);
-  color: var(--sf-text-primary);
+  color: var(--sf-brand-navy-deep);
 }
 
 /* React Flow (lineage graph) nodes pick up the brand instead of the library defaults. */

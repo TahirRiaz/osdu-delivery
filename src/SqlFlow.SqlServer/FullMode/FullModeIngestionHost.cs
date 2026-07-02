@@ -139,10 +139,21 @@ public sealed class FullModeIngestionHost
             ? new DefaultInvokeRunner(invokeFlows, dispatcher)
             : NullInvokeRunner.Instance;
 
+        // The pre-ingestion transform's type inference profiles the (SQL Server) target the runner just loaded;
+        // the runner hands it an already-resolved connection string, so the env-backed resolver is a pass-through.
+        var inference = new Core.Engine.InferenceService(
+            new SqlServerSchemaProvider(),
+            new SqlServerColumnProfiler(),
+            new Core.Engine.TypeInferencer(),
+            new SqlServerInferenceValidator(),
+            new SqlServerLocaleProvider(),
+            new SecretResolver([new EnvSecretProvider()]));
+
         var runner = new IngestionFlowRunner(
             resolver, factory, catalogs, desiredIndexes: null, runLog: runLog, assertions: assertions,
             surrogateKeys: surrogateKeys, invoke: hookRunner,
-            sourceDialects: registry.Dialects, sourceTypeMappers: registry.TypeMappers);
+            sourceDialects: registry.Dialects, sourceTypeMappers: registry.TypeMappers,
+            inference: inference);
         var flows = new SqlIngestionFlowLoader(control);
         var storedProcedureRunner = new StoredProcedureFlowRunner(resolver, runLog, hookRunner);
         var storedProcedureFlows = new SqlStoredProcedureFlowLoader(control);

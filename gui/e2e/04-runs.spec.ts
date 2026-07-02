@@ -56,6 +56,49 @@ test.describe.serial("runs", () => {
     await adminPage.getByTestId("filter-status-failed").click(); // back to all
   });
 
+  test("runs group under their batch with step sub-headers, and the flat view shows batch columns", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-runs").click();
+    await expect(adminPage.getByTestId("page-runs")).toBeVisible();
+
+    // Csv_Basic declares no batch in its YAML, so its runs report under the fallback batch group, with the
+    // lineage step as the nested level (the classic ReportBatchStartEnd layout).
+    const groupHeader = adminPage.getByTestId("batch-group-header").filter({ hasText: "Batch: default" });
+    await expect(groupHeader.first()).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("step-group-header").first()).toBeVisible();
+
+    // Collapsing the batch node hides its whole subtree (step nodes and leaf rows); expanding brings it back.
+    const rowCount = await adminPage.getByTestId("table-row").count();
+    expect(rowCount).toBeGreaterThan(0);
+    await adminPage.getByTestId("group-header-row").first().click();
+    await expect(adminPage.getByTestId("table-row")).toHaveCount(0);
+    await expect(adminPage.getByTestId("subgroup-header-row")).toHaveCount(0);
+    await adminPage.getByTestId("group-header-row").first().click();
+    await expect(adminPage.getByTestId("table-row").first()).toBeVisible();
+
+    // A step node collapses independently of its batch: its leaf rows hide while the batch node stays open.
+    await adminPage.getByTestId("subgroup-header-row").first().click();
+    await expect(adminPage.getByTestId("table-row")).toHaveCount(0);
+    await expect(adminPage.getByTestId("group-header-row").first()).toBeVisible();
+    await adminPage.getByTestId("subgroup-header-row").first().click();
+    await expect(adminPage.getByTestId("table-row").first()).toBeVisible();
+
+    // The batch filter narrows by label: the fallback label matches, gibberish empties the list.
+    await adminPage.getByTestId("filter-batch").fill("default");
+    await expect(adminPage.getByTestId("table-row").first()).toBeVisible({ timeout: 15_000 });
+    await adminPage.getByTestId("filter-batch").fill("no-such-batch-xyz");
+    await expect(adminPage.getByTestId("empty-message")).toBeVisible({ timeout: 15_000 });
+    await adminPage.getByTestId("filter-batch").fill("");
+    await expect(adminPage.getByTestId("table-row").first()).toBeVisible({ timeout: 15_000 });
+
+    // Ungrouped, batch and step become ordinary columns and the header rows disappear.
+    await adminPage.getByTestId("group-by-batch").click();
+    await expect(adminPage.getByTestId("group-header-row")).toHaveCount(0);
+    await expect(adminPage.getByRole("columnheader", { name: "Batch" })).toBeVisible();
+    await expect(adminPage.getByRole("columnheader", { name: "Step" })).toBeVisible();
+    await adminPage.getByTestId("group-by-batch").click(); // back to the grouped default
+    await expect(adminPage.getByTestId("group-header-row").first()).toBeVisible();
+  });
+
   test("a queued run (pooled to no node) can be cancelled from its detail page", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-runs").click();
     await adminPage.getByTestId("open-trigger-run").click();

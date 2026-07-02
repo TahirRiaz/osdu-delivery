@@ -11,3 +11,10 @@ TestResults/
 **/.sqlflow/
 docs/
 *.md
+# The GUI builds in its own image (gui/Dockerfile with the gui/ context); keep its trees out of the .NET context.
+gui/node_modules/
+gui/dist/
+gui/e2e/
+gui/playwright-report/
+gui/test-results/
+gui/.tsbuild/

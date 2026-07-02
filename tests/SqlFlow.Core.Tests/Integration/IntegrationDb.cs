@@ -87,6 +87,7 @@ internal static class IntegrationDb
             new NullStateStore(),
             NullFlowEventSink.Instance,
             new SecretResolver([new EnvSecretProvider()]),
+            RealInferenceService(),
             NullLogger<FlowRunner>.Instance);
     }
 

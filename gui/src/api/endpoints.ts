@@ -5,7 +5,7 @@ import { del, get, getAnonymous, post, postAnonymous, type QueryParams } from ".
 import type {
   AuthProviders, ColumnHit, CreateScheduleRequest, CreateUserRequest, Dashboard, DefinitionHit, FlowDependency,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, ObjectHit, PagedResult,
-  PipelineDetail, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, Role,
+  PipelineColumn, PipelineDetail, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, Role,
   RunAssertion, RunDetail, RunFile, RunHealthCheckMetric, RunStatement, RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse, User, Wave,
 } from "./types";
@@ -49,6 +49,7 @@ export interface PipelineListQuery extends PageQuery {
 export const pipelineApi = {
   list: (query: PipelineListQuery = {}) => get<PagedResult<PipelineSummary>>("/api/v1/pipelines", query as QueryParams),
   getById: (id: string) => get<PipelineDetail>(`/api/v1/pipelines/${id}`),
+  columns: (id: string) => get<PipelineColumn[]>(`/api/v1/pipelines/${id}/columns`),
 };
 
 // ---- Runs ----------------------------------------------------------------------------------------------------------------
@@ -60,6 +61,9 @@ export interface RunListQuery extends PageQuery {
   status?: string;
   success?: boolean;
   flowName?: string;
+  batch?: string;
+  /** Keep only each pipeline's newest run (the batch status board); status filters apply to that latest run. */
+  latest?: boolean;
 }
 
 export const runApi = {

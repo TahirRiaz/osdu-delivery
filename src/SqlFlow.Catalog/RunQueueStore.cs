@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.Catalog;
@@ -10,10 +11,13 @@ namespace SqlFlow.Catalog;
 /// pool routes it to eligible nodes, and an optional commit SHA pins it to an exact git version the node
 /// materializes. A null <see cref="CommitSha"/> is not "unpinned" but "default": enqueueing pins the run to the
 /// repo's last synced commit when one is known (see <see cref="RunQueueStore.EnqueueAsync"/>), so any node in the
-/// fleet can execute it. Bundled into one request so the two optional references can never be passed in the wrong
-/// order.</summary>
+/// fleet can execute it. <see cref="Parameters"/> carries the per-run substitution parameters (the built-in
+/// backfill: full load, window, file pattern), validated at the trust boundary and recorded on the run row so
+/// every backfill is auditable. Bundled into one request so the optional references can never be passed in the
+/// wrong order.</summary>
 public sealed record RunEnqueueRequest(
-    Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null);
+    Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
+    RunParameters? Parameters = null);
 
 /// <summary>The result of a cancel request, so the API can answer 200 / 404 / 409 precisely.</summary>
 public enum CancelOutcome
@@ -82,6 +86,9 @@ public static class RunQueueStore
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.FlowName);
 
+        var parameters = request.Parameters ?? RunParameters.None;
+        parameters.Validate();
+
         var runId = Guid.CreateVersion7();
         return CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
@@ -98,6 +105,10 @@ public static class RunQueueStore
                 FlowKind = string.IsNullOrWhiteSpace(request.FlowKind) ? "unknown" : request.FlowKind,
                 TargetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim(),
                 CommitSha = commitSha,
+                FullLoad = parameters.FullLoad,
+                BackfillFrom = parameters.BackfillFrom,
+                BackfillTo = parameters.BackfillTo,
+                FilePattern = string.IsNullOrWhiteSpace(parameters.FilePattern) ? null : parameters.FilePattern.Trim(),
                 Status = RunStatuses.Queued,
                 EnqueuedUtc = nowUtc,
                 // Until the run finishes there is no artifact; seed WrittenUtc with the enqueue time so the run
@@ -316,7 +327,8 @@ public static class RunQueueStore
     {
         // Identity fields are the same whether the row was enqueued or is being inserted fresh (RunFromJson derives
         // PipelineId from repo + flow name, exactly as enqueue did); the queue-only fields (EnqueuedUtc,
-        // ClaimedByNode) and the claim's StartUtc are preserved.
+        // ClaimedByNode, the run parameters FullLoad/BackfillFrom/BackfillTo/FilePattern) and the claim's
+        // StartUtc are preserved by simply not assigning them here.
         target.PipelineId = projected.PipelineId;
         target.RepoId = projected.RepoId;
         target.FlowName = projected.FlowName;

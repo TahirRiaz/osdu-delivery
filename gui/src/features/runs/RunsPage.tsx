@@ -3,17 +3,19 @@ import { useNavigate } from "react-router-dom";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import FormControl from "@mui/material/FormControl";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
+import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import type { RunStatus, RunSummary } from "../../api/types";
 import { runApi } from "../../api/endpoints";
-import { PagedTable, type Column } from "../../components/PagedTable";
+import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { formatDurationSeconds } from "../../lib/time";
@@ -22,7 +24,7 @@ import { TriggerRunDialog } from "./TriggerRunDialog";
 const statuses: RunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled"];
 const kinds = ["all", "file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
-const columns: Column<RunSummary>[] = [
+const baseColumns: Column<RunSummary>[] = [
   { id: "status", header: "Status", render: (row) => <RunStatusBadge status={row.status} /> },
   {
     id: "flow",
@@ -49,7 +51,86 @@ const columns: Column<RunSummary>[] = [
   },
 ];
 
-/** The run inbox: live-polled list with status/flow/kind filters and the entry point for triggering runs. */
+// In the flat (ungrouped) view batch and step become ordinary columns; grouped, they live in the header rows.
+const flatColumns: Column<RunSummary>[] = [
+  baseColumns[0],
+  baseColumns[1],
+  baseColumns[2],
+  { id: "batch", header: "Batch", render: (row) => row.batch },
+  { id: "step", header: "Step", align: "right", render: (row) => (row.wave >= 0 ? row.wave : "-") },
+  ...baseColumns.slice(3),
+];
+
+/** Aggregates one group's rows for its header line: when it started, total duration, and how many failed. */
+function groupStats(rows: RunSummary[]) {
+  let durationTotal = 0;
+  let hasDuration = false;
+  let earliest: string | null = null;
+  let failed = 0;
+  for (const row of rows) {
+    if (row.durationSeconds != null) {
+      durationTotal += row.durationSeconds;
+      hasDuration = true;
+    }
+
+    const at = row.enqueuedUtc ?? row.writtenUtc;
+    if (earliest === null || new Date(at).getTime() < new Date(earliest).getTime()) {
+      earliest = at;
+    }
+
+    if (row.status === "failed") {
+      failed += 1;
+    }
+  }
+
+  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed };
+}
+
+function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
+  const stats = groupStats(rows);
+  return (
+    <>
+      <Typography variant="body2" color="text.secondary" component="span">
+        started <RelativeTime value={stats.earliest} />
+      </Typography>
+      {stats.durationTotal != null && (
+        <Typography variant="body2" color="text.secondary" component="span">
+          duration {formatDurationSeconds(stats.durationTotal)}
+        </Typography>
+      )}
+      <Typography variant="body2" color="text.secondary" component="span">({rows.length})</Typography>
+      {stats.failed > 0 && (
+        <Typography variant="body2" color="error.main" component="span">{stats.failed} failed</Typography>
+      )}
+    </>
+  );
+}
+
+// The batch-report layout carried over from classic SQLFlow: each pipeline's LAST run clusters under its batch,
+// then under the lineage step, so the grouped view answers "what failed, what needs fixing" at a glance. Full
+// run history lives in the flat view and on the pipeline detail page.
+const batchGrouping: TableGrouping<RunSummary> = {
+  groupKey: (row) => row.batch,
+  renderGroupHeader: (rows) => (
+    <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="batch-group-header">
+      <Typography variant="body2" sx={{ fontWeight: 700 }}>Batch: {rows[0].batch}</Typography>
+      <GroupStatsInline rows={rows} />
+    </Stack>
+  ),
+  subKey: (row) => row.wave,
+  renderSubHeader: (rows) => (
+    <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="step-group-header">
+      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}
+      </Typography>
+      <GroupStatsInline rows={rows} />
+    </Stack>
+  ),
+};
+
+/** The run inbox: live-polled list with status/flow/kind/batch filters and the entry point for triggering runs.
+ * Grouped by batch (the default) it is a status board: each pipeline's latest run under its batch and lineage
+ * step, like the classic batch report. Toggled flat it is the full run history. */
 export default function RunsPage() {
   const navigate = useNavigate();
   const [triggerOpen, setTriggerOpen] = useState(false);
@@ -57,11 +138,19 @@ export default function RunsPage() {
   const [kind, setKind] = useState("all");
   const [flowNameInput, setFlowNameInput] = useState("");
   const [flowName, setFlowName] = useState("");
+  const [batchInput, setBatchInput] = useState("");
+  const [batch, setBatch] = useState("");
+  const [groupByBatch, setGroupByBatch] = useState(true);
 
   useEffect(() => {
     const handle = window.setTimeout(() => setFlowName(flowNameInput.trim()), 400);
     return () => window.clearTimeout(handle);
   }, [flowNameInput]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => setBatch(batchInput.trim()), 400);
+    return () => window.clearTimeout(handle);
+  }, [batchInput]);
 
   return (
     <Box data-testid="page-runs">
@@ -91,6 +180,13 @@ export default function RunsPage() {
           onChange={(e) => setFlowNameInput(e.target.value)}
           inputProps={{ "data-testid": "filter-flow-name" }}
         />
+        <TextField
+          size="small"
+          label="Batch"
+          value={batchInput}
+          onChange={(e) => setBatchInput(e.target.value)}
+          inputProps={{ "data-testid": "filter-batch" }}
+        />
         <FormControl size="small" sx={{ minWidth: 120 }}>
           <InputLabel id="filter-kind-label">Kind</InputLabel>
           <Select
@@ -105,23 +201,37 @@ export default function RunsPage() {
             ))}
           </Select>
         </FormControl>
+        <FormControlLabel
+          control={(
+            <Switch
+              size="small"
+              checked={groupByBatch}
+              onChange={(e) => setGroupByBatch(e.target.checked)}
+              data-testid="group-by-batch"
+            />
+          )}
+          label="Group by batch"
+        />
       </Stack>
 
       <PagedTable
-        queryKey={["runs", "list", status, flowName, kind]}
+        queryKey={["runs", "list", status, flowName, kind, batch, groupByBatch]}
         fetchPage={(page, pageSize) =>
           runApi.list({
             status: status ?? undefined,
             flowName: flowName === "" ? undefined : flowName,
             flowKind: kind === "all" ? undefined : kind,
+            batch: batch === "" ? undefined : batch,
+            latest: groupByBatch || undefined,
             page,
             pageSize,
           })}
-        columns={columns}
+        columns={groupByBatch ? baseColumns : flatColumns}
         rowKey={(row) => row.runId}
         onRowClick={(row) => navigate(`/runs/${row.runId}`)}
         pollMs={5000}
         emptyMessage="No runs match the current filters."
+        grouping={groupByBatch ? batchGrouping : undefined}
         data-testid="runs-table"
       />
 

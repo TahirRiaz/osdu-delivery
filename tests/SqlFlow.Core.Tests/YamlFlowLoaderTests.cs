@@ -51,6 +51,46 @@ public sealed class YamlFlowLoaderTests
     }
 
     [Fact]
+    public void Parse_NoBatch_LeavesBatchNull()
+    {
+        var flow = _loader.Parse(ValidYaml);
+
+        Assert.Null(flow.Batch);
+    }
+
+    [Fact]
+    public void Parse_Batch_Mapped()
+    {
+        const string yaml =
+            """
+            name: x
+            batch: apc-dalane
+            source: { type: csv, location: ./x.csv }
+            target: { connection: c, schema: dbo, table: T }
+            """;
+
+        var flow = _loader.Parse(yaml);
+
+        Assert.Equal("apc-dalane", flow.Batch);
+    }
+
+    [Fact]
+    public void Parse_BlankBatch_NormalizedToNull()
+    {
+        const string yaml =
+            """
+            name: x
+            batch: "   "
+            source: { type: csv, location: ./x.csv }
+            target: { connection: c, schema: dbo, table: T }
+            """;
+
+        var flow = _loader.Parse(yaml);
+
+        Assert.Null(flow.Batch);
+    }
+
+    [Fact]
     public void Parse_PreAndPostProcess_Mapped()
     {
         const string yaml =

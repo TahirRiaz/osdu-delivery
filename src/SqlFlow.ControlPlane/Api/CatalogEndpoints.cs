@@ -25,6 +25,7 @@ public static class CatalogEndpoints
         pipelines.MapGet("/", ListPipelinesAsync).WithName("ListPipelines");
         pipelines.MapGet("/{id:guid}", GetPipelineAsync).WithName("GetPipeline");
         pipelines.MapGet("/{id:guid}/definition", GetPipelineDefinitionAsync).WithName("GetPipelineDefinition");
+        pipelines.MapGet("/{id:guid}/columns", GetPipelineColumnsAsync).WithName("GetPipelineColumns");
 
         return group;
     }
@@ -109,6 +110,30 @@ public static class CatalogEndpoints
         return json is null
             ? NotFound("pipeline", id)
             : TypedResults.Text(json, "application/json");
+    }
+
+    /// <summary>
+    /// The pipeline's pre-ingestion transform columns: <c>declared</c> rows projected from the flow YAML on sync
+    /// (the source of truth) and <c>detected</c> rows from the latest run's generated transformation view. An
+    /// optional <c>kind</c> filters to one provenance. Ordered declared-first, then by view position. Returned
+    /// whole (not paged): a view's column count is bounded by the table it projects.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<PipelineColumnDto>>> GetPipelineColumnsAsync(
+        Guid id, CatalogDbContext db, string? kind, CancellationToken ct)
+    {
+        var query = db.PipelineColumns.AsNoTracking().Where(c => c.PipelineId == id);
+        if (!string.IsNullOrWhiteSpace(kind))
+        {
+            query = query.Where(c => c.Kind == kind);
+        }
+
+        IReadOnlyList<PipelineColumnDto> items = await query
+            .OrderBy(c => c.Kind == PipelineColumnKinds.Declared ? 0 : 1).ThenBy(c => c.Ordinal)
+            .Select(c => new PipelineColumnDto(
+                c.Kind, c.Ordinal, c.ColumnName, c.SourceColumn, c.Expression, c.DataType,
+                c.SortOrder, c.IsVirtual, c.ExcludeFromView, c.Converted))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(items);
     }
 
     private static ProblemHttpResult NotFound(string resource, Guid id)

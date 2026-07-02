@@ -14,6 +14,11 @@ import Tabs from "@mui/material/Tabs";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableHead from "@mui/material/TableHead";
+import TableRow from "@mui/material/TableRow";
 import { isApiError } from "../../api/client";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
 import type { RunSummary, Schedule } from "../../api/types";
@@ -66,6 +71,104 @@ const runColumns = (): Column<RunSummary>[] => [
     ),
   },
 ];
+
+/** The pre-ingestion transform columns of a pipeline: the declared (YAML) and detected (latest run) view
+ * projection, fetched whole (a view's column count is bounded by the table it projects). */
+function TransformsTab({ pipelineId }: { pipelineId: string }) {
+  const columnsQuery = useQuery({
+    queryKey: ["pipelines", "columns", pipelineId],
+    queryFn: () => pipelineApi.columns(pipelineId),
+  });
+
+  if (columnsQuery.isError) {
+    return isApiError(columnsQuery.error)
+      ? <CorrelationError error={columnsQuery.error} />
+      : <Typography color="error">{String(columnsQuery.error)}</Typography>;
+  }
+
+  const rows = columnsQuery.data;
+  if (rows === undefined) {
+    return <Skeleton variant="rounded" height={240} data-testid="pipeline-transforms-loading" />;
+  }
+
+  if (rows.length === 0) {
+    return (
+      <Card variant="outlined">
+        <CardContent>
+          <Typography color="text.secondary" data-testid="pipeline-transforms-empty">
+            No transformations are declared in this pipeline's YAML, and no run has detected any yet.
+          </Typography>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card variant="outlined">
+      <Table size="small" data-testid="pipeline-transforms">
+        <TableHead>
+          <TableRow>
+            <TableCell>Kind</TableCell>
+            <TableCell align="right">#</TableCell>
+            <TableCell>Column</TableCell>
+            <TableCell>Source column</TableCell>
+            <TableCell>Data type</TableCell>
+            <TableCell>Expression</TableCell>
+            <TableCell>Flags</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={`${row.kind}-${row.ordinal}`} hover>
+              <TableCell>
+                <Chip
+                  size="small"
+                  label={row.kind}
+                  color={row.kind === "declared" ? "primary" : "default"}
+                  variant="outlined"
+                />
+              </TableCell>
+              <TableCell align="right">{row.ordinal}</TableCell>
+              <TableCell>
+                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
+                  {row.columnName}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
+                  {row.sourceColumn ?? "-"}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
+                  {row.dataType ?? "-"}
+                </Typography>
+              </TableCell>
+              <TableCell sx={{ maxWidth: 420 }}>
+                {row.expression === null ? (
+                  "-"
+                ) : (
+                  <Tooltip title={row.expression}>
+                    <Typography variant="body2" component="span" noWrap sx={{ fontFamily: "monospace", display: "block" }}>
+                      {row.expression}
+                    </Typography>
+                  </Tooltip>
+                )}
+              </TableCell>
+              <TableCell>
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                  {row.converted && <Chip size="small" label="typed" variant="outlined" color="success" />}
+                  {row.isVirtual && <Chip size="small" label="virtual" variant="outlined" />}
+                  {row.excludeFromView && <Chip size="small" label="excluded" variant="outlined" color="warning" />}
+                </Stack>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Card>
+  );
+}
 
 const scheduleColumns: Column<Schedule>[] = [
   { id: "trigger", header: "Trigger", render: (row) => scheduleTrigger(row) },
@@ -164,6 +267,7 @@ export default function PipelineDetailPage() {
       <Tabs value={tab} onChange={(_, next) => setTab(next as number)} data-testid="pipeline-tabs">
         <Tab label="YAML" data-testid="pipeline-tab-yaml" />
         <Tab label="Definition" data-testid="pipeline-tab-definition" />
+        <Tab label="Transforms" data-testid="pipeline-tab-transforms" />
         <Tab label="Runs" data-testid="pipeline-tab-runs" />
         <Tab label="Schedules" data-testid="pipeline-tab-schedules" />
       </Tabs>
@@ -172,7 +276,8 @@ export default function PipelineDetailPage() {
       {tab === 1 && (
         <CodeView value={prettyJson(detail.definitionJson)} language="json" height={560} data-testid="pipeline-definition" />
       )}
-      {tab === 2 && (
+      {tab === 2 && <TransformsTab pipelineId={pipelineId} />}
+      {tab === 3 && (
         <PagedTable
           queryKey={["runs", "by-pipeline", pipelineId]}
           fetchPage={(page, pageSize) => runApi.list({ pipelineId, page, pageSize })}
@@ -183,7 +288,7 @@ export default function PipelineDetailPage() {
           emptyMessage="This pipeline has not run yet."
         />
       )}
-      {tab === 3 && (
+      {tab === 4 && (
         <PagedTable
           queryKey={["schedules", "by-pipeline", pipelineId]}
           fetchPage={(page, pageSize) => scheduleApi.list({ pipelineId, page, pageSize })}

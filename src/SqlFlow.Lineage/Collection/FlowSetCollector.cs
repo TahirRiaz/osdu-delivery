@@ -97,6 +97,16 @@ public sealed class FlowSetCollector
                 result.Facts.Add(ObjectFact(name, LineageRelation.Reads, source, flow.Source.Table, LineageNodeKind.Unknown));
                 result.Facts.Add(ObjectFact(name, LineageRelation.Writes, target, flow.Target.Table, LineageNodeKind.Table));
 
+                // The transformation view is a run output too (external-DB landings): the flow refreshes
+                // [schema].[v<Table>] over its target, and the downstream chained flow reads THE VIEW. Declaring
+                // it written here connects "landing flow -> view -> downstream flow" so waves order the chain.
+                if (flow.Transform.GeneratesView)
+                {
+                    result.Facts.Add(ObjectFact(
+                        name, LineageRelation.Writes, target,
+                        flow.Target.Table with { Name = $"v{flow.Target.Table.Name}" }, LineageNodeKind.View));
+                }
+
                 ExtractHook(result, name, target, flow.Process.PreProcessOnTarget, $"{file}: preProcess", flow.Target.Table.Database);
                 ExtractHook(result, name, target, flow.Process.PostProcessOnTarget, $"{file}: postProcess", flow.Target.Table.Database);
                 break;
@@ -173,7 +183,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = flow.Name, Kind = "file", File = file, Batch = null },
+                    Node = new LineageFlowNode { Name = flow.Name, Kind = "file", File = file, Batch = flow.Batch },
                     TargetServerRef = target,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,
@@ -193,6 +203,25 @@ public sealed class FlowSetCollector
                     Tier = LineageTier.Declared,
                     KindHint = LineageNodeKind.Table,
                 });
+
+                // The pre-ingestion transform view is a run output too: the flow refreshes [schema].[v<Table>]
+                // over its loaded table, and downstream chained flows read THE VIEW, not the table. Declaring the
+                // view as written here is what connects "landing flow -> view -> downstream ingestion flow" in
+                // the graph, so flow dependencies and execution waves order the chain correctly.
+                if (flow.Inference.GeneratesView)
+                {
+                    result.Facts.Add(new LineageFact
+                    {
+                        Flow = flow.Name,
+                        Relation = LineageRelation.Writes,
+                        ServerRef = target,
+                        Schema = flow.Target.Schema,
+                        Name = $"v{flow.Target.Table}",
+                        Tier = LineageTier.Declared,
+                        KindHint = LineageNodeKind.View,
+                    });
+                }
+
                 break;
             }
 
@@ -200,7 +229,7 @@ public sealed class FlowSetCollector
                 // An invoke triggers external compute; it moves no catalog data itself.
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = doc.Document.Definition.InvokeAlias, Kind = "inv", File = file, Batch = null },
+                    Node = new LineageFlowNode { Name = doc.Document.Definition.InvokeAlias, Kind = "inv", File = file, Batch = doc.Document.Definition.Batch },
                     TargetServerRef = ServerIdentity.FileSystem,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,

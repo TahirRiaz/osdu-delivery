@@ -164,14 +164,33 @@
     },
     "transform": {
       "type": "object",
-      "description": "Optional type inference over the loaded raw data.",
+      "description": "Pre-ingestion transform: type inference and authored per-column transforms over the raw landing table, projected into a typed view the target is loaded through.",
       "additionalProperties": false,
       "properties": {
         "inferTypes": { "type": "boolean", "description": "Infer optimal SQL types for the raw string columns." },
         "onConvertError": { "enum": ["silent-null", "fail"], "description": "When a value cannot convert: produce NULL, or fail loudly." },
         "threshold": { "type": "number", "description": "Fraction of values that must convert for a type to be chosen (0..1)." },
         "sample": { "type": "integer", "description": "Rows to sample for inference; 0 = all." },
-        "preserveLeadingZeros": { "type": "boolean", "description": "Keep values with leading zeros as strings rather than numbers." }
+        "preserveLeadingZeros": { "type": "boolean", "description": "Keep values with leading zeros as strings rather than numbers." },
+        "generateView": { "type": "boolean", "description": "Generate the typed transformation view [schema].[v<Table>] over the flow's loaded table as a post-process (default true); downstream flows read the view for correct types. Set false to skip it." },
+        "columns": {
+          "type": "array",
+          "description": "Authored per-column transforms (the source of truth), one entry per column that is cast, renamed, computed, or dropped. An authored transform overrides inference for that column; inference fills the rest.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "description": "The raw source column the transform applies to (for a virtual column, the name of the computed column)." },
+              "expr": { "type": "string", "description": "SQL expression producing the value; @ColName is substituted with the quoted source column. Required for a virtual column." },
+              "as": { "type": "string", "description": "Output column name (alias) in the view. Default: name." },
+              "type": { "type": "string", "description": "Declared target SQL type, e.g. varchar(50). With no expr, the transform is CAST(@ColName AS type)." },
+              "order": { "type": "integer", "description": "Column position in the view. Lower first; unset columns keep natural order." },
+              "virtual": { "type": "boolean", "description": "A computed column with no raw source counterpart. Requires expr; @ColName is not valid here." },
+              "excludeFromView": { "type": "boolean", "description": "Compute nothing into the view's final projection; drop this column from the view output." }
+            }
+          }
+        }
       }
     },
     "desiredIndexes": {

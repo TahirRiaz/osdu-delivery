@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 
 namespace SqlFlow.ControlPlane.Configuration;
@@ -22,6 +23,8 @@ public sealed class ControlPlaneOptions
     public BootstrapOptions Bootstrap { get; set; } = new();
 
     public RateLimitOptions RateLimit { get; set; } = new();
+
+    public ProxyOptions Proxy { get; set; } = new();
 
     public SchedulerOptions Scheduler { get; set; } = new();
 
@@ -75,6 +78,7 @@ public sealed class ControlPlaneOptions
 
         AzureAd.Validate();
         Bootstrap.Validate();
+        Proxy.Validate();
     }
 }
 
@@ -240,10 +244,87 @@ public sealed class SchedulerOptions
 
 /// <summary>The control plane's in-process worker. <see cref="Pools"/> are the run pools it serves: empty (the
 /// default) means it claims only untargeted runs, which is the single-node default; set it to also drain runs
-/// routed to those pools.</summary>
+/// routed to those pools. <see cref="Enabled"/> turns the in-process worker off entirely for API-only replicas:
+/// in a scaled deployment the HTTP tier scales on request load behind the ingress while compute scales on queue
+/// depth as separate worker processes, and this switch is what keeps the two independent.</summary>
 public sealed class WorkerOptions
 {
+    public bool Enabled { get; set; } = true;
+
     public string[] Pools { get; set; } = [];
+}
+
+/// <summary>
+/// Reverse-proxy awareness. Behind an ingress or load balancer the raw connection address is the proxy's, which
+/// would collapse every caller into one rate-limit partition and one login-throttle key. When enabled, the
+/// standard <c>X-Forwarded-For</c>/<c>X-Forwarded-Proto</c> headers are honored, but ONLY from the proxies listed
+/// here (a client on the open internet can never spoof its address by sending the header itself). List the
+/// ingress/LB addresses as CIDRs in <see cref="KnownNetworks"/> (for example <c>10.0.0.0/8</c> inside a cluster)
+/// or as single IPs in <see cref="KnownProxies"/>.
+/// </summary>
+public sealed class ProxyOptions
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>Trusted proxy networks in CIDR form (for example <c>10.244.0.0/16</c>).</summary>
+    public string[] KnownNetworks { get; set; } = [];
+
+    /// <summary>Trusted individual proxy addresses (IPv4 or IPv6).</summary>
+    public string[] KnownProxies { get; set; } = [];
+
+    /// <summary>How many proxy hops to unwind from <c>X-Forwarded-For</c>; 1 for a single ingress (the default),
+    /// 2 when a CDN sits in front of the ingress, and so on.</summary>
+    public int ForwardLimit { get; set; } = 1;
+
+    public void Validate()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        if (KnownNetworks.Length == 0 && KnownProxies.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Proxy is enabled but trusts no proxies; set KnownNetworks (CIDRs) and/or KnownProxies (IPs) to the ingress addresses. Trusting nothing would silently ignore the forwarded headers.");
+        }
+
+        if (ForwardLimit < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:Proxy:ForwardLimit must be at least 1.");
+        }
+
+        foreach (var network in KnownNetworks)
+        {
+            ParseNetwork(network);
+        }
+
+        foreach (var proxy in KnownProxies)
+        {
+            if (!IPAddress.TryParse(proxy, out _))
+            {
+                throw new InvalidOperationException($"ControlPlane:Proxy:KnownProxies entry '{proxy}' is not a valid IP address.");
+            }
+        }
+    }
+
+    /// <summary>Parses a CIDR into its prefix and length, throwing a configuration error naming the bad entry.</summary>
+    public static (IPAddress Prefix, int PrefixLength) ParseNetwork(string cidr)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cidr);
+        var parts = cidr.Split('/', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length == 2
+            && IPAddress.TryParse(parts[0], out var prefix)
+            && int.TryParse(parts[1], out var length)
+            && length >= 0
+            && length <= (prefix.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? 128 : 32))
+        {
+            return (prefix, length);
+        }
+
+        throw new InvalidOperationException(
+            $"ControlPlane:Proxy:KnownNetworks entry '{cidr}' is not a valid CIDR (expected e.g. 10.0.0.0/8 or fd00::/8).");
+    }
 }
 
 /// <summary>The managed git-to-catalog sync. <see cref="PollSeconds"/> is how often the control plane scans for

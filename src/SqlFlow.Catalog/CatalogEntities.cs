@@ -19,6 +19,17 @@ public static class RunStatuses
         => status is Succeeded or Failed or Cancelled;
 }
 
+/// <summary>The provenance of a <see cref="CatalogPipelineColumn"/>, stored as a short lowercase string (same
+/// convention as <see cref="RunStatuses"/>) so the value is self-describing and filterable with plain equality.</summary>
+public static class PipelineColumnKinds
+{
+    /// <summary>Authored in the flow YAML (the source of truth), projected on every pipeline sync.</summary>
+    public const string Declared = "declared";
+
+    /// <summary>Inferred by a run from the loaded raw data (a type-inference report), projected per run.</summary>
+    public const string Detected = "detected";
+}
+
 /// <summary>
 /// One source repository synced into the catalog. Several git repos can sync into one catalog database, so the
 /// GUI and queries span repos: every pipeline and run is attributed to its repo. Identity is stable from the
@@ -51,6 +62,12 @@ public class CatalogRepo
 /// </summary>
 public class CatalogPipeline
 {
+    /// <summary>The batch label a flow reports under when its YAML declares no <c>batch</c>: every run belongs to
+    /// a batch (a source executes jointly), so surfaces that group by batch coalesce a missing label to this
+    /// value rather than leaving an ungroupable hole. Applied at query time; the row itself keeps the honest
+    /// null so the catalog reflects exactly what the YAML says.</summary>
+    public const string DefaultBatch = "default";
+
     public Guid Id { get; set; }
 
     public Guid RepoId { get; set; }
@@ -60,6 +77,8 @@ public class CatalogPipeline
     /// <summary>The flow kind: file / ing / exp / sp / inv / hc / scm / batch.</summary>
     public string Kind { get; set; } = string.Empty;
 
+    /// <summary>The batch (source system) the flow's YAML declares, the label its runs group under; null when the
+    /// document declares none (grouping surfaces then fall back to <see cref="DefaultBatch"/>).</summary>
     public string? Batch { get; set; }
 
     /// <summary>The flow document path relative to the repo root (forward-slashed).</summary>
@@ -145,6 +164,21 @@ public class CatalogRun
     /// this exact SHA and runs the flow from there, so the run is reproducible and a node can run a flow it has no
     /// local copy of. Null runs the flow from the node's locally synced repo path (the default).</summary>
     public string? CommitSha { get; set; }
+
+    /// <summary>Per-run substitution: ignore the watermark and read everything the definition selects (the
+    /// built-in backfill's force-full). Recorded on the run, so every backfill is auditable from the history.</summary>
+    public bool FullLoad { get; set; }
+
+    /// <summary>Per-run substitution: the externally-bounded window's low bound (inclusive, UTC). File flows
+    /// bound file dates; ingestion flows bound the incremental date column; exports re-window their chunk plan.</summary>
+    public DateTime? BackfillFrom { get; set; }
+
+    /// <summary>Per-run substitution: the window's high bound (UTC); null leaves the definition's own upper
+    /// bound in effect.</summary>
+    public DateTime? BackfillTo { get; set; }
+
+    /// <summary>Per-run substitution: a glob narrowing which files a file flow reads this run.</summary>
+    public string? FilePattern { get; set; }
 
     public int SchemaVersion { get; set; }
 
@@ -423,6 +457,57 @@ public class CatalogObjectColumn
     public string? DataType { get; set; }
 
     public bool Nullable { get; set; }
+}
+
+/// <summary>
+/// One resolved column of a pipeline's pre-ingestion transformation view: the modernized, central form of a
+/// legacy <c>flw.PreIngestionTransform</c> row, so the estate can be queried for "which transformations are set
+/// or detected on a pipeline". Two provenances share the row shape, distinguished by <see cref="Kind"/>:
+/// <c>declared</c> rows are projected from the flow YAML (the source of truth, refreshed on every pipeline sync),
+/// and <c>detected</c> rows are projected from a type-inference report produced by a run against the loaded raw
+/// data. Repo-scoped and keyed to its pipeline by <see cref="PipelineId"/> (a soft link, no FK, matching the rest
+/// of the catalog). Replaced by (pipeline, kind) so a re-sync or a fresh run reflects the current transforms.
+/// </summary>
+public class CatalogPipelineColumn
+{
+    public long Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The owning pipeline's stable id (FlowIdentity of the flow name); a soft link (no FK).</summary>
+    public Guid PipelineId { get; set; }
+
+    /// <summary><c>declared</c> (authored in YAML) or <c>detected</c> (inferred by a run from the raw data).</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>1-based position of the column in the resolved transformation view.</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>The output column name in the view (the alias when the transform renames, else the source name).</summary>
+    public string ColumnName { get; set; } = string.Empty;
+
+    /// <summary>The raw source column the transform reads (legacy ColumnName); null for a virtual/computed column.</summary>
+    public string? SourceColumn { get; set; }
+
+    /// <summary>The SQL expression producing the value, with <c>@ColName</c> already resolved to the source column
+    /// reference; null when the column is a straight pass-through with no transform.</summary>
+    public string? Expression { get; set; }
+
+    /// <summary>The column's SQL type (declared in YAML, or inferred); null when a plain expression's type is not
+    /// declared.</summary>
+    public string? DataType { get; set; }
+
+    /// <summary>The authored sort order (legacy ColumnSortOrder); null when the column keeps its natural position.</summary>
+    public int? SortOrder { get; set; }
+
+    /// <summary>A computed column with no raw source counterpart (legacy Virtual indicator).</summary>
+    public bool IsVirtual { get; set; }
+
+    /// <summary>Computed but dropped from the view's final projection (legacy ExcludeFromView).</summary>
+    public bool ExcludeFromView { get; set; }
+
+    /// <summary>True when a real conversion/expression was applied (as opposed to a raw string pass-through).</summary>
+    public bool Converted { get; set; }
 }
 
 /// <summary>

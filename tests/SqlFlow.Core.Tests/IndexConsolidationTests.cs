@@ -96,7 +96,19 @@ public sealed class IndexConsolidationTests
         new NullStateStore(),
         NullFlowEventSink.Instance,
         new SecretResolver([new EnvSecretProvider()]),
+        new UnusedInferenceService(),
         NullLogger<FlowRunner>.Instance);
+
+    /// <summary>These flows declare no transform, so the runner must never touch inference; throwing on any call
+    /// turns an unexpected invocation into a loud test failure instead of a silently-passing fake.</summary>
+    private sealed class UnusedInferenceService : IInferenceService
+    {
+        public Task<InferenceReport> InferAsync(InferenceRequest request, CancellationToken ct = default)
+            => throw new InvalidOperationException("Inference is not expected in this test (the flow declares no transform).");
+
+        public Task<InferenceReport> ValidateAsync(InferenceRequest request, CancellationToken ct = default)
+            => throw new InvalidOperationException("Inference is not expected in this test (the flow declares no transform).");
+    }
 
     private sealed class RecordingIndexManager : IIndexManager
     {
