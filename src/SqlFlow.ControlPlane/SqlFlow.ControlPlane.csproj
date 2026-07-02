@@ -11,6 +11,10 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" />
+    <!-- PasswordHasher (PBKDF2) for local SQLFlow users; no other part of ASP.NET Identity is used. -->
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" />
+    <!-- OIDC metadata + JWKS retrieval for validating Microsoft Entra ID tokens on /auth/exchange. -->
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" />
   </ItemGroup>
 
   <ItemGroup>

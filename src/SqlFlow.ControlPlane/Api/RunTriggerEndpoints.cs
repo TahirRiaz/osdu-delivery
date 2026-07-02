@@ -10,7 +10,9 @@ namespace SqlFlow.ControlPlane.Api;
 /// <summary>The body that triggers a run: references only (the repo, the flow name, an optional target pool, and an
 /// optional commit SHA). A secret is never accepted here; the worker resolves every credential from the executing
 /// host's own environment. <c>pool</c> routes the run to a node serving that pool (omit for any node);
-/// <c>commitSha</c> pins the run to an exact git version the node materializes (omit to run the node's synced copy).</summary>
+/// <c>commitSha</c> pins the run to an exact git version the node materializes. Omitting it pins the run to the
+/// repo's last synced commit (so any node can execute it, and the executed version always matches what the catalog
+/// shows); only a repo with no resolvable synced commit runs unpinned from the node's local copy.</summary>
 public sealed record RunTriggerRequest(Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null);
 
 /// <summary>The accepted-run acknowledgement: the minted run id and its queued status. The run executes
@@ -54,6 +56,16 @@ public static class RunTriggerEndpoints
                 title: "Invalid request");
         }
 
+        // An explicit pin must at least look like a git object id; catching garbage here (the trust boundary)
+        // beats queueing a run every node is guaranteed to fail materializing.
+        if (request.CommitSha is not null && !IsPlausibleCommitSha(request.CommitSha.Trim()))
+        {
+            return TypedResults.Problem(
+                detail: "commitSha must be a 4- to 64-character hexadecimal git object id (or omitted to pin to the last synced commit).",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
         var flowName = request.FlowName.Trim();
         var pipelineId = CatalogIdentity.Pipeline(request.RepoId, flowName);
 
@@ -78,6 +90,9 @@ public static class RunTriggerEndpoints
         // is queued (status "queued"), through running, to its terminal state.
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new RunTriggerAccepted(runId, "queued"));
     }
+
+    private static bool IsPlausibleCommitSha(string sha)
+        => sha.Length is >= 4 and <= 64 && sha.All(char.IsAsciiHexDigit);
 
     private static async Task<Results<Ok<RunTriggerAccepted>, ProblemHttpResult>> CancelRunAsync(
         Guid runId, CatalogDbContext db, TimeProvider clock, CancellationToken ct)

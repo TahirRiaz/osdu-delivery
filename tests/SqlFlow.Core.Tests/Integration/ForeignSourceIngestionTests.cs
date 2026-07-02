@@ -1,3 +1,4 @@
+using Oracle.ManagedDataAccess.Client;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Providers;
 using SqlFlow.SqlServer.Ingestion;
@@ -9,8 +10,10 @@ namespace SqlFlow.Tests.Integration;
 /// <summary>
 /// End-to-end ingestion from NON-SQL-Server sources into the SQL Server sink, authored as YAML, through the
 /// single without-database code path. Each test needs a live source database and skips unless its environment
-/// variable is set: SQLFLOW_TEST_MYSQL (a MySQL connection string with a writable test database) and
-/// SQLFLOW_TEST_PG (a PostgreSQL connection string with a writable schema), plus the usual sink.
+/// variable is set: SQLFLOW_TEST_MYSQL (a MySQL connection string with a writable test database),
+/// SQLFLOW_TEST_PG (a PostgreSQL connection string with a writable schema), and SQLFLOW_TEST_ORACLE (an Oracle
+/// connection string with a writable schema), plus the usual sink. The docker compose in <c>docker/</c> brings
+/// up all three databases with the connection strings listed in <c>docker/README.md</c>.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class ForeignSourceIngestionTests
@@ -192,6 +195,122 @@ public sealed class ForeignSourceIngestionTests
         {
             await IntegrationDb.DropTableAsync(sink, trg);
             await CleanupPostgresAsync(pg!);
+        }
+    }
+
+    [SkippableFact]
+    public async Task OracleSource_IngestsAndUpserts_IntoSqlServer()
+    {
+        var sink = IntegrationDb.Require();
+        var oracle = Environment.GetEnvironmentVariable("SQLFLOW_TEST_ORACLE");
+        Skip.If(string.IsNullOrWhiteSpace(oracle), "Set SQLFLOW_TEST_ORACLE (an Oracle connection string with a writable schema) to run this test.");
+
+        const string trg = "_SfOra_Trg";
+        await IntegrationDb.DropTableAsync(sink, trg);
+
+        // Seed the Oracle source. Oracle runs one statement per command (no batch), and unquoted identifiers
+        // fold to upper case, so the object reference below is SF_ORDERS in the connecting user's schema.
+        string owner;
+        await using (var connection = new OracleConnection(oracle))
+        {
+            await connection.OpenAsync();
+            owner = (string)(await ScalarOracleAsync(connection, "SELECT USER FROM DUAL"))!;
+            await DropOracleTableAsync(connection);
+            await ExecuteOracleAsync(connection, """
+                CREATE TABLE sf_orders (
+                    id NUMBER(9) NOT NULL PRIMARY KEY,
+                    amount NUMBER(10,2) NOT NULL,
+                    note VARCHAR2(200) NULL,
+                    updated_at TIMESTAMP(3) NOT NULL
+                )
+                """);
+            await ExecuteOracleAsync(connection, "INSERT INTO sf_orders VALUES (1, 10.50, 'first', TIMESTAMP '2024-01-01 10:00:00.000')");
+            await ExecuteOracleAsync(connection, "INSERT INTO sf_orders VALUES (2, 20.25, NULL, TIMESTAMP '2024-01-02 11:00:00.000')");
+        }
+
+        try
+        {
+            var yaml = $$"""
+                flowType: ing
+                name: oracle-e2e
+                connections:
+                  erp:
+                    provider: oracle
+                    connection: ${env:SQLFLOW_TEST_ORACLE}
+                  sink: ${env:SQLFlowSinkConStr}
+                source:
+                  server: erp
+                  object: db.{{owner}}.SF_ORDERS
+                target:
+                  server: sink
+                  object: db.dbo.{{trg}}
+                load:
+                  keyColumns: [ID]
+                """;
+
+            var first = await RunAsync(yaml);
+            Assert.True(first.Success, first.Error);
+            Assert.Equal(2, first.RowsStaged);
+            Assert.Equal(2, await IntegrationDb.RowCountAsync(sink, trg));
+
+            // NUMBER(10,2) mapped to decimal(10, 2) and survived the round trip.
+            Assert.Equal(10.50m, await IntegrationDb.ScalarAsync<decimal?>(sink, $"SELECT [amount] FROM [dbo].[{trg}] WHERE [id] = 1"));
+
+            // Second run: change one row, add one; the keyed upsert reconciles without duplicating.
+            await using (var connection = new OracleConnection(oracle))
+            {
+                await connection.OpenAsync();
+                await ExecuteOracleAsync(connection, "UPDATE sf_orders SET amount = 99.99 WHERE id = 1");
+                await ExecuteOracleAsync(connection, "INSERT INTO sf_orders VALUES (3, 30.00, 'third', TIMESTAMP '2024-01-03 12:00:00.000')");
+            }
+
+            var second = await RunAsync(yaml);
+            Assert.True(second.Success, second.Error);
+            Assert.Equal(1, second.RowsUpdated);
+            Assert.Equal(1, second.RowsInserted);
+            Assert.Equal(3, await IntegrationDb.RowCountAsync(sink, trg));
+            Assert.Equal(99.99m, await IntegrationDb.ScalarAsync<decimal?>(sink, $"SELECT [amount] FROM [dbo].[{trg}] WHERE [id] = 1"));
+
+            // The trace captured double-quoted Oracle source SQL.
+            Assert.Contains(second.SqlTrace, e => e.Step == "source.select" && e.Sql.Contains("\"SF_ORDERS\"", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await IntegrationDb.DropTableAsync(sink, trg);
+            await CleanupOracleAsync(oracle!);
+        }
+    }
+
+    private static async Task<object?> ScalarOracleAsync(OracleConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return await command.ExecuteScalarAsync();
+    }
+
+    private static async Task ExecuteOracleAsync(OracleConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    // Oracle has no DROP TABLE IF EXISTS; the PL/SQL block swallows ORA-00942 (table does not exist).
+    private static Task DropOracleTableAsync(OracleConnection connection)
+        => ExecuteOracleAsync(connection,
+            "BEGIN EXECUTE IMMEDIATE 'DROP TABLE sf_orders'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF; END;");
+
+    private static async Task CleanupOracleAsync(string connectionString)
+    {
+        try
+        {
+            await using var connection = new OracleConnection(connectionString);
+            await connection.OpenAsync();
+            await DropOracleTableAsync(connection);
+        }
+        catch (OracleException)
+        {
+            // Best-effort source cleanup.
         }
     }
 

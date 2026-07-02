@@ -665,7 +665,7 @@ internal static class Program
         }
 
         var kind = ParseProviderOption(GetOption(args, "--provider"));
-        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL)
+        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL or DataSourceKind.Oracle)
         {
             Console.Error.WriteLine("ERROR  healthcheck runs T-SQL on the monitored table; --provider must be mssql or azdb.");
             return 1;
@@ -1218,7 +1218,7 @@ internal static class Program
 
             default:
                 Console.Error.WriteLine(
-                    "Usage: sqlflow catalog <databases|schemas|tables|search|columns|scaffold|scaffold-all> --source <ref> [--provider mysql|postgres] [options]");
+                    "Usage: sqlflow catalog <databases|schemas|tables|search|columns|scaffold|scaffold-all> --source <ref> [--provider mysql|postgres|oracle] [options]");
                 return 1;
         }
     }
@@ -1243,7 +1243,7 @@ internal static class Program
         }
 
         var kind = ParseProviderOption(GetOption(args, "--provider"));
-        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL)
+        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL or DataSourceKind.Oracle)
         {
             Console.Error.WriteLine("ERROR  detect-unique-key profiles with T-SQL; --provider must be mssql or azdb.");
             return 1;
@@ -1343,7 +1343,7 @@ internal static class Program
     private static async Task<string[]> DetectTopKeyAsync(
         IServiceProvider provider, string source, DataSourceKind? kind, ThreePartName name, IReadOnlyList<string> columns, int? sample)
     {
-        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL || columns.Count == 0)
+        if (kind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL or DataSourceKind.Oracle || columns.Count == 0)
         {
             return [];
         }
@@ -1383,6 +1383,7 @@ internal static class Program
             {
                 DataSourceKind.MySQL => "mysql",
                 DataSourceKind.PostgreSQL => "postgres",
+                DataSourceKind.Oracle => "oracle",
                 DataSourceKind.AZDB => "azdb",
                 _ => null,
             },
@@ -1404,7 +1405,8 @@ internal static class Program
         "azdb" => DataSourceKind.AZDB,
         "mysql" => DataSourceKind.MySQL,
         "postgres" or "postgresql" => DataSourceKind.PostgreSQL,
-        _ => throw new SqlFlowException($"Unknown --provider '{provider}'. Allowed: mssql, azdb, mysql, postgres."),
+        "oracle" => DataSourceKind.Oracle,
+        _ => throw new SqlFlowException($"Unknown --provider '{provider}'. Allowed: mssql, azdb, mysql, postgres, oracle."),
     };
 
     private static string SafeFileName(string name)
@@ -1669,8 +1671,8 @@ internal static class Program
             paths/flatten/discover work for JSON and XML; the format is taken from the file extension
             (or --pattern for a folder). Flatten rule flags map to each format's option keys.
 
-            Source discovery and replication scaffolding (SQL Server, MySQL, PostgreSQL):
-              sqlflow catalog tables       --source ${env:SRC} [--provider mysql|postgres] [--schema s] [--like x]
+            Source discovery and replication scaffolding (SQL Server, MySQL, PostgreSQL, Oracle):
+              sqlflow catalog tables       --source ${env:SRC} [--provider mysql|postgres|oracle] [--schema s] [--like x]
               sqlflow catalog databases|schemas|search|columns ... same flags
               sqlflow catalog scaffold     --source ... --object schema.table --target ${env:DW} --target-object raw.table
               sqlflow catalog scaffold-all --source ... --target ${env:DW} --out ./flows [--schema s] [--target-schema raw]

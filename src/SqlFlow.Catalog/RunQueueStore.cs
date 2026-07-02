@@ -8,7 +8,10 @@ namespace SqlFlow.Catalog;
 
 /// <summary>What to enqueue: references only (never a secret). The flow is addressed by repo + name; an optional
 /// pool routes it to eligible nodes, and an optional commit SHA pins it to an exact git version the node
-/// materializes. Bundled into one request so the two optional references can never be passed in the wrong order.</summary>
+/// materializes. A null <see cref="CommitSha"/> is not "unpinned" but "default": enqueueing pins the run to the
+/// repo's last synced commit when one is known (see <see cref="RunQueueStore.EnqueueAsync"/>), so any node in the
+/// fleet can execute it. Bundled into one request so the two optional references can never be passed in the wrong
+/// order.</summary>
 public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null);
 
@@ -61,7 +64,17 @@ public static class RunQueueStore
 
     /// <summary>Enqueues a run: inserts a <c>queued</c> <see cref="CatalogRun"/> row and returns its newly minted
     /// (time-ordered) id. The caller hands that id back to the trigger's caller, and the run is recorded under it,
-    /// so <c>GET /runs/{id}</c> reflects the run from the moment it is queued.</summary>
+    /// so <c>GET /runs/{id}</c> reflects the run from the moment it is queued.
+    /// <para>
+    /// Commit pinning: an explicit <see cref="RunEnqueueRequest.CommitSha"/> is honored verbatim. When it is
+    /// omitted, the run is pinned to the repo's last successfully synced commit (the managed-sync source's
+    /// <see cref="CatalogRepoSource.LastSyncedSha"/>), so the version that executes is exactly the version the
+    /// catalog reflects, and ANY node in the fleet can materialize and run it, whether or not it holds a local
+    /// synced copy. The version decision is therefore made centrally, at enqueue time, while the content itself
+    /// still travels through git (workers materialize the commit once and cache it). Only when no synced commit is
+    /// resolvable (the repo was synced from a local path with no remote, or has no managed source) does the run
+    /// stay unpinned and fall back to the executing node's locally synced copy.
+    /// </para></summary>
     public static Task<Guid> EnqueueAsync(
         CatalogDbContext catalog, RunEnqueueRequest request, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -70,8 +83,12 @@ public static class RunQueueStore
         ArgumentException.ThrowIfNullOrWhiteSpace(request.FlowName);
 
         var runId = Guid.CreateVersion7();
-        return CatalogTransaction.InSerializableAsync(catalog, () =>
+        return CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
+            var commitSha = string.IsNullOrWhiteSpace(request.CommitSha)
+                ? await ResolveSyncedShaAsync(catalog, request.RepoId, ct).ConfigureAwait(false)
+                : request.CommitSha.Trim();
+
             catalog.Runs.Add(new CatalogRun
             {
                 RunId = runId,
@@ -80,7 +97,7 @@ public static class RunQueueStore
                 FlowName = request.FlowName,
                 FlowKind = string.IsNullOrWhiteSpace(request.FlowKind) ? "unknown" : request.FlowKind,
                 TargetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim(),
-                CommitSha = string.IsNullOrWhiteSpace(request.CommitSha) ? null : request.CommitSha.Trim(),
+                CommitSha = commitSha,
                 Status = RunStatuses.Queued,
                 EnqueuedUtc = nowUtc,
                 // Until the run finishes there is no artifact; seed WrittenUtc with the enqueue time so the run
@@ -88,8 +105,30 @@ public static class RunQueueStore
                 WrittenUtc = nowUtc,
                 Success = false,
             });
-            return Task.FromResult(runId);
+            return runId;
         }, ct);
+    }
+
+    /// <summary>
+    /// The commit an unpinned enqueue defaults to: the repo's managed-sync source's last successfully synced SHA.
+    /// The repo row and its source row are joined by name, which is the managed-sync invariant (the sync records
+    /// the repo under the source's name; see RepoSyncService). The pin is only usable when the repo has a remote
+    /// URL for workers to materialize from, so a repo synced from a bare local path never produces a pin a worker
+    /// could not honor. Runs inside the enqueue transaction, so the pin and the queued row are one consistent
+    /// snapshot.
+    /// </summary>
+    private static async Task<string?> ResolveSyncedShaAsync(
+        CatalogDbContext catalog, Guid repoId, CancellationToken ct)
+    {
+        var sha = await (
+                from repo in catalog.Repos.AsNoTracking()
+                join source in catalog.RepoSources.AsNoTracking() on repo.Name equals source.Name
+                where repo.Id == repoId
+                      && repo.RemoteUrl != null && repo.RemoteUrl != ""
+                      && source.LastSyncedSha != null && source.LastSyncedSha != ""
+                select source.LastSyncedSha)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return string.IsNullOrWhiteSpace(sha) ? null : sha.Trim();
     }
 
     /// <summary>Atomically claims the oldest queued run this node is eligible for, flipping it to <c>running</c> and

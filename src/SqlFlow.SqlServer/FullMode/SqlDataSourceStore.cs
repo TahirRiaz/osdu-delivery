@@ -45,7 +45,7 @@ public sealed partial class SqlDataSourceStore : IDataSourceStore
         var kindText = reader.GetString(reader.GetOrdinal("Kind"));
         if (!Enum.TryParse<DataSourceKind>(kindText, ignoreCase: false, out var kind))
         {
-            throw new SqlFlowException($"Data source '{aliasName}' has an unknown Kind '{kindText}'. Valid values: MSSQL, AZDB, MySQL, PostgreSQL.");
+            throw new SqlFlowException($"Data source '{aliasName}' has an unknown Kind '{kindText}'. Valid values: MSSQL, AZDB, MySQL, PostgreSQL, Oracle.");
         }
 
         var connectionRef = reader.GetString(reader.GetOrdinal("ConnectionRef"));

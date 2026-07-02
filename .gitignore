@@ -10,6 +10,15 @@ artifacts/
 *.suo
 .vs/
 
+gui/node_modules
+gui/node_modules/**
+gui/dist/
+gui/.env.local
+gui/playwright-report/
+gui/test-results/
+gui/e2e/.fixtures/
+gui/.tsbuild/
+
 ## Rider / VS Code
 .idea/
 .vscode/
@@ -38,3 +47,8 @@ secrets.json
 
 ## SQLFlow run artifacts, model state, and local secrets (.sqlflow/env)
 .sqlflow/
+
+## Docker sample-data dumps (fetched on demand by docker/fetch-samples; hand-written init scripts stay tracked)
+docker/mysql/initdb/*.sql
+docker/postgres/initdb/*.sql
+docker/oracle/sakila-sql/*.sql

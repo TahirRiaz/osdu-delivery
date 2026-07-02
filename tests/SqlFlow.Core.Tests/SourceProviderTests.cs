@@ -3,6 +3,7 @@ using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Providers.MySql;
+using SqlFlow.Providers.Oracle;
 using SqlFlow.Providers.Postgres;
 using SqlFlow.SqlServer;
 using Xunit;
@@ -106,6 +107,50 @@ public sealed class SourceProviderTests
         Assert.Contains("'C'", ex.Message, StringComparison.Ordinal);
     }
 
+    // ---- Oracle type mapping (SSMA-grounded, with the documented decisions) ----
+
+    [Theory]
+    [InlineData("NUMBER(10,2)", "decimal(10, 2)")]
+    [InlineData("NUMBER(38,0)", "decimal(38, 0)")]
+    [InlineData("NUMBER", "float(53)")]                        // unconstrained NUMBER is a floating numeric
+    [InlineData("FLOAT", "float(53)")]
+    [InlineData("FLOAT(126)", "float(53)")]
+    [InlineData("BINARY_FLOAT", "real")]
+    [InlineData("BINARY_DOUBLE", "float(53)")]
+    [InlineData("VARCHAR2(50)", "nvarchar(50)")]
+    [InlineData("VARCHAR2(5000)", "nvarchar(max)")]
+    [InlineData("NVARCHAR2(100)", "nvarchar(100)")]
+    [InlineData("CHAR(10)", "nchar(10)")]
+    [InlineData("NCHAR(5)", "nchar(5)")]
+    [InlineData("CLOB", "nvarchar(max)")]
+    [InlineData("NCLOB", "nvarchar(max)")]
+    [InlineData("LONG", "nvarchar(max)")]
+    [InlineData("DATE", "datetime2(0)")]                       // Oracle DATE carries time to whole seconds
+    [InlineData("TIMESTAMP(6)", "datetime2(6)")]
+    [InlineData("TIMESTAMP(9)", "datetime2(7)")]               // capped at SQL Server's max fractional scale
+    [InlineData("TIMESTAMP(6) WITH TIME ZONE", "datetimeoffset(6)")]
+    [InlineData("TIMESTAMP(6) WITH LOCAL TIME ZONE", "datetime2(6)")]  // normalized instant, no stored offset
+    [InlineData("INTERVAL DAY(2) TO SECOND(6)", "nvarchar(50)")]
+    [InlineData("INTERVAL YEAR(2) TO MONTH", "nvarchar(50)")]
+    [InlineData("RAW(16)", "varbinary(16)")]
+    [InlineData("RAW(9000)", "varbinary(max)")]
+    [InlineData("BLOB", "varbinary(max)")]
+    [InlineData("LONG RAW", "varbinary(max)")]
+    [InlineData("ROWID", "nvarchar(4000)")]
+    [InlineData("XMLTYPE", "xml")]
+    public void OracleTypes_MapToSqlServer(string oracle, string expected)
+        => Assert.Equal(expected, new OracleSourceTypeMapper().ToSqlServerType(Col(oracle)));
+
+    [Theory]
+    [InlineData("BFILE")]           // an external file locator, not row data
+    [InlineData("SDO_GEOMETRY")]    // a spatial object type with no scalar mapping
+    [InlineData("FROBNICATE")]      // unknown type: must throw, never degrade
+    public void OracleTypes_Unmappable_Throw(string oracle)
+    {
+        var ex = Assert.Throws<SqlFlowException>(() => new OracleSourceTypeMapper().ToSqlServerType(Col(oracle)));
+        Assert.Contains("'C'", ex.Message, StringComparison.Ordinal);
+    }
+
     // ---- Dialects ----
 
     private static readonly RelationalObject Table = new() { Database = "erp", Schema = "erp", Name = "orders" };
@@ -131,6 +176,16 @@ public sealed class SourceProviderTests
     }
 
     [Fact]
+    public void OracleDialect_DoubleQuotes_NumToDsInterval_HexToRaw()
+    {
+        var dialect = new OracleSourceDialect();
+        Assert.Equal("\"o\"\"dd\"", dialect.QuoteIdentifier("o\"dd"));
+        Assert.Equal("\"erp\".\"orders\"", dialect.QualifyObject(Table));
+        Assert.Equal("(MIN(\"d\") - NUMTODSINTERVAL(7, 'DAY'))", dialect.DateSubtractDays("MIN(\"d\")", 7));
+        Assert.Equal("HEXTORAW('DEAD')", dialect.FormatBinaryLiteral([0xDE, 0xAD]));
+    }
+
+    [Fact]
     public void SqlServerDialect_Brackets_DateAdd_HexLiteral()
     {
         var dialect = new SqlServerSourceDialect();
@@ -138,6 +193,25 @@ public sealed class SourceProviderTests
         Assert.Equal("[erp].[orders]", dialect.QualifyObject(Table));
         Assert.Equal("DATEADD(day, -7, MIN([d]))", dialect.DateSubtractDays("MIN([d])", 7));
         Assert.Equal("0xDEAD", dialect.FormatBinaryLiteral([0xDE, 0xAD]));
+    }
+
+    [Fact]
+    public void TemporalLiterals_QuotedForMostDialects_ExplicitConversionForOracle()
+    {
+        const string ts = "2024-01-03 10:00:00.000";
+
+        // SQL Server, MySQL, PostgreSQL accept the ISO string directly.
+        Assert.Equal($"'{ts}'", new SqlServerSourceDialect().FormatTemporalLiteral("datetime2", ts));
+        Assert.Equal($"'{ts}'", new MySqlSourceDialect().FormatTemporalLiteral("datetime2", ts));
+        Assert.Equal($"'{ts}'", new PostgresSourceDialect().FormatTemporalLiteral("datetime2", ts));
+
+        // Oracle wraps in an explicit conversion so the comparison never depends on the session NLS format.
+        var oracle = new OracleSourceDialect();
+        Assert.Equal("TO_DATE('2024-01-03', 'YYYY-MM-DD')", oracle.FormatTemporalLiteral("date", "2024-01-03"));
+        Assert.Equal($"TO_TIMESTAMP('{ts}', 'YYYY-MM-DD HH24:MI:SS.FF3')", oracle.FormatTemporalLiteral("datetime2", ts));
+        Assert.Equal($"TO_TIMESTAMP('{ts}', 'YYYY-MM-DD HH24:MI:SS.FF3')", oracle.FormatTemporalLiteral("datetime", ts));
+        Assert.Equal("TO_TIMESTAMP_TZ('2024-01-03 10:00:00.000 +02:00', 'YYYY-MM-DD HH24:MI:SS.FF3 TZH:TZM')",
+            oracle.FormatTemporalLiteral("datetimeoffset", "2024-01-03 10:00:00.000 +02:00"));
     }
 
     // ---- Canonicalizers (builder parsing is local, no live database) ----
@@ -171,6 +245,19 @@ public sealed class SourceProviderTests
             .Canonicalize("Host=db;Username=u;Password=p", ConnectionRole.Source, SecretlessPolicy.RequireSelfAuthenticating));
     }
 
+    [Fact]
+    public void OracleCanonicalizer_TrustedPasses_AndRedacts_InlineRejected()
+    {
+        var canonicalizer = new OracleConnectionStringCanonicalizer();
+        var canonical = canonicalizer.Canonicalize(
+            "User Id=scott;Password=secret123;Data Source=localhost:1521/FREEPDB1", ConnectionRole.Source, SecretlessPolicy.Trusted);
+        Assert.DoesNotContain("secret123", canonical.Redacted, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("scott", canonical.Redacted, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Throws<SqlFlowException>(() => canonicalizer
+            .Canonicalize("User Id=scott;Password=secret123;Data Source=x", ConnectionRole.Source, SecretlessPolicy.RequireSelfAuthenticating));
+    }
+
     // ---- Composite registries: a closed set with clear errors, never a silent null ----
 
     [Fact]
@@ -187,9 +274,10 @@ public sealed class SourceProviderTests
     [Fact]
     public void CompositeCatalogReaderFactory_DispatchesByKind()
     {
-        var composite = new CompositeCatalogReaderFactory([new MySqlCatalogReader(), new PostgresCatalogReader()]);
+        var composite = new CompositeCatalogReaderFactory([new MySqlCatalogReader(), new PostgresCatalogReader(), new OracleCatalogReader()]);
         Assert.IsType<MySqlCatalogReader>(composite.ReaderFor(Resolved(DataSourceKind.MySQL)));
         Assert.IsType<PostgresCatalogReader>(composite.ReaderFor(Resolved(DataSourceKind.PostgreSQL)));
+        Assert.IsType<OracleCatalogReader>(composite.ReaderFor(Resolved(DataSourceKind.Oracle)));
         Assert.Throws<SqlFlowException>(() => composite.ReaderFor(Resolved(DataSourceKind.MSSQL)));
     }
 

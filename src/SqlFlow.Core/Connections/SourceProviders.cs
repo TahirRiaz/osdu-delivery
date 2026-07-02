@@ -63,6 +63,16 @@ public interface ISourceSqlDialect
 
     /// <summary>A binary literal (0x... for SQL Server and MySQL; bytea hex for PostgreSQL).</summary>
     string FormatBinaryLiteral(byte[] value);
+
+    /// <summary>
+    /// Renders a temporal watermark literal for a comparison in the source's own SQL, from the ISO-8601 text
+    /// body (no surrounding quotes) and the SQL Server base type it came from (<c>date</c>, <c>datetime</c>,
+    /// <c>datetime2</c>, <c>smalldatetime</c>, <c>datetimeoffset</c>, <c>time</c>). SQL Server, MySQL, and
+    /// PostgreSQL accept the quoted ISO string directly; Oracle wraps it in <c>TO_DATE</c> /
+    /// <c>TO_TIMESTAMP</c> / <c>TO_TIMESTAMP_TZ</c> so the comparison never depends on the session's NLS date
+    /// format (a bare ISO string raises ORA-01843 under a non-ISO NLS setting).
+    /// </summary>
+    string FormatTemporalLiteral(string baseType, string isoBody);
 }
 
 /// <summary>

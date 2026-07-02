@@ -100,4 +100,11 @@ public sealed class MySqlSourceDialect : ISourceSqlDialect
         ArgumentNullException.ThrowIfNull(value);
         return "0x" + Convert.ToHexString(value);
     }
+
+    // MySQL accepts an ISO-8601 date/time string literal directly in a comparison.
+    public string FormatTemporalLiteral(string baseType, string isoBody)
+    {
+        ArgumentNullException.ThrowIfNull(isoBody);
+        return $"'{isoBody}'";
+    }
 }

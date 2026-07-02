@@ -2,12 +2,13 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.Providers</RootNamespace>
-    <Description>Non-SQL-Server source providers: MySQL (MySqlConnector) and PostgreSQL (Npgsql) connection factories, canonicalizers, catalog readers, SQL dialects, and type mappers. Sources only; the target is always SQL Server.</Description>
+    <Description>Non-SQL-Server source providers: MySQL (MySqlConnector), PostgreSQL (Npgsql), and Oracle (Oracle.ManagedDataAccess.Core) connection factories, canonicalizers, catalog readers, SQL dialects, and type mappers. Sources only; the target is always SQL Server.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MySqlConnector" />
     <PackageReference Include="Npgsql" />
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" />
   </ItemGroup>
 
   <ItemGroup>

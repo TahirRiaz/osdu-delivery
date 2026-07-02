@@ -263,7 +263,7 @@ public sealed class SourceControlEdgeCaseTests : IDisposable
             name: edge-flow
             connections:
               DW:
-                provider: oracle
+                provider: db2
                 connection: ${env:DW}
             source:
               server: DW

@@ -88,12 +88,12 @@ public sealed class YamlProviderConnectionTests
             flowType: ing
             connections:
               x:
-                provider: oracle
+                provider: db2
                 connection: y
             source: { server: x, object: a.b.c }
             target: { connection: z, object: a.b.c }
             """));
-        Assert.Contains("oracle", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("db2", ex.Message, StringComparison.Ordinal);
         Assert.Contains("mssql, azdb, mysql, postgres", ex.Message, StringComparison.Ordinal);
     }
 

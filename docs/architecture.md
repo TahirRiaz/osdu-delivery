@@ -53,9 +53,15 @@ YAML ──▶ [ model ] ──▶ infer source schema ──▶ introspect targ
 ## Current status (this repo)
 
 Implemented: the **stateless lightweight engine** end-to-end for the CSV → SQL Server slice with
-schema evolution. Roadmap: full mode (metadata DB + memory + logging + lineage), the control/compute
-split, a scheduler, additional source/target providers, and a thin read-only reporting UI plus a
-Monaco-based YAML editor.
+schema evolution; the **control/compute split** (SqlFlow.ControlPlane + SqlFlow.Node with the durable
+run queue, scheduler, node registry, and managed git sync); **identity** (regular SQLFlow users with
+catalog-backed credentials, Microsoft Entra ID single sign-on via token exchange with JIT
+provisioning, role/scope authorization, and first-run bootstrap provisioning of migrations, roles,
+the initial admin, and an optional demo repo source); and the **GUI** (`gui/`): a React SPA over the
+control plane API with dashboard, runs, fleet, pipelines (read-only Monaco YAML), schedules, repo
+sources, lineage explorer/graph, search, and user administration, verified by a Playwright end-to-end
+suite that boots the whole stack. Roadmap: additional source/target providers and a Monaco-based YAML
+editor (authoring, not just viewing).
 
 ## Project structure
 

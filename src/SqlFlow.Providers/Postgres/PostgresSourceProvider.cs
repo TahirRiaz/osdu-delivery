@@ -101,4 +101,11 @@ public sealed class PostgresSourceDialect : ISourceSqlDialect
         ArgumentNullException.ThrowIfNull(value);
         return $"'\\x{Convert.ToHexString(value)}'::bytea";
     }
+
+    // PostgreSQL parses an ISO-8601 date/time string literal directly in a comparison.
+    public string FormatTemporalLiteral(string baseType, string isoBody)
+    {
+        ArgumentNullException.ThrowIfNull(isoBody);
+        return $"'{isoBody}'";
+    }
 }

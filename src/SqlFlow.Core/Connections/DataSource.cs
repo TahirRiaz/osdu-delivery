@@ -2,7 +2,8 @@ namespace SqlFlow.Core.Connections;
 
 /// <summary>
 /// The kind of relational system a data source is: the three legacy <c>flw.SysDataSource.SourceType</c>
-/// values plus PostgreSQL (new in V3). There is deliberately no Synapse value here; Synapse-ness is a
+/// values plus PostgreSQL and Oracle (new in V3). MySQL, PostgreSQL, and Oracle are SOURCE-only kinds; the
+/// target of every flow is always SQL Server. There is deliberately no Synapse value here; Synapse-ness is a
 /// capability (<see cref="DataSourceCapabilities.IsSynapse"/>), not a kind, so the two can never disagree.
 /// </summary>
 public enum DataSourceKind
@@ -11,6 +12,7 @@ public enum DataSourceKind
     AZDB,
     MySQL,
     PostgreSQL,
+    Oracle,
 }
 
 /// <summary>

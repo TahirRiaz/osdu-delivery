@@ -337,10 +337,10 @@ public sealed class IncrementalWindowResolver
             "decimal" or "numeric" or "money" or "smallmoney" => Convert.ToDecimal(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture),
             "float" or "real" => Convert.ToDouble(value, CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture),
             "binary" or "varbinary" or "timestamp" or "rowversion" => dialect.FormatBinaryLiteral((byte[])value),
-            "date" => "'" + ((DateTime)value).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + "'",
-            "datetime" or "datetime2" or "smalldatetime" => "'" + Convert.ToDateTime(value, CultureInfo.InvariantCulture).ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + "'",
-            "datetimeoffset" => "'" + ((DateTimeOffset)value).ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture) + "'",
-            "time" => "'" + ((TimeSpan)value).ToString("c", CultureInfo.InvariantCulture) + "'",
+            "date" => dialect.FormatTemporalLiteral(baseType, ((DateTime)value).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+            "datetime" or "datetime2" or "smalldatetime" => dialect.FormatTemporalLiteral(baseType, Convert.ToDateTime(value, CultureInfo.InvariantCulture).ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)),
+            "datetimeoffset" => dialect.FormatTemporalLiteral(baseType, ((DateTimeOffset)value).ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture)),
+            "time" => dialect.FormatTemporalLiteral(baseType, ((TimeSpan)value).ToString("c", CultureInfo.InvariantCulture)),
             _ => "'" + (value.ToString() ?? string.Empty).Replace("'", "''", StringComparison.Ordinal) + "'",
         };
     }

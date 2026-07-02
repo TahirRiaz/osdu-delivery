@@ -16,6 +16,9 @@
     <PackageVersion Include="DuckDB.NET.Data.Full" Version="1.5.3" />
     <PackageVersion Include="MySqlConnector" Version="2.6.0" />
     <PackageVersion Include="Npgsql" Version="10.0.3" />
+    <!-- Oracle's official cross-platform managed ADO.NET driver (SqlFlow.Providers): pure-managed, no native
+         client install, targets modern .NET. Oracle is a SOURCE-only provider like MySQL and PostgreSQL. -->
+    <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.200" />
     <!-- The ML health check (SqlFlow.HealthCheck): the same proven pair the legacy engine trained with. -->
     <PackageVersion Include="Microsoft.ML" Version="4.0.2" />
     <PackageVersion Include="Microsoft.ML.AutoML" Version="0.22.2" />
@@ -39,6 +42,11 @@
          JWT bearer auth, the built-in .NET 9 OpenAPI document, and EF health-check probe for readiness. -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.8" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="9.0.8" />
+    <!-- Identity for the control plane's user store: PasswordHasher (PBKDF2) for local SQLFlow users, and the
+         OpenID Connect protocol stack for validating Microsoft Entra ID tokens on the /auth/exchange endpoint.
+         The OpenIdConnect version matches what JwtBearer already resolves transitively. -->
+    <PackageVersion Include="Microsoft.Extensions.Identity.Core" Version="9.0.8" />
+    <PackageVersion Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.0.1" />
     <!-- Cronos: standard-cron parsing with correct time-zone / DST handling, for the control-plane scheduler. -->
     <PackageVersion Include="Cronos" Version="0.11.0" />
     <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.8" />

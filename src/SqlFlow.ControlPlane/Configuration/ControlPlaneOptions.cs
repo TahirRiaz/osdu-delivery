@@ -17,6 +17,10 @@ public sealed class ControlPlaneOptions
 
     public CorsOptions Cors { get; set; } = new();
 
+    public AzureAdOptions AzureAd { get; set; } = new();
+
+    public BootstrapOptions Bootstrap { get; set; } = new();
+
     public RateLimitOptions RateLimit { get; set; } = new();
 
     public SchedulerOptions Scheduler { get; set; } = new();
@@ -68,6 +72,9 @@ public sealed class ControlPlaneOptions
         {
             throw new InvalidOperationException("ControlPlane:Scheduler:PollSeconds must be positive.");
         }
+
+        AzureAd.Validate();
+        Bootstrap.Validate();
     }
 }
 
@@ -102,6 +109,116 @@ public sealed class JwtOptions
 public sealed class CorsOptions
 {
     public string[] AllowedOrigins { get; set; } = [];
+}
+
+/// <summary>
+/// Microsoft Entra ID single sign-on. When enabled, the SPA signs the user in against Entra (MSAL, auth code +
+/// PKCE) and posts the resulting ID token to <c>POST /api/v1/auth/exchange</c>; the control plane validates it
+/// against the tenant's published keys and issues its own SQLFlow token, so every API call downstream uses one
+/// token type regardless of how the user signed in.
+/// </summary>
+public sealed class AzureAdOptions
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>The directory (tenant) id of the Entra tenant whose users may sign in.</summary>
+    public string? TenantId { get; set; }
+
+    /// <summary>The app registration (client) id the SPA signs in with; the audience the ID token must carry.</summary>
+    public string? ClientId { get; set; }
+
+    /// <summary>The OIDC authority. Defaults to the public-cloud tenant authority
+    /// (<c>https://login.microsoftonline.com/{TenantId}/v2.0</c>); override only for sovereign clouds.</summary>
+    public string? Authority { get; set; }
+
+    /// <summary>The role a first-time Entra user is provisioned with (least privilege by default; an admin raises
+    /// it afterwards).</summary>
+    public string DefaultRole { get; set; } = "viewer";
+
+    /// <summary>The effective authority, with the public-cloud default applied.</summary>
+    public string ResolveAuthority()
+        => string.IsNullOrWhiteSpace(Authority)
+            ? $"https://login.microsoftonline.com/{TenantId}/v2.0"
+            : Authority.TrimEnd('/');
+
+    public void Validate()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(TenantId) || string.IsNullOrWhiteSpace(ClientId))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:AzureAd:TenantId and ControlPlane:AzureAd:ClientId are required when AzureAd is enabled.");
+        }
+
+        if (string.IsNullOrWhiteSpace(DefaultRole))
+        {
+            throw new InvalidOperationException("ControlPlane:AzureAd:DefaultRole must not be blank.");
+        }
+    }
+}
+
+/// <summary>
+/// First-run provisioning. On startup the control plane (retrying until the catalog database is reachable)
+/// applies pending catalog migrations, seeds the built-in roles, creates the initial admin user when configured
+/// and absent, and registers the optional demo repo source. Everything is idempotent: a restart converges to the
+/// same state and never overwrites operator changes (an existing admin's password is not reset).
+/// </summary>
+public sealed class BootstrapOptions
+{
+    /// <summary>Whether startup applies pending EF catalog migrations. Disable only when a DBA applies migration
+    /// scripts out of band; pending migrations are then logged as a warning.</summary>
+    public bool ApplyMigrations { get; set; } = true;
+
+    /// <summary>The initial admin's sign-in name. Set together with <see cref="AdminPasswordReference"/>.</summary>
+    public string? AdminUsername { get; set; }
+
+    /// <summary>The initial admin's password as a secret reference (<c>${env:...}</c> / <c>${keyvault:...}</c>),
+    /// resolved through the SqlFlow secret resolver. Never a literal in source control.</summary>
+    public string? AdminPasswordReference { get; set; }
+
+    /// <summary>An optional repo source registered at bootstrap, so a fresh install has a synced estate to look at.</summary>
+    public DemoRepoOptions? DemoRepo { get; set; }
+
+    public void Validate()
+    {
+        var hasUsername = !string.IsNullOrWhiteSpace(AdminUsername);
+        var hasPassword = !string.IsNullOrWhiteSpace(AdminPasswordReference);
+        if (hasUsername != hasPassword)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Bootstrap:AdminUsername and ControlPlane:Bootstrap:AdminPasswordReference must be set together.");
+        }
+
+        if (DemoRepo is not null)
+        {
+            if (string.IsNullOrWhiteSpace(DemoRepo.Name) || string.IsNullOrWhiteSpace(DemoRepo.RemoteUrl))
+            {
+                throw new InvalidOperationException(
+                    "ControlPlane:Bootstrap:DemoRepo requires both Name and RemoteUrl when configured.");
+            }
+
+            if (DemoRepo.SyncIntervalSeconds < 1)
+            {
+                throw new InvalidOperationException("ControlPlane:Bootstrap:DemoRepo:SyncIntervalSeconds must be positive.");
+            }
+        }
+    }
+}
+
+/// <summary>The demo repo source bootstrap registers (same shape as an API registration).</summary>
+public sealed class DemoRepoOptions
+{
+    public string? Name { get; set; }
+
+    public string? RemoteUrl { get; set; }
+
+    public string Branch { get; set; } = "main";
+
+    public int SyncIntervalSeconds { get; set; } = 300;
 }
 
 /// <summary>The global fixed-window rate limit, partitioned per authenticated subject (or client IP when

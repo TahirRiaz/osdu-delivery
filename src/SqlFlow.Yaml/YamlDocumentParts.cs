@@ -101,8 +101,9 @@ internal static class YamlDocumentParts
             "azdb" => DataSourceKind.AZDB,
             "mysql" => DataSourceKind.MySQL,
             "postgres" or "postgresql" => DataSourceKind.PostgreSQL,
+            "oracle" => DataSourceKind.Oracle,
             _ => throw new FlowValidationException(
-                $"{source}: '{field}' has unknown provider '{provider}'. Allowed: mssql, azdb, mysql, postgres."),
+                $"{source}: '{field}' has unknown provider '{provider}'. Allowed: mssql, azdb, mysql, postgres, oracle."),
         };
 
     /// <summary>Resolves an endpoint to the connection NAME the model carries. The endpoint either references a

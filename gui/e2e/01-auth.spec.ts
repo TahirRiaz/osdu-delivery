@@ -1,0 +1,62 @@
+import { expect, test } from "@playwright/test";
+import { E2E } from "../playwright.config";
+import { adminSession, seedSession } from "./helpers";
+
+// Sign-in surface: the route guard, every login method the control plane offers, error rendering, and sign-out.
+
+test.describe("authentication", () => {
+  test("unauthenticated visit is redirected to the login page with a return target", async ({ page }) => {
+    await page.goto("/runs");
+    await expect(page.getByTestId("login-card")).toBeVisible();
+    expect(page.url()).toContain("/login?returnTo=%2Fruns");
+  });
+
+  test("wrong credentials show an error and stay on the login page", async ({ page, request }) => {
+    await adminSession(request); // ensures bootstrap provisioning has completed before probing logins
+    await page.goto("/login");
+    await page.getByTestId("login-username").fill("no-such-user");
+    await page.getByTestId("login-password").fill("definitely-wrong-password");
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("login-error")).toBeVisible();
+    await expect(page.getByTestId("login-card")).toBeVisible();
+  });
+
+  test("local sign-in lands on the dashboard and returns to the requested page", async ({ page, request }) => {
+    await adminSession(request);
+    await page.goto("/nodes");
+    await expect(page.getByTestId("login-card")).toBeVisible();
+    await page.getByTestId("login-username").fill(E2E.adminUsername);
+    await page.getByTestId("login-password").fill(E2E.adminPassword);
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("page-nodes")).toBeVisible();
+  });
+
+  test("account menu shows the subject and role; sign out returns to login", async ({ page, request }) => {
+    await seedSession(page, await adminSession(request));
+    await page.goto("/");
+    await page.getByTestId("account-menu-button").click();
+    await expect(page.getByTestId("account-subject")).toContainText(E2E.adminUsername);
+    await expect(page.getByTestId("account-subject")).toContainText("admin");
+    await page.getByTestId("account-logout").click();
+    await expect(page.getByTestId("login-card")).toBeVisible();
+    // The session really ended: the persisted session is gone. (A goto here would prove nothing: the test's
+    // init script would immediately re-seed sessionStorage on the navigation.)
+    const persisted = await page.evaluate(() => window.sessionStorage.getItem("sqlflow.session"));
+    expect(persisted).toBeNull();
+  });
+
+  test("bootstrap secret sign-in works from the advanced expander", async ({ page }) => {
+    await page.goto("/login");
+    await page.getByTestId("login-bootstrap-expander").click();
+    await page.getByTestId("login-bootstrap-secret").fill(E2E.bootstrapSecret);
+    await page.getByTestId("login-bootstrap-submit").click();
+    await expect(page.getByTestId("page-dashboard")).toBeVisible();
+  });
+
+  test("entra button is hidden when the control plane has SSO disabled", async ({ page }) => {
+    await page.goto("/login");
+    await expect(page.getByTestId("login-card")).toBeVisible();
+    await expect(page.getByTestId("login-bootstrap-expander")).toBeVisible();
+    await expect(page.getByTestId("login-entra")).toHaveCount(0);
+  });
+});

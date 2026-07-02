@@ -46,6 +46,10 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRepoSource> RepoSources => Set<CatalogRepoSource>();
 
+    public DbSet<CatalogUser> Users => Set<CatalogUser>();
+
+    public DbSet<CatalogRole> Roles => Set<CatalogRole>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -247,6 +251,33 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(s => s.Name).IsUnique();
             // The sync loop scans for enabled sources whose next sync is due.
             entity.HasIndex(s => s.NextSyncUtc);
+        });
+
+        modelBuilder.Entity<CatalogRole>(entity =>
+        {
+            entity.ToTable("Role");
+            entity.HasKey(r => r.Name);
+            entity.Property(r => r.Name).HasMaxLength(64);
+            entity.Property(r => r.Scopes).HasMaxLength(256).IsRequired();
+            entity.Property(r => r.Description).HasMaxLength(512).IsRequired();
+        });
+
+        modelBuilder.Entity<CatalogUser>(entity =>
+        {
+            entity.ToTable("User");
+            entity.HasKey(u => u.Id);
+            entity.Property(u => u.Username).HasMaxLength(256).IsRequired();
+            entity.Property(u => u.Email).HasMaxLength(320);
+            entity.Property(u => u.DisplayName).HasMaxLength(256);
+            // PBKDF2 hashes render well under 512 chars; bounded so the column is never an accidental blob.
+            entity.Property(u => u.PasswordHash).HasMaxLength(512);
+            entity.Property(u => u.Role).HasMaxLength(64).IsRequired();
+            entity.Property(u => u.Provider).HasMaxLength(16).IsRequired();
+            entity.Property(u => u.ExternalObjectId).HasMaxLength(64);
+            // One account per sign-in name across providers, so a token subject is always unambiguous.
+            entity.HasIndex(u => u.Username).IsUnique();
+            // JIT provisioning keys on the Entra object id; filtered unique so local users (null) do not collide.
+            entity.HasIndex(u => u.ExternalObjectId).IsUnique().HasFilter("[ExternalObjectId] IS NOT NULL");
         });
     }
 }

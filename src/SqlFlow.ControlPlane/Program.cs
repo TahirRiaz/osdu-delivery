@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -33,6 +34,20 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSqlFlowEngine();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();
+
+// ---- Identity: regular SQLFlow users (username + PBKDF2 password hash in the catalog) and Azure single sign-on
+// (Entra ID token exchange with JIT provisioning). Both paths end in the same SQLFlow-issued token, so the API
+// surface authorizes one token type no matter how the user signed in.
+builder.Services.AddSingleton<IPasswordHasher<CatalogUser>, PasswordHasher<CatalogUser>>();
+builder.Services.AddSingleton<LoginThrottle>();
+if (options.AzureAd.Enabled)
+{
+    builder.Services.AddSingleton<IExternalTokenValidator, EntraTokenValidator>();
+}
+
+// ---- Bootstrap provisioning: migrations, built-in roles, the initial admin, and the optional demo repo source.
+// Retries in the background until the catalog is reachable, so start order (app before database) never matters.
+builder.Services.AddHostedService<BootstrapProvisioningService>();
 
 // ---- Run queue: the catalog's Run table is a durable work queue. The dispatcher enqueues a run (references only:
 // repo + flow name) and nudges the worker; the background worker atomically claims the oldest queued run, runs it
@@ -89,12 +104,18 @@ builder.Services
 
 builder.Services.AddAuthorization(authz =>
 {
+    static bool HasScope(System.Security.Claims.ClaimsPrincipal user, string scope)
+        => user.FindFirst("scope")?.Value
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(scope) == true;
+
     authz.AddPolicy("read", policy => policy.RequireAuthenticatedUser());
     authz.AddPolicy("operate", policy => policy
         .RequireAuthenticatedUser()
-        .RequireAssertion(context => context.User.FindFirst("scope")?.Value
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Contains("operate") == true));
+        .RequireAssertion(context => HasScope(context.User, "operate")));
+    authz.AddPolicy("admin", policy => policy
+        .RequireAuthenticatedUser()
+        .RequireAssertion(context => HasScope(context.User, "admin")));
 });
 
 // ---- Cross-cutting: problem details, OpenAPI, compression, health, rate limiting, CORS -----------------------
@@ -154,11 +175,9 @@ app.MapOpenApi();
 
 var v1 = app.MapGroup("/api/v1");
 
-// The bootstrap token endpoint is mapped only when a bootstrap secret is configured.
-if (!string.IsNullOrEmpty(options.Jwt.BootstrapSecret))
-{
-    v1.MapAuthEndpoints();
-}
+// The sign-in surface: providers discovery and local login are always available; the Entra token exchange is
+// mapped when Azure SSO is enabled; the break-glass bootstrap token endpoint only when a secret is configured.
+v1.MapAuthEndpoints(options);
 
 // The authenticated read surface: repos/pipelines, runs, lineage, cross-repo search, and schedules.
 v1.MapGroup(string.Empty).RequireAuthorization("read")
@@ -177,6 +196,11 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapRunTriggerEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints();
+
+// The admin surface: user and role administration requires the "admin" scope (the admin role, or a bootstrap
+// token that requested it).
+v1.MapGroup(string.Empty).RequireAuthorization("admin")
+    .MapUserEndpoints();
 
 app.Run();
 

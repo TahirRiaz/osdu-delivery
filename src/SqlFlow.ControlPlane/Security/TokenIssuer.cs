@@ -27,8 +27,10 @@ public sealed class TokenIssuer
     }
 
     /// <summary>Issues a token for the subject with the given scopes (space-delimited <c>scope</c> claim), valid
-    /// for the configured access-token lifetime. <paramref name="nowUtc"/> is injectable for deterministic tests.</summary>
-    public TokenResult Issue(string subject, IReadOnlyList<string> scopes, DateTime nowUtc)
+    /// for the configured access-token lifetime. A user-backed token also carries the user's role and catalog id
+    /// (<c>role</c> / <c>uid</c> claims) so the GUI can shape itself without a second call; a bootstrap token
+    /// carries neither. <paramref name="nowUtc"/> is injectable for deterministic tests.</summary>
+    public TokenResult Issue(string subject, IReadOnlyList<string> scopes, DateTime nowUtc, string? role = null, Guid? userId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subject);
         ArgumentNullException.ThrowIfNull(scopes);
@@ -42,6 +44,16 @@ public sealed class TokenIssuer
         if (scopes.Count > 0)
         {
             claims.Add(new Claim("scope", string.Join(' ', scopes)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(role))
+        {
+            claims.Add(new Claim("role", role));
+        }
+
+        if (userId is not null)
+        {
+            claims.Add(new Claim("uid", userId.Value.ToString("D")));
         }
 
         var descriptor = new SecurityTokenDescriptor

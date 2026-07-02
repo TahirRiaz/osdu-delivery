@@ -484,6 +484,96 @@ public class CatalogNode
     public string? Version { get; set; }
 }
 
+/// <summary>The identity providers a <see cref="CatalogUser"/> can come from, stored as a short lowercase string
+/// (same convention as <see cref="RunStatuses"/>).</summary>
+public static class UserProviders
+{
+    /// <summary>A regular SQLFlow user: username + password hash held in the catalog.</summary>
+    public const string Local = "local";
+
+    /// <summary>A Microsoft Entra ID user provisioned just-in-time from a validated Entra token.</summary>
+    public const string Entra = "entra";
+}
+
+/// <summary>The built-in role names. Roles live in <see cref="CatalogRole"/> rows (seeded at bootstrap) so their
+/// scope grants are visible and queryable in the database; these constants exist so code never scatters string
+/// literals.</summary>
+public static class RoleNames
+{
+    /// <summary>Full control: read, operate, and user/role administration.</summary>
+    public const string Admin = "admin";
+
+    /// <summary>Day-to-day operations: read everything, trigger/cancel runs, manage schedules and repo sources.</summary>
+    public const string Operator = "operator";
+
+    /// <summary>Read-only access to the whole API surface.</summary>
+    public const string Viewer = "viewer";
+
+    /// <summary>Every built-in role, for validation messages and seeding.</summary>
+    public static readonly string[] All = [Admin, Operator, Viewer];
+}
+
+/// <summary>
+/// One role: a named set of API scopes. The built-in roles (admin / operator / viewer) are seeded by the control
+/// plane's bootstrap provisioning; a user's effective scopes at login are read from their role's row, so a grant
+/// change takes effect on the next token without a redeploy.
+/// </summary>
+public class CatalogRole
+{
+    /// <summary>The role name (the stable identity users reference).</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The scopes the role grants, space-delimited exactly as they appear in the token's <c>scope</c>
+    /// claim (for example <c>read operate admin</c>).</summary>
+    public string Scopes { get; set; } = string.Empty;
+
+    public string Description { get; set; } = string.Empty;
+
+    public DateTime CreatedUtc { get; set; }
+}
+
+/// <summary>
+/// One user of the control plane. Two kinds share the row shape: a regular SQLFlow user
+/// (<see cref="UserProviders.Local"/>, authenticated by <see cref="PasswordHash"/>) and a Microsoft Entra ID user
+/// (<see cref="UserProviders.Entra"/>, authenticated by Entra and provisioned just-in-time on first sign-in, keyed
+/// by <see cref="ExternalObjectId"/>). Either way the control plane issues its own token; this row supplies the
+/// subject and the role the token's scopes come from. Users are deactivated rather than deleted so audit history
+/// stays attributable.
+/// </summary>
+public class CatalogUser
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The sign-in name (for an Entra user, the account's UPN/email). Unique across providers.</summary>
+    public string Username { get; set; } = string.Empty;
+
+    public string? Email { get; set; }
+
+    public string? DisplayName { get; set; }
+
+    /// <summary>The PBKDF2 password hash for a local user; null for an SSO user (they have no local password).</summary>
+    public string? PasswordHash { get; set; }
+
+    /// <summary>The role granting this user's scopes; references <see cref="CatalogRole.Name"/> (soft link).</summary>
+    public string Role { get; set; } = RoleNames.Viewer;
+
+    /// <summary>Where the user authenticates: <see cref="UserProviders.Local"/> or <see cref="UserProviders.Entra"/>.</summary>
+    public string Provider { get; set; } = UserProviders.Local;
+
+    /// <summary>The Entra object id (<c>oid</c> claim) for an SSO user: the immutable identity JIT provisioning
+    /// keys on, so a UPN rename never creates a duplicate. Null for local users.</summary>
+    public string? ExternalObjectId { get; set; }
+
+    /// <summary>An inactive user cannot sign in (local) or exchange a token (SSO). Deactivation is the delete.</summary>
+    public bool Active { get; set; } = true;
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+
+    public DateTime? LastLoginUtc { get; set; }
+}
+
 /// <summary>
 /// One schedule that fires a pipeline on a cron expression or a fixed interval by enqueuing a run onto the durable
 /// queue (the same path a manual trigger takes). A schedule is either declared in the flow YAML and synced from git

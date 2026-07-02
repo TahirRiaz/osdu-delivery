@@ -446,14 +446,14 @@ public sealed class StoredProcedureEdgeCaseTests
             name: bogus-provider
             connections:
               dwh:
-                provider: oracle
+                provider: db2
                 connection: ${env:DWH}
             procedure:
               server: dwh
               object: DW.dbo.usp_X
             """));
 
-        Assert.Contains("unknown provider 'oracle'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("unknown provider 'db2'", ex.Message, StringComparison.Ordinal);
     }
 
     // ---------------------------------------------------------------------------------------------------
