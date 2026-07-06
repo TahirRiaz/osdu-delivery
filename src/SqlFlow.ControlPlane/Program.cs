@@ -1,5 +1,6 @@
 using System.Text;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -86,9 +87,24 @@ builder.Services.AddDbContextPool<CatalogDbContext>((sp, db) =>
 });
 
 // ---- AuthN / AuthZ -------------------------------------------------------------------------------------------
+// Two bearer credentials share one Authorization header: a short-lived HS256 session token (the GUI, MCP device
+// flow) and a long-lived personal access token (headless clients: the CLI, the VSCode extension, automation). A
+// policy scheme reads the presented token and forwards to the right validator by shape, so authorization downstream
+// sees one authenticated principal type regardless of which credential arrived.
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.Jwt.SigningKey!));
 builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddAuthentication(PersonalAccessTokenDefaults.PolicyScheme)
+    .AddPolicyScheme(PersonalAccessTokenDefaults.PolicyScheme, "Bearer (JWT or PAT)", policy =>
+    {
+        policy.ForwardDefaultSelector = context =>
+        {
+            var header = context.Request.Headers.Authorization.ToString();
+            return header.StartsWith("Bearer " + AccessTokenGenerator.Prefix, StringComparison.Ordinal)
+                ? PersonalAccessTokenDefaults.Scheme
+                : JwtBearerDefaults.AuthenticationScheme;
+        };
+    })
+    .AddScheme<AuthenticationSchemeOptions, PersonalAccessTokenHandler>(PersonalAccessTokenDefaults.Scheme, null)
     .AddJwtBearer(jwt =>
     {
         jwt.MapInboundClaims = false; // keep "sub"/"scope" claim types as issued
@@ -224,7 +240,9 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapScheduleReadEndpoints()
     .MapNodeEndpoints()
     .MapRepoSourceReadEndpoints()
-    .MapSummaryEndpoints();
+    .MapSummaryEndpoints()
+    // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own).
+    .MapMeEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.

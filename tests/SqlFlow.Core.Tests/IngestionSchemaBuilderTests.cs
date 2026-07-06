@@ -39,7 +39,8 @@ public sealed class IngestionSchemaBuilderTests
             forStaging: true);
 
         Assert.Equal(new[] { "Id", "Name", "InsertedDate_DW", "UpdatedDate_DW" }, schema.Columns.Select(c => c.Name).ToArray());
-        Assert.Equal("datetime2(3)", Col(schema, "InsertedDate_DW").DataType.Render());
+        // Audit stamps are datetime (not datetime2), matching the original SQLFlow arc/ods tables.
+        Assert.Equal("datetime", Col(schema, "InsertedDate_DW").DataType.Render());
         Assert.Equal(ColumnOrigin.Computed, Col(schema, "InsertedDate_DW").Origin);
         Assert.Equal(ColumnOrigin.BulkCopied, Col(schema, "Id").Origin);
         Assert.Equal(new[] { "Id", "Name" }, schema.SourceToTargetNames.Keys.OrderBy(k => k).ToArray());

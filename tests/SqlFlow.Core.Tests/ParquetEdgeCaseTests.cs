@@ -445,7 +445,8 @@ public sealed class ParquetEdgeCaseTests : IDisposable
 
         var (columns, rows) = await ReadAllRowsAsync(EdgeSource(path));
 
-        Assert.Equal(expectedSize, CellOf(columns, rows[0], "FileSize_DW"));
+        // Provenance lands as strings in the raw layer; the size is the byte count rendered as digits.
+        Assert.Equal(expectedSize.ToString(CultureInfo.InvariantCulture), CellOf(columns, rows[0], "FileSize_DW"));
     }
 
     [Fact]
@@ -458,8 +459,10 @@ public sealed class ParquetEdgeCaseTests : IDisposable
 
         var (columns, rows) = await ReadAllRowsAsync(EdgeSource(path));
 
-        var fileDate = Assert.IsType<DateTime>(CellOf(columns, Assert.Single(rows), "FileDate_DW"));
-        Assert.Equal(stamp, fileDate.ToUniversalTime());
+        // Provenance lands as strings in the raw layer: the modified timestamp is encoded yyyyMMddHHmmss
+        // (UTC), the shape the transformation view CASTs to decimal(14,0).
+        var fileDate = Assert.IsType<string>(CellOf(columns, Assert.Single(rows), "FileDate_DW"));
+        Assert.Equal(stamp.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture), fileDate);
     }
 
     // ---- ExpectedColumnCount: the matching (non-throwing) side, counting leaves ------------------------------

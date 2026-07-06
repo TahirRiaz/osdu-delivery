@@ -347,8 +347,10 @@ public sealed class XlsSourceReaderTests : IDisposable
 
         var columns = await _reader.GetColumnsAsync(Source(path, new() { ["includeFileLineNumber"] = "true" }));
 
-        Assert.Equal(typeof(long), columns.Single(c => c.Name == "FileSize_DW").Type);
-        Assert.Equal(typeof(DateTime), columns.Single(c => c.Name == "FileDate_DW").Type);
+        // File provenance lands as strings (the raw layer is untyped; the transformation view applies
+        // the real types), while the row/line counters stay real longs from the reader.
+        Assert.Equal(typeof(string), columns.Single(c => c.Name == "FileSize_DW").Type);
+        Assert.Equal(typeof(string), columns.Single(c => c.Name == "FileDate_DW").Type);
         Assert.Equal(typeof(long), columns.Single(c => c.Name == "RowNumber_DW").Type);
         Assert.Equal(typeof(long), columns.Single(c => c.Name == "FileLineNumber").Type);
     }

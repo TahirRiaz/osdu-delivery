@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
@@ -135,6 +136,64 @@ public sealed class RunBatchReportApiTests
             var orphanDetail = await GetJsonAsync<RunDetailDto>(client, token, $"/api/v1/runs/{orphanRunId}");
             Assert.Equal(CatalogPipeline.DefaultBatch, orphanDetail.Batch);
             Assert.Equal(-1, orphanDetail.Wave);
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
+    public async Task RunsApi_LatestBreaksWrittenUtcTies_ByRunIdDescending()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repoName = "cp_tie_" + suffix;
+        var repoId = FlowIdentity.FromName(repoName);
+        var flowName = "cp_tie_flow_" + suffix;
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var now = DateTime.UtcNow;
+
+        // Two runs of one pipeline written at the SAME instant: the board must surface the one with the
+        // greater RunId, compared the way SQL Server orders uniqueidentifier (SqlGuid, not Guid.CompareTo),
+        // because that is the comparison the query's ORDER BY RunId DESC evaluates in.
+        var tieA = Guid.CreateVersion7();
+        var tieB = Guid.CreateVersion7();
+        var expectedWinner = new SqlGuid(tieA).CompareTo(new SqlGuid(tieB)) > 0 ? tieA : tieB;
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Repos.Add(new CatalogRepo
+                {
+                    Id = repoId,
+                    Name = repoName,
+                    RemoteUrl = null,
+                    RootPath = "/tmp/" + repoName,
+                    FirstSeenUtc = now,
+                    LastSyncUtc = now,
+                });
+                db.Pipelines.Add(SeedPipeline(pipelineId, repoId, flowName, batch: null, wave: 0, now));
+                db.Runs.Add(SeedRun(tieA, pipelineId, repoId, flowName, now, succeeded: true));
+                db.Runs.Add(SeedRun(tieB, pipelineId, repoId, flowName, now, succeeded: false));
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueReadTokenAsync(client);
+
+            var latest = await GetJsonAsync<PagedResult<RunSummaryDto>>(
+                client, token, $"/api/v1/runs?repoId={repoId}&latest=true&pageSize=200");
+            Assert.Equal(1, latest.Total);
+            Assert.Equal(expectedWinner, Assert.Single(latest.Items).RunId);
         }
         finally
         {

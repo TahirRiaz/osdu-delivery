@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using DuckDB.NET.Data;
 using SqlFlow.Core;
 using SqlFlow.Core.Abstractions;
@@ -17,6 +18,19 @@ namespace SqlFlow.DuckDb;
 public sealed class DuckDbSourceReader : ISourceReader
 {
     private readonly ICloudCredentialProvider? _cloudCredentials;
+
+    // The prepared connection (extensions installed/loaded, secrets created, relation DESCRIBEd, query built)
+    // is parked here by GetColumnsAsync and consumed by OpenAsync, so one run prepares once instead of paying
+    // the DESCRIBE round trip against the remote relation twice. Keyed by the SourceSpec instance the engine
+    // threads through a run's stages: concurrent runs load distinct instances and never share a connection.
+    // A parked connection a run never opens (a schema-only plan) is closed by CompleteAsync; entries whose
+    // spec dies unconsumed are collected with it and the connection's safe handles finalize the native side.
+    private readonly ConditionalWeakTable<SourceSpec, PreparedSlot> _prepared = new();
+
+    private sealed class PreparedSlot
+    {
+        public Prepared? Value;
+    }
 
     /// <summary>Constructs a reader with no cloud-credential resolution (local/explicit-init only).</summary>
     public DuckDbSourceReader()
@@ -43,7 +57,16 @@ public sealed class DuckDbSourceReader : ISourceReader
     {
         ArgumentNullException.ThrowIfNull(source);
         var prepared = await PrepareAsync(source, ct).ConfigureAwait(false);
-        await prepared.Connection.DisposeAsync().ConfigureAwait(false);
+
+        // Park the prepared connection for the run's OpenAsync instead of disposing it, so the run prepares
+        // once. A prior parked connection for the same spec (a re-planned run) is displaced and closed.
+        var slot = _prepared.GetOrCreateValue(source);
+        var displaced = Interlocked.Exchange(ref slot.Value, prepared);
+        if (displaced is not null)
+        {
+            await displaced.Connection.DisposeAsync().ConfigureAwait(false);
+        }
+
         return prepared.Columns;
     }
 
@@ -51,7 +74,7 @@ public sealed class DuckDbSourceReader : ISourceReader
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        var prepared = await PrepareAsync(source, ct).ConfigureAwait(false);
+        var prepared = TakePrepared(source) ?? await PrepareAsync(source, ct).ConfigureAwait(false);
         DbCommand? command = null;
         try
         {
@@ -79,6 +102,27 @@ public sealed class DuckDbSourceReader : ISourceReader
             throw;
         }
     }
+
+    /// <summary>
+    /// Closes a prepared connection the run parked but never opened (a plan that stopped at the schema stage,
+    /// or a failed run that got no further), so the engine's end-of-run hook releases it deterministically. A
+    /// normal run's connection was consumed by <see cref="OpenAsync"/> and is owned by its reader; this is a
+    /// no-op then.
+    /// </summary>
+    public async Task CompleteAsync(SourceSpec source, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var leftover = TakePrepared(source);
+        if (leftover is not null)
+        {
+            await leftover.Connection.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Atomically claims the connection parked for this spec, or null when none is parked (no schema
+    /// pass ran, or it was already consumed), so a parked connection is opened exactly once.</summary>
+    private Prepared? TakePrepared(SourceSpec source)
+        => _prepared.TryGetValue(source, out var slot) ? Interlocked.Exchange(ref slot.Value, null) : null;
 
     private async Task<Prepared> PrepareAsync(SourceSpec source, CancellationToken ct)
     {

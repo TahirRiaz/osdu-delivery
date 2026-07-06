@@ -190,9 +190,11 @@ public sealed class ParquetSourceReaderTests : IDisposable
         var byName = columns.ToDictionary(c => c.Name, c => c.Type, StringComparer.OrdinalIgnoreCase);
 
         Assert.Equal(typeof(int), byName["id"]);   // source column now carries its real type
+        // File provenance lands as strings (the raw layer is untyped; the transformation view applies
+        // the real types), while the row number stays a real long from the reader.
         Assert.Equal(typeof(string), byName["FileName_DW"]);
-        Assert.Equal(typeof(DateTime), byName["FileDate_DW"]);
-        Assert.Equal(typeof(long), byName["FileSize_DW"]);
+        Assert.Equal(typeof(string), byName["FileDate_DW"]);
+        Assert.Equal(typeof(string), byName["FileSize_DW"]);
         Assert.Equal(typeof(long), byName["RowNumber_DW"]);
     }
 

@@ -21,7 +21,7 @@ public sealed class ExportSegmentPlannerTests
     private static ExportFlow Flow(
         string by, int size = 1, string? dateColumn = null, string? keyColumn = null,
         DateOnly? from = null, DateOnly? to = null, bool timestamp = false, string? filter = null,
-        string? subfolder = null, string fileName = "out", string? withHint = null)
+        string? subfolder = null, string fileName = "out", string? withHint = null, int threads = 0)
         => new()
         {
             FlowId = 1,
@@ -39,6 +39,7 @@ public sealed class ExportSegmentPlannerTests
             Subfolderpattern = subfolder,
             TrgFileName = fileName,
             SrcWithHint = withHint,
+            NoOfThreads = threads,
         };
 
     [Fact]
@@ -99,6 +100,65 @@ public sealed class ExportSegmentPlannerTests
         Assert.Contains("[Id] IS NULL", segments[^1].Sql, StringComparison.Ordinal);
         Assert.Contains("[Id] >= 0 AND [Id] <= ", segments[0].Sql, StringComparison.Ordinal); // inclusive key window
         Assert.Matches(@"^out_\d{3}-\d{3}$", segments[0].FileName);                            // padded to 250's width
+    }
+
+    [Fact]
+    public void Full_WithIntegerKeyRange_SplitsIntoContiguousInclusiveRanges_PlusNullRows()
+    {
+        var range = new FullExportKeyRange { Column = "Id", Kind = FullExportKeyKind.Whole, Min = 0L, Max = 100L };
+        var segments = ExportSegmentPlanner.Plan(Flow("F", threads: 4), Columns, keyMax: 0, RunTimestamp, range);
+
+        Assert.Equal(5, segments.Count); // four thread ranges + NullRows
+        Assert.Contains("[Id] >= 0 AND [Id] <= 24", segments[0].Sql, StringComparison.Ordinal);
+        Assert.Contains("[Id] >= 25 AND [Id] <= 49", segments[1].Sql, StringComparison.Ordinal);
+        Assert.Contains("[Id] >= 50 AND [Id] <= 74", segments[2].Sql, StringComparison.Ordinal);
+        Assert.Contains("[Id] >= 75 AND [Id] <= 100", segments[3].Sql, StringComparison.Ordinal);
+        Assert.Equal("out_000-024", segments[0].FileName); // padded to 100's width, K-style
+        Assert.EndsWith("_NullRows", segments[^1].FileName);
+        Assert.Contains("[Id] IS NULL", segments[^1].Sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Full_WithDateTimeKeyRange_UsesHalfOpenRanges_LastClosedAtMax()
+    {
+        var range = new FullExportKeyRange
+        {
+            Column = "OrderDate",
+            Kind = FullExportKeyKind.DateTime,
+            Min = new DateTime(2024, 1, 1),
+            Max = new DateTime(2024, 1, 5),
+        };
+        var segments = ExportSegmentPlanner.Plan(Flow("F", threads: 2), Columns, keyMax: 0, RunTimestamp, range);
+
+        Assert.Equal(3, segments.Count); // two thread ranges + NullRows
+        Assert.Contains(
+            "[OrderDate] >= '2024-01-01T00:00:00.0000000' AND [OrderDate] < '2024-01-03T00:00:00.0000000'",
+            segments[0].Sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "[OrderDate] >= '2024-01-03T00:00:00.0000000' AND [OrderDate] <= '2024-01-05T00:00:00.0000000'",
+            segments[1].Sql, StringComparison.Ordinal);
+        Assert.Equal("out_20240101000000-20240103000000", segments[0].FileName);
+        Assert.EndsWith("_NullRows", segments[^1].FileName);
+    }
+
+    [Fact]
+    public void Full_WithKeyRange_ButSingleThread_StaysOneSegment()
+    {
+        var range = new FullExportKeyRange { Column = "Id", Kind = FullExportKeyKind.Whole, Min = 0L, Max = 100L };
+        var segment = Assert.Single(ExportSegmentPlanner.Plan(Flow("F", threads: 1), Columns, keyMax: 0, RunTimestamp, range));
+        Assert.EndsWith("WHERE 1=1", segment.Sql);
+        Assert.Equal("out", segment.FileName);
+    }
+
+    [Fact]
+    public void Full_WithCollapsedKeyRange_EmitsOneRange_PlusNullRows()
+    {
+        var range = new FullExportKeyRange { Column = "Id", Kind = FullExportKeyKind.Whole, Min = 7L, Max = 7L };
+        var segments = ExportSegmentPlanner.Plan(Flow("F", threads: 4), Columns, keyMax: 0, RunTimestamp, range);
+
+        Assert.Equal(2, segments.Count); // the whole (single-value) range + NullRows
+        Assert.Contains("[Id] >= 7 AND [Id] <= 7", segments[0].Sql, StringComparison.Ordinal);
+        Assert.EndsWith("_NullRows", segments[^1].FileName);
     }
 
     [Fact]

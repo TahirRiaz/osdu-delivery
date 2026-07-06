@@ -88,10 +88,28 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
             return;
         }
 
-        var resource = SchemaLockResource(batch.Schema, batch.Table);
-
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
+        await ApplyDdlAsync(connection, batch, options, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Same protocol over a caller-supplied open connection, so a caller that has already opened one for
+    /// introspection (see <c>SchemaSyncService.EvolveAsync</c>) does not pay a second open. The session's
+    /// LOCK_TIMEOUT is restored to the default before returning, so the connection goes back to its owner
+    /// (or the pool) without a surprise timeout baked into the session.
+    /// </summary>
+    public static async Task ApplyDdlAsync(SqlConnection connection, DdlBatch batch, SchemaApplyOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(batch);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!batch.HasChanges)
+        {
+            return;
+        }
+
+        var resource = SchemaLockResource(batch.Schema, batch.Table);
 
         // Governs the Sch-M waits of the DDL itself: a blocked ALTER aborts with 1222 instead of queuing.
         await SetSessionLockTimeoutAsync(connection, options.DdlLockTimeoutMs, ct).ConfigureAwait(false);
@@ -140,6 +158,26 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
         finally
         {
             await ReleaseAppLockAsync(connection, resource).ConfigureAwait(false);
+            await RestoreDefaultLockTimeoutAsync(connection).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task RestoreDefaultLockTimeoutAsync(SqlConnection connection)
+    {
+        if (connection.State != ConnectionState.Open)
+        {
+            return;
+        }
+
+        try
+        {
+            await using var command = new SqlCommand("SET LOCK_TIMEOUT -1;", connection);
+            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (SqlException)
+        {
+            // Best-effort session hygiene: a shared connection is disposed or pool-reset by its owner anyway,
+            // and a restore failure must not mask the original DDL exception.
         }
     }
 

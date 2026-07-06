@@ -358,6 +358,17 @@ export interface LineageObjectColumn {
   nullable: boolean;
 }
 
+/** The script behind any lineage node in one shape: a pipeline's YAML, a view/procedure's module body, or a
+ * table's generated CREATE TABLE. `language` is "yaml" or "sql"; `source` is Authored / Module / a script tier. */
+export interface NodeScript {
+  key: string;
+  kind: string;
+  language: string;
+  script: string | null;
+  source: string | null;
+  name: string | null;
+}
+
 export interface LineageEdge {
   id: number;
   repoId: string;
@@ -444,4 +455,34 @@ export interface CreateUserRequest {
   role: string;
   email?: string | null;
   displayName?: string | null;
+}
+
+// ---- Personal access tokens -------------------------------------------------------------------------------------
+
+export interface AccessToken {
+  id: string;
+  name: string;
+  /** The recognizable, non-secret lead of the token (for example "sqlf_a1b2c3"). */
+  prefix: string;
+  scopes: string[];
+  createdUtc: string;
+  /** Null when the token never expires; a past value means it is expired. */
+  expiresUtc: string | null;
+  lastUsedUtc: string | null;
+  /** Non-null once the token is revoked. */
+  revokedUtc: string | null;
+}
+
+export interface CreateAccessTokenRequest {
+  name: string;
+  /** Capped server-side to the caller's own scopes; omit/empty defaults to all of them. */
+  scopes?: string[];
+  /** Null (omitted) means the token never expires. */
+  expiresInDays?: number | null;
+}
+
+/** The create response: the listing view plus the one-time secret, shown exactly once. */
+export interface CreatedAccessToken {
+  token: AccessToken;
+  secret: string;
 }

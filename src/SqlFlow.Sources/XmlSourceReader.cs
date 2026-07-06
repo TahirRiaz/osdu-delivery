@@ -77,7 +77,10 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
         var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
         var records = XmlRecordReader.ReadRecords(data, meta.RowXPath, meta.StripNamespacePrefixes, file.Name);
 
-        var columns = DiscoverColumns(records, flattener);
+        // The column order comes from the discovery the schema pass already ran and cached, so the data pass is
+        // one download, one parse, and one flatten per record. Only a standalone read with no prior schema pass
+        // on this spec discovers the order here, from the records just parsed.
+        var columns = CachedRawColumnNames(source, file) ?? DiscoverColumns(records, flattener);
         // Case-insensitive, matching SQL Server collation and the base pipeline's column union.
         var index = new Dictionary<string, int>(columns.Count, StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < columns.Count; i++)

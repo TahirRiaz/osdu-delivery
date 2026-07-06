@@ -271,8 +271,12 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
             }
 
             // The reference becomes resolvable: the identity gains its database, and the weak twin
-            // (no longer referenced by any repo's edges) is superseded and removed.
+            // (no longer referenced by any repo's edges) is superseded and removed. The flow document is also
+            // touched (a comment changes its content hash), because the sync recomputes lineage only when a
+            // lineage input it can observe changed: pipeline content, the flow set, or new run artifacts. An
+            // environment-only change rides along with the next content change or connected sync.
             Environment.SetEnvironmentVariable(variable, "Server=localhost;Initial Catalog=SinkDb;Integrated Security=true;");
+            File.AppendAllText(flowPath, $"{Environment.NewLine}# sink reference resolvable since this revision{Environment.NewLine}");
             await using (var db = CatalogDatabase.Create(cs))
             {
                 var healed = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);

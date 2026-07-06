@@ -76,6 +76,17 @@ public sealed class ControlPlaneOptions
             throw new InvalidOperationException("ControlPlane:Scheduler:PollSeconds must be positive.");
         }
 
+        if (Worker.MaxConcurrentRuns < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:Worker:MaxConcurrentRuns must be at least 1.");
+        }
+
+        if (Worker.PollMilliseconds < 250)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Worker:PollMilliseconds must be at least 250, so a misconfigured value cannot spin the drain loop against the catalog.");
+        }
+
         AzureAd.Validate();
         Bootstrap.Validate();
         Proxy.Validate();
@@ -252,6 +263,16 @@ public sealed class WorkerOptions
     public bool Enabled { get; set; } = true;
 
     public string[] Pools { get; set; } = [];
+
+    /// <summary>How many claimed runs this node executes at once. The queue's atomic claim already supports
+    /// concurrent claimants, so this only sizes the node's own in-flight work; a saturated node stops claiming
+    /// and leaves queued runs for other nodes. Minimum 1 (a strictly serial node).</summary>
+    public int MaxConcurrentRuns { get; set; } = 4;
+
+    /// <summary>The drain loop's poll fallback in milliseconds. A triggered run starts at once via the in-process
+    /// nudge; this only bounds how long schedule- and other-node-enqueued runs (and recovery) wait to be picked
+    /// up. Minimum 250, so a misconfigured value cannot spin-loop the worker against the catalog.</summary>
+    public int PollMilliseconds { get; set; } = 2000;
 }
 
 /// <summary>

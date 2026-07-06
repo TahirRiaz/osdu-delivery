@@ -128,6 +128,15 @@ export default function AppShell() {
             <MenuItem
               onClick={() => {
                 setAccountAnchor(null);
+                navigate("/settings/tokens");
+              }}
+              data-testid="account-tokens"
+            >
+              Personal access tokens
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setAccountAnchor(null);
                 logout();
               }}
               data-testid="account-logout"

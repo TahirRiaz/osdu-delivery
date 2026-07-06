@@ -87,7 +87,21 @@ public sealed class ExportFlowRunner
                 keyMax = await ProbeKeyMaxAsync(sourceConnectionString, keyMaxSql, ct).ConfigureAwait(false);
             }
 
-            var segments = ExportSegmentPlanner.Plan(flow, columns, keyMax, startUtc);
+            // A full-table export with NoOfThreads > 1 auto-chunks on a single-column key (the flow's
+            // IncrementalColumn when set, otherwise a discovered single-column source key) so the thread
+            // cap actually fans out; without a usable key it stays one segment and the event says why.
+            FullExportKeyRange? fullKeyRange = null;
+            if (IsFullExport(flow.ExportBy) && flow.NoOfThreads > 1)
+            {
+                (fullKeyRange, var reason) = await ProbeFullExportKeyRangeAsync(flow, sourceConnectionString, from, Trace, ct).ConfigureAwait(false);
+                if (fullKeyRange is null)
+                {
+                    events.Log(RunLogLevel.Info, "export.plan",
+                        $"full export stays a single segment despite noOfThreads {flow.NoOfThreads}: {reason}");
+                }
+            }
+
+            var segments = ExportSegmentPlanner.Plan(flow, columns, keyMax, startUtc, fullKeyRange);
             events.Log(RunLogLevel.Info, "export.plan",
                 $"{segments.Count} segment(s), chunked by '{flow.ExportBy.Trim().ToUpperInvariant()}', {Math.Max(1, flow.NoOfThreads)} concurrent");
             foreach (var segment in segments)
@@ -245,6 +259,108 @@ public sealed class ExportFlowRunner
         await using var command = new SqlCommand(keyMaxSql, connection) { CommandTimeout = 0 };
         var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
         return value is null or DBNull ? 0 : Math.Max(0, Convert.ToInt32(value, CultureInfo.InvariantCulture));
+    }
+
+    // Anything the planner does not chunk by day/month/key runs its default full-table arm.
+    private static bool IsFullExport(string exportBy)
+    {
+        var by = exportBy.Trim().ToUpperInvariant();
+        return by is not "D" and not "M" and not "K";
+    }
+
+    /// <summary>
+    /// Probes the chunk key for a parallel full-table export: resolves the key column and its CLR type via a
+    /// KeyInfo schema read (the same cross-database three-part name the data SELECTs use), then reads the key's
+    /// MIN/MAX under the flow's source hint. Returns the range, or null plus the reason parallel chunking is
+    /// not possible for this flow.
+    /// </summary>
+    private static async Task<(FullExportKeyRange? Range, string Reason)> ProbeFullExportKeyRangeAsync(
+        ExportFlow flow, string connectionString, string from, Action<string, string?> trace, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        string? column;
+        Type? clrType;
+        var keyInfoSql = $"SELECT * FROM {from}";
+        await using (var schemaCommand = new SqlCommand(keyInfoSql, connection) { CommandTimeout = 0 })
+        await using (var schemaReader = await schemaCommand.ExecuteReaderAsync(CommandBehavior.SchemaOnly | CommandBehavior.KeyInfo, ct).ConfigureAwait(false))
+        {
+            var schema = await schemaReader.GetSchemaTableAsync(ct).ConfigureAwait(false);
+            if (schema is null)
+            {
+                return (null, "the source exposes no column metadata");
+            }
+
+            var types = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
+            var keyColumns = new List<string>();
+            foreach (DataRow row in schema.Rows)
+            {
+                if (row["ColumnName"] is not string name || row["DataType"] is not Type type)
+                {
+                    continue;
+                }
+
+                types[name] = type;
+                if (row["IsKey"] is bool isKey && isKey)
+                {
+                    keyColumns.Add(name);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(flow.IncrementalColumn))
+            {
+                column = flow.IncrementalColumn.Trim();
+                if (!types.TryGetValue(column, out clrType))
+                {
+                    return (null, $"incrementalColumn '{column}' was not found on the source");
+                }
+            }
+            else if (keyColumns.Count == 1)
+            {
+                column = keyColumns[0];
+                clrType = types[column];
+            }
+            else
+            {
+                return (null, keyColumns.Count == 0
+                    ? "the source declares no single-column key and the flow sets no incrementalColumn"
+                    : $"the source key spans {keyColumns.Count} columns; set incrementalColumn to pick the chunk key");
+            }
+        }
+
+        var kind = FullExportKeyRange.KindOf(clrType);
+        if (kind is null)
+        {
+            return (null, $"chunk key '{column}' is {clrType.Name}, not a numeric or date/time type");
+        }
+
+        // Read the key range under the same source hint (for example NOLOCK) as the data SELECTs.
+        var rangeSql = $"SELECT MIN([{Escape(column)}]), MAX([{Escape(column)}]) FROM {from}{ExportSegmentPlanner.TableHint(flow.SrcWithHint)}";
+        trace("source.keyrange", rangeSql);
+        await using var rangeCommand = new SqlCommand(rangeSql, connection) { CommandTimeout = 0 };
+        await using var rangeReader = await rangeCommand.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await rangeReader.ReadAsync(ct).ConfigureAwait(false)
+            || await rangeReader.IsDBNullAsync(0, ct).ConfigureAwait(false)
+            || await rangeReader.IsDBNullAsync(1, ct).ConfigureAwait(false))
+        {
+            return (null, $"chunk key '{column}' has no non-null values to split on");
+        }
+
+        object min;
+        object max;
+        try
+        {
+            min = rangeReader.GetValue(0);
+            max = rangeReader.GetValue(1);
+        }
+        catch (Exception ex) when (ex is OverflowException or System.Data.SqlTypes.SqlTypeException)
+        {
+            // decimal(38) keys beyond the CLR decimal range cannot be split client-side.
+            return (null, $"chunk key '{column}' holds values outside the client numeric range ({ex.Message})");
+        }
+
+        return (new FullExportKeyRange { Column = column, Kind = kind.Value, Min = min, Max = max }, string.Empty);
     }
 
     private static IngestionRunRecord BuildRecord(

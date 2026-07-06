@@ -1,7 +1,9 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -36,12 +38,92 @@ public abstract class FileSourceReaderBase : ISourceReader
     private readonly IFileLifecycle _lifecycle;
     private readonly IReadOnlyList<IFileStore> _fileStores;
 
+    // Per-run cache, keyed by the SourceSpec instance the engine threads through a run's three stages
+    // (GetColumnsAsync, OpenAsync, CompleteAsync). Concurrent runs load distinct spec instances, so they never
+    // share an entry; the weak table drops an entry when its spec dies, and CompleteAsync evicts eagerly so a
+    // host that re-runs a cached spec instance still resolves fresh.
+    private readonly ConditionalWeakTable<SourceSpec, RunState> _runs = new();
+
     protected FileSourceReaderBase(IFileLifecycle lifecycle, IEnumerable<IFileStore> fileStores)
     {
         ArgumentNullException.ThrowIfNull(fileStores);
         _lifecycle = lifecycle;
         _fileStores = fileStores.ToList();
     }
+
+    /// <summary>
+    /// One run's cached file selection and per-file schemas. The snapshot semantic is deliberate: the file list
+    /// is resolved once and every later stage acts on that same set, so a file appearing (or vanishing) mid-run
+    /// is never half-processed - it belongs to the next run, which resolves a fresh snapshot. The schema map is
+    /// concurrent because the data pass prefetches the next file's schema while the current file streams.
+    /// </summary>
+    private sealed class RunState
+    {
+        /// <summary>The single resolve for the run; null until a stage starts it.</summary>
+        private volatile Task<ResolvedFiles>? _resolve;
+
+        /// <summary>Each file's schema, read exactly once per run, keyed by <see cref="FileRef.Path"/>.</summary>
+        public readonly ConcurrentDictionary<string, FileSchema> FileSchemas = new(StringComparer.Ordinal);
+
+        /// <summary>The run's snapshot when the resolve has completed successfully, else null.</summary>
+        public ResolvedFiles? Snapshot
+            => _resolve is { IsCompletedSuccessfully: true } resolved ? resolved.Result : null;
+
+        /// <summary>
+        /// Starts (or joins) the run's one resolve. A failed resolve is not memoized: every stage that awaited
+        /// it observes the failure, but a later stage on the same state resolves afresh instead of replaying a
+        /// stale error.
+        /// </summary>
+        public Task<ResolvedFiles> ResolveOnceAsync(Func<Task<ResolvedFiles>> resolve)
+        {
+            lock (FileSchemas)
+            {
+                if (_resolve is { } existing)
+                {
+                    return existing;
+                }
+
+                var started = AwaitAndUncacheOnFailureAsync(resolve);
+
+                // A resolve that already failed (it completed synchronously) has run its cleanup before this
+                // point, so memoizing it would pin the stale failure; hand it back unmemoized instead.
+                if (!started.IsFaulted && !started.IsCanceled)
+                {
+                    _resolve = started;
+                }
+
+                return started;
+            }
+        }
+
+        private async Task<ResolvedFiles> AwaitAndUncacheOnFailureAsync(Func<Task<ResolvedFiles>> resolve)
+        {
+            try
+            {
+                return await resolve().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Only this task can be memoized while it is in flight, so clearing here always removes
+                // exactly this failed resolve (or a no-op null when it failed before being memoized).
+                lock (FileSchemas)
+                {
+                    _resolve = null;
+                }
+
+                throw;
+            }
+        }
+    }
+
+    private sealed record ResolvedFiles(IFileStore Store, IReadOnlyList<FileRef> Files);
+
+    /// <summary>
+    /// A single file's schema: the cleaned columns the pipeline unions and maps by, plus the raw (pre-cleanup)
+    /// column-name order for formats that lay out row cells by discovered name (JSON, XML). The two lists are
+    /// index-aligned because <see cref="CleanColumnNames"/> is index-preserving.
+    /// </summary>
+    protected sealed record FileSchema(IReadOnlyList<SourceColumn> Columns, IReadOnlyList<string> RawNames);
 
     /// <summary>True if this reader handles the given source type (e.g. "csv", "xls").</summary>
     public abstract bool CanHandle(string sourceType);
@@ -62,19 +144,50 @@ public abstract class FileSourceReaderBase : ISourceReader
     /// Reads a single file's column schema in file order. The default treats every column as a string - the
     /// format leaves typing to the downstream inference step. A self-describing format (Parquet) overrides this
     /// to declare the real CLR and SQL types; its <see cref="ReadLinesAsync"/> cells then carry the matching
-    /// typed values, which the pipeline streams straight to the typed target columns.
+    /// typed values, which the pipeline streams straight to the typed target columns. Called at most once per
+    /// file per run: the result is cached on the run state and reused by the data pass and the row streamer.
     /// </summary>
-    protected virtual async Task<IReadOnlyList<SourceColumn>> ReadColumnSchemaAsync(IFileStore store, FileRef file, SourceSpec source, CancellationToken ct)
+    protected virtual async Task<FileSchema> ReadFileSchemaAsync(IFileStore store, FileRef file, SourceSpec source, CancellationToken ct)
     {
-        var names = CleanColumnNames(await ReadColumnNamesAsync(store, file, source, ct).ConfigureAwait(false));
+        var rawNames = await ReadColumnNamesAsync(store, file, source, ct).ConfigureAwait(false);
+        var names = CleanColumnNames(rawNames);
         var columns = new List<SourceColumn>(names.Count);
         foreach (var name in names)
         {
             columns.Add(new SourceColumn { Name = name, Type = typeof(string), IsNullable = true });
         }
 
-        return columns;
+        return new FileSchema(columns, rawNames);
     }
+
+    /// <summary>
+    /// The file's schema from the run's cache, reading it (and populating the cache) only on the first request.
+    /// The schema pass fills the cache for every selected file, so the data pass never re-reads a header; a data
+    /// pass without a preceding schema pass (a caller that opens directly) reads on demand instead.
+    /// </summary>
+    private async Task<FileSchema> GetOrReadFileSchemaAsync(RunState run, IFileStore store, FileRef file, SourceSpec source, CancellationToken ct)
+    {
+        if (run.FileSchemas.TryGetValue(file.Path, out var cached))
+        {
+            return cached;
+        }
+
+        var schema = await ReadFileSchemaAsync(store, file, source, ct).ConfigureAwait(false);
+
+        // GetOrAdd, not overwrite: if two readers of the same file raced, every consumer keeps seeing the one
+        // schema that won, so the union pass and the row layout can never diverge for a file.
+        return run.FileSchemas.GetOrAdd(file.Path, schema);
+    }
+
+    /// <summary>
+    /// The raw (pre-cleanup) column-name order the schema pass recorded for a file in this run, or null when the
+    /// file's schema has not been read yet. Formats that lay out row cells by discovered name (JSON, XML) use
+    /// this to emit the data pass from a single parse instead of re-discovering the column order.
+    /// </summary>
+    protected IReadOnlyList<string>? CachedRawColumnNames(SourceSpec source, FileRef file)
+        => _runs.TryGetValue(source, out var run) && run.FileSchemas.TryGetValue(file.Path, out var schema)
+            ? schema.RawNames
+            : null;
 
     /// <summary>
     /// The legacy file-flow column-name cleanup, applied to every file source so a V3 run produces the same
@@ -89,7 +202,8 @@ public abstract class FileSourceReaderBase : ISourceReader
     {
         ArgumentNullException.ThrowIfNull(source);
         var options = ReadOptions(source);
-        var (store, files) = await ResolveAsync(options, ct).ConfigureAwait(false);
+        var run = RunStateFor(source);
+        var (store, files) = await GetOrResolveAsync(run, options, ct).ConfigureAwait(false);
 
         var union = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -97,7 +211,7 @@ public abstract class FileSourceReaderBase : ISourceReader
 
         foreach (var file in files)
         {
-            foreach (var column in await ReadColumnSchemaAsync(store, file, source, ct).ConfigureAwait(false))
+            foreach (var column in (await GetOrReadFileSchemaAsync(run, store, file, source, ct).ConfigureAwait(false)).Columns)
             {
                 if (string.IsNullOrEmpty(column.Name))
                 {
@@ -218,7 +332,8 @@ public abstract class FileSourceReaderBase : ISourceReader
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(columns);
         var options = ReadOptions(source);
-        var (store, files) = await ResolveAsync(options, ct).ConfigureAwait(false);
+        var run = RunStateFor(source);
+        var (store, files) = await GetOrResolveAsync(run, options, ct).ConfigureAwait(false);
 
         var manifest = new List<ProcessedFile>();
         var names = new string[columns.Count];
@@ -229,12 +344,26 @@ public abstract class FileSourceReaderBase : ISourceReader
             types[i] = columns[i].Type;
         }
 
-        var rows = StreamRowsAsync(store, files, columns, source, options, manifest, CancellationToken.None);
+        var rows = StreamRowsAsync(run, store, files, columns, source, options, manifest, CancellationToken.None);
         var reader = new StreamingDataReader(names, types, rows.GetAsyncEnumerator(ct));
         return new SourceReadResult { Reader = reader, ProcessedFiles = manifest };
     }
 
+    /// <summary>A file opened (or failed) ahead of its turn: its schema, its line enumerator primed to the first
+    /// line, or the error to surface when the file's turn arrives.</summary>
+    private sealed class OpenedFile
+    {
+        public OpenedFile(FileRef file) => File = file;
+
+        public FileRef File { get; }
+        public FileSchema? Schema;
+        public IAsyncEnumerator<FileLine>? Lines;
+        public bool HasFirst;
+        public Exception? Error;
+    }
+
     private async IAsyncEnumerable<object?[]> StreamRowsAsync(
+        RunState run,
         IFileStore store,
         IReadOnlyList<FileRef> files,
         IReadOnlyList<SourceColumn> columns,
@@ -272,76 +401,172 @@ public abstract class FileSourceReaderBase : ISourceReader
         long total = 0;
         var reachedMax = false;
 
-        foreach (var file in files)
+        // Bounded prefetch (depth 1): while file i streams into the loader, file i+1's schema lookup and open
+        // (the download, for a remote store) already run in the background, so the pipeline never idles between
+        // files. Depth stays at one because an opened file can hold a large buffer. Rows are still emitted
+        // strictly in file order; a prefetch failure is captured and surfaced only when that file's turn
+        // arrives, and an abandoned prefetch (cancellation, a prior file failing, maxRows reached) is cancelled
+        // and disposed in the finally below so no download or stream leaks.
+        using var prefetchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        async Task<OpenedFile> OpenFileAsync(FileRef file)
         {
-            if (reachedMax)
+            var opened = new OpenedFile(file);
+            try
             {
-                break;
+                opened.Schema = await GetOrReadFileSchemaAsync(run, store, file, source, prefetchCts.Token).ConfigureAwait(false);
+                opened.Lines = ReadLinesAsync(store, file, source, prefetchCts.Token).GetAsyncEnumerator(prefetchCts.Token);
+                opened.HasFirst = await opened.Lines.MoveNextAsync().ConfigureAwait(false);
             }
-
-            var fileModifiedUtc = (file.Modified ?? DateTimeOffset.UtcNow).UtcDateTime;
-            var ingestedUtc = DateTime.UtcNow;
-            var nameValue = options.ShowPathWithFileName ? file.Path : file.Name;
-
-            var fileColumns = (await ReadColumnSchemaAsync(store, file, source, ct).ConfigureAwait(false)).Select(c => c.Name).ToList();
-            var map = BuildColumnMap(fileColumns, indexByName);
-            var window = skipEnding > 0 ? new Queue<object?[]>(skipEnding + 1) : null;
-            long fileRows = 0;
-
-            await foreach (var line in ReadLinesAsync(store, file, source, ct).ConfigureAwait(false))
+            catch (Exception ex)
             {
-                if (options.MaxRows > 0 && total >= options.MaxRows)
+                if (opened.Lines is not null)
                 {
-                    reachedMax = true;
-                    break;
-                }
-
-                var cells = line.Cells;
-                var row = new object?[columnCount];
-                for (var i = 0; i < cells.Length && i < map.Length; i++)
-                {
-                    if (map[i] >= 0)
+                    // Release the failed enumerator's stream now; a dispose failure on top of the primary
+                    // failure is aggregated so neither is lost.
+                    try
                     {
-                        row[map[i]] = CoerceCell(cells[i], columns[map[i]].Type);
+                        await opened.Lines.DisposeAsync().ConfigureAwait(false);
                     }
-                }
-
-                if (lineNumberIndex >= 0) row[lineNumberIndex] = line.LineNumber;
-                if (fileNameIndex >= 0) row[fileNameIndex] = nameValue;
-                if (fileDateIndex >= 0) row[fileDateIndex] = fileModifiedUtc;
-                if (fileRowDateIndex >= 0) row[fileRowDateIndex] = ingestedUtc;
-                if (fileSizeIndex >= 0) row[fileSizeIndex] = file.Size;
-                if (dataSetIndex >= 0) row[dataSetIndex] = fileModifiedUtc;
-                if (rowNumberIndex >= 0) row[rowNumberIndex] = line.DataRowNumber;
-
-                if (concatKeyIndex >= 0) row[concatKeyIndex] = BuildConcatKey(row, concatInputIndices, options.ConcatKeySeparator);
-                if (rowHasher is not null) row[hashKeyIndex] = ComputeRowHash(rowHasher, row, hashInputIndices);
-
-                if (window is not null)
-                {
-                    window.Enqueue(row);
-                    if (window.Count <= skipEnding)
+                    catch (Exception disposeEx)
                     {
-                        continue;
+                        ex = new AggregateException(ex, disposeEx);
                     }
 
-                    row = window.Dequeue();
+                    opened.Lines = null;
                 }
 
-                total++;
-                fileRows++;
-                yield return row;
+                opened.Error = ex;
             }
 
-            manifest.Add(new ProcessedFile
+            return opened;
+        }
+
+        var pending = OpenFileAsync(files[0]);
+        try
+        {
+            for (var f = 0; f < files.Count && !reachedMax; f++)
             {
-                Name = file.Name,
-                Path = file.Path,
-                SizeBytes = file.Size,
-                Modified = file.Modified,
-                Rows = fileRows,
-                Columns = fileColumns.Count,
-            });
+                // pending is null only after the last file was claimed, and then the loop condition has
+                // already stopped the iteration, so it is always set here.
+                var current = await pending!.ConfigureAwait(false);
+                pending = f + 1 < files.Count ? OpenFileAsync(files[f + 1]) : null;
+
+                try
+                {
+                    if (current.Error is not null)
+                    {
+                        ExceptionDispatchInfo.Capture(current.Error).Throw();
+                    }
+
+                    var file = current.File;
+                    var fileModifiedUtc = (file.Modified ?? DateTimeOffset.UtcNow).UtcDateTime;
+                    var ingestedUtc = DateTime.UtcNow;
+                    var nameValue = options.ShowPathWithFileName ? file.Path : file.Name;
+
+                    var fileColumns = current.Schema!.Columns;
+                    var fileColumnNames = new string[fileColumns.Count];
+                    for (var i = 0; i < fileColumns.Count; i++)
+                    {
+                        fileColumnNames[i] = fileColumns[i].Name;
+                    }
+
+                    var map = BuildColumnMap(fileColumnNames, indexByName);
+                    var window = skipEnding > 0 ? new Queue<object?[]>(skipEnding + 1) : null;
+                    long fileRows = 0;
+
+                    var lines = current.Lines!;
+                    var hasLine = current.HasFirst;
+                    while (hasLine)
+                    {
+                        if (options.MaxRows > 0 && total >= options.MaxRows)
+                        {
+                            reachedMax = true;
+                            break;
+                        }
+
+                        var line = lines.Current;
+                        var cells = line.Cells;
+                        var row = new object?[columnCount];
+                        for (var i = 0; i < cells.Length && i < map.Length; i++)
+                        {
+                            if (map[i] >= 0)
+                            {
+                                row[map[i]] = CoerceCell(cells[i], columns[map[i]].Type);
+                            }
+                        }
+
+                        if (lineNumberIndex >= 0) row[lineNumberIndex] = line.LineNumber;
+                        if (fileNameIndex >= 0) row[fileNameIndex] = nameValue;
+                        // Provenance dates/sizes are written as strings in the encoding the transformation view's casts
+                        // expect: FileDate_DW/DataSet_DW as yyyyMMddHHmmss (view CASTs to decimal(14,0)/numeric(14,0)),
+                        // FileRowDate_DW as yyyy-MM-dd HH:mm:ss (view CONVERTs to datetime, style 20), FileSize_DW as digits.
+                        if (fileDateIndex >= 0) row[fileDateIndex] = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+                        if (fileRowDateIndex >= 0) row[fileRowDateIndex] = ingestedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+                        if (fileSizeIndex >= 0) row[fileSizeIndex] = file.Size.ToString(CultureInfo.InvariantCulture);
+                        if (dataSetIndex >= 0) row[dataSetIndex] = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+                        if (rowNumberIndex >= 0) row[rowNumberIndex] = line.DataRowNumber;
+
+                        if (concatKeyIndex >= 0) row[concatKeyIndex] = BuildConcatKey(row, concatInputIndices, options.ConcatKeySeparator);
+                        if (rowHasher is not null) row[hashKeyIndex] = ComputeRowHash(rowHasher, row, hashInputIndices);
+
+                        var emit = true;
+                        if (window is not null)
+                        {
+                            window.Enqueue(row);
+                            if (window.Count <= skipEnding)
+                            {
+                                emit = false;
+                            }
+                            else
+                            {
+                                row = window.Dequeue();
+                            }
+                        }
+
+                        if (emit)
+                        {
+                            total++;
+                            fileRows++;
+                            yield return row;
+                        }
+
+                        hasLine = await lines.MoveNextAsync().ConfigureAwait(false);
+                    }
+
+                    manifest.Add(new ProcessedFile
+                    {
+                        Name = file.Name,
+                        Path = file.Path,
+                        SizeBytes = file.Size,
+                        Modified = file.Modified,
+                        Rows = fileRows,
+                        Columns = fileColumns.Count,
+                    });
+                }
+                finally
+                {
+                    if (current.Lines is not null)
+                    {
+                        await current.Lines.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            if (pending is not null)
+            {
+                // A prefetched file whose turn never came: cancel its in-flight open, then await and dispose it
+                // so nothing leaks. Its captured error, if any, is intentionally dropped - the failure (or
+                // cancellation) that ended the run is already propagating to the caller.
+                prefetchCts.Cancel();
+                var abandoned = await pending.ConfigureAwait(false);
+                if (abandoned.Lines is not null)
+                {
+                    await abandoned.Lines.DisposeAsync().ConfigureAwait(false);
+                }
+            }
         }
     }
 
@@ -349,6 +574,15 @@ public abstract class FileSourceReaderBase : ISourceReader
     {
         ArgumentNullException.ThrowIfNull(source);
         var options = ReadOptions(source);
+
+        // The run ends here: consume its cache so a host that re-runs a cached spec instance resolves a fresh
+        // file list instead of replaying this run's snapshot.
+        RunState? run = null;
+        if (_runs.TryGetValue(source, out var ended))
+        {
+            run = ended;
+            _runs.Remove(source);
+        }
 
         if (string.IsNullOrWhiteSpace(options.CopyToPath)
             && string.IsNullOrWhiteSpace(options.ZipToPath)
@@ -358,7 +592,11 @@ public abstract class FileSourceReaderBase : ISourceReader
             return;
         }
 
-        var (_, files) = await ResolveAsync(options, ct).ConfigureAwait(false);
+        // The lifecycle acts on the same snapshot the schema and data passes read, never on a re-listed set (a
+        // file that appeared after the load must not be copied or deleted as if it had been ingested). Only a
+        // standalone CompleteAsync, with no prior pass on this spec, resolves the list itself.
+        var files = run?.Snapshot?.Files
+            ?? (await ResolveAsync(options, ct).ConfigureAwait(false)).Files;
         foreach (var file in files)
         {
             if (!string.IsNullOrWhiteSpace(options.CopyToPath))
@@ -381,10 +619,30 @@ public abstract class FileSourceReaderBase : ISourceReader
     /// <summary>
     /// Resolves the source files a run would read, applying every selection filter (glob, path mask, date
     /// window, incremental watermark) exactly as the load does. Exposed so format-specific tooling (e.g.
-    /// JSON structure discovery) selects the same files on the one code path instead of re-listing.
+    /// JSON structure discovery) selects the same files on the one code path instead of re-listing. Shares the
+    /// per-run snapshot, so repeated calls within one operation list the store once.
     /// </summary>
     protected Task<(IFileStore Store, IReadOnlyList<FileRef> Files)> ResolveFilesAsync(SourceSpec source, CancellationToken ct)
-        => ResolveAsync(ReadOptions(source), ct);
+        => GetOrResolveAsync(RunStateFor(source), ReadOptions(source), ct);
+
+    private RunState RunStateFor(SourceSpec source) => _runs.GetOrCreateValue(source);
+
+    /// <summary>
+    /// The run's file-list snapshot, resolving it on the first call and reusing it afterwards. The snapshot is
+    /// per run by construction (the run state is keyed by the run's SourceSpec instance and evicted by
+    /// <see cref="CompleteAsync"/>), so all three stages act on one stable set of files: a file appearing
+    /// mid-run does not surface in the data pass when it was absent from the schema pass.
+    /// </summary>
+    private async Task<(IFileStore Store, IReadOnlyList<FileRef> Files)> GetOrResolveAsync(RunState run, FileSourceOptions options, CancellationToken ct)
+    {
+        var snapshot = await run.ResolveOnceAsync(async () =>
+        {
+            var (store, files) = await ResolveAsync(options, ct).ConfigureAwait(false);
+            return new ResolvedFiles(store, files);
+        }).ConfigureAwait(false);
+
+        return (snapshot.Store, snapshot.Files);
+    }
 
     private async Task<(IFileStore Store, IReadOnlyList<FileRef> Files)> ResolveAsync(FileSourceOptions options, CancellationToken ct)
     {
@@ -592,13 +850,17 @@ public abstract class FileSourceReaderBase : ISourceReader
             .Replace("-", string.Empty, StringComparison.Ordinal)
             .ToUpperInvariant();
 
+    // The file provenance columns land as strings (varchar(255)), matching the original SQLFlow pre table: the raw
+    // landing layer is untyped, and the generated transformation view applies the real types (FileDate_DW ->
+    // decimal(14,0), FileSize_DW -> decimal(18,0), FileRowDate_DW -> datetime, ...). Values are written in the
+    // encodings those casts expect (see StreamRowsAsync): dates as yyyyMMddHHmmss / yyyy-MM-dd HH:mm:ss strings.
     private static (Type Type, int? MaxLength)? SystemColumnType(string name) => name switch
     {
-        FileNameColumn => (typeof(string), 4000),
-        FileDateColumn => (typeof(DateTime), null),
-        FileRowDateColumn => (typeof(DateTime), null),
-        FileSizeColumn => (typeof(long), null),
-        DataSetColumn => (typeof(DateTime), null),
+        FileNameColumn => (typeof(string), 255),
+        FileDateColumn => (typeof(string), 255),
+        FileRowDateColumn => (typeof(string), 255),
+        FileSizeColumn => (typeof(string), 255),
+        DataSetColumn => (typeof(string), 255),
         RowNumberColumn => (typeof(long), null),
         FileLineNumberColumn => (typeof(long), null),
         _ => null,

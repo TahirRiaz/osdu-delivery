@@ -19,7 +19,8 @@ public sealed record DashboardDto(
 /// <summary>
 /// The dashboard read surface: <c>GET /api/v1/summary</c> aggregates the catalog into the one-call overview a GUI
 /// landing page needs, so the front end does not fan out a dozen list calls just to render headline numbers. Read
-/// scope; every figure is a cheap COUNT computed at read time, so it is always current.
+/// scope; every figure is computed at read time (always current) in exactly two database round trips: one grouped
+/// scan of the run table for the lifecycle counts, and one labelled-count union for every other headline number.
 /// </summary>
 public static class SummaryEndpoints
 {
@@ -38,27 +39,55 @@ public static class SummaryEndpoints
         var dayAgo = now.AddDays(-1);
         var onlineSince = now - OnlineWindow;
 
+        // Round trip 1: every lifecycle count from ONE grouped pass over the run table (the largest table on
+        // this page), instead of a COUNT query per status. The server groups under its (case-insensitive)
+        // collation, so the lookup is case-insensitive too, exactly like the equality COUNTs it replaces.
+        var runsByStatus = await db.Runs
+            .GroupBy(r => r.Status)
+            .Select(g => new { Status = g.Key, Count = g.LongCount() })
+            .ToDictionaryAsync(x => x.Status, x => x.Count, StringComparer.OrdinalIgnoreCase, ct).ConfigureAwait(false);
+
+        // Round trip 2: every other headline number in ONE statement. Each table contributes rows tagged with a
+        // label (its filter applied per branch) and a single GROUP BY counts them, so the dashboard costs two
+        // round trips no matter how many tiles it shows. A label with no rows is simply absent (count 0).
+        var counted = await db.Repos.Select(r => "repos")
+            .Concat(db.Pipelines.Select(p => "pipelines"))
+            .Concat(db.Pipelines.Where(p => p.Active).Select(p => "activePipelines"))
+            .Concat(db.Runs.Where(r => r.WrittenUtc >= dayAgo).Select(r => "runsLast24h"))
+            .Concat(db.Nodes.Where(n => n.LastSeenUtc >= onlineSince).Select(n => "nodesOnline"))
+            .Concat(db.Nodes.Select(n => "nodesTotal"))
+            .Concat(db.Schedules.Where(s => s.Enabled && !s.Paused).Select(s => "schedulesEnabled"))
+            .Concat(db.Schedules.Where(s => s.Paused).Select(s => "schedulesPaused"))
+            .Concat(db.RepoSources.Select(s => "repoSources"))
+            .Concat(db.RepoSources.Where(s => s.LastError != null).Select(s => "repoSourcesWithErrors"))
+            .GroupBy(label => label)
+            .Select(g => new { Label = g.Key, Count = g.LongCount() })
+            .ToDictionaryAsync(x => x.Label, x => x.Count, ct).ConfigureAwait(false);
+
         var runs = new RunCountsDto(
-            Queued: await db.Runs.CountAsync(r => r.Status == RunStatuses.Queued, ct).ConfigureAwait(false),
-            Running: await db.Runs.CountAsync(r => r.Status == RunStatuses.Running, ct).ConfigureAwait(false),
-            Succeeded: await db.Runs.CountAsync(r => r.Status == RunStatuses.Succeeded, ct).ConfigureAwait(false),
-            Failed: await db.Runs.CountAsync(r => r.Status == RunStatuses.Failed, ct).ConfigureAwait(false),
-            Cancelled: await db.Runs.CountAsync(r => r.Status == RunStatuses.Cancelled, ct).ConfigureAwait(false),
-            Last24h: await db.Runs.CountAsync(r => r.WrittenUtc >= dayAgo, ct).ConfigureAwait(false));
+            Queued: CountOf(runsByStatus, RunStatuses.Queued),
+            Running: CountOf(runsByStatus, RunStatuses.Running),
+            Succeeded: CountOf(runsByStatus, RunStatuses.Succeeded),
+            Failed: CountOf(runsByStatus, RunStatuses.Failed),
+            Cancelled: CountOf(runsByStatus, RunStatuses.Cancelled),
+            Last24h: CountOf(counted, "runsLast24h"));
 
         var dashboard = new DashboardDto(
-            Repos: await db.Repos.CountAsync(ct).ConfigureAwait(false),
-            Pipelines: await db.Pipelines.CountAsync(ct).ConfigureAwait(false),
-            ActivePipelines: await db.Pipelines.CountAsync(p => p.Active, ct).ConfigureAwait(false),
+            Repos: CountOf(counted, "repos"),
+            Pipelines: CountOf(counted, "pipelines"),
+            ActivePipelines: CountOf(counted, "activePipelines"),
             Runs: runs,
-            NodesOnline: await db.Nodes.CountAsync(n => n.LastSeenUtc >= onlineSince, ct).ConfigureAwait(false),
-            NodesTotal: await db.Nodes.CountAsync(ct).ConfigureAwait(false),
-            SchedulesEnabled: await db.Schedules.CountAsync(s => s.Enabled && !s.Paused, ct).ConfigureAwait(false),
-            SchedulesPaused: await db.Schedules.CountAsync(s => s.Paused, ct).ConfigureAwait(false),
-            RepoSources: await db.RepoSources.CountAsync(ct).ConfigureAwait(false),
-            RepoSourcesWithErrors: await db.RepoSources.CountAsync(s => s.LastError != null, ct).ConfigureAwait(false),
+            NodesOnline: CountOf(counted, "nodesOnline"),
+            NodesTotal: CountOf(counted, "nodesTotal"),
+            SchedulesEnabled: CountOf(counted, "schedulesEnabled"),
+            SchedulesPaused: CountOf(counted, "schedulesPaused"),
+            RepoSources: CountOf(counted, "repoSources"),
+            RepoSourcesWithErrors: CountOf(counted, "repoSourcesWithErrors"),
             AsOfUtc: now);
 
         return TypedResults.Ok(dashboard);
     }
+
+    private static long CountOf(IReadOnlyDictionary<string, long> counts, string key)
+        => counts.TryGetValue(key, out var count) ? count : 0;
 }

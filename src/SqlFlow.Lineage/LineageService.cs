@@ -22,8 +22,9 @@ public sealed record LineageOptions
     public ISecretResolver? Secrets { get; init; }
 }
 
-/// <summary>The report plus its raw pre-merge facts: what <see cref="LineageService.ComputeDetailedAsync"/>
-/// returns when a caller wants both the canonical graph and the debugging dump from one collection pass.</summary>
+/// <summary>The report plus its raw pre-merge facts: what
+/// <see cref="LineageService.ComputeDetailedAsync(LineageOptions, CancellationToken)"/> returns when a caller
+/// wants both the canonical graph and the debugging dump from one collection pass.</summary>
 public sealed record LineageComputation
 {
     public required LineageReport Report { get; init; }
@@ -41,16 +42,39 @@ public static class LineageService
     public static async Task<LineageReport> ComputeAsync(LineageOptions options, CancellationToken ct = default)
         => (await ComputeDetailedAsync(options, ct).ConfigureAwait(false)).Report;
 
+    /// <summary>Computes the report from an already-collected declared-tier flow set, so a caller that has just
+    /// scanned the estate (the catalog sync) never scans or parses the documents a second time. Same contract as
+    /// <see cref="ComputeAsync(LineageOptions, CancellationToken)"/> otherwise; see
+    /// <see cref="ComputeDetailedAsync(LineageOptions, CollectionResult, CancellationToken)"/> for the mutation
+    /// note on <paramref name="collected"/>.</summary>
+    public static async Task<LineageReport> ComputeAsync(
+        LineageOptions options, CollectionResult collected, CancellationToken ct = default)
+        => (await ComputeDetailedAsync(options, collected, ct).ConfigureAwait(false)).Report;
+
     /// <summary>
     /// Runs the collection once and returns BOTH the canonical report AND the raw pre-merge facts (the dump),
     /// so a caller that wants the debugging view does not collect twice (and never connects twice). The report
     /// and the dump carry the same GeneratedAtUtc and tier set.
     /// </summary>
-    public static async Task<LineageComputation> ComputeDetailedAsync(LineageOptions options, CancellationToken ct = default)
+    public static Task<LineageComputation> ComputeDetailedAsync(LineageOptions options, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        return ComputeDetailedAsync(options, new FlowSetCollector().Collect(options.FlowDirectory), ct);
+    }
 
-        var collected = new FlowSetCollector().Collect(options.FlowDirectory);
+    /// <summary>
+    /// The pre-collected variant of <see cref="ComputeDetailedAsync(LineageOptions, CancellationToken)"/>: the
+    /// caller supplies the declared-tier collection (typically the very scan it already ran over
+    /// <see cref="LineageOptions.FlowDirectory"/>), and only the requested extra tiers are collected here. The
+    /// observed and derived tiers merge INTO <paramref name="collected"/>, so the instance is mutated; pass a
+    /// result you do not need to keep pristine.
+    /// </summary>
+    public static async Task<LineageComputation> ComputeDetailedAsync(
+        LineageOptions options, CollectionResult collected, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(collected);
+
         var tiers = new List<LineageTier> { LineageTier.Declared };
 
         if (options.IncludeObserved)

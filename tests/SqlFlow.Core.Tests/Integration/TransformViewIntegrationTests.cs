@@ -33,7 +33,7 @@ public sealed class TransformViewIntegrationTests
     {
         var cs = IntegrationDb.Require();
         var table = "IT_TView_" + Guid.NewGuid().ToString("N")[..8];
-        var view = "v" + table;
+        var view = "v_" + table;
         await IntegrationDb.DropTableAsync(cs, table);
         await DropViewAsync(cs, view);
 
@@ -102,7 +102,7 @@ public sealed class TransformViewIntegrationTests
     {
         var cs = IntegrationDb.Require();
         var table = "IT_TViewOff_" + Guid.NewGuid().ToString("N")[..8];
-        var view = "v" + table;
+        var view = "v_" + table;
         await IntegrationDb.DropTableAsync(cs, table);
         await DropViewAsync(cs, view);
 

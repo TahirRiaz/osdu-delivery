@@ -23,7 +23,7 @@ public sealed class SqlTraceIntegrationTests
     [SkippableFact]
     public async Task SuccessfulRun_CapturesOrderedTrace()
     {
-        const int flowId = 30;
+        const int flowId = 9105;
         var cs = IntegrationDb.Require();
         const string src = "_SfTrace_Src";
         const string trg = "_SfTrace_Trg";
@@ -61,7 +61,7 @@ public sealed class SqlTraceIntegrationTests
     [SkippableFact]
     public async Task FailedRun_KeepsTraceUpToFailurePoint()
     {
-        const int flowId = 31;
+        const int flowId = 9106;
         var cs = IntegrationDb.Require();
         const string src = "_SfTraceF_Src";
         const string trg = "_SfTraceF_Trg";

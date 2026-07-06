@@ -71,10 +71,12 @@ public sealed record RecordRunResult
 /// only - the database mirrors the files, never the reverse - so the catalog can always be rebuilt by re-syncing,
 /// and several repos sync into one catalog for cross-repo queries. Pipelines are upserted by their stable
 /// identity (ones that have left the estate are deactivated, keeping their run history); runs are inserted by
-/// their own id, so re-syncing the same folders, or aggregating many nodes' folders, is idempotent. The whole
-/// pass runs in one serializable transaction so two syncs of the same repo cannot lose each other's updates.
-/// Secrets never rest in the catalog: a flow document is detected (and warned) when it embeds a credential, and
-/// the stored YAML / definition JSON are passed through the same redactor used for connection-string error text.
+/// their own id, so re-syncing the same folders, or aggregating many nodes' folders, is idempotent. A pass runs
+/// in two phases: the estate is collected and every document parsed exactly once up front (pure computation, no
+/// transaction held), then the reconciliation writes run in one serializable transaction so two syncs of the
+/// same repo cannot lose each other's updates. Secrets never rest in the catalog: a flow document is detected
+/// (and warned) when it embeds a credential, and the stored YAML / definition JSON are passed through the same
+/// redactor used for connection-string error text.
 /// </summary>
 public sealed class CatalogSync
 {
@@ -82,6 +84,11 @@ public sealed class CatalogSync
     // exhausting memory or bloating the nvarchar(max) columns. Over-limit files are skipped with a warning.
     private const long MaxYamlBytes = 16L * 1024 * 1024;
     internal const long MaxRunJsonBytes = 64L * 1024 * 1024;
+
+    // SQL Server allows roughly 2100 parameters per command, and a keys.Contains(...) predicate can translate
+    // to one parameter per key, so membership queries and deletes over report-sized key sets run in bounded
+    // chunks whose results/effects are combined. 500 keys per round trip stays far under the limit.
+    private const int KeyChunkSize = 500;
 
     private static readonly JsonSerializerOptions DefinitionJsonOptions = new()
     {
@@ -92,14 +99,40 @@ public sealed class CatalogSync
 
     private readonly FlowSetCollector _estate = new();
 
-    private readonly YamlFlowLoader _flowLoader = new();
-
-    private readonly YamlIngestionFlowLoader _ingestionLoader = new();
-
     private readonly YamlDocumentLoader _documents = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
         new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader());
+
+    /// <summary>One estate flow prepared for the reconciliation transaction: its redacted text, content hash,
+    /// serialized definition, and the parsed document (null when it failed to parse after the scan) that the
+    /// declared-column projection reads. Prepared once per pass; the transaction (and any retry of it) stages
+    /// fresh rows from this data.</summary>
+    private sealed record PreparedPipeline
+    {
+        public required CollectedFlow Flow { get; init; }
+
+        public required Guid Id { get; init; }
+
+        public required string Yaml { get; init; }
+
+        public required string ContentHash { get; init; }
+
+        public required string DefinitionJson { get; init; }
+
+        public required FlowDocument? Document { get; init; }
+    }
+
+    /// <summary>One validated git-declared schedule, ready to stage into the schedule table.</summary>
+    private sealed record PreparedSchedule(string FlowName, Core.ScheduleSpec Spec, DateTime NextFireUtc);
+
+    /// <summary>One run artifact awaiting insertion: the projected header row (client-keyed, so re-adding it on
+    /// a transaction retry is safe) and the parsed document its detail rows project from inside the transaction,
+    /// retained so the file is read and parsed exactly once per pass.</summary>
+    private sealed record PreparedRun(CatalogRun Run, JsonDocument Document) : IDisposable
+    {
+        public void Dispose() => Document.Dispose();
+    }
 
     public async Task<CatalogSyncResult> SyncAsync(
         CatalogDbContext context, string estateDirectory, string repoName, string? repoRemoteUrl, DateTime nowUtc,
@@ -110,52 +143,151 @@ public sealed class CatalogSync
         ArgumentException.ThrowIfNullOrWhiteSpace(estateDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(repoName);
         var root = Path.GetFullPath(estateDirectory);
+        var repoId = FlowIdentity.FromName(repoName);
+        var warnings = new List<string>();
 
-        // One serializable transaction for the whole pass (so concurrent syncs of the same repo serialize instead
-        // of racing), run through the context's execution strategy so it is a single retriable unit. The control
-        // plane enables connection resiliency (EnableRetryOnFailure); EF then forbids a user-initiated transaction
-        // unless wrapped this way. The pass re-collects the estate from disk each attempt, so a retry is safe.
-        return await CatalogTransaction.InSerializableAsync(context, async () =>
+        // ---- Phase one: pure computation and reads, before any transaction. The estate is collected once and
+        // each present document read and parsed once; the parsed artifacts (the collected flow set, the loaded
+        // documents, the redacted text) flow into every consumer below, including the lineage computation.
+        var collected = _estate.Collect(root);
+        warnings.AddRange(collected.Warnings);
+
+        // Preview-first selection: flows the source deliberately excludes are not projected as pipelines (and, being
+        // absent from the present set, are deactivated below if a previous sync had imported them, keeping their
+        // history). The selection is the ONLY gate; everything else stays the same one sync path.
+        var flows = excludedFlowPaths is { Count: > 0 }
+            ? collected.Flows.Where(f => !excludedFlowPaths.Contains(Normalize(f.Node.File))).ToList()
+            : collected.Flows;
+
+        var (pipelines, presentIds, schedules, anyUnreadable) = PreparePipelines(root, repoId, flows, nowUtc, warnings, ct);
+
+        // The stored state this pass reconciles against, read outside the transaction: the known run ids (so only
+        // new artifacts are parsed and retained) and the active pipelines' content hashes (the lineage gate).
+        var knownRunIds = (await context.Runs.Where(r => r.RepoId == repoId).Select(r => r.RunId)
+            .ToListAsync(ct).ConfigureAwait(false)).ToHashSet();
+        var storedActiveHashes = await context.Pipelines.AsNoTracking()
+            .Where(p => p.RepoId == repoId && p.Active)
+            .Select(p => new { p.Id, p.ContentHash })
+            .ToDictionaryAsync(p => p.Id, p => p.ContentHash, ct).ConfigureAwait(false);
+
+        var (runs, runsSkipped, runsFailed) = await PrepareRunsAsync(root, repoId, knownRunIds, warnings, ct).ConfigureAwait(false);
+        try
         {
-            var warnings = new List<string>();
-            var repoId = await UpsertRepoAsync(context, repoName, repoRemoteUrl, root, nowUtc, ct).ConfigureAwait(false);
-            var pipelines = await SyncPipelinesAsync(context, root, repoId, nowUtc, warnings, excludedFlowPaths, ct).ConfigureAwait(false);
-            var runs = await SyncRunsAsync(context, root, repoId, warnings, ct).ConfigureAwait(false);
-            var lineage = await SyncLineageAsync(context, root, repoId, includeDerived, secrets, nowUtc, warnings, ct).ConfigureAwait(false);
+            // The lineage recompute gate: recompute only when an input of the graph could have changed. The
+            // declared tier's input is the flow set (content hashes, additions, removals); the observed tier's
+            // input is the run history (any newly discovered artifact); the derived tier reads the live
+            // catalogs, which can change on their own, so a connected sync always recomputes. An excluded flow
+            // still contributes lineage (the graph spans the whole estate) but has no stored hash to compare,
+            // so a selection-scoped sync recomputes too. When nothing changed, the stored lineage IS current.
+            var anyExcluded = collected.Flows.Count != flows.Count;
+            var lineageNeeded = includeDerived || anyExcluded || runs.Count > 0
+                || LineageInputsChanged(pipelines, anyUnreadable, storedActiveHashes);
 
-            return new CatalogSyncResult
+            LineageReport? report = null;
+            string? lineageFailure = null;
+            if (lineageNeeded)
             {
-                PipelinesAdded = pipelines.Added,
-                PipelinesUpdated = pipelines.Updated,
-                PipelinesUnchanged = pipelines.Unchanged,
-                PipelinesDeactivated = pipelines.Deactivated,
-                RunsAdded = runs.Added,
-                RunsSkipped = runs.Skipped,
-                RunsFailed = runs.Failed,
-                RunFilesAdded = runs.Files,
-                RunAssertionsAdded = runs.Assertions,
-                RunStatementsAdded = runs.Statements,
-                RunSurrogateKeysAdded = runs.SurrogateKeys,
-                RunHealthCheckMetricsAdded = runs.Metrics,
-                ObjectsUpserted = lineage.Objects,
-                ObjectsSuperseded = lineage.Superseded,
-                ObjectColumns = lineage.Columns,
-                LineageEdges = lineage.Edges,
-                FlowDependencies = lineage.FlowDeps,
-                Waves = lineage.Waves,
-                LineageConnected = lineage.Connected,
-                Warnings = warnings,
-            };
-        }, ct).ConfigureAwait(false);
+                try
+                {
+                    // Reuses the flow set collected above, so the estate is never scanned or parsed a second time.
+                    report = await LineageService.ComputeAsync(
+                        new LineageOptions { FlowDirectory = root, IncludeObserved = true, IncludeDerived = includeDerived, Secrets = secrets },
+                        collected, ct).ConfigureAwait(false);
+                    foreach (var warning in report.Warnings)
+                    {
+                        warnings.Add($"lineage: {warning}");
+                    }
+                }
+                catch (Exception ex) when (ex is SqlFlow.Core.SqlFlowException or IOException or InvalidOperationException)
+                {
+                    // Lineage is an enrichment: a failure to compute it (e.g. a connect-tier timeout) must not
+                    // fail the whole sync. The pipeline registry and run history still land; the write phase
+                    // resets the stale waves so they never read as a real execution order.
+                    lineageFailure = SecretHygiene.RedactedMessage(ex.Message);
+                    warnings.Add($"lineage was not computed for this sync ({lineageFailure}); objects and edges left unchanged, waves reset to not-computed.");
+                }
+            }
+
+            // ---- Phase two: one serializable transaction for the reconciliation writes only (so concurrent
+            // syncs of the same repo serialize instead of racing), run through the context's execution strategy
+            // so it is a single retriable unit. The control plane enables connection resiliency
+            // (EnableRetryOnFailure); EF then forbids a user-initiated transaction unless wrapped this way. A
+            // retried attempt re-stages its rows from the phase-one artifacts, never from half-tracked state.
+            return await CatalogTransaction.InSerializableAsync(context, async () =>
+            {
+                await UpsertRepoAsync(context, repoId, repoName, repoRemoteUrl, root, nowUtc, ct).ConfigureAwait(false);
+                var pipelineTally = await ApplyPipelinesAsync(context, repoId, nowUtc, pipelines, presentIds, schedules, ct).ConfigureAwait(false);
+                var runTally = await ApplyRunsAsync(context, repoId, runs, runsSkipped, runsFailed, ct).ConfigureAwait(false);
+
+                (int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected) lineage;
+                if (report is not null)
+                {
+                    lineage = await ApplyLineageAsync(context, repoId, report, includeDerived, nowUtc, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    if (lineageFailure is not null)
+                    {
+                        // A wave from an earlier successful sync no longer provably reflects this estate, so reset
+                        // every active pipeline in this repo to the -1 "not computed" sentinel rather than leaving
+                        // a stale wave that reads as a real execution order. The pipelines are already tracked
+                        // (loaded in ApplyPipelinesAsync), so mutating them here is persisted by the single
+                        // SaveChangesAsync at the end of the pass.
+                        foreach (var pipeline in context.Pipelines.Local)
+                        {
+                            if (pipeline.RepoId == repoId && pipeline.Active)
+                            {
+                                pipeline.Wave = -1;
+                            }
+                        }
+                    }
+
+                    // else: no lineage input changed since the stored state (same content hashes, no additions or
+                    // removals, no new runs, offline): the stored objects, edges, waves, and dependencies are
+                    // already current, so the recompute is skipped and nothing lineage-related is written.
+                    lineage = (0, 0, 0, 0, 0, 0, false);
+                }
+
+                return new CatalogSyncResult
+                {
+                    PipelinesAdded = pipelineTally.Added,
+                    PipelinesUpdated = pipelineTally.Updated,
+                    PipelinesUnchanged = pipelineTally.Unchanged,
+                    PipelinesDeactivated = pipelineTally.Deactivated,
+                    RunsAdded = runTally.Added,
+                    RunsSkipped = runTally.Skipped,
+                    RunsFailed = runTally.Failed,
+                    RunFilesAdded = runTally.Files,
+                    RunAssertionsAdded = runTally.Assertions,
+                    RunStatementsAdded = runTally.Statements,
+                    RunSurrogateKeysAdded = runTally.SurrogateKeys,
+                    RunHealthCheckMetricsAdded = runTally.Metrics,
+                    ObjectsUpserted = lineage.Objects,
+                    ObjectsSuperseded = lineage.Superseded,
+                    ObjectColumns = lineage.Columns,
+                    LineageEdges = lineage.Edges,
+                    FlowDependencies = lineage.FlowDeps,
+                    Waves = lineage.Waves,
+                    LineageConnected = lineage.Connected,
+                    Warnings = warnings,
+                };
+            }, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            foreach (var run in runs)
+            {
+                run.Dispose();
+            }
+        }
     }
 
     // The retriable serializable-transaction wrapper lives in CatalogTransaction so the run-queue lifecycle shares
     // the exact same execution-strategy + change-tracker-reset semantics as the sync/write-back.
 
-    private static async Task<Guid> UpsertRepoAsync(
-        CatalogDbContext context, string repoName, string? remoteUrl, string root, DateTime nowUtc, CancellationToken ct)
+    private static async Task UpsertRepoAsync(
+        CatalogDbContext context, Guid repoId, string repoName, string? remoteUrl, string root, DateTime nowUtc, CancellationToken ct)
     {
-        var repoId = FlowIdentity.FromName(repoName);
         var repo = await context.Repos.FindAsync([repoId], ct).ConfigureAwait(false);
         if (repo is null)
         {
@@ -176,32 +308,20 @@ public sealed class CatalogSync
             repo.RootPath = root;
             repo.LastSyncUtc = nowUtc;
         }
-
-        return repoId;
     }
 
-    private async Task<(int Added, int Updated, int Unchanged, int Deactivated)> SyncPipelinesAsync(
-        CatalogDbContext context, string root, Guid repoId, DateTime nowUtc, List<string> warnings,
-        IReadOnlySet<string>? excludedFlowPaths, CancellationToken ct)
+    /// <summary>
+    /// Phase-one preparation of this repo's pipeline projections: reads and parses each present flow document
+    /// exactly once, producing everything the reconciliation transaction stages (the redacted YAML, its hash,
+    /// the definition JSON, the parsed document for the declared-column projection) plus the validated schedule
+    /// mirror entries. File IO and pure computation only; nothing here touches the database.
+    /// </summary>
+    private (List<PreparedPipeline> Pipelines, HashSet<Guid> PresentIds, List<PreparedSchedule> Schedules, bool AnyUnreadable) PreparePipelines(
+        string root, Guid repoId, IReadOnlyList<CollectedFlow> flows, DateTime nowUtc, List<string> warnings, CancellationToken ct)
     {
-        var collected = _estate.Collect(root);
-        warnings.AddRange(collected.Warnings);
-
-        // Preview-first selection: flows the source deliberately excludes are not projected as pipelines (and, being
-        // absent from 'present', are deactivated below if a previous sync had imported them, keeping their history).
-        // The selection is the ONLY gate; everything else stays the same one sync path.
-        var flows = excludedFlowPaths is { Count: > 0 }
-            ? collected.Flows.Where(f => !excludedFlowPaths.Contains(Normalize(f.Node.File))).ToList()
-            : collected.Flows;
-
-        // Only this repo's pipelines: another repo's flows in the same catalog must not be touched by this sync.
-        // AsTracking so the update/deactivate mutations below persist even when the host's context defaults to
-        // NoTracking (the control plane pools its context that way); on a tracking context this is a no-op.
-        var existing = await context.Pipelines.Where(p => p.RepoId == repoId).AsTracking().ToDictionaryAsync(p => p.Id, ct).ConfigureAwait(false);
+        var pipelines = new List<PreparedPipeline>();
         var present = new HashSet<Guid>();
-        var added = 0;
-        var updated = 0;
-        var unchanged = 0;
+        var anyUnreadable = false;
 
         foreach (var flow in flows)
         {
@@ -218,6 +338,7 @@ public sealed class CatalogSync
             {
                 // The file vanished or was unreadable since the estate scan: leave any existing row untouched (it
                 // stays in 'present' so it is not deactivated) rather than overwriting it with empty content.
+                anyUnreadable = true;
                 continue;
             }
 
@@ -231,20 +352,114 @@ public sealed class CatalogSync
             var yaml = SecretHygiene.RedactedMessage(rawYaml);
             var hash = CatalogProjection.Hash(yaml);
 
-            if (existing.TryGetValue(id, out var row) && string.Equals(row.ContentHash, hash, StringComparison.Ordinal))
+            // ONE parse serves both the queryable definition JSON and the declared-column projection. A document
+            // that fails to parse still lands as a pipeline row (the YAML text is the source of truth), just
+            // without those enrichments; that is never a reason to fail the sync.
+            FlowDocument? document = null;
+            var definitionJson = string.Empty;
+            try
+            {
+                document = _documents.Parse(rawYaml, fullPath);
+                definitionJson = SerializeDefinition(document, fullPath, warnings);
+            }
+            catch (SqlFlow.Core.SqlFlowException ex)
+            {
+                // FlowValidationException derives from SqlFlowException, so a malformed document is caught here too.
+                warnings.Add($"'{fullPath}' could not be parsed for the catalog definition ({SecretHygiene.RedactedMessage(ex.Message)}); stored without it.");
+            }
+
+            pipelines.Add(new PreparedPipeline
+            {
+                Flow = flow,
+                Id = id,
+                Yaml = yaml,
+                ContentHash = hash,
+                DefinitionJson = definitionJson,
+                Document = document,
+            });
+        }
+
+        // Mirror git-declared schedules: a flow's schedule lives in its YAML and is validated here (pure); the
+        // staging into the schedule table happens inside the sync's transaction.
+        var schedules = new List<PreparedSchedule>();
+        var scheduledPipelineIds = new HashSet<Guid>();
+        foreach (var flow in flows)
+        {
+            var pipelineId = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
+            if (!scheduledPipelineIds.Add(pipelineId) || flow.Schedule is not { } spec)
+            {
+                continue; // a duplicate flow name (first wins) or no schedule declared
+            }
+
+            if (!ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
+            {
+                warnings.Add($"'{flow.Node.Name}' ({flow.Node.File}) has an invalid schedule: {scheduleError}");
+                continue;
+            }
+
+            var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
+            schedules.Add(new PreparedSchedule(flow.Node.Name, spec, nextFire));
+        }
+
+        return (pipelines, present, schedules, anyUnreadable);
+    }
+
+    /// <summary>Whether the declared tier's lineage inputs differ from what the stored catalog reflects: any
+    /// pipeline added, removed, or with changed content since the stored state. Doubt (a file unreadable during
+    /// this pass, a stored hash that is blank) counts as changed, so the caller recomputes.</summary>
+    private static bool LineageInputsChanged(
+        IReadOnlyList<PreparedPipeline> pipelines, bool anyUnreadable, IReadOnlyDictionary<Guid, string> storedActiveHashes)
+    {
+        if (anyUnreadable || pipelines.Count != storedActiveHashes.Count)
+        {
+            return true; // uncertain state, or a pipeline was added/removed/deactivated/reactivated.
+        }
+
+        foreach (var pipeline in pipelines)
+        {
+            if (!storedActiveHashes.TryGetValue(pipeline.Id, out var storedHash)
+                || string.IsNullOrEmpty(storedHash)
+                || !string.Equals(storedHash, pipeline.ContentHash, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Reconciles this repo's pipeline rows, git-declared schedules, and declared pipeline-column rows
+    /// from the phase-one preparation. Runs inside the sync's transaction and performs only database work.</summary>
+    private static async Task<(int Added, int Updated, int Unchanged, int Deactivated)> ApplyPipelinesAsync(
+        CatalogDbContext context, Guid repoId, DateTime nowUtc,
+        IReadOnlyList<PreparedPipeline> pipelines, IReadOnlySet<Guid> presentIds,
+        IReadOnlyList<PreparedSchedule> schedules, CancellationToken ct)
+    {
+        // Only this repo's pipelines: another repo's flows in the same catalog must not be touched by this sync.
+        // AsTracking so the update/deactivate mutations below persist even when the host's context defaults to
+        // NoTracking (the control plane pools its context that way); on a tracking context this is a no-op.
+        var existing = await context.Pipelines.Where(p => p.RepoId == repoId).AsTracking().ToDictionaryAsync(p => p.Id, ct).ConfigureAwait(false);
+        var added = 0;
+        var updated = 0;
+        var unchanged = 0;
+
+        foreach (var prepared in pipelines)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (existing.TryGetValue(prepared.Id, out var row) && string.Equals(row.ContentHash, prepared.ContentHash, StringComparison.Ordinal))
             {
                 // Unchanged content (derived fields cannot have changed either): re-affirm presence only.
                 row.Active = true;
                 row.LastSeenUtc = nowUtc;
-                row.RelativePath = Normalize(flow.Node.File);
+                row.RelativePath = Normalize(prepared.Flow.Node.File);
                 unchanged++;
                 continue;
             }
 
-            var definitionJson = SerializeDefinition(fullPath, warnings);
+            var flow = prepared.Flow;
             var projected = CatalogProjection.Pipeline(
                 repoId, flow.Node.Name, flow.Node.Kind, flow.Node.Batch, Normalize(flow.Node.File),
-                flow.SourceServerRef, flow.TargetServerRef, hash, yaml, definitionJson, nowUtc);
+                flow.SourceServerRef, flow.TargetServerRef, prepared.ContentHash, prepared.Yaml, prepared.DefinitionJson, nowUtc);
 
             if (row is not null)
             {
@@ -271,133 +486,80 @@ public sealed class CatalogSync
         var deactivated = 0;
         foreach (var (id, row) in existing)
         {
-            if (!present.Contains(id) && row.Active)
+            if (!presentIds.Contains(id) && row.Active)
             {
                 row.Active = false;
                 deactivated++;
             }
         }
 
-        // Mirror git-declared schedules into the schedule table (the 'yaml' source). A flow's schedule lives in its
-        // YAML and is refreshed from git on each sync, but an operator's API pause is preserved and API-created
-        // schedules are never touched; a flow whose schedule left git has its yaml schedule removed. Staged on this
-        // context so the changes commit inside the sync's own transaction (the store's transaction-free variants).
-        var scheduledPipelineIds = new HashSet<Guid>();
+        // Stage the validated yaml schedule mirror: an operator's API pause is preserved and API-created
+        // schedules are never touched; a flow whose schedule left git has its yaml schedule removed. Staged on
+        // this context so the changes commit inside the sync's own transaction (the store's transaction-free
+        // variants).
         var scheduleKeep = new HashSet<Guid>();
-        foreach (var flow in flows)
+        foreach (var schedule in schedules)
         {
-            var pipelineId = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
-            if (!scheduledPipelineIds.Add(pipelineId) || flow.Schedule is not { } spec)
-            {
-                continue; // a duplicate flow name (first wins) or no schedule declared
-            }
-
-            if (!ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
-            {
-                warnings.Add($"'{flow.Node.Name}' ({flow.Node.File}) has an invalid schedule: {scheduleError}");
-                continue;
-            }
-
-            var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
             var scheduleId = await ScheduleStore.StageYamlUpsertAsync(
-                context, repoId, flow.Node.Name, spec.Cron, spec.IntervalSeconds, spec.Timezone, spec.Enabled,
-                spec.Catchup, nextFire, nowUtc, ct).ConfigureAwait(false);
+                context, repoId, schedule.FlowName, schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
+                schedule.Spec.Timezone, schedule.Spec.Enabled, schedule.Spec.Catchup, schedule.NextFireUtc, nowUtc, ct).ConfigureAwait(false);
             scheduleKeep.Add(scheduleId);
         }
 
         await ScheduleStore.StageRemoveYamlSchedulesNotInAsync(context, repoId, scheduleKeep, ct).ConfigureAwait(false);
 
-        // Project the authored per-column transforms of every present flow into the declared pipeline-column rows
-        // (the source of truth for "which transforms are set"). Refreshed wholesale for this repo so a removed or
-        // edited transform does not linger; detected rows (from runs) are a different kind and are left untouched.
-        await RefreshDeclaredColumnsAsync(context, root, repoId, flows, present, ct).ConfigureAwait(false);
-
-        return (added, updated, unchanged, deactivated);
-    }
-
-    /// <summary>
-    /// Replaces this repo's declared pipeline-column rows from the authored YAML transforms of every present flow.
-    /// Declared rows are the source-of-truth projection, so they are rebuilt wholesale (delete this repo's declared
-    /// rows, re-insert) each full sync; detected rows (a different <see cref="PipelineColumnKinds"/>) are produced
-    /// by runs and are never touched here. Only file flows carry authored transforms today (a FlowDefinition); a
-    /// flow of any other kind contributes nothing.
-    /// </summary>
-    private async Task RefreshDeclaredColumnsAsync(
-        CatalogDbContext context, string root, Guid repoId,
-        IReadOnlyList<CollectedFlow> flows, HashSet<Guid> present, CancellationToken ct)
-    {
+        // Replace this repo's declared pipeline-column rows from the authored YAML transforms of every present
+        // flow (the source of truth for "which transforms are set"). Rebuilt wholesale for this repo so a removed
+        // or edited transform does not linger; detected rows (from runs) are a different kind and are left
+        // untouched. The rows project from the documents parsed in phase one, fresh per attempt.
         await context.PipelineColumns
             .Where(c => c.RepoId == repoId && c.Kind == PipelineColumnKinds.Declared)
             .ExecuteDeleteAsync(ct).ConfigureAwait(false);
-
-        var done = new HashSet<Guid>();
-        foreach (var flow in flows)
+        foreach (var prepared in pipelines)
         {
-            var pipelineId = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
-            if (!present.Contains(pipelineId) || !done.Add(pipelineId))
-            {
-                continue;
-            }
-
-            var fullPath = Path.GetFullPath(Path.Combine(root, flow.Node.File));
-            foreach (var column in ProjectDeclaredColumns(flow.Node.Kind, fullPath, repoId, pipelineId))
+            foreach (var column in ProjectDeclaredColumns(prepared.Document, repoId, prepared.Id))
             {
                 context.PipelineColumns.Add(column);
             }
         }
+
+        return (added, updated, unchanged, deactivated);
     }
 
-    /// <summary>Loads a flow's transform policy and projects its authored transforms into declared column rows.
-    /// File and relational (ing) flows carry the shared transform block; any other kind, or a document that fails
-    /// to parse, contributes none (the pipeline projection already warned about a parse failure; declared columns
-    /// are an enrichment, never a reason to fail the sync).</summary>
-    private IReadOnlyList<CatalogPipelineColumn> ProjectDeclaredColumns(string kind, string fullPath, Guid repoId, Guid pipelineId)
+    /// <summary>Projects a flow document's authored transform policy into declared column rows. File and
+    /// relational (ing) flows carry the shared transform block; any other kind, or a document that failed to
+    /// parse (null), contributes none (the pipeline projection already warned about a parse failure; declared
+    /// columns are an enrichment, never a reason to fail the sync).</summary>
+    private static IReadOnlyList<CatalogPipelineColumn> ProjectDeclaredColumns(FlowDocument? document, Guid repoId, Guid pipelineId)
     {
-        try
+        var policy = document switch
         {
-            var policy = kind switch
-            {
-                "file" => _flowLoader.LoadFile(fullPath).Inference,
-                "ing" => _ingestionLoader.LoadFile(fullPath).Flow.Transform,
-                _ => null,
-            };
+            FileFlowDocument file => file.Flow.Inference,
+            IngestionFlowDocument ing => ing.Document.Flow.Transform,
+            _ => null,
+        };
 
-            if (policy is { Columns.Count: > 0 })
-            {
-                return CatalogProjection.PipelineColumnsDeclared(repoId, pipelineId, policy);
-            }
-        }
-        catch (Exception ex) when (ex is SqlFlow.Core.SqlFlowException or IOException)
-        {
-            // A malformed document was already warned about by the pipeline projection.
-        }
-
-        return [];
+        return policy is { Columns.Count: > 0 }
+            ? CatalogProjection.PipelineColumnsDeclared(repoId, pipelineId, policy)
+            : [];
     }
 
-    private static async Task<RunSyncTally> SyncRunsAsync(
-        CatalogDbContext context, string root, Guid repoId, List<string> warnings, CancellationToken ct)
+    /// <summary>Phase-one scan of the estate's run artifacts: parses each <c>run.json</c> once and keeps ONLY the
+    /// runs the catalog does not already know, so nothing is read or parsed twice per pass. Known and duplicate
+    /// runs count as skipped; unreadable, malformed, or over-limit artifacts as failed. The caller owns disposing
+    /// the returned documents once the write phase is done with them.</summary>
+    private static async Task<(List<PreparedRun> Runs, int Skipped, int Failed)> PrepareRunsAsync(
+        string root, Guid repoId, HashSet<Guid> knownRunIds, List<string> warnings, CancellationToken ct)
     {
-        // Scope the known-run set to this repo (a run id is globally unique and always synced under its own repo),
-        // so the dedup memory grows with the repo, not the whole catalog.
-        var known = (await context.Runs.Where(r => r.RepoId == repoId).Select(r => r.RunId).ToListAsync(ct).ConfigureAwait(false)).ToHashSet();
+        var prepared = new List<PreparedRun>();
         var seen = new HashSet<Guid>();
-        var added = 0;
         var skipped = 0;
         var failed = 0;
-        var files = 0;
-        var assertions = 0;
-        var statements = 0;
-        var surrogateKeys = 0;
-        var metrics = 0;
-
-        // The newest transform-view projection seen per pipeline this pass: the detected pipeline columns are a
-        // "latest run wins" snapshot, so only the most recent run's view columns are applied after the loop.
-        var detectedCandidates = new Dictionary<Guid, (DateTime WrittenUtc, IReadOnlyList<CatalogPipelineColumn> Rows)>();
 
         foreach (var file in EnumerateRunArtifacts(root))
         {
             ct.ThrowIfCancellationRequested();
+            JsonDocument? document = null;
             try
             {
                 var length = new FileInfo(file).Length;
@@ -408,7 +570,7 @@ public sealed class CatalogSync
                     continue;
                 }
 
-                using var document = JsonDocument.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false));
+                document = JsonDocument.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false));
                 var run = CatalogProjection.RunFromJson(document.RootElement, repoId);
                 if (run is null)
                 {
@@ -417,33 +579,78 @@ public sealed class CatalogSync
                     continue;
                 }
 
-                if (known.Contains(run.RunId) || !seen.Add(run.RunId))
+                if (knownRunIds.Contains(run.RunId) || !seen.Add(run.RunId))
                 {
                     skipped++; // immutable and already recorded (or seen earlier this pass).
                     continue;
                 }
 
-                // A run is immutable, so its drill-down detail is inserted exactly once, with the run itself.
-                context.Runs.Add(run);
-                added++;
-                var detail = AddRunDetail(context, document.RootElement, run.RunId, repoId);
-                files += detail.Files;
-                assertions += detail.Assertions;
-                statements += detail.Statements;
-                surrogateKeys += detail.SurrogateKeys;
-                metrics += detail.Metrics;
-
-                var detected = CatalogProjection.PipelineColumnsDetected(document.RootElement, repoId, run.PipelineId);
-                if (detected.Count > 0
-                    && (!detectedCandidates.TryGetValue(run.PipelineId, out var current) || run.WrittenUtc > current.WrittenUtc))
-                {
-                    detectedCandidates[run.PipelineId] = (run.WrittenUtc, detected);
-                }
+                prepared.Add(new PreparedRun(run, document));
+                document = null; // ownership handed to the prepared list.
             }
             catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
             {
                 warnings.Add($"run artifact '{file}' could not be read ({SecretHygiene.RedactedMessage(ex.Message)}); skipped.");
                 failed++;
+            }
+            finally
+            {
+                document?.Dispose();
+            }
+        }
+
+        return (prepared, skipped, failed);
+    }
+
+    /// <summary>Inserts the phase-one runs and their drill-down detail, and applies the newest detected
+    /// transform-view projection per pipeline. Runs inside the sync's transaction.</summary>
+    private static async Task<RunSyncTally> ApplyRunsAsync(
+        CatalogDbContext context, Guid repoId, IReadOnlyList<PreparedRun> runs, int skippedInScan, int failedInScan, CancellationToken ct)
+    {
+        var skipped = skippedInScan;
+        var added = 0;
+        var files = 0;
+        var assertions = 0;
+        var statements = 0;
+        var surrogateKeys = 0;
+        var metrics = 0;
+
+        // The pre-transaction scan already dropped every run the catalog knew then; re-verify the survivors
+        // INSIDE the transaction (in bounded chunks) so a run another node recorded in the meantime is skipped,
+        // keeping the insert idempotent under concurrency.
+        var alreadyKnown = (await SelectByKeysAsync(
+                runs.Select(r => r.Run.RunId).ToList(),
+                chunk => context.Runs.Where(r => chunk.Contains(r.RunId)).Select(r => r.RunId).ToListAsync(ct))
+            .ConfigureAwait(false)).ToHashSet();
+
+        // The newest transform-view projection seen per pipeline this pass: the detected pipeline columns are a
+        // "latest run wins" snapshot, so only the most recent run's view columns are applied after the loop.
+        var detectedCandidates = new Dictionary<Guid, (DateTime WrittenUtc, IReadOnlyList<CatalogPipelineColumn> Rows)>();
+
+        foreach (var prepared in runs)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (alreadyKnown.Contains(prepared.Run.RunId))
+            {
+                skipped++; // recorded by a concurrent sync/write-back since the scan; a run is immutable.
+                continue;
+            }
+
+            // A run is immutable, so its drill-down detail is inserted exactly once, with the run itself.
+            context.Runs.Add(prepared.Run);
+            added++;
+            var detail = AddRunDetail(context, prepared.Document.RootElement, prepared.Run.RunId, repoId);
+            files += detail.Files;
+            assertions += detail.Assertions;
+            statements += detail.Statements;
+            surrogateKeys += detail.SurrogateKeys;
+            metrics += detail.Metrics;
+
+            var detected = CatalogProjection.PipelineColumnsDetected(prepared.Document.RootElement, repoId, prepared.Run.PipelineId);
+            if (detected.Count > 0
+                && (!detectedCandidates.TryGetValue(prepared.Run.PipelineId, out var current) || prepared.Run.WrittenUtc > current.WrittenUtc))
+            {
+                detectedCandidates[prepared.Run.PipelineId] = (prepared.Run.WrittenUtc, detected);
             }
         }
 
@@ -467,7 +674,7 @@ public sealed class CatalogSync
             }
         }
 
-        return new RunSyncTally(added, skipped, failed, files, assertions, statements, surrogateKeys, metrics);
+        return new RunSyncTally(added, skipped, failedInScan, files, assertions, statements, surrogateKeys, metrics);
     }
 
     /// <summary>Adds the immutable drill-down detail of one run (files, assertions, generated SQL, surrogate keys,
@@ -536,14 +743,15 @@ public sealed class CatalogSync
         var fullFlowPath = Path.GetFullPath(flowFilePath);
         var root = Path.GetDirectoryName(fullFlowPath)
             ?? throw new SqlFlow.Core.SqlFlowException($"'{flowFilePath}' has no parent directory.");
+        var repoId = FlowIdentity.FromName(repoName);
         // One serializable transaction, run through the context's execution strategy so it is a single retriable
         // unit. The control plane enables connection resiliency (EnableRetryOnFailure); EF then forbids a
-        // user-initiated transaction unless it is wrapped this way. The work rebuilds all its state from run.json
-        // each attempt, so a retry is safe. See InSerializableTransactionAsync.
+        // user-initiated transaction unless it is wrapped this way. The work rebuilds all its state from the flow
+        // document and run.json each attempt, so a retry is safe. See InSerializableTransactionAsync.
         return await CatalogTransaction.InSerializableAsync(context, async () =>
         {
             var warnings = new List<string>();
-            var repoId = await UpsertRepoAsync(context, repoName, repoRemoteUrl, root, nowUtc, ct).ConfigureAwait(false);
+            await UpsertRepoAsync(context, repoId, repoName, repoRemoteUrl, root, nowUtc, ct).ConfigureAwait(false);
             var pipelineChange = await UpsertSinglePipelineAsync(context, root, fullFlowPath, repoId, nowUtc, warnings, ct).ConfigureAwait(false);
 
             var runRecorded = false;
@@ -616,35 +824,46 @@ public sealed class CatalogSync
         }, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Upserts the single flow that produced a run (found by its file path under <paramref name="root"/>),
-    /// reusing the same redaction, hashing, and projection as the full pipeline sync. Lineage-derived fields
-    /// (Wave) are left to the full sync; an unchanged flow only re-affirms its presence.</summary>
+    /// <summary>Upserts the single flow that produced a run by loading and parsing JUST that document (a targeted
+    /// read, never an estate scan), reusing the same redaction, hashing, and projection as the full pipeline
+    /// sync. Lineage-derived fields (Wave) are left to the full sync; an unchanged flow only re-affirms its
+    /// presence. A missing, unreadable, or unparseable document is a warning and the run is recorded without a
+    /// pipeline row.</summary>
     private async Task<PipelineChange> UpsertSinglePipelineAsync(
         CatalogDbContext context, string root, string fullFlowPath, Guid repoId, DateTime nowUtc, List<string> warnings, CancellationToken ct)
     {
-        var collected = _estate.Collect(root);
-        var flow = collected.Flows.FirstOrDefault(f =>
-            string.Equals(Path.GetFullPath(Path.Combine(root, f.Node.File)), fullFlowPath, StringComparison.OrdinalIgnoreCase));
-        if (flow is null)
-        {
-            warnings.Add($"'{fullFlowPath}' was not found as a flow under '{root}'; its run is recorded without a pipeline row.");
-            return PipelineChange.None;
-        }
-
-        var rawYaml = ReadYaml(fullFlowPath, flow.Node.File, warnings);
+        var relativePath = Path.GetRelativePath(root, fullFlowPath);
+        var rawYaml = ReadYaml(fullFlowPath, relativePath, warnings);
         if (rawYaml is null)
         {
             return PipelineChange.None;
         }
 
+        FlowDocument document;
+        try
+        {
+            document = _documents.Parse(rawYaml, fullFlowPath);
+        }
+        catch (SqlFlow.Core.SqlFlowException ex)
+        {
+            warnings.Add($"'{fullFlowPath}' could not be parsed as a flow ({SecretHygiene.RedactedMessage(ex.Message)}); its run is recorded without a pipeline row.");
+            return PipelineChange.None;
+        }
+
+        if (ProjectHeader(document) is not { } header)
+        {
+            warnings.Add($"'{fullFlowPath}' is an orchestration document, not a runnable flow; its run is recorded without a pipeline row.");
+            return PipelineChange.None;
+        }
+
         if (SecretHygiene.LooksLikeEmbeddedSecret(rawYaml))
         {
-            warnings.Add($"'{flow.Node.Name}' ({flow.Node.File}) appears to embed a credential; it is redacted in the catalog, but secrets must be ${{env:...}}/${{keyvault:...}} references in the YAML, not literals.");
+            warnings.Add($"'{header.Name}' ({relativePath}) appears to embed a credential; it is redacted in the catalog, but secrets must be ${{env:...}}/${{keyvault:...}} references in the YAML, not literals.");
         }
 
         var yaml = SecretHygiene.RedactedMessage(rawYaml);
         var hash = CatalogProjection.Hash(yaml);
-        var id = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
+        var id = CatalogIdentity.Pipeline(repoId, header.Name);
         var row = await context.Pipelines.FindAsync([id], ct).ConfigureAwait(false);
 
         // Refresh this one pipeline's declared columns from its YAML on every write-back: declared columns are the
@@ -653,7 +872,7 @@ public sealed class CatalogSync
         await context.PipelineColumns
             .Where(c => c.PipelineId == id && c.Kind == PipelineColumnKinds.Declared)
             .ExecuteDeleteAsync(ct).ConfigureAwait(false);
-        foreach (var column in ProjectDeclaredColumns(flow.Node.Kind, fullFlowPath, repoId, id))
+        foreach (var column in ProjectDeclaredColumns(document, repoId, id))
         {
             context.PipelineColumns.Add(column);
         }
@@ -662,14 +881,14 @@ public sealed class CatalogSync
         {
             row.Active = true;
             row.LastSeenUtc = nowUtc;
-            row.RelativePath = Normalize(flow.Node.File);
+            row.RelativePath = Normalize(relativePath);
             return PipelineChange.Unchanged;
         }
 
-        var definitionJson = SerializeDefinition(fullFlowPath, warnings);
+        var definitionJson = SerializeDefinition(document, fullFlowPath, warnings);
         var projected = CatalogProjection.Pipeline(
-            repoId, flow.Node.Name, flow.Node.Kind, flow.Node.Batch, Normalize(flow.Node.File),
-            flow.SourceServerRef, flow.TargetServerRef, hash, yaml, definitionJson, nowUtc);
+            repoId, header.Name, header.Kind, header.Batch, Normalize(relativePath),
+            header.SourceServer, header.TargetServer, hash, yaml, definitionJson, nowUtc);
 
         if (row is not null)
         {
@@ -691,48 +910,82 @@ public sealed class CatalogSync
         return PipelineChange.Added;
     }
 
-    private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected)> SyncLineageAsync(
-        CatalogDbContext context, string root, Guid repoId, bool includeDerived, ISecretResolver? secrets,
-        DateTime nowUtc, List<string> warnings, CancellationToken ct)
+    /// <summary>The pipeline-projection header of one flow document: the fields a catalog row derives from the
+    /// document itself, shaped exactly like the estate scan's flow nodes.</summary>
+    private sealed record FlowHeader(string Name, string Kind, string? Batch, string? SourceServer, string? TargetServer);
+
+    /// <summary>Projects one already-loaded document into its pipeline header, mirroring how
+    /// <see cref="FlowSetCollector"/> shapes each kind's flow node (name, kind, batch, server identities), so the
+    /// per-run write-back can upsert a pipeline from a single targeted load. Null for an orchestration document
+    /// (scm/batch), which the full sync never projects as a pipeline either.</summary>
+    private static FlowHeader? ProjectHeader(FlowDocument document)
     {
-        LineageReport report;
-        try
+        switch (document)
         {
-            report = await LineageService.ComputeAsync(
-                new LineageOptions { FlowDirectory = root, IncludeObserved = true, IncludeDerived = includeDerived, Secrets = secrets },
-                ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SqlFlow.Core.SqlFlowException or IOException or InvalidOperationException)
-        {
-            // Lineage is an enrichment: a failure to compute it (e.g. a connect-tier timeout) must not fail the
-            // whole sync. The pipeline registry and run history still land. But a wave from an earlier successful
-            // sync no longer reflects this estate, so reset every active pipeline in this repo to the -1
-            // "not computed" sentinel rather than leaving a stale wave that reads as a real execution order.
-            // The pipelines are already tracked (loaded in SyncPipelinesAsync), so mutating them here is persisted
-            // by the single SaveChangesAsync at the end of the pass.
-            foreach (var pipeline in context.Pipelines.Local)
+            case IngestionFlowDocument doc:
             {
-                if (pipeline.RepoId == repoId && pipeline.Active)
-                {
-                    pipeline.Wave = -1;
-                }
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                return new FlowHeader(
+                    flow.SysAlias ?? flow.Target.Table.Name, "ing", flow.Batch,
+                    ServerIdentity.From(refs[flow.Source.Server]), ServerIdentity.From(refs[flow.Target.Server]));
             }
 
-            warnings.Add($"lineage was not computed for this sync ({SecretHygiene.RedactedMessage(ex.Message)}); objects and edges left unchanged, waves reset to not-computed.");
-            return (0, 0, 0, 0, 0, 0, false);
-        }
+            case ExportFlowDocument doc:
+            {
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                var server = ServerIdentity.From(refs[flow.SrcServer]);
+                return new FlowHeader(flow.SysAlias, "exp", flow.Batch, server, server);
+            }
 
-        foreach (var warning in report.Warnings)
-        {
-            warnings.Add($"lineage: {warning}");
-        }
+            case StoredProcedureFlowDocument doc:
+            {
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                return new FlowHeader(flow.SysAlias, "sp", flow.Batch, null, ServerIdentity.From(refs[flow.Server]));
+            }
 
+            case HealthCheckFlowDocument doc:
+            {
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                return new FlowHeader(flow.SysAlias, "hc", flow.Batch, null, ServerIdentity.From(refs[flow.Server]));
+            }
+
+            case FileFlowDocument doc:
+                return new FlowHeader(
+                    doc.Flow.Name, "file", doc.Flow.Batch, null, ServerIdentity.From(doc.Flow.Target.Connection));
+
+            case InvokeFlowDocument doc:
+                return new FlowHeader(
+                    doc.Document.Definition.InvokeAlias, "inv", doc.Document.Definition.Batch, null, ServerIdentity.FileSystem);
+
+            default:
+                // scm/batch (and any future orchestration kind): they move no catalog data and never become
+                // pipeline rows.
+                return null;
+        }
+    }
+
+    private static Dictionary<string, string> ConnectionRefs(IEnumerable<Core.Connections.DataSource> connections)
+        => connections.ToDictionary(c => c.Alias, c => c.ConnectionRef, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Writes a precomputed lineage report into the catalog: the global object registry, the data
+    /// dictionary, this repo's edges and flow dependencies, the execution waves, and the identity healing. Runs
+    /// inside the sync's transaction and performs only database work; the report itself was computed before the
+    /// transaction opened.</summary>
+    private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected)> ApplyLineageAsync(
+        CatalogDbContext context, Guid repoId, LineageReport report, bool includeDerived, DateTime nowUtc, CancellationToken ct)
+    {
         // Objects are GLOBAL (shared across repos by their canonical key) - upsert, never delete. Load only the
         // keys this report mentions, so the working set scales with the report, not the whole catalog.
         var keys = report.Objects.Select(o => o.Key).Distinct().ToList();
         // AsTracking so the object-metadata updates below persist under a NoTracking host context (see the pipeline
-        // query above); harmless on a tracking context.
-        var existingObjects = await context.Objects.Where(o => keys.Contains(o.Key)).AsTracking().ToDictionaryAsync(o => o.Key, ct).ConfigureAwait(false);
+        // query in ApplyPipelinesAsync); harmless on a tracking context.
+        var existingObjects = (await SelectByKeysAsync(
+                keys, chunk => context.Objects.Where(o => chunk.Contains(o.Key)).AsTracking().ToListAsync(ct))
+            .ConfigureAwait(false)).ToDictionary(o => o.Key);
         foreach (var node in report.Objects)
         {
             if (existingObjects.TryGetValue(node.Key, out var row))
@@ -779,11 +1032,15 @@ public sealed class CatalogSync
         if (withColumns.Count > 0)
         {
             var candidateKeys = withColumns.Select(o => o.Key).Distinct().ToList();
-            var existingTiers = await context.ObjectColumns
-                .Where(c => candidateKeys.Contains(c.ObjectKey))
-                .Select(c => new { c.ObjectKey, c.Tier })
-                .Distinct()
-                .ToListAsync(ct).ConfigureAwait(false);
+            // Distinct per chunk is a true distinct: the chunks partition the keys, so no pair repeats.
+            var existingTiers = await SelectByKeysAsync(
+                    candidateKeys,
+                    chunk => context.ObjectColumns
+                        .Where(c => chunk.Contains(c.ObjectKey))
+                        .Select(c => new { c.ObjectKey, c.Tier })
+                        .Distinct()
+                        .ToListAsync(ct))
+                .ConfigureAwait(false);
             var existingRankByKey = existingTiers
                 .GroupBy(x => x.ObjectKey, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.Max(x => TierRank(x.Tier)), StringComparer.Ordinal);
@@ -795,7 +1052,9 @@ public sealed class CatalogSync
             var refreshedKeys = nodesToRefresh.Select(o => o.Key).Distinct().ToList();
             if (refreshedKeys.Count > 0)
             {
-                await context.ObjectColumns.Where(c => refreshedKeys.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                await ExecuteByKeysAsync(
+                        refreshedKeys, chunk => context.ObjectColumns.Where(c => chunk.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
                 foreach (var node in nodesToRefresh)
                 {
                     var tier = (node.ColumnsTier ?? Core.Lineage.LineageTier.Observed).ToString();
@@ -847,16 +1106,23 @@ public sealed class CatalogSync
         var superseded = 0;
         if (weakerTwins.Count > 0)
         {
-            var stillReferenced = await context.LineageEdges
-                .Where(e => weakerTwins.Contains(e.ObjectKey))
-                .Select(e => e.ObjectKey)
-                .Distinct()
-                .ToListAsync(ct).ConfigureAwait(false);
+            var stillReferenced = await SelectByKeysAsync(
+                    weakerTwins,
+                    chunk => context.LineageEdges
+                        .Where(e => chunk.Contains(e.ObjectKey))
+                        .Select(e => e.ObjectKey)
+                        .Distinct()
+                        .ToListAsync(ct))
+                .ConfigureAwait(false);
             var deletable = weakerTwins.Except(stillReferenced, StringComparer.Ordinal).ToList();
             if (deletable.Count > 0)
             {
-                superseded = await context.Objects.Where(o => deletable.Contains(o.Key)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
-                await context.ObjectColumns.Where(c => deletable.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                superseded = await ExecuteByKeysAsync(
+                        deletable, chunk => context.Objects.Where(o => chunk.Contains(o.Key)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
+                await ExecuteByKeysAsync(
+                        deletable, chunk => context.ObjectColumns.Where(c => chunk.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
             }
         }
 
@@ -896,18 +1162,46 @@ public sealed class CatalogSync
         _ => -1,
     };
 
-    private string SerializeDefinition(string fullPath, List<string> warnings)
+    /// <summary>Runs a keyed membership query per <see cref="KeyChunkSize"/> chunk and unions the rows, so a
+    /// large key set never approaches SQL Server's per-command parameter limit. The chunks partition the keys,
+    /// so per-chunk results combine without cross-chunk duplicates.</summary>
+    private static async Task<List<TRow>> SelectByKeysAsync<TKey, TRow>(
+        IReadOnlyList<TKey> keys, Func<TKey[], Task<List<TRow>>> query)
+    {
+        var rows = new List<TRow>();
+        foreach (var chunk in keys.Chunk(KeyChunkSize))
+        {
+            rows.AddRange(await query(chunk).ConfigureAwait(false));
+        }
+
+        return rows;
+    }
+
+    /// <summary>Runs a keyed bulk write per <see cref="KeyChunkSize"/> chunk and sums the affected row counts.</summary>
+    private static async Task<int> ExecuteByKeysAsync<TKey>(IReadOnlyList<TKey> keys, Func<TKey[], Task<int>> write)
+    {
+        var affected = 0;
+        foreach (var chunk in keys.Chunk(KeyChunkSize))
+        {
+            affected += await write(chunk).ConfigureAwait(false);
+        }
+
+        return affected;
+    }
+
+    /// <summary>Serializes an already-parsed flow document into the queryable, secret-redacted definition JSON.
+    /// A serialization failure degrades to an empty definition with a warning (the definition is an enrichment,
+    /// never a reason to fail the sync).</summary>
+    private static string SerializeDefinition(FlowDocument document, string fullPath, List<string> warnings)
     {
         try
         {
-            var document = _documents.LoadFile(fullPath);
             var json = JsonSerializer.Serialize(document, document.GetType(), DefinitionJsonOptions);
             return SecretHygiene.RedactedMessage(json);
         }
-        catch (Exception ex) when (ex is SqlFlow.Core.SqlFlowException or IOException or JsonException)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
-            // FlowValidationException derives from SqlFlowException, so a malformed document is caught here too.
-            warnings.Add($"'{fullPath}' could not be parsed for the catalog definition ({SecretHygiene.RedactedMessage(ex.Message)}); stored without it.");
+            warnings.Add($"'{fullPath}' could not be serialized for the catalog definition ({SecretHygiene.RedactedMessage(ex.Message)}); stored without it.");
             return string.Empty;
         }
     }

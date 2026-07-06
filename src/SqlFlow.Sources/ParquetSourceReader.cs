@@ -18,8 +18,10 @@ namespace SqlFlow.Sources;
 /// (nvarchar(max)), the same "keep-a-subtree-as-a-string" fallback the JSON/XML readers use; struct fields are
 /// surfaced as typed dotted columns. It rides <see cref="FileSourceReaderBase"/> for file selection, schema
 /// evolution, provenance / key columns, streaming, and lifecycle - the one code path shared with CSV/XLS/JSON/XML
-/// (those declare string columns, Parquet declares typed ones). Files are read one row group at a time to bound
-/// memory, mirroring the original engine.
+/// (those declare string columns, Parquet declares typed ones). Rows are materialized one row group at a time,
+/// but the format needs random access (the footer lives at the end), so a remote, non-seekable file is first
+/// buffered fully in memory: per file, peak memory is the file size plus one row group. A seekable (local) file
+/// is not buffered and is bounded by one row group.
 /// </summary>
 public sealed class ParquetSourceReader : FileSourceReaderBase
 {
@@ -70,7 +72,7 @@ public sealed class ParquetSourceReader : FileSourceReaderBase
     }
 
     /// <summary>The file's typed column schema: scalar/struct leaves typed, nested collections as nvarchar(max) JSON.</summary>
-    protected override async Task<IReadOnlyList<SourceColumn>> ReadColumnSchemaAsync(IFileStore store, FileRef file, SourceSpec source, CancellationToken ct)
+    protected override async Task<FileSchema> ReadFileSchemaAsync(IFileStore store, FileRef file, SourceSpec source, CancellationToken ct)
     {
         var meta = PreIngestionParquet.FromSource(source);
         await using var stream = await OpenSeekableAsync(store, file, ct).ConfigureAwait(false);
@@ -79,14 +81,16 @@ public sealed class ParquetSourceReader : FileSourceReaderBase
         var plan = BuildPlan(reader, file, meta);
 
         // Route the self-describing field names through the same legacy cleanup as every other file source,
-        // index-preserving so the positional plan reader stays aligned.
+        // index-preserving so the positional plan reader stays aligned. The cleaned names are also the raw
+        // order: Parquet's row pass lays out cells from the file's own plan, not from discovered names, so the
+        // JSON/XML raw-name channel just carries the file's column order.
         var columns = plan.Select(p => p.Column).ToList();
         var cleaned = CleanColumnNames(columns.Select(c => c.Name).ToList());
-        return columns.Select((c, i) => c with { Name = cleaned[i] }).ToList();
+        return new FileSchema(columns.Select((c, i) => c with { Name = cleaned[i] }).ToList(), cleaned);
     }
 
     protected override async Task<IReadOnlyList<string>> ReadColumnNamesAsync(IFileStore store, FileRef file, SourceSpec source, CancellationToken ct)
-        => (await ReadColumnSchemaAsync(store, file, source, ct).ConfigureAwait(false)).Select(c => c.Name).ToList();
+        => (await ReadFileSchemaAsync(store, file, source, ct).ConfigureAwait(false)).Columns.Select(c => c.Name).ToList();
 
     protected override async IAsyncEnumerable<FileLine> ReadLinesAsync(
         IFileStore store, FileRef file, SourceSpec source, [EnumeratorCancellation] CancellationToken ct)

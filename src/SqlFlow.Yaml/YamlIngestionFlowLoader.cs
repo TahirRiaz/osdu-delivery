@@ -148,6 +148,7 @@ public sealed class YamlIngestionFlowLoader
         {
             FlowId = name is null ? 0 : StableFlowId(name),
             SysAlias = name,
+            Batch = NullIfBlank(y.Batch),
             Description = string.IsNullOrWhiteSpace(y.Description) ? null : y.Description,
             Source = new IngestionSource
             {

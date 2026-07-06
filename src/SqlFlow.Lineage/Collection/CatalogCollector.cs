@@ -9,9 +9,10 @@ namespace SqlFlow.Lineage.Collection;
 /// Phases one and two of the derived tier, connected: per SQL Server the documents reference, one read-only
 /// catalog inventory (objects, synonyms) and one verbatim module harvest (sys.sql_modules), each module's
 /// definition parsed through the same operation-wise extractor. This is the SMO replacement: plain set-based
-/// reads, one parser instance per module, no shared state, servers processed in parallel. An unreachable
-/// server or an encrypted module degrades to a warning, never a failure: the derived tier is an enrichment
-/// of the offline graph, not a prerequisite for it.
+/// reads, one parser instance per module, no shared state, servers processed in parallel and each server's
+/// module bodies parsed in parallel (bounded by the processor count). An unreachable server or an encrypted
+/// module degrades to a warning, never a failure: the derived tier is an enrichment of the offline graph,
+/// not a prerequisite for it.
 /// </summary>
 public sealed class CatalogCollector
 {
@@ -38,8 +39,10 @@ public sealed class CatalogCollector
 
         // Identity proof pass: two references resolving to the same canonical connection string ARE the
         // same server. The ordinal-smallest identity represents the group; the rest alias to it, so the
-        // graph stops splitting one physical estate across reference spellings.
-        var representatives = new List<(string ServerRef, string RawReference)>();
+        // graph stops splitting one physical estate across reference spellings. The resolved canonical
+        // string is carried into the collection below, so each server's reference (and its secret) is
+        // resolved exactly once per refresh.
+        var representatives = new List<(string ServerRef, string ConnectionString)>();
         var byCanonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (serverRef, value) in sqlServers)
         {
@@ -61,11 +64,11 @@ public sealed class CatalogCollector
             else
             {
                 byCanonical[canonical] = serverRef;
-                representatives.Add((serverRef, value.RawReference));
+                representatives.Add((serverRef, canonical));
             }
         }
 
-        var results = await Task.WhenAll(representatives.Select(server => CollectServerAsync(server.ServerRef, server.RawReference, ct)))
+        var results = await Task.WhenAll(representatives.Select(server => CollectServerAsync(server.ServerRef, server.ConnectionString, ct)))
             .ConfigureAwait(false);
 
         foreach (var result in results)
@@ -85,14 +88,12 @@ public sealed class CatalogCollector
         return merged;
     }
 
-    private async Task<CollectionResult> CollectServerAsync(string serverRef, string rawReference, CancellationToken ct)
+    private static async Task<CollectionResult> CollectServerAsync(string serverRef, string connectionString, CancellationToken ct)
     {
         var result = new CollectionResult();
         try
         {
-            var resolved = await _resolver.ResolveAsync(rawReference, ConnectionRole.Source, ct: ct).ConfigureAwait(false);
-
-            await using var connection = new SqlConnection(resolved.CanonicalString);
+            await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
 
             var database = (string?)await Scalar(connection, "SELECT DB_NAME();", ct).ConfigureAwait(false)
@@ -105,6 +106,7 @@ public sealed class CatalogCollector
             await InventoryAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
             await SynonymsAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
             await ModulesAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
+            await TableScriptsAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -189,6 +191,129 @@ public sealed class CatalogCollector
         }
 
         return map;
+    }
+
+    /// <summary>
+    /// Reconstructs a <c>CREATE TABLE</c> script for every base table from the live schema - columns (with
+    /// identity, computed expressions, nullability) and the primary key - and attaches it as a derived-tier
+    /// artifact. SQL Server keeps no CREATE TABLE text (unlike a module's <c>sys.sql_modules</c> body), so the
+    /// catalog would otherwise hold a script for views/procedures but never for tables. A generating script per
+    /// object is required to recreate the estate in a new environment and to reason about it offline, so tables
+    /// are scripted here the way <see cref="ModulesAsync"/> harvests module bodies.
+    /// </summary>
+    private static async Task TableScriptsAsync(
+        CollectionResult result, SqlConnection connection, string serverRef, string database, CancellationToken ct)
+    {
+        const string columnsSql = """
+            SELECT s.name, o.name, c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity,
+                   CONVERT(bigint, ISNULL(ic.seed_value, 1)), CONVERT(bigint, ISNULL(ic.increment_value, 1)),
+                   c.is_computed, cc.definition
+            FROM sys.columns c
+            JOIN sys.objects o ON o.object_id = c.object_id
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            JOIN sys.types t ON t.user_type_id = c.user_type_id
+            LEFT JOIN sys.identity_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+            LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+            WHERE o.type = 'U' AND o.is_ms_shipped = 0
+            ORDER BY s.name, o.name, c.column_id;
+            """;
+
+        var tables = new Dictionary<string, TableScript>(StringComparer.Ordinal);
+        TableScript Table(string schema, string name)
+        {
+            var key = schema + "|" + name;
+            if (!tables.TryGetValue(key, out var t))
+            {
+                tables[key] = t = new TableScript { Schema = schema, Name = name };
+            }
+
+            return t;
+        }
+
+        await using (var command = new SqlCommand(columnsSql, connection) { CommandTimeout = 0 })
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var table = Table(reader.GetString(0), reader.GetString(1));
+                var columnName = reader.GetString(2);
+                if (reader.GetBoolean(11))
+                {
+                    // A computed column: [name] AS (expression); it carries no type or nullability of its own.
+                    var definition = reader.IsDBNull(12) ? "NULL" : reader.GetString(12);
+                    table.Columns.Add($"    [{columnName}] AS {definition}");
+                    continue;
+                }
+
+                var type = RenderType(reader.GetString(3), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
+                var identity = reader.GetBoolean(8)
+                    ? string.Create(CultureInfo.InvariantCulture, $" IDENTITY({reader.GetInt64(9)},{reader.GetInt64(10)})")
+                    : string.Empty;
+                var nullability = reader.GetBoolean(7) ? "NULL" : "NOT NULL";
+                table.Columns.Add($"    [{columnName}] {type}{identity} {nullability}");
+            }
+        }
+
+        const string pkSql = """
+            SELECT s.name, o.name, kc.name, i.type_desc, col.name
+            FROM sys.indexes i
+            JOIN sys.objects o ON o.object_id = i.object_id
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+            JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+            JOIN sys.key_constraints kc ON kc.parent_object_id = i.object_id AND kc.unique_index_id = i.index_id
+            WHERE i.is_primary_key = 1 AND o.type = 'U' AND o.is_ms_shipped = 0
+            ORDER BY s.name, o.name, ic.key_ordinal;
+            """;
+
+        await using (var command = new SqlCommand(pkSql, connection) { CommandTimeout = 0 })
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var table = Table(reader.GetString(0), reader.GetString(1));
+                table.PrimaryKeyName = reader.GetString(2);
+                table.PrimaryKeyClustered = reader.GetString(3);   // CLUSTERED / NONCLUSTERED
+                table.PrimaryKeyColumns.Add(reader.GetString(4));
+            }
+        }
+
+        foreach (var table in tables.Values)
+        {
+            var lines = new List<string>(table.Columns);
+            if (table.PrimaryKeyColumns.Count > 0)
+            {
+                var keyColumns = string.Join(", ", table.PrimaryKeyColumns.Select(c => $"[{c}] ASC"));
+                lines.Add($"    CONSTRAINT [{table.PrimaryKeyName}] PRIMARY KEY {table.PrimaryKeyClustered} ({keyColumns})");
+            }
+
+            result.ObjectArtifacts.Add(new CollectedObjectArtifact
+            {
+                ServerRef = serverRef,
+                Database = database,
+                Schema = table.Schema,
+                Name = table.Name,
+                Kind = LineageNodeKind.Table,
+                Script = $"CREATE TABLE [{table.Schema}].[{table.Name}] (\n{string.Join(",\n", lines)}\n);",
+                Tier = LineageTier.Derived,
+            });
+        }
+    }
+
+    /// <summary>Accumulates one base table's rendered column lines and primary key while the schema is read.</summary>
+    private sealed class TableScript
+    {
+        public required string Schema { get; init; }
+
+        public required string Name { get; init; }
+
+        public List<string> Columns { get; } = [];
+
+        public string? PrimaryKeyName { get; set; }
+
+        public string PrimaryKeyClustered { get; set; } = "CLUSTERED";
+
+        public List<string> PrimaryKeyColumns { get; } = [];
     }
 
     /// <summary>Renders a SQL Server type with its length/precision the way it reads in DDL (best-effort, for
@@ -278,12 +403,44 @@ public sealed class CatalogCollector
             }
         }
 
-        foreach (var (schema, name, definition) in modules)
-        {
-            ct.ThrowIfCancellationRequested();
-            var moduleKey = NodeKey.For(serverRef, database, schema, name);
-            var label = $"{serverRef}:{database}.{schema}.{name}";
+        // The ScriptDom walk is pure CPU and the extractor is thread-safe by construction (one parser and one
+        // walk state per call, no shared mutable state), so the readable bodies parse in parallel, bounded by
+        // the processor count. Each module's warnings and facts land in its own slot; the sequential merge
+        // below runs in the original catalog order, so the output is byte-for-byte what the serial walk built.
+        var extracted = new (List<string> Warnings, List<LineageFact> Facts)[modules.Count];
+        Parallel.For(
+            0,
+            modules.Count,
+            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct },
+            i =>
+            {
+                var (schema, name, definition) = modules[i];
+                if (definition is null)
+                {
+                    return;
+                }
 
+                var moduleKey = NodeKey.For(serverRef, database, schema, name);
+                var label = $"{serverRef}:{database}.{schema}.{name}";
+                var deps = Extraction.TSqlLineageExtractor.Extract(definition, label, defaultDatabase: database);
+
+                var facts = new List<LineageFact>();
+                foreach (var fact in ScriptFactBuilder.Facts(
+                             deps, flow: null, viaModuleKey: moduleKey, serverRef, LineageTier.Derived, minimumParts: 1))
+                {
+                    // The module's own CREATE statement points at itself; self-facts carry nothing.
+                    if (NodeKey.For(serverRef, fact.Database ?? database, fact.Schema, fact.Name) != moduleKey)
+                    {
+                        facts.Add(fact with { Database = fact.Database ?? database });
+                    }
+                }
+
+                extracted[i] = (deps.Warnings, facts);
+            });
+
+        for (var i = 0; i < modules.Count; i++)
+        {
+            var (schema, name, definition) = modules[i];
             if (definition is null)
             {
                 // WITH ENCRYPTION: the stored text is unreadable by design; the gap is declared, not hidden.
@@ -311,18 +468,8 @@ public sealed class CatalogCollector
                 Definition = definition,
             });
 
-            var deps = Extraction.TSqlLineageExtractor.Extract(definition, label, defaultDatabase: database);
-            result.Warnings.AddRange(deps.Warnings);
-
-            foreach (var fact in ScriptFactBuilder.Facts(
-                         deps, flow: null, viaModuleKey: moduleKey, serverRef, LineageTier.Derived, minimumParts: 1))
-            {
-                // The module's own CREATE statement points at itself; self-facts carry nothing.
-                if (NodeKey.For(serverRef, fact.Database ?? database, fact.Schema, fact.Name) != moduleKey)
-                {
-                    result.Facts.Add(fact with { Database = fact.Database ?? database });
-                }
-            }
+            result.Warnings.AddRange(extracted[i].Warnings);
+            result.Facts.AddRange(extracted[i].Facts);
         }
     }
 

@@ -8,13 +8,16 @@ using SqlFlow.Lineage;
 namespace SqlFlow.Orchestration;
 
 /// <summary>
-/// Runs a batch: lineage computes the concurrency waves over the selected member flows, then each wave runs its
-/// members concurrently (bounded by maxParallel) and the whole wave must finish before the next starts. Failure
-/// is explicit: <c>onError: stop</c> halts after the current wave's barrier; <c>onError: continue</c> keeps
-/// running independent members and skips only those that depend on a failure; a member listed under
-/// <c>ignoreErrors</c> may fail without stopping the batch or blocking its dependents. Members in a dependency
-/// cycle run together in a final fallback wave and are reported as unordered. Every member runs through the
-/// shared <see cref="IDocumentRunner"/>, the same path as a directly-invoked flow.
+/// Runs a batch: lineage computes the dependency graph over the selected member flows, then members are dispatched
+/// as a DAG: each member starts as soon as every one of its direct dependencies has completed (bounded by
+/// maxParallel), so a member never waits on an unrelated slow member. The topological waves are still computed and
+/// reported (they are how a plan reads, and each member records its wave), but they are levels, not execution
+/// barriers. Failure is explicit: <c>onError: stop</c> lets in-flight members finish and skips every member not
+/// yet started; <c>onError: continue</c> keeps running independent members and skips only those that depend on a
+/// failure; a member listed under <c>ignoreErrors</c> may fail without stopping the batch or blocking its
+/// dependents. Members in a dependency cycle run together in a final fallback wave, after every acyclic member has
+/// finished, and are reported as unordered. Every member runs through the shared <see cref="IDocumentRunner"/>,
+/// the same path as a directly-invoked flow.
 /// </summary>
 public sealed class BatchOrchestrator
 {
@@ -80,32 +83,121 @@ public sealed class BatchOrchestrator
             warnings.Add($"dependency cycle among members ({string.Join(", ", unordered)}); they run together in the final wave, order undecidable.");
         }
 
-        // ---- Wave execution. -------------------------------------------------------------------------------
+        // ---- DAG execution: a member starts when its own direct dependencies complete. ----------------------
         var byName = active.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
         var directDeps = DirectMemberDependencies(active.Select(m => m.Name).ToList(), report.FlowDependencies);
-        var maxParallel = flow.MaxParallel <= 0 ? int.MaxValue : flow.MaxParallel;
+        // With no explicit cap, bound by the machine rather than launching an arbitrarily wide estate at once.
+        var maxParallel = flow.MaxParallel <= 0 ? Math.Max(2, Environment.ProcessorCount) : flow.MaxParallel;
         using var gate = new SemaphoreSlim(maxParallel);
 
         var memberResults = new Dictionary<string, BatchMemberResult>(StringComparer.OrdinalIgnoreCase);
         var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // failed (non-ignored) or skipped
         var stopRequested = false;
-        var waveResults = new List<BatchWaveResult>();
 
+        // The waves are reported as computed (each member also records its wave), but execution below is
+        // per-member: a wave describes the plan's topological levels, never a barrier.
+        var waveResults = new List<BatchWaveResult>();
+        var waveOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var w = 0; w < waves.Count; w++)
         {
-            var waveNumber = w + 1;
-            waveResults.Add(new BatchWaveResult { Wave = waveNumber, Members = waves[w] });
-
-            // A member is skipped (not run) when the batch already stopped, or when one of its member
-            // dependencies failed or was skipped. Both are recorded before the wave runs.
-            var toRun = new List<string>();
+            waveResults.Add(new BatchWaveResult { Wave = w + 1, Members = waves[w] });
             foreach (var name in waves[w])
+            {
+                waveOf[name] = w + 1;
+            }
+        }
+
+        // Only the acyclic members are dispatched here; cycle members run in the final fallback phase below, so
+        // their (undrainable) dependency counts are excluded. A dependent of a cycle member is itself unordered
+        // (Kahn never reaches it), so the acyclic subgraph is self-contained and every count here does drain.
+        var cycleMembers = new HashSet<string>(unordered, StringComparer.OrdinalIgnoreCase);
+        var dependents = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var remainingDeps = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var member in active)
+        {
+            if (!cycleMembers.Contains(member.Name))
+            {
+                dependents[member.Name] = [];
+                remainingDeps[member.Name] = directDeps[member.Name].Count;
+            }
+        }
+
+        foreach (var name in remainingDeps.Keys)
+        {
+            foreach (var dep in directDeps[name])
+            {
+                dependents[dep].Add(name);
+            }
+        }
+
+        // A member becomes ready when its last direct dependency completes. At dequeue time it is either skipped
+        // (the batch stopped, or a dependency failed or was skipped; both recorded with the reason) or started,
+        // still bounded by the maxParallel gate. Skips complete the member too, so their dependents cascade.
+        var ready = new Queue<string>(remainingDeps.Where(kv => kv.Value == 0).Select(kv => kv.Key));
+        var running = new HashSet<Task<(Member Member, BatchMemberResult Result)>>();
+        while (ready.Count > 0 || running.Count > 0)
+        {
+            while (ready.Count > 0)
+            {
+                var name = ready.Dequeue();
+                var blockingDep = directDeps[name].FirstOrDefault(blocked.Contains);
+                if (stopRequested || blockingDep is not null)
+                {
+                    blocked.Add(name);
+                    memberResults[name] = Skipped(byName[name], waveOf[name],
+                        stopRequested ? "batch stopped before this member started" : $"depends on '{blockingDep}', which did not succeed");
+                    ReleaseDependents(name, dependents, remainingDeps, ready);
+                    continue;
+                }
+
+                running.Add(RunMemberAsync(byName[name], waveOf[name], flowDirectory, memberOptions, gate, ct));
+            }
+
+            if (running.Count == 0)
+            {
+                break;
+            }
+
+            var finishedTask = await Task.WhenAny(running).ConfigureAwait(false);
+            running.Remove(finishedTask);
+            Member member;
+            BatchMemberResult result;
+            try
+            {
+                (member, result) = await finishedTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The batch is being cancelled. The sibling member tasks observe the same token; wait for them to
+                // unwind so no member task outlives the batch, then let the cancellation reach the caller.
+                await Task.WhenAll(running.Select(AwaitCancelledMemberAsync)).ConfigureAwait(false);
+                throw;
+            }
+
+            memberResults[member.Name] = result;
+            if (result.Status == BatchMemberStatus.Failed)
+            {
+                blocked.Add(member.Name);
+                if (flow.OnError == BatchErrorMode.Stop)
+                {
+                    stopRequested = true;
+                }
+            }
+
+            ReleaseDependents(member.Name, dependents, remainingDeps, ready);
+        }
+
+        // ---- Cycle members: the reported fallback wave, run only after every acyclic member finished. --------
+        if (unordered.Count > 0)
+        {
+            var toRun = new List<string>();
+            foreach (var name in waves[^1])
             {
                 var blockingDep = directDeps[name].FirstOrDefault(blocked.Contains);
                 if (stopRequested || blockingDep is not null)
                 {
                     blocked.Add(name);
-                    memberResults[name] = Skipped(byName[name], waveNumber,
+                    memberResults[name] = Skipped(byName[name], waveOf[name],
                         stopRequested ? "batch stopped before this wave" : $"depends on '{blockingDep}', which did not succeed");
                     continue;
                 }
@@ -113,24 +205,13 @@ public sealed class BatchOrchestrator
                 toRun.Add(name);
             }
 
-            if (toRun.Count == 0)
+            if (toRun.Count > 0)
             {
-                continue;
-            }
-
-            var outcomes = await Task.WhenAll(toRun.Select(name => RunMemberAsync(byName[name], waveNumber, flowDirectory, memberOptions, gate, ct)))
-                .ConfigureAwait(false);
-
-            foreach (var (member, result) in outcomes)
-            {
-                memberResults[member.Name] = result;
-                if (result.Status == BatchMemberStatus.Failed)
+                var outcomes = await Task.WhenAll(toRun.Select(name => RunMemberAsync(byName[name], waveOf[name], flowDirectory, memberOptions, gate, ct)))
+                    .ConfigureAwait(false);
+                foreach (var (member, result) in outcomes)
                 {
-                    blocked.Add(member.Name);
-                    if (flow.OnError == BatchErrorMode.Stop)
-                    {
-                        stopRequested = true;
-                    }
+                    memberResults[member.Name] = result;
                 }
             }
         }
@@ -190,7 +271,7 @@ public sealed class BatchOrchestrator
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // A runner is expected to return a failed outcome, not throw; guard anyway so one member's
-                // unexpected throw cannot abort the whole wave's barrier.
+                // unexpected throw cannot abort the batch dispatch.
                 outcome = new DocumentRunOutcome
                 {
                     FlowName = member.Name,
@@ -220,6 +301,37 @@ public sealed class BatchOrchestrator
         finally
         {
             gate.Release();
+        }
+    }
+
+    /// <summary>Marks <paramref name="name"/> complete for dispatch purposes: every dependent's remaining
+    /// dependency count drops by one, and a dependent that reaches zero becomes ready (it is skipped or started
+    /// when dequeued). Applied on success, failure, and skip alike; whether a dependent then runs is decided by
+    /// the blocked set at dequeue time.</summary>
+    private static void ReleaseDependents(
+        string name, Dictionary<string, List<string>> dependents, Dictionary<string, int> remainingDeps, Queue<string> ready)
+    {
+        foreach (var dependent in dependents[name])
+        {
+            if (--remainingDeps[dependent] == 0)
+            {
+                ready.Enqueue(dependent);
+            }
+        }
+    }
+
+    /// <summary>Awaits a sibling member task during batch cancellation. Cancellation is the only way a member task
+    /// faults (<see cref="RunMemberAsync"/> converts every other throw into a failed outcome), and it is swallowed
+    /// here because the primary cancellation is what propagates to the caller.</summary>
+    private static async Task AwaitCancelledMemberAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during unwind; the first observed cancellation is rethrown by the dispatch loop.
         }
     }
 
@@ -271,8 +383,9 @@ public sealed class BatchOrchestrator
     }
 
     /// <summary>The direct member-to-member dependency map (a member -> the members it must wait for), filtered
-    /// to the active set. Because the waves are topological, checking only direct dependencies for a blocked
-    /// upstream is sufficient to skip transitive dependents.</summary>
+    /// to the active set. Because a member is only dispatched once every direct dependency has completed, and a
+    /// skipped dependency joins the blocked set itself, checking only direct dependencies for a blocked upstream
+    /// is sufficient to skip transitive dependents.</summary>
     private static Dictionary<string, HashSet<string>> DirectMemberDependencies(
         IReadOnlyList<string> names, IReadOnlyList<LineageFlowDependency> dependencies)
     {
@@ -290,9 +403,9 @@ public sealed class BatchOrchestrator
         return map;
     }
 
-    /// <summary>Concurrency waves over the member subgraph: modified Kahn with max-level assignment (a member's
-    /// wave is one past its latest dependency). Cycle members fall into a final wave and are returned as
-    /// unordered, never refused.</summary>
+    /// <summary>Topological waves (the reported plan levels) over the member subgraph: modified Kahn with
+    /// max-level assignment (a member's wave is one past its latest dependency). Cycle members fall into a final
+    /// wave and are returned as unordered, never refused.</summary>
     private static (List<IReadOnlyList<string>> Waves, List<string> Unordered) ComputeMemberWaves(
         IReadOnlyList<string> names, IReadOnlyList<LineageFlowDependency> dependencies)
     {

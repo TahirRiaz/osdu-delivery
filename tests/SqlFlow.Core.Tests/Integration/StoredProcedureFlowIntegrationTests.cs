@@ -47,7 +47,7 @@ public sealed class StoredProcedureFlowIntegrationTests
     [SkippableFact]
     public async Task FullMode_LoadsStoredProcedureFlow_RunsAndLogs()
     {
-        const int flowId = 51;
+        const int flowId = 9104;
         var cs = IntegrationDb.Require();
         await ControlPlaneSchema.EnsureAsync(cs);
         var dbName = await IntegrationDb.ScalarAsync<string?>(cs, "SELECT DB_NAME();");

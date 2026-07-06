@@ -14,13 +14,11 @@ namespace SqlFlow.ControlPlane.Background;
 /// </summary>
 public sealed class RunExecutionWorker : BackgroundService
 {
-    // The poll fallback bound: a nudge starts a triggered run at once; this only governs schedule-/other-node-enqueued
-    // runs and recovery, where a couple of seconds of latency is immaterial.
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
-
     private readonly RunWorker _worker;
     private readonly RunQueueSignal _signal;
     private readonly IReadOnlyList<string> _pools;
+    private readonly TimeSpan _pollInterval;
+    private readonly int _maxConcurrentRuns;
 
     public RunExecutionWorker(RunWorker worker, RunQueueSignal signal, IOptions<ControlPlaneOptions> options)
     {
@@ -30,8 +28,14 @@ public sealed class RunExecutionWorker : BackgroundService
         _worker = worker;
         _signal = signal;
         _pools = options.Value.Worker.Pools;
+        // Both bounds come from ControlPlane:Worker and are validated at startup (ControlPlaneOptions.Validate):
+        // the poll fallback (a nudge starts a triggered run at once; this only governs schedule-/other-node-enqueued
+        // runs and recovery) has a 250ms floor so a bad value cannot spin-loop, and the run concurrency has a floor
+        // of one (a strictly serial node).
+        _pollInterval = TimeSpan.FromMilliseconds(options.Value.Worker.PollMilliseconds);
+        _maxConcurrentRuns = options.Value.Worker.MaxConcurrentRuns;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
-        => _worker.RunAsync(PollInterval, _pools, (timeout, ct) => _signal.WaitAsync(timeout, ct), stoppingToken);
+        => _worker.RunAsync(_pollInterval, _pools, (timeout, ct) => _signal.WaitAsync(timeout, ct), stoppingToken, _maxConcurrentRuns);
 }

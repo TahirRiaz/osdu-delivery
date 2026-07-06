@@ -104,7 +104,7 @@ public sealed class FlowSetCollector
                 {
                     result.Facts.Add(ObjectFact(
                         name, LineageRelation.Writes, target,
-                        flow.Target.Table with { Name = $"v{flow.Target.Table.Name}" }, LineageNodeKind.View));
+                        flow.Target.Table with { Name = $"v_{flow.Target.Table.Name}" }, LineageNodeKind.View));
                 }
 
                 ExtractHook(result, name, target, flow.Process.PreProcessOnTarget, $"{file}: preProcess", flow.Target.Table.Database);
@@ -216,7 +216,7 @@ public sealed class FlowSetCollector
                         Relation = LineageRelation.Writes,
                         ServerRef = target,
                         Schema = flow.Target.Schema,
-                        Name = $"v{flow.Target.Table}",
+                        Name = $"v_{flow.Target.Table}",
                         Tier = LineageTier.Declared,
                         KindHint = LineageNodeKind.View,
                     });

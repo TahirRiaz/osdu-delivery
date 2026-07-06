@@ -80,10 +80,12 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
         var flattener = new JsonPathFlattener(BuildFlattenConfig(meta));
         var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
 
-        // A file's column order is fixed by the same discovery the schema pass uses, so the cells below
-        // line up positionally with ReadColumnNamesAsync. Records are re-read (cheaply, from the in-memory
-        // bytes) for the data pass.
-        var columns = DiscoverColumns(JsonRecordReader.ReadRecords(data, source.Type, meta.RootPath, file.Name), flattener);
+        // A file's column order is fixed by the discovery the schema pass already ran and cached, so the data
+        // pass is one download and one parse: the records stream out of the in-memory bytes exactly once, and
+        // the cells below line up positionally with ReadColumnNamesAsync. Only a standalone read with no prior
+        // schema pass on this spec discovers the order here, from a first parse of the same bytes.
+        var columns = CachedRawColumnNames(source, file)
+            ?? DiscoverColumns(JsonRecordReader.ReadRecords(data, source.Type, meta.RootPath, file.Name), flattener);
         // Case-insensitive, matching SQL Server collation and the base pipeline's column union, so the
         // positional projection cannot desync on keys that differ only in case.
         var index = new Dictionary<string, int>(columns.Count, StringComparer.OrdinalIgnoreCase);

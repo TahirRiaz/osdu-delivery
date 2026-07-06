@@ -76,11 +76,14 @@ public static class DocumentLoader
 
     /// <summary>Resolves a relative source location against the flow file's own directory, so a sample's
     /// <c>./data/x.json</c> works no matter which directory the command runs from (paths in a config file are
-    /// naturally relative to that file). Absolute locations and non-file sources are left untouched. Public
+    /// naturally relative to that file). Absolute locations, cloud URIs (any <c>scheme://</c> such as
+    /// <c>abfss://</c>, <c>s3://</c>, <c>gs://</c>, <c>https://</c>), and non-file sources are left untouched. Public
     /// because the CLI's flow-only verbs resolve the same way a document load does.</summary>
     public static FlowDefinition ResolveRelativeLocation(FlowDefinition flow, string file)
     {
-        if (flow.Source.Location is { } location && !Path.IsPathRooted(location))
+        if (flow.Source.Location is { } location
+            && !location.Contains("://", StringComparison.Ordinal)
+            && !Path.IsPathRooted(location))
         {
             var baseDir = Path.GetDirectoryName(Path.GetFullPath(file)) ?? Directory.GetCurrentDirectory();
             var resolved = Path.GetFullPath(Path.Combine(baseDir, location));

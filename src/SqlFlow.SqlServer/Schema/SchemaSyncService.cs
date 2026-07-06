@@ -62,17 +62,16 @@ public sealed class SchemaSyncService
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        EvolutionPlan plan;
-        await using (var connection = new SqlConnection(connectionString))
-        {
-            await connection.OpenAsync(ct).ConfigureAwait(false);
-            plan = await PlanAsync(connection, target, desired, keyColumns, ct).ConfigureAwait(false);
-        }
+        // One connection serves both the introspection and the DDL apply, so an evolve never pays a second
+        // open (and its sp_reset_connection round trip) on the hot ingestion path.
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        var plan = await PlanAsync(connection, target, desired, keyColumns, ct).ConfigureAwait(false);
 
         // Generate validates the plan (throws on a blocked plan or an unauthorized rewrite). A plan with no
         // changes and no block produces an empty batch, which ApplyDdlAsync treats as a no-op.
         var batch = EvolutionDdlGenerator.Generate(target, plan, allowTableRewrite);
-        await SqlServerSchemaProvider.ApplyDdlAsync(connectionString, batch, options, ct).ConfigureAwait(false);
+        await SqlServerSchemaProvider.ApplyDdlAsync(connection, batch, options, ct).ConfigureAwait(false);
         return new EvolutionOutcome { Plan = plan, AppliedStatements = batch.Statements };
     }
 

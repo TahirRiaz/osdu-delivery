@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -11,23 +12,27 @@ using SqlFlow.Yaml;
 namespace SqlFlow.Node;
 
 /// <summary>
-/// The compute-node runtime: it drains the durable run queue by atomically claiming the oldest queued run (so two
-/// nodes never run the same flow), resolving the flow file from the catalog (repo root + relative path), executing
-/// it through the shared <see cref="DocumentExecutor"/> (identical to a CLI run), and recording the outcome from
-/// the produced artifact under the run id the trigger already returned. The queue is the database, so the runtime
-/// is stateless and horizontally scalable: the control plane hosts it in-process, and a self-hosted
-/// <c>sqlflow worker</c> hosts the very same loop on a node inside a private network. Each node resolves every
-/// credential from its own environment, so nothing sensitive travels through the queue.
+/// The compute-node runtime: it drains the durable run queue by atomically claiming the oldest queued runs (so two
+/// nodes never run the same flow) and executing up to a bounded number of them concurrently, each on its own DI
+/// scope, resolving the flow file from the catalog (repo root + relative path), executing it through the shared
+/// <see cref="DocumentExecutor"/> (identical to a CLI run), and recording the outcome from the produced artifact
+/// under the run id the trigger already returned. The queue is the database, so the runtime is stateless and
+/// horizontally scalable: the control plane hosts it in-process, and a self-hosted <c>sqlflow worker</c> hosts the
+/// very same loop on a node inside a private network. Each node resolves every credential from its own
+/// environment, so nothing sensitive travels through the queue.
 /// </summary>
 /// <remarks>
-/// Robustness: one run's failure never tears down the loop (per-run try/catch drives the run to a terminal state and
-/// continues); a poll/claim error (a transient database outage) is logged and retried next tick. On startup it
-/// requeues any run this node left <c>running</c> (an orphan from a previous incarnation that stopped mid-run). On
-/// shutdown it stops claiming and lets the in-flight run finish, or, if cancelled, leaves it <c>running</c> for the
-/// next start to recover. All diagnostics are logged with secret-redacted messages.
+/// Robustness: one run's failure never tears down the loop or its sibling runs (per-run try/catch drives the run
+/// to a terminal state and continues); a poll/claim error (a transient database outage) is logged and retried next
+/// tick. On startup it requeues any run this node left <c>running</c> (an orphan from a previous incarnation that
+/// stopped mid-run). On shutdown it stops claiming and lets the in-flight runs finish, or, if cancelled, leaves
+/// them <c>running</c> for the next start to recover. All diagnostics are logged with secret-redacted messages.
 /// </remarks>
 public sealed partial class RunWorker
 {
+    /// <summary>The default bound on how many claimed runs a node executes at once (see <see cref="RunAsync"/>).</summary>
+    public const int DefaultMaxConcurrentRuns = 4;
+
     private readonly IServiceProvider _services;
     private readonly DocumentExecutor _executor;
     private readonly TimeProvider _clock;
@@ -59,14 +64,22 @@ public sealed partial class RunWorker
     /// worker passes a plain delay - and <paramref name="pollInterval"/> bounds that wait so schedule- and
     /// other-node-enqueued runs (and recovery) are still picked up. <paramref name="pools"/> are the pools this node
     /// serves: it claims untargeted runs plus runs routed to one of these (an empty list = untargeted only).
+    /// <paramref name="maxConcurrentRuns"/> bounds how many claimed runs execute at once on this node (minimum 1):
+    /// the queue's atomic claim already supports concurrent claimants, so the bound only sizes this node's own
+    /// in-flight work, and a saturated node stops claiming so queued runs stay available to other nodes.
     /// </summary>
     public async Task RunAsync(
-        TimeSpan pollInterval, IReadOnlyList<string> pools, Func<TimeSpan, CancellationToken, Task> waitForWork, CancellationToken stoppingToken)
+        TimeSpan pollInterval, IReadOnlyList<string> pools, Func<TimeSpan, CancellationToken, Task> waitForWork,
+        CancellationToken stoppingToken, int maxConcurrentRuns = DefaultMaxConcurrentRuns)
     {
         ArgumentNullException.ThrowIfNull(pools);
         ArgumentNullException.ThrowIfNull(waitForWork);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentRuns, 1);
 
         await RecoverOrphansAsync(stoppingToken).ConfigureAwait(false);
+
+        using var gate = new SemaphoreSlim(maxConcurrentRuns, maxConcurrentRuns);
+        var inFlight = new ConcurrentDictionary<Guid, Task>();
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -74,7 +87,7 @@ public sealed partial class RunWorker
 
             try
             {
-                await DrainAsync(pools, stoppingToken).ConfigureAwait(false);
+                await DrainAsync(pools, gate, inFlight, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -94,6 +107,16 @@ public sealed partial class RunWorker
             {
                 break;
             }
+        }
+
+        // Shutdown: claiming has stopped; wait for the in-flight runs. Each either finishes cleanly (recording
+        // its outcome) or observes the cancellation and leaves its row 'running' for the next start's recovery.
+        // The run tasks never fault (ExecuteClaimedAsync catches everything), so this wait cannot throw, and it
+        // keeps the gate alive until every slot is released.
+        var pending = inFlight.Values.ToArray();
+        if (pending.Length > 0)
+        {
+            await Task.WhenAll(pending).ConfigureAwait(false);
         }
     }
 
@@ -140,20 +163,77 @@ public sealed partial class RunWorker
         }
     }
 
-    private async Task DrainAsync(IReadOnlyList<string> pools, CancellationToken ct)
+    private async Task DrainAsync(
+        IReadOnlyList<string> pools, SemaphoreSlim gate, ConcurrentDictionary<Guid, Task> inFlight, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
+            // A concurrency slot must be free before claiming: a claim flips the run to 'running', so a node must
+            // never claim more than it can execute (a saturated node leaves queued runs claimable by other nodes).
+            // Waiting on the gate here also hands a finishing run's slot straight to the next queued run, with no
+            // poll-interval gap in between.
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+
+            var slotOwnedByRun = false;
+            try
+            {
+                Guid? runId;
+                await using (var scope = _services.CreateAsyncScope())
+                {
+                    var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+                    runId = await RunQueueStore.ClaimNextAsync(catalog, _node, pools, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                }
+
+                if (runId is null)
+                {
+                    return; // queue drained
+                }
+
+                // Each claimed run executes on its own task with its own DI scope (a scope and its CatalogDbContext
+                // are never shared across tasks). From here the task owns the slot and releases it when the run
+                // reaches its end state; the continuation only prunes the in-flight map used by shutdown.
+                var task = ExecuteClaimedAsync(runId.Value, gate, ct);
+                slotOwnedByRun = true;
+                inFlight[runId.Value] = task;
+                _ = task.ContinueWith(
+                    _ => inFlight.TryRemove(runId.Value, out Task? _),
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+            finally
+            {
+                // A failed or cancelled claim (or an empty queue) never launched a run, so the slot goes back.
+                if (!slotOwnedByRun)
+                {
+                    gate.Release();
+                }
+            }
+        }
+    }
+
+    /// <summary>Executes one claimed run on its own DI scope and releases the concurrency slot when the run reaches
+    /// its end state. Never throws: a shutdown cancellation leaves the run <c>running</c> for the next start's
+    /// recovery, and every other failure has already been driven terminal (best-effort) by
+    /// <see cref="RunClaimedAsync"/>, so one run can never kill the drain loop or a sibling run.</summary>
+    private async Task ExecuteClaimedAsync(Guid runId, SemaphoreSlim gate, CancellationToken ct)
+    {
+        try
+        {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-
-            var runId = await RunQueueStore.ClaimNextAsync(catalog, _node, pools, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            if (runId is null)
-            {
-                return; // queue drained
-            }
-
-            await RunClaimedAsync(scope.ServiceProvider, catalog, runId.Value, ct).ConfigureAwait(false);
+            await RunClaimedAsync(scope.ServiceProvider, catalog, runId, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutdown cancelled this run mid-flight: it stays 'running' so the next start's recovery requeues it.
+        }
+        catch (Exception ex)
+        {
+            // RunClaimedAsync drives run failures terminal itself; this guards the scope plumbing around it.
+            LogRunError(runId, SecretHygiene.RedactedMessage(ex.Message));
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -161,7 +241,35 @@ public sealed partial class RunWorker
     {
         try
         {
-            var run = await catalog.Runs.AsNoTracking().FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
+            // One joined projection instead of three or four sequential lookups: the run row, its repo and
+            // pipeline, and the repo's managed source (used only by SHA-pinned runs) arrive in a single round
+            // trip. Left joins keep the missing cases distinguishable, so every failure message stays precise.
+            var run = await (
+                    from r in catalog.Runs.AsNoTracking()
+                    where r.RunId == runId
+                    join repoRow in catalog.Repos.AsNoTracking() on r.RepoId equals (Guid?)repoRow.Id into repoRows
+                    from repo in repoRows.DefaultIfEmpty()
+                    join pipelineRow in catalog.Pipelines.AsNoTracking() on r.PipelineId equals pipelineRow.Id into pipelineRows
+                    from pipeline in pipelineRows.DefaultIfEmpty()
+                    join sourceRow in catalog.RepoSources.AsNoTracking() on repo.Name equals sourceRow.Name into sourceRows
+                    from source in sourceRows.DefaultIfEmpty()
+                    select new
+                    {
+                        r.RepoId,
+                        r.FlowName,
+                        r.CommitSha,
+                        r.FullLoad,
+                        r.BackfillFrom,
+                        r.BackfillTo,
+                        r.FilePattern,
+                        RepoName = repo != null ? repo.Name : null,
+                        RepoRemoteUrl = repo != null ? repo.RemoteUrl : null,
+                        RepoRootPath = repo != null ? repo.RootPath : null,
+                        PipelineRelativePath = pipeline != null ? pipeline.RelativePath : null,
+                        CredentialReference = source != null ? source.CredentialReference : null,
+                        CredentialUsername = source != null ? source.CredentialUsername : null,
+                    })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
             if (run is null)
             {
                 return; // cancelled/removed between claim and load; nothing to run
@@ -173,10 +281,9 @@ public sealed partial class RunWorker
                 return;
             }
 
-            var repo = await catalog.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct).ConfigureAwait(false);
-            var pipeline = await catalog.Pipelines.AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == run.PipelineId, ct).ConfigureAwait(false);
-            if (repo is null || pipeline is null)
+            // Repo.Name and Pipeline.RelativePath are required columns on their tables, so a null projection can
+            // only mean the left join found no row: the repo or pipeline has since left the catalog.
+            if (run.RepoName is not { } repoName || run.PipelineRelativePath is not { } relativePath)
             {
                 await FailAsync(catalog, runId, "the run's repository or pipeline is no longer in the catalog.", ct).ConfigureAwait(false);
                 return;
@@ -187,46 +294,45 @@ public sealed partial class RunWorker
             {
                 // SHA-pinned: run the exact committed version, materialized from the repo's remote (reproducible,
                 // and works even on a node with no locally synced copy of this flow).
-                if (string.IsNullOrWhiteSpace(repo.RemoteUrl))
+                if (string.IsNullOrWhiteSpace(run.RepoRemoteUrl))
                 {
                     await FailAsync(catalog, runId,
-                        $"run is pinned to commit '{run.CommitSha}' but repository '{repo.Name}' has no remote URL to materialize from.", ct).ConfigureAwait(false);
+                        $"run is pinned to commit '{run.CommitSha}' but repository '{repoName}' has no remote URL to materialize from.", ct).ConfigureAwait(false);
                     return;
                 }
 
-                // Resolve the git credential from the repo's registered source (matched by name), whose stored
-                // ${...} reference points at the vault/env holding the token; a repo synced by the CLI with no
-                // source falls back to the host environment. The node fetches the secret itself: it is the mobile
-                // execution engine that resolves what it needs, and only the reference travelled through the catalog.
-                var repoSource = await catalog.RepoSources.AsNoTracking()
-                    .FirstOrDefaultAsync(s => s.Name == repo.Name, ct).ConfigureAwait(false);
+                // The git credential comes from the repo's registered source (matched by name, projected above),
+                // whose stored ${...} reference points at the vault/env holding the token; a repo synced by the
+                // CLI with no source falls back to the host environment. The node fetches the secret itself: it is
+                // the mobile execution engine that resolves what it needs, and only the reference travelled
+                // through the catalog.
                 var resolver = scope.GetRequiredService<ISecretResolver>();
                 var credentials = await GitMaterializer
-                    .ResolveCredentialsAsync(resolver, repoSource?.CredentialReference, repoSource?.CredentialUsername, ct)
+                    .ResolveCredentialsAsync(resolver, run.CredentialReference, run.CredentialUsername, ct)
                     .ConfigureAwait(false);
-                flowRoot = _materializer.Materialize(repo.RemoteUrl, run.CommitSha, credentials, ct);
-                LogMaterialized(runId, repo.Name, run.CommitSha);
+                flowRoot = _materializer.Materialize(run.RepoRemoteUrl, run.CommitSha, credentials, ct);
+                LogMaterialized(runId, repoName, run.CommitSha);
             }
             else
             {
                 // Unpinned: run from the node's locally synced repo path (the default).
-                if (string.IsNullOrWhiteSpace(repo.RootPath))
+                if (string.IsNullOrWhiteSpace(run.RepoRootPath))
                 {
-                    await FailAsync(catalog, runId, $"repository '{repo.Name}' has no synced root path on this node.", ct).ConfigureAwait(false);
+                    await FailAsync(catalog, runId, $"repository '{repoName}' has no synced root path on this node.", ct).ConfigureAwait(false);
                     return;
                 }
 
-                flowRoot = repo.RootPath;
+                flowRoot = run.RepoRootPath;
             }
 
-            var flowFile = Path.GetFullPath(Path.Combine(flowRoot, pipeline.RelativePath));
+            var flowFile = Path.GetFullPath(Path.Combine(flowRoot, relativePath));
             if (!File.Exists(flowFile))
             {
                 await FailAsync(catalog, runId, $"the flow file for '{run.FlowName}' was not found on this node.", ct).ConfigureAwait(false);
                 return;
             }
 
-            LogStarting(runId, run.FlowName, repo.Name);
+            LogStarting(runId, run.FlowName, repoName);
 
             var documents = scope.GetRequiredService<YamlDocumentLoader>();
             var document = DocumentLoader.Load(documents, flowFile, message => LogHygiene(runId, message));

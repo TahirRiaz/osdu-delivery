@@ -802,7 +802,7 @@ public sealed class IngestionFlowRunner
         }
 
         var resolved = ColumnTransformResolver.Resolve(targetColumns.Select(c => c.Name).ToList(), flow.Transform, inferred);
-        var viewName = $"v{flow.Target.Table.Name}";
+        var viewName = $"v_{flow.Target.Table.Name}";
         var ddl = TransformViewBuilder.Build(flow.Target.Table.Schema, viewName, flow.Target.Table.Schema, flow.Target.Table.Name, resolved);
         await ExecuteAsync(targetConnectionString, ddl, ct).ConfigureAwait(false);
 

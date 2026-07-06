@@ -7,10 +7,11 @@ using Xunit;
 namespace SqlFlow.Tests.Batch;
 
 /// <summary>
-/// The batch orchestrator over real lineage-computed waves (declared tier, no database): members run in
-/// dependency order, a wave is a barrier, and the failure semantics (stop vs continue, ignoreErrors, skip
-/// dependents), inactive members, and dependency cycles all behave as specified. The member runner is faked so
-/// the orchestration is provable without executing any SQL.
+/// The batch orchestrator over a real lineage-computed dependency graph (declared tier, no database): members run
+/// in dependency order via per-member DAG dispatch (a member starts once its own direct dependencies complete;
+/// the reported waves are plan levels, not barriers), and the failure semantics (stop vs continue, ignoreErrors,
+/// skip dependents), inactive members, and dependency cycles all behave as specified. The member runner is faked
+/// so the orchestration is provable without executing any SQL.
 /// </summary>
 public sealed class BatchOrchestratorTests : IDisposable
 {
@@ -81,7 +82,7 @@ public sealed class BatchOrchestratorTests : IDisposable
         Assert.Equal(2, result.Waves.Count);
         Assert.Contains("raw_orders", result.Waves[0].Members);
         Assert.Contains("dim_customer", result.Waves[1].Members);
-        // The barrier guarantees the dependency completed before the dependent started.
+        // Dependency dispatch guarantees the dependency completed before the dependent started.
         Assert.True(runner.CompletionIndexOf("raw_orders") < runner.StartIndexOf("dim_customer"));
         Assert.All(result.Members, m => Assert.Equal(BatchMemberStatus.Succeeded, m.Status));
     }
@@ -102,17 +103,34 @@ public sealed class BatchOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task Stop_LetsTheCurrentWaveFinish_BeforeStopping()
+    public async Task Stop_LetsInFlightMembersFinish_WhenAnotherMemberFails()
     {
         WriteStandardEstate();
-        // audit and raw_orders share wave 1; audit fails. Stop finishes wave 1 (raw still runs) then halts.
+        // audit and raw_orders are both dispatched immediately (neither has a dependency); audit fails while
+        // raw_orders is still in flight. Stop never cancels in-flight members, so raw_orders runs to completion.
         var runner = new FakeRunner(fail: ["audit"]);
 
         var result = await RunAsync(Batch(BatchErrorMode.Stop), runner);
 
-        Assert.True(runner.WasRun("raw_orders"));               // wave 1 finished
-        Assert.Equal(BatchMemberStatus.Skipped, Member(result, "dim_customer").Status); // wave 2 never started
+        Assert.True(runner.WasRun("raw_orders"));
+        Assert.Equal(BatchMemberStatus.Succeeded, Member(result, "raw_orders").Status);
         Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task DagDispatch_MemberStartsWhenItsDependenciesComplete_NotWhenItsWaveIsReached()
+    {
+        WriteStandardEstate();
+        // audit (wave 1, independent) is held until dim_customer (wave 2) has STARTED. Under a wave barrier
+        // dim_customer could never start before audit completed, so the ordering below proves per-member
+        // dispatch: dim_customer only needs raw_orders, not the whole prior wave.
+        var runner = new GatedRunner(held: "audit", releasedByStartOf: "dim_customer");
+
+        var result = await RunAsync(Batch(), runner);
+
+        Assert.True(result.Success);
+        Assert.All(result.Members, m => Assert.Equal(BatchMemberStatus.Succeeded, m.Status));
+        Assert.True(runner.StartIndexOf("dim_customer") < runner.CompletionIndexOf("audit"));
     }
 
     [Fact]
@@ -273,6 +291,67 @@ public sealed class BatchOrchestratorTests : IDisposable
             lock (_lock)
             {
                 return _completeOrder.FindIndex(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+    }
+
+    /// <summary>Like <see cref="FakeRunner"/> (always succeeds), but holds one member's completion until another
+    /// member has started, so dispatch-ordering assertions are deterministic. A generous fallback delay releases
+    /// the held member anyway, so a dispatch regression fails the ordering assertion instead of hanging the
+    /// test.</summary>
+    private sealed class GatedRunner(string held, string releasedByStartOf) : IDocumentRunner
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly object _lock = new();
+        // One global event sequence ("start:name" / "complete:name"), so start-vs-completion ordering across
+        // DIFFERENT members can be asserted by index (two per-kind lists cannot express that).
+        private readonly List<string> _events = [];
+
+        public async Task<DocumentRunOutcome> RunAsync(string flowFile, DocumentExecutionOptions options, CancellationToken ct = default)
+        {
+            var name = Path.GetFileName(flowFile).Replace(".flow.yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
+            lock (_lock)
+            {
+                _events.Add("start:" + name);
+            }
+
+            if (string.Equals(name, releasedByStartOf, StringComparison.OrdinalIgnoreCase))
+            {
+                _release.TrySetResult();
+            }
+
+            if (string.Equals(name, held, StringComparison.OrdinalIgnoreCase))
+            {
+                await Task.WhenAny(_release.Task, Task.Delay(TimeSpan.FromSeconds(5), ct)).ConfigureAwait(false);
+            }
+            else
+            {
+                await Task.Yield();
+            }
+
+            lock (_lock)
+            {
+                _events.Add("complete:" + name);
+            }
+
+            return new DocumentRunOutcome
+            {
+                FlowName = name,
+                FlowKind = "ing",
+                Success = true,
+                RunId = Guid.NewGuid(),
+            };
+        }
+
+        public int StartIndexOf(string name) => EventIndexOf("start:" + name);
+
+        public int CompletionIndexOf(string name) => EventIndexOf("complete:" + name);
+
+        private int EventIndexOf(string entry)
+        {
+            lock (_lock)
+            {
+                return _events.FindIndex(e => string.Equals(e, entry, StringComparison.OrdinalIgnoreCase));
             }
         }
     }

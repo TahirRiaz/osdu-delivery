@@ -92,22 +92,36 @@ public sealed class CsvExportFileWriter : IExportFileWriter
         await using var writer = new StreamWriter(destination, _options.Encoding, leaveOpen: true);
         if (_options.WriteHeader)
         {
-            await writer.WriteAsync(string.Join(_options.Delimiter, names.Select(n => Escape(n, isStringColumn: false)))).ConfigureAwait(false);
+            for (var i = 0; i < fieldCount; i++)
+            {
+                if (i > 0)
+                {
+                    await writer.WriteAsync(_options.Delimiter).ConfigureAwait(false);
+                }
+
+                await WriteFieldAsync(writer, names[i], isStringColumn: false).ConfigureAwait(false);
+            }
+
             await writer.WriteAsync(RecordSeparator).ConfigureAwait(false);
         }
 
         long rows = 0;
-        var fields = new string[fieldCount];
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             for (var i = 0; i < fieldCount; i++)
             {
-                fields[i] = await reader.IsDBNullAsync(i, ct).ConfigureAwait(false)
-                    ? string.Empty
-                    : Escape(FormatValue(reader.GetValue(i)), isStringColumn[i]);
+                if (i > 0)
+                {
+                    await writer.WriteAsync(_options.Delimiter).ConfigureAwait(false);
+                }
+
+                // NULL writes nothing: an empty, unquoted field, as before.
+                if (!await reader.IsDBNullAsync(i, ct).ConfigureAwait(false))
+                {
+                    await WriteFieldAsync(writer, FormatValue(reader.GetValue(i)), isStringColumn[i]).ConfigureAwait(false);
+                }
             }
 
-            await writer.WriteAsync(string.Join(_options.Delimiter, fields)).ConfigureAwait(false);
             await writer.WriteAsync(RecordSeparator).ConfigureAwait(false);
             rows++;
         }
@@ -116,7 +130,9 @@ public sealed class CsvExportFileWriter : IExportFileWriter
         return rows;
     }
 
-    private string Escape(string field, bool isStringColumn)
+    // Streams one field straight into the buffered writer: quoted when required and any embedded qualifier
+    // doubled in place, with no per-row field array, join, or replace copies.
+    private async Task WriteFieldAsync(StreamWriter writer, string field, bool isStringColumn)
     {
         var mustQuote = (_options.QuoteStringColumnsOnly && isStringColumn)
             || field.Contains(_options.Delimiter, StringComparison.Ordinal)
@@ -125,11 +141,24 @@ public sealed class CsvExportFileWriter : IExportFileWriter
             || field.Contains('\n');
         if (!mustQuote)
         {
-            return field;
+            await writer.WriteAsync(field).ConfigureAwait(false);
+            return;
         }
 
         var q = _options.Qualifier;
-        return q + field.Replace(q.ToString(), new string(q, 2), StringComparison.Ordinal) + q;
+        await writer.WriteAsync(q).ConfigureAwait(false);
+        var start = 0;
+        int idx;
+        while ((idx = field.IndexOf(q, start)) >= 0)
+        {
+            // Write up to and including the qualifier, then write it once more to double it.
+            await writer.WriteAsync(field.AsMemory(start, idx - start + 1)).ConfigureAwait(false);
+            await writer.WriteAsync(q).ConfigureAwait(false);
+            start = idx + 1;
+        }
+
+        await writer.WriteAsync(field.AsMemory(start)).ConfigureAwait(false);
+        await writer.WriteAsync(q).ConfigureAwait(false);
     }
 
     private static string FormatValue(object value) => value switch
@@ -152,12 +181,17 @@ public sealed class CsvExportFileWriter : IExportFileWriter
 
 /// <summary>
 /// Streams a reader to an Apache Parquet file using Parquet.Net (the columnar inverse of the reader's type
-/// mapping): each reader column becomes a typed, nullable Parquet field, rows are buffered into bounded row
-/// groups, and each group is written column-by-column. Legacy never wrote Parquet; this is a V3 capability.
+/// mapping): each reader column becomes a typed, nullable Parquet field, values accumulate directly into
+/// per-column typed buffers (each cell is touched once, unboxed), and each bounded row group is written
+/// column-by-column. Legacy never wrote Parquet; this is a V3 capability.
 /// </summary>
 public sealed class ParquetExportFileWriter : IExportFileWriter
 {
-    private const int RowGroupSize = 50_000;
+    // Row-group sizing: the full 50k rows for narrow tables, scaled down on wide ones so a buffered group
+    // never holds more than RowGroupCellCap cells (rows x columns). 5M cells keeps 50k rows up to 100
+    // columns and bounds the in-memory footprint beyond that (e.g. 1,000 columns -> 5k rows per group).
+    private const int MaxRowGroupRows = 50_000;
+    private const long RowGroupCellCap = 5_000_000;
 
     private readonly CompressionMethod _compression;
 
@@ -169,12 +203,13 @@ public sealed class ParquetExportFileWriter : IExportFileWriter
         ArgumentNullException.ThrowIfNull(destination);
 
         var fieldCount = reader.FieldCount;
+        var rowGroupRows = (int)Math.Max(1L, Math.Min(MaxRowGroupRows, RowGroupCellCap / fieldCount));
         var schemaTable = await reader.GetSchemaTableAsync(ct).ConfigureAwait(false);
-        var columns = new ColumnWriter[fieldCount];
+        var columns = new ColumnBuffer[fieldCount];
         var fields = new Field[fieldCount];
         for (var i = 0; i < fieldCount; i++)
         {
-            columns[i] = PlanColumn(reader.GetName(i), reader.GetFieldType(i), DecimalInfo(schemaTable, i));
+            columns[i] = PlanColumn(reader.GetName(i), reader.GetFieldType(i), DecimalInfo(schemaTable, i), rowGroupRows);
             fields[i] = columns[i].Field;
         }
 
@@ -182,114 +217,161 @@ public sealed class ParquetExportFileWriter : IExportFileWriter
         writer.CompressionMethod = _compression;
 
         long total = 0;
-        var buffer = new List<object?[]>(RowGroupSize);
+        var buffered = 0;
 
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            var row = new object?[fieldCount];
             for (var i = 0; i < fieldCount; i++)
             {
-                row[i] = await reader.IsDBNullAsync(i, ct).ConfigureAwait(false) ? null : reader.GetValue(i);
+                if (await reader.IsDBNullAsync(i, ct).ConfigureAwait(false))
+                {
+                    columns[i].AppendNull();
+                }
+                else
+                {
+                    columns[i].Append(reader, i);
+                }
             }
 
-            buffer.Add(row);
-            if (buffer.Count >= RowGroupSize)
+            buffered++;
+            if (buffered >= rowGroupRows)
             {
-                await FlushAsync(writer, columns, buffer, ct).ConfigureAwait(false);
-                total += buffer.Count;
-                buffer.Clear();
+                await FlushAsync(writer, columns, ct).ConfigureAwait(false);
+                total += buffered;
+                buffered = 0;
             }
         }
 
-        if (buffer.Count > 0)
+        if (buffered > 0)
         {
-            await FlushAsync(writer, columns, buffer, ct).ConfigureAwait(false);
-            total += buffer.Count;
+            await FlushAsync(writer, columns, ct).ConfigureAwait(false);
+            total += buffered;
         }
 
         return total;
     }
 
-    private static async Task FlushAsync(ParquetWriter writer, ColumnWriter[] columns, List<object?[]> buffer, CancellationToken ct)
+    private static async Task FlushAsync(ParquetWriter writer, ColumnBuffer[] columns, CancellationToken ct)
     {
         using var rowGroup = writer.CreateRowGroup();
-        for (var c = 0; c < columns.Length; c++)
+        foreach (var column in columns)
         {
-            var values = new object?[buffer.Count];
-            for (var r = 0; r < buffer.Count; r++)
-            {
-                values[r] = buffer[r][c];
-            }
-
-            await rowGroup.WriteColumnAsync(new DataColumn(columns[c].Field, columns[c].Build(values)), ct).ConfigureAwait(false);
+            await rowGroup.WriteColumnAsync(new DataColumn(column.Field, column.Drain()), ct).ConfigureAwait(false);
         }
     }
 
-    private static ColumnWriter PlanColumn(string name, Type clr, (int Precision, int Scale)? dec)
+    private static ColumnBuffer PlanColumn(string name, Type clr, (int Precision, int Scale)? dec, int capacity)
     {
-        if (clr == typeof(bool)) return NullableValue<bool>(name, v => (bool)v);
-        if (clr == typeof(byte)) return NullableValue<int>(name, v => (byte)v);
-        if (clr == typeof(short)) return NullableValue<int>(name, v => (short)v);
-        if (clr == typeof(int)) return NullableValue<int>(name, v => (int)v);
-        if (clr == typeof(long)) return NullableValue<long>(name, v => (long)v);
-        if (clr == typeof(float)) return NullableValue<float>(name, v => (float)v);
-        if (clr == typeof(double)) return NullableValue<double>(name, v => (double)v);
-        if (clr == typeof(decimal)) return DecimalColumn(name, dec?.Precision ?? 38, dec?.Scale ?? 18);
-        if (clr == typeof(DateTime)) return NullableValue<DateTime>(name, v => (DateTime)v);
-        if (clr == typeof(DateTimeOffset)) return NullableValue<DateTimeOffset>(name, v => (DateTimeOffset)v);
-        if (clr == typeof(TimeSpan)) return NullableValue<TimeSpan>(name, v => (TimeSpan)v);
-        if (clr == typeof(Guid)) return NullableValue<Guid>(name, v => (Guid)v);
-        if (clr == typeof(byte[])) return BinaryColumn(name);
-        return StringColumn(name);
+        if (clr == typeof(bool)) return Value<bool>(name, capacity, static (r, i) => r.GetBoolean(i));
+        if (clr == typeof(byte)) return Value<int>(name, capacity, static (r, i) => r.GetByte(i));
+        if (clr == typeof(short)) return Value<int>(name, capacity, static (r, i) => r.GetInt16(i));
+        if (clr == typeof(int)) return Value<int>(name, capacity, static (r, i) => r.GetInt32(i));
+        if (clr == typeof(long)) return Value<long>(name, capacity, static (r, i) => r.GetInt64(i));
+        if (clr == typeof(float)) return Value<float>(name, capacity, static (r, i) => r.GetFloat(i));
+        if (clr == typeof(double)) return Value<double>(name, capacity, static (r, i) => r.GetDouble(i));
+        if (clr == typeof(decimal))
+        {
+            return new ValueColumnBuffer<decimal>(
+                new DecimalDataField(name, dec?.Precision ?? 38, dec?.Scale ?? 18, isNullable: true),
+                capacity, static (r, i) => r.GetDecimal(i));
+        }
+
+        if (clr == typeof(DateTime)) return Value<DateTime>(name, capacity, static (r, i) => r.GetDateTime(i));
+        if (clr == typeof(DateTimeOffset)) return Value<DateTimeOffset>(name, capacity, static (r, i) => r.GetFieldValue<DateTimeOffset>(i));
+        if (clr == typeof(TimeSpan)) return Value<TimeSpan>(name, capacity, static (r, i) => r.GetFieldValue<TimeSpan>(i));
+        if (clr == typeof(Guid)) return Value<Guid>(name, capacity, static (r, i) => r.GetGuid(i));
+        if (clr == typeof(byte[])) return new BinaryColumnBuffer(name, capacity);
+        return new StringColumnBuffer(name, capacity);
     }
 
-    private static ColumnWriter NullableValue<T>(string name, Func<object, T> convert) where T : struct
-        => new(new DataField<T?>(name), values =>
+    private static ColumnBuffer Value<T>(string name, int capacity, Func<DbDataReader, int, T> read) where T : struct
+        => new ValueColumnBuffer<T>(new DataField<T?>(name), capacity, read);
+
+    /// <summary>A per-column row-group buffer: each value appends once as the row streams by (no row array,
+    /// no boxing for value types) and drains into the exact array shape Parquet.Net expects.</summary>
+    private abstract class ColumnBuffer
+    {
+        protected ColumnBuffer(DataField field) => Field = field;
+
+        public DataField Field { get; }
+
+        public abstract void Append(DbDataReader reader, int ordinal);
+
+        public abstract void AppendNull();
+
+        public abstract Array Drain();
+    }
+
+    private sealed class ValueColumnBuffer<T> : ColumnBuffer where T : struct
+    {
+        private readonly Func<DbDataReader, int, T> _read;
+        private readonly List<T?> _values;
+
+        public ValueColumnBuffer(DataField field, int capacity, Func<DbDataReader, int, T> read)
+            : base(field)
         {
-            var array = new T?[values.Length];
-            for (var i = 0; i < values.Length; i++)
-            {
-                array[i] = values[i] is null ? null : convert(values[i]!);
-            }
+            _read = read;
+            _values = new List<T?>(capacity);
+        }
 
-            return array;
-        });
+        public override void Append(DbDataReader reader, int ordinal) => _values.Add(_read(reader, ordinal));
 
-    private static ColumnWriter DecimalColumn(string name, int precision, int scale)
-        => new(new DecimalDataField(name, precision, scale, isNullable: true), values =>
+        public override void AppendNull() => _values.Add(null);
+
+        public override Array Drain()
         {
-            var array = new decimal?[values.Length];
-            for (var i = 0; i < values.Length; i++)
-            {
-                array[i] = values[i] is null ? null : Convert.ToDecimal(values[i], CultureInfo.InvariantCulture);
-            }
+            var drained = _values.ToArray();
+            _values.Clear();
+            return drained;
+        }
+    }
 
-            return array;
-        });
+    private sealed class StringColumnBuffer : ColumnBuffer
+    {
+        private readonly List<string?> _values;
 
-    private static ColumnWriter StringColumn(string name)
-        => new(new DataField<string>(name), values =>
+        public StringColumnBuffer(string name, int capacity)
+            : base(new DataField<string>(name))
+            => _values = new List<string?>(capacity);
+
+        // Non-string CLR shapes (sql_variant and friends) land here too; anything not already a string is
+        // formatted invariantly, exactly as before.
+        public override void Append(DbDataReader reader, int ordinal)
         {
-            var array = new string?[values.Length];
-            for (var i = 0; i < values.Length; i++)
-            {
-                array[i] = values[i] is null ? null : (values[i] as string ?? Convert.ToString(values[i], CultureInfo.InvariantCulture));
-            }
+            var value = reader.GetValue(ordinal);
+            _values.Add(value as string ?? Convert.ToString(value, CultureInfo.InvariantCulture));
+        }
 
-            return array;
-        });
+        public override void AppendNull() => _values.Add(null);
 
-    private static ColumnWriter BinaryColumn(string name)
-        => new(new DataField<byte[]>(name), values =>
+        public override Array Drain()
         {
-            var array = new byte[values.Length][];
-            for (var i = 0; i < values.Length; i++)
-            {
-                array[i] = values[i] as byte[] ?? [];
-            }
+            var drained = _values.ToArray();
+            _values.Clear();
+            return drained;
+        }
+    }
 
-            return array;
-        });
+    private sealed class BinaryColumnBuffer : ColumnBuffer
+    {
+        private readonly List<byte[]> _values;
+
+        public BinaryColumnBuffer(string name, int capacity)
+            : base(new DataField<byte[]>(name))
+            => _values = new List<byte[]>(capacity);
+
+        public override void Append(DbDataReader reader, int ordinal) => _values.Add(reader.GetValue(ordinal) as byte[] ?? []);
+
+        // NULL binaries stay empty arrays, matching the previous writer's output.
+        public override void AppendNull() => _values.Add([]);
+
+        public override Array Drain()
+        {
+            var drained = _values.ToArray();
+            _values.Clear();
+            return drained;
+        }
+    }
 
     private static (int Precision, int Scale)? DecimalInfo(System.Data.DataTable? schema, int ordinal)
     {
@@ -315,6 +397,4 @@ public sealed class ParquetExportFileWriter : IExportFileWriter
         "none" or "" or null => CompressionMethod.None,
         _ => CompressionMethod.Gzip,
     };
-
-    private sealed record ColumnWriter(DataField Field, Func<object?[], Array> Build);
 }

@@ -77,3 +77,19 @@ public sealed record SetRoleRequest(string Role);
 
 /// <summary>Resets a local user's password.</summary>
 public sealed record SetPasswordRequest(string Password);
+
+/// <summary>A personal access token as its owner lists it. Never carries the secret (unrecoverable after creation)
+/// nor its hash; <see cref="Prefix"/> is the recognizable, non-secret lead. <see cref="RevokedUtc"/> non-null means
+/// the token is revoked; <see cref="ExpiresUtc"/> in the past means expired.</summary>
+public sealed record AccessTokenDto(
+    Guid Id, string Name, string Prefix, IReadOnlyList<string> Scopes, DateTime CreatedUtc,
+    DateTime? ExpiresUtc, DateTime? LastUsedUtc, DateTime? RevokedUtc);
+
+/// <summary>Creates a personal access token. <see cref="Scopes"/> is capped server-side to the caller's own scopes
+/// (an empty/omitted list defaults to all of them); <see cref="ExpiresInDays"/> null means the token never
+/// expires.</summary>
+public sealed record CreateAccessTokenRequest(string Name, IReadOnlyList<string>? Scopes, int? ExpiresInDays);
+
+/// <summary>The response to creating a token: the listing view plus the one-time <see cref="Secret"/>. The secret is
+/// shown exactly once here and is never retrievable again.</summary>
+public sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret);

@@ -88,9 +88,11 @@ public sealed class IngestionSchemaBuilder
 
     private static void AddSystemColumns(List<SqlColumn> columns, SystemColumnsPolicy policy)
     {
-        AddComputed(columns, policy.InsertedDate, "InsertedDate_DW", "datetime2(3)", ColumnRole.System);
-        AddComputed(columns, policy.UpdatedDate, "UpdatedDate_DW", "datetime2(3)", ColumnRole.System);
-        AddComputed(columns, policy.DeletedDate, "DeletedDate_DW", "datetime2(3)", ColumnRole.System);
+        // The audit stamp columns are datetime (not datetime2), matching the original SQLFlow arc/ods tables so
+        // migrated targets are schema-identical to production.
+        AddComputed(columns, policy.InsertedDate, "InsertedDate_DW", "datetime", ColumnRole.System);
+        AddComputed(columns, policy.UpdatedDate, "UpdatedDate_DW", "datetime", ColumnRole.System);
+        AddComputed(columns, policy.DeletedDate, "DeletedDate_DW", "datetime", ColumnRole.System);
         AddComputed(columns, policy.RowStatus, "RowStatus_DW", "char(1)", ColumnRole.System);
     }
 

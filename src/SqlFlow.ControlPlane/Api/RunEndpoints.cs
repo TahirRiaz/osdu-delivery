@@ -106,16 +106,20 @@ public static class RunEndpoints
         }
 
         // latest=true keeps only each pipeline's newest run: the batch status board ("what is red right now"),
-        // one row per pipeline, versus the full history the flat inbox and the pipeline detail show. It is a
-        // correlated not-exists over ALL of the pipeline's runs (RunId breaks WrittenUtc ties, any deterministic
-        // order works since both sides evaluate in SQL), and it applies BEFORE the lifecycle filters below so
-        // status=failed means "currently failed", not "ever failed".
+        // one row per pipeline, versus the full history the flat inbox and the pipeline detail show. A row
+        // survives when it IS the top-1 of ALL of the pipeline's runs ordered by WrittenUtc then RunId, both
+        // descending: exactly the row the previous correlated NOT-EXISTS kept (RunId breaks WrittenUtc ties,
+        // and being the primary key it makes the maximum unique), but shaped as a per-pipeline TOP(1) seek the
+        // (PipelineId, WrittenUtc DESC, RunId DESC) index on Run answers directly. It still applies BEFORE the
+        // lifecycle filters below so status=failed means "currently failed", not "ever failed".
         if (latest == true)
         {
-            query = query.Where(x => !db.Runs.Any(newer =>
-                newer.PipelineId == x.PipelineId
-                && (newer.WrittenUtc > x.WrittenUtc
-                    || (newer.WrittenUtc == x.WrittenUtc && newer.RunId > x.RunId))));
+            query = query.Where(x => x.RunId == db.Runs
+                .Where(candidate => candidate.PipelineId == x.PipelineId)
+                .OrderByDescending(candidate => candidate.WrittenUtc)
+                .ThenByDescending(candidate => candidate.RunId)
+                .Select(candidate => candidate.RunId)
+                .FirstOrDefault());
         }
 
         // Lifecycle filter (queued / running / succeeded / failed / cancelled): the GUI's "active runs" and

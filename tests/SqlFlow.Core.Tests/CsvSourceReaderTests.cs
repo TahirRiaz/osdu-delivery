@@ -1,3 +1,4 @@
+using System.Globalization;
 using SqlFlow.Core;
 using SqlFlow.Core.Model;
 using SqlFlow.Sources;
@@ -168,10 +169,10 @@ public sealed class CsvSourceReaderTests : IDisposable
 
         Assert.True(nameIdx >= 0 && sizeIdx >= 0 && rowNumIdx >= 0);
 
-        // The provenance columns carry their real types: file name is a string, file size is a long,
-        // and the row number is a long (not a stringified value).
+        // The raw landing layer is untyped: file provenance lands as strings (the transformation view
+        // applies the real types downstream), while the row number stays a real long from the parser.
         Assert.Equal(typeof(string), columns[nameIdx].Type);
-        Assert.Equal(typeof(long), columns[sizeIdx].Type);
+        Assert.Equal(typeof(string), columns[sizeIdx].Type);
         Assert.Equal(typeof(long), columns[rowNumIdx].Type);
 
         var read = await _reader.OpenAsync(source, columns);
@@ -181,7 +182,7 @@ public sealed class CsvSourceReaderTests : IDisposable
         while (await data.ReadAsync())
         {
             Assert.EndsWith("sys.csv", data.GetString(nameIdx), StringComparison.Ordinal);
-            Assert.True(data.GetInt64(sizeIdx) > 0);
+            Assert.True(long.Parse(data.GetString(sizeIdx), CultureInfo.InvariantCulture) > 0);
             rowNumbers.Add(data.GetInt64(rowNumIdx));
         }
 

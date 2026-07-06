@@ -107,7 +107,7 @@ public sealed class InferenceService : IInferenceService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var connectionString = _secrets.Resolve(request.Connection);
+        var connectionString = await _secrets.ResolveAsync(request.Connection, ct).ConfigureAwait(false);
         var table = await _schema.GetTableSchemaAsync(connectionString, request.Schema, request.Table, ct).ConfigureAwait(false)
             ?? throw new SqlFlowException($"Table {request.QualifiedName} does not exist - load the raw data before inferring.");
 

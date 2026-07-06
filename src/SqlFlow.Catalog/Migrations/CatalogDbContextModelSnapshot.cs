@@ -23,6 +23,57 @@ namespace SqlFlow.Catalog.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("SqlFlow.Catalog.CatalogAccessToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("LastUsedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Prefix")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTime?>("RevokedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Scopes")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("AccessToken", "catalog");
+                });
+
             modelBuilder.Entity("SqlFlow.Catalog.CatalogFlowDependency", b =>
                 {
                     b.Property<long>("Id")
@@ -618,6 +669,9 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("WrittenUtc");
 
                     b.HasIndex("Status", "EnqueuedUtc");
+
+                    b.HasIndex("PipelineId", "WrittenUtc", "RunId")
+                        .IsDescending(false, true, true);
 
                     b.ToTable("Run", "catalog");
                 });

@@ -697,6 +697,54 @@ public class CatalogUser
 }
 
 /// <summary>
+/// One personal access token: a long-lived, per-user bearer credential for headless clients (the VSCode extension,
+/// the CLI, scripted automation) that cannot sit in the browser's short session. The secret is shown once at
+/// creation and never stored; only its <see cref="TokenHash"/> (SHA-256 of the secret) is kept, so a leaked
+/// database row cannot be replayed as a credential. <see cref="Scopes"/> is the cap chosen at creation (always a
+/// subset of the owner's own scopes); the effective grant at authentication time is this cap intersected with the
+/// owner's current role scopes, so demoting or deactivating the user shrinks or kills every token they hold without
+/// touching the token rows. A token is revoked (<see cref="RevokedUtc"/> set) rather than deleted so its last-used
+/// history stays attributable; expiry (<see cref="ExpiresUtc"/>) is optional.
+/// </summary>
+public class CatalogAccessToken
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The owning user (<see cref="CatalogUser.Id"/>); a soft link, matching the rest of the catalog.</summary>
+    public Guid UserId { get; set; }
+
+    /// <summary>A human label the owner gives the token so they can tell their tokens apart (for example
+    /// "vscode-laptop"). Not unique.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The lowercase-hex SHA-256 of the full secret: what a presented token is hashed to and looked up by.
+    /// The secret itself is high-entropy (256 bits), so a plain unsalted hash is both safe and required for the
+    /// O(1) lookup; no per-token salt or slow KDF is needed or wanted here.</summary>
+    public string TokenHash { get; set; } = string.Empty;
+
+    /// <summary>The token's leading, non-secret characters (for example <c>sqlf_a1b2c3</c>), stored for display so
+    /// the owner can recognize a token in the list without the (unrecoverable) full secret.</summary>
+    public string Prefix { get; set; } = string.Empty;
+
+    /// <summary>The scopes granted at creation, space-delimited exactly as they appear in a token's <c>scope</c>
+    /// claim. Always a subset of the creator's own scopes; further intersected with the owner's live role scopes at
+    /// authentication time.</summary>
+    public string Scopes { get; set; } = string.Empty;
+
+    public DateTime CreatedUtc { get; set; }
+
+    /// <summary>When the token stops being accepted; null for a token that never expires.</summary>
+    public DateTime? ExpiresUtc { get; set; }
+
+    /// <summary>When the token last authenticated a request; null until first use. Updated at most periodically (not
+    /// on every request) so a busy token does not write on every call.</summary>
+    public DateTime? LastUsedUtc { get; set; }
+
+    /// <summary>When the token was revoked; null while active. Revocation is the delete, so history stays.</summary>
+    public DateTime? RevokedUtc { get; set; }
+}
+
+/// <summary>
 /// One schedule that fires a pipeline on a cron expression or a fixed interval by enqueuing a run onto the durable
 /// queue (the same path a manual trigger takes). A schedule is either declared in the flow YAML and synced from git
 /// (<see cref="Source"/> = <c>yaml</c>, the version-controlled source of truth) or created through the control-plane

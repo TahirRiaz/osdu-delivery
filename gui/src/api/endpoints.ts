@@ -3,9 +3,10 @@
 
 import { del, get, getAnonymous, post, postAnonymous, type QueryParams } from "./client";
 import type {
-  AuthProviders, ColumnHit, CreateScheduleRequest, CreateUserRequest, Dashboard, DefinitionHit, DiscoveredFlow,
+  AccessToken, AuthProviders, ColumnHit, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
+  CreateUserRequest, Dashboard, DefinitionHit, DiscoveredFlow,
   DiscoverRepoRequest, FlowDependency,
-  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, ObjectHit, PagedResult,
+  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, NodeScript, ObjectHit, PagedResult,
   PipelineColumn, PipelineDetail, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, Role,
   RunAssertion, RunDetail, RunFile, RunHealthCheckMetric, RunStatement, RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse, User, Wave,
@@ -137,6 +138,7 @@ export const lineageApi = {
   objects: (query: LineageObjectQuery = {}) =>
     get<PagedResult<LineageObject>>("/api/v1/lineage/objects", query as QueryParams),
   objectDetail: (key: string) => get<LineageObjectDetail>("/api/v1/lineage/objects/detail", { key }),
+  script: (key: string) => get<NodeScript>("/api/v1/lineage/script", { key }),
   objectColumns: (key: string, query: PageQuery = {}) =>
     get<PagedResult<LineageObjectColumn>>("/api/v1/lineage/objects/columns", { key, ...query } as QueryParams),
   edges: (repoId: string, query: LineageEdgeQuery = {}) =>
@@ -175,4 +177,12 @@ export const userApi = {
   deactivate: (id: string) => post<User>(`/api/v1/users/${id}/deactivate`),
   setPassword: (id: string, password: string) => post<User>(`/api/v1/users/${id}/password`, { password }),
   roles: () => get<Role[]>("/api/v1/roles"),
+};
+
+// ---- Personal access tokens (self-service: the caller's own tokens) ----------------------------------------------
+
+export const tokenApi = {
+  list: () => get<AccessToken[]>("/api/v1/me/tokens"),
+  create: (request: CreateAccessTokenRequest) => post<CreatedAccessToken>("/api/v1/me/tokens", request),
+  revoke: (id: string) => del<void>(`/api/v1/me/tokens/${id}`),
 };

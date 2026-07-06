@@ -16,12 +16,19 @@ namespace SqlFlow.ControlPlane.Background;
 /// <remarks>
 /// Robustness: a bad cron / time zone on one schedule is logged and that schedule is parked (its next fire is
 /// cleared) rather than re-scanned forever or stopping the loop; a tick error (a transient database outage) is
-/// logged and retried next tick; an inactive or removed pipeline is skipped, not enqueued. All diagnostics are
-/// secret-redacted.
+/// logged and retried next tick; an inactive or removed pipeline is skipped, not enqueued. Due schedules fire
+/// with bounded concurrency, each on its own scope (and so its own DbContext); one schedule's failure is logged
+/// and never stops the others. All diagnostics are secret-redacted.
 /// </remarks>
 public sealed partial class SchedulerService : BackgroundService
 {
     private const int MaxPerTick = 200;
+
+    // Each fire costs several catalog round trips (claim, pipeline check, enqueue, last-run stamp), so a burst of
+    // due schedules (a shared top-of-the-hour cron) is fired concurrently instead of serializing all of it; the
+    // claim's compare-and-swap already makes concurrent firing race-safe. Eight keeps the tick fast without
+    // stampeding the catalog.
+    private const int MaxConcurrentFires = 8;
 
     private readonly IServiceProvider _services;
     private readonly IRunDispatcher _dispatcher;
@@ -79,18 +86,48 @@ public sealed partial class SchedulerService : BackgroundService
     private async Task TickAsync(CancellationToken ct)
     {
         var now = _clock.GetUtcNow().UtcDateTime;
-        await using var scope = _services.CreateAsyncScope();
-        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-
-        var due = await ScheduleStore.ListDueAsync(catalog, now, MaxPerTick, ct).ConfigureAwait(false);
-        foreach (var schedule in due)
+        IReadOnlyList<CatalogSchedule> due;
+        await using (var scope = _services.CreateAsyncScope())
         {
-            if (ct.IsCancellationRequested)
-            {
-                return;
-            }
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+            due = await ScheduleStore.ListDueAsync(catalog, now, MaxPerTick, ct).ConfigureAwait(false);
+        }
 
+        if (due.Count == 0)
+        {
+            return;
+        }
+
+        // Bounded fan-out: each fire runs on its own scope (a DbContext is not thread-safe), gated so a burst of
+        // due schedules never opens more than MaxConcurrentFires catalog conversations at once. WhenAll observes
+        // every task, so the gate is fully released before it is disposed.
+        using var gate = new SemaphoreSlim(MaxConcurrentFires, MaxConcurrentFires);
+        await Task.WhenAll(due.Select(schedule => FireGuardedAsync(schedule, now, gate, ct))).ConfigureAwait(false);
+    }
+
+    /// <summary>Fires one due schedule behind the concurrency gate, on its own scope. A failure (a transient
+    /// database outage, a bad pipeline row) is logged and confined to this schedule so the rest of the tick's due
+    /// set still fires; only cancellation propagates, and the unclaimed occurrences simply re-scan next tick.</summary>
+    private async Task FireGuardedAsync(CatalogSchedule schedule, DateTime now, SemaphoreSlim gate, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
             await FireAsync(catalog, schedule, now, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // shutdown mid-tick; ExecuteAsync observes the cancellation and stops cleanly
+        }
+        catch (Exception ex)
+        {
+            LogFireError(schedule.Id, schedule.FlowName, SecretHygiene.RedactedMessage(ex.Message));
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -155,4 +192,7 @@ public sealed partial class SchedulerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Scheduler tick error: {Error}")]
     private partial void LogTickError(string error);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Schedule {ScheduleId} for flow '{FlowName}' failed to fire: {Error}")]
+    private partial void LogFireError(Guid scheduleId, string flowName, string error);
 }

@@ -99,6 +99,75 @@ public sealed class ExportFlowIntegrationTests
     }
 
     [SkippableFact]
+    public async Task FullExport_WithThreads_ChunksOnThePrimaryKey_AndCoversEveryRow()
+    {
+        var cs = IntegrationDb.Require();
+        const string src = "_SfExpFt_Src";
+        var dir = TempDir();
+        await Reset(cs, src, "[Id] int NOT NULL PRIMARY KEY, [Val] nvarchar(20) NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"""
+            INSERT INTO [dbo].[{src}] ([Id],[Val])
+            SELECT TOP (100) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)), 'v'
+            FROM sys.all_objects;
+            """);
+
+        try
+        {
+            var runner = new ExportFlowRunner(RelationalIngestionHarness.BuildResolver());
+            var flow = await FlowAsync(cs, 74, src, dir) with { NoOfThreads = 4 };
+
+            var result = await runner.RunAsync(flow);
+
+            Assert.True(result.Success, result.Error);
+            Assert.Equal(100, result.TotalRows);
+            // Four contiguous key-range files; the NullRows segment is empty (PK) and leaves no file.
+            var files = Directory.GetFiles(dir, "*.csv");
+            Assert.Equal(4, files.Length);
+            Assert.True(File.Exists(Path.Combine(dir, "out_001-024.csv")));
+            Assert.True(File.Exists(Path.Combine(dir, "out_075-100.csv")));
+            // Every row lands exactly once: 100 data lines + one header per file.
+            var lines = 0;
+            foreach (var file in files)
+            {
+                lines += (await File.ReadAllLinesAsync(file)).Length - 1;
+            }
+
+            Assert.Equal(100, lines);
+        }
+        finally
+        {
+            await Cleanup(cs, src, dir);
+        }
+    }
+
+    [SkippableFact]
+    public async Task FullExport_WithThreads_ButNoUsableKey_FallsBackToOneFile()
+    {
+        var cs = IntegrationDb.Require();
+        const string src = "_SfExpFk_Src";
+        var dir = TempDir();
+        // A keyless heap: no single-column key to chunk on and no incrementalColumn set.
+        await Reset(cs, src, "[Name] nvarchar(20) NULL, [Amount] int NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES ('a',1),('b',2),('c',3);");
+
+        try
+        {
+            var runner = new ExportFlowRunner(RelationalIngestionHarness.BuildResolver());
+            var flow = await FlowAsync(cs, 75, src, dir) with { NoOfThreads = 4 };
+
+            var result = await runner.RunAsync(flow);
+
+            Assert.True(result.Success, result.Error);
+            Assert.Equal(3, result.TotalRows);
+            Assert.Equal(["out.csv"], Directory.GetFiles(dir, "*.csv").Select(f => Path.GetFileName(f)!).ToArray());
+        }
+        finally
+        {
+            await Cleanup(cs, src, dir);
+        }
+    }
+
+    [SkippableFact]
     public async Task Parquet_WritesReadableFile()
     {
         var cs = IntegrationDb.Require();

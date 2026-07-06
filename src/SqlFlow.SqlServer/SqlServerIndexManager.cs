@@ -43,8 +43,9 @@ public sealed class SqlServerIndexManager : IIndexManager
 
         foreach (var name in names)
         {
+            // No timeout: disabling can wait on a Sch-M lock behind long readers on a busy table.
             var disable = $"ALTER INDEX [{Escape(name)}] ON {qualified} DISABLE;";
-            await using var command = new SqlCommand(disable, connection);
+            await using var command = new SqlCommand(disable, connection) { CommandTimeout = 0 };
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
@@ -74,8 +75,9 @@ public sealed class SqlServerIndexManager : IIndexManager
                 continue;
             }
 
+            // No timeout: a rebuild scans and re-sorts the whole table, far beyond the 30s default.
             var rebuild = $"ALTER INDEX [{Escape(name)}] ON {qualified} REBUILD;";
-            await using var command = new SqlCommand(rebuild, connection);
+            await using var command = new SqlCommand(rebuild, connection) { CommandTimeout = 0 };
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
     }

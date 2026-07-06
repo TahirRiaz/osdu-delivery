@@ -97,13 +97,13 @@ public sealed class FlowRunner
 
         try
         {
-            connectionString = _secrets.Resolve(flow.Target.Connection);
+            connectionString = await _secrets.ResolveAsync(flow.Target.Connection, ct).ConfigureAwait(false);
 
             // Incremental: probe the target for the watermark and bound the source read to new files
             // only. Returns the original flow unchanged when there is no incremental spec or no watermark.
             var effectiveFlow = await ApplyIncrementalAsync(flow, connectionString, context, ct).ConfigureAwait(false);
 
-            var plan = await PlanCoreAsync(effectiveFlow, context, ct).ConfigureAwait(false);
+            var plan = await PlanCoreAsync(effectiveFlow, context, ct, connectionString).ConfigureAwait(false);
 
             // A table that did not exist before this run is created by the schema DDL below; that
             // distinction drives index handling: a new table gets its declared (desired) indexes built
@@ -121,10 +121,20 @@ public sealed class FlowRunner
                 await StageAsync("target.preprocess", context, () => _schema.ExecuteDdlAsync(connectionString, flow.PreProcess, ct)).ConfigureAwait(false);
             }
 
-            if (flow.Load.ManageIndexes && !tableIsNew)
+            // Disabling and rebuilding every nonclustered index costs O(table size), which pays off when the
+            // load replaces or dwarfs the existing data but dominates wall-clock when a watermark-bounded
+            // incremental run appends a small delta. An incremental bound (effectiveFlow differs from flow)
+            // means only new data is read, so per-row index maintenance during the insert is the cheaper path
+            // and the disable/rebuild pair is skipped for that run.
+            var incrementallyBounded = !ReferenceEquals(effectiveFlow, flow);
+            if (flow.Load.ManageIndexes && !tableIsNew && !incrementallyBounded)
             {
                 disabledIndexes = await StageAsync("indexes.disable", context,
                     () => _indexManager.DisableNonClusteredAsync(connectionString, flow.Target.Schema, flow.Target.Table, ct)).ConfigureAwait(false);
+            }
+            else if (flow.Load.ManageIndexes && !tableIsNew)
+            {
+                Emit(context, "indexes: incremental run loads only the delta; keeping indexes online instead of disable/rebuild", stage: "indexes.disable");
             }
 
             if (flow.Load.Mode == LoadMode.TruncateLoad)
@@ -403,21 +413,26 @@ public sealed class FlowRunner
         }
 
         var resolved = ColumnTransformResolver.Resolve(tableColumns, flow.Inference, inferred);
-        var viewName = $"v{flow.Target.Table}";
+        var viewName = $"v_{flow.Target.Table}";
         var ddl = TransformViewBuilder.Build(flow.Target.Schema, viewName, flow.Target.Schema, flow.Target.Table, resolved);
         await _schema.ExecuteDdlAsync(connectionString, [ddl], ct).ConfigureAwait(false);
 
         return new TransformViewResult { ViewName = viewName, Ddl = ddl, Columns = resolved };
     }
 
-    private async Task<FlowPlan> PlanCoreAsync(FlowDefinition flow, RunContext context, CancellationToken ct)
+    /// <param name="flow">The flow to plan.</param>
+    /// <param name="context">Per-run state for events and tracing.</param>
+    /// <param name="ct">Cancellation for the plan.</param>
+    /// <param name="resolvedConnection">The already-resolved target connection string when the caller resolved
+    /// it (the run path does, so one run never resolves the same secret twice); null resolves it here.</param>
+    private async Task<FlowPlan> PlanCoreAsync(FlowDefinition flow, RunContext context, CancellationToken ct, string? resolvedConnection = null)
     {
         using var activity = SqlFlowDiagnostics.ActivitySource.StartActivity("flow.plan");
         activity?.SetTag("flow.name", flow.Name);
         activity?.SetTag("flow.id", context.FlowId);
         activity?.SetTag("flow.run_id", context.RunId);
 
-        var connectionString = _secrets.Resolve(flow.Target.Connection);
+        var connectionString = resolvedConnection ?? await _secrets.ResolveAsync(flow.Target.Connection, ct).ConfigureAwait(false);
         var reader = ResolveReader(flow.Source.Type);
 
         var sourceColumns = await StageAsync("source.columns", context, () => reader.GetColumnsAsync(flow.Source, ct)).ConfigureAwait(false);

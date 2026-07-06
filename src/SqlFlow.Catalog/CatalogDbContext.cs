@@ -52,6 +52,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRole> Roles => Set<CatalogRole>();
 
+    public DbSet<CatalogAccessToken> AccessTokens => Set<CatalogAccessToken>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -109,6 +111,9 @@ public sealed class CatalogDbContext : DbContext
             // EnqueuedUtc. This composite index makes that a range seek instead of a scan, and also serves the
             // "recover runs stuck running" recovery query.
             entity.HasIndex(r => new { r.Status, r.EnqueuedUtc });
+            // The latest-run board resolves each pipeline's newest run (top-1 per pipeline by WrittenUtc, then
+            // RunId): this composite serves that as a per-pipeline seek in exactly the query's order.
+            entity.HasIndex(r => new { r.PipelineId, r.WrittenUtc, r.RunId }).IsDescending(false, true, true);
         });
 
         modelBuilder.Entity<CatalogObject>(entity =>
@@ -310,6 +315,22 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(u => u.Username).IsUnique();
             // JIT provisioning keys on the Entra object id; filtered unique so local users (null) do not collide.
             entity.HasIndex(u => u.ExternalObjectId).IsUnique().HasFilter("[ExternalObjectId] IS NOT NULL");
+        });
+
+        modelBuilder.Entity<CatalogAccessToken>(entity =>
+        {
+            entity.ToTable("AccessToken");
+            entity.HasKey(t => t.Id);
+            entity.Property(t => t.Name).HasMaxLength(200).IsRequired();
+            // SHA-256 hex is exactly 64 chars; bounded to that.
+            entity.Property(t => t.TokenHash).HasMaxLength(64).IsRequired();
+            entity.Property(t => t.Prefix).HasMaxLength(32).IsRequired();
+            entity.Property(t => t.Scopes).HasMaxLength(256).IsRequired();
+            // Authentication looks a presented token up by its hash: unique (a hash collision would be a distinct
+            // secret) and the seek index for every authenticated PAT request.
+            entity.HasIndex(t => t.TokenHash).IsUnique();
+            // The owner's token list (self-service management) seeks by user.
+            entity.HasIndex(t => t.UserId);
         });
     }
 }

@@ -14,7 +14,7 @@ namespace SqlFlow.Tests.Batch;
 /// the failure semantics (stop in a later wave, continue's transitive skip across three levels, ignoreErrors
 /// under both modes), the inactive set (all-inactive, an inactive producer), cycle handling (a two-flow mutual
 /// pair is broken while a ring survives and coexists with an ordered chain), concurrency bounds (maxParallel of
-/// one, two, unbounded, and larger than the wave), a runner that throws rather than returns, cross-server objects
+/// one, two, the machine-sized default, and larger than the wave), a runner that throws rather than returns, cross-server objects
 /// that do not link, duplicate member names, cancellation, and the aggregate counts and echoed fields. Every
 /// member runs through a faked <see cref="IDocumentRunner"/>, so the orchestration is proven without SQL; the
 /// loader cases parse YAML in memory. All inputs are fixed, so the tests are deterministic. Helper names are
@@ -299,7 +299,7 @@ public sealed class BatchEdgeCaseTests : IDisposable
         Assert.True(result.Success);
         Assert.Equal(length, result.Waves.Count);
         Assert.Empty(result.Unordered);
-        // The barrier puts each step strictly after its predecessor completed.
+        // Dependency dispatch puts each step strictly after its predecessor completed.
         for (var i = 1; i < length; i++)
         {
             Assert.True(runner.CompletionIndexOf($"step_{(i - 1).ToString(CultureInfo.InvariantCulture)}")
@@ -499,8 +499,8 @@ public sealed class BatchEdgeCaseTests : IDisposable
 
         var result = await RunAsync(MakeBatch(mode), runner);
 
-        // Both share wave 1; the bystander runs to completion regardless of mode because the barrier finishes
-        // the wave before stop takes effect, and there is no later wave for it to be skipped from.
+        // Both are dispatched immediately (neither has a dependency), so the bystander is already in flight when
+        // the victim's failure lands; stop never cancels in-flight members, so it runs to completion in either mode.
         Assert.Equal(BatchMemberStatus.Failed, Member(result, "victim").Status);
         Assert.Equal(BatchMemberStatus.Succeeded, Member(result, "bystander").Status);
         Assert.True(runner.WasRun("bystander"));
@@ -804,20 +804,19 @@ public sealed class BatchEdgeCaseTests : IDisposable
     }
 
     [Fact]
-    public async Task MaxParallelUnbounded_RunsTheWholeWaveConcurrently()
+    public async Task MaxParallelZero_UsesTheMachineSizedDefault_AndOverlapsMembers()
     {
         WriteIndependentFlow("u1");
         WriteIndependentFlow("u2");
-        WriteIndependentFlow("u3");
-        WriteIndependentFlow("u4");
-        // releaseAt 4 means no member completes until all four have started; if the gate serialized them this
-        // would not reach four in flight, so PeakConcurrency proves they overlapped.
-        var runner = new BecConcurrencyRunner(releaseAt: 4);
+        // maxParallel 0 defaults to Math.Max(2, ProcessorCount), so at least two members can be in flight on any
+        // machine. releaseAt 2 means neither member completes until both have started; if the default serialized
+        // them this would never reach two in flight, so PeakConcurrency proves they overlapped.
+        var runner = new BecConcurrencyRunner(releaseAt: 2);
 
         var result = await RunAsync(MakeBatch(maxParallel: 0), runner);
 
         Assert.True(result.Success);
-        Assert.Equal(4, runner.PeakConcurrency);
+        Assert.Equal(2, runner.PeakConcurrency);
     }
 
     [Fact]

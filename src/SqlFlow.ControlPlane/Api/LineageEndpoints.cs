@@ -25,6 +25,15 @@ public sealed record ObjectDetailDto(
 /// from the CREATE the run executed (Observed/Declared).</summary>
 public sealed record ObjectColumnDto(int Ordinal, string Name, string? DataType, bool Nullable, string Tier);
 
+/// <summary>The script for any lineage node in one consistent shape, whatever its kind: a pipeline's authored
+/// YAML, a view's or stored procedure's/function's module body, or a table's generated CREATE TABLE. This is
+/// the single "show me the code behind this node" contract the graph uses, so clicking any node - flow or
+/// object - resolves through one endpoint. <c>Language</c> is <c>yaml</c> for a pipeline and <c>sql</c> for a
+/// database object; <c>Source</c> records where the script came from (Authored for a pipeline, Module for a
+/// sys.sql_modules body, or the script tier - Derived/Observed/Declared - for a generated table script).</summary>
+public sealed record NodeScriptDto(
+    string Key, string Kind, string Language, string? Script, string? Source, string? Name);
+
 /// <summary>One attributed lineage fact: a flow (or a module body) relating to an object.</summary>
 public sealed record EdgeDto(
     long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule,
@@ -76,6 +85,7 @@ public static class LineageEndpoints
         lineage.MapGet("/objects/detail", GetObjectAsync).WithName("GetLineageObject");
         lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
+        lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
 
         var repos = group.MapGroup("/repos").WithTags("Lineage");
         repos.MapGet("/{repoId:guid}/lineage/edges", ListEdgesAsync).WithName("ListLineageEdges");
@@ -166,6 +176,50 @@ public static class LineageEndpoints
                 o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("object", key) : TypedResults.Ok(dto);
+    }
+
+    /// <summary>
+    /// The unified script accessor: <c>GET /api/v1/lineage/script?key=&lt;node&gt;</c> returns the code behind any
+    /// node in the graph, resolving the identifier across both sides of the bipartite graph. A catalog object
+    /// (table/view/procedure/function/trigger) is matched by its node <c>Key</c> and returns its module body
+    /// (<c>Definition</c>) when it has one, else its generated script (a table's CREATE TABLE); a pipeline is
+    /// matched by its flow name, or by its stable id when the key is a GUID, and returns its authored YAML. So a
+    /// single call serves every node kind the lineage graph draws.
+    /// </summary>
+    private static async Task<Results<Ok<NodeScriptDto>, ProblemHttpResult>> GetNodeScriptAsync(
+        string key, CatalogDbContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return TypedResults.Problem(
+                detail: "A 'key' query parameter is required (an object node key or a pipeline name/id).",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        // A database object: the module body is the authoritative source for a view/procedure/function/trigger;
+        // a table has no module body, so its generated CREATE TABLE script is returned instead.
+        var obj = await db.Objects.AsNoTracking().Where(o => o.Key == key)
+            .Select(o => new { o.Key, o.Kind, o.Name, o.Definition, o.Script, o.ScriptTier })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (obj is not null)
+        {
+            var script = obj.Definition ?? obj.Script;
+            var source = obj.Definition is not null ? "Module" : obj.ScriptTier;
+            return TypedResults.Ok(new NodeScriptDto(obj.Key, obj.Kind, "sql", script, source, obj.Name));
+        }
+
+        // A pipeline (flow) node: matched by its name, or by its stable id when the caller passed a GUID.
+        var isId = Guid.TryParse(key, out var pipelineId);
+        var pipe = await db.Pipelines.AsNoTracking()
+            .Where(p => p.Name == key || (isId && p.Id == pipelineId))
+            .Select(p => new { p.Name, p.Kind, p.Yaml })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (pipe is not null)
+        {
+            return TypedResults.Ok(new NodeScriptDto(pipe.Name, "pipeline", "yaml", pipe.Yaml, "Authored", pipe.Name));
+        }
+
+        return NotFound("script for node", key);
     }
 
     private static async Task<Results<Ok<PagedResult<ObjectColumnDto>>, ProblemHttpResult>> GetObjectColumnsAsync(

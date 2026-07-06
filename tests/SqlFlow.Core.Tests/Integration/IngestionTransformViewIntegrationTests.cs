@@ -21,7 +21,8 @@ public sealed class IngestionTransformViewIntegrationTests
         var cs = IntegrationDb.Require();
         const string src = "_SfTvw_Src";
         const string trg = "_SfTvw_Trg";
-        const string view = "v" + trg;
+        // Transform views are named v_<table> (the original SQLFlow pre-view convention).
+        const string view = "v_" + trg;
 
         await IntegrationDb.ExecuteAsync(cs, $"DROP VIEW IF EXISTS [dbo].[{view}];");
         await IntegrationDb.DropTableAsync(cs, src);

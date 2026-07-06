@@ -18,9 +18,12 @@ import Autocomplete from "@mui/material/Autocomplete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
+import Drawer from "@mui/material/Drawer";
 import FormControl from "@mui/material/FormControl";
 import IconButton from "@mui/material/IconButton";
+import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Select from "@mui/material/Select";
@@ -39,6 +42,7 @@ import TableRowsIcon from "@mui/icons-material/TableRows";
 import { isApiError } from "../../api/client";
 import { lineageApi, repoApi } from "../../api/endpoints";
 import type { LineageEdge } from "../../api/types";
+import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/PageHeader";
@@ -319,6 +323,8 @@ interface CanvasProps {
   centerRequest: { id: string; nonce: number } | null;
   onFocus: (id: string | null) => void;
   onOpen: (id: string) => void;
+  /** Right-click on a node: opens the node context menu at the pointer. */
+  onNodeContextMenu: (id: string, position: { x: number; y: number }) => void;
   /** Overlay content rendered inside the flow pane (the floating details panel). */
   children?: ReactNode;
 }
@@ -328,7 +334,7 @@ interface CanvasProps {
  * focus styling is applied in place so a focus change never resets positions the user arranged. Single click
  * focuses (upstream/downstream highlight); double click opens the node's page; clicking the pane clears focus.
  */
-function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, children }: CanvasProps) {
+function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, onNodeContextMenu, children }: CanvasProps) {
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const view = useReactFlow();
 
@@ -396,6 +402,10 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
       onNodesChange={onNodesChange}
       onNodeClick={(_, node) => onFocus(node.id)}
       onNodeDoubleClick={(_, node) => onOpen(node.id)}
+      onNodeContextMenu={(event, node) => {
+        event.preventDefault();
+        onNodeContextMenu(node.id, { x: event.clientX, y: event.clientY });
+      }}
       onPaneClick={() => onFocus(null)}
       colorMode={colorMode}
       fitView
@@ -428,6 +438,15 @@ export default function LineageGraphPage() {
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  // Right-click context menu on a node, and the node whose script is open in the drawer.
+  const [nodeMenu, setNodeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [scriptKey, setScriptKey] = useState<string | null>(null);
+
+  const scriptQuery = useQuery({
+    queryKey: ["lineage-node-script", scriptKey],
+    queryFn: () => lineageApi.script(scriptKey as string),
+    enabled: scriptKey !== null,
+  });
 
   const repos = useQuery({
     queryKey: ["repos", "for-lineage-graph"],
@@ -1178,6 +1197,7 @@ export default function LineageGraphPage() {
               centerRequest={centerRequest}
               onFocus={focusNode}
               onOpen={openNode}
+              onNodeContextMenu={(id, position) => setNodeMenu({ id, x: position.x, y: position.y })}
             >
               {panelOpen ? (
                 <Panel position="top-right">{detailsPanel}</Panel>
@@ -1198,6 +1218,94 @@ export default function LineageGraphPage() {
             </GraphCanvas>
           </ReactFlowProvider>
         )}
+
+        <Menu
+          open={nodeMenu !== null}
+          onClose={() => setNodeMenu(null)}
+          anchorReference="anchorPosition"
+          anchorPosition={nodeMenu !== null ? { top: nodeMenu.y, left: nodeMenu.x } : undefined}
+        >
+          <MenuItem
+            data-testid="node-menu-view-script"
+            onClick={() => {
+              if (nodeMenu !== null) {
+                setScriptKey(nodeMenu.id);
+              }
+              setNodeMenu(null);
+            }}
+          >
+            View script
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              if (nodeMenu !== null) {
+                focusNode(nodeMenu.id);
+              }
+              setNodeMenu(null);
+            }}
+          >
+            Trace upstream / downstream
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              if (nodeMenu !== null) {
+                openNode(nodeMenu.id);
+              }
+              setNodeMenu(null);
+            }}
+          >
+            Open details
+          </MenuItem>
+        </Menu>
+
+        <Drawer
+          anchor="right"
+          open={scriptKey !== null}
+          onClose={() => setScriptKey(null)}
+          sx={{ zIndex: (t) => t.zIndex.modal }}
+        >
+          <Box sx={{ width: { xs: "100vw", sm: 760 }, maxWidth: "100vw", display: "flex", flexDirection: "column", height: "100%" }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} sx={{ p: 2, borderBottom: 1, borderColor: "divider" }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="subtitle1" noWrap>{scriptQuery.data?.name ?? scriptKey}</Typography>
+                {scriptQuery.data && (
+                  <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                    <Chip size="small" color="primary" label={scriptQuery.data.kind} />
+                    <Chip size="small" variant="outlined" label={scriptQuery.data.language.toUpperCase()} />
+                    {scriptQuery.data.source && <Chip size="small" variant="outlined" label={scriptQuery.data.source} />}
+                  </Stack>
+                )}
+              </Box>
+              <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={!scriptQuery.data?.script}
+                  onClick={() => { void navigator.clipboard.writeText(scriptQuery.data?.script ?? ""); }}
+                >
+                  Copy
+                </Button>
+                <Button size="small" variant="contained" onClick={() => setScriptKey(null)}>Close</Button>
+              </Stack>
+            </Stack>
+            <Box sx={{ flex: 1, minHeight: 0, p: 2 }}>
+              {scriptQuery.isLoading && <Stack alignItems="center" sx={{ py: 4 }}><CircularProgress size={24} /></Stack>}
+              {scriptQuery.isError && (isApiError(scriptQuery.error)
+                ? <CorrelationError error={scriptQuery.error} />
+                : <Typography color="error">{String(scriptQuery.error)}</Typography>)}
+              {scriptQuery.data && (scriptQuery.data.script
+                ? (
+                  <CodeView
+                    value={scriptQuery.data.script}
+                    language={scriptQuery.data.language === "yaml" ? "yaml" : "sql"}
+                    height="calc(100vh - 128px)"
+                    data-testid="node-script-body"
+                  />
+                )
+                : <EmptyState title="No script" description="This node has no captured script yet. For database objects, run a connected sync (--connect) so the source is read." />)}
+            </Box>
+          </Box>
+        </Drawer>
       </Box>
     </Box>
   );
