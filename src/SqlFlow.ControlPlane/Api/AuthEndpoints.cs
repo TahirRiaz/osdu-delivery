@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Identity;
@@ -46,6 +47,29 @@ public static class AuthEndpoints
             .AllowAnonymous()
             .WithTags("Authentication")
             .WithName("Login");
+
+        // OAuth 2.0 device-authorization grant (RFC 8628): the sign-in path for the MCP server and any headless
+        // client. Start and token polling are anonymous (the device_code is the secret); approval/denial run under
+        // an authenticated browser session so a human binds their own identity and scopes to the device.
+        group.MapPost("/auth/device", StartDeviceAsync)
+            .AllowAnonymous()
+            .WithTags("Authentication")
+            .WithName("StartDeviceAuthorization");
+
+        group.MapPost("/auth/device/token", DeviceTokenAsync)
+            .AllowAnonymous()
+            .WithTags("Authentication")
+            .WithName("PollDeviceToken");
+
+        group.MapPost("/auth/device/approve", ApproveDeviceAsync)
+            .RequireAuthorization("read")
+            .WithTags("Authentication")
+            .WithName("ApproveDeviceAuthorization");
+
+        group.MapPost("/auth/device/deny", DenyDeviceAsync)
+            .RequireAuthorization("read")
+            .WithTags("Authentication")
+            .WithName("DenyDeviceAuthorization");
 
         if (options.AzureAd.Enabled)
         {
@@ -224,6 +248,170 @@ public static class AuthEndpoints
         return TypedResults.Ok(new TokenResponse(result.Token, "Bearer", expiresIn));
     }
 
+    // --- Device authorization grant (RFC 8628) -------------------------------------------------------------------
+
+    /// <summary>Scopes a device token may ever carry. Admin is intentionally excluded: a headless client signs in
+    /// for read and operate, never account administration.</summary>
+    private static readonly string[] DeviceAllowedScopes = ["read", "operate"];
+
+    private const int DeviceCodeTtlSeconds = 600;
+    private const int DevicePollIntervalSeconds = 5;
+
+    /// <summary>Begin a device flow: mint a device/user code pair and advertise the approval URL. Anonymous, since
+    /// the opaque device_code is the only secret the polling client holds.</summary>
+    private static Ok<DeviceAuthorizationResponse> StartDeviceAsync(
+        DeviceAuthorizationRequest? request, DeviceCodeStore store, TimeProvider clock, HttpContext httpContext)
+    {
+        NeverCache(httpContext);
+
+        var requested = ParseScopes(request?.Scope)
+            .Where(s => DeviceAllowedScopes.Contains(s, StringComparer.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (requested.Count == 0)
+        {
+            requested = ["read"];
+        }
+
+        var nowUtc = clock.GetUtcNow().UtcDateTime;
+        var entry = store.Create(requested, nowUtc, DeviceCodeTtlSeconds, DevicePollIntervalSeconds);
+
+        var origin = $"{httpContext.Request.Scheme}://{httpContext.Request.Host}";
+        var verificationUri = $"{origin}/device";
+        var verificationUriComplete = $"{verificationUri}?code={Uri.EscapeDataString(entry.UserCode)}";
+        var expiresIn = (int)Math.Max(1, (entry.ExpiresUtc - nowUtc).TotalSeconds);
+
+        return TypedResults.Ok(new DeviceAuthorizationResponse(
+            entry.DeviceCode, entry.UserCode, verificationUri, verificationUriComplete, expiresIn, entry.IntervalSeconds));
+    }
+
+    /// <summary>Poll for the device token. Returns the standard RFC 8628 error codes until the flow is approved,
+    /// then mints a normal HS256 token for the approving user (scoped to the granted read/operate subset).</summary>
+    private static Results<Ok<DeviceTokenResponse>, JsonHttpResult<DeviceErrorResponse>> DeviceTokenAsync(
+        DeviceTokenRequest request, DeviceCodeStore store, TokenIssuer issuer, TimeProvider clock, HttpContext httpContext)
+    {
+        NeverCache(httpContext);
+        var nowUtc = clock.GetUtcNow().UtcDateTime;
+
+        if (request is null || string.IsNullOrWhiteSpace(request.DeviceCode))
+        {
+            return DeviceError("invalid_request");
+        }
+
+        var entry = store.FindByDeviceCode(request.DeviceCode, nowUtc);
+        if (entry is null)
+        {
+            // Unknown or expired: RFC 8628 collapses both to expired_token from the client's perspective.
+            return DeviceError("expired_token");
+        }
+
+        // Enforce the advertised minimum poll cadence.
+        if (entry.LastPolledUtc is { } last && (nowUtc - last).TotalSeconds < entry.IntervalSeconds)
+        {
+            entry.LastPolledUtc = nowUtc;
+            return DeviceError("slow_down");
+        }
+
+        entry.LastPolledUtc = nowUtc;
+
+        switch (entry.Status)
+        {
+            case DeviceCodeStore.DeviceStatus.Pending:
+                return DeviceError("authorization_pending");
+            case DeviceCodeStore.DeviceStatus.Denied:
+                store.Remove(entry);
+                return DeviceError("access_denied");
+            case DeviceCodeStore.DeviceStatus.Approved:
+                var result = issuer.Issue(entry.Username!, entry.GrantedScopes!, nowUtc, entry.Role, entry.UserId);
+                store.Remove(entry);
+                var expiresIn = (int)Math.Max(1, (result.ExpiresUtc - nowUtc).TotalSeconds);
+                return TypedResults.Ok(new DeviceTokenResponse(
+                    result.Token, "Bearer", expiresIn, string.Join(' ', entry.GrantedScopes!)));
+            default:
+                return DeviceError("expired_token");
+        }
+    }
+
+    /// <summary>Approve a device flow from an authenticated session, binding the caller's identity and the granted
+    /// (requested ∩ own, minus admin) scopes to the pending entry.</summary>
+    private static Results<NoContent, ProblemHttpResult> ApproveDeviceAsync(
+        DeviceApprovalRequest request, DeviceCodeStore store, TimeProvider clock, HttpContext httpContext)
+    {
+        NeverCache(httpContext);
+        if (request is null || string.IsNullOrWhiteSpace(request.UserCode))
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, title: "A user code is required");
+        }
+
+        var nowUtc = clock.GetUtcNow().UtcDateTime;
+        var entry = store.FindByUserCode(request.UserCode, nowUtc);
+        if (entry is null)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status404NotFound, title: "Unknown or expired code");
+        }
+
+        if (entry.Status != DeviceCodeStore.DeviceStatus.Pending)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status409Conflict, title: "This code has already been resolved");
+        }
+
+        var user = httpContext.User;
+        var username = user.FindFirst("sub")?.Value;
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status401Unauthorized, title: "The session has no subject");
+        }
+
+        var ownScopes = (user.FindFirst("scope")?.Value ?? string.Empty)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var granted = entry.RequestedScopes
+            .Where(s => ownScopes.Contains(s, StringComparer.Ordinal) && s != "admin")
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (granted.Count == 0)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "Insufficient scope",
+                detail: "Your account does not hold any of the scopes this device requested.");
+        }
+
+        entry.Username = username;
+        entry.GrantedScopes = granted;
+        entry.Role = user.FindFirst("role")?.Value;
+        entry.UserId = Guid.TryParse(user.FindFirst("uid")?.Value, out var uid) ? uid : null;
+        entry.Status = DeviceCodeStore.DeviceStatus.Approved;
+        return TypedResults.NoContent();
+    }
+
+    /// <summary>Deny a pending device flow from an authenticated session.</summary>
+    private static Results<NoContent, ProblemHttpResult> DenyDeviceAsync(
+        DeviceApprovalRequest request, DeviceCodeStore store, TimeProvider clock, HttpContext httpContext)
+    {
+        NeverCache(httpContext);
+        if (request is null || string.IsNullOrWhiteSpace(request.UserCode))
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, title: "A user code is required");
+        }
+
+        var entry = store.FindByUserCode(request.UserCode, clock.GetUtcNow().UtcDateTime);
+        if (entry is null)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status404NotFound, title: "Unknown or expired code");
+        }
+
+        entry.Status = DeviceCodeStore.DeviceStatus.Denied;
+        return TypedResults.NoContent();
+    }
+
+    private static JsonHttpResult<DeviceErrorResponse> DeviceError(string error)
+        => TypedResults.Json(new DeviceErrorResponse(error), statusCode: StatusCodes.Status400BadRequest);
+
+    private static IEnumerable<string> ParseScopes(string? scope)
+        => string.IsNullOrWhiteSpace(scope)
+            ? DeviceAllowedScopes
+            : scope.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     /// <summary>Sign-in responses carry bearer tokens; never let an intermediary cache them.</summary>
     private static void NeverCache(HttpContext httpContext)
     {
@@ -234,3 +422,29 @@ public static class AuthEndpoints
     private static bool FixedTimeEquals(string a, string b)
         => CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
 }
+
+/// <summary>Request body for <c>POST /auth/device</c>: an optional client id and space-delimited requested scopes
+/// (capped server-side to read/operate).</summary>
+public sealed record DeviceAuthorizationRequest(string? ClientId, string? Scope);
+
+/// <summary>The device-authorization response (camelCase on the wire): the codes, the approval URL, and polling
+/// hints.</summary>
+public sealed record DeviceAuthorizationResponse(
+    string DeviceCode, string UserCode, string VerificationUri, string VerificationUriComplete, int ExpiresIn, int Interval);
+
+/// <summary>Request body for <c>POST /auth/device/token</c>.</summary>
+public sealed record DeviceTokenRequest(string DeviceCode);
+
+/// <summary>The minted device token. Field names follow the OAuth token-response convention (snake_case).</summary>
+public sealed record DeviceTokenResponse(
+    [property: JsonPropertyName("access_token")] string AccessToken,
+    [property: JsonPropertyName("token_type")] string TokenType,
+    [property: JsonPropertyName("expires_in")] int ExpiresIn,
+    [property: JsonPropertyName("scope")] string Scope);
+
+/// <summary>The RFC 8628 error envelope: <c>authorization_pending</c>, <c>slow_down</c>, <c>access_denied</c>,
+/// <c>expired_token</c>, or <c>invalid_request</c>.</summary>
+public sealed record DeviceErrorResponse([property: JsonPropertyName("error")] string Error);
+
+/// <summary>Request body for <c>POST /auth/device/approve</c> and <c>/deny</c>.</summary>
+public sealed record DeviceApprovalRequest(string UserCode);

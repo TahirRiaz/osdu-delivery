@@ -71,10 +71,10 @@ public static class ScheduleStore
     /// </summary>
     public static Task<Guid> UpsertYamlScheduleAsync(
         CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,
-        bool enabled, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, flowName, cron, intervalSeconds, timezone, enabled, computedNextFireUtc, nowUtc, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, flowName, cron, intervalSeconds, timezone, enabled, catchup, computedNextFireUtc, nowUtc, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
@@ -82,7 +82,7 @@ public static class ScheduleStore
     /// transaction (the public <see cref="UpsertYamlScheduleAsync"/> wraps this for standalone callers).</summary>
     public static async Task<Guid> StageYamlUpsertAsync(
         CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,
-        bool enabled, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -103,6 +103,7 @@ public static class ScheduleStore
                     IntervalSeconds = intervalSeconds,
                     Timezone = timezone,
                     Enabled = enabled,
+                    Catchup = catchup,
                     Source = "yaml",
                     NextFireUtc = computedNextFireUtc,
                     CreatedUtc = nowUtc,
@@ -122,6 +123,7 @@ public static class ScheduleStore
             existing.IntervalSeconds = intervalSeconds;
             existing.Timezone = timezone;
             existing.Enabled = enabled;
+            existing.Catchup = catchup;
             existing.Source = "yaml";
             existing.UpdatedUtc = nowUtc;
             // Only reset the cadence when the timing definition changed; an unchanged re-sync leaves the next fire
@@ -151,7 +153,7 @@ public static class ScheduleStore
     /// <summary>Creates an ad-hoc API schedule with a fresh id; a flow can carry its git schedule plus API ones.</summary>
     public static Task<Guid> CreateApiScheduleAsync(
         CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,
-        bool enabled, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -169,6 +171,7 @@ public static class ScheduleStore
                 IntervalSeconds = intervalSeconds,
                 Timezone = timezone,
                 Enabled = enabled,
+                Catchup = catchup,
                 Source = "api",
                 NextFireUtc = computedNextFireUtc,
                 CreatedUtc = nowUtc,

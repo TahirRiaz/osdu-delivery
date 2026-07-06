@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SqlFlow.Core.Connections;
 using SqlFlow.Core.Lineage;
 using SqlFlow.Lineage.Collection;
 using SqlFlow.Lineage.Graph;
@@ -333,6 +334,67 @@ public sealed class LineageGraphTests
 
         Assert.Contains(report.Warnings, w => w.Contains("matches 2 databases", StringComparison.Ordinal));
         Assert.Equal(3, report.Objects.Count(o => o.Name == "Orders"));
+    }
+
+    [Fact]
+    public void DefaultDatabase_CompletesADatabaselessIdentity()
+    {
+        var collected = new CollectionResult();
+        collected.Flows.Add(Flow("file-load", "file"));
+        collected.Flows.Add(Flow("reader"));
+        collected.Servers.Add("@dwh", ("${env:SQLFLOW_CONN_DWH}", DataSourceKind.MSSQL));
+        collected.ServerDefaultDatabases.Add("@dwh", "DW");
+
+        // The file flow's target has no database (its connection carries it); the reader is fully qualified.
+        collected.Facts.Add(Fact("file-load", LineageRelation.Writes, "Orders", db: null));
+        collected.Facts.Add(Fact("reader", LineageRelation.Reads, "Orders", db: "DW"));
+
+        var report = Build(collected);
+
+        var node = Assert.Single(report.Objects, o => o.Name == "Orders");
+        Assert.Equal("DW", node.Database, ignoreCase: true); // node metadata carries the case-folded key part
+        Assert.Equal([["file-load"], ["reader"]], Waves(report));
+        Assert.DoesNotContain(report.Warnings, w => w.Contains("no database identity", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DefaultDatabase_DisambiguatesTwoSameNamedDatabases()
+    {
+        // Two databases on one server both carry dbo.Orders. Single-candidate unification can only warn and
+        // split; the connection's default catalog resolves the database-less write to the right one, exactly
+        // as the engine resolves the two-part name at execution time.
+        var collected = new CollectionResult();
+        collected.Flows.Add(Flow("loader-dw1"));
+        collected.Flows.Add(Flow("loader-dw2", "file"));
+        collected.Flows.Add(Flow("reader"));
+        collected.Servers.Add("@dwh", ("${env:SQLFLOW_CONN_DWH}", DataSourceKind.MSSQL));
+        collected.ServerDefaultDatabases.Add("@dwh", "DW2");
+
+        collected.Facts.Add(Fact("loader-dw1", LineageRelation.Writes, "Orders", db: "DW1"));
+        collected.Facts.Add(Fact("loader-dw2", LineageRelation.Writes, "Orders", db: null));
+        collected.Facts.Add(Fact("reader", LineageRelation.Reads, "Orders", db: "DW2"));
+
+        var report = Build(collected);
+
+        Assert.DoesNotContain(report.Warnings, w => w.Contains("matches 2 databases", StringComparison.Ordinal));
+        Assert.Equal(2, report.Objects.Count(o => o.Name == "Orders"));
+        Assert.Equal([["loader-dw1", "loader-dw2"], ["reader"]], Waves(report));
+    }
+
+    [Fact]
+    public void DatabaselessSqlServerIdentity_Warns_WhenItCannotBeCompleted()
+    {
+        // A SQL Server whose default catalog is unknown (unresolvable reference, no Initial Catalog) leaves
+        // its two-part identities incomplete; the report must say so instead of silently splitting.
+        var collected = new CollectionResult();
+        collected.Flows.Add(Flow("file-load", "file"));
+        collected.Servers.Add("@dwh", ("${env:SQLFLOW_CONN_DWH}", DataSourceKind.MSSQL));
+        collected.Facts.Add(Fact("file-load", LineageRelation.Writes, "Orders", db: null));
+
+        var report = Build(collected);
+
+        Assert.Contains(report.Warnings, w =>
+            w.Contains("object 'dbo.Orders' on server '@dwh' has no database identity", StringComparison.Ordinal));
     }
 
     [Fact]

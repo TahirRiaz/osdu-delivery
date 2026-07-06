@@ -194,7 +194,17 @@ public sealed partial class RunWorker
                     return;
                 }
 
-                flowRoot = _materializer.Materialize(repo.RemoteUrl, run.CommitSha, GitMaterializer.CredentialsFromEnvironment(), ct);
+                // Resolve the git credential from the repo's registered source (matched by name), whose stored
+                // ${...} reference points at the vault/env holding the token; a repo synced by the CLI with no
+                // source falls back to the host environment. The node fetches the secret itself: it is the mobile
+                // execution engine that resolves what it needs, and only the reference travelled through the catalog.
+                var repoSource = await catalog.RepoSources.AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.Name == repo.Name, ct).ConfigureAwait(false);
+                var resolver = scope.GetRequiredService<ISecretResolver>();
+                var credentials = await GitMaterializer
+                    .ResolveCredentialsAsync(resolver, repoSource?.CredentialReference, repoSource?.CredentialUsername, ct)
+                    .ConfigureAwait(false);
+                flowRoot = _materializer.Materialize(repo.RemoteUrl, run.CommitSha, credentials, ct);
                 LogMaterialized(runId, repo.Name, run.CommitSha);
             }
             else

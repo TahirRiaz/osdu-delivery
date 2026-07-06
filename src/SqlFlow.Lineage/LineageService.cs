@@ -59,12 +59,18 @@ public static class LineageService
             tiers.Add(LineageTier.Observed);
         }
 
+        var resolver = WithoutDatabaseResolver.Build([], options.Secrets, SqlServerSourceProvider.CreateRegistry());
         if (options.IncludeDerived)
         {
-            var resolver = WithoutDatabaseResolver.Build([], options.Secrets, SqlServerSourceProvider.CreateRegistry());
             collected.Merge(await new CatalogCollector(resolver).CollectAsync(collected.Servers, ct).ConfigureAwait(false));
             tiers.Add(LineageTier.Derived);
         }
+
+        // Default-database resolution, after every tier has contributed facts: the connected pass above
+        // recorded DB_NAME() ground truth for the servers it reached; this fills the remaining servers
+        // offline from each reference's Initial Catalog, so a two-part identity (a file-flow target, an
+        // observed statement) resolves against the same catalog the engine executes it in.
+        await DefaultDatabaseResolver.ResolveAsync(collected, resolver, ct).ConfigureAwait(false);
 
         var flowDirectory = Path.GetFullPath(options.FlowDirectory);
         var generatedAtUtc = DateTime.UtcNow;

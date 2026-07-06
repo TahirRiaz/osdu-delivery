@@ -153,6 +153,11 @@ public static class CatalogProjection
             // same redactor as the YAML/definition JSON before it rests in the catalog (guard null: only redact
             // when a body was captured).
             Definition = node.Definition is null ? null : NullIfBlank(SecretHygiene.RedactedMessage(node.Definition)),
+            // The generating DDL is redacted the same way as the module body: a hook or a generated statement
+            // can embed a literal credential.
+            Script = node.Script is null ? null : NullIfBlank(SecretHygiene.RedactedMessage(node.Script)),
+            ScriptTier = node.ScriptTier?.ToString(),
+            ScriptUpdatedUtc = node.Script is null ? null : nowUtc,
             FirstSeenUtc = nowUtc,
             LastSeenUtc = nowUtc,
         };

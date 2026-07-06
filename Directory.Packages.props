@@ -28,6 +28,7 @@
     <PackageVersion Include="Azure.ResourceManager" Version="1.14.0" />
     <PackageVersion Include="Azure.ResourceManager.DataFactory" Version="1.11.1" />
     <PackageVersion Include="Azure.ResourceManager.Automation" Version="1.1.2" />
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.24.0" />
     <PackageVersion Include="YamlDotNet" Version="16.3.0" />
     <!-- Source control (SqlFlow.SourceControl): SMO scripts the database objects with full fidelity; LibGit2Sharp
          commits and pushes the snapshot to a git remote (BitBucket app password or GitHub PAT over HTTPS). Both

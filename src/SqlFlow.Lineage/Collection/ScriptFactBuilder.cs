@@ -51,4 +51,35 @@ public static class ScriptFactBuilder
             };
         }
     }
+
+    /// <summary>The created-object artifacts of one script (the generating DDL and, for a table, its columns),
+    /// under the same identity threshold the facts use: temp names and run-scoped staging (created then
+    /// dropped) stay out, so only durable objects carry a script and column dictionary into the catalog.</summary>
+    public static IEnumerable<CollectedObjectArtifact> ObjectArtifacts(
+        ScriptDependencies deps, string serverRef, LineageTier tier, int minimumParts)
+    {
+        ArgumentNullException.ThrowIfNull(deps);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverRef);
+
+        foreach (var created in deps.CreatedObjects.Values)
+        {
+            var table = created.Table;
+            if (table.IsTemp || table.PartCount < minimumParts || deps.CreatedThenDropped.Contains(table.Key))
+            {
+                continue;
+            }
+
+            yield return new CollectedObjectArtifact
+            {
+                ServerRef = serverRef,
+                Database = table.Database,
+                Schema = table.Schema,
+                Name = table.Name,
+                Kind = created.Kind,
+                Script = created.Ddl,
+                Columns = created.Columns,
+                Tier = tier,
+            };
+        }
+    }
 }

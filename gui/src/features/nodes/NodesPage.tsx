@@ -1,8 +1,8 @@
-import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import type { Node } from "../../api/types";
 import { nodeApi } from "../../api/endpoints";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { OnlineBadge } from "../../components/StatusBadge";
@@ -22,13 +22,11 @@ const columns: Column<Node>[] = [
 /** The worker fleet: which nodes exist, which are heartbeating, and what they run. */
 export default function NodesPage() {
   return (
-    <Box data-testid="page-nodes">
-      <Stack sx={{ mb: 2 }}>
-        <Typography variant="h5">Nodes</Typography>
-        <Typography variant="body2" color="text.secondary">
-          A node is online when it heartbeated within the last minute; anything older shows as offline.
-        </Typography>
-      </Stack>
+    <Page data-testid="page-nodes">
+      <PageHeader
+        title="Nodes"
+        subtitle="A node is online when it heartbeated within the last minute; anything older shows as offline."
+      />
 
       <PagedTable
         queryKey={["nodes", "list"]}
@@ -39,6 +37,6 @@ export default function NodesPage() {
         emptyMessage="No worker nodes have registered yet."
         data-testid="nodes-table"
       />
-    </Box>
+    </Page>
   );
 }

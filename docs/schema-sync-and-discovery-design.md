@@ -1,5 +1,13 @@
 # SQLFlowV3: Schema Sync-Up and Source Discovery - Unified Design
 
+> Pre-implementation design document; the shipped CLI surface diverged from what this document
+> specifies. It describes discovery as `sqlflow discover databases|schemas|tables|search|columns|scaffold`
+> with a `--no-cache` flag; the shipped commands are `sqlflow catalog <databases|schemas|tables|search|columns|scaffold|scaffold-all>`,
+> `sqlflow discover` is instead the JSON/XML source introspection verb, and there is no `--no-cache`
+> flag anywhere. For the current, code-verified behavior see
+> [docs/reference/cli/catalog.md](reference/cli/catalog.md) and
+> [docs/reference/cli/discover.md](reference/cli/discover.md).
+
 Lead-architect synthesis of two deliverables over one shared introspection foundation, building on the implemented connection registry (`SqlFlow.Core.Connections`), ingestion model (`SqlFlow.Core.Ingestion`), and schema-evolution slice 1 (`SqlFlow.SqlServer/Schema`: `SqlDataType`, `SqlTypeResolution`, `HashKey`). Every critic finding is folded into the design, not listed. SQL Server is the target by design; two modes one engine; secrets never leave the canonical string; one code path; production-grade, no stubs.
 
 ---

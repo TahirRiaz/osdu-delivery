@@ -10,9 +10,11 @@ SQLFlow reads your source, looks at the live target schema, and **generates the 
 the `CREATE`/`ALTER` to evolve the schema and the bulk load to move the data. You describe *what*
 you want in a small YAML file; SQLFlow figures out the SQL.
 
-> This is the v3 rebuild: a clean, modern .NET 9 engine. It runs in **lightweight mode** (no
-> control database, no setup) today; a full mode that adds memory, logging, lineage, and a control
-> plane is on the roadmap.
+> This is the v3 rebuild: a clean, modern .NET 9 engine. A single flow file runs standalone with
+> no setup (`sqlflow plan` / `sqlflow run`, no control database required). The same repository of
+> flows can also be synced into a shadow catalog (`sqlflow db`, `sqlflow catalog sync`) to unlock
+> lineage (`sqlflow lineage`), scheduling, and a queued-run control plane with worker nodes
+> (`sqlflow worker`).
 
 ## Quick start
 
@@ -56,27 +58,39 @@ load:
 
 ## How it works
 
-```
+```text
 YAML ──▶ [ model ] ──▶ infer source schema ──▶ introspect target
                                                       │
                                                       ▼
                                   diff ──▶ generate DDL ──▶ execute ──▶ bulk load
 ```
 
-The engine is stateless in lightweight mode. In **full mode** (roadmap) a metadata database becomes
-the source of truth and supplies *memory* - watermarks and run history - so the generator can emit
-*optimal incremental* code instead of full loads. See [docs/architecture.md](docs/architecture.md).
+A standalone flow is stateless between runs: the target table (via `incremental`) is the only
+state, so a re-run reasons from the live schema and watermark rather than from stored history. A
+flow synced into the shadow catalog additionally gets run history, lineage, and scheduling backed
+by the catalog database. See [docs/architecture.md](docs/architecture.md).
 
 ## Repository layout
 
 | Project | Responsibility |
-|---|---|
-| `src/SqlFlow.Core` | Domain model, abstractions, the stateless engine |
+| --- | --- |
+| `src/SqlFlow.Core` | Domain model, abstractions, the engine |
+| `src/SqlFlow.Yaml` | YAML to model mapping and validation, every flow document kind |
+| `src/SqlFlow.Execution` | Document loading and execution shared across flow kinds |
 | `src/SqlFlow.SqlServer` | SQL Server introspection, DDL generation, bulk load, type mapping |
-| `src/SqlFlow.Sources` | Source readers (CSV) + type inference |
-| `src/SqlFlow.Yaml` | YAML ↔ model mapping and validation |
+| `src/SqlFlow.Sources` | File source readers (CSV, XLS, JSON, XML, Parquet) and type inference |
+| `src/SqlFlow.DuckDb` | DuckDB-backed source reader (Parquet, CSV, JSON, Delta) |
+| `src/SqlFlow.Providers` | Foreign database catalog discovery (MySQL, PostgreSQL, Oracle) |
+| `src/SqlFlow.Catalog` | The shadow catalog: pipelines, schedules, run history, sync |
+| `src/SqlFlow.Lineage` | Lineage graph computation across the flow estate |
+| `src/SqlFlow.ControlPlane` | Control-plane API: run queue, catalog, and schedule endpoints |
+| `src/SqlFlow.Orchestration` | Batch flow orchestration: dependency waves, parallel execution |
+| `src/SqlFlow.Node` | Worker node: polls the control plane and executes queued runs |
+| `src/SqlFlow.Azure` | Azure auth, ADF/Automation invoke, service principal resolution |
+| `src/SqlFlow.HealthCheck` | ML anomaly-detection engine for health-check flows |
+| `src/SqlFlow.SourceControl` | SMO database scripting to git for source-control flows |
 | `src/SqlFlow.Cli` | The `sqlflow` command-line tool |
-| `tests/SqlFlow.Core.Tests` | Unit tests |
+| `tests/SqlFlow.Core.Tests` | Unit and integration tests |
 
 ## Build & test
 
@@ -107,6 +121,10 @@ Each integration test creates uniquely named tables and drops them before and af
 sink starts fresh every run. The connection must use a reachable endpoint: SQL Server's TCP/IP protocol
 has to be enabled (SQL Server Configuration Manager) and the port in the connection string must match
 the port the instance listens on.
+
+## Reference documentation
+
+[docs/reference/](docs/reference/) has the full generated reference corpus: every CLI command, every `.flow.yaml` section and source type, cross-cutting concepts, and task guides, each fact traced to its source file and line. [docs/reference/flow/keys.json](docs/reference/flow/keys.json) is a machine-readable census of every YAML attribute (type, default, allowed values, validation), and [docs/reference/manifest.json](docs/reference/manifest.json) indexes every page. See [docs/reference/README.md](docs/reference/README.md) for how these are meant to be consumed.
 
 ## Contributing
 

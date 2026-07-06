@@ -140,8 +140,13 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
     {
         ArgumentNullException.ThrowIfNull(source);
         var meta = PreIngestionXml.FromSource(source);
-        var config = BuildFlattenConfig(meta);
         var depth = maxDepth < 1 ? 10 : maxDepth;
+
+        // Resolve the row grain once (explicit rowXPath, else the detected record anchor, else the engine
+        // default) and use it for the scan, the derived formula, and the reported options so all three agree.
+        var rowXPath = await ResolveDiscoveryRowXPathAsync(source, meta, maxFiles, ct).ConfigureAwait(false);
+        var autoDetected = string.IsNullOrWhiteSpace(meta.RowXPath) && !string.IsNullOrEmpty(rowXPath);
+        var config = BuildFlattenConfig(meta) with { RowXPath = rowXPath };
         var flattener = new XmlPathFlattener(config);
 
         // One scan yields both views: the path inventory (every addressable XPath, for `paths`) and the
@@ -149,7 +154,7 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
         // produces). The inventory uses the requested inspection depth; the formula honors the flatten's own
         // MaxDepth because it comes straight from the flattener.
         var (filesScanned, perRecord) = await ScanRecordsAsync(
-            source, meta, maxFiles, maxRecords,
+            source, meta, rowXPath, maxFiles, maxRecords,
             record => (Paths: XmlPathInventoryBuilder.ExtractTypedPaths(record, depth), Columns: flattener.SchemaColumns(record)),
             ct).ConfigureAwait(false);
 
@@ -165,11 +170,52 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
             "xml",
             new SchemaInventory(filesScanned, inventory.RecordsScanned, paths),
             new SchemaFormula(columns, formula.CollisionMappings),
-            BuildOptions(meta));
+            BuildOptions(meta, rowXPath))
+        {
+            AutoDetectedGrain = autoDetected ? rowXPath : null,
+        };
+    }
+
+    /// <summary>
+    /// Resolves the row XPath the discovery scan should select records with. An explicit rowXPath is
+    /// authoritative and returned as-is. Otherwise the document roots are sampled and the statistics-driven
+    /// record-anchor detector proposes the outermost repeating element (an RSS feed resolves to
+    /// <c>/rss/channel/item</c>); when nothing repeats, the empty default (each direct child of the root)
+    /// stands. This only shapes discovery: a load still selects records with whatever rowXPath the config carries.
+    /// </summary>
+    private async Task<string> ResolveDiscoveryRowXPathAsync(SourceSpec source, PreIngestionXml meta, int maxFiles, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(meta.RowXPath))
+        {
+            return meta.RowXPath;
+        }
+
+        var detector = new XmlRecordAnchorDetector();
+        var (store, files) = await ResolveFilesAsync(source, ct).ConfigureAwait(false);
+        var fileLimit = maxFiles > 0 ? maxFiles : int.MaxValue;
+        var filesScanned = 0;
+
+        foreach (var file in files)
+        {
+            if (filesScanned >= fileLimit)
+            {
+                break;
+            }
+
+            filesScanned++;
+            var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
+            var root = XmlRecordReader.ReadDocumentRoot(data, meta.StripNamespacePrefixes, file.Name);
+            if (root is not null)
+            {
+                detector.Accumulate(root);
+            }
+        }
+
+        return detector.Detect() ?? string.Empty;
     }
 
     private async Task<(int FilesScanned, List<T> Items)> ScanRecordsAsync<T>(
-        SourceSpec source, PreIngestionXml meta, int maxFiles, int maxRecords, Func<XElement, T> project, CancellationToken ct)
+        SourceSpec source, PreIngestionXml meta, string rowXPath, int maxFiles, int maxRecords, Func<XElement, T> project, CancellationToken ct)
     {
         var (store, files) = await ResolveFilesAsync(source, ct).ConfigureAwait(false);
         var items = new List<T>();
@@ -187,7 +233,7 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
             filesScanned++;
             var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
 
-            foreach (var record in XmlRecordReader.ReadRecords(data, meta.RowXPath, meta.StripNamespacePrefixes, file.Name))
+            foreach (var record in XmlRecordReader.ReadRecords(data, rowXPath, meta.StripNamespacePrefixes, file.Name))
             {
                 if (maxRecords > 0 && recordsScanned >= maxRecords)
                 {
@@ -209,12 +255,12 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
         _ => SchemaPathKind.Value,
     };
 
-    private static IReadOnlyList<KeyValuePair<string, string>> BuildOptions(PreIngestionXml meta)
+    private static IReadOnlyList<KeyValuePair<string, string>> BuildOptions(PreIngestionXml meta, string rowXPath)
     {
         var options = new List<KeyValuePair<string, string>>();
-        if (!string.IsNullOrWhiteSpace(meta.RowXPath))
+        if (!string.IsNullOrWhiteSpace(rowXPath))
         {
-            options.Add(new KeyValuePair<string, string>("rowXPath", meta.RowXPath));
+            options.Add(new KeyValuePair<string, string>("rowXPath", rowXPath));
         }
 
         options.Add(new KeyValuePair<string, string>("separator", meta.Separator));

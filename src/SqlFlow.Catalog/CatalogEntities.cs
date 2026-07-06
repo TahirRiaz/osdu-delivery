@@ -238,6 +238,19 @@ public class CatalogObject
     /// references dbo.Orders". Null for plain tables, an unconnected sync, or an encrypted module.</summary>
     public string? Definition { get; set; }
 
+    /// <summary>The generating DDL the engine emitted for this object (the <c>CREATE TABLE</c> or
+    /// <c>CREATE OR ALTER VIEW</c>), captured from the run trace or a declared hook so the catalog holds the
+    /// object's script even offline. Distinct from <see cref="Definition"/>: that is the live module body read
+    /// from the database, this is the script we ran. Null for a pre-existing source table no tier saw created.</summary>
+    public string? Script { get; set; }
+
+    /// <summary>Which tier supplied <see cref="Script"/>: Declared / Observed / Derived. Null when there is no
+    /// script.</summary>
+    public string? ScriptTier { get; set; }
+
+    /// <summary>When <see cref="Script"/> was last refreshed. Null when there is no script.</summary>
+    public DateTime? ScriptUpdatedUtc { get; set; }
+
     public DateTime FirstSeenUtc { get; set; }
 
     public DateTime LastSeenUtc { get; set; }
@@ -457,6 +470,11 @@ public class CatalogObjectColumn
     public string? DataType { get; set; }
 
     public bool Nullable { get; set; }
+
+    /// <summary>Which tier supplied this column set: <c>Derived</c> (read live from the database),
+    /// <c>Observed</c> (parsed from the CREATE TABLE the run executed), or <c>Declared</c>. The sync keeps a
+    /// live (derived) dictionary from being overwritten by an offline (observed) one.</summary>
+    public string Tier { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -514,8 +532,10 @@ public class CatalogPipelineColumn
 /// A git repository the control plane keeps the catalog synced from: it periodically pulls the branch HEAD and
 /// runs the catalog sync, so the shadow catalog stays current with git without anyone running <c>sqlflow db sync</c>
 /// by hand (git stays the source of truth; this is the managed shadow). The credential to pull a private remote is
-/// resolved from the control plane's own environment, never stored here. <see cref="NextSyncUtc"/> is advanced
-/// atomically when a sync is claimed, so several control-plane nodes never sync the same source at once.
+/// named by <see cref="CredentialReference"/> (a <c>${keyvault:...}</c>/<c>${env:...}</c> reference resolved at
+/// clone time); the secret value itself is created and maintained in the vault, never stored here.
+/// <see cref="NextSyncUtc"/> is advanced atomically when a sync is claimed, so several control-plane nodes never
+/// sync the same source at once.
 /// </summary>
 public class CatalogRepoSource
 {
@@ -527,6 +547,23 @@ public class CatalogRepoSource
     public string RemoteUrl { get; set; } = string.Empty;
 
     public string Branch { get; set; } = "main";
+
+    /// <summary>A secret reference (<c>${keyvault:vault/secret}</c> or <c>${env:NAME}</c>) for the token used to
+    /// pull a private remote, resolved through the SqlFlow secret resolver at clone time. Only the reference is
+    /// stored; the secret value lives in the vault and is created/maintained there. Null falls back to the host's
+    /// own environment (<c>SQLFLOW_GIT_TOKEN</c>), which covers public remotes.</summary>
+    public string? CredentialReference { get; set; }
+
+    /// <summary>The git username paired with the resolved token. Optional and not a secret; required by hosts that
+    /// authenticate the username too (Bitbucket app passwords). Null uses the token-only placeholder GitHub accepts.</summary>
+    public string? CredentialUsername { get; set; }
+
+    /// <summary>The flow files this source deliberately does NOT import, from a preview-first scan: a JSON array of
+    /// repo-relative, forward-slashed paths. Null or empty imports every <c>*.flow.yaml</c> (the default, and
+    /// backward-compatible). Applied on every sync, so a previously-imported flow that becomes excluded is
+    /// deactivated on the next sync (its run history is kept), and a newly-included flow is imported then. The
+    /// selection lives here, but nothing reaches the catalog until a sync runs, which is what the scheduler reads.</summary>
+    public string? ExcludedFlowPaths { get; set; }
 
     /// <summary>Whether the control plane auto-syncs this source. A disabled source is kept but never pulled.</summary>
     public bool Enabled { get; set; } = true;
@@ -694,6 +731,11 @@ public class CatalogSchedule
 
     /// <summary>Whether the schedule is active per its definition (the YAML <c>enabled</c> flag or the API create).</summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>Whether missed occurrences are backfilled. False (the default) skips a fire the host missed and
+    /// resumes at the next occurrence after now; true catches up, firing one missed occurrence per scheduler tick
+    /// until current. Applied by the scheduler when it advances <see cref="NextFireUtc"/>.</summary>
+    public bool Catchup { get; set; }
 
     /// <summary>An API-applied operational pause that is independent of <see cref="Enabled"/>, so a git re-sync of a
     /// <c>yaml</c> schedule does not clear a pause an operator set through the GUI.</summary>

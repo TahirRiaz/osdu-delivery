@@ -1,4 +1,6 @@
+using System.Text;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
+using SqlFlow.Core.Lineage;
 
 namespace SqlFlow.Lineage.Extraction;
 
@@ -113,7 +115,7 @@ public static class TSqlLineageExtractor
                         break;
                     case ViewStatementBody view:
                         // CREATE, ALTER, and CREATE OR ALTER VIEW all carry the same body shape.
-                        ExtractViewBody(view.SchemaObjectName, view.SelectStatement,
+                        ExtractViewBody(view, view.SchemaObjectName, view.SelectStatement,
                             view is AlterViewStatement ? TableOperation.Alter : TableOperation.Create);
                         break;
                     case CreateTableStatement createTable:
@@ -262,6 +264,7 @@ public static class TSqlLineageExtractor
                     Outbound(target, TableOperation.CreateAs);
                     _deps.CtasCreated.Add(target.Key);
                     RecordMovement(target, reads);
+                    RecordCreatedObject(target, LineageNodeKind.Table, select, columns: []);
                 }
             });
         }
@@ -279,10 +282,12 @@ public static class TSqlLineageExtractor
                     _deps.CtasCreated.Add(target.Key);
                     RecordMovement(target, reads);
                 });
+                RecordCreatedObject(target, LineageNodeKind.Table, createTable, columns: []);
                 return;
             }
 
             Outbound(target, TableOperation.Create);
+            RecordCreatedObject(target, LineageNodeKind.Table, createTable, ReadColumnDefinitions(createTable.Definition));
         }
 
         /// <summary>ALTER TABLE ... SWITCH [PARTITION n] TO target: a metadata-speed data movement, still a
@@ -488,7 +493,8 @@ public static class TSqlLineageExtractor
 
         // ---- Modules ----------------------------------------------------------------------------------
 
-        private void ExtractViewBody(SchemaObjectName name, SelectStatement body, TableOperation operation)
+        private void ExtractViewBody(
+            TSqlFragment statement, SchemaObjectName name, SelectStatement body, TableOperation operation)
         {
             var view = TableName.From(name, _currentDatabase);
             Outbound(view, operation);
@@ -498,6 +504,10 @@ public static class TSqlLineageExtractor
                 WalkQuery(body.QueryExpression, subqueryDepth: 0);
                 RecordMovement(view, reads);
             });
+
+            // The whole CREATE/ALTER VIEW statement is the view's generating script; an ALTER only re-defines
+            // the body, so treat both as the current definition.
+            RecordCreatedObject(view, LineageNodeKind.View, statement, columns: []);
         }
 
         private void ExtractFunction(FunctionStatementBody function)
@@ -1040,6 +1050,96 @@ public static class TSqlLineageExtractor
             {
                 _deps.DataFlowPairs.Add(new DataFlowPair { Source = source, Target = target });
             }
+        }
+
+        // ---- Created-object capture -------------------------------------------------------------------
+
+        /// <summary>Records an object this script created with its verbatim DDL and (for a plain table) its
+        /// columns, so the catalog can attach the generating script and an offline column dictionary. A
+        /// temp object is script-local and never captured; a later CREATE for the same key supersedes an
+        /// earlier one (a rebuild).</summary>
+        private void RecordCreatedObject(TableName table, LineageNodeKind kind, TSqlFragment ddlFragment, IReadOnlyList<LineageColumn> columns)
+        {
+            if (table.IsTemp)
+            {
+                return;
+            }
+
+            var ddl = FragmentText(ddlFragment);
+            if (string.IsNullOrWhiteSpace(ddl))
+            {
+                return;
+            }
+
+            _deps.CreatedObjects[table.Key] = new CreatedObject
+            {
+                Table = table,
+                Kind = kind,
+                Ddl = ddl,
+                Columns = columns,
+            };
+        }
+
+        /// <summary>Reads the column definitions of a CREATE TABLE body: the name, the type rendered verbatim
+        /// from the source, and nullability (an explicit NOT NULL constraint makes it non-nullable; SQL Server
+        /// columns default to nullable otherwise).</summary>
+        private static IReadOnlyList<LineageColumn> ReadColumnDefinitions(TableDefinition? definition)
+        {
+            if (definition is null || definition.ColumnDefinitions.Count == 0)
+            {
+                return [];
+            }
+
+            var columns = new List<LineageColumn>(definition.ColumnDefinitions.Count);
+            var ordinal = 1;
+            foreach (var column in definition.ColumnDefinitions)
+            {
+                var name = column.ColumnIdentifier?.Value;
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                var nullable = true;
+                foreach (var constraint in column.Constraints)
+                {
+                    if (constraint is NullableConstraintDefinition nullableConstraint)
+                    {
+                        nullable = nullableConstraint.Nullable;
+                    }
+                }
+
+                columns.Add(new LineageColumn
+                {
+                    Ordinal = ordinal++,
+                    Name = name,
+                    DataType = FragmentText(column.DataType),
+                    Nullable = nullable,
+                });
+            }
+
+            return columns;
+        }
+
+        /// <summary>The verbatim source text of a fragment, reassembled from its token-stream span. Null when
+        /// the fragment carries no token span (a synthesized node).</summary>
+        private static string? FragmentText(TSqlFragment? fragment)
+        {
+            if (fragment?.ScriptTokenStream is not { } tokens
+                || fragment.FirstTokenIndex < 0
+                || fragment.LastTokenIndex < fragment.FirstTokenIndex
+                || fragment.LastTokenIndex >= tokens.Count)
+            {
+                return null;
+            }
+
+            var builder = new StringBuilder();
+            for (var i = fragment.FirstTokenIndex; i <= fragment.LastTokenIndex; i++)
+            {
+                builder.Append(tokens[i].Text);
+            }
+
+            return builder.ToString().Trim();
         }
 
         private bool IsCteInScope(string name)

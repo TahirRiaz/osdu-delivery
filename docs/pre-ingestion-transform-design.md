@@ -1,5 +1,10 @@
 # Pre-ingestion transform view (design)
 
+> Pre-implementation design document; it has not been re-verified against the current codebase.
+> For the current, code-verified behavior see
+> [docs/reference/concepts/pre-ingestion-transform.md](reference/concepts/pre-ingestion-transform.md)
+> and [docs/reference/flow/transform.md](reference/flow/transform.md).
+
 Restores the SQLFlow V2 `flw.PreIngestionTransform` capability in V3: authored per-column transforms
 and inferred data types, projected into a typed transformation view generated as a post-process of the
 landing flow, with the transform metadata persisted centrally so the estate is queryable for "which

@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import LinearProgress from "@mui/material/LinearProgress";
 import LoginPage from "./auth/LoginPage";
 import { RequireAuth, RequireScope } from "./auth/RequireAuth";
@@ -15,11 +15,16 @@ const RepoDetailPage = lazy(() => import("./features/repos/RepoDetailPage"));
 const PipelinesPage = lazy(() => import("./features/pipelines/PipelinesPage"));
 const PipelineDetailPage = lazy(() => import("./features/pipelines/PipelineDetailPage"));
 const SchedulesPage = lazy(() => import("./features/schedules/SchedulesPage"));
-const RepoSourcesPage = lazy(() => import("./features/repo-sources/RepoSourcesPage"));
 const LineagePage = lazy(() => import("./features/lineage/LineagePage"));
 const LineageGraphPage = lazy(() => import("./features/lineage/LineageGraphPage"));
 const SearchPage = lazy(() => import("./features/search/SearchPage"));
 const UsersPage = lazy(() => import("./features/users/UsersPage"));
+
+/** The graph moved from /lineage/graph to /lineage; forward old links, preserving the repo/view query string. */
+function LineageGraphRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/lineage${search}`} replace />;
+}
 
 export default function App() {
   return (
@@ -42,9 +47,13 @@ export default function App() {
           <Route path="/pipelines" element={<PipelinesPage />} />
           <Route path="/pipelines/:pipelineId" element={<PipelineDetailPage />} />
           <Route path="/schedules" element={<SchedulesPage />} />
-          <Route path="/repo-sources" element={<RepoSourcesPage />} />
-          <Route path="/lineage" element={<LineagePage />} />
-          <Route path="/lineage/graph" element={<LineageGraphPage />} />
+          {/* Repo sources merged into the Repos page; keep the old path working for bookmarks. */}
+          <Route path="/repo-sources" element={<Navigate to="/repos" replace />} />
+          {/* The graph is the lineage landing; the searchable object catalog is the secondary explorer. */}
+          <Route path="/lineage" element={<LineageGraphPage />} />
+          <Route path="/lineage/objects" element={<LineagePage />} />
+          {/* The graph used to live here; keep the old link working, carrying any repo/view query through. */}
+          <Route path="/lineage/graph" element={<LineageGraphRedirect />} />
           <Route path="/search" element={<SearchPage />} />
           <Route
             path="/users"

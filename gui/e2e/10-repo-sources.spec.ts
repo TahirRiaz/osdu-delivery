@@ -4,7 +4,7 @@ import { expect, test } from "./helpers";
 
 test.describe.serial("repo sources", () => {
   test("sync now re-requests a sync for the healthy source", async ({ adminPage }) => {
-    await adminPage.getByTestId("nav-repo-sources").click();
+    await adminPage.getByTestId("nav-repos").click();
     const row = adminPage.getByTestId("table-row").filter({ hasText: "e2e-repo" }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
 
@@ -14,7 +14,7 @@ test.describe.serial("repo sources", () => {
   });
 
   test("a source with an unreachable remote surfaces its sync error", async ({ adminPage }) => {
-    await adminPage.getByTestId("nav-repo-sources").click();
+    await adminPage.getByTestId("nav-repos").click();
     await adminPage.getByTestId("open-register-source").click();
     await adminPage.getByTestId("source-name").fill("e2e-broken");
     await adminPage.getByTestId("source-remote-url").fill("C:/definitely/not/a/git/remote");

@@ -61,12 +61,26 @@ public static class LineageGraphBuilder
             return (serverRef, database, schema, name);
         }
 
+        // ---- Default-database resolution BEFORE unification: a fact without a database is a two-part
+        // reference, and the engine resolves those against its connection's default catalog at execution
+        // time; the collectors recorded that catalog per server (DB_NAME() connected, the reference's
+        // Initial Catalog offline), so the graph applies the exact same resolution. This is identity from
+        // evidence, not the single-candidate guess: it holds even when another database on the server
+        // carries a same-named object.
+        var collectedFacts = collected.ServerDefaultDatabases.Count == 0
+            ? collected.Facts
+            : collected.Facts
+                .Select(f => f.Database is null && collected.ServerDefaultDatabases.TryGetValue(f.ServerRef, out var defaultDatabase)
+                    ? f with { Database = defaultDatabase }
+                    : f)
+                .ToList();
+
         // ---- Identity unification BEFORE synonym resolution: a partially qualified fact must first gain
         // its full identity, otherwise a 2-part reference to a synonym never matches the synonym map and
         // its dependency edge silently vanishes.
-        var aliasMap = BuildIdentityAliases(collected.Facts, collected.CatalogObjects, warnings);
+        var aliasMap = BuildIdentityAliases(collectedFacts, collected.CatalogObjects, warnings);
 
-        var facts = collected.Facts
+        var facts = collectedFacts
             .Select(f =>
             {
                 var key = NodeKey.For(f.ServerRef, f.Database, f.Schema, f.Name);
@@ -83,6 +97,25 @@ public static class LineageGraphBuilder
                 return f with { ServerRef = resolved.ServerRef, Database = resolved.Database, Schema = resolved.Schema, Name = resolved.Name };
             })
             .ToList();
+
+        // A SQL Server identity STILL without a database (unknown default catalog AND no unambiguous
+        // match) is a split risk: the same physical table under a database-qualified key elsewhere becomes
+        // a second node and its dependency edges detach. Named explicitly, once per identity, so the estate
+        // can fix the connection or qualify the name; engines without a database concept are exempt.
+        var databasedServers = collected.Servers
+            .Where(s => s.Value.Kind is Core.Connections.DataSourceKind.MSSQL or Core.Connections.DataSourceKind.AZDB)
+            .Select(s => s.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var incomplete in facts
+                     .Where(f => f.Database is null && databasedServers.Contains(f.ServerRef))
+                     .Select(f => (f.ServerRef, Label: f.Schema is null ? f.Name : $"{f.Schema}.{f.Name}"))
+                     .Distinct()
+                     .OrderBy(x => x.ServerRef, StringComparer.Ordinal)
+                     .ThenBy(x => x.Label, StringComparer.Ordinal))
+        {
+            warnings.Add(
+                $"object '{incomplete.Label}' on server '{incomplete.ServerRef}' has no database identity; it can split from the same object's database-qualified identity elsewhere in the graph.");
+        }
 
         // The inventory and the module harvest can both describe one object (a procedure appears in
         // sys.objects AND, when encrypted, as a warning-bearing module entry): merge, never drop warnings.
@@ -130,6 +163,8 @@ public static class LineageGraphBuilder
                 Kind = fromCatalog?.Kind ?? hint,
                 Definition = fromCatalog?.Definition,
                 Columns = fromCatalog?.Columns ?? [],
+                // A live catalog read is the derived tier; an offline artifact fills the tier later.
+                ColumnsTier = fromCatalog is { Columns.Count: > 0 } ? LineageTier.Derived : null,
                 Warnings = nodeWarnings,
             };
         }
@@ -167,6 +202,63 @@ public static class LineageGraphBuilder
                     Step = fact.Step,
                 };
             }
+        }
+
+        // The identity resolution the object-artifact fold uses to map an artifact onto its node key: the same
+        // default-database completion, unification, and synonym follow the table facts get.
+        (string ServerRef, string? Database, string? Schema, string Name) ResolveIdentity(
+            string serverRef, string? database, string? schema, string name)
+        {
+            if (database is null && collected.ServerDefaultDatabases.TryGetValue(serverRef, out var defaultDatabase))
+            {
+                database = defaultDatabase;
+            }
+
+            if (aliasMap.TryGetValue(NodeKey.For(serverRef, database, schema, name), out var unified))
+            {
+                database = unified.Database ?? database;
+                schema = unified.Schema ?? schema;
+            }
+
+            return ResolveSynonyms(serverRef, database, schema, name);
+        }
+
+        // ---- Object artifacts: fold the highest-tier script and column dictionary onto each node, so a
+        // table created by a run carries its generating DDL and columns even offline. The live (derived) tier
+        // already sets Definition and Columns from the catalog; an artifact never downgrades those. ----------
+        foreach (var group in collected.ObjectArtifacts
+                     .Select(a =>
+                     {
+                         var resolved = ResolveIdentity(a.ServerRef, a.Database, a.Schema, a.Name);
+                         return (Key: NodeKey.For(resolved.ServerRef, resolved.Database, resolved.Schema, resolved.Name), Artifact: a);
+                     })
+                     .Where(x => nodes.ContainsKey(x.Key))
+                     .GroupBy(x => x.Key, StringComparer.Ordinal))
+        {
+            var node = nodes[group.Key];
+            var artifacts = group.Select(x => x.Artifact).ToList();
+
+            var bestScript = artifacts.Where(a => !string.IsNullOrWhiteSpace(a.Script))
+                .OrderByDescending(a => a.Tier).FirstOrDefault();
+            if (bestScript is not null && node.Script is null)
+            {
+                node = node with { Script = bestScript.Script, ScriptTier = bestScript.Tier };
+            }
+
+            // Columns only when the derived tier did not already supply them (Columns empty here means no live
+            // dictionary; a derived node already carries ColumnsTier = Derived), taking the highest-tier
+            // artifact that actually carried columns.
+            if (node.Columns.Count == 0)
+            {
+                var bestColumns = artifacts.Where(a => a.Columns.Count > 0)
+                    .OrderByDescending(a => a.Tier).FirstOrDefault();
+                if (bestColumns is not null)
+                {
+                    node = node with { Columns = bestColumns.Columns, ColumnsTier = bestColumns.Tier };
+                }
+            }
+
+            nodes[group.Key] = node;
         }
 
         // ---- Module relation inheritance. -------------------------------------------------------------
@@ -630,12 +722,20 @@ public static class LineageGraphBuilder
             SourceServerRef = f.SourceServerRef is { } source ? server(source) : null,
         }));
         remapped.Facts.AddRange(collected.Facts.Select(f => f with { ServerRef = server(f.ServerRef) }));
+        remapped.ObjectArtifacts.AddRange(collected.ObjectArtifacts.Select(a => a with { ServerRef = server(a.ServerRef) }));
         remapped.CatalogObjects.AddRange(collected.CatalogObjects.Select(o => o with { ServerRef = server(o.ServerRef) }));
         remapped.Synonyms.AddRange(collected.Synonyms.Select(s => s with { ServerRef = server(s.ServerRef) }));
         remapped.Warnings.AddRange(collected.Warnings);
         foreach (var (key, value) in collected.Servers)
         {
             remapped.Servers.TryAdd(server(key), value);
+        }
+
+        // Aliased references share one canonical connection string, so their default databases are equal
+        // by construction; TryAdd keeps the representative's entry.
+        foreach (var (key, database) in collected.ServerDefaultDatabases)
+        {
+            remapped.ServerDefaultDatabases.TryAdd(server(key), database);
         }
 
         return remapped;

@@ -35,6 +35,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSqlFlowEngine();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();
+builder.Services.AddSingleton<DeviceCodeStore>();
 
 // ---- Identity: regular SQLFlow users (username + PBKDF2 password hash in the catalog) and Azure single sign-on
 // (Entra ID token exchange with JIT provisioning). Both paths end in the same SQLFlow-issued token, so the API
@@ -203,6 +204,10 @@ app.UseAuthorization();
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false }).DisableRateLimiting();
 app.MapHealthChecks("/health/ready").DisableRateLimiting();
 app.MapOpenApi();
+
+// The device-authorization approval page (the verificationUri for the RFC 8628 grant). Served at the root so the
+// URL advertised to a headless client resolves without a separate front-end deployment.
+app.MapDeviceApprovalPage();
 
 var v1 = app.MapGroup("/api/v1");
 

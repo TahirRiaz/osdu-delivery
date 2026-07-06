@@ -21,4 +21,9 @@ public sealed record ScheduleSpec
 
     /// <summary>Whether the schedule is active. A disabled schedule is recorded but never fires.</summary>
     public bool Enabled { get; init; } = true;
+
+    /// <summary>Whether missed occurrences are backfilled. When false (the default) a fire that was missed because the
+    /// host was down is skipped and the schedule resumes at the next occurrence after now. When true the schedule
+    /// catches up, firing one missed occurrence per scheduler tick until it is current again.</summary>
+    public bool Catchup { get; init; }
 }

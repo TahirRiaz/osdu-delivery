@@ -191,7 +191,7 @@ public sealed class BootstrapProvisioningService : BackgroundService
         // Config is desired state: re-registering on every start keeps the source aligned with configuration
         // (UpsertAsync updates in place and preserves the sync schedule of an existing source).
         var id = await RepoSourceStore.UpsertAsync(
-            catalog, demo.Name!, demo.RemoteUrl!, demo.Branch, enabled: true, demo.SyncIntervalSeconds, nowUtc, ct)
+            catalog, demo.Name!, demo.RemoteUrl!, demo.Branch, enabled: true, demo.SyncIntervalSeconds, nowUtc, ct: ct)
             .ConfigureAwait(false);
         _logger.LogInformation("Demo repo source '{Name}' registered ({SourceId}).", demo.Name, id);
     }

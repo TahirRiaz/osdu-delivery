@@ -1,5 +1,10 @@
 # Dynamic Schema Evolution in V3
 
+> Pre-implementation design document (legacy-behavior study plus an early implementation slice); it
+> has not been re-verified against the current codebase. For the current, code-verified behavior see
+> [docs/reference/concepts/schema-evolution.md](reference/concepts/schema-evolution.md) and
+> [docs/reference/flow/schema.md](reference/flow/schema.md).
+
 Status: design plus first implemented slice. This is the core of the ingestion engine: detect the schema of the incoming stream and adjust the target schema on the fly. It builds on the connection registry (slice 1) and the ingestion model (`SqlFlow.Core.Ingestion`). Grounded in a detailed study of the legacy `SyncSchema` path; legacy file:line citations are in the study notes, summarized here.
 
 ## 1. How legacy does it (the mechanics that matter)

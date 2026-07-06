@@ -37,6 +37,9 @@ public static class SqlFlowEngineServices
 
         services.AddSingleton<IFileLifecycle, LocalFileLifecycle>();
         services.AddSingleton<IFileStore, LocalFileStore>();
+        // Cloud object store: reads abfss/wasbs/https lake paths through the shared Azure credential (az login /
+        // managed identity / service principal). Selected by CanHandle for Azure URIs; local paths stay on LocalFileStore.
+        services.AddSingleton<IFileStore, AzureBlobFileStore>();
         services.AddSingleton<ISourceReader, CsvSourceReader>();
         services.AddSingleton<ISourceReader, XlsSourceReader>();
         services.AddSingleton<ISourceReader, JsonSourceReader>();

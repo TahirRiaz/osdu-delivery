@@ -101,7 +101,12 @@ public sealed partial class SchedulerService : BackgroundService
             return; // not actually due (defensive against a concurrent change)
         }
 
-        var next = ScheduleClock.NextFire(schedule.Cron, schedule.IntervalSeconds, schedule.Timezone, now);
+        // Where the next fire is computed from decides catch-up. Without catchup the next fire is strictly after now,
+        // so a fire the host missed is skipped and the schedule resumes its cadence. With catchup the next fire is
+        // computed from the missed occurrence itself, so an overdue schedule advances one occurrence per tick and
+        // fires each missed window in turn until it is current again.
+        var advanceFrom = schedule.Catchup ? observed : now;
+        var next = ScheduleClock.NextFire(schedule.Cron, schedule.IntervalSeconds, schedule.Timezone, advanceFrom);
 
         // Claim this occurrence by advancing the next-fire from the value we observed. Only the winner proceeds.
         var won = await ScheduleStore.TryClaimFireAsync(catalog, schedule.Id, observed, next, now, ct).ConfigureAwait(false);

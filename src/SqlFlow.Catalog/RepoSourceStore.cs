@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core.Identity;
 
@@ -19,10 +20,13 @@ public enum RepoSourceMutation
 public static class RepoSourceStore
 {
     /// <summary>Registers or refreshes a tracked repo (keyed by name, so re-registering updates in place). A new
-    /// source is due to sync immediately; an existing one keeps its schedule but takes the refreshed settings.</summary>
+    /// source is due to sync immediately; an existing one keeps its schedule but takes the refreshed settings.
+    /// <paramref name="credentialReference"/> is a secret reference (never a secret value) for the git token, and
+    /// <paramref name="credentialUsername"/> the paired username; both are optional and null clears them.</summary>
     public static Task<Guid> UpsertAsync(
         CatalogDbContext catalog, string name, string remoteUrl, string branch, bool enabled, int syncIntervalSeconds,
-        DateTime nowUtc, CancellationToken ct = default)
+        DateTime nowUtc, string? credentialReference = null, string? credentialUsername = null,
+        IReadOnlyList<string>? excludedFlowPaths = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -31,6 +35,9 @@ public static class RepoSourceStore
         var id = FlowIdentity.FromName($"reposource/{name}");
         var interval = Math.Max(1, syncIntervalSeconds);
         var effectiveBranch = string.IsNullOrWhiteSpace(branch) ? "main" : branch.Trim();
+        var reference = string.IsNullOrWhiteSpace(credentialReference) ? null : credentialReference.Trim();
+        var username = string.IsNullOrWhiteSpace(credentialUsername) ? null : credentialUsername.Trim();
+        var excludedJson = SerializeExcludedPaths(excludedFlowPaths);
 
         return CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
@@ -46,6 +53,9 @@ public static class RepoSourceStore
                     Branch = effectiveBranch,
                     Enabled = enabled,
                     SyncIntervalSeconds = interval,
+                    CredentialReference = reference,
+                    CredentialUsername = username,
+                    ExcludedFlowPaths = excludedJson,
                     NextSyncUtc = nowUtc, // a new source syncs on the next tick
                     CreatedUtc = nowUtc,
                     UpdatedUtc = nowUtc,
@@ -57,6 +67,9 @@ public static class RepoSourceStore
             existing.Branch = effectiveBranch;
             existing.Enabled = enabled;
             existing.SyncIntervalSeconds = interval;
+            existing.CredentialReference = reference;
+            existing.CredentialUsername = username;
+            existing.ExcludedFlowPaths = excludedJson;
             existing.UpdatedUtc = nowUtc;
             // Re-enabling a source (or one that never got a next-sync) becomes due now.
             if (enabled && existing.NextSyncUtc is null)
@@ -66,6 +79,56 @@ public static class RepoSourceStore
 
             return id;
         }, ct);
+    }
+
+    /// <summary>Serializes an excluded-flow selection to the stored JSON array: trimmed, forward-slashed, distinct,
+    /// non-blank paths, ordinal-sorted for a stable value. Null / empty selection stores null (import everything).</summary>
+    public static string? SerializeExcludedPaths(IReadOnlyList<string>? excludedFlowPaths)
+    {
+        if (excludedFlowPaths is null)
+        {
+            return null;
+        }
+
+        var paths = excludedFlowPaths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p.Trim().Replace('\\', '/'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToArray();
+        return paths.Length == 0 ? null : JsonSerializer.Serialize(paths);
+    }
+
+    /// <summary>Parses the stored excluded-flow JSON into a case-insensitive set the sync compares flow paths
+    /// against. A null, blank, or malformed value yields an empty set (import everything), never an error.</summary>
+    public static IReadOnlySet<string> ParseExcludedPaths(string? excludedJson)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(excludedJson))
+        {
+            return set;
+        }
+
+        try
+        {
+            var paths = JsonSerializer.Deserialize<string[]>(excludedJson);
+            if (paths is not null)
+            {
+                foreach (var path in paths)
+                {
+                    if (!string.IsNullOrWhiteSpace(path))
+                    {
+                        set.Add(path.Trim().Replace('\\', '/'));
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // A corrupt selection must never break a sync: fall back to importing everything.
+        }
+
+        return set;
     }
 
     /// <summary>The enabled sources whose next sync has arrived, oldest-due first.</summary>

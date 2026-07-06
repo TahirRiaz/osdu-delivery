@@ -11,6 +11,7 @@
     <PackageReference Include="Azure.ResourceManager" />
     <PackageReference Include="Azure.ResourceManager.DataFactory" />
     <PackageReference Include="Azure.ResourceManager.Automation" />
+    <PackageReference Include="Azure.Storage.Blobs" />
   </ItemGroup>
 
   <ItemGroup>

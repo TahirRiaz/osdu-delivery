@@ -1,5 +1,10 @@
 # SQLFlow as a drop-in for Azure Data Factory
 
+> This document has not been re-verified against the current codebase. For the current,
+> code-verified behavior of the invoke flow and control plane it describes, see
+> [docs/reference/flow/inv.md](reference/flow/inv.md) and
+> [docs/reference/concepts/control-plane.md](reference/concepts/control-plane.md).
+
 SQLFlow runs inside your ADF pipelines as a thin trigger, not as a container ADF boots per run. The model is the
 proven one: ADF calls an always-on custom API to start work. Here that API is the **SQLFlow control plane**, and the
 ADF side is a small, copyable pipeline of Web Activities.

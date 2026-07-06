@@ -156,6 +156,150 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Sync_HonorsExcludedFlowSelection_UnderNoTracking_DeactivatesAndReactivates()
+    {
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_sel_" + suffix;
+        var flowA = "cat_sel_a_" + suffix;
+        var flowB = "cat_sel_b_" + suffix;
+        var repoId = FlowIdentity.FromName(repo);
+
+        WriteFlow(flowA, "flows/a.flow.yaml");
+        WriteFlow(flowB, "flows/b.flow.yaml");
+        await CatalogDatabase.MigrateAsync(cs);
+
+        // The control plane pools its catalog context with QueryTrackingBehavior.NoTracking; the sync's
+        // update/deactivate mutations MUST still persist. Running the whole lifecycle through a NoTracking context
+        // is the regression guard for that fix (without it, the deactivation below silently no-ops).
+        static CatalogDbContext NoTracking(string connectionString)
+        {
+            var db = CatalogDatabase.Create(connectionString);
+            db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+            return db;
+        }
+
+        var excludeB = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "flows/b.flow.yaml" };
+
+        try
+        {
+            // 1. Import with flow B excluded: only A becomes a pipeline; B is never projected.
+            await using (var db = NoTracking(cs))
+            {
+                var r = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow, excludedFlowPaths: excludeB);
+                Assert.Equal(1, r.PipelinesAdded);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.True(await db.Pipelines.AnyAsync(p => p.Name == flowA && p.Active));
+                Assert.False(await db.Pipelines.AnyAsync(p => p.Name == flowB));
+            }
+
+            // 2. Re-include B (no exclusion): it appears and is active.
+            await using (var db = NoTracking(cs))
+            {
+                var r = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow, excludedFlowPaths: null);
+                Assert.Equal(1, r.PipelinesAdded); // B added; A unchanged
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.True(await db.Pipelines.AnyAsync(p => p.Name == flowB && p.Active));
+            }
+
+            // 3. Exclude B again: the previously-imported pipeline is DEACTIVATED (the mutation persists under
+            // NoTracking), and its history would survive. A stays active.
+            await using (var db = NoTracking(cs))
+            {
+                var r = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow, excludedFlowPaths: excludeB);
+                Assert.Equal(1, r.PipelinesDeactivated);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.True(await db.Pipelines.AnyAsync(p => p.Name == flowA && p.Active));
+                Assert.False((await db.Pipelines.SingleAsync(p => p.Name == flowB)).Active);
+            }
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
+    public async Task Sync_HealsTheDatabaselessTwin_WhenTheIdentityGainsItsDatabase()
+    {
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_heal_" + suffix;
+        var flowName = "cat_heal_orders_" + suffix;
+        var table = "HealOrders_" + suffix;
+        var variable = "SQLFLOW_TEST_SINK_" + suffix.ToUpperInvariant();
+        var repoId = FlowIdentity.FromName(repo);
+        var serverRef = "${env:" + variable + "}";
+        var weakKey = SqlFlow.Lineage.Collection.NodeKey.For(serverRef, null, "dbo", table);
+        var strongKey = SqlFlow.Lineage.Collection.NodeKey.For(serverRef, "SinkDb", "dbo", table);
+
+        var flowPath = Path.Combine(_dir, "flows", "heal.flow.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(flowPath)!);
+        File.WriteAllText(flowPath, $$"""
+            name: {{flowName}}
+            source:
+              type: csv
+              location: ./data.csv
+            target:
+              connection: ${env:{{variable}}}
+              schema: dbo
+              table: {{table}}
+            """);
+
+        await CatalogDatabase.MigrateAsync(cs);
+        try
+        {
+            // First sync with the reference unresolvable: the object lands under the database-less key,
+            // exactly the pre-resolution catalog state this healing exists for.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+                Assert.True(await db.Objects.AnyAsync(o => o.Key == weakKey));
+            }
+
+            // The reference becomes resolvable: the identity gains its database, and the weak twin
+            // (no longer referenced by any repo's edges) is superseded and removed.
+            Environment.SetEnvironmentVariable(variable, "Server=localhost;Initial Catalog=SinkDb;Integrated Security=true;");
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var healed = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+                Assert.Equal(1, healed.ObjectsSuperseded);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.False(await db.Objects.AnyAsync(o => o.Key == weakKey));
+                var strong = await db.Objects.SingleAsync(o => o.Key == strongKey);
+                Assert.Equal("sinkdb", strong.Database);
+                Assert.True(await db.LineageEdges.AnyAsync(e => e.RepoId == repoId && e.ObjectKey == strongKey));
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+            await using var db = CatalogDatabase.Create(cs);
+            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+            await db.Objects.Where(o => o.Key == weakKey || o.Key == strongKey).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
     public async Task Sync_MirrorsYamlSchedule_PreservesApiPause_AndRemovesItWhenItLeavesGit()
     {
         var cs = IntegrationDb.Require();

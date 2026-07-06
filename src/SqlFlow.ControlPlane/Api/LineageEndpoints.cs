@@ -13,19 +13,31 @@ public sealed record ObjectDto(
     string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind,
     DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
-/// <summary>A single lineage object with its full module body (<c>Definition</c>) for the detail view; the
-/// definition is null for plain tables, an unconnected sync, or an encrypted module.</summary>
+/// <summary>A single lineage object with its full module body (<c>Definition</c>) and generating script
+/// (<c>Script</c>) for the detail view; the definition is null for plain tables, an unconnected sync, or an
+/// encrypted module, and the script is null when no tier saw the object created.</summary>
 public sealed record ObjectDetailDto(
     string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind,
-    string? Definition, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+    string? Definition, string? Script, string? ScriptTier, DateTime? ScriptUpdatedUtc,
+    DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
-/// <summary>One column of a lineage object, captured by the derived (connected) tier.</summary>
-public sealed record ObjectColumnDto(int Ordinal, string Name, string? DataType, bool Nullable);
+/// <summary>One column of a lineage object; <c>Tier</c> records whether it was read live (Derived) or parsed
+/// from the CREATE the run executed (Observed/Declared).</summary>
+public sealed record ObjectColumnDto(int Ordinal, string Name, string? DataType, bool Nullable, string Tier);
 
 /// <summary>One attributed lineage fact: a flow (or a module body) relating to an object.</summary>
 public sealed record EdgeDto(
     long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule,
     string Relation, string ObjectKey, string ObjectName, string Tier);
+
+/// <summary>Everything known about one object in a single payload: its identity and metadata, its columns, its
+/// generating script and module body, and the lineage edges that reference it. This is the "ask about this
+/// object" aggregate a model uses to reason about, or author SQL against, the object. Each list is bounded for
+/// a stable payload.</summary>
+public sealed record ObjectDossierDto(
+    ObjectDetailDto Object,
+    IReadOnlyList<ObjectColumnDto> Columns,
+    IReadOnlyList<EdgeDto> Edges);
 
 /// <summary>One flow-level dependency in a repo's execution plan: <c>ToFlow</c> waits for <c>FromFlow</c>.</summary>
 public sealed record FlowDependencyDto(
@@ -38,6 +50,11 @@ public sealed record WaveDto(int Wave, IReadOnlyList<WavePipelineDto> Pipelines)
 
 /// <summary>One pipeline within a wave: its stable id and name.</summary>
 public sealed record WavePipelineDto(Guid Id, string Name, string Kind);
+
+/// <summary>One (server, database, schema) grouping in the catalog with how many objects it holds: the schema
+/// hierarchy a caller browses to answer "what schemas exist" and "how big is each" before drilling into
+/// objects. A null database/schema is an object whose identity was only partially resolved (an offline sync).</summary>
+public sealed record SchemaDto(string ServerRef, string? Database, string? Schema, int ObjectCount);
 
 /// <summary>
 /// The read API over the shadow catalog's lineage graph: objects (with their columns and module bodies), the
@@ -54,9 +71,11 @@ public static class LineageEndpoints
         ArgumentNullException.ThrowIfNull(group);
 
         var lineage = group.MapGroup("/lineage").WithTags("Lineage");
+        lineage.MapGet("/schemas", ListSchemasAsync).WithName("ListLineageSchemas");
         lineage.MapGet("/objects", ListObjectsAsync).WithName("ListLineageObjects");
         lineage.MapGet("/objects/detail", GetObjectAsync).WithName("GetLineageObject");
         lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
+        lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
 
         var repos = group.MapGroup("/repos").WithTags("Lineage");
         repos.MapGet("/{repoId:guid}/lineage/edges", ListEdgesAsync).WithName("ListLineageEdges");
@@ -66,8 +85,39 @@ public static class LineageEndpoints
         return group;
     }
 
+    private static async Task<Ok<IReadOnlyList<SchemaDto>>> ListSchemasAsync(
+        CatalogDbContext db, string? serverRef, string? database, CancellationToken ct)
+    {
+        var query = db.Objects.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(serverRef))
+        {
+            query = query.Where(o => o.ServerRef == serverRef);
+        }
+
+        if (!string.IsNullOrWhiteSpace(database))
+        {
+            query = query.Where(o => o.Database == database);
+        }
+
+        // The whole schema hierarchy in one response (no paging): the distinct (server, database, schema)
+        // groupings are bounded by the estate's real schema count, not the object count, so this cannot grow
+        // without bound. Ordered so the hierarchy reads top-down and deterministically.
+        var groups = await query
+            .GroupBy(o => new { o.ServerRef, o.Database, o.Schema })
+            .Select(g => new SchemaDto(g.Key.ServerRef, g.Key.Database, g.Key.Schema, g.Count()))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var ordered = groups
+            .OrderBy(s => s.ServerRef, StringComparer.Ordinal)
+            .ThenBy(s => s.Database, StringComparer.Ordinal)
+            .ThenBy(s => s.Schema, StringComparer.Ordinal)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<SchemaDto>>(ordered);
+    }
+
     private static async Task<Ok<PagedResult<ObjectDto>>> ListObjectsAsync(
-        CatalogDbContext db, string? name, string? serverRef, string? kind, int? page, int? pageSize, CancellationToken ct)
+        CatalogDbContext db, string? name, string? serverRef, string? database, string? schema, string? kind,
+        int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -80,6 +130,16 @@ public static class LineageEndpoints
         if (!string.IsNullOrWhiteSpace(serverRef))
         {
             query = query.Where(o => o.ServerRef == serverRef);
+        }
+
+        if (!string.IsNullOrWhiteSpace(database))
+        {
+            query = query.Where(o => o.Database == database);
+        }
+
+        if (!string.IsNullOrWhiteSpace(schema))
+        {
+            query = query.Where(o => o.Schema == schema);
         }
 
         if (!string.IsNullOrWhiteSpace(kind))
@@ -102,7 +162,8 @@ public static class LineageEndpoints
     {
         var dto = await db.Objects.AsNoTracking().Where(o => o.Key == key)
             .Select(o => new ObjectDetailDto(
-                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Definition, o.FirstSeenUtc, o.LastSeenUtc))
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Definition, o.Script, o.ScriptTier,
+                o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("object", key) : TypedResults.Ok(dto);
     }
@@ -125,9 +186,47 @@ public static class LineageEndpoints
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var columns = await ordered
             .Skip((p - 1) * size).Take(size)
-            .Select(c => new ObjectColumnDto(c.Ordinal, c.Name, c.DataType, c.Nullable))
+            .Select(c => new ObjectColumnDto(c.Ordinal, c.Name, c.DataType, c.Nullable, c.Tier))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<ObjectColumnDto>(columns, p, size, total));
+    }
+
+    /// <summary>The maximum rows each list of the dossier returns: an object's columns and its edges are
+    /// bounded by the object, but a hot object can be referenced by many flows across many repos, so each
+    /// collection is capped for a stable, single-response payload (the paged endpoints serve the full sets).</summary>
+    private const int MaxDossierRows = 500;
+
+    private static async Task<Results<Ok<ObjectDossierDto>, ProblemHttpResult>> GetObjectDossierAsync(
+        string key, CatalogDbContext db, CancellationToken ct)
+    {
+        var detail = await db.Objects.AsNoTracking().Where(o => o.Key == key)
+            .Select(o => new ObjectDetailDto(
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Definition, o.Script, o.ScriptTier,
+                o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (detail is null)
+        {
+            return NotFound("object", key);
+        }
+
+        var columns = await db.ObjectColumns.AsNoTracking()
+            .Where(c => c.ObjectKey == key)
+            .OrderBy(c => c.Ordinal).ThenBy(c => c.Name)
+            .Take(MaxDossierRows)
+            .Select(c => new ObjectColumnDto(c.Ordinal, c.Name, c.DataType, c.Nullable, c.Tier))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        // Object-level edges reference the key across every repo (the object is global): both what reads it and
+        // what writes it, so the model sees the flows on both sides.
+        var edges = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.ObjectKey == key)
+            .OrderBy(e => e.Relation).ThenBy(e => e.Flow).ThenBy(e => e.Id)
+            .Take(MaxDossierRows)
+            .Select(e => new EdgeDto(
+                e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName, e.Tier))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges));
     }
 
     private static async Task<Results<Ok<PagedResult<EdgeDto>>, ProblemHttpResult>> ListEdgesAsync(

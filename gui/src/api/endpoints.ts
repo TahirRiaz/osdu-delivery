@@ -3,7 +3,8 @@
 
 import { del, get, getAnonymous, post, postAnonymous, type QueryParams } from "./client";
 import type {
-  AuthProviders, ColumnHit, CreateScheduleRequest, CreateUserRequest, Dashboard, DefinitionHit, FlowDependency,
+  AuthProviders, ColumnHit, CreateScheduleRequest, CreateUserRequest, Dashboard, DefinitionHit, DiscoveredFlow,
+  DiscoverRepoRequest, FlowDependency,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, ObjectHit, PagedResult,
   PipelineColumn, PipelineDetail, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, Role,
   RunAssertion, RunDetail, RunFile, RunHealthCheckMetric, RunStatement, RunSummary, RunSurrogateKey,
@@ -113,6 +114,8 @@ export const repoSourceApi = {
   list: (query: PageQuery = {}) => get<PagedResult<RepoSource>>("/api/v1/repos/sources", query as QueryParams),
   register: (request: RegisterRepoSourceRequest) => post<RepoSourceRegistered>("/api/v1/repos/sources", request),
   syncNow: (id: string) => post<RepoSource>(`/api/v1/repos/sources/${id}/sync`),
+  // Preview-first scan: list a repo's flows without importing (nothing reaches the catalog until a sync).
+  discover: (request: DiscoverRepoRequest) => post<DiscoveredFlow[]>("/api/v1/repos/discover", request),
 };
 
 // ---- Lineage -------------------------------------------------------------------------------------------------------------------

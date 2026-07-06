@@ -1,5 +1,11 @@
 # Connection Registry Design: Consolidated Corrections Report
 
+> This is a pre-implementation red-team critique of `connection-registry-design.md`, not a
+> description of shipped behavior; the as-built connections model has since diverged from both
+> documents. For the current, code-verified behavior see
+> [docs/reference/concepts/connections-and-secrets.md](reference/concepts/connections-and-secrets.md)
+> and [docs/reference/flow/connections.md](reference/flow/connections.md).
+
 Target document: `C:\Projects\SQLFlowV3\docs\connection-registry-design.md`
 
 ## 1. Headline

@@ -5,8 +5,11 @@ import { expect, test } from "./helpers";
 // target objects and edges).
 
 test.describe("explore", () => {
-  test("lineage page lists objects or a clean empty state; the drawer opens on a row", async ({ adminPage }) => {
+  test("the explorer lists objects or a clean empty state; the drawer opens on a row", async ({ adminPage }) => {
+    // Lineage lands on the graph; the searchable object catalog is the Explorer, one click away.
     await adminPage.getByTestId("nav-lineage").click();
+    await expect(adminPage.getByTestId("page-lineage-graph")).toBeVisible();
+    await adminPage.getByTestId("open-lineage-objects").click();
     await expect(adminPage.getByTestId("page-lineage")).toBeVisible();
 
     const firstRow = adminPage.getByTestId("table-row").first();
@@ -20,20 +23,24 @@ test.describe("explore", () => {
     }
   });
 
-  test("lineage filters and the graph-view button work", async ({ adminPage }) => {
+  test("lineage lands on the graph, and the explorer filters work", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
+    await expect(adminPage.getByTestId("page-lineage-graph")).toBeVisible();
+    await expect(adminPage.getByTestId("graph-empty")).toBeVisible();
+
+    await adminPage.getByTestId("open-lineage-objects").click();
+    await expect(adminPage.getByTestId("page-lineage")).toBeVisible();
     await adminPage.getByTestId("filter-object-name").fill("no-such-object-zzz");
     await expect(adminPage.getByTestId("empty-message")).toBeVisible({ timeout: 15_000 });
     await adminPage.getByTestId("filter-object-name").fill("");
 
+    // The Graph button returns to the graph landing.
     await adminPage.getByTestId("open-lineage-graph").click();
     await expect(adminPage.getByTestId("page-lineage-graph")).toBeVisible();
-    await expect(adminPage.getByTestId("graph-empty")).toBeVisible();
   });
 
   test("the flows graph focuses on click and opens the pipeline from the panel", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
-    await adminPage.getByTestId("open-lineage-graph").click();
     await adminPage.getByTestId("graph-repo-select").click();
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
 
@@ -65,7 +72,6 @@ test.describe("explore", () => {
 
   test("the objects view draws the data flow between file and table, colored per flow", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
-    await adminPage.getByTestId("open-lineage-graph").click();
     await adminPage.getByTestId("graph-repo-select").click();
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
     await adminPage.getByTestId("graph-view-objects").click();

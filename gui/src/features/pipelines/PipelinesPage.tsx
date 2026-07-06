@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import Chip from "@mui/material/Chip";
-import Stack from "@mui/material/Stack";
+import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { pipelineApi, repoApi } from "../../api/endpoints";
 import type { PipelineSummary } from "../../api/types";
+import { FilterBar } from "../../components/FilterBar";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { ActiveBadge } from "../../components/StatusBadge";
 
@@ -49,24 +52,22 @@ export default function PipelinesPage() {
   const repoOptions = repos.data?.items ?? [];
 
   return (
-    <Stack spacing={2} data-testid="page-pipelines">
-      <Typography variant="h5">Pipelines</Typography>
+    <Page data-testid="page-pipelines">
+      <PageHeader title="Pipelines" />
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} useFlexGap flexWrap="wrap">
+      <FilterBar>
         <TextField
           select
           size="small"
           label="Repo"
           value={repoFilter}
           onChange={(e) => setRepoFilter(e.target.value)}
-          SelectProps={{ native: true }}
-          InputLabelProps={{ shrink: true }}
           inputProps={{ "data-testid": "filter-repo" }}
           sx={{ minWidth: 200 }}
         >
-          <option value="">all</option>
+          <MenuItem value="">all</MenuItem>
           {repoOptions.map((repo) => (
-            <option key={repo.id} value={repo.id}>{repo.name}</option>
+            <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
           ))}
         </TextField>
         <TextField
@@ -75,14 +76,12 @@ export default function PipelinesPage() {
           label="Kind"
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
-          SelectProps={{ native: true }}
-          InputLabelProps={{ shrink: true }}
           inputProps={{ "data-testid": "filter-kind" }}
           sx={{ minWidth: 140 }}
         >
-          <option value="">all</option>
+          <MenuItem value="">all</MenuItem>
           {kinds.map((kind) => (
-            <option key={kind} value={kind}>{kind}</option>
+            <MenuItem key={kind} value={kind}>{kind}</MenuItem>
           ))}
         </TextField>
         <TextField
@@ -91,14 +90,12 @@ export default function PipelinesPage() {
           label="Active"
           value={activeFilter}
           onChange={(e) => setActiveFilter(e.target.value)}
-          SelectProps={{ native: true }}
-          InputLabelProps={{ shrink: true }}
           inputProps={{ "data-testid": "filter-active" }}
           sx={{ minWidth: 140 }}
         >
-          <option value="">all</option>
-          <option value="active">active</option>
-          <option value="inactive">inactive</option>
+          <MenuItem value="">all</MenuItem>
+          <MenuItem value="active">active</MenuItem>
+          <MenuItem value="inactive">inactive</MenuItem>
         </TextField>
         <TextField
           size="small"
@@ -109,7 +106,7 @@ export default function PipelinesPage() {
           inputProps={{ "data-testid": "filter-name" }}
           sx={{ minWidth: 220 }}
         />
-      </Stack>
+      </FilterBar>
 
       <PagedTable
         queryKey={["pipelines", "list", repoFilter, kindFilter, activeFilter, nameFilter]}
@@ -126,6 +123,6 @@ export default function PipelinesPage() {
         onRowClick={(row) => navigate(`/pipelines/${row.id}`)}
         emptyMessage="No pipelines match the current filters."
       />
-    </Stack>
+    </Page>
   );
 }

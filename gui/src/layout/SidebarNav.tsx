@@ -9,7 +9,6 @@ import DnsIcon from "@mui/icons-material/Dns";
 import FolderIcon from "@mui/icons-material/Folder";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ScheduleIcon from "@mui/icons-material/Schedule";
-import SyncIcon from "@mui/icons-material/Sync";
 import HubIcon from "@mui/icons-material/Hub";
 import SearchIcon from "@mui/icons-material/Search";
 import PeopleIcon from "@mui/icons-material/People";
@@ -34,7 +33,6 @@ const catalog: NavItem[] = [
   { label: "Repos", to: "/repos", icon: <FolderIcon />, testId: "nav-repos" },
   { label: "Pipelines", to: "/pipelines", icon: <AccountTreeIcon />, testId: "nav-pipelines" },
   { label: "Schedules", to: "/schedules", icon: <ScheduleIcon />, testId: "nav-schedules" },
-  { label: "Repo sources", to: "/repo-sources", icon: <SyncIcon />, testId: "nav-repo-sources" },
 ];
 
 const explore: NavItem[] = [

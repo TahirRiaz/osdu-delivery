@@ -1,5 +1,9 @@
 # SQLFlow Architecture
 
+> This document summarizes design principles and has not been re-verified against the current
+> codebase in full detail. For the current, code-verified behavior see
+> [docs/reference/concepts/architecture-and-execution.md](reference/concepts/architecture-and-execution.md).
+
 This document summarizes the design principles guiding the v3 rebuild.
 
 ## Goals

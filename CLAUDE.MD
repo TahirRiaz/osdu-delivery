@@ -1,4 +1,12 @@
-# DeltaForge - Project Instructions
+# SQLFlow - Project Instructions
+
+## Project Identity
+
+**This project is SQLFlow (SQLFlow V3). It is NOT DeltaForge.** They are different systems and must never be conflated.
+
+- SQLFlow is a .NET solution: an ASP.NET Core control plane, an EF Core shadow catalog on SQL Server, a React + TypeScript + Vite GUI, and a direct ADO.NET execution engine. The product name shown in the GUI is "SQLFlow".
+- The `deltaforge` MCP server, and its documentation corpus describing a Rust/Axum/PostgreSQL/Unity-Catalog stack, is a separate and divergent system. Those docs are NOT authoritative for this codebase and routinely do not match it (different language, storage, catalog model, and commands).
+- When answering any question about how this system behaves, verify against the actual source in this repository and cite files from here, not the DeltaForge MCP docs.
 
 ## Writing Style
 

@@ -56,6 +56,31 @@ public sealed class LineageServiceTests
     }
 
     [Fact]
+    public async Task ObservedTier_CapturesObjectScriptAndColumns()
+    {
+        // The engine's generated trace creates the target and loads it. The observed tier should attach the
+        // generating script and an offline column dictionary to the target object, without a live connection:
+        // the accurate context an LLM needs to author a query against it.
+        using var estate = new LineageEstateHarness()
+            .Flow("load-orders.flow.yaml", LineageEstateHarness.Ingestion("load-orders", "Staging.dbo.Orders", "DW.dbo.Orders"))
+            .Run("load-orders", new DateTime(2026, 6, 10, 6, 0, 0, DateTimeKind.Utc),
+                ("target.evolve", "CREATE TABLE [DW].[dbo].[Orders] ([Id] int NOT NULL, [Amount] decimal(18,2) NULL);"),
+                ("upsert.insert", "INSERT INTO [DW].[dbo].[Orders] ([Id], [Amount]) SELECT s.[Id], s.[Amount] FROM [DW].[dbo].[OrdersSource] s;"));
+
+        var report = await estate.ComputeAsync();
+
+        // The target object carries its generating script and columns, both from the observed tier.
+        var orders = report.Objects.Single(o => o.Key.EndsWith("|dw|dbo|orders", StringComparison.Ordinal));
+        Assert.NotNull(orders.Script);
+        Assert.Contains("CREATE TABLE", orders.Script!, StringComparison.Ordinal);
+        Assert.Equal(LineageTier.Observed, orders.ScriptTier);
+        Assert.Equal(LineageTier.Observed, orders.ColumnsTier);
+        Assert.Collection(orders.Columns.OrderBy(c => c.Ordinal),
+            c => { Assert.Equal("Id", c.Name); Assert.False(c.Nullable); },
+            c => { Assert.Equal("Amount", c.Name); Assert.True(c.Nullable); });
+    }
+
+    [Fact]
     public async Task StaleDocument_IsWarnedInTheReport()
     {
         using var estate = new LineageEstateHarness()
@@ -68,6 +93,59 @@ public sealed class LineageServiceTests
         var report = await estate.ComputeAsync();
 
         Assert.Contains(report.Warnings, w => w.Contains("changed after its last run", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task FileFlowTarget_GainsItsDatabase_FromTheConnectionsInitialCatalog()
+    {
+        // A file flow declares no database anywhere; the connection string owns it. The lineage identity
+        // must still carry it, offline, from the resolved reference's Initial Catalog.
+        var variable = "SQLFLOW_TEST_SINK_" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        Environment.SetEnvironmentVariable(variable, "Server=localhost;Initial Catalog=Landing;Integrated Security=true;");
+        try
+        {
+            using var estate = new LineageEstateHarness().Flow("csv.flow.yaml", $$"""
+                name: csv-load
+                source: { type: csv, location: ./data/orders.csv }
+                target:
+                  connection: ${env:{{variable}}}
+                  schema: raw
+                  table: Orders
+                """);
+
+            var report = await estate.ComputeAsync();
+
+            var node = Assert.Single(report.Objects, o => o.Name == "Orders");
+            Assert.Equal("Landing", node.Database, ignoreCase: true); // node metadata carries the case-folded key part
+            Assert.Contains("|landing|raw|orders", node.Key, StringComparison.Ordinal);
+            Assert.DoesNotContain(report.Warnings, w => w.Contains("no database identity", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+        }
+    }
+
+    [Fact]
+    public async Task FileFlowTarget_WarnsAndStaysDatabaseless_WhenTheReferenceCannotResolve()
+    {
+        // Offline with an unresolvable reference the identity cannot be completed; the report must name
+        // both the unknown default database and the incomplete identity instead of degrading silently.
+        using var estate = new LineageEstateHarness().Flow("csv.flow.yaml", """
+            name: csv-load
+            source: { type: csv, location: ./data/orders.csv }
+            target:
+              connection: ${env:SQLFLOW_TEST_SINK_THAT_IS_NEVER_SET}
+              schema: raw
+              table: Orders
+            """);
+
+        var report = await estate.ComputeAsync();
+
+        var node = Assert.Single(report.Objects, o => o.Name == "Orders");
+        Assert.Null(node.Database);
+        Assert.Contains(report.Warnings, w => w.Contains("default database unknown", StringComparison.Ordinal));
+        Assert.Contains(report.Warnings, w => w.Contains("no database identity", StringComparison.Ordinal));
     }
 
     [Fact]

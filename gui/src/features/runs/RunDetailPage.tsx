@@ -1,12 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Link as RouterLink, Navigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSnackbar } from "notistack";
 import Alert from "@mui/material/Alert";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Card from "@mui/material/Card";
-import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogContent from "@mui/material/DialogContent";
@@ -26,6 +23,10 @@ import { runApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DetailHeaderCard } from "../../components/DetailHeaderCard";
+import { DetailPair } from "../../components/DetailPair";
+import { Mono } from "../../components/Mono";
+import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
@@ -43,26 +44,13 @@ function YesNo({ value }: { value: boolean }) {
     : <Chip size="small" label="no" color="default" variant="outlined" />;
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <Box sx={{ minWidth: 180 }}>
-      <Typography variant="caption" color="text.secondary" display="block">{label}</Typography>
-      <Typography variant="body2" component="div">{children}</Typography>
-    </Box>
-  );
-}
-
 const statementColumns: Column<RunStatement>[] = [
   { id: "ordinal", header: "Ordinal", width: 90, render: (row) => row.ordinal },
   { id: "step", header: "Step", width: 200, render: (row) => row.step },
   {
     id: "sql",
     header: "SQL",
-    render: (row) => (
-      <span style={{ fontFamily: "monospace" }}>
-        {row.sql.length > 120 ? `${row.sql.slice(0, 120)}…` : row.sql}
-      </span>
-    ),
+    render: (row) => <Mono>{row.sql.length > 120 ? `${row.sql.slice(0, 120)}…` : row.sql}</Mono>,
   },
 ];
 
@@ -149,85 +137,82 @@ function RunDetailContent({ runId }: { runId: string }) {
 
   if (query.isError) {
     return (
-      <Box data-testid="page-run-detail">
+      <Page data-testid="page-run-detail">
         {isApiError(query.error)
           ? <CorrelationError error={query.error} />
           : <Typography color="error">{String(query.error)}</Typography>}
-      </Box>
+      </Page>
     );
   }
 
   const run = query.data;
   if (run === undefined) {
     return (
-      <Box data-testid="page-run-detail">
-        <Skeleton variant="rounded" height={240} sx={{ mb: 2 }} />
+      <Page data-testid="page-run-detail">
+        <Skeleton variant="rounded" height={240} />
         <Skeleton variant="rounded" height={320} />
-      </Box>
+      </Page>
     );
   }
 
   return (
-    <Box data-testid="page-run-detail">
-      <Card variant="outlined" sx={{ mb: 2 }}>
-        <CardContent>
-          <Stack direction="row" alignItems="center" spacing={2} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+    <Page data-testid="page-run-detail">
+      <DetailHeaderCard
+        title={run.flowName}
+        badges={(
+          <>
             <RunStatusBadge status={run.status} />
-            <Typography variant="h5">{run.flowName}</Typography>
             <Chip size="small" label={run.flowKind} variant="outlined" data-testid="run-kind" />
             <Chip size="small" label={`batch: ${run.batch}`} variant="outlined" data-testid="run-batch" />
-            <Box sx={{ flexGrow: 1 }} />
-            {run.status === "queued" && (
-              <Button color="error" variant="outlined" onClick={() => setConfirmOpen(true)} data-testid="cancel-run">
-                Cancel run
-              </Button>
-            )}
-          </Stack>
+          </>
+        )}
+        actions={run.status === "queued" && (
+          <Button color="error" variant="outlined" onClick={() => setConfirmOpen(true)} data-testid="cancel-run">
+            Cancel run
+          </Button>
+        )}
+      >
+        <DetailPair label="Run id"><Mono>{run.runId}</Mono></DetailPair>
+        <DetailPair label="Repo">
+          {run.repoId
+            ? <Link component={RouterLink} to={`/repos/${run.repoId}`} data-testid="run-repo-link">{run.repoId}</Link>
+            : "-"}
+        </DetailPair>
+        <DetailPair label="Pipeline">
+          <Link component={RouterLink} to={`/pipelines/${run.pipelineId}`} data-testid="run-pipeline-link">
+            {run.pipelineId}
+          </Link>
+        </DetailPair>
+        <DetailPair label="Batch">{run.batch}</DetailPair>
+        <DetailPair label="Step">{run.wave >= 0 ? run.wave : "-"}</DetailPair>
+        <DetailPair label="Enqueued"><RelativeTime value={run.enqueuedUtc} /></DetailPair>
+        <DetailPair label="Started"><RelativeTime value={run.startUtc} /></DetailPair>
+        <DetailPair label="Ended"><RelativeTime value={run.endUtc} /></DetailPair>
+        <DetailPair label="Duration">
+          {run.durationSeconds != null ? formatDurationSeconds(run.durationSeconds) : "-"}
+        </DetailPair>
+        <DetailPair label="Claimed by node">{run.claimedByNode ?? "-"}</DetailPair>
+        <DetailPair label="Host">{run.host ?? "-"}</DetailPair>
+        <DetailPair label="Target pool">{run.targetPool ?? "-"}</DetailPair>
+        <DetailPair label="Commit">
+          {run.commitSha ? (
+            <Tooltip title={run.commitSha}>
+              <Mono>{run.commitSha.slice(0, 12)}</Mono>
+            </Tooltip>
+          ) : "-"}
+        </DetailPair>
+        <DetailPair label="Rows loaded">{run.rowsLoaded ?? "-"}</DetailPair>
+        <DetailPair label="Rows inserted">{run.rowsInserted ?? "-"}</DetailPair>
+        <DetailPair label="Rows updated">{run.rowsUpdated ?? "-"}</DetailPair>
+        <DetailPair label="Rows deleted">{run.rowsDeleted ?? "-"}</DetailPair>
+      </DetailHeaderCard>
 
-          {run.status === "failed" && run.error !== null && (
-            <Alert severity="error" sx={{ mb: 2 }} data-testid="run-error">{run.error}</Alert>
-          )}
-
-          <Stack direction="row" spacing={3} useFlexGap flexWrap="wrap">
-            <Field label="Run id"><span style={{ fontFamily: "monospace" }}>{run.runId}</span></Field>
-            <Field label="Repo">
-              {run.repoId
-                ? <Link component={RouterLink} to={`/repos/${run.repoId}`} data-testid="run-repo-link">{run.repoId}</Link>
-                : "-"}
-            </Field>
-            <Field label="Pipeline">
-              <Link component={RouterLink} to={`/pipelines/${run.pipelineId}`} data-testid="run-pipeline-link">
-                {run.pipelineId}
-              </Link>
-            </Field>
-            <Field label="Batch">{run.batch}</Field>
-            <Field label="Step">{run.wave >= 0 ? run.wave : "-"}</Field>
-            <Field label="Enqueued"><RelativeTime value={run.enqueuedUtc} /></Field>
-            <Field label="Started"><RelativeTime value={run.startUtc} /></Field>
-            <Field label="Ended"><RelativeTime value={run.endUtc} /></Field>
-            <Field label="Duration">
-              {run.durationSeconds != null ? formatDurationSeconds(run.durationSeconds) : "-"}
-            </Field>
-            <Field label="Claimed by node">{run.claimedByNode ?? "-"}</Field>
-            <Field label="Host">{run.host ?? "-"}</Field>
-            <Field label="Target pool">{run.targetPool ?? "-"}</Field>
-            <Field label="Commit">
-              {run.commitSha ? (
-                <Tooltip title={run.commitSha}>
-                  <span style={{ fontFamily: "monospace" }}>{run.commitSha.slice(0, 12)}</span>
-                </Tooltip>
-              ) : "-"}
-            </Field>
-            <Field label="Rows loaded">{run.rowsLoaded ?? "-"}</Field>
-            <Field label="Rows inserted">{run.rowsInserted ?? "-"}</Field>
-            <Field label="Rows updated">{run.rowsUpdated ?? "-"}</Field>
-            <Field label="Rows deleted">{run.rowsDeleted ?? "-"}</Field>
-          </Stack>
-        </CardContent>
-      </Card>
+      {run.status === "failed" && run.error !== null && (
+        <Alert severity="error" data-testid="run-error">{run.error}</Alert>
+      )}
 
       {(run.fullLoad || run.backfillFrom || run.filePattern) && (
-        <Alert severity="info" icon={false} sx={{ mb: 2 }} data-testid="run-backfill">
+        <Alert severity="info" icon={false} data-testid="run-backfill">
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
             <Typography variant="body2" fontWeight={600}>Backfill:</Typography>
             {run.fullLoad && <Chip size="small" label="full load" color="warning" />}
@@ -249,7 +234,6 @@ function RunDetailContent({ runId }: { runId: string }) {
         onChange={(_, next: number) => setTab(next)}
         variant="scrollable"
         allowScrollButtonsMobile
-        sx={{ mb: 2 }}
         data-testid="run-tabs"
       >
         <Tab label="Statements" data-testid="tab-statements" />
@@ -336,6 +320,6 @@ function RunDetailContent({ runId }: { runId: string }) {
         onConfirm={() => cancel.mutate()}
         onClose={() => setConfirmOpen(false)}
       />
-    </Box>
+    </Page>
   );
 }

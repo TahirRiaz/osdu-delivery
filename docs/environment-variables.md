@@ -1,5 +1,12 @@
 # Environment Variables and Secrets: the Canonical Contract
 
+> This document predates the verified reference corpus and has known drift: it omits several
+> accepted `SQLFLOW_AZURE_AUTH` value aliases (`sp`, `mi`, `msi`, `azurecli`, `azlogin`; see
+> [AzureAuth.cs](../src/SqlFlow.Azure/AzureAuth.cs)), and it does not mention that
+> `detect-unique-key` also defaults `--source` from `SQLFLOW_SOURCE`. For the current, code-verified
+> contract see [docs/reference/concepts/environment-variables.md](reference/concepts/environment-variables.md)
+> and [docs/reference/concepts/connections-and-secrets.md](reference/concepts/connections-and-secrets.md).
+
 Flow documents live under source control. Credentials never do. This page is the one contract that makes
 those two facts compatible: which names exist, where values come from on each platform, and what the tool
 does to keep secrets out of your repository. Everything here works identically on Windows, Linux, macOS, and

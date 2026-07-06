@@ -180,6 +180,16 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
 
+                    b.Property<string>("Script")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ScriptTier")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTime?>("ScriptUpdatedUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("ServerRef")
                         .IsRequired()
                         .HasMaxLength(512)
@@ -224,6 +234,11 @@ namespace SqlFlow.Catalog.Migrations
 
                     b.Property<int>("Ordinal")
                         .HasColumnType("int");
+
+                    b.Property<string>("Tier")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
 
                     b.HasKey("Id");
 
@@ -424,8 +439,19 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("CredentialReference")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<string>("CredentialUsername")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<bool>("Enabled")
                         .HasColumnType("bit");
+
+                    b.Property<string>("ExcludedFlowPaths")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("LastError")
                         .HasColumnType("nvarchar(max)");
@@ -815,6 +841,9 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Catchup")
+                        .HasColumnType("bit");
 
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");

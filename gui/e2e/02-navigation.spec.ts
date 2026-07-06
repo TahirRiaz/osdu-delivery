@@ -9,8 +9,7 @@ const navTargets: Array<{ nav: string; page: string }> = [
   { nav: "nav-repos", page: "page-repos" },
   { nav: "nav-pipelines", page: "page-pipelines" },
   { nav: "nav-schedules", page: "page-schedules" },
-  { nav: "nav-repo-sources", page: "page-repo-sources" },
-  { nav: "nav-lineage", page: "page-lineage" },
+  { nav: "nav-lineage", page: "page-lineage-graph" },
   { nav: "nav-search", page: "page-search" },
   { nav: "nav-users", page: "page-users" },
 ];

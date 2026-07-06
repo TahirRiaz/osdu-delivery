@@ -21,6 +21,11 @@ public sealed record CatalogSyncResult
     public int RunsSkipped { get; init; }
     public int RunsFailed { get; init; }
     public int ObjectsUpserted { get; init; }
+
+    /// <summary>Database-less twin rows deleted because their object now syncs under a database-qualified
+    /// key and no repo's edges reference the weak key anymore (identity healing).</summary>
+    public int ObjectsSuperseded { get; init; }
+
     public int ObjectColumns { get; init; }
     public int LineageEdges { get; init; }
     public int FlowDependencies { get; init; }
@@ -98,7 +103,8 @@ public sealed class CatalogSync
 
     public async Task<CatalogSyncResult> SyncAsync(
         CatalogDbContext context, string estateDirectory, string repoName, string? repoRemoteUrl, DateTime nowUtc,
-        bool includeDerived = false, ISecretResolver? secrets = null, CancellationToken ct = default)
+        bool includeDerived = false, ISecretResolver? secrets = null, IReadOnlySet<string>? excludedFlowPaths = null,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(estateDirectory);
@@ -113,7 +119,7 @@ public sealed class CatalogSync
         {
             var warnings = new List<string>();
             var repoId = await UpsertRepoAsync(context, repoName, repoRemoteUrl, root, nowUtc, ct).ConfigureAwait(false);
-            var pipelines = await SyncPipelinesAsync(context, root, repoId, nowUtc, warnings, ct).ConfigureAwait(false);
+            var pipelines = await SyncPipelinesAsync(context, root, repoId, nowUtc, warnings, excludedFlowPaths, ct).ConfigureAwait(false);
             var runs = await SyncRunsAsync(context, root, repoId, warnings, ct).ConfigureAwait(false);
             var lineage = await SyncLineageAsync(context, root, repoId, includeDerived, secrets, nowUtc, warnings, ct).ConfigureAwait(false);
 
@@ -132,6 +138,7 @@ public sealed class CatalogSync
                 RunSurrogateKeysAdded = runs.SurrogateKeys,
                 RunHealthCheckMetricsAdded = runs.Metrics,
                 ObjectsUpserted = lineage.Objects,
+                ObjectsSuperseded = lineage.Superseded,
                 ObjectColumns = lineage.Columns,
                 LineageEdges = lineage.Edges,
                 FlowDependencies = lineage.FlowDeps,
@@ -174,19 +181,29 @@ public sealed class CatalogSync
     }
 
     private async Task<(int Added, int Updated, int Unchanged, int Deactivated)> SyncPipelinesAsync(
-        CatalogDbContext context, string root, Guid repoId, DateTime nowUtc, List<string> warnings, CancellationToken ct)
+        CatalogDbContext context, string root, Guid repoId, DateTime nowUtc, List<string> warnings,
+        IReadOnlySet<string>? excludedFlowPaths, CancellationToken ct)
     {
         var collected = _estate.Collect(root);
         warnings.AddRange(collected.Warnings);
 
+        // Preview-first selection: flows the source deliberately excludes are not projected as pipelines (and, being
+        // absent from 'present', are deactivated below if a previous sync had imported them, keeping their history).
+        // The selection is the ONLY gate; everything else stays the same one sync path.
+        var flows = excludedFlowPaths is { Count: > 0 }
+            ? collected.Flows.Where(f => !excludedFlowPaths.Contains(Normalize(f.Node.File))).ToList()
+            : collected.Flows;
+
         // Only this repo's pipelines: another repo's flows in the same catalog must not be touched by this sync.
-        var existing = await context.Pipelines.Where(p => p.RepoId == repoId).ToDictionaryAsync(p => p.Id, ct).ConfigureAwait(false);
+        // AsTracking so the update/deactivate mutations below persist even when the host's context defaults to
+        // NoTracking (the control plane pools its context that way); on a tracking context this is a no-op.
+        var existing = await context.Pipelines.Where(p => p.RepoId == repoId).AsTracking().ToDictionaryAsync(p => p.Id, ct).ConfigureAwait(false);
         var present = new HashSet<Guid>();
         var added = 0;
         var updated = 0;
         var unchanged = 0;
 
-        foreach (var flow in collected.Flows)
+        foreach (var flow in flows)
         {
             ct.ThrowIfCancellationRequested();
             var id = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
@@ -267,7 +284,7 @@ public sealed class CatalogSync
         // context so the changes commit inside the sync's own transaction (the store's transaction-free variants).
         var scheduledPipelineIds = new HashSet<Guid>();
         var scheduleKeep = new HashSet<Guid>();
-        foreach (var flow in collected.Flows)
+        foreach (var flow in flows)
         {
             var pipelineId = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
             if (!scheduledPipelineIds.Add(pipelineId) || flow.Schedule is not { } spec)
@@ -284,7 +301,7 @@ public sealed class CatalogSync
             var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
             var scheduleId = await ScheduleStore.StageYamlUpsertAsync(
                 context, repoId, flow.Node.Name, spec.Cron, spec.IntervalSeconds, spec.Timezone, spec.Enabled,
-                nextFire, nowUtc, ct).ConfigureAwait(false);
+                spec.Catchup, nextFire, nowUtc, ct).ConfigureAwait(false);
             scheduleKeep.Add(scheduleId);
         }
 
@@ -293,7 +310,7 @@ public sealed class CatalogSync
         // Project the authored per-column transforms of every present flow into the declared pipeline-column rows
         // (the source of truth for "which transforms are set"). Refreshed wholesale for this repo so a removed or
         // edited transform does not linger; detected rows (from runs) are a different kind and are left untouched.
-        await RefreshDeclaredColumnsAsync(context, root, repoId, collected.Flows, present, ct).ConfigureAwait(false);
+        await RefreshDeclaredColumnsAsync(context, root, repoId, flows, present, ct).ConfigureAwait(false);
 
         return (added, updated, unchanged, deactivated);
     }
@@ -674,7 +691,7 @@ public sealed class CatalogSync
         return PipelineChange.Added;
     }
 
-    private static async Task<(int Objects, int Columns, int Edges, int FlowDeps, int Waves, bool Connected)> SyncLineageAsync(
+    private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected)> SyncLineageAsync(
         CatalogDbContext context, string root, Guid repoId, bool includeDerived, ISecretResolver? secrets,
         DateTime nowUtc, List<string> warnings, CancellationToken ct)
     {
@@ -702,7 +719,7 @@ public sealed class CatalogSync
             }
 
             warnings.Add($"lineage was not computed for this sync ({SecretHygiene.RedactedMessage(ex.Message)}); objects and edges left unchanged, waves reset to not-computed.");
-            return (0, 0, 0, 0, 0, false);
+            return (0, 0, 0, 0, 0, 0, false);
         }
 
         foreach (var warning in report.Warnings)
@@ -713,7 +730,9 @@ public sealed class CatalogSync
         // Objects are GLOBAL (shared across repos by their canonical key) - upsert, never delete. Load only the
         // keys this report mentions, so the working set scales with the report, not the whole catalog.
         var keys = report.Objects.Select(o => o.Key).Distinct().ToList();
-        var existingObjects = await context.Objects.Where(o => keys.Contains(o.Key)).ToDictionaryAsync(o => o.Key, ct).ConfigureAwait(false);
+        // AsTracking so the object-metadata updates below persist under a NoTracking host context (see the pipeline
+        // query above); harmless on a tracking context.
+        var existingObjects = await context.Objects.Where(o => keys.Contains(o.Key)).AsTracking().ToDictionaryAsync(o => o.Key, ct).ConfigureAwait(false);
         foreach (var node in report.Objects)
         {
             if (existingObjects.TryGetValue(node.Key, out var row))
@@ -731,6 +750,15 @@ public sealed class CatalogSync
                     row.Definition = NullIfBlank(SecretHygiene.RedactedMessage(node.Definition));
                 }
 
+                // The generating DDL, likewise: only overwrite when this sync captured a script, so an offline
+                // sync that saw no run trace never wipes a script an earlier sync stored.
+                if (node.Script is not null)
+                {
+                    row.Script = NullIfBlank(SecretHygiene.RedactedMessage(node.Script));
+                    row.ScriptTier = node.ScriptTier?.ToString();
+                    row.ScriptUpdatedUtc = nowUtc;
+                }
+
                 row.LastSeenUtc = nowUtc;
             }
             else
@@ -739,29 +767,51 @@ public sealed class CatalogSync
             }
         }
 
-        // Object columns are the connected-tier data dictionary. Refresh ONLY the objects the derived tier
-        // actually re-read this sync (the node carries columns); a failed or offline collection (no columns)
-        // never wipes a previously-collected dictionary. Replace-by-key so a re-read reflects schema changes.
+        // Object columns are the data dictionary. Refresh ONLY the objects a tier supplied columns for this
+        // sync (the node carries columns); a failed or offline collection (no columns) never wipes a
+        // previously-collected dictionary. Replace-by-key so a re-read reflects schema changes. Precedence:
+        // an offline (Observed) set must not overwrite a live (Derived) set an earlier connected sync stored,
+        // so a key is refreshed only when this sync's tier is at least as authoritative as what is on record.
         // Like the global Object/Definition (upsert-only, never deleted for cross-repo identity), a dropped
         // object's columns are NOT cleaned up here; the dictionary is additive and tolerates that staleness.
         var columns = 0;
-        var refreshedKeys = report.Objects.Where(o => o.Columns.Count > 0).Select(o => o.Key).Distinct().ToList();
-        if (refreshedKeys.Count > 0)
+        var withColumns = report.Objects.Where(o => o.Columns.Count > 0).ToList();
+        if (withColumns.Count > 0)
         {
-            await context.ObjectColumns.Where(c => refreshedKeys.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
-            foreach (var node in report.Objects.Where(o => o.Columns.Count > 0))
+            var candidateKeys = withColumns.Select(o => o.Key).Distinct().ToList();
+            var existingTiers = await context.ObjectColumns
+                .Where(c => candidateKeys.Contains(c.ObjectKey))
+                .Select(c => new { c.ObjectKey, c.Tier })
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false);
+            var existingRankByKey = existingTiers
+                .GroupBy(x => x.ObjectKey, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Max(x => TierRank(x.Tier)), StringComparer.Ordinal);
+
+            var nodesToRefresh = withColumns
+                .Where(o => TierRank((o.ColumnsTier ?? Core.Lineage.LineageTier.Observed).ToString())
+                            >= (existingRankByKey.TryGetValue(o.Key, out var rank) ? rank : -1))
+                .ToList();
+            var refreshedKeys = nodesToRefresh.Select(o => o.Key).Distinct().ToList();
+            if (refreshedKeys.Count > 0)
             {
-                foreach (var column in node.Columns)
+                await context.ObjectColumns.Where(c => refreshedKeys.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                foreach (var node in nodesToRefresh)
                 {
-                    context.ObjectColumns.Add(new CatalogObjectColumn
+                    var tier = (node.ColumnsTier ?? Core.Lineage.LineageTier.Observed).ToString();
+                    foreach (var column in node.Columns)
                     {
-                        ObjectKey = node.Key,
-                        Ordinal = column.Ordinal,
-                        Name = column.Name,
-                        DataType = column.DataType,
-                        Nullable = column.Nullable,
-                    });
-                    columns++;
+                        context.ObjectColumns.Add(new CatalogObjectColumn
+                        {
+                            ObjectKey = node.Key,
+                            Ordinal = column.Ordinal,
+                            Name = column.Name,
+                            DataType = column.DataType,
+                            Nullable = column.Nullable,
+                            Tier = tier,
+                        });
+                        columns++;
+                    }
                 }
             }
         }
@@ -775,6 +825,39 @@ public sealed class CatalogSync
             var name = objectNames.TryGetValue(edge.ObjectKey, out var n) ? n : edge.ObjectKey;
             context.LineageEdges.Add(CatalogProjection.Edge(edge, repoId, name));
             edges++;
+        }
+
+        // Identity healing: a key that now carries its database (or schema) supersedes the weaker key an
+        // earlier sync recorded for the SAME object (a file-flow target keyed '<server>||<schema>|<name>'
+        // before default-database resolution, for example). Objects are global and upsert-only for
+        // cross-repo identity, but a weaker twin is not another repo's object, it is this object under a
+        // partial key; delete it once no repo's edges reference it, so the explorer stops listing a
+        // columnless duplicate. This repo's replacement edges above only reference report keys, which are
+        // excluded here, so a twin still live in THIS report is never deleted.
+        var weakerTwins = report.Objects
+            .SelectMany(o => new[]
+            {
+                string.IsNullOrWhiteSpace(o.Database) ? null : NodeKey.For(o.ServerRef, null, o.Schema, o.Name),
+                string.IsNullOrWhiteSpace(o.Schema) ? null : NodeKey.For(o.ServerRef, o.Database, null, o.Name),
+            })
+            .OfType<string>()
+            .Where(twin => !objectNames.ContainsKey(twin))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var superseded = 0;
+        if (weakerTwins.Count > 0)
+        {
+            var stillReferenced = await context.LineageEdges
+                .Where(e => weakerTwins.Contains(e.ObjectKey))
+                .Select(e => e.ObjectKey)
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false);
+            var deletable = weakerTwins.Except(stillReferenced, StringComparer.Ordinal).ToList();
+            if (deletable.Count > 0)
+            {
+                superseded = await context.Objects.Where(o => deletable.Contains(o.Key)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                await context.ObjectColumns.Where(c => deletable.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            }
         }
 
         // The execution plan - lineage's primary output. Stamp each pipeline with its wave (its batch and order)
@@ -800,8 +883,18 @@ public sealed class CatalogSync
             dependencies++;
         }
 
-        return (report.Objects.Count, columns, edges, dependencies, report.ExecutionPlan.Waves.Count, includeDerived);
+        return (report.Objects.Count, superseded, columns, edges, dependencies, report.ExecutionPlan.Waves.Count, includeDerived);
     }
+
+    /// <summary>The authority ordering of a column/definition tier: Derived (live) beats Observed (parsed from
+    /// a run) beats Declared. An unknown or blank tier ranks below all, so it never blocks a real refresh.</summary>
+    private static int TierRank(string? tier) => tier switch
+    {
+        nameof(Core.Lineage.LineageTier.Derived) => 2,
+        nameof(Core.Lineage.LineageTier.Observed) => 1,
+        nameof(Core.Lineage.LineageTier.Declared) => 0,
+        _ => -1,
+    };
 
     private string SerializeDefinition(string fullPath, List<string> warnings)
     {

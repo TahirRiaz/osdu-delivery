@@ -1,5 +1,6 @@
 using LibGit2Sharp;
 using LibGit2Sharp.Handlers;
+using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.Node;
 
@@ -136,6 +137,33 @@ public sealed class GitMaterializer
         return string.IsNullOrWhiteSpace(token)
             ? null
             : new GitMaterializerCredentials(Environment.GetEnvironmentVariable("SQLFLOW_GIT_USERNAME"), token);
+    }
+
+    /// <summary>
+    /// Resolves the git credential for a clone from a stored <c>${scheme:locator}</c> reference (a Key Vault or
+    /// environment reference held on the repo source; the secret value itself is created and maintained in the vault,
+    /// never stored in the catalog). A blank reference falls back to <see cref="CredentialsFromEnvironment"/>, which
+    /// covers public remotes and the single-credential deployment. The resolved secret lives in memory only for the
+    /// clone. This is the one credential-resolution path shared by the control plane's managed sync and a compute
+    /// node materializing a pinned commit.
+    /// </summary>
+    public static async Task<GitMaterializerCredentials?> ResolveCredentialsAsync(
+        ISecretResolver resolver, string? credentialReference, string? username, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(resolver);
+        if (string.IsNullOrWhiteSpace(credentialReference))
+        {
+            return CredentialsFromEnvironment();
+        }
+
+        var secret = await resolver.ResolveAsync(credentialReference, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(secret))
+        {
+            throw new SqlFlowNodeException(
+                $"the git credential reference '{credentialReference}' resolved to an empty value; create the secret in the vault it points to.");
+        }
+
+        return new GitMaterializerCredentials(string.IsNullOrWhiteSpace(username) ? null : username, secret);
     }
 
     private static CredentialsHandler? CredentialsProvider(GitMaterializerCredentials? credentials)

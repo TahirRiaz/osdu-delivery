@@ -50,6 +50,24 @@ public sealed record DataFlowPair
     public required TableName Target { get; init; }
 }
 
+/// <summary>An object this script created, with the verbatim CREATE statement text and (for a plain CREATE
+/// TABLE) its column definitions. This is what lets the catalog attach the generating SQL and an offline
+/// column dictionary to a table/view without a live connection: the script we generate is the script we
+/// store.</summary>
+public sealed record CreatedObject
+{
+    public required TableName Table { get; init; }
+
+    public required LineageNodeKind Kind { get; init; }
+
+    /// <summary>The verbatim CREATE statement text, reconstructed from the token stream.</summary>
+    public required string Ddl { get; init; }
+
+    /// <summary>The column definitions of a plain CREATE TABLE (name, rendered type, nullability); empty for a
+    /// view, a CTAS/SELECT INTO, or when the definition carried no columns.</summary>
+    public IReadOnlyList<LineageColumn> Columns { get; init; } = [];
+}
+
 /// <summary>
 /// Everything the extractor learned from one script: the DeltaForge ScriptDependencies equivalent.
 /// Inbound = read from, outbound = written/created/dropped, local deps = the per-name source lists that let
@@ -89,6 +107,12 @@ public sealed class ScriptDependencies
     /// <summary>Per-statement source-to-target movements: insert-like statements only, three-part names on
     /// both sides, subquery/change-feed self-pairs exempted (the DeltaForge extract_data_flow_edges rules).</summary>
     public List<DataFlowPair> DataFlowPairs { get; } = [];
+
+    /// <summary>The objects this script created (CREATE TABLE/VIEW, CTAS, SELECT INTO), keyed by object key so
+    /// a later rebuild's CREATE supersedes an earlier one. Carries the generating DDL and, for a plain table,
+    /// its columns: the catalog attaches these to the object so its script and column dictionary are known
+    /// offline.</summary>
+    public Dictionary<string, CreatedObject> CreatedObjects { get; } = new(StringComparer.Ordinal);
 
     public List<string> Warnings { get; } = [];
 

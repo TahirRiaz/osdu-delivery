@@ -123,6 +123,9 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(o => o.Kind).HasMaxLength(32);
             // The module body is unbounded; nvarchar(max) so a long proc/view definition is never truncated.
             entity.Property(o => o.Definition);
+            // The generating DDL is unbounded too (a wide CREATE TABLE, a long view body); nvarchar(max).
+            entity.Property(o => o.Script);
+            entity.Property(o => o.ScriptTier).HasMaxLength(16);
             // A DB-generated surrogate that serves only as the full-text KEY INDEX (Key is too wide to be one).
             entity.Property(o => o.FullTextKey).UseIdentityColumn();
             entity.HasIndex(o => o.FullTextKey).IsUnique();
@@ -211,6 +214,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(c => c.ObjectKey).HasMaxLength(900).IsRequired();
             entity.Property(c => c.Name).HasMaxLength(512).IsRequired();
             entity.Property(c => c.DataType).HasMaxLength(128);
+            entity.Property(c => c.Tier).HasMaxLength(16).IsRequired();
             // Column-by-name search across every object.
             entity.HasIndex(c => c.Name);
             // One row per column position per object: a true invariant (sys.columns.column_id is unique per
@@ -271,6 +275,11 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.Name).HasMaxLength(256).IsRequired();
             entity.Property(s => s.RemoteUrl).HasMaxLength(1024).IsRequired();
             entity.Property(s => s.Branch).HasMaxLength(256).IsRequired();
+            // A secret reference (${keyvault:...}/${env:...}), not a secret value: bounded, never a blob.
+            entity.Property(s => s.CredentialReference).HasMaxLength(512);
+            entity.Property(s => s.CredentialUsername).HasMaxLength(256);
+            // A JSON array of excluded flow paths: unbounded (a large estate can exclude many files).
+            entity.Property(s => s.ExcludedFlowPaths);
             entity.HasIndex(s => s.Name).IsUnique();
             // The sync loop scans for enabled sources whose next sync is due.
             entity.HasIndex(s => s.NextSyncUtc);

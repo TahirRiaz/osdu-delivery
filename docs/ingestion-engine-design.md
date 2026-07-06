@@ -1,5 +1,12 @@
 # The Ingestion Engine in V3 (flw.Ingestion + flw.IngestionVirtual)
 
+> Pre-implementation design document reasoning from the legacy `flw.Ingestion` schema; it has not
+> been re-verified against the current codebase. For the current, code-verified behavior see
+> [docs/reference/flow/ing.md](reference/flow/ing.md) and its companion pages
+> ([ing-load](reference/flow/ing-load.md), [ing-quality](reference/flow/ing-quality.md),
+> [ing-schema-incremental](reference/flow/ing-schema-incremental.md), [ing-versioning](reference/flow/ing-versioning.md)),
+> plus [docs/reference/concepts/ingestion-run-pipeline.md](reference/concepts/ingestion-run-pipeline.md).
+
 Status: design. Target tree: `C:\Projects\SQLFlowV3`. Builds on the connection registry (see `connection-registry-design.md`, slice 1 implemented). This document covers the legacy `flw.Ingestion` and `flw.IngestionVirtual` tables, which the project owner identifies as the main engine of SQLFlow.
 
 ---

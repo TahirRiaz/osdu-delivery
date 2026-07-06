@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Link as RouterLink, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -24,11 +23,16 @@ import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
 import type { RunSummary, Schedule } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DetailHeaderCard } from "../../components/DetailHeaderCard";
+import { DetailPair } from "../../components/DetailPair";
+import { EmptyState } from "../../components/EmptyState";
+import { Mono } from "../../components/Mono";
+import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge, RunStatusBadge, ScheduleStateBadge } from "../../components/StatusBadge";
 import { formatDurationSeconds } from "../../lib/time";
-import { DetailPair } from "../repos/RepoDetailPage";
+import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 
 /** Definition JSON arrives as one compact string; pretty-print it, falling back to the raw text if malformed. */
@@ -64,11 +68,7 @@ const runColumns = (): Column<RunSummary>[] => [
   {
     id: "commit",
     header: "Commit",
-    render: (row) => (
-      <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
-        {row.commitSha?.slice(0, 10) ?? "-"}
-      </Typography>
-    ),
+    render: (row) => <Mono>{row.commitSha?.slice(0, 10) ?? "-"}</Mono>,
   },
 ];
 
@@ -94,11 +94,11 @@ function TransformsTab({ pipelineId }: { pipelineId: string }) {
   if (rows.length === 0) {
     return (
       <Card variant="outlined">
-        <CardContent>
-          <Typography color="text.secondary" data-testid="pipeline-transforms-empty">
-            No transformations are declared in this pipeline's YAML, and no run has detected any yet.
-          </Typography>
-        </CardContent>
+        <EmptyState
+          title="No transformations yet"
+          description="Nothing is declared in this pipeline's YAML, and no run has detected any yet."
+          data-testid="pipeline-transforms-empty"
+        />
       </Card>
     );
   }
@@ -173,7 +173,16 @@ function TransformsTab({ pipelineId }: { pipelineId: string }) {
 const scheduleColumns: Column<Schedule>[] = [
   { id: "trigger", header: "Trigger", render: (row) => scheduleTrigger(row) },
   { id: "timezone", header: "Timezone", render: (row) => row.timezone },
-  { id: "state", header: "State", render: (row) => <ScheduleStateBadge enabled={row.enabled} paused={row.paused} /> },
+  {
+    id: "state",
+    header: "State",
+    render: (row) => (
+      <Stack direction="row" spacing={0.5} alignItems="center">
+        <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
+        {row.catchup && <Chip size="small" variant="outlined" label="catchup" />}
+      </Stack>
+    ),
+  },
   { id: "source", header: "Source", render: (row) => <Chip size="small" label={row.source} variant="outlined" /> },
   { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} /> },
   { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} /> },
@@ -201,7 +210,7 @@ export default function PipelineDetailPage() {
   const detail = detailQuery.data;
   if (detail === undefined) {
     return (
-      <Stack spacing={2} data-testid="page-pipeline-detail">
+      <Page data-testid="page-pipeline-detail">
         <Card variant="outlined">
           <CardContent>
             <Stack spacing={1}>
@@ -212,57 +221,54 @@ export default function PipelineDetailPage() {
           </CardContent>
         </Card>
         <Skeleton variant="rounded" height={320} />
-      </Stack>
+      </Page>
     );
   }
 
   return (
-    <Stack spacing={2} data-testid="page-pipeline-detail">
-      <Card variant="outlined">
-        <CardContent>
-          <Stack spacing={2}>
-            <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography variant="h5" sx={{ fontWeight: 600 }}>{detail.name}</Typography>
-              <Chip size="small" label={detail.kind} variant="outlined" />
-              <ActiveBadge active={detail.active} />
-              <Box sx={{ flexGrow: 1 }} />
-              <Button
-                variant="contained"
-                startIcon={<PlayArrowIcon />}
-                onClick={() => setTriggerOpen(true)}
-                data-testid="open-trigger-run"
-              >
-                Trigger run
-              </Button>
-            </Stack>
-            <Stack direction="row" spacing={4} flexWrap="wrap" useFlexGap>
-              <DetailPair label="Repo">
-                <Link component={RouterLink} to={`/repos/${detail.repoId}`} data-testid="pipeline-repo-link">
-                  {detail.repoId}
-                </Link>
-              </DetailPair>
-              <DetailPair label="Batch">{detail.batch ?? "-"}</DetailPair>
-              <DetailPair label="Wave">{detail.wave === -1 ? "-" : String(detail.wave)}</DetailPair>
-              <DetailPair label="Source server">{detail.sourceServer ?? "-"}</DetailPair>
-              <DetailPair label="Target server">{detail.targetServer ?? "-"}</DetailPair>
-              <DetailPair label="Path">
-                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
-                  {detail.relativePath}
-                </Typography>
-              </DetailPair>
-              <DetailPair label="Content hash">
-                <Tooltip title={detail.contentHash}>
-                  <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
-                    {detail.contentHash.slice(0, 12)}
-                  </Typography>
-                </Tooltip>
-              </DetailPair>
-              <DetailPair label="First seen"><RelativeTime value={detail.firstSeenUtc} /></DetailPair>
-              <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} /></DetailPair>
-            </Stack>
-          </Stack>
-        </CardContent>
-      </Card>
+    <Page data-testid="page-pipeline-detail">
+      <DetailHeaderCard
+        title={detail.name}
+        badges={(
+          <>
+            <Chip size="small" label={detail.kind} variant="outlined" />
+            <ActiveBadge active={detail.active} />
+          </>
+        )}
+        actions={(
+          <Button
+            variant="contained"
+            startIcon={<PlayArrowIcon />}
+            onClick={() => setTriggerOpen(true)}
+            data-testid="open-trigger-run"
+          >
+            Trigger run
+          </Button>
+        )}
+      >
+        <DetailPair label="Repo">
+          <Link component={RouterLink} to={`/repos/${detail.repoId}`} data-testid="pipeline-repo-link">
+            {detail.repoId}
+          </Link>
+        </DetailPair>
+        <DetailPair label="Project">
+          <Link component={RouterLink} to={`/repos/${detail.repoId}`} data-testid="pipeline-project-link">
+            {projectOf(detail.relativePath)}
+          </Link>
+        </DetailPair>
+        <DetailPair label="Batch">{detail.batch ?? "-"}</DetailPair>
+        <DetailPair label="Wave">{detail.wave === -1 ? "-" : String(detail.wave)}</DetailPair>
+        <DetailPair label="Source server">{detail.sourceServer ?? "-"}</DetailPair>
+        <DetailPair label="Target server">{detail.targetServer ?? "-"}</DetailPair>
+        <DetailPair label="Path"><Mono>{detail.relativePath}</Mono></DetailPair>
+        <DetailPair label="Content hash">
+          <Tooltip title={detail.contentHash}>
+            <Mono>{detail.contentHash.slice(0, 12)}</Mono>
+          </Tooltip>
+        </DetailPair>
+        <DetailPair label="First seen"><RelativeTime value={detail.firstSeenUtc} /></DetailPair>
+        <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} /></DetailPair>
+      </DetailHeaderCard>
 
       <Tabs value={tab} onChange={(_, next) => setTab(next as number)} data-testid="pipeline-tabs">
         <Tab label="YAML" data-testid="pipeline-tab-yaml" />
@@ -306,6 +312,6 @@ export default function PipelineDetailPage() {
           flowName={detail.name}
         />
       )}
-    </Stack>
+    </Page>
   );
 }

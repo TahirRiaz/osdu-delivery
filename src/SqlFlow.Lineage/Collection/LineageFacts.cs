@@ -53,6 +53,29 @@ public sealed record CollectedFlow
     public required DateTime FileWriteUtc { get; init; }
 }
 
+/// <summary>An object a collector saw created, with its generating DDL and (for a plain table) its columns.
+/// The observed tier produces these from the run trace and the declared tier from a hook, so the catalog
+/// attaches a script and an offline column dictionary to an object without a live connection. The graph
+/// builder folds the highest-tier artifact per object onto the node.</summary>
+public sealed record CollectedObjectArtifact
+{
+    public required string ServerRef { get; init; }
+
+    public string? Database { get; init; }
+
+    public string? Schema { get; init; }
+
+    public required string Name { get; init; }
+
+    public required LineageNodeKind Kind { get; init; }
+
+    public string? Script { get; init; }
+
+    public IReadOnlyList<LineageColumn> Columns { get; init; } = [];
+
+    public required LineageTier Tier { get; init; }
+}
+
 /// <summary>One inventoried catalog object (derived tier): the node-kind ground truth.</summary>
 public sealed record CatalogObject
 {
@@ -103,6 +126,8 @@ public sealed class CollectionResult
 
     public List<LineageFact> Facts { get; } = [];
 
+    public List<CollectedObjectArtifact> ObjectArtifacts { get; } = [];
+
     /// <summary>Every server identity any document referenced, with its raw reference and provider kind
     /// (the derived tier connects to the SQL Server ones).</summary>
     public Dictionary<string, (string RawReference, Core.Connections.DataSourceKind Kind)> Servers { get; }
@@ -132,6 +157,7 @@ public sealed class CollectionResult
         ArgumentNullException.ThrowIfNull(other);
         Flows.AddRange(other.Flows);
         Facts.AddRange(other.Facts);
+        ObjectArtifacts.AddRange(other.ObjectArtifacts);
         CatalogObjects.AddRange(other.CatalogObjects);
         Synonyms.AddRange(other.Synonyms);
         Warnings.AddRange(other.Warnings);

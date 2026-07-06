@@ -126,8 +126,10 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     public async Task<JsonDiscoveryResult> DiscoverAsync(SourceSpec source, int maxFiles, int maxRecords, int maxDepth, CancellationToken ct = default)
     {
         var depth = maxDepth < 1 ? 10 : maxDepth;
+        var meta = PreIngestionJsn.FromSource(source);
+        var rootPath = await ResolveDiscoveryRootPathAsync(source, meta, maxFiles, maxRecords, depth, ct).ConfigureAwait(false);
         var (filesScanned, perRecord) = await ScanRecordsAsync(
-            source, maxFiles, maxRecords, record => JsonStructureDiscovery.ExtractPaths(record, depth), ct).ConfigureAwait(false);
+            source, rootPath, maxFiles, maxRecords, record => JsonStructureDiscovery.ExtractPaths(record, depth), ct).ConfigureAwait(false);
         return JsonStructureDiscovery.Aggregate(perRecord) with { FilesScanned = filesScanned };
     }
 
@@ -139,9 +141,57 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     public async Task<JsonPathInventory> InventoryAsync(SourceSpec source, int maxFiles, int maxRecords, int maxDepth, CancellationToken ct = default)
     {
         var depth = maxDepth < 1 ? 10 : maxDepth;
+        var meta = PreIngestionJsn.FromSource(source);
+        var rootPath = await ResolveDiscoveryRootPathAsync(source, meta, maxFiles, maxRecords, depth, ct).ConfigureAwait(false);
         var (filesScanned, perRecord) = await ScanRecordsAsync(
-            source, maxFiles, maxRecords, record => JsonPathInventoryBuilder.ExtractTypedPaths(record, depth), ct).ConfigureAwait(false);
+            source, rootPath, maxFiles, maxRecords, record => JsonPathInventoryBuilder.ExtractTypedPaths(record, depth), ct).ConfigureAwait(false);
         return JsonPathInventoryBuilder.Build(perRecord) with { FilesScanned = filesScanned };
+    }
+
+    /// <summary>
+    /// Resolves the root path the discovery scan should read records under. An explicit rootPath is authoritative
+    /// and returned as-is. Otherwise the top-level documents are sampled and the statistics-driven record-anchor
+    /// detector proposes the array whose elements are the records (an envelope such as <c>{ items: [...] }</c>
+    /// resolves to <c>$.items</c>); when nothing qualifies, the document root <c>$</c> stands. This only shapes
+    /// discovery (the schema-authoring surface): a load still reads whatever rootPath the saved config carries.
+    /// </summary>
+    private async Task<string> ResolveDiscoveryRootPathAsync(
+        SourceSpec source, PreIngestionJsn meta, int maxFiles, int maxRecords, int maxDepth, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(meta.RootPath) && meta.RootPath != "$")
+        {
+            return meta.RootPath;
+        }
+
+        var detector = new JsonRecordAnchorDetector(maxDepth);
+        var (store, files) = await ResolveFilesAsync(source, ct).ConfigureAwait(false);
+        var fileLimit = maxFiles > 0 ? maxFiles : int.MaxValue;
+        var filesScanned = 0;
+        var documentsScanned = 0;
+
+        foreach (var file in files)
+        {
+            if (filesScanned >= fileLimit || (maxRecords > 0 && documentsScanned >= maxRecords))
+            {
+                break;
+            }
+
+            filesScanned++;
+            var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
+
+            foreach (var document in JsonRecordReader.ReadTopLevelDocuments(data, source.Type, file.Name))
+            {
+                if (maxRecords > 0 && documentsScanned >= maxRecords)
+                {
+                    break;
+                }
+
+                documentsScanned++;
+                detector.Accumulate(document);
+            }
+        }
+
+        return detector.Detect() ?? "$";
     }
 
     /// <summary>
@@ -150,10 +200,9 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     /// scan behind <see cref="DiscoverAsync"/> and <see cref="InventoryAsync"/>.
     /// </summary>
     private async Task<(int FilesScanned, List<T> Items)> ScanRecordsAsync<T>(
-        SourceSpec source, int maxFiles, int maxRecords, Func<JsonElement, T> project, CancellationToken ct)
+        SourceSpec source, string rootPath, int maxFiles, int maxRecords, Func<JsonElement, T> project, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var meta = PreIngestionJsn.FromSource(source);
         var (store, files) = await ResolveFilesAsync(source, ct).ConfigureAwait(false);
 
         var items = new List<T>();
@@ -171,7 +220,7 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
             filesScanned++;
             var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
 
-            foreach (var record in JsonRecordReader.ReadRecords(data, source.Type, meta.RootPath, file.Name))
+            foreach (var record in JsonRecordReader.ReadRecords(data, source.Type, rootPath, file.Name))
             {
                 if (maxRecords > 0 && recordsScanned >= maxRecords)
                 {
@@ -191,9 +240,18 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     {
         ArgumentNullException.ThrowIfNull(source);
         var meta = PreIngestionJsn.FromSource(source);
-        var config = BuildFlattenConfig(meta);
+        var depth = maxDepth < 1 ? 10 : maxDepth;
 
-        var inventory = await InventoryAsync(source, maxFiles, maxRecords, maxDepth, ct).ConfigureAwait(false);
+        // Resolve the record grain once (explicit rootPath, else the detected anchor, else "$") and use it for
+        // the scan, the derived formula, and the reported options so all three views agree on one row grain.
+        var rootPath = await ResolveDiscoveryRootPathAsync(source, meta, maxFiles, maxRecords, depth, ct).ConfigureAwait(false);
+        var specifiedRoot = string.IsNullOrWhiteSpace(meta.RootPath) ? "$" : meta.RootPath;
+        var autoDetected = !string.Equals(rootPath, specifiedRoot, StringComparison.Ordinal);
+        var config = BuildFlattenConfig(meta) with { RootPath = rootPath };
+
+        var (filesScanned, perRecord) = await ScanRecordsAsync(
+            source, rootPath, maxFiles, maxRecords, record => JsonPathInventoryBuilder.ExtractTypedPaths(record, depth), ct).ConfigureAwait(false);
+        var inventory = JsonPathInventoryBuilder.Build(perRecord) with { FilesScanned = filesScanned };
         var formula = JsonFlattenFormulaBuilder.Build(inventory, config);
 
         var paths = inventory.Paths
@@ -205,7 +263,10 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
             "json",
             new SchemaInventory(inventory.FilesScanned, inventory.RecordsScanned, paths),
             new SchemaFormula(columns, formula.CollisionMappings),
-            BuildOptions(meta));
+            BuildOptions(meta, rootPath))
+        {
+            AutoDetectedGrain = autoDetected ? rootPath : null,
+        };
     }
 
     private static SchemaPathKind MapKind(JsonNodeKind kind) => kind switch
@@ -215,11 +276,11 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
         _ => SchemaPathKind.Value,
     };
 
-    private static IReadOnlyList<KeyValuePair<string, string>> BuildOptions(PreIngestionJsn meta)
+    private static IReadOnlyList<KeyValuePair<string, string>> BuildOptions(PreIngestionJsn meta, string rootPath)
     {
         var options = new List<KeyValuePair<string, string>>
         {
-            new("rootPath", string.IsNullOrWhiteSpace(meta.RootPath) ? "$" : meta.RootPath),
+            new("rootPath", string.IsNullOrWhiteSpace(rootPath) ? "$" : rootPath),
             new("separator", meta.Separator),
             new("arrayHandling", meta.ArrayHandling),
         };

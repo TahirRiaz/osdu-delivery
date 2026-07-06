@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -6,6 +6,7 @@ import {
   Controls,
   MarkerType,
   MiniMap,
+  Panel,
   ReactFlow,
   ReactFlowProvider,
   useNodesState,
@@ -16,11 +17,10 @@ import {
 import Autocomplete from "@mui/material/Autocomplete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Card from "@mui/material/Card";
-import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
 import FormControl from "@mui/material/FormControl";
+import IconButton from "@mui/material/IconButton";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Select from "@mui/material/Select";
@@ -29,12 +29,19 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { useTheme } from "@mui/material/styles";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import DownloadIcon from "@mui/icons-material/Download";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import TableRowsIcon from "@mui/icons-material/TableRows";
 import { isApiError } from "../../api/client";
 import { lineageApi, repoApi } from "../../api/endpoints";
 import type { LineageEdge } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
+import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
 import { brandToken, seriesColor } from "../../theme/branding";
 import "@xyflow/react/dist/style.css";
 
@@ -42,7 +49,9 @@ const NODE_WIDTH = 200;
 const NODE_HEIGHT = 56;
 const LAYER_SPACING = 150; // vertical gap between layers (rows, top to bottom); clears NODE_HEIGHT + edge/label room
 const NODE_SPACING = 260;  // horizontal gap between nodes within a layer; clears NODE_WIDTH
-const GRAPH_HEIGHT = "max(calc(100vh - 260px), 480px)";
+// The page fills the viewport below the app chrome (fixed app bar + main padding) so the canvas is as large as
+// possible; the two breakpoints match AppShell's toolbar height and padding on mobile vs desktop.
+const PAGE_HEIGHT = { xs: "calc(100vh - 88px)", md: "calc(100vh - 112px)" } as const;
 
 type GraphView = "flows" | "objects";
 
@@ -212,6 +221,90 @@ function addAdjacency(map: Map<string, string[]>, from: string, to: string): voi
   }
 }
 
+function escapeXml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) =>
+    ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : ch === "\"" ? "&quot;" : "&apos;");
+}
+
+/**
+ * Serialize the built graph to a standalone SVG from the computed layout: rounded node cards with a colored accent
+ * bar, bezier edges with arrowheads and relation labels. Built from the graph model rather than React Flow's DOM,
+ * so the export is a clean vector (no HTML foreignObject) that opens in any SVG editor, in the current theme's
+ * colors. Returns "" for an empty graph.
+ */
+function buildLineageSvg(
+  graph: BuiltGraph,
+  palette: { text: string; textMuted: string; paper: string; border: string },
+): string {
+  if (graph.nodes.length === 0) {
+    return "";
+  }
+  const PAD = 48;
+  const xs = graph.nodes.map((node) => node.position.x);
+  const ys = graph.nodes.map((node) => node.position.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const width = Math.round(Math.max(...xs) - minX + NODE_WIDTH + PAD * 2);
+  const height = Math.round(Math.max(...ys) - minY + NODE_HEIGHT + PAD * 2);
+  const ox = PAD - minX;
+  const oy = PAD - minY;
+
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const strokeOf = (color: unknown) => (typeof color === "string" ? color : palette.border);
+  const markerId = (color: string) =>
+    `arrow-${[...color].reduce((hash, ch) => (hash * 31 + ch.charCodeAt(0)) >>> 0, 0).toString(36)}`;
+
+  const colors = new Set<string>();
+  for (const edge of graph.edges) {
+    colors.add(strokeOf(edge.style?.stroke));
+  }
+  const defs = [...colors]
+    .map((color) =>
+      `<marker id="${markerId(color)}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">`
+      + `<path d="M0,0 L10,5 L0,10 z" fill="${color}"/></marker>`)
+    .join("");
+
+  const edgeSvg = graph.edges.map((edge) => {
+    const from = nodeById.get(edge.source);
+    const to = nodeById.get(edge.target);
+    if (!from || !to) {
+      return "";
+    }
+    const stroke = strokeOf(edge.style?.stroke);
+    const sx = from.position.x + ox + NODE_WIDTH / 2;
+    const sy = from.position.y + oy + NODE_HEIGHT;
+    const tx = to.position.x + ox + NODE_WIDTH / 2;
+    const ty = to.position.y + oy;
+    const my = (sy + ty) / 2;
+    const path = `<path d="M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}" fill="none" stroke="${stroke}" stroke-width="1.5" marker-end="url(#${markerId(stroke)})"/>`;
+    const label = typeof edge.label === "string" ? edge.label : "";
+    if (label === "") {
+      return path;
+    }
+    const lx = (sx + tx) / 2;
+    const boxWidth = label.length * 6.5 + 12;
+    return path
+      + `<rect x="${lx - boxWidth / 2}" y="${my - 9}" width="${boxWidth}" height="18" rx="4" fill="${palette.paper}" stroke="${palette.border}"/>`
+      + `<text x="${lx}" y="${my + 4}" text-anchor="middle" font-size="11" fill="${palette.textMuted}">${escapeXml(label)}</text>`;
+  }).join("");
+
+  const nodeSvg = graph.nodes.map((node) => {
+    const x = node.position.x + ox;
+    const y = node.position.y + oy;
+    const accent = graph.flowColors.get(node.id) ?? palette.border;
+    const name = graph.names.get(node.id) ?? node.id;
+    const label = name.length > 26 ? `${name.slice(0, 25)}…` : name;
+    return `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="8" fill="${palette.paper}" stroke="${palette.border}"/>`
+      + `<rect x="${x}" y="${y}" width="4" height="${NODE_HEIGHT}" rx="2" fill="${accent}"/>`
+      + `<text x="${x + 14}" y="${y + NODE_HEIGHT / 2 + 4}" font-size="13" font-weight="600" fill="${palette.text}">${escapeXml(label)}</text>`;
+  }).join("");
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" `
+    + `font-family="Inter, system-ui, -apple-system, sans-serif">`
+    + `<rect x="0" y="0" width="100%" height="100%" fill="${palette.paper}"/>`
+    + `<defs>${defs}</defs>${edgeSvg}${nodeSvg}</svg>`;
+}
+
 interface FocusState {
   id: string;
   upstream: Set<string>;
@@ -226,6 +319,8 @@ interface CanvasProps {
   centerRequest: { id: string; nonce: number } | null;
   onFocus: (id: string | null) => void;
   onOpen: (id: string) => void;
+  /** Overlay content rendered inside the flow pane (the floating details panel). */
+  children?: ReactNode;
 }
 
 /**
@@ -233,7 +328,7 @@ interface CanvasProps {
  * focus styling is applied in place so a focus change never resets positions the user arranged. Single click
  * focuses (upstream/downstream highlight); double click opens the node's page; clicking the pane clears focus.
  */
-function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen }: CanvasProps) {
+function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, children }: CanvasProps) {
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const view = useReactFlow();
 
@@ -310,7 +405,8 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen }
     >
       <Background />
       <Controls />
-      <MiniMap />
+      <MiniMap pannable zoomable />
+      {children}
     </ReactFlow>
   );
 }
@@ -331,6 +427,7 @@ export default function LineageGraphPage() {
   const graphView: GraphView = searchParams.get("view") === "objects" ? "objects" : "flows";
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const [panelOpen, setPanelOpen] = useState(true);
 
   const repos = useQuery({
     queryKey: ["repos", "for-lineage-graph"],
@@ -387,6 +484,17 @@ export default function LineageGraphPage() {
     return [...waves.data].sort((a, b) => rank(a.wave) - rank(b.wave));
   }, [waves.data]);
 
+  // The wave (batch) top filter, read from ?wave= and validated against the repo's actual waves so a stale value
+  // (e.g. after switching repos) simply falls back to "all waves" instead of drawing an empty graph.
+  const rawWave = searchParams.get("wave");
+  const selectedWave = useMemo(() => {
+    if (rawWave === null || rawWave === "") {
+      return null;
+    }
+    const parsed = Number(rawWave);
+    return sortedWaves.some((wave) => wave.wave === parsed) ? parsed : null;
+  }, [rawWave, sortedWaves]);
+
   // ---- Flows view: pipelines AND the physical objects they move data through, all as nodes -------------------
   // A pipeline reads and writes objects, so a physical table (Fact_OrderSummary, a mart) is its OWN node sitting
   // between the flow that produces it and the flow(s) that consume it - not a label collapsed onto one edge. A
@@ -406,19 +514,32 @@ export default function LineageGraphPage() {
     const nodes: FlowNode[] = [];
     const edges: FlowEdge[] = [];
     const seenEdges = new Set<string>();
-    let colorIndex = 0;
 
-    // Pipeline nodes (one accent color each).
+    // Stable per-pipeline accent color and a name->id map across EVERY wave first, so a pipeline keeps its color
+    // whether or not the wave filter is applied (the filter only changes which nodes are drawn, not their colors).
+    let colorIndex = 0;
     for (const wave of waves.data) {
+      for (const pipeline of wave.pipelines) {
+        if (!flowColors.has(pipeline.id)) {
+          flowColors.set(pipeline.id, seriesColor(colorIndex));
+          colorIndex += 1;
+        }
+        pipelineIdByName.set(pipeline.name, pipeline.id);
+      }
+    }
+
+    // Pipeline nodes, restricted to the selected wave when the batch filter is set. Only these pipelines pull in
+    // the objects they read/write below, so filtering to a wave scopes the whole graph to that batch.
+    for (const wave of waves.data) {
+      if (selectedWave !== null && wave.wave !== selectedWave) {
+        continue;
+      }
       for (const pipeline of wave.pipelines) {
         if (names.has(pipeline.id)) {
           continue;
         }
-        const color = seriesColor(colorIndex);
-        colorIndex += 1;
+        const color = flowColors.get(pipeline.id)!;
         names.set(pipeline.id, pipeline.name);
-        pipelineIdByName.set(pipeline.name, pipeline.id);
-        flowColors.set(pipeline.id, color);
         nodes.push({
           id: pipeline.id,
           position: { x: 0, y: 0 },
@@ -531,7 +652,8 @@ export default function LineageGraphPage() {
     // it reads. Every physical table a flow produces is therefore its own node between producer and consumers.
     for (const [flow, group] of byFlow) {
       const producerId = pipelineIdByName.get(flow);
-      if (producerId === undefined) {
+      // Skip flows whose pipeline is not a drawn node (unknown flow, or filtered out by the wave selection).
+      if (producerId === undefined || !names.has(producerId)) {
         continue;
       }
       const color = flowColors.get(producerId)!;
@@ -552,6 +674,10 @@ export default function LineageGraphPage() {
     for (const viewKey of viewKeys) {
       const owner = writeOwner.get(viewKey);
       const producerId = owner ? pipelineIdByName.get(owner) : undefined;
+      // Under a wave filter, only keep views maintained by a pipeline that is actually drawn in this batch.
+      if (selectedWave !== null && (producerId === undefined || !names.has(producerId))) {
+        continue;
+      }
       const color = producerId ? flowColors.get(producerId)! : seriesColor(colorIndex++);
       ensureObject(viewKey);
       for (const baseKey of moduleReads.get(viewKey) ?? []) {
@@ -568,11 +694,11 @@ export default function LineageGraphPage() {
       incoming,
       outgoing,
       openTarget: (id) => (objectNodeIds.has(id)
-        ? { label: "Open in explorer", to: `/lineage?name=${encodeURIComponent(names.get(id) ?? id)}` }
+        ? { label: "Open in explorer", to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}` }
         : { label: "Open pipeline", to: `/pipelines/${id}` }),
     };
     // The series colors are theme-scoped custom properties; rebuilding on mode change keeps them in sync.
-  }, [waves.data, objectEdges.data, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [waves.data, objectEdges.data, selectedWave, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Objects view: tables/files as nodes, "flow moves data from A to B" as edges, colored per flow -------------
   const objectsGraph = useMemo<BuiltGraph | null>(() => {
@@ -717,7 +843,7 @@ export default function LineageGraphPage() {
       outgoing,
       openTarget: (id) => ({
         label: "Open in explorer",
-        to: `/lineage?name=${encodeURIComponent(names.get(id) ?? id)}`,
+        to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}`,
       }),
     };
   }, [graphView, objectEdges.data, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -757,206 +883,322 @@ export default function LineageGraphPage() {
   const queryError = [repos, waves, objectEdges].find((query) => query.isError)?.error;
   const loadingGraph = repoId !== "" && (waves.isPending || objectEdges.isPending);
   const hasContent = graph !== null && graph.nodes.length > 0;
+  const repoName = repoItems.find((repo) => repo.id === repoId)?.name ?? repoId;
+
+  // Export the drawn graph as an SVG vector of the current layout (nodes, edges, labels) in the active theme,
+  // built from the same in-memory graph so it stays a single source of truth.
+  const downloadLineage = useCallback(() => {
+    if (graph === null) {
+      return;
+    }
+    const svg = buildLineageSvg(graph, {
+      text: theme.palette.text.primary,
+      textMuted: theme.palette.text.secondary,
+      paper: theme.palette.background.paper,
+      border: theme.palette.divider,
+    });
+    if (svg === "") {
+      return;
+    }
+    const safeName = (repoName || repoId || "graph").replace(/[^\w.-]+/g, "_");
+    const blob = new Blob([svg], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `lineage-${safeName}-${graphView}.svg`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }, [graph, graphView, repoId, repoName, theme.palette]);
+
+  // The floating details panel: node focus (upstream/downstream trace + open) over the execution waves (flows)
+  // or the per-flow edge legend (objects). It rides on the canvas via a React Flow <Panel> so the graph keeps the
+  // full width, and collapses to a single button when the user wants the whole canvas.
+  const detailsPanel = graph === null ? null : (
+    <Paper
+      variant="outlined"
+      data-testid="graph-side-panel"
+      sx={{
+        width: 300,
+        // Bounded to the visible canvas so a long wave list scrolls inside the panel rather than off the graph.
+        maxHeight: { xs: "calc(100vh - 200px)", md: "calc(100vh - 224px)" },
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          px: 2,
+          py: 1,
+          flexShrink: 0,
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
+        <Typography variant="subtitle2" fontWeight={700}>Details</Typography>
+        <Tooltip title="Collapse panel">
+          <IconButton size="small" onClick={() => setPanelOpen(false)} data-testid="graph-panel-collapse" aria-label="Collapse panel">
+            <ChevronRightIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", p: 2 }}>
+        {focus !== null && (
+          <Box data-testid="graph-focus-panel" sx={{ mb: 2 }}>
+            <Typography variant="subtitle1" fontWeight={600} noWrap>
+              {graph.names.get(focus.id) ?? focus.id}
+            </Typography>
+            <Stack direction="row" spacing={1} sx={{ my: 1 }}>
+              <Chip
+                size="small"
+                label={`${focus.upstream.size} upstream`}
+                sx={{ bgcolor: brandToken("--sf-series-2"), color: brandToken("--sf-primary-contrast") }}
+              />
+              <Chip
+                size="small"
+                label={`${focus.downstream.size} downstream`}
+                sx={{ bgcolor: brandToken("--sf-series-7"), color: brandToken("--sf-primary-contrast") }}
+              />
+            </Stack>
+            <Stack direction="row" spacing={1}>
+              <Button size="small" variant="contained" onClick={() => openNode(focus.id)} data-testid="graph-open-selected">
+                {graph.openTarget(focus.id).label}
+              </Button>
+              <Button size="small" onClick={() => focusNode(null)} data-testid="graph-clear-focus">
+                Clear
+              </Button>
+            </Stack>
+            <Divider sx={{ mt: 2 }} />
+          </Box>
+        )}
+
+        {graphView === "flows" ? (
+          <>
+            <Typography variant="subtitle1" fontWeight={600} gutterBottom>Execution waves</Typography>
+            {sortedWaves.map((wave) => (
+              <Box key={wave.wave} sx={{ mb: 1.5 }}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  {wave.wave === -1 ? "Unwaved (lineage not computed)" : `Wave ${wave.wave}`}
+                </Typography>
+                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }} data-testid="wave-list">
+                  {wave.pipelines.map((pipeline) => (
+                    <Chip
+                      key={pipeline.id}
+                      label={pipeline.name}
+                      size="small"
+                      onClick={() => {
+                        focusNode(pipeline.id);
+                        setCenterRequest((previous) => ({ id: pipeline.id, nonce: (previous?.nonce ?? 0) + 1 }));
+                      }}
+                      sx={{
+                        borderLeft: `4px solid ${graph.flowColors.get(pipeline.id) ?? "transparent"}`,
+                        borderRadius: 1,
+                      }}
+                      data-testid={`wave-pipeline-${pipeline.id}`}
+                    />
+                  ))}
+                </Box>
+              </Box>
+            ))}
+          </>
+        ) : (
+          <>
+            <Typography variant="subtitle1" fontWeight={600} gutterBottom>Flows (edge colors)</Typography>
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }} data-testid="graph-flow-legend">
+              {[...graph.flowColors.entries()].map(([flow, color]) => (
+                <Chip
+                  key={flow}
+                  label={flow}
+                  size="small"
+                  sx={{ borderLeft: `4px solid ${color}`, borderRadius: 1 }}
+                />
+              ))}
+            </Box>
+          </>
+        )}
+      </Box>
+    </Paper>
+  );
 
   return (
-    <Box data-testid="page-lineage-graph">
-      <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
-        <Typography variant="h5" fontWeight={600} sx={{ flexGrow: 1 }}>Lineage graph</Typography>
-        <ToggleButtonGroup
-          exclusive
-          size="small"
-          value={graphView}
-          onChange={(_, value: GraphView | null) => {
-            if (value !== null) {
-              setParam("view", value === "flows" ? "" : value);
-            }
-          }}
-          data-testid="graph-view-toggle"
-        >
-          <ToggleButton value="flows" data-testid="graph-view-flows">Flows</ToggleButton>
-          <ToggleButton value="objects" data-testid="graph-view-objects">Objects</ToggleButton>
-        </ToggleButtonGroup>
-        {hasContent && (
-          <Autocomplete
-            size="small"
-            sx={{ width: 260 }}
-            options={searchOptions}
-            getOptionLabel={(option) => option.name}
-            isOptionEqualToValue={(a, b) => a.id === b.id}
-            onChange={(_, option) => {
-              if (option) {
-                focusNode(option.id);
-                setCenterRequest((previous) => ({ id: option.id, nonce: (previous?.nonce ?? 0) + 1 }));
-              }
-            }}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                placeholder="Find a node"
-                inputProps={{ ...params.inputProps, "data-testid": "graph-node-search" }}
+    <Box
+      data-testid="page-lineage-graph"
+      sx={{ display: "flex", flexDirection: "column", gap: 2, height: PAGE_HEIGHT, minWidth: 0 }}
+    >
+      <PageHeader
+        title="Lineage graph"
+        actions={(
+          <>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<TableRowsIcon />}
+              onClick={() => navigate("/lineage/objects")}
+              data-testid="open-lineage-objects"
+            >
+              Explorer
+            </Button>
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={graphView}
+              onChange={(_, value: GraphView | null) => {
+                if (value !== null) {
+                  setParam("view", value === "flows" ? "" : value);
+                }
+              }}
+              data-testid="graph-view-toggle"
+            >
+              <ToggleButton value="flows" data-testid="graph-view-flows">Flows</ToggleButton>
+              <ToggleButton value="objects" data-testid="graph-view-objects">Objects</ToggleButton>
+            </ToggleButtonGroup>
+            {graphView === "flows" && sortedWaves.length > 0 && (
+              <FormControl size="small" sx={{ minWidth: 150 }}>
+                <Select
+                  value={selectedWave === null ? "" : String(selectedWave)}
+                  onChange={(event) => setParam("wave", event.target.value)}
+                  displayEmpty
+                  inputProps={{ "aria-label": "Wave" }}
+                  data-testid="graph-wave-filter"
+                >
+                  <MenuItem value=""><em>All waves</em></MenuItem>
+                  {sortedWaves.map((wave) => (
+                    <MenuItem key={wave.wave} value={String(wave.wave)}>
+                      {wave.wave === -1 ? "Unwaved" : `Wave ${wave.wave}`}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+            {hasContent && (
+              <Autocomplete
+                size="small"
+                sx={{ width: 240 }}
+                options={searchOptions}
+                getOptionLabel={(option) => option.name}
+                isOptionEqualToValue={(a, b) => a.id === b.id}
+                onChange={(_, option) => {
+                  if (option) {
+                    focusNode(option.id);
+                    setCenterRequest((previous) => ({ id: option.id, nonce: (previous?.nonce ?? 0) + 1 }));
+                  }
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    placeholder="Find a node"
+                    inputProps={{ ...params.inputProps, "data-testid": "graph-node-search" }}
+                  />
+                )}
               />
             )}
-          />
+            {hasContent && (
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<DownloadIcon />}
+                onClick={downloadLineage}
+                data-testid="download-lineage"
+              >
+                Download SVG
+              </Button>
+            )}
+            <FormControl size="small" sx={{ minWidth: 220 }}>
+              <Select
+                value={selectValue}
+                onChange={(event) => setParam("repoId", event.target.value)}
+                displayEmpty
+                inputProps={{ "aria-label": "Repo" }}
+                data-testid="graph-repo-select"
+              >
+                <MenuItem value=""><em>Select a repo</em></MenuItem>
+                {repoItems.map((repo) => (
+                  <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </>
         )}
-        <FormControl size="small" sx={{ minWidth: 240 }}>
-          <Select
-            value={selectValue}
-            onChange={(event) => setParam("repoId", event.target.value)}
-            displayEmpty
-            inputProps={{ "aria-label": "Repo" }}
-            data-testid="graph-repo-select"
-          >
-            <MenuItem value=""><em>Select a repo</em></MenuItem>
-            {repoItems.map((repo) => (
-              <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      </Stack>
+      />
 
       {queryError !== undefined && (
-        <Box sx={{ mb: 2 }}>
-          {isApiError(queryError)
-            ? <CorrelationError error={queryError} />
-            : <Typography color="error">{String(queryError)}</Typography>}
-        </Box>
+        isApiError(queryError)
+          ? <CorrelationError error={queryError} />
+          : <Typography color="error">{String(queryError)}</Typography>
       )}
 
-      {repoId === "" && !repos.isError && (
-        <Paper variant="outlined" sx={{ p: 6, textAlign: "center" }} data-testid="graph-empty">
-          <Typography variant="h6" color="text.secondary" gutterBottom>Pick a repo to draw its graph</Typography>
-          <Typography variant="body2" color="text.secondary">
-            The lineage graph is computed per repo: select one above to see its pipelines and the objects that
-            connect them. Click a node to trace what feeds it and what depends on it.
-          </Typography>
-        </Paper>
-      )}
-
-      {loadingGraph && !queryError && (
-        <Skeleton variant="rectangular" sx={{ height: 480, borderRadius: 1 }} data-testid="graph-loading" />
-      )}
-
-      {repoId !== "" && !loadingGraph && !queryError && graph !== null && !hasContent && (
-        <Paper variant="outlined" sx={{ p: 6, textAlign: "center" }} data-testid="graph-no-lineage">
-          <Typography variant="h6" color="text.secondary" gutterBottom>
-            {graphView === "flows" ? "No lineage for this repo yet" : "No object lineage for this repo yet"}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {graphView === "flows"
-              ? "No waves or pipelines were found. Sync the repo, then come back."
-              : "No object edges were recorded. Sync the repo (a connected sync adds the derived tier), then come back."}
-          </Typography>
-        </Paper>
-      )}
-
-      {repoId !== "" && !loadingGraph && !queryError && graph !== null && hasContent && (
-        <Stack direction={{ xs: "column", lg: "row" }} spacing={2}>
-          <Box
-            sx={{
-              flexGrow: 1,
-              minWidth: 0,
-              height: GRAPH_HEIGHT,
-              border: 1,
-              borderColor: "divider",
-              borderRadius: 1,
-              overflow: "hidden",
-            }}
-            data-testid="lineage-graph-canvas"
-          >
-            <ReactFlowProvider>
-              <GraphCanvas
-                graph={graph}
-                focus={focus}
-                colorMode={theme.palette.mode}
-                centerRequest={centerRequest}
-                onFocus={focusNode}
-                onOpen={openNode}
-              />
-            </ReactFlowProvider>
+      <Box
+        data-testid="lineage-graph-canvas"
+        sx={{
+          position: "relative",
+          flexGrow: 1,
+          minHeight: 0,
+          border: 1,
+          borderColor: "divider",
+          borderRadius: 1,
+          overflow: "hidden",
+          bgcolor: "background.paper",
+        }}
+      >
+        {repoId === "" && !repos.isError && (
+          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-empty">
+            <EmptyState
+              title="Pick a repo to draw its graph"
+              description="The lineage graph is computed per repo: select one above to see its pipelines and the objects that connect them. Click a node to trace what feeds it and what depends on it."
+            />
           </Box>
-          <Card
-            variant="outlined"
-            sx={{ width: { xs: "100%", lg: 320 }, flexShrink: 0, maxHeight: GRAPH_HEIGHT, overflowY: "auto" }}
-            data-testid="graph-side-panel"
-          >
-            <CardContent>
-              {focus !== null && (
-                <Box data-testid="graph-focus-panel" sx={{ mb: 2 }}>
-                  <Typography variant="subtitle1" fontWeight={600} noWrap>
-                    {graph.names.get(focus.id) ?? focus.id}
-                  </Typography>
-                  <Stack direction="row" spacing={1} sx={{ my: 1 }}>
-                    <Chip
-                      size="small"
-                      label={`${focus.upstream.size} upstream`}
-                      sx={{ bgcolor: brandToken("--sf-series-2"), color: brandToken("--sf-primary-contrast") }}
-                    />
-                    <Chip
-                      size="small"
-                      label={`${focus.downstream.size} downstream`}
-                      sx={{ bgcolor: brandToken("--sf-series-7"), color: brandToken("--sf-primary-contrast") }}
-                    />
-                  </Stack>
-                  <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="contained" onClick={() => openNode(focus.id)} data-testid="graph-open-selected">
-                      {graph.openTarget(focus.id).label}
-                    </Button>
-                    <Button size="small" onClick={() => focusNode(null)} data-testid="graph-clear-focus">
-                      Clear
-                    </Button>
-                  </Stack>
-                  <Divider sx={{ mt: 2 }} />
-                </Box>
-              )}
+        )}
 
-              {graphView === "flows" ? (
-                <>
-                  <Typography variant="subtitle1" fontWeight={600} gutterBottom>Execution waves</Typography>
-                  {sortedWaves.map((wave) => (
-                    <Box key={wave.wave} sx={{ mb: 1.5 }}>
-                      <Typography variant="subtitle2" color="text.secondary">
-                        {wave.wave === -1 ? "Unwaved (lineage not computed)" : `Wave ${wave.wave}`}
-                      </Typography>
-                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }} data-testid="wave-list">
-                        {wave.pipelines.map((pipeline) => (
-                          <Chip
-                            key={pipeline.id}
-                            label={pipeline.name}
-                            size="small"
-                            onClick={() => {
-                              focusNode(pipeline.id);
-                              setCenterRequest((previous) => ({ id: pipeline.id, nonce: (previous?.nonce ?? 0) + 1 }));
-                            }}
-                            sx={{
-                              borderLeft: `4px solid ${graph.flowColors.get(pipeline.id) ?? "transparent"}`,
-                              borderRadius: 1,
-                            }}
-                            data-testid={`wave-pipeline-${pipeline.id}`}
-                          />
-                        ))}
-                      </Box>
-                    </Box>
-                  ))}
-                </>
+        {loadingGraph && !queryError && (
+          <Skeleton variant="rectangular" sx={{ position: "absolute", inset: 0, height: "100%" }} data-testid="graph-loading" />
+        )}
+
+        {repoId !== "" && !loadingGraph && !queryError && graph !== null && !hasContent && (
+          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-no-lineage">
+            <EmptyState
+              title={graphView === "flows" ? "No lineage for this repo yet" : "No object lineage for this repo yet"}
+              description={graphView === "flows"
+                ? "No waves or pipelines were found. Sync the repo, then come back."
+                : "No object edges were recorded. Sync the repo (a connected sync adds the derived tier), then come back."}
+            />
+          </Box>
+        )}
+
+        {repoId !== "" && !loadingGraph && !queryError && graph !== null && hasContent && (
+          <ReactFlowProvider>
+            <GraphCanvas
+              graph={graph}
+              focus={focus}
+              colorMode={theme.palette.mode}
+              centerRequest={centerRequest}
+              onFocus={focusNode}
+              onOpen={openNode}
+            >
+              {panelOpen ? (
+                <Panel position="top-right">{detailsPanel}</Panel>
               ) : (
-                <>
-                  <Typography variant="subtitle1" fontWeight={600} gutterBottom>Flows (edge colors)</Typography>
-                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }} data-testid="graph-flow-legend">
-                    {[...graph.flowColors.entries()].map(([flow, color]) => (
-                      <Chip
-                        key={flow}
-                        label={flow}
-                        size="small"
-                        sx={{ borderLeft: `4px solid ${color}`, borderRadius: 1 }}
-                      />
-                    ))}
-                  </Box>
-                </>
+                <Panel position="top-right">
+                  <Tooltip title="Show details">
+                    <IconButton
+                      onClick={() => setPanelOpen(true)}
+                      data-testid="graph-panel-open"
+                      aria-label="Show details panel"
+                      sx={{ bgcolor: "background.paper", border: 1, borderColor: "divider", "&:hover": { bgcolor: "background.paper" } }}
+                    >
+                      <InfoOutlinedIcon />
+                    </IconButton>
+                  </Tooltip>
+                </Panel>
               )}
-            </CardContent>
-          </Card>
-        </Stack>
-      )}
+            </GraphCanvas>
+          </ReactFlowProvider>
+        )}
+      </Box>
     </Box>
   );
 }

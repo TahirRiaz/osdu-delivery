@@ -61,6 +61,43 @@ public static class XmlRecordReader
         return SelectRecords(working, rowXPath, fileName).ToList();
     }
 
+    /// <summary>
+    /// Parses one XML document and returns its root element WITHOUT selecting row elements: the raw tree the
+    /// record-anchor detector walks before a row grain is chosen. Namespaces are stripped when
+    /// <paramref name="stripNamespaces"/> is set, so the absolute paths the detector emits match the paths the
+    /// row selector later resolves. Returns null for an empty document or one with no root element. The returned
+    /// element keeps its document alive by reference, so it is safe to hold after this returns.
+    /// </summary>
+    public static XElement? ReadDocumentRoot(byte[] data, bool stripNamespaces, string fileName)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        if (data.Length == 0)
+        {
+            return null;
+        }
+
+        XDocument document;
+        try
+        {
+            using var stream = new MemoryStream(data, writable: false);
+            using var reader = XmlReader.Create(stream, SafeSettings);
+            document = XDocument.Load(reader);
+        }
+        catch (XmlException ex)
+        {
+            throw new SqlFlowException($"Invalid XML in '{fileName}': {ex.Message}", ex);
+        }
+
+        var root = document.Root;
+        if (root is null)
+        {
+            return null;
+        }
+
+        EnsureWithinDepth(root, fileName);
+        return stripNamespaces ? StripNamespaces(root) : root;
+    }
+
     /// <summary>Generous bound on element nesting depth; deeper documents are rejected rather than risk a stack overflow.</summary>
     private const int MaxNestingDepth = 1000;
 

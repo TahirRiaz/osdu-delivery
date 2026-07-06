@@ -12,6 +12,10 @@ import Typography from "@mui/material/Typography";
 import SearchIcon from "@mui/icons-material/Search";
 import { searchApi } from "../../api/endpoints";
 import type { ColumnHit, DefinitionHit, ObjectHit } from "../../api/types";
+import { EmptyState } from "../../components/EmptyState";
+import { Mono } from "../../components/Mono";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 
 function truncate(value: string, max: number): string {
@@ -50,9 +54,7 @@ const columnColumns: Column<ColumnHit>[] = [
     header: "Object key",
     render: (row) => (
       <Tooltip title={row.objectKey}>
-        <Typography component="span" variant="body2" sx={{ fontFamily: "monospace" }}>
-          {truncate(row.objectKey, 60)}
-        </Typography>
+        <Mono>{truncate(row.objectKey, 60)}</Mono>
       </Tooltip>
     ),
   },
@@ -68,11 +70,7 @@ const definitionColumns: Column<DefinitionHit>[] = [
   {
     id: "snippet",
     header: "Snippet",
-    render: (row) => (
-      <Typography component="span" variant="body2" sx={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
-        {row.snippet}
-      </Typography>
-    ),
+    render: (row) => <Mono sx={{ whiteSpace: "pre-wrap" }}>{row.snippet}</Mono>,
   },
 ];
 
@@ -98,13 +96,13 @@ export default function SearchPage() {
     setSearchParams(trimmed === "" ? {} : { q: trimmed }, { replace: true });
   };
 
-  const openLineage = (name: string) => navigate(`/lineage?name=${encodeURIComponent(name)}`);
+  const openLineage = (name: string) => navigate(`/lineage/objects?name=${encodeURIComponent(name)}`);
 
   return (
-    <Box data-testid="page-search">
-      <Typography variant="h5" fontWeight={600} sx={{ mb: 2 }}>Search</Typography>
+    <Page data-testid="page-search">
+      <PageHeader title="Search" />
 
-      <Box component="form" onSubmit={submit} sx={{ mb: 2 }}>
+      <Box component="form" onSubmit={submit}>
         <Stack direction="row" spacing={2}>
           <TextField
             label="Search term"
@@ -120,18 +118,17 @@ export default function SearchPage() {
         </Stack>
       </Box>
 
-      <Tabs value={tab} onChange={(_, next: number) => setTab(next)} sx={{ mb: 2 }} data-testid="search-tabs">
+      <Tabs value={tab} onChange={(_, next: number) => setTab(next)} data-testid="search-tabs">
         <Tab label="Objects" data-testid="search-tab-objects" />
         <Tab label="Columns" data-testid="search-tab-columns" />
         <Tab label="Definitions" data-testid="search-tab-definitions" />
       </Tabs>
 
       {q === "" && (
-        <Box sx={{ py: 10, textAlign: "center" }}>
-          <Typography color="text.secondary" data-testid="search-hint">
-            Type a term to search objects, columns, and definitions
-          </Typography>
-        </Box>
+        <EmptyState
+          title="Type a term to search objects, columns, and definitions"
+          data-testid="search-hint"
+        />
       )}
 
       {q !== "" && tab === 0 && (
@@ -169,6 +166,6 @@ export default function SearchPage() {
           data-testid="search-definitions-table"
         />
       )}
-    </Box>
+    </Page>
   );
 }

@@ -3,7 +3,6 @@ import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSnackbar } from "notistack";
 import Autocomplete from "@mui/material/Autocomplete";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
@@ -30,6 +29,8 @@ import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
 import type { Schedule } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ScheduleStateBadge } from "../../components/StatusBadge";
@@ -44,6 +45,7 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
   const [intervalText, setIntervalText] = useState("");
   const [timezone, setTimezone] = useState("UTC");
   const [enabled, setEnabled] = useState(true);
+  const [catchup, setCatchup] = useState(false);
 
   const repos = useQuery({
     queryKey: ["repos", "all-for-schedule"],
@@ -79,6 +81,7 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
       intervalSeconds: triggerKind === "interval" ? Number.parseInt(intervalText.trim(), 10) : null,
       timezone: timezone.trim() === "" ? "UTC" : timezone.trim(),
       enabled,
+      catchup,
     });
   };
 
@@ -174,6 +177,16 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
             )}
             label="Enabled"
           />
+          <FormControlLabel
+            control={(
+              <Switch
+                checked={catchup}
+                onChange={(e) => setCatchup(e.target.checked)}
+                data-testid="schedule-catchup"
+              />
+            )}
+            label="Catch up missed occurrences"
+          />
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -247,7 +260,20 @@ export default function SchedulesPage() {
       },
     },
     { id: "timezone", header: "Timezone", render: (row) => row.timezone },
-    { id: "state", header: "State", render: (row) => <ScheduleStateBadge enabled={row.enabled} paused={row.paused} /> },
+    {
+      id: "state",
+      header: "State",
+      render: (row) => (
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
+          {row.catchup && (
+            <Tooltip title="Missed occurrences are backfilled (one per tick), not skipped.">
+              <Chip size="small" variant="outlined" label="catchup" />
+            </Tooltip>
+          )}
+        </Stack>
+      ),
+    },
     { id: "source", header: "Source", render: (row) => <Chip size="small" label={row.source} variant="outlined" /> },
     { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} /> },
     { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} /> },
@@ -327,14 +353,15 @@ export default function SchedulesPage() {
   ];
 
   return (
-    <Stack spacing={2} data-testid="page-schedules">
-      <Stack direction="row" alignItems="center" spacing={2}>
-        <Typography variant="h5">Schedules</Typography>
-        <Box sx={{ flexGrow: 1 }} />
-        <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-schedule">
-          Create schedule
-        </Button>
-      </Stack>
+    <Page data-testid="page-schedules">
+      <PageHeader
+        title="Schedules"
+        actions={(
+          <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-schedule">
+            Create schedule
+          </Button>
+        )}
+      />
 
       <PagedTable
         queryKey={["schedules", "list"]}
@@ -361,6 +388,6 @@ export default function SchedulesPage() {
         }}
         onClose={() => setDeleteTarget(null)}
       />
-    </Stack>
+    </Page>
   );
 }

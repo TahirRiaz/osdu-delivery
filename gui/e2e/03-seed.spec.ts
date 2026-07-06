@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./helpers";
 
-// Seeds the estate THROUGH the product: registers the fixture git repo as a repo source from the GUI, then
-// watches the control plane's managed sync pull it and the pipeline appear in the catalog. Everything after
-// this spec runs against real synced data.
+// Seeds the estate THROUGH the product: registers the fixture git repo as a source from the Repos page in the
+// GUI, then watches the control plane's managed sync pull it and the pipeline appear in the catalog. Everything
+// after this spec runs against real synced data.
 
 function fixtureMeta(): { repoDir: string; headSha: string } {
   const metaPath = join(import.meta.dirname, ".fixtures", "meta.json");
@@ -13,8 +13,8 @@ function fixtureMeta(): { repoDir: string; headSha: string } {
 
 test.describe.serial("seed the estate via repo source sync", () => {
   test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {
-    await adminPage.getByTestId("nav-repo-sources").click();
-    await expect(adminPage.getByTestId("page-repo-sources")).toBeVisible();
+    await adminPage.getByTestId("nav-repos").click();
+    await expect(adminPage.getByTestId("page-repos")).toBeVisible();
 
     const meta = fixtureMeta();
     await adminPage.getByTestId("open-register-source").click();

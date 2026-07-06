@@ -151,5 +151,6 @@ public static class RunArtifactCollector
         result.Facts.AddRange(ScriptFactBuilder.Facts(
             deps, flow.Node.Name, viaModuleKey: null, serverRef, LineageTier.Observed,
             minimumParts: 2, runId, writtenUtc, side));
+        result.ObjectArtifacts.AddRange(ScriptFactBuilder.ObjectArtifacts(deps, serverRef, LineageTier.Observed, minimumParts: 2));
     }
 }

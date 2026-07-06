@@ -1,12 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import FormControl from "@mui/material/FormControl";
 import FormControlLabel from "@mui/material/FormControlLabel";
-import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
-import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
@@ -15,6 +11,10 @@ import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import type { RunStatus, RunSummary } from "../../api/types";
 import { runApi } from "../../api/endpoints";
+import { FilterBar } from "../../components/FilterBar";
+import { Mono } from "../../components/Mono";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
@@ -47,7 +47,7 @@ const baseColumns: Column<RunSummary>[] = [
   {
     id: "commit",
     header: "Commit",
-    render: (row) => <span style={{ fontFamily: "monospace" }}>{row.commitSha?.slice(0, 10) ?? "-"}</span>,
+    render: (row) => <Mono>{row.commitSha?.slice(0, 10) ?? "-"}</Mono>,
   },
 ];
 
@@ -153,15 +153,17 @@ export default function RunsPage() {
   }, [batchInput]);
 
   return (
-    <Box data-testid="page-runs">
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5">Runs</Typography>
-        <Button variant="contained" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
-          Trigger run
-        </Button>
-      </Stack>
+    <Page data-testid="page-runs">
+      <PageHeader
+        title="Runs"
+        actions={(
+          <Button variant="contained" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
+            Trigger run
+          </Button>
+        )}
+      />
 
-      <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mb: 2 }}>
+      <FilterBar>
         <ToggleButtonGroup
           size="small"
           exclusive
@@ -187,20 +189,19 @@ export default function RunsPage() {
           onChange={(e) => setBatchInput(e.target.value)}
           inputProps={{ "data-testid": "filter-batch" }}
         />
-        <FormControl size="small" sx={{ minWidth: 120 }}>
-          <InputLabel id="filter-kind-label">Kind</InputLabel>
-          <Select
-            labelId="filter-kind-label"
-            label="Kind"
-            value={kind}
-            onChange={(e) => setKind(e.target.value)}
-            data-testid="filter-kind"
-          >
-            {kinds.map((k) => (
-              <MenuItem key={k} value={k}>{k}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <TextField
+          select
+          size="small"
+          label="Kind"
+          value={kind}
+          onChange={(e) => setKind(e.target.value)}
+          inputProps={{ "data-testid": "filter-kind" }}
+          sx={{ minWidth: 120 }}
+        >
+          {kinds.map((k) => (
+            <MenuItem key={k} value={k}>{k}</MenuItem>
+          ))}
+        </TextField>
         <FormControlLabel
           control={(
             <Switch
@@ -212,7 +213,7 @@ export default function RunsPage() {
           )}
           label="Group by batch"
         />
-      </Stack>
+      </FilterBar>
 
       <PagedTable
         queryKey={["runs", "list", status, flowName, kind, batch, groupByBatch]}
@@ -236,6 +237,6 @@ export default function RunsPage() {
       />
 
       <TriggerRunDialog open={triggerOpen} onClose={() => setTriggerOpen(false)} />
-    </Box>
+    </Page>
   );
 }

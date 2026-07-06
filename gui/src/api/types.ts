@@ -239,6 +239,8 @@ export interface Schedule {
   intervalSeconds: number | null;
   timezone: string;
   enabled: boolean;
+  /** Whether missed occurrences are backfilled (one per scheduler tick) instead of skipped. */
+  catchup: boolean;
   paused: boolean;
   source: string;
   nextFireUtc: string | null;
@@ -255,6 +257,7 @@ export interface CreateScheduleRequest {
   intervalSeconds?: number | null;
   timezone?: string | null;
   enabled?: boolean | null;
+  catchup?: boolean | null;
 }
 
 export interface ScheduleCreated {
@@ -285,6 +288,12 @@ export interface RepoSource {
   lastSyncUtc: string | null;
   lastSyncedSha: string | null;
   lastError: string | null;
+  /** A secret reference (${keyvault:...}/${env:...}) for the git token, never the token itself; null uses the host env. */
+  credentialReference: string | null;
+  /** The git username paired with the token (for Bitbucket); null uses the token-only placeholder. */
+  credentialUsername: string | null;
+  /** The repo-relative flow files this source does NOT import (the preview-first selection); empty imports all. */
+  excludedFlowPaths: string[];
   createdUtc: string;
   updatedUtc: string;
 }
@@ -295,6 +304,30 @@ export interface RegisterRepoSourceRequest {
   branch?: string | null;
   syncIntervalSeconds?: number | null;
   enabled?: boolean | null;
+  credentialReference?: string | null;
+  credentialUsername?: string | null;
+  /** The flow files to leave out of the import; null or omitted imports every *.flow.yaml. */
+  excludedFlowPaths?: string[] | null;
+}
+
+/** The body to preview a repo's flows without importing them (a read-only discover). */
+export interface DiscoverRepoRequest {
+  remoteUrl: string;
+  branch?: string | null;
+  credentialReference?: string | null;
+  credentialUsername?: string | null;
+}
+
+/** One *.flow.yaml a discover found, for the selection wizard. */
+export interface DiscoveredFlow {
+  relativePath: string;
+  flowName: string | null;
+  kind: string | null;
+  sizeBytes: number;
+  parseOk: boolean;
+  parseError: string | null;
+  /** Secret-redacted content for preview; null when the file is too large to inline. */
+  content: string | null;
 }
 
 export interface RepoSourceRegistered {

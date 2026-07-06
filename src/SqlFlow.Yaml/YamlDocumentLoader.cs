@@ -90,6 +90,8 @@ public sealed class YamlDocumentLoader
         public string? Timezone { get; set; }
 
         public bool? Enabled { get; set; }
+
+        public bool? Catchup { get; set; }
     }
 
     private readonly IDeserializer _probe = new DeserializerBuilder()
@@ -228,6 +230,7 @@ public sealed class YamlDocumentLoader
             IntervalSeconds = schedule.IntervalSeconds,
             Timezone = string.IsNullOrWhiteSpace(schedule.Timezone) ? "UTC" : schedule.Timezone.Trim(),
             Enabled = schedule.Enabled ?? true,
+            Catchup = schedule.Catchup ?? false,
         };
     }
 }

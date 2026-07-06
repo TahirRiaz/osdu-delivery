@@ -111,13 +111,24 @@ public sealed partial class RepoSyncService : BackgroundService
 
         try
         {
-            var (workingDir, sha) = _materializer.MaterializeBranch(
-                source.RemoteUrl, source.Branch, GitMaterializer.CredentialsFromEnvironment(), ct);
+            // Resolve the source's git credential from its stored ${...} reference (Key Vault / env); the secret
+            // value is never stored in the catalog, only fetched here for the clone. A source with no reference
+            // falls back to the host environment (public remotes, single-credential deployments).
+            var resolver = scope.ServiceProvider.GetRequiredService<ISecretResolver>();
+            var credentials = await GitMaterializer
+                .ResolveCredentialsAsync(resolver, source.CredentialReference, source.CredentialUsername, ct)
+                .ConfigureAwait(false);
+            var (workingDir, sha) = _materializer.MaterializeBranch(source.RemoteUrl, source.Branch, credentials, ct);
+
+            // The preview-first selection: only the flows the source includes are projected as pipelines (an
+            // excluded flow never becomes a catalog pipeline, so the scheduler never picks it up).
+            var excludedFlowPaths = RepoSourceStore.ParseExcludedPaths(source.ExcludedFlowPaths);
 
             // The exact same catalog sync the CLI's `db sync` runs - one sync path. Offline (no derived tier): a
             // managed sync mirrors the git estate; the connected/derived tier is a separate, opt-in concern.
             await new CatalogSync()
-                .SyncAsync(catalog, workingDir, source.Name, source.RemoteUrl, _clock.GetUtcNow().UtcDateTime, ct: ct)
+                .SyncAsync(catalog, workingDir, source.Name, source.RemoteUrl, _clock.GetUtcNow().UtcDateTime,
+                    excludedFlowPaths: excludedFlowPaths, ct: ct)
                 .ConfigureAwait(false);
 
             await RepoSourceStore.RecordSuccessAsync(catalog, source.Id, sha, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);

@@ -262,6 +262,7 @@ public sealed class FlowSetCollector
         result.Warnings.AddRange(deps.Warnings);
         result.Facts.AddRange(ScriptFactBuilder.Facts(
             deps, flow, viaModuleKey: null, serverRef, LineageTier.Declared, minimumParts: 1));
+        result.ObjectArtifacts.AddRange(ScriptFactBuilder.ObjectArtifacts(deps, serverRef, LineageTier.Declared, minimumParts: 1));
     }
 
     private static LineageFact ObjectFact(

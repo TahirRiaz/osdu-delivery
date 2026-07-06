@@ -1,5 +1,14 @@
 # V3 Central Connection & Data-Source / Credential Registry - Design
 
+> Pre-implementation design document; the as-built code has diverged in several places this
+> document (and its own corrections report) describe as decided: there is no `Synapse`
+> `DataSourceKind` (Synapse-ness is `DataSourceCapabilities.IsSynapse`), connections live in
+> `src/SqlFlow.Core/Connections/` rather than a separate `SqlFlow.Connections` project,
+> `ISecretResolver` is asynchronous (`ResolveAsync`), and `IConnectionFactory` returns `DbConnection`
+> dispatched by kind rather than a bare `SqlConnection`. For the current, code-verified behavior see
+> [docs/reference/concepts/connections-and-secrets.md](reference/concepts/connections-and-secrets.md)
+> and [docs/reference/flow/connections.md](reference/flow/connections.md).
+
 Status: design (red-team corrected). Target tree: `C:\Projects\SQLFlowV3`. Target platform: SQL Server by design, .NET 9. This document supersedes the four (unavailable) dimension drafts and folds in every critic finding as a resolved decision, not a list. The end of section 10 carries a per-id revision log (H1..H9, M1..M9, L1..L9) so every correction is auditable.
 
 ---

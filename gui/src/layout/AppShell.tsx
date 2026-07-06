@@ -156,14 +156,17 @@ export default function AppShell() {
         </Drawer>
       )}
 
-      <Box component="main" sx={{ flexGrow: 1, p: 3, minWidth: 0 }}>
+      <Box component="main" sx={{ flexGrow: 1, p: { xs: 2, md: 3 }, minWidth: 0 }}>
         <Toolbar />
-        {rateLimitedUntil !== null && (
-          <Alert severity="warning" sx={{ mb: 2 }} data-testid="rate-limit-banner">
-            The API rate limit was reached; live updates resume shortly.
-          </Alert>
-        )}
-        <Outlet />
+        {/* Cap the content measure and center it so pages do not stretch edge to edge on wide monitors. */}
+        <Box sx={{ maxWidth: 1600, mx: "auto" }}>
+          {rateLimitedUntil !== null && (
+            <Alert severity="warning" sx={{ mb: 2 }} data-testid="rate-limit-banner">
+              The API rate limit was reached; live updates resume shortly.
+            </Alert>
+          )}
+          <Outlet />
+        </Box>
       </Box>
     </Box>
   );

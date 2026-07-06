@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSnackbar } from "notistack";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
@@ -21,6 +20,9 @@ import { userApi } from "../../api/endpoints";
 import type { Role, User } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
+import { FilterBar } from "../../components/FilterBar";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge } from "../../components/StatusBadge";
@@ -318,16 +320,17 @@ export default function UsersPage() {
   ];
 
   return (
-    <Stack spacing={2} data-testid="page-users">
-      <Stack direction="row" alignItems="center" spacing={2}>
-        <Typography variant="h5">Users</Typography>
-        <Box sx={{ flexGrow: 1 }} />
-        <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-user">
-          Create user
-        </Button>
-      </Stack>
+    <Page data-testid="page-users">
+      <PageHeader
+        title="Users"
+        actions={(
+          <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-user">
+            Create user
+          </Button>
+        )}
+      />
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} useFlexGap flexWrap="wrap">
+      <FilterBar>
         <TextField
           size="small"
           label="Username"
@@ -343,14 +346,12 @@ export default function UsersPage() {
           label="Role"
           value={roleFilter}
           onChange={(e) => setRoleFilter(e.target.value)}
-          SelectProps={{ native: true }}
-          InputLabelProps={{ shrink: true }}
           inputProps={{ "data-testid": "filter-role" }}
           sx={{ minWidth: 160 }}
         >
-          <option value="">all</option>
+          <MenuItem value="">all</MenuItem>
           {roles.map((role) => (
-            <option key={role.name} value={role.name}>{role.name}</option>
+            <MenuItem key={role.name} value={role.name}>{role.name}</MenuItem>
           ))}
         </TextField>
         <TextField
@@ -359,14 +360,12 @@ export default function UsersPage() {
           label="Provider"
           value={providerFilter}
           onChange={(e) => setProviderFilter(e.target.value)}
-          SelectProps={{ native: true }}
-          InputLabelProps={{ shrink: true }}
           inputProps={{ "data-testid": "filter-provider" }}
           sx={{ minWidth: 140 }}
         >
-          <option value="">all</option>
-          <option value="local">local</option>
-          <option value="entra">entra</option>
+          <MenuItem value="">all</MenuItem>
+          <MenuItem value="local">local</MenuItem>
+          <MenuItem value="entra">entra</MenuItem>
         </TextField>
         <TextField
           select
@@ -374,16 +373,14 @@ export default function UsersPage() {
           label="Active"
           value={activeFilter}
           onChange={(e) => setActiveFilter(e.target.value)}
-          SelectProps={{ native: true }}
-          InputLabelProps={{ shrink: true }}
           inputProps={{ "data-testid": "filter-active" }}
           sx={{ minWidth: 140 }}
         >
-          <option value="">all</option>
-          <option value="active">active</option>
-          <option value="inactive">inactive</option>
+          <MenuItem value="">all</MenuItem>
+          <MenuItem value="active">active</MenuItem>
+          <MenuItem value="inactive">inactive</MenuItem>
         </TextField>
-      </Stack>
+      </FilterBar>
 
       <PagedTable
         queryKey={["users", "list", usernameFilter, roleFilter, providerFilter, activeFilter]}
@@ -477,6 +474,6 @@ export default function UsersPage() {
         }}
         onClose={() => setDeactivateUser(null)}
       />
-    </Stack>
+    </Page>
   );
 }

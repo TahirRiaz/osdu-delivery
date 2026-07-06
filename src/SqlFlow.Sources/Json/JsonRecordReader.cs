@@ -65,6 +65,72 @@ public static class JsonRecordReader
         }
     }
 
+    /// <summary>
+    /// Enumerates the top-level documents in <paramref name="data"/> WITHOUT navigating a root path or
+    /// expanding arrays into records: the whole parsed value per JSON document (one for a plain file, one per
+    /// line for ndjson/jsonl). This is the raw view the record-anchor detector reasons over, before any grain is
+    /// chosen. Like <see cref="ReadRecords"/>, each yielded element is valid only until the next is requested,
+    /// so a consumer must finish with it (the detector copies out its small aggregate) before continuing.
+    /// </summary>
+    public static IEnumerable<JsonElement> ReadTopLevelDocuments(byte[] data, string sourceType, string fileName)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var body = StripBom(data);
+
+        if (body.Length == 0)
+        {
+            yield break;
+        }
+
+        if (IsLineDelimited(sourceType) || !TryParseWhole(body, out var document))
+        {
+            foreach (var line in ReadLineDelimitedDocuments(body, fileName))
+            {
+                yield return line;
+            }
+
+            yield break;
+        }
+
+        using (document)
+        {
+            yield return document.RootElement;
+        }
+    }
+
+    private static IEnumerable<JsonElement> ReadLineDelimitedDocuments(ReadOnlyMemory<byte> body, string fileName)
+    {
+        var text = Encoding.UTF8.GetString(body.Span);
+        var lineNumber = 0;
+        using var lines = new StringReader(text);
+        while (lines.ReadLine() is { } raw)
+        {
+            lineNumber++;
+            var line = raw.Trim();
+
+            if (line.Length == 0 || line[0] == '#')
+            {
+                continue;
+            }
+
+            JsonDocument document;
+            try
+            {
+                document = JsonDocument.Parse(line, ParseOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new SqlFlowException(
+                    $"Invalid JSON in '{fileName}' at line {lineNumber.ToString(CultureInfo.InvariantCulture)}: {ex.Message}", ex);
+            }
+
+            using (document)
+            {
+                yield return document.RootElement;
+            }
+        }
+    }
+
     private static IEnumerable<JsonElement> ReadLineDelimited(ReadOnlyMemory<byte> body, string rootPath, string fileName)
     {
         var text = Encoding.UTF8.GetString(body.Span);

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import Box from "@mui/material/Box";
@@ -6,11 +6,8 @@ import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
-import FormControl from "@mui/material/FormControl";
 import IconButton from "@mui/material/IconButton";
-import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
-import Select from "@mui/material/Select";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
@@ -22,6 +19,10 @@ import { lineageApi } from "../../api/endpoints";
 import type { LineageObject, LineageObjectColumn } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DetailPair } from "../../components/DetailPair";
+import { FilterBar } from "../../components/FilterBar";
+import { Page } from "../../components/Page";
+import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 
@@ -63,19 +64,6 @@ const columnTableColumns: Column<LineageObjectColumn>[] = [
   },
 ];
 
-function DetailRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <Box sx={{ display: "flex", gap: 1 }}>
-      <Typography variant="body2" color="text.secondary" sx={{ width: 96, flexShrink: 0 }}>
-        {label}
-      </Typography>
-      <Typography variant="body2" component="div" sx={{ minWidth: 0, wordBreak: "break-word" }}>
-        {children}
-      </Typography>
-    </Box>
-  );
-}
-
 /** The drawer body: object detail (with the SQL definition when captured) plus the paged column list. */
 function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
   const detail = useQuery({
@@ -116,13 +104,13 @@ function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
         {data.key}
       </Typography>
 
-      <Stack spacing={0.75} sx={{ mb: 2 }}>
-        <DetailRow label="Server">{data.serverRef}</DetailRow>
-        <DetailRow label="Database">{data.database ?? "-"}</DetailRow>
-        <DetailRow label="Schema">{data.schema ?? "-"}</DetailRow>
-        <DetailRow label="First seen"><RelativeTime value={data.firstSeenUtc} /></DetailRow>
-        <DetailRow label="Last seen"><RelativeTime value={data.lastSeenUtc} /></DetailRow>
-      </Stack>
+      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: "repeat(2, minmax(0, 1fr))", mb: 2 }}>
+        <DetailPair label="Server">{data.serverRef}</DetailPair>
+        <DetailPair label="Database">{data.database ?? "-"}</DetailPair>
+        <DetailPair label="Schema">{data.schema ?? "-"}</DetailPair>
+        <DetailPair label="First seen"><RelativeTime value={data.firstSeenUtc} /></DetailPair>
+        <DetailPair label="Last seen"><RelativeTime value={data.lastSeenUtc} /></DetailPair>
+      </Box>
 
       {data.definition !== null && (
         <Box sx={{ mb: 2 }}>
@@ -161,20 +149,22 @@ export default function LineagePage() {
   const debouncedServerRef = useDebounced(serverRef, 400);
 
   return (
-    <Box data-testid="page-lineage">
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5" fontWeight={600}>Lineage</Typography>
-        <Button
-          variant="outlined"
-          startIcon={<AccountTreeIcon />}
-          onClick={() => navigate("/lineage/graph")}
-          data-testid="open-lineage-graph"
-        >
-          Graph view
-        </Button>
-      </Stack>
+    <Page data-testid="page-lineage">
+      <PageHeader
+        title="Lineage"
+        actions={(
+          <Button
+            variant="outlined"
+            startIcon={<AccountTreeIcon />}
+            onClick={() => navigate("/lineage")}
+            data-testid="open-lineage-graph"
+          >
+            Graph view
+          </Button>
+        )}
+      />
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
+      <FilterBar>
         <TextField
           label="Name"
           size="small"
@@ -183,21 +173,20 @@ export default function LineagePage() {
           inputProps={{ "data-testid": "filter-object-name" }}
           sx={{ minWidth: 220 }}
         />
-        <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel id="lineage-kind-label">Kind</InputLabel>
-          <Select
-            labelId="lineage-kind-label"
-            label="Kind"
-            value={kind}
-            onChange={(event) => setKind(event.target.value)}
-            data-testid="filter-object-kind"
-          >
-            <MenuItem value="all">All kinds</MenuItem>
-            {OBJECT_KINDS.map((option) => (
-              <MenuItem key={option} value={option}>{option}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <TextField
+          select
+          label="Kind"
+          size="small"
+          value={kind}
+          onChange={(event) => setKind(event.target.value)}
+          inputProps={{ "data-testid": "filter-object-kind" }}
+          sx={{ minWidth: 180 }}
+        >
+          <MenuItem value="all">All kinds</MenuItem>
+          {OBJECT_KINDS.map((option) => (
+            <MenuItem key={option} value={option}>{option}</MenuItem>
+          ))}
+        </TextField>
         <TextField
           label="Server ref"
           size="small"
@@ -206,7 +195,7 @@ export default function LineagePage() {
           inputProps={{ "data-testid": "filter-server-ref" }}
           sx={{ minWidth: 220 }}
         />
-      </Stack>
+      </FilterBar>
 
       <PagedTable<LineageObject>
         queryKey={["lineage-objects", debouncedName, kind, debouncedServerRef]}
@@ -238,6 +227,6 @@ export default function LineagePage() {
         </Box>
         {selectedKey !== null && <ObjectDrawerContent objectKey={selectedKey} />}
       </Drawer>
-    </Box>
+    </Page>
   );
 }

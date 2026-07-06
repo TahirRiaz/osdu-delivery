@@ -81,9 +81,22 @@ public sealed record LineageObjectNode
     /// captured by the derived (connected) tier. Null for a plain table, an offline tier, or an encrypted module.</summary>
     public string? Definition { get; init; }
 
-    /// <summary>The object's columns, captured by the derived (connected) tier. Empty for an offline tier or an
-    /// object that has no columns (a procedure).</summary>
+    /// <summary>The generating DDL of the object (the <c>CREATE TABLE</c>/<c>CREATE VIEW</c> we ran), captured
+    /// from the observed run trace or a declared hook so the catalog holds the script offline. Null when no
+    /// tier saw the object created (a pre-existing source table). Distinct from <see cref="Definition"/>: that
+    /// is the live module body read from the database, this is the script the engine emitted.</summary>
+    public string? Script { get; init; }
+
+    /// <summary>The tier that supplied <see cref="Script"/>, or null when there is no script.</summary>
+    public LineageTier? ScriptTier { get; init; }
+
+    /// <summary>The object's columns: the derived (connected) tier reads them live; offline they are parsed
+    /// from the CREATE TABLE the run executed. Empty when no tier saw them.</summary>
     public IReadOnlyList<LineageColumn> Columns { get; init; } = [];
+
+    /// <summary>The tier that supplied <see cref="Columns"/>, or null when there are none. The catalog uses it
+    /// to keep a live (derived) dictionary from being overwritten by an offline (observed) one.</summary>
+    public LineageTier? ColumnsTier { get; init; }
 
     /// <summary>Node-scoped findings: an encrypted module whose definition is unreadable, an ambiguous
     /// database resolution, a linked-server reference that could not be expanded.</summary>
@@ -190,8 +203,10 @@ public sealed record LineageDuplicateFlowName
 /// </summary>
 public sealed record LineageReport
 {
-    /// <summary>The current lineage.json schema version written by this build.</summary>
-    public const int CurrentSchemaVersion = 1;
+    /// <summary>The current lineage.json schema version written by this build. Version 2 adds the object
+    /// <see cref="LineageObjectNode.Script"/> and its offline columns: a v1 reader sees the same shape plus
+    /// new fields it can ignore.</summary>
+    public const int CurrentSchemaVersion = 2;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 

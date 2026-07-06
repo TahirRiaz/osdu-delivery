@@ -10,12 +10,12 @@ namespace SqlFlow.ControlPlane.Api;
 /// <summary>A schedule as the API returns it: its timing, lifecycle flags, source, and the next/last fire.</summary>
 public sealed record ScheduleDto(
     Guid Id, Guid RepoId, Guid PipelineId, string FlowName, string? Cron, int? IntervalSeconds, string Timezone,
-    bool Enabled, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
+    bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
     DateTime CreatedUtc, DateTime UpdatedUtc);
 
 /// <summary>The body to create an ad-hoc API schedule: a flow reference and exactly one of cron / intervalSeconds.</summary>
 public sealed record CreateScheduleRequest(
-    Guid RepoId, string FlowName, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled);
+    Guid RepoId, string FlowName, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled, bool? Catchup = null);
 
 /// <summary>The created-schedule acknowledgement.</summary>
 public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
@@ -123,7 +123,7 @@ public static class ScheduleEndpoints
         var next = ScheduleClock.NextFire(request.Cron, request.IntervalSeconds, timezone, now);
         var id = await ScheduleStore.CreateApiScheduleAsync(
             db, request.RepoId, flowName, request.Cron, request.IntervalSeconds, timezone,
-            request.Enabled ?? true, next ?? now, now, ct).ConfigureAwait(false);
+            request.Enabled ?? true, request.Catchup ?? false, next ?? now, now, ct).ConfigureAwait(false);
 
         return TypedResults.Created($"/api/v1/schedules/{id}", new ScheduleCreated(id, next));
     }
@@ -179,5 +179,5 @@ public static class ScheduleEndpoints
     // An expression (not a method) so EF Core can translate the projection into the SELECT column list.
     private static readonly Expression<Func<CatalogSchedule, ScheduleDto>> Project = s => new ScheduleDto(
         s.Id, s.RepoId, s.PipelineId, s.FlowName, s.Cron, s.IntervalSeconds, s.Timezone,
-        s.Enabled, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.CreatedUtc, s.UpdatedUtc);
+        s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.CreatedUtc, s.UpdatedUtc);
 }

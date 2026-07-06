@@ -27,7 +27,8 @@ export function KpiCard({ label, value, caption, linkTo, color, testId }: KpiCar
   );
 
   return (
-    <Card sx={{ minWidth: 160, flex: "1 1 160px" }} data-testid={testId}>
+    // Full height so every card in a dashboard grid row is the same size; the grid controls the width.
+    <Card variant="outlined" sx={{ height: "100%" }} data-testid={testId}>
       {linkTo ? <CardActionArea onClick={() => navigate(linkTo)}>{content}</CardActionArea> : content}
     </Card>
   );

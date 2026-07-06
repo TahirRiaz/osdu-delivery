@@ -32,7 +32,15 @@ public sealed record FlattenIntrospection(
     string SourceType,
     SchemaInventory Inventory,
     SchemaFormula Formula,
-    IReadOnlyList<KeyValuePair<string, string>> Options);
+    IReadOnlyList<KeyValuePair<string, string>> Options)
+{
+    /// <summary>
+    /// The record grain (JSON rootPath or XML rowXPath) that statistics-driven detection chose because the
+    /// caller gave no explicit one, or null when the caller pinned the grain or nothing was detected. Present so
+    /// the CLI can tell the user its rows came from an auto-detected anchor rather than the document root.
+    /// </summary>
+    public string? AutoDetectedGrain { get; init; }
+}
 
 /// <summary>
 /// Implemented by the path-based flatten readers (JSON, XML) so the <c>paths</c>, <c>flatten</c>, and
