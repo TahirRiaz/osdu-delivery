@@ -26,7 +26,7 @@ public sealed record RunSummaryDto(
 public sealed record RunDetailDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
     string Status, bool Success,
-    string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode,
+    string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
     bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern);
@@ -186,7 +186,7 @@ public static class RunEndpoints
                     pipeline != null && pipeline.Batch != null ? pipeline.Batch : CatalogPipeline.DefaultBatch,
                     pipeline != null ? pipeline.Wave : -1,
                     run.Status, run.Success,
-                    run.TargetPool, run.CommitSha, run.EnqueuedUtc, run.ClaimedByNode,
+                    run.TargetPool, run.CommitSha, run.EnqueuedUtc, run.ClaimedByNode, run.CancelRequestedUtc,
                     run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
                     run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host,
                     run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern))

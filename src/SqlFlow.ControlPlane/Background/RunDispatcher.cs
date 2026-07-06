@@ -14,6 +14,12 @@ public interface IRunDispatcher
     /// pool and commit SHA) using the caller's catalog context, and returns the minted run id so the caller can
     /// point a client at <c>GET /api/v1/runs/{runId}</c>.</summary>
     Task<Guid> EnqueueAsync(CatalogDbContext catalog, RunEnqueueRequest request, CancellationToken ct = default);
+
+    /// <summary>Cancels a run: a still-queued run is dequeued outright; a run already executing has a durable cancel
+    /// request stamped for its owning node to honor. Returns the precise <see cref="CancelOutcome"/> so the endpoint
+    /// can answer 200 / 202 / 404 / 409. Goes through the dispatcher (not the store directly) so the in-process
+    /// backend can also nudge the local worker to observe the request without waiting out its poll interval.</summary>
+    Task<CancelOutcome> CancelAsync(CatalogDbContext catalog, Guid runId, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -42,6 +48,23 @@ public sealed class InProcessRunDispatcher : IRunDispatcher
             .ConfigureAwait(false);
         _signal.Signal();
         return runId;
+    }
+
+    public async Task<CancelOutcome> CancelAsync(CatalogDbContext catalog, Guid runId, CancellationToken ct = default)
+    {
+        var outcome = await RunQueueStore
+            .CancelAsync(catalog, runId, _clock.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+
+        // A running run's cancel is observed by the worker's poll: nudge it so the abort happens at once rather than
+        // waiting out the poll interval. (A queued run is already gone; the worker has nothing to observe.) Like the
+        // enqueue nudge this is only a latency optimization - a missed signal still means the next poll honors it.
+        if (outcome == CancelOutcome.CancelRequested)
+        {
+            _signal.Signal();
+        }
+
+        return outcome;
     }
 }
 

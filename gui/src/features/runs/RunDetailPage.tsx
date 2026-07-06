@@ -155,6 +155,12 @@ function RunDetailContent({ runId }: { runId: string }) {
     );
   }
 
+  // A run can be cancelled while queued (dequeued outright) or while running (the node aborts the in-flight
+  // statement). Once a running run's cancel is in flight, the button is disabled and a "cancelling" chip shows,
+  // until polling reflects the terminal "cancelled" status.
+  const cancellable = run.status === "queued" || run.status === "running";
+  const cancelling = run.status === "running" && run.cancelRequestedUtc !== null;
+
   return (
     <Page data-testid="page-run-detail">
       <DetailHeaderCard
@@ -162,13 +168,22 @@ function RunDetailContent({ runId }: { runId: string }) {
         badges={(
           <>
             <RunStatusBadge status={run.status} />
+            {cancelling && (
+              <Chip size="small" color="warning" label="cancelling" data-testid="run-cancelling" />
+            )}
             <Chip size="small" label={run.flowKind} variant="outlined" data-testid="run-kind" />
             <Chip size="small" label={`batch: ${run.batch}`} variant="outlined" data-testid="run-batch" />
           </>
         )}
-        actions={run.status === "queued" && (
-          <Button color="error" variant="outlined" onClick={() => setConfirmOpen(true)} data-testid="cancel-run">
-            Cancel run
+        actions={cancellable && (
+          <Button
+            color="error"
+            variant="outlined"
+            onClick={() => setConfirmOpen(true)}
+            disabled={cancelling || cancel.isPending}
+            data-testid="cancel-run"
+          >
+            {cancelling ? "Cancelling…" : "Cancel run"}
           </Button>
         )}
       >
@@ -313,7 +328,9 @@ function RunDetailContent({ runId }: { runId: string }) {
       <ConfirmDialog
         open={confirmOpen}
         title="Cancel run"
-        message={`Cancel queued run ${run.runId}? A queued run is dequeued before any node claims it.`}
+        message={run.status === "running"
+          ? `Cancel running run ${run.runId}? The node executing it aborts the in-flight statement and rolls back its transaction.`
+          : `Cancel queued run ${run.runId}? A queued run is dequeued before any node claims it.`}
         confirmLabel="Cancel run"
         danger
         busy={cancel.isPending}

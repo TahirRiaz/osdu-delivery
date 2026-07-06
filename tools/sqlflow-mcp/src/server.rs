@@ -520,7 +520,19 @@ impl SqlFlowMcp {
         };
         match self.cp.poll_device_token(&code).await {
             Ok(PollOutcome::Approved(t)) => {
-                format!("Signed in. Scopes: {}.", if t.scope.is_empty() { "(none reported)".into() } else { t.scope })
+                // The device grant hands back a short-lived session token. Exchange it for a long-lived, self-
+                // rotating personal access token so the user does not have to sign in again; if the control plane
+                // cannot mint one, the device token stands and sign-in still succeeds.
+                let scope = if t.scope.is_empty() { "read operate".to_string() } else { t.scope.clone() };
+                match self.cp.provision_managed_token(&scope).await {
+                    Ok(()) => format!(
+                        "Signed in. A long-lived access token (scopes: {scope}) was provisioned and will refresh automatically; you will not need to sign in again while this client stays in use."
+                    ),
+                    Err(_) => format!(
+                        "Signed in. Scopes: {}. (Could not provision a long-lived token; this session token expires and will need a fresh sign-in.)",
+                        if scope.is_empty() { "(none reported)".into() } else { scope }
+                    ),
+                }
             }
             Ok(PollOutcome::Pending) => "Still waiting for approval. Approve in the browser, then check again.".to_string(),
             Ok(PollOutcome::SlowDown) => "Polling too fast; wait a few seconds and check again.".to_string(),
@@ -532,12 +544,26 @@ impl SqlFlowMcp {
 
     #[tool(description = "Store a bearer access token directly (alternative to device-flow login).")]
     async fn set_access_token(&self, Parameters(input): Parameters<TokenInput>) -> String {
+        let token = input.token.trim().to_string();
+        let is_pat = token.starts_with("sqlf_");
+        let scope = input.scope.unwrap_or_else(|| "read operate".to_string());
         self.cp.set_token(crate::config::TokenCache {
-            access_token: input.token,
-            scope: input.scope.unwrap_or_else(|| "read operate".to_string()),
+            access_token: token,
+            scope: scope.clone(),
             expires_at: None,
+            token_id: None,
+            // A pasted personal access token is already long-lived and owned by the user; we do not manage its
+            // lifecycle. A pasted session token is short-lived, so we exchange it below for one we do manage.
+            renewable: false,
         });
-        "Access token stored.".to_string()
+        if is_pat {
+            "Access token stored.".to_string()
+        } else {
+            match self.cp.provision_managed_token(&scope).await {
+                Ok(()) => "Access token stored and exchanged for a long-lived, self-refreshing token.".to_string(),
+                Err(_) => "Access token stored.".to_string(),
+            }
+        }
     }
 
     #[tool(description = "Forget the stored access token.")]

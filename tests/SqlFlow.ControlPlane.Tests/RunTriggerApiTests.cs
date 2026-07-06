@@ -345,6 +345,70 @@ public sealed class RunTriggerApiTests
 
     [SkippableFact]
     [Trait("Category", "Integration")]
+    public async Task CancelRun_ForRunningRun_Returns202Cancelling_AndStampsTheRequest()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repoId = FlowIdentity.FromName("cp_cancel_" + suffix);
+        var flowName = "cp_cancel_orders_" + suffix;
+        var runId = Guid.CreateVersion7();
+        var now = DateTime.UtcNow;
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            // Seed a run that is already running, claimed by a node that is NOT this host, so the control-plane
+            // worker never touches it: the cancel is therefore a pure request (202 "cancelling"), left for the
+            // (absent) owning node to honor. This exercises the endpoint's running-run branch deterministically.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Runs.Add(new CatalogRun
+                {
+                    RunId = runId,
+                    PipelineId = CatalogIdentity.Pipeline(repoId, flowName),
+                    RepoId = repoId,
+                    FlowName = flowName,
+                    FlowKind = "ing",
+                    Status = RunStatuses.Running,
+                    ClaimedByNode = "some-remote-node-" + suffix,
+                    EnqueuedUtc = now,
+                    StartUtc = now,
+                    WrittenUtc = now,
+                    Success = false,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["operate"]);
+
+            using var response = await PostCancelAsync(client, token, runId);
+
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            var accepted = await response.Content.ReadFromJsonAsync<RunTriggerAccepted>();
+            Assert.NotNull(accepted);
+            Assert.Equal(runId, accepted.RunId);
+            Assert.Equal("cancelling", accepted.Status);
+            Assert.Equal($"/api/v1/runs/{runId}", response.Headers.Location!.ToString());
+
+            // The request is durable on the row for the owning node to observe.
+            await using var probe = CatalogDatabase.Create(cs);
+            var stored = await probe.Runs.AsNoTracking().FirstAsync(r => r.RunId == runId);
+            Assert.Equal(RunStatuses.Running, stored.Status);
+            Assert.NotNull(stored.CancelRequestedUtc);
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
     public async Task TriggerRun_WithPool_QueuesItForThatPool_AndTheUntargetedWorkerLeavesItQueued()
     {
         var cs = CatalogTestDb.Require();

@@ -154,6 +154,12 @@ public class CatalogRun
     /// run). The basis for crash recovery: a run left <c>running</c> by a node that died is requeued.</summary>
     public string? ClaimedByNode { get; set; }
 
+    /// <summary>When an operator asked to cancel this run while it was already <c>running</c> (a queued run is
+    /// cancelled outright, so this stays null for that path). It is a durable request, not the outcome: the owning
+    /// node observes it on its next poll, trips the run's cancellation token to abort the in-flight statement, and
+    /// records the run <c>cancelled</c>. Null means no cancel was requested.</summary>
+    public DateTime? CancelRequestedUtc { get; set; }
+
     /// <summary>The pool this run is routed to: only a worker that serves this pool may claim it. Null means
     /// "any node" (untargeted) - any worker claims it. Routing keeps a flow on a node that can actually reach its
     /// database and resolve its secrets (least privilege), so an on-prem flow runs on an on-prem node and a cloud

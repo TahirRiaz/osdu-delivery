@@ -1,5 +1,5 @@
 # Generated from old SQLFlow metadata (flw.PreIngestionCSV FlowID 545) by Generate-PreFlow.ps1.
-# Stage 1 of 2 (pre): lands the CSV into [pre].[Baatbooking_sess] and builds the typed view vBaatbooking_sess.
+# Stage 1 of 2 (pre): lands the CSV into [pre].[Baatbooking_sess] and builds the typed view v_Baatbooking_sess.
 name: BB_Baatbooking_sess_pre
 batch: BB
 source:
@@ -18,6 +18,9 @@ schema:
   evolve: widen
 load:
   mode: append
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
 transform:
   generateView: true
   columns:

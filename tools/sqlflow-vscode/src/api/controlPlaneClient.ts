@@ -32,6 +32,9 @@ export class ControlPlaneClient {
     }
 
     private async request<T>(path: string, init?: { method?: string; query?: Record<string, unknown>; body?: unknown }): Promise<T> {
+        // Rotate the managed token if it is close to expiry, so a long-running session never lapses into a re-login.
+        // A no-op unless a rotation is actually due.
+        await this.session.ensureFresh(this.baseUrl());
         const token = await this.session.getToken();
         if (!token) {
             throw new AuthError('Not signed in. Run "SQLFlow: Sign In".');

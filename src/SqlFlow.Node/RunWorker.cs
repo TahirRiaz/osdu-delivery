@@ -41,6 +41,12 @@ public sealed partial class RunWorker
     private readonly string? _version = typeof(RunWorker).Assembly.GetName().Version?.ToString();
     private readonly GitMaterializer _materializer = new();
 
+    // The runs this node is currently executing, keyed by run id, each with its own cancellation source linked to
+    // the shutdown token. An operator cancel of a running run trips its source (see PollCancellationsAsync), which
+    // aborts the in-flight statement; ExecuteClaimedAsync registers a run here before it starts and removes it when
+    // it ends. Concurrent because the drain loop registers while executing tasks remove.
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _running = new();
+
     public RunWorker(IServiceProvider services, DocumentExecutor executor, TimeProvider clock, ILogger<RunWorker> logger)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -84,6 +90,7 @@ public sealed partial class RunWorker
         while (!stoppingToken.IsCancellationRequested)
         {
             await HeartbeatAsync(stoppingToken).ConfigureAwait(false);
+            await PollCancellationsAsync(stoppingToken).ConfigureAwait(false);
 
             try
             {
@@ -135,6 +142,42 @@ public sealed partial class RunWorker
         catch (Exception ex)
         {
             // The fleet heartbeat is best-effort: a failure must never affect draining; the next poll retries it.
+            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+        }
+    }
+
+    /// <summary>Observes operator cancel requests for the runs this node is executing and trips each matching run's
+    /// cancellation token, which aborts its in-flight statement (SqlClient sends an attention to the server) and
+    /// drives it to <c>cancelled</c>. Best-effort like the heartbeat: it only queries when this node has in-flight
+    /// runs, and a transient catalog error is logged and retried on the next poll rather than stopping the loop.</summary>
+    private async Task PollCancellationsAsync(CancellationToken ct)
+    {
+        if (_running.IsEmpty)
+        {
+            return;
+        }
+
+        try
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+            var requested = await RunQueueStore.ListCancelRequestedAsync(catalog, _node, ct).ConfigureAwait(false);
+            foreach (var runId in requested)
+            {
+                if (_running.TryGetValue(runId, out var cts) && !cts.IsCancellationRequested)
+                {
+                    LogCancelling(runId);
+                    cts.Cancel();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutting down; nothing to do.
+        }
+        catch (Exception ex)
+        {
+            // Observing cancels is best-effort: a failure must never affect draining; the next poll retries it.
             LogPollError(SecretHygiene.RedactedMessage(ex.Message));
         }
     }
@@ -214,31 +257,45 @@ public sealed partial class RunWorker
     /// its end state. Never throws: a shutdown cancellation leaves the run <c>running</c> for the next start's
     /// recovery, and every other failure has already been driven terminal (best-effort) by
     /// <see cref="RunClaimedAsync"/>, so one run can never kill the drain loop or a sibling run.</summary>
-    private async Task ExecuteClaimedAsync(Guid runId, SemaphoreSlim gate, CancellationToken ct)
+    private async Task ExecuteClaimedAsync(Guid runId, SemaphoreSlim gate, CancellationToken stoppingToken)
     {
+        // A per-run source linked to the shutdown token: an operator cancel trips only this one (aborting just this
+        // run), while shutdown trips every run through the link. Registered before execution so a cancel arriving
+        // the instant after the claim is still observed. Disposed only after the run ends, so a late cancel never
+        // races a disposed source.
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        _running[runId] = runCts;
         try
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            await RunClaimedAsync(scope.ServiceProvider, catalog, runId, ct).ConfigureAwait(false);
+            await RunClaimedAsync(scope.ServiceProvider, catalog, runId, stoppingToken, runCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             // Shutdown cancelled this run mid-flight: it stays 'running' so the next start's recovery requeues it.
         }
         catch (Exception ex)
         {
-            // RunClaimedAsync drives run failures terminal itself; this guards the scope plumbing around it.
+            // RunClaimedAsync drives run failures (and operator cancels) terminal itself; this guards the scope
+            // plumbing around it.
             LogRunError(runId, SecretHygiene.RedactedMessage(ex.Message));
         }
         finally
         {
+            _running.TryRemove(runId, out _);
             gate.Release();
         }
     }
 
-    private async Task RunClaimedAsync(IServiceProvider scope, CatalogDbContext catalog, Guid runId, CancellationToken ct)
+    /// <param name="shutdownCt">The node's shutdown token: when it trips, the run is left <c>running</c> for the next
+    /// start's recovery (never recorded terminal), so a stop-then-start never loses in-flight work.</param>
+    /// <param name="runCt">The per-run token (linked to shutdown): an operator cancel trips this alone, aborting the
+    /// flow's in-flight statement so the run is recorded <c>cancelled</c> rather than requeued.</param>
+    private async Task RunClaimedAsync(
+        IServiceProvider scope, CatalogDbContext catalog, Guid runId, CancellationToken shutdownCt, CancellationToken runCt)
     {
+        var ct = shutdownCt;
         try
         {
             // One joined projection instead of three or four sequential lookups: the run row, its repo and
@@ -354,7 +411,10 @@ public sealed partial class RunWorker
             }
 
             var options = new DocumentExecutionOptions { RunId = runId, Echo = null, Parameters = parameters };
-            var exec = await _executor.ExecuteAsync(document, flowFile, options, ct).ConfigureAwait(false);
+            // The executor runs under the per-run token: an operator cancel aborts the in-flight statement here (and
+            // only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel never
+            // corrupts the completion write.
+            var exec = await _executor.ExecuteAsync(document, flowFile, options, runCt).ConfigureAwait(false);
 
             var now = _clock.GetUtcNow().UtcDateTime;
             if (exec.RunDirectory is { } runDirectory)
@@ -378,10 +438,18 @@ public sealed partial class RunWorker
                 LogFailed(runId, run.FlowName, SecretHygiene.RedactedMessage(exec.Error ?? "(no error message)"));
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (shutdownCt.IsCancellationRequested)
         {
             // Shutdown cancelled this run mid-flight: leave it 'running' so the next start's recovery requeues it.
             throw;
+        }
+        catch (Exception) when (runCt.IsCancellationRequested && !shutdownCt.IsCancellationRequested)
+        {
+            // The operator cancelled this run: the per-run token tripped and aborted the in-flight statement (which
+            // SqlClient may surface as OperationCanceledException or a SqlException), so its transaction rolled back.
+            // Record it 'cancelled' - not 'failed' - and continue to the next claim.
+            LogCancelled(runId);
+            await TryCancelRunningAsync(catalog, runId).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -410,6 +478,21 @@ public sealed partial class RunWorker
         }
     }
 
+    private async Task TryCancelRunningAsync(CatalogDbContext catalog, Guid runId)
+    {
+        try
+        {
+            // The per-run token that triggered this is already tripped, so record the outcome on a short independent
+            // deadline (mirroring TryFailAsync) - the run must still reach 'cancelled' rather than linger 'running'.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await RunQueueStore.CancelRunningAsync(catalog, runId, _clock.GetUtcNow().UtcDateTime, cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+        }
+    }
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: materialized repo '{Repo}' at commit {CommitSha}.")]
     private partial void LogMaterialized(Guid runId, string repo, string commitSha);
 
@@ -424,6 +507,12 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId} failed: flow '{FlowName}': {Error}")]
     private partial void LogFailed(Guid runId, string flowName, string error);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: operator cancel observed; aborting the in-flight statement.")]
+    private partial void LogCancelling(Guid runId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId} cancelled by operator; recorded cancelled.")]
+    private partial void LogCancelled(Guid runId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Run {RunId} threw and was driven to failed: {Error}")]
     private partial void LogRunError(Guid runId, string error);

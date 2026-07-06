@@ -122,18 +122,23 @@ public static class RunTriggerEndpoints
     private static bool IsPlausibleCommitSha(string sha)
         => sha.Length is >= 4 and <= 64 && sha.All(char.IsAsciiHexDigit);
 
-    private static async Task<Results<Ok<RunTriggerAccepted>, ProblemHttpResult>> CancelRunAsync(
-        Guid runId, CatalogDbContext db, TimeProvider clock, CancellationToken ct)
+    private static async Task<Results<Ok<RunTriggerAccepted>, Accepted<RunTriggerAccepted>, ProblemHttpResult>> CancelRunAsync(
+        Guid runId, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
     {
-        var outcome = await RunQueueStore.CancelAsync(db, runId, clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        var outcome = await dispatcher.CancelAsync(db, runId, ct).ConfigureAwait(false);
         return outcome switch
         {
+            // A still-queued run is cancelled synchronously (it never ran): 200 with the terminal status.
             CancelOutcome.Cancelled => TypedResults.Ok(new RunTriggerAccepted(runId, "cancelled")),
+            // A running run's cancel is asynchronous: the owning node aborts the in-flight statement and records the
+            // run cancelled. 202 with a transitional status; poll GET /api/v1/runs/{runId} for the terminal outcome.
+            CancelOutcome.CancelRequested => TypedResults.Accepted(
+                $"/api/v1/runs/{runId}", new RunTriggerAccepted(runId, "cancelling")),
             CancelOutcome.NotFound => TypedResults.Problem(
                 detail: $"No run '{runId}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found"),
-            // A run already claimed for execution or finished cannot be cancelled through the queue.
+            // A run that has already finished has nothing to cancel.
             _ => TypedResults.Problem(
-                detail: $"Run '{runId}' is no longer queued and cannot be cancelled.",
+                detail: $"Run '{runId}' has already finished and cannot be cancelled.",
                 statusCode: StatusCodes.Status409Conflict, title: "Conflict"),
         };
     }

@@ -94,6 +94,13 @@ foreach ($col in $provFlags.Keys) {
 [void]$sb.AppendLine("  evolve: widen")
 [void]$sb.AppendLine("load:")
 [void]$sb.AppendLine("  mode: append")
+# Incremental by the injected file date: each run probes MAX(FileDate_DW) on the target and reads only files
+# newer than that watermark, so a normal re-run picks up just new files instead of reloading the whole history
+# (the initial load of an empty target still reads everything, once). FileDate_DW is a yyyyMMddHHmmss string;
+# the engine's probe parses its lexicographic MAX as the chronological watermark.
+[void]$sb.AppendLine("incremental:")
+[void]$sb.AppendLine("  dateColumn: FileDate_DW")
+[void]$sb.AppendLine("  overlapDays: 0")
 [void]$sb.AppendLine("transform:")
 [void]$sb.AppendLine("  generateView: true")
 [void]$sb.AppendLine("  columns:")

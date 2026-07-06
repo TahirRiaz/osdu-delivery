@@ -140,6 +140,9 @@ export interface RunSummary {
 
 export interface RunDetail extends RunSummary {
   claimedByNode: string | null;
+  /** When an operator asked to cancel this run while it was already running; null otherwise. While set and the run
+   * is still "running", the owning node is aborting the in-flight statement (a transitional "cancelling" state). */
+  cancelRequestedUtc: string | null;
   schemaVersion: number;
   startUtc: string | null;
   endUtc: string | null;

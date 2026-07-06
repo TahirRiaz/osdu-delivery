@@ -56,6 +56,28 @@ struct ErrorResponse {
     error: String,
 }
 
+/// The `POST /api/v1/me/tokens` response: the listing view of the created token plus its one-time secret.
+#[derive(Deserialize)]
+struct CreatedAccessToken {
+    token: AccessTokenInfo,
+    secret: String,
+}
+
+#[derive(Deserialize)]
+struct AccessTokenInfo {
+    id: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+    #[serde(rename = "expiresUtc", default)]
+    expires_utc: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The lifetime a self-managed PAT is minted with, and how close to expiry it is rotated. The client mints a token
+/// good for `PAT_LIFETIME_DAYS`, then silently replaces it once fewer than `PAT_ROTATE_WINDOW_DAYS` remain, so a
+/// long-running client never lapses into a re-login as long as it is used within the rotation window.
+const PAT_LIFETIME_DAYS: i64 = 90;
+const PAT_ROTATE_WINDOW_DAYS: i64 = 14;
+
 pub struct ControlPlane {
     http: reqwest::Client,
     base_url: RwLock<String>,
@@ -63,6 +85,9 @@ pub struct ControlPlane {
     /// The device code of an in-flight `login`, so `check_auth_status` can poll
     /// without the caller re-supplying it.
     pending_device_code: RwLock<Option<String>>,
+    /// Single-flights token rotation so two concurrent requests entering the rotation window mint one replacement,
+    /// not two.
+    rotate_lock: tokio::sync::Mutex<()>,
 }
 
 impl ControlPlane {
@@ -79,6 +104,8 @@ impl ControlPlane {
                 access_token: t,
                 scope: "read operate".to_string(),
                 expires_at: None,
+                token_id: None,
+                renewable: false,
             })
             .or_else(config::load_token);
         ControlPlane {
@@ -89,6 +116,7 @@ impl ControlPlane {
             base_url: RwLock::new(normalize_base(&base_url)),
             token: RwLock::new(token),
             pending_device_code: RwLock::new(None),
+            rotate_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -191,6 +219,10 @@ impl ControlPlane {
                 access_token: tok.access_token,
                 scope: tok.scope,
                 expires_at,
+                // The device grant yields a short-lived session token, not a managed PAT; the caller exchanges it
+                // for one right after approval.
+                token_id: None,
+                renewable: false,
             };
             self.set_token(cache.clone());
             return Ok(PollOutcome::Approved(cache));
@@ -208,10 +240,101 @@ impl ControlPlane {
         })
     }
 
+    // --- Managed personal access tokens ------------------------------------
+
+    /// Exchange the current credential for a long-lived, self-managed personal access token and store it in its
+    /// place. Called right after an interactive sign-in (or after pasting a short-lived session token) so the client
+    /// holds a durable credential instead of a token that lapses in an hour. Best-effort by contract: the caller
+    /// ignores the error and keeps the original token if the control plane cannot mint one (an older control plane,
+    /// or a session with no user behind it). Scopes are capped server-side to what the current credential holds.
+    pub async fn provision_managed_token(&self, scope: &str) -> Result<()> {
+        let bearer = self
+            .bearer()
+            .ok_or_else(|| anyhow!("not authenticated: cannot provision an access token"))?;
+        let scopes: Vec<&str> = scope.split_whitespace().collect();
+        let resp = self
+            .http
+            .post(self.url("/api/v1/me/tokens"))
+            .bearer_auth(bearer)
+            .json(&json!({ "name": client_token_name(), "scopes": scopes, "expiresInDays": PAT_LIFETIME_DAYS }))
+            .send()
+            .await
+            .context("could not provision an access token")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("access-token provisioning failed ({status}): {body}");
+        }
+        let created: CreatedAccessToken = resp.json().await.context("invalid token response")?;
+        self.set_token(TokenCache {
+            access_token: created.secret,
+            scope: created.token.scopes.join(" "),
+            expires_at: created.token.expires_utc,
+            token_id: Some(created.token.id),
+            renewable: true,
+        });
+        Ok(())
+    }
+
+    /// Rotate the managed token if it has entered its rotation window: mint a replacement with the still-valid
+    /// current token, then revoke the old one. Cheap and a no-op when no rotation is due (the common case), so it is
+    /// safe to call before every request. Single-flighted so concurrent requests rotate once.
+    pub async fn ensure_fresh(&self) {
+        let (due, old_id, scope) = {
+            let guard = self.token.read().unwrap();
+            match guard.as_ref() {
+                Some(t) if t.should_rotate(PAT_ROTATE_WINDOW_DAYS) => {
+                    (true, t.token_id.clone(), t.scope.clone())
+                }
+                _ => (false, None, String::new()),
+            }
+        };
+        if !due {
+            return;
+        }
+
+        // Only one rotation at a time; a loser simply skips (the winner refreshes the shared token).
+        let Ok(_guard) = self.rotate_lock.try_lock() else {
+            return;
+        };
+        // Re-check under the guard: a rotation that finished between our snapshot and acquiring the lock leaves
+        // nothing to do.
+        let still_due = self
+            .token
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.should_rotate(PAT_ROTATE_WINDOW_DAYS))
+            .unwrap_or(false);
+        if !still_due {
+            return;
+        }
+
+        if self.provision_managed_token(&scope).await.is_ok() {
+            if let Some(id) = old_id {
+                // The freshly minted token is now current; revoke its predecessor with it. Best-effort: an orphaned
+                // old token simply expires on its own.
+                self.revoke_token(&id).await;
+            }
+        }
+    }
+
+    async fn revoke_token(&self, id: &str) {
+        if let Some(bearer) = self.bearer() {
+            let _ = self
+                .http
+                .delete(self.url(&format!("/api/v1/me/tokens/{id}")))
+                .bearer_auth(bearer)
+                .send()
+                .await;
+        }
+    }
+
     // --- Generic verbs -----------------------------------------------------
 
     /// Authenticated `GET` returning parsed JSON.
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        self.ensure_fresh().await;
         let bearer = self
             .bearer()
             .ok_or_else(|| anyhow!("not authenticated: run the `login` tool or set an access token"))?;
@@ -226,6 +349,7 @@ impl ControlPlane {
 
     /// Authenticated `POST` returning parsed JSON (empty body → JSON null).
     pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
+        self.ensure_fresh().await;
         let bearer = self
             .bearer()
             .ok_or_else(|| anyhow!("not authenticated: run the `login` tool or set an access token"))?;
@@ -258,6 +382,17 @@ impl ControlPlane {
         }
         serde_json::from_str(&text).with_context(|| format!("{path} returned non-JSON body"))
     }
+}
+
+/// A human label for the tokens this client mints, so they are recognizable in the GUI's token list. The host name
+/// is best-effort; a nameless host still yields a usable, if generic, label.
+fn client_token_name() -> String {
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| "host".to_string());
+    format!("sqlflow-mcp ({host})")
 }
 
 /// Strip a trailing slash so `url()` concatenation is well-formed.

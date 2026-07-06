@@ -168,6 +168,81 @@ public sealed class RunQueueStoreTests
     }
 
     [SkippableFact]
+    public async Task Cancel_RunningRun_RequestsCancellation_ForTheOwningNodeToObserveAndRecord()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var node = "cancel-node-" + Guid.NewGuid().ToString("N")[..8];
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            Assert.Equal(runId, await RunQueueStore.ClaimNextAsync(db, node, [], DateTime.UtcNow));
+
+            // A running run cannot be cancelled out from under its worker: it is a durable request instead, stamped
+            // on the row for the owning node to observe. The run stays 'running' until the node records the outcome.
+            var requestedAt = DateTime.UtcNow;
+            Assert.Equal(CancelOutcome.CancelRequested, await RunQueueStore.CancelAsync(db, runId, requestedAt));
+            var requested = await Reload(db, runId);
+            Assert.Equal(RunStatuses.Running, requested.Status);
+            Assert.Equal(requestedAt, requested.CancelRequestedUtc);
+
+            // A second cancel is idempotent (still a pending request) and does not move the original request time.
+            Assert.Equal(CancelOutcome.CancelRequested, await RunQueueStore.CancelAsync(db, runId, requestedAt.AddSeconds(5)));
+            Assert.Equal(requestedAt, (await Reload(db, runId)).CancelRequestedUtc);
+
+            // The owning node sees exactly this run in its cancel-requested set; a different node sees nothing.
+            Assert.Equal([runId], await RunQueueStore.ListCancelRequestedAsync(db, node));
+            Assert.Empty(await RunQueueStore.ListCancelRequestedAsync(db, "some-other-node"));
+
+            // After the node aborts the in-flight statement it records the run cancelled; the request then clears
+            // from the set (the run is no longer 'running'), and a further cancel finds nothing to cancel.
+            Assert.Equal(1, await RunQueueStore.CancelRunningAsync(db, runId, DateTime.UtcNow));
+            var cancelled = await Reload(db, runId);
+            Assert.Equal(RunStatuses.Cancelled, cancelled.Status);
+            Assert.False(cancelled.Success);
+            Assert.NotNull(cancelled.EndUtc);
+            Assert.Empty(await RunQueueStore.ListCancelRequestedAsync(db, node));
+            Assert.Equal(CancelOutcome.NotCancellable, await RunQueueStore.CancelAsync(db, runId, DateTime.UtcNow));
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, null);
+        }
+    }
+
+    [SkippableFact]
+    public async Task CancelRunning_DoesNotOverwriteAnAlreadyCompletedRun()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var dir = NewTempDir();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow);
+
+            // The run finishes successfully in the same instant a late cancel lands: CancelRunningAsync is guarded on
+            // 'running', so it updates nothing and the recorded success stands.
+            var runJson = Path.Combine(dir, "run.json");
+            await File.WriteAllTextAsync(runJson, RunArtifact(runId, flowName, success: true, rowsLoaded: 3));
+            Assert.True(await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
+
+            Assert.Equal(0, await RunQueueStore.CancelRunningAsync(db, runId, DateTime.UtcNow));
+            Assert.Equal(RunStatuses.Succeeded, (await Reload(db, runId)).Status);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, dir);
+        }
+    }
+
+    [SkippableFact]
     public async Task RecoverStuckRunning_RequeuesThisNodesOrphans()
     {
         var cs = CatalogTestDb.Require();

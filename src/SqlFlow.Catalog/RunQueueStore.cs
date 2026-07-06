@@ -19,16 +19,20 @@ public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
     RunParameters? Parameters = null);
 
-/// <summary>The result of a cancel request, so the API can answer 200 / 404 / 409 precisely.</summary>
+/// <summary>The result of a cancel request, so the API can answer 200 / 202 / 404 / 409 precisely.</summary>
 public enum CancelOutcome
 {
-    /// <summary>The run was queued and is now cancelled.</summary>
+    /// <summary>The run was queued and is now cancelled outright (it never started).</summary>
     Cancelled,
+
+    /// <summary>The run was already running, so a cancel was requested: the owning node will abort the in-flight
+    /// statement and record the run cancelled. The cancel is durable but asynchronous, hence a distinct outcome.</summary>
+    CancelRequested,
 
     /// <summary>No run with that id exists.</summary>
     NotFound,
 
-    /// <summary>The run exists but is no longer queued (already running or finished), so it cannot be cancelled.</summary>
+    /// <summary>The run exists but is already finished (terminal), so there is nothing to cancel.</summary>
     NotCancellable,
 }
 
@@ -284,9 +288,13 @@ public static class RunQueueStore
                 .SetProperty(r => r.WrittenUtc, nowUtc), ct);
     }
 
-    /// <summary>Cancels a run if (and only if) it is still queued. Atomic: a run that is claimed for execution
-    /// between the check and the update is reported as not-cancellable rather than cancelled out from under a
-    /// worker.</summary>
+    /// <summary>Cancels a run, honoring its lifecycle. A still-queued run is cancelled outright (it never ran). A
+    /// run already <c>running</c> cannot be cancelled out from under its worker here; instead a durable cancel
+    /// request is stamped (<see cref="CatalogRun.CancelRequestedUtc"/>) for the owning node to observe, abort the
+    /// in-flight statement, and record the run cancelled (see <see cref="ListCancelRequestedAsync"/> /
+    /// <see cref="CancelRunningAsync"/>). Each step is a single atomic conditional update, so a run that is claimed
+    /// between the queued check and the running check is caught by the second step rather than lost. Requesting a
+    /// cancel on a run that already has one pending is idempotent (still <see cref="CancelOutcome.CancelRequested"/>).</summary>
     public static async Task<CancelOutcome> CancelAsync(
         CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -304,8 +312,63 @@ public static class RunQueueStore
             return CancelOutcome.Cancelled;
         }
 
-        var exists = await catalog.Runs.AsNoTracking().AnyAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
-        return exists ? CancelOutcome.NotCancellable : CancelOutcome.NotFound;
+        // Still-running: record the request for the owning node. Stamp CancelRequestedUtc only when it is not yet
+        // set, so the request reflects when the operator first asked (a repeated click does not keep moving it).
+        var requested = await catalog.Runs
+            .Where(r => r.RunId == runId && r.Status == RunStatuses.Running && r.CancelRequestedUtc == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.CancelRequestedUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+        if (requested > 0)
+        {
+            return CancelOutcome.CancelRequested;
+        }
+
+        // No queued or freshly-running row updated: either it is running with a request already pending (idempotent
+        // success), it is already terminal (nothing to cancel), or it does not exist.
+        var state = await catalog.Runs.AsNoTracking()
+            .Where(r => r.RunId == runId)
+            .Select(r => (string?)r.Status)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return state switch
+        {
+            null => CancelOutcome.NotFound,
+            RunStatuses.Running => CancelOutcome.CancelRequested,
+            _ => CancelOutcome.NotCancellable,
+        };
+    }
+
+    /// <summary>The ids of runs this node is executing that an operator has asked to cancel: <c>running</c>, claimed
+    /// by <paramref name="node"/>, with a pending <see cref="CatalogRun.CancelRequestedUtc"/>. The worker polls this
+    /// to trip the matching run's cancellation token. Scoped to the node so a worker only ever cancels its own
+    /// in-flight work.</summary>
+    public static Task<List<Guid>> ListCancelRequestedAsync(
+        CatalogDbContext catalog, string node, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(node);
+
+        return catalog.Runs.AsNoTracking()
+            .Where(r => r.Status == RunStatuses.Running && r.ClaimedByNode == node && r.CancelRequestedUtc != null)
+            .Select(r => r.RunId)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>Records a running run as <c>cancelled</c> after its owning node has aborted the in-flight statement.
+    /// Conditional on the run still being <c>running</c>, so a run that finished on its own (succeeded/failed) in the
+    /// same instant is never overwritten by a late cancel.</summary>
+    public static Task<int> CancelRunningAsync(
+        CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        return catalog.Runs
+            .Where(r => r.RunId == runId && r.Status == RunStatuses.Running)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, RunStatuses.Cancelled)
+                .SetProperty(r => r.Success, false)
+                .SetProperty(r => r.Error, "The run was cancelled by an operator while executing.")
+                .SetProperty(r => r.EndUtc, nowUtc)
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct);
     }
 
     /// <summary>Requeues runs left <c>running</c> by this node: on worker startup they are orphans from a previous
