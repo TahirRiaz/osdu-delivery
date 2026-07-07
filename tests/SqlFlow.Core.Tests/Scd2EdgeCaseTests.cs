@@ -236,11 +236,12 @@ public sealed class Scd2EdgeCaseTests
     }
 
     [Fact]
-    public void Insert_DedupesByKeyEvenWhenDeduplicateStagedRowsIsOff()
+    public void Insert_DedupesByKeyViaRowNumber()
     {
-        // The SCD2 insert always reduces staging to one row per key via ROW_NUMBER, independent of the plain
-        // upsert's DeduplicateStagedRows flag (which it ignores). It must never emit SELECT DISTINCT.
-        var insert = EdgeGen(EdgeOptions() with { DeduplicateStagedRows = false })[^1].Sql;
+        // The SCD2 insert reduces staging to one row per key via ROW_NUMBER (the same collapse the plain and
+        // batched keyed inserts use), so a key appearing several times in staging versions once. It must never
+        // emit SELECT DISTINCT.
+        var insert = EdgeGen(EdgeOptions())[^1].Sql;
 
         Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [CustomerId]", insert, StringComparison.Ordinal);
         Assert.Contains("WHERE src._rn = 1", insert, StringComparison.Ordinal);

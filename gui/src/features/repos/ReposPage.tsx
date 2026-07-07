@@ -18,6 +18,7 @@ import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
+import { TruncatedText } from "../../components/TruncatedText";
 import { RegisterSourceDialog } from "./RegisterSourceDialog";
 
 // Repos and their git sources are two facets of one thing, joined by name: a source is the git registration that
@@ -142,7 +143,11 @@ export default function ReposPage() {
         </Stack>
       ),
     },
-    { id: "remoteUrl", header: "Remote URL", render: (row) => row.source?.remoteUrl ?? row.repo?.remoteUrl ?? "-" },
+    {
+      id: "remoteUrl",
+      header: "Remote URL",
+      render: (row) => <TruncatedText text={row.source?.remoteUrl ?? row.repo?.remoteUrl} mono maxWidth={360} />,
+    },
     { id: "branch", header: "Branch", render: (row) => row.source?.branch ?? "-" },
     { id: "sync", header: "Sync", render: (row) => renderSync(row.source) },
     {

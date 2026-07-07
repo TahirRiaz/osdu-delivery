@@ -19,6 +19,21 @@ public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
     RunParameters? Parameters = null);
 
+/// <summary>What to enqueue as one multi-flow run group (a Node or Batch execution): the resolved, ordered member
+/// flows (with their waves) plus the shared routing. Every member is enqueued under one <see cref="RunGroupModes"/>
+/// header and gated by wave, so a dependency never runs before what it depends on. Members always run with default
+/// run parameters: the built-in backfill is a single-flow concept, so it is never applied across a whole set.</summary>
+public sealed record RunGroupEnqueueRequest(
+    Guid RepoId, string Mode, string Anchor, IReadOnlyList<RunScopeMember> Members,
+    string? TargetPool = null, string? CommitSha = null);
+
+/// <summary>The outcome of enqueuing a group: the new group id and the ids of every member run, in wave order.</summary>
+public sealed record RunGroupEnqueueResult(Guid GroupId, IReadOnlyList<Guid> RunIds);
+
+/// <summary>The outcome of cancelling a run group: whether the group existed, how many queued members were cancelled
+/// outright, and how many running members had a cancel request stamped (the latter drives a worker nudge).</summary>
+public sealed record GroupCancelResult(bool Found, int CancelledQueued, int RequestedRunning);
+
 /// <summary>The result of a cancel request, so the API can answer 200 / 202 / 404 / 409 precisely.</summary>
 public enum CancelOutcome
 {
@@ -59,15 +74,25 @@ public static class RunQueueStore
     // illegal. READ COMMITTED is also the engine default, so this only ever restores it.
     // {POOL_PREDICATE} is replaced with a parameterized pool filter (the pool NAMES are bound as parameters, never
     // interpolated, so the IN list is injection-safe).
+    //
+    // The group-gating clause enforces wave order within a run group without any external coordinator: a member of a
+    // group is claimable only once every same-group member in a LOWER wave is terminal (no sibling with a smaller
+    // GroupWave is still queued or running). A standalone run (GroupId IS NULL) short-circuits the clause and is
+    // claimable exactly as before. Because a blocked member simply is not selected (rather than locked), READPAST
+    // still lets a worker move straight to the next eligible run - a not-yet-ready wave never stalls the queue.
     private const string ClaimSqlTemplate = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         UPDATE [catalog].[Run]
         SET [Status] = @running, [ClaimedByNode] = @node, [StartUtc] = @now
         OUTPUT inserted.[RunId]
         WHERE [RunId] = (
-            SELECT TOP (1) [RunId] FROM [catalog].[Run] WITH (UPDLOCK, READPAST, ROWLOCK)
-            WHERE [Status] = @queued AND {POOL_PREDICATE}
-            ORDER BY [EnqueuedUtc], [RunId]);
+            SELECT TOP (1) r.[RunId] FROM [catalog].[Run] AS r WITH (UPDLOCK, READPAST, ROWLOCK)
+            WHERE r.[Status] = @queued AND {POOL_PREDICATE}
+              AND (r.[GroupId] IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM [catalog].[Run] AS s
+                  WHERE s.[GroupId] = r.[GroupId] AND s.[GroupWave] < r.[GroupWave]
+                    AND s.[Status] IN (@queued, @running)))
+            ORDER BY r.[EnqueuedUtc], r.[RunId]);
         """;
 
     /// <summary>Enqueues a run: inserts a <c>queued</c> <see cref="CatalogRun"/> row and returns its newly minted
@@ -124,6 +149,72 @@ public static class RunQueueStore
         }, ct);
     }
 
+    /// <summary>Enqueues a whole run group (a Node or Batch execution) atomically: inserts one
+    /// <see cref="CatalogRunGroup"/> header and one <c>queued</c> <see cref="CatalogRun"/> per member, each stamped
+    /// with the shared <see cref="CatalogRun.GroupId"/> and its own <see cref="CatalogRun.GroupWave"/> so the claim
+    /// runs them in wave order. Every member is pinned to the same resolved commit (so the whole set executes one
+    /// consistent version) and carries default run parameters (backfill is single-flow only). Returns the group id
+    /// and the member run ids in wave order. Members are validated non-empty by the caller (an empty scope is a
+    /// request error, not something to enqueue).</summary>
+    public static Task<RunGroupEnqueueResult> EnqueueGroupAsync(
+        CatalogDbContext catalog, RunGroupEnqueueRequest request, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Mode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Anchor);
+        if (request.Members is not { Count: > 0 })
+        {
+            throw new ArgumentException("A run group must have at least one member flow.", nameof(request));
+        }
+
+        var groupId = Guid.CreateVersion7();
+        var targetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim();
+        return CatalogTransaction.InSerializableAsync(catalog, async () =>
+        {
+            var commitSha = string.IsNullOrWhiteSpace(request.CommitSha)
+                ? await ResolveSyncedShaAsync(catalog, request.RepoId, ct).ConfigureAwait(false)
+                : request.CommitSha.Trim();
+
+            catalog.RunGroups.Add(new CatalogRunGroup
+            {
+                GroupId = groupId,
+                RepoId = request.RepoId,
+                Mode = request.Mode,
+                Anchor = request.Anchor,
+                MemberCount = request.Members.Count,
+                CommitSha = commitSha,
+                EnqueuedUtc = nowUtc,
+            });
+
+            var runIds = new List<Guid>(request.Members.Count);
+            foreach (var member in request.Members)
+            {
+                var runId = Guid.CreateVersion7();
+                runIds.Add(runId);
+                catalog.Runs.Add(new CatalogRun
+                {
+                    RunId = runId,
+                    PipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName),
+                    RepoId = request.RepoId,
+                    FlowName = member.FlowName,
+                    FlowKind = string.IsNullOrWhiteSpace(member.FlowKind) ? "unknown" : member.FlowKind,
+                    TargetPool = targetPool,
+                    CommitSha = commitSha,
+                    GroupId = groupId,
+                    // A negative (uncomputed) wave collapses to 0 so an un-analyzed set runs as one parallel wave.
+                    GroupWave = member.Wave < 0 ? 0 : member.Wave,
+                    Status = RunStatuses.Queued,
+                    EnqueuedUtc = nowUtc,
+                    WrittenUtc = nowUtc,
+                    Success = false,
+                });
+            }
+
+            return new RunGroupEnqueueResult(groupId, runIds);
+        }, ct);
+    }
+
     /// <summary>
     /// The commit an unpinned enqueue defaults to: the repo's managed-sync source's last successfully synced SHA.
     /// The repo row and its source row are joined by name, which is the managed-sync invariant (the sync records
@@ -160,11 +251,11 @@ public static class RunQueueStore
         // A worker with no pools claims only untargeted runs; a pooled worker also claims runs routed to one of its
         // pools. The pool names are bound as parameters (only the @poolN placeholders are interpolated), so the IN
         // list cannot be an injection vector.
-        var poolPredicate = "[TargetPool] IS NULL";
+        var poolPredicate = "r.[TargetPool] IS NULL";
         if (pools.Count > 0)
         {
             var placeholders = string.Join(", ", pools.Select((_, i) => $"@pool{i}"));
-            poolPredicate = $"([TargetPool] IS NULL OR [TargetPool] IN ({placeholders}))";
+            poolPredicate = $"(r.[TargetPool] IS NULL OR r.[TargetPool] IN ({placeholders}))";
         }
 
         var sql = ClaimSqlTemplate.Replace("{POOL_PREDICATE}", poolPredicate, StringComparison.Ordinal);
@@ -246,7 +337,21 @@ public static class RunQueueStore
                             catalog.Runs.Add(target);
                         }
 
+                        // The node may have streamed this run's statements into the catalog live as it executed.
+                        // Those rows are a real-time preview; run.json is the authoritative final trace (it carries
+                        // the full order and the failure marker), so clear any live rows before re-projecting from
+                        // the artifact. A no-op for CLI runs and any run with no live feed, and atomic with the rest
+                        // of the completion inside this serializable transaction.
+                        await catalog.RunStatements.Where(s => s.RunId == runId)
+                            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
                         CatalogSync.AddRunDetail(catalog, document.RootElement, runId, repoId);
+                        // A failed group member strands its dependents: skip them in the same transaction so the
+                        // completion and its consequences commit together (a no-op for a standalone or succeeded run).
+                        if (!projected.Success)
+                        {
+                            await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
+                        }
+
                         return true;
                     }
                 }
@@ -264,6 +369,8 @@ public static class RunQueueStore
                 existing.EndUtc = nowUtc;
                 existing.WrittenUtc = nowUtc;
                 existing.Error = $"the run executed but its result could not be recorded: {readError}.";
+                // An unrecordable run is still a failed group member: strand its dependents like any other failure.
+                await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
             }
 
             return false;
@@ -273,19 +380,25 @@ public static class RunQueueStore
     /// <summary>Drives a run to <c>failed</c> with a reason when execution could not even produce an artifact (the
     /// flow file was missing, failed to load, or the worker threw): a no-op if the run is already terminal, so a
     /// late failure never overwrites a recorded success.</summary>
-    public static Task FailAsync(
+    public static async Task FailAsync(
         CatalogDbContext catalog, Guid runId, string error, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
-        return catalog.Runs
+        var failed = await catalog.Runs
             .Where(r => r.RunId == runId && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatuses.Failed)
                 .SetProperty(r => r.Success, false)
                 .SetProperty(r => r.Error, error)
                 .SetProperty(r => r.EndUtc, nowUtc)
-                .SetProperty(r => r.WrittenUtc, nowUtc), ct);
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+
+        if (failed > 0)
+        {
+            await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Cancels a run, honoring its lifecycle. A still-queued run is cancelled outright (it never ran). A
@@ -309,6 +422,9 @@ public static class RunQueueStore
             .ConfigureAwait(false);
         if (cancelled > 0)
         {
+            // Cancelling a queued group member is a non-success terminal too: its dependents in the group can no
+            // longer run, so skip them (a no-op for a standalone run).
+            await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
             return CancelOutcome.Cancelled;
         }
 
@@ -337,6 +453,40 @@ public static class RunQueueStore
         };
     }
 
+    /// <summary>Cancels a whole run group as a unit: every still-<c>queued</c> member is cancelled outright and every
+    /// member already <c>running</c> gets a durable cancel request stamped for its owning node to honor, exactly as
+    /// the single-run <see cref="CancelAsync"/> does. No per-member dependent-skipping is needed here: the entire
+    /// group is being cancelled, so there is nothing left to strand. Returns whether the group existed and how many
+    /// members were affected, so the endpoint can answer 404 for an unknown group and the dispatcher can nudge the
+    /// worker when a running member must observe its request.</summary>
+    public static async Task<GroupCancelResult> CancelGroupAsync(
+        CatalogDbContext catalog, Guid groupId, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        var found = await catalog.RunGroups.AsNoTracking()
+            .AnyAsync(g => g.GroupId == groupId, ct).ConfigureAwait(false);
+        if (!found)
+        {
+            return new GroupCancelResult(false, 0, 0);
+        }
+
+        var cancelledQueued = await catalog.Runs
+            .Where(r => r.GroupId == groupId && r.Status == RunStatuses.Queued)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, RunStatuses.Cancelled)
+                .SetProperty(r => r.EndUtc, nowUtc)
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+
+        var requestedRunning = await catalog.Runs
+            .Where(r => r.GroupId == groupId && r.Status == RunStatuses.Running && r.CancelRequestedUtc == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.CancelRequestedUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+
+        return new GroupCancelResult(true, cancelledQueued, requestedRunning);
+    }
+
     /// <summary>The ids of runs this node is executing that an operator has asked to cancel: <c>running</c>, claimed
     /// by <paramref name="node"/>, with a pending <see cref="CatalogRun.CancelRequestedUtc"/>. The worker polls this
     /// to trip the matching run's cancellation token. Scoped to the node so a worker only ever cancels its own
@@ -356,19 +506,27 @@ public static class RunQueueStore
     /// <summary>Records a running run as <c>cancelled</c> after its owning node has aborted the in-flight statement.
     /// Conditional on the run still being <c>running</c>, so a run that finished on its own (succeeded/failed) in the
     /// same instant is never overwritten by a late cancel.</summary>
-    public static Task<int> CancelRunningAsync(
+    public static async Task<int> CancelRunningAsync(
         CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
-        return catalog.Runs
+        var cancelled = await catalog.Runs
             .Where(r => r.RunId == runId && r.Status == RunStatuses.Running)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatuses.Cancelled)
                 .SetProperty(r => r.Success, false)
                 .SetProperty(r => r.Error, "The run was cancelled by an operator while executing.")
                 .SetProperty(r => r.EndUtc, nowUtc)
-                .SetProperty(r => r.WrittenUtc, nowUtc), ct);
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+
+        if (cancelled > 0)
+        {
+            await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
+        }
+
+        return cancelled;
     }
 
     /// <summary>Requeues runs left <c>running</c> by this node: on worker startup they are orphans from a previous
@@ -384,6 +542,93 @@ public static class RunQueueStore
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatuses.Queued)
                 .SetProperty(r => r.ClaimedByNode, (string?)null), ct);
+    }
+
+    /// <summary>When a group member reaches a non-success terminal state (failed / cancelled), marks every member
+    /// that transitively depends on it and is still <c>queued</c> as <c>skipped</c>: a broken upstream is never fed
+    /// downstream, while independent branches of the group keep running. A no-op for a standalone run (no group), a
+    /// succeeded run, or a run whose dependents have all already started. Idempotent (guarded on <c>queued</c>), so
+    /// two failures in the same group each skip their own cone without fighting. The reachable set is computed over
+    /// the group's own members only, so a dependent outside this run group is never touched.</summary>
+    private static async Task SkipGroupDescendantsAsync(
+        CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct)
+    {
+        var run = await catalog.Runs.AsNoTracking()
+            .Where(r => r.RunId == runId)
+            .Select(r => new { r.GroupId, r.PipelineId, r.RepoId, r.FlowName, r.Status })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (run is null || run.GroupId is not { } groupId || run.RepoId is not { } repoId
+            || run.Status == RunStatuses.Succeeded)
+        {
+            return;
+        }
+
+        var memberIds = (await catalog.Runs.AsNoTracking()
+                .Where(r => r.GroupId == groupId)
+                .Select(r => r.PipelineId)
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToHashSet();
+
+        var edges = await catalog.FlowDependencies.AsNoTracking()
+            .Where(d => d.RepoId == repoId)
+            .Select(d => new { d.FromPipelineId, d.ToPipelineId })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var outgoing = new Dictionary<Guid, List<Guid>>();
+        foreach (var edge in edges)
+        {
+            // Only edges wholly inside this group matter: a dependency on a flow that is not part of the run cannot
+            // be satisfied or skipped by it.
+            if (!memberIds.Contains(edge.FromPipelineId) || !memberIds.Contains(edge.ToPipelineId))
+            {
+                continue;
+            }
+
+            if (!outgoing.TryGetValue(edge.FromPipelineId, out var to))
+            {
+                to = new List<Guid>();
+                outgoing[edge.FromPipelineId] = to;
+            }
+
+            to.Add(edge.ToPipelineId);
+        }
+
+        var dependents = new HashSet<Guid>();
+        var queue = new Queue<Guid>();
+        queue.Enqueue(run.PipelineId);
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (!outgoing.TryGetValue(current, out var neighbors))
+            {
+                continue;
+            }
+
+            foreach (var next in neighbors)
+            {
+                if (dependents.Add(next))
+                {
+                    queue.Enqueue(next);
+                }
+            }
+        }
+
+        if (dependents.Count == 0)
+        {
+            return;
+        }
+
+        var dependentIds = dependents.ToList();
+        var reason = $"skipped: an upstream dependency ('{run.FlowName}') did not succeed.";
+        await catalog.Runs
+            .Where(r => r.GroupId == groupId && r.Status == RunStatuses.Queued && dependentIds.Contains(r.PipelineId))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, RunStatuses.Skipped)
+                .SetProperty(r => r.Success, false)
+                .SetProperty(r => r.Error, reason)
+                .SetProperty(r => r.EndUtc, nowUtc)
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+            .ConfigureAwait(false);
     }
 
     private static void ApplyCompletion(CatalogRun target, CatalogRun projected, DateTime nowUtc)
@@ -409,6 +654,10 @@ public static class RunQueueStore
         target.RowsDeleted = projected.RowsDeleted;
         target.Error = projected.Error;
         target.Host = projected.Host ?? target.Host;
+        target.IncrementalMode = projected.IncrementalMode;
+        target.IncrementalFilter = projected.IncrementalFilter;
+        target.IncrementalWatermark = projected.IncrementalWatermark;
+        target.IncrementalWatermarkSource = projected.IncrementalWatermarkSource;
     }
 
     private static void AddParameter(DbCommand command, string name, object value)

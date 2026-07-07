@@ -66,7 +66,7 @@ public sealed class UpsertEdgeCaseTests
             UecOptions(["TenantId", "Id", "Name"], ["TenantId", "Id"])));
 
         Assert.Contains(
-            "WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Trg] AS trg WHERE src.[TenantId] = trg.[TenantId] AND src.[Id] = trg.[Id])",
+            "NOT EXISTS (SELECT 1 FROM [dbo].[Trg] AS trg WHERE src.[TenantId] = trg.[TenantId] AND src.[Id] = trg.[Id])",
             insert.Sql,
             StringComparison.Ordinal);
     }
@@ -425,31 +425,36 @@ public sealed class UpsertEdgeCaseTests
         Assert.Contains("src.[Amount]", checksum, StringComparison.Ordinal);
     }
 
-    // --- Deduplicate-staged-rows default --------------------------------------------------------------------
+    // --- Per-key staging dedupe on insert -------------------------------------------------------------------
 
     [Fact]
-    public void DeduplicateStagedRowsDefault_EmitsNoDistinctOnTheInsertSelect()
+    public void PlainInsert_CollapsesStagingToOneRowPerKey()
     {
         var insert = UecInsert(UpsertGenerator.GenerateStatements(UecTarget, UecStaging,
             UecOptions(["Id", "Name"], ["Id"])));
 
+        // Partition by key + keep _rn = 1: one row per key survives, so two same-key staging rows cannot both
+        // be inserted and collide on the target's unique key. A full-row SELECT DISTINCT would not achieve this.
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [Id]", insert.Sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE src._rn = 1 AND NOT EXISTS", insert.Sql, StringComparison.Ordinal);
         Assert.DoesNotContain("SELECT DISTINCT", insert.Sql, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void DeduplicateStagedRows_WithBatching_PutsDistinctOnTheWindowedInsertSelect()
+    public void BatchedInsert_CollapsesStagingToOneRowPerKeyInsideTheWindow()
     {
         var insert = UecInsert(UpsertGenerator.GenerateStatements(UecTarget, UecStaging, new UpsertOptions
         {
             DataColumns = ["Id", "Name"],
             KeyColumns = ["Id"],
-            DeduplicateStagedRows = true,
             BatchToAvoidLockEscalation = true,
             BatchRowCount = 1000,
         }));
 
-        // The data insert inside the window is made distinct.
-        Assert.Contains("SELECT DISTINCT src.[Id], src.[Name]", insert.Sql, StringComparison.Ordinal);
+        // The windowed insert reads from the per-key-deduped staging source, so a key window inserts one row
+        // per key even when staging holds several rows for that key.
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [Id]", insert.Sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE src._rn = 1 AND k.RowNum BETWEEN @Start AND @End", insert.Sql, StringComparison.Ordinal);
     }
 
     // --- Batched-window combinations ------------------------------------------------------------------------

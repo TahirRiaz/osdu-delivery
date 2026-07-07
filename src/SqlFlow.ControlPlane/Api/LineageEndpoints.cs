@@ -1,3 +1,6 @@
+using System.IO.Enumeration;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
@@ -5,6 +8,14 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 
 namespace SqlFlow.ControlPlane.Api;
+
+/// <summary>A file-ingestion pipeline whose source spec matches a given file: the flow that would ingest it. The
+/// match is by the source's file-name glob (as the engine applies it) and, when a full path is given, the source
+/// location or path mask. <see cref="PathConfirmed"/> is true when the path (not just the name) was matched, so a
+/// caller can rank a definitively-located match above a name-only one.</summary>
+public sealed record FilePipelineMatchDto(
+    Guid PipelineId, string PipelineName, Guid RepoId, string RepoName,
+    string SourceType, string? SourceLocation, string Pattern, bool PathConfirmed);
 
 /// <summary>A lineage object as it appears in lists: the canonical identity and metadata, without the heavy module
 /// body (<c>Definition</c>). Keyed by <see cref="Key"/>, the global identity that joins the same physical object
@@ -48,6 +59,11 @@ public sealed record ObjectDossierDto(
     IReadOnlyList<ObjectColumnDto> Columns,
     IReadOnlyList<EdgeDto> Edges);
 
+/// <summary>One repo whose lineage references an object: how many edges in that repo touch it, and whether any of
+/// them writes/creates it (the repo where a flow populates it). The list is ranked so the writing repo comes
+/// first, which is the repo the lineage graph opens on when a search result jumps to "how is this populated".</summary>
+public sealed record ObjectRepoDto(Guid RepoId, string RepoName, int EdgeCount, bool Writes);
+
 /// <summary>One flow-level dependency in a repo's execution plan: <c>ToFlow</c> waits for <c>FromFlow</c>.</summary>
 public sealed record FlowDependencyDto(
     long Id, Guid RepoId, string FromFlow, string ToFlow, Guid FromPipelineId, Guid ToPipelineId, string ViaObjects);
@@ -84,7 +100,9 @@ public static class LineageEndpoints
         lineage.MapGet("/objects", ListObjectsAsync).WithName("ListLineageObjects");
         lineage.MapGet("/objects/detail", GetObjectAsync).WithName("GetLineageObject");
         lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
+        lineage.MapGet("/objects/repos", ListObjectReposAsync).WithName("ListLineageObjectRepos");
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
+        lineage.MapGet("/file-pipelines", MatchFilePipelinesAsync).WithName("MatchFilePipelines");
         lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
 
         var repos = group.MapGroup("/repos").WithTags("Lineage");
@@ -243,6 +261,248 @@ public static class LineageEndpoints
             .Select(c => new ObjectColumnDto(c.Ordinal, c.Name, c.DataType, c.Nullable, c.Tier))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<ObjectColumnDto>(columns, p, size, total));
+    }
+
+    /// <summary>
+    /// The repos whose lineage references an object, ranked so the repo that populates it comes first. An object
+    /// key is global (the same physical table appears in every repo that reads or writes it), but the lineage
+    /// graph is drawn per repo, so a client jumping from a search hit to "how is this object populated" needs to
+    /// know which repo's graph to open. Grouping the object's edges by repo answers that in one call: the repo
+    /// with a <c>Writes</c>/<c>Creates</c> edge (a flow producing the object) is ranked first, then by how much of
+    /// the object's lineage lives in the repo. An empty list means the object has no recorded lineage edges, so it
+    /// appears in no graph.
+    /// </summary>
+    private static async Task<Results<Ok<IReadOnlyList<ObjectRepoDto>>, ProblemHttpResult>> ListObjectReposAsync(
+        string? key, CatalogDbContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return TypedResults.Problem(
+                detail: "A 'key' query parameter is required (a lineage object key).",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        // Count the object's edges per repo and flag whether any of them writes/creates it (the producing repo).
+        var groups = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.ObjectKey == key)
+            .GroupBy(e => e.RepoId)
+            .Select(g => new
+            {
+                RepoId = g.Key,
+                EdgeCount = g.Count(),
+                Writes = g.Any(e => e.Relation == "Writes" || e.Relation == "Creates"),
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (groups.Count == 0)
+        {
+            return TypedResults.Ok<IReadOnlyList<ObjectRepoDto>>(Array.Empty<ObjectRepoDto>());
+        }
+
+        // Resolve the repo names in one round-trip (the repo set is small and bounded by the estate's repos).
+        var repoIds = groups.Select(g => g.RepoId).ToList();
+        var names = await db.Repos.AsNoTracking()
+            .Where(r => repoIds.Contains(r.Id))
+            .ToDictionaryAsync(r => r.Id, r => r.Name, ct).ConfigureAwait(false);
+
+        // Rank: the repo that populates the object first (the "how is it populated" view the graph opens on), then
+        // by how much of its lineage lives there, then by name so the order is stable.
+        var ranked = groups
+            .Select(g => new ObjectRepoDto(
+                g.RepoId,
+                names.TryGetValue(g.RepoId, out var name) ? name : g.RepoId.ToString(),
+                g.EdgeCount,
+                g.Writes))
+            .OrderByDescending(r => r.Writes)
+            .ThenByDescending(r => r.EdgeCount)
+            .ThenBy(r => r.RepoName, StringComparer.Ordinal)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<ObjectRepoDto>>(ranked);
+    }
+
+    /// <summary>
+    /// Resolve which file-ingestion pipelines would ingest a given file, by matching it against the source spec
+    /// each file flow declares (the spec already in the catalog, so no run is required). The match mirrors the
+    /// engine's file selection: the source's file-name glob (<c>source.options.srcFile</c>, defaulting per source
+    /// type) is applied to the file NAME with the same matcher the engine's cloud store uses
+    /// (<see cref="FileSystemName.MatchesSimpleExpression(ReadOnlySpan{char}, ReadOnlySpan{char}, bool)"/>); when a
+    /// full path is given it is further constrained by the path mask (<c>source.options.srcPathMask</c>, a regex
+    /// over the path) or, absent a mask, by the source <c>location</c> the path must sit under. A bare file name
+    /// (no path) matches on the glob alone and can return several flows, which the caller disambiguates. This is
+    /// the definitional "which flow feeds this file" answer, complementing the historical run-to-file record.
+    /// </summary>
+    private static async Task<Results<Ok<IReadOnlyList<FilePipelineMatchDto>>, ProblemHttpResult>> MatchFilePipelinesAsync(
+        string? file, CatalogDbContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(file))
+        {
+            return TypedResults.Problem(
+                detail: "A 'file' query parameter is required (a file name or full path).",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        // Normalize to forward slashes; the file name is the last path segment, the rest is the (optional) path.
+        var input = file.Trim().Replace('\\', '/');
+        var slash = input.LastIndexOf('/');
+        var fileName = slash >= 0 ? input[(slash + 1)..] : input;
+        var hasPath = slash >= 0;
+        if (fileName.Length == 0)
+        {
+            return TypedResults.Problem(
+                detail: "The 'file' value has no file name to match.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        // Only file flows have a file source spec; scan the active ones (bounded by the estate's file flows).
+        var flows = await db.Pipelines.AsNoTracking()
+            .Where(p => p.Kind == "file" && p.Active)
+            .Join(db.Repos.AsNoTracking(), p => p.RepoId, r => r.Id,
+                (p, r) => new { p.Id, p.Name, p.RepoId, RepoName = r.Name, p.DefinitionJson })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var matches = new List<(FilePipelineMatchDto Dto, bool Confirmed)>();
+        foreach (var flow in flows)
+        {
+            var source = ExtractFileSource(flow.DefinitionJson);
+            if (source is null)
+            {
+                continue;
+            }
+
+            var glob = string.IsNullOrWhiteSpace(source.Glob) ? DefaultFilePattern(source.Type) : source.Glob!;
+            // The engine applies the glob to the file name; reuse the exact BCL matcher its cloud store uses.
+            if (!FileSystemName.MatchesSimpleExpression(glob, fileName, ignoreCase: true))
+            {
+                continue;
+            }
+
+            // Confirm against the path when one was supplied: the path mask (a regex over the path) takes priority;
+            // otherwise the path must sit under the source location (both normalized). A location carrying an
+            // unresolved ${...} reference cannot be compared, so it does not constrain the match.
+            bool? pathConfirmed = null;
+            if (hasPath)
+            {
+                if (!string.IsNullOrWhiteSpace(source.Mask))
+                {
+                    pathConfirmed = SafeRegexMatch(source.Mask!, input);
+                }
+                else if (!string.IsNullOrWhiteSpace(source.Location) && !source.Location!.Contains("${", StringComparison.Ordinal))
+                {
+                    var loc = source.Location!.Replace('\\', '/').TrimEnd('/');
+                    pathConfirmed = loc.Length > 0
+                        && input.Contains(loc, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+
+            // A path constraint we could evaluate and that failed excludes the flow; a glob-only match (no path, or
+            // no constraint to check) is still returned, flagged as unconfirmed so the caller can rank it lower.
+            if (pathConfirmed == false)
+            {
+                continue;
+            }
+
+            matches.Add((
+                new FilePipelineMatchDto(
+                    flow.Id, flow.Name, flow.RepoId, flow.RepoName, source.Type, source.Location, glob,
+                    pathConfirmed == true),
+                pathConfirmed == true));
+        }
+
+        var ordered = matches
+            .OrderByDescending(m => m.Confirmed)
+            .ThenBy(m => m.Dto.RepoName, StringComparer.Ordinal)
+            .ThenBy(m => m.Dto.PipelineName, StringComparer.Ordinal)
+            .Select(m => m.Dto)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<FilePipelineMatchDto>>(ordered);
+    }
+
+    /// <summary>The parsed file source of a flow: what a file must match to be ingested by it.</summary>
+    private sealed record FileSource(string Type, string? Location, string? Glob, string? Mask);
+
+    /// <summary>Reads a file flow's source spec out of its stored <c>DefinitionJson</c> (the parsed flow), reaching
+    /// <c>flow.source</c> and its options. Returns null when the document is not a file flow or carries no source.</summary>
+    private static FileSource? ExtractFileSource(string definitionJson)
+    {
+        if (string.IsNullOrWhiteSpace(definitionJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(definitionJson);
+            if (!doc.RootElement.TryGetProperty("flow", out var flow)
+                || flow.ValueKind != JsonValueKind.Object
+                || !flow.TryGetProperty("source", out var source)
+                || source.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var type = StringProp(source, "type") ?? "";
+            var location = StringProp(source, "location");
+            string? glob = null, mask = null, srcPath = null;
+            if (source.TryGetProperty("options", out var options) && options.ValueKind == JsonValueKind.Object)
+            {
+                glob = StringProp(options, "srcFile");
+                mask = StringProp(options, "srcPathMask");
+                srcPath = StringProp(options, "srcPath");
+            }
+
+            // The source root is either the endpoint location or the srcPath option (the loader accepts either).
+            location ??= srcPath;
+            // Nothing to match on (neither a type to default a pattern from, nor an explicit glob): not a usable
+            // file source.
+            if (type.Length == 0 && string.IsNullOrEmpty(glob))
+            {
+                return null;
+            }
+
+            return new FileSource(type, location, glob, mask);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? StringProp(JsonElement obj, string name)
+        => obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    /// <summary>The default file-name glob a file reader applies when the source declares no <c>srcFile</c>,
+    /// matching each reader's <c>DefaultFilePattern</c>.</summary>
+    private static string DefaultFilePattern(string type) => type.ToLowerInvariant() switch
+    {
+        "csv" => "*.csv",
+        "json" or "jsonl" or "ndjson" => "*.json",
+        "xml" => "*.xml",
+        "parquet" or "prq" => "*.parquet",
+        "xls" or "xlsx" => "*.xlsx",
+        _ => "*",
+    };
+
+    /// <summary>Matches a path against a source path-mask regex the way the engine does (case-insensitive, culture
+    /// invariant), bounded by a short timeout and treating an invalid or runaway pattern as no match rather than
+    /// letting a bad catalog value fault the request.</summary>
+    private static bool SafeRegexMatch(string pattern, string path)
+    {
+        try
+        {
+            return Regex.IsMatch(
+                path, pattern,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                TimeSpan.FromMilliseconds(100));
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
     }
 
     /// <summary>The maximum rows each list of the dossier returns: an object's columns and its edges are

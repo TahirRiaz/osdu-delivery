@@ -48,6 +48,9 @@ export default defineConfig({
         ControlPlane__Catalog__ConnectionReference: E2E.catalogDb,
         ControlPlane__Jwt__SigningKey: "e2e-signing-key-0123456789abcdef-0123456789abcdef-PADDING",
         ControlPlane__Jwt__BootstrapSecret: E2E.bootstrapSecret,
+        // The suite provisions a fresh, dedicated test catalog, so it opts into database creation explicitly.
+        // Production startup leaves this off, refusing to create/initialise a database it was pointed at by mistake.
+        ControlPlane__Bootstrap__AllowCreate: "true",
         ControlPlane__Bootstrap__AdminUsername: E2E.adminUsername,
         ControlPlane__Bootstrap__AdminPasswordReference: E2E.adminPassword,
         ControlPlane__Cors__AllowedOrigins__0: E2E.guiBaseUrl,

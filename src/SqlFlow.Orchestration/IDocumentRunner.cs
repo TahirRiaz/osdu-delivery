@@ -1,3 +1,4 @@
+using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Runs;
 
 namespace SqlFlow.Orchestration;
@@ -32,6 +33,17 @@ public sealed record DocumentExecutionOptions
     /// operational overrides applied by the engine for this run only. Defaults to
     /// <see cref="RunParameters.None"/>, which changes nothing.</summary>
     public RunParameters Parameters { get; init; } = RunParameters.None;
+
+    /// <summary>The downstream (next) table the incremental watermark probe should read instead of the flow's
+    /// own target, resolved from lineage by the control plane for a flow that opts in with
+    /// <c>incremental.watermarkFromDownstream</c>. Null (the default, and every direct CLI run) leaves the probe
+    /// on the flow's own target. Threaded into the ingestion runner through the single execution path.</summary>
+    public RelationalObject? WatermarkSourceTable { get; init; }
+
+    /// <summary>Receives each generated SQL statement as the run executes it, for live persistence (the node
+    /// streams the trace into the catalog during the run). Null (the default) records nothing live, so a direct
+    /// CLI run is unchanged; the trace is still written to the artifact and projected at completion.</summary>
+    public IRunStatementSink? StatementSink { get; init; }
 }
 
 /// <summary>The uniform outcome of running one flow document, whatever its kind. The batch needs only the

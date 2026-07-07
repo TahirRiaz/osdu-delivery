@@ -19,6 +19,14 @@ public static class PageRequest
 public sealed record RepoDto(
     Guid Id, string Name, string? RemoteUrl, string? RootPath, DateTime FirstSeenUtc, DateTime LastSyncUtc);
 
+/// <summary>The outcome of a manual local-path repo sync: the pipeline reconciliation counts and the lineage tallies
+/// (objects, columns, edges, waves, dependencies), whether the derived tier connected to the live database, and any
+/// warnings the pass surfaced (bounded). This is the compact summary the GUI shows after a "Sync now".</summary>
+public sealed record RepoSyncResultDto(
+    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated,
+    int Objects, int Columns, int Edges, int Waves, int Dependencies,
+    bool Connected, IReadOnlyList<string> Warnings);
+
 /// <summary>A pipeline (flow) as it appears in lists: the hot dimensions, without the heavy YAML/definition body.</summary>
 public sealed record PipelineSummaryDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active,
@@ -35,6 +43,12 @@ public sealed record PipelineDetailDto(
 public sealed record PipelineColumnDto(
     string Kind, int Ordinal, string ColumnName, string? SourceColumn, string? Expression, string? DataType,
     int? SortOrder, bool IsVirtual, bool ExcludeFromView, bool Converted);
+
+/// <summary>One distinct file a pipeline has processed across its whole run history (deduplicated by name+path,
+/// carrying the newest processing's metadata). <see cref="LastRun"/> flags the files processed by the pipeline's
+/// most recent file-bearing run, so the view can separate "what the last run found" from "everything ever seen".</summary>
+public sealed record PipelineFileDto(
+    string Name, string? Path, DateTimeOffset? Modified, long Rows, long SizeBytes, bool LastRun, DateTime? LastProcessedUtc);
 
 /// <summary>The bootstrap token request body (only honored when a bootstrap secret is configured).</summary>
 public sealed record TokenRequest(string Secret, string? Subject, IReadOnlyList<string>? Scopes);

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core.Identity;
@@ -298,6 +299,71 @@ public sealed class RunQueueStoreTests
         }
     }
 
+    [Fact]
+    public void RunStatements_ProjectsTheErrorOntoTheFailingStatementOnly()
+    {
+        var runId = Guid.NewGuid();
+        var repoId = Guid.NewGuid();
+        using var doc = JsonDocument.Parse(FailedArtifactWithTrace(runId, "rq_flow"));
+
+        var statements = CatalogProjection.RunStatements(doc.RootElement, runId, repoId);
+
+        Assert.Equal(2, statements.Count);
+        Assert.Equal(1, statements[0].Ordinal);
+        Assert.Equal("staging.create", statements[0].Step);
+        Assert.Null(statements[0].Error);
+        Assert.Equal(2, statements[1].Ordinal);
+        Assert.Equal("upsert.insert", statements[1].Step);
+        Assert.Equal("Cannot insert duplicate key", statements[1].Error);
+    }
+
+    [SkippableFact]
+    public async Task CompleteFromArtifact_ReplacesLiveStatementsWithTheProjectedTrace()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var dir = NewTempDir();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow);
+
+            // Simulate the node's live feed: statement rows written into the catalog while the run was executing.
+            db.RunStatements.Add(new CatalogRunStatement
+            {
+                RunId = runId, RepoId = repoId, Ordinal = 1, Step = "staging.create", Sql = "CREATE TABLE #stale;",
+            });
+            db.RunStatements.Add(new CatalogRunStatement
+            {
+                RunId = runId, RepoId = repoId, Ordinal = 2, Step = "upsert.insert", Sql = "INSERT INTO stale;",
+            });
+            await db.SaveChangesAsync();
+
+            var runJson = Path.Combine(dir, "run.json");
+            await File.WriteAllTextAsync(runJson, FailedArtifactWithTrace(runId, flowName));
+            Assert.True(await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
+
+            var projected = await db.RunStatements.AsNoTracking()
+                .Where(s => s.RunId == runId).OrderBy(s => s.Ordinal).ToListAsync();
+            // The live preview rows were cleared and replaced by exactly the artifact's trace (no duplication), with
+            // the failure attributed to the one statement that threw.
+            Assert.Equal(2, projected.Count);
+            Assert.Equal("INSERT INTO t;", projected[1].Sql);
+            Assert.Null(projected[0].Error);
+            Assert.Equal("Cannot insert duplicate key", projected[1].Error);
+
+            var run = await Reload(db, runId);
+            Assert.Equal(RunStatuses.Failed, run.Status);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, dir);
+        }
+    }
+
     private static (Guid RepoId, string FlowName) NewIds()
     {
         var suffix = Guid.NewGuid().ToString("N")[..8];
@@ -321,6 +387,28 @@ public sealed class RunQueueStoreTests
               "success": {{(success ? "true" : "false")}},
               "writtenUtc": "2026-06-19T10:00:00Z",
               "result": { "rowsLoaded": {{rowsLoaded}}, "durationSeconds": 1.0 }
+            }
+            """;
+
+    // A failed ingestion artifact whose SQL trace attributes the failure to the second statement (the upsert
+    // insert), mirroring a real duplicate-key failure: the projection stamps its Error onto that entry only.
+    private static string FailedArtifactWithTrace(Guid runId, string flowName)
+        => $$"""
+            {
+              "schemaVersion": 1,
+              "flowKind": "ing",
+              "flowName": "{{flowName}}",
+              "runId": "{{runId}}",
+              "success": false,
+              "error": "Cannot insert duplicate key",
+              "writtenUtc": "2026-06-19T10:00:00Z",
+              "result": {
+                "durationSeconds": 2.0,
+                "sqlTrace": [
+                  { "sequence": 1, "step": "staging.create", "sql": "CREATE TABLE #s;" },
+                  { "sequence": 2, "step": "upsert.insert", "sql": "INSERT INTO t;", "error": "Cannot insert duplicate key" }
+                ]
+              }
             }
             """;
 

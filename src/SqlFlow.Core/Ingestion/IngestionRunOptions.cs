@@ -18,6 +18,12 @@ public sealed record IngestionRunOptions
     /// streamed live and written to the .sqlflow run folder). Null records nothing.</summary>
     public IRunEventSink? Events { get; init; }
 
+    /// <summary>Receives each generated SQL statement as the runner executes it, so a live consumer (the node)
+    /// can persist the trace to the catalog during the run. Null (the default) records nothing live; the trace
+    /// still rides the result and is projected from the artifact at completion, so behavior is unchanged for
+    /// every CLI run.</summary>
+    public IRunStatementSink? StatementSink { get; init; }
+
     /// <summary>An orchestrator-assigned run id the runner stamps on the run instead of minting its own. The
     /// control-plane trigger hands a run id to its caller before the run executes, so the runner must record the
     /// run under that exact id for <c>GET /runs/{id}</c> to resolve. Null mints a fresh id, which is what every
@@ -28,4 +34,11 @@ public sealed record IngestionRunOptions
     /// incremental window, applied for this run only. Defaults to <see cref="RunParameters.None"/> (no change).
     /// <see cref="RunParameters.FilePattern"/> is a file-flow concern and is ignored here.</summary>
     public RunParameters Parameters { get; init; } = RunParameters.None;
+
+    /// <summary>The downstream (next) table the high-water MAX probe should read instead of the flow's own
+    /// target, resolved from lineage by the control plane when the flow sets
+    /// <c>incremental.watermarkFromDownstream</c>. Null (the default, and every direct CLI run, which has no
+    /// lineage) probes the flow's own target. The resolver honors this only when it is reachable and carries
+    /// every watermark column, falling back to the target otherwise.</summary>
+    public RelationalObject? WatermarkSourceTable { get; init; }
 }

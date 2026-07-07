@@ -195,6 +195,28 @@ export default function RepoDetailPage() {
       enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
   });
 
+  // A CLI/local-path repo has no git source for the background sync to poll, so it is re-synced inline from its
+  // recorded root path (connected: the derived lineage tier reads the live database). On success the pipeline and
+  // lineage views are refreshed so the new waves/edges show without a manual reload.
+  const syncLocal = useMutation({
+    mutationFn: (id: string) => repoApi.syncLocal(id),
+    onSuccess: (result) => {
+      enqueueSnackbar(
+        `Synced: ${result.pipelinesAdded} added, ${result.pipelinesUpdated} updated, `
+        + `${result.objects} objects, ${result.edges} edges, ${result.waves} waves`
+        + `${result.connected ? " (connected)" : ""}`
+        + `${result.warnings.length > 0 ? `; ${result.warnings.length} warning(s)` : ""}`,
+        { variant: result.connected ? "success" : "warning" },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["repos"] });
+      void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+      void queryClient.invalidateQueries({ queryKey: ["lineage-waves"] });
+      void queryClient.invalidateQueries({ queryKey: ["lineage-object-edges"] });
+    },
+    onError: (error) =>
+      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+  });
+
   if (repoQuery.isError) {
     return isApiError(repoQuery.error)
       ? <CorrelationError error={repoQuery.error} />
@@ -227,7 +249,7 @@ export default function RepoDetailPage() {
           )}
           actions={(
             <>
-              {source !== undefined && (
+              {source !== undefined ? (
                 <Button
                   variant="outlined"
                   startIcon={<SyncIcon />}
@@ -237,7 +259,21 @@ export default function RepoDetailPage() {
                 >
                   Sync now
                 </Button>
-              )}
+              ) : repo.rootPath ? (
+                <Tooltip title={`Re-sync from ${repo.rootPath} (connected: reads the live database for object lineage)`}>
+                  <span>
+                    <Button
+                      variant="outlined"
+                      startIcon={<SyncIcon />}
+                      disabled={syncLocal.isPending}
+                      onClick={() => syncLocal.mutate(repoId)}
+                      data-testid="repo-sync-local"
+                    >
+                      {syncLocal.isPending ? "Syncing…" : "Sync now"}
+                    </Button>
+                  </span>
+                </Tooltip>
+              ) : null}
               <Button
                 variant="outlined"
                 startIcon={<AccountTreeIcon />}

@@ -137,8 +137,12 @@ public sealed class DocumentExecutor : IDocumentRunner
     {
         var runner = _provider.GetRequiredService<FlowRunner>();
         var flow = ApplyFileRunParameters(doc.Flow, options.Parameters);
-        var result = await runner.RunAsync(flow, options.RunId, ct).ConfigureAwait(false);
-        var trace = string.Join(Environment.NewLine + Environment.NewLine, result.DdlExecuted);
+
+        // The run-history anchor (the flow document's folder) is the same one RunHistory.Write uses below, so the
+        // incremental probe reads the durable last-processed watermark from exactly the runs written here.
+        var runHistoryDirectory = Path.GetDirectoryName(Path.GetFullPath(flowFile)) ?? Directory.GetCurrentDirectory();
+        var result = await runner.RunAsync(flow, options.RunId, options.StatementSink, runHistoryDirectory, options.WatermarkSourceTable, ct).ConfigureAwait(false);
+        var trace = SqlTrace.Render(result.SqlTrace);
 
         var runDirectory = RunHistory.Write(flowFile, doc.Flow.Name, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -233,7 +237,11 @@ public sealed class DocumentExecutor : IDocumentRunner
             InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals));
         var result = await runner.RunAsync(
             doc.Document.Flow,
-            new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, Parameters = options.Parameters },
+            new IngestionRunOptions
+            {
+                ExecMode = "cli", Events = runLogger, RunId = options.RunId, Parameters = options.Parameters,
+                StatementSink = options.StatementSink, WatermarkSourceTable = options.WatermarkSourceTable,
+            },
             ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias ?? doc.Document.Flow.Target.Table.Name;
@@ -286,7 +294,7 @@ public sealed class DocumentExecutor : IDocumentRunner
                 $"run parameters '{options.Parameters.Describe()}' do not apply to an export flow (only a backfill window does); running as defined.");
         }
 
-        var result = await runner.RunAsync(exportFlow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(exportFlow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, StatementSink = options.StatementSink }, ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
@@ -319,7 +327,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             _provider.GetRequiredService<ISecretResolver>(),
             doc.Document.Invokes,
             InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals));
-        var result = await runner.RunAsync(doc.Document.Flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(doc.Document.Flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, StatementSink = options.StatementSink }, ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
@@ -352,7 +360,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             doc.Document.Connections, anchor, _provider.GetRequiredService<ISecretResolver>());
         var flow = options.Retrain ? doc.Document.Flow with { Training = HealthCheckTraining.Always } : doc.Document.Flow;
 
-        var outcome = await runner.RunAsync(flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct: ct).ConfigureAwait(false);
+        var outcome = await runner.RunAsync(flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, StatementSink = options.StatementSink }, ct: ct).ConfigureAwait(false);
         var result = outcome.Result;
 
         var flowName = flow.SysAlias;

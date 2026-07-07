@@ -226,6 +226,7 @@ public static class CatalogProjection
                     RepoId = repoId,
                     Name = name,
                     Path = NullIfBlank(Str(file, "path")),
+                    Modified = DateOffset(file, "modified"),
                     Rows = Long(file, "rows") ?? 0,
                     Columns = Int(Long(file, "columns")),
                     SizeBytes = Long(file, "sizeBytes") ?? 0,
@@ -261,10 +262,12 @@ public static class CatalogProjection
     }
 
     /// <summary>Every generated SQL statement of a run, in execution order: the kind-specific <c>sqlTrace</c>
-    /// (ing/exp/sp/hc, which already includes the surrogate-key statements) and a file flow's <c>ddlExecuted</c>
-    /// (file flows have no sqlTrace). This is the central, queryable trace log; ordinals are assigned in
-    /// projection order. Surrogate-key statements are NOT read from the surrogate-key result: they are already in
-    /// the ingestion <c>sqlTrace</c>, so reading both would double them.</summary>
+    /// (every runner now emits one, including the file flow, and it already includes the surrogate-key statements)
+    /// and, for a legacy file artifact that predates the file-flow trace, its <c>ddlExecuted</c> list. This is the
+    /// central, queryable trace log; ordinals are assigned in projection order. Surrogate-key statements are NOT
+    /// read from the surrogate-key result: they are already in the ingestion <c>sqlTrace</c>, so reading both would
+    /// double them. A current file artifact carries only <c>sqlTrace</c> (its <c>ddlExecuted</c> is a strict subset
+    /// kept out of the JSON), so the two branches never double-count the same statement.</summary>
     public static IReadOnlyList<CatalogRunStatement> RunStatements(JsonElement root, Guid runId, Guid repoId)
     {
         if (Prop(root, "result") is not { } result)
@@ -274,7 +277,7 @@ public static class CatalogProjection
 
         var list = new List<CatalogRunStatement>();
 
-        void Add(string step, string? sql)
+        void Add(string step, string? sql, string? error)
         {
             if (string.IsNullOrWhiteSpace(sql))
             {
@@ -288,6 +291,7 @@ public static class CatalogProjection
                 Ordinal = list.Count + 1,
                 Step = Truncate(step, 128),
                 Sql = sql,
+                Error = error,
             });
         }
 
@@ -295,7 +299,7 @@ public static class CatalogProjection
         {
             foreach (var entry in trace.EnumerateArray())
             {
-                Add(Str(entry, "step") ?? "sql", Str(entry, "sql"));
+                Add(Str(entry, "step") ?? "sql", Str(entry, "sql"), Str(entry, "error"));
             }
         }
 
@@ -305,7 +309,7 @@ public static class CatalogProjection
             {
                 if (statement.ValueKind == JsonValueKind.String)
                 {
-                    Add("schema.ddl", statement.GetString());
+                    Add("schema.ddl", statement.GetString(), null);
                 }
             }
         }
@@ -446,6 +450,7 @@ public static class CatalogProjection
 
         var result = Prop(root, "result");
         var success = Bool(root, "success") ?? false;
+        var incremental = result is { } inc ? Prop(inc, "incremental") : null;
 
         return new CatalogRun
         {
@@ -468,8 +473,17 @@ public static class CatalogProjection
             RowsUpdated = result is { } r5 ? Long(r5, "rowsUpdated") : null,
             RowsDeleted = result is { } r6 ? Long(r6, "rowsDeleted") : null,
             Host = NullIfBlank(Str(root, "host")),
+            IncrementalMode = incremental is { } i1 ? NullIfBlank(Str(i1, "mode")) : null,
+            IncrementalFilter = incremental is { } i2 ? Truncate2048(Str(i2, "filter")) : null,
+            IncrementalWatermark = incremental is { } i3 ? NullIfBlank(Str(i3, "watermark")) : null,
+            IncrementalWatermarkSource = incremental is { } i4 ? NullIfBlank(Str(i4, "watermarkSource")) : null,
         };
     }
+
+    /// <summary>The incremental filter is bounded by the column width (2048); an oversized WHERE fragment from an
+    /// extreme flow is truncated rather than overflowing the insert.</summary>
+    private static string? Truncate2048(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : Truncate(value, 2048);
 
     private static double? DurationSeconds(JsonElement? result)
     {
@@ -521,6 +535,9 @@ public static class CatalogProjection
 
     private static DateTime? Date(JsonElement element, string name)
         => Prop(element, name) is { ValueKind: JsonValueKind.String } p && p.TryGetDateTime(out var v) ? v : null;
+
+    private static DateTimeOffset? DateOffset(JsonElement element, string name)
+        => Prop(element, name) is { ValueKind: JsonValueKind.String } p && p.TryGetDateTimeOffset(out var v) ? v : null;
 
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 

@@ -1,9 +1,12 @@
 using System.Data.Common;
 using System.Diagnostics;
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Diagnostics;
+using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Model;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.Core.Engine;
@@ -71,21 +74,85 @@ public sealed class FlowRunner
     }
 
     public Task<FlowResult> RunAsync(FlowDefinition flow, CancellationToken ct = default)
-        => RunAsync(flow, null, ct);
+        => RunAsync(flow, null, null, ct);
+
+    public Task<FlowResult> RunAsync(FlowDefinition flow, Guid? runId, CancellationToken ct = default)
+        => RunAsync(flow, runId, null, null, ct);
+
+    public Task<FlowResult> RunAsync(FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, CancellationToken ct = default)
+        => RunAsync(flow, runId, statementSink, null, null, ct);
+
+    public Task<FlowResult> RunAsync(
+        FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, string? runHistoryDirectory, CancellationToken ct = default)
+        => RunAsync(flow, runId, statementSink, runHistoryDirectory, null, ct);
 
     /// <param name="flow">The validated flow to run.</param>
     /// <param name="runId">An orchestrator-assigned run id stamped on the run instead of minting one; the
     /// control-plane trigger supplies the id it already handed the caller so the recorded run resolves under it.
     /// Null mints a fresh time-ordered id, which is what every direct CLI run does.</param>
+    /// <param name="statementSink">Receives each executed SQL statement as it runs, so the node can stream the
+    /// trace into the catalog live (the Statements view updates while the run is in flight). Null (every CLI and
+    /// library caller) records nothing live; the trace still rides the result and is projected at completion.</param>
+    /// <param name="runHistoryDirectory">The directory this flow's on-disk run history is anchored to (the flow
+    /// document's folder). Supplied so a file flow's incremental probe can read the durable last-processed
+    /// watermark from prior runs when the target table is a transient landing table. Null skips that source and
+    /// uses only the target-table probe.</param>
+    /// <param name="watermarkTable">The next durable table downstream in the lineage graph (the ods/silver table
+    /// this flow feeds), resolved by the control plane. When set, the incremental watermark is probed from THIS
+    /// table instead of the flow's own target, so deleting rows there re-opens the read window (bronze is driven
+    /// by what silver holds). Null (a direct CLI run, or no unambiguous downstream table) probes the flow's own
+    /// target. The anchor is column-safe and reachability-safe: an absent table/column falls back to the target.</param>
     /// <param name="ct">Cancellation for the run.</param>
-    public async Task<FlowResult> RunAsync(FlowDefinition flow, Guid? runId, CancellationToken ct = default)
+    public async Task<FlowResult> RunAsync(
+        FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, string? runHistoryDirectory,
+        RelationalObject? watermarkTable, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
 
-        var context = new RunContext(runId ?? Guid.CreateVersion7(), flow.FlowId, flow.Name);
+        var context = new RunContext(runId ?? Guid.CreateVersion7(), flow.FlowId, flow.Name, runHistoryDirectory);
         var startedAt = Stopwatch.GetTimestamp();
         string? connectionString = null;
+        IncrementalSummary? incrementalSummary = null;
         IReadOnlyList<string> disabledIndexes = [];
+
+        // The run's ordered SQL trace: every statement executed against the target, captured as it runs and
+        // streamed to the live sink so the node persists it during the run. On failure the offending statement
+        // is stamped (executingSequence tracks which traced statement is mid-execution; 0 means the failure was
+        // outside any traced statement, for example the bulk load, so no statement is falsely blamed).
+        var statements = statementSink ?? NullRunStatementSink.Instance;
+        var trace = new List<SqlTraceEntry>();
+        var executingSequence = 0;
+        void Trace(string step, string? sql)
+        {
+            if (string.IsNullOrWhiteSpace(sql))
+            {
+                return;
+            }
+
+            var entry = new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql };
+            trace.Add(entry);
+            statements.Report(entry);
+        }
+
+        // Trace each statement in a DDL group, execute the group as one stage, and clear the in-flight marker on
+        // success. A throw leaves executingSequence pointing at the group's last statement so the catch attributes
+        // the failure (best-effort within a batched group, precise for single-statement stages like the view).
+        async Task RunDdlAsync(string step, IReadOnlyList<string> ddl)
+        {
+            if (ddl.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var statement in ddl)
+            {
+                Trace(step, statement);
+            }
+
+            executingSequence = trace.Count;
+            await StageAsync(step, context, () => _schema.ExecuteDdlAsync(connectionString!, ddl, ct)).ConfigureAwait(false);
+            executingSequence = 0;
+        }
 
         using var scope = _logger.BeginScope("Flow {FlowName} {FlowId} ({RunId})", flow.Name, context.FlowId, context.RunId);
         using var activity = SqlFlowDiagnostics.ActivitySource.StartActivity("flow.run");
@@ -100,8 +167,10 @@ public sealed class FlowRunner
             connectionString = await _secrets.ResolveAsync(flow.Target.Connection, ct).ConfigureAwait(false);
 
             // Incremental: probe the target for the watermark and bound the source read to new files
-            // only. Returns the original flow unchanged when there is no incremental spec or no watermark.
-            var effectiveFlow = await ApplyIncrementalAsync(flow, connectionString, context, ct).ConfigureAwait(false);
+            // only. Returns the original flow unchanged when there is no incremental spec or no watermark,
+            // alongside the summary of which filter (if any) the read used.
+            FlowDefinition effectiveFlow;
+            (effectiveFlow, incrementalSummary) = await ApplyIncrementalAsync(flow, connectionString, watermarkTable, context, ct).ConfigureAwait(false);
 
             var plan = await PlanCoreAsync(effectiveFlow, context, ct, connectionString).ConfigureAwait(false);
 
@@ -111,15 +180,9 @@ public sealed class FlowRunner
             // rebuilt after. The two paths are mutually exclusive, so no index work is duplicated.
             var tableIsNew = plan.Actual is null;
 
-            if (plan.DdlStatements.Count > 0)
-            {
-                await StageAsync("schema.apply-ddl", context, () => _schema.ExecuteDdlAsync(connectionString, plan.DdlStatements, ct)).ConfigureAwait(false);
-            }
+            await RunDdlAsync("schema.apply-ddl", plan.DdlStatements).ConfigureAwait(false);
 
-            if (flow.PreProcess.Count > 0)
-            {
-                await StageAsync("target.preprocess", context, () => _schema.ExecuteDdlAsync(connectionString, flow.PreProcess, ct)).ConfigureAwait(false);
-            }
+            await RunDdlAsync("target.preprocess", flow.PreProcess).ConfigureAwait(false);
 
             // Disabling and rebuilding every nonclustered index costs O(table size), which pays off when the
             // load replaces or dwarfs the existing data but dominates wall-clock when a watermark-bounded
@@ -184,10 +247,7 @@ public sealed class FlowRunner
                 }
             }
 
-            if (flow.PostProcess.Count > 0)
-            {
-                await StageAsync("target.postprocess", context, () => _schema.ExecuteDdlAsync(connectionString, flow.PostProcess, ct)).ConfigureAwait(false);
-            }
+            await RunDdlAsync("target.postprocess", flow.PostProcess).ConfigureAwait(false);
 
             await StageAsync("source.complete", context, () => reader.CompleteAsync(effectiveFlow.Source, ct)).ConfigureAwait(false);
 
@@ -199,8 +259,18 @@ public sealed class FlowRunner
             TransformViewResult? transformView = null;
             if (flow.Inference.GeneratesView)
             {
-                transformView = await StageAsync("transform.view", context,
-                    () => GenerateTransformViewAsync(flow, connectionString, ct), r => r.Columns.Count).ConfigureAwait(false);
+                var cs = connectionString;
+                transformView = await StageAsync("transform.view", context, async () =>
+                {
+                    // Build the view DDL (introspect + infer + resolve), trace it, then execute: trace-then-execute
+                    // so a failure here stamps the exact view statement, and the live sink sees it before it runs.
+                    var built = await BuildTransformViewAsync(flow, cs, ct).ConfigureAwait(false);
+                    Trace("transform.view", built.Ddl);
+                    executingSequence = trace.Count;
+                    await _schema.ExecuteDdlAsync(cs, [built.Ddl], ct).ConfigureAwait(false);
+                    executingSequence = 0;
+                    return built;
+                }, r => r.Columns.Count).ConfigureAwait(false);
                 Emit(context,
                     $"transformation view [{flow.Target.Schema}].[{transformView.ViewName}] refreshed "
                     + $"({transformView.Columns.Count} column(s), {transformView.Columns.Count(c => c.Converted)} typed)",
@@ -227,10 +297,12 @@ public sealed class FlowRunner
                 Status = FlowStatus.Success,
                 RowsLoaded = rows,
                 DdlExecuted = plan.DdlStatements,
+                SqlTrace = trace,
                 ProcessedFiles = read.ProcessedFiles,
                 Trace = context.Trace,
                 TotalMs = totalMs,
                 TransformView = transformView,
+                Incremental = incrementalSummary,
             };
         }
         catch (NoSourceFilesException ex) when (flow.Incremental is { FullLoad: false })
@@ -248,8 +320,10 @@ public sealed class FlowRunner
                 FlowName = flow.Name,
                 Status = FlowStatus.Success,
                 RowsLoaded = 0,
+                SqlTrace = trace,
                 Trace = context.Trace,
                 TotalMs = totalMs,
+                Incremental = incrementalSummary,
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -273,15 +347,26 @@ public sealed class FlowRunner
             _logger.LogError(ex, "Flow '{Flow}' failed after {ElapsedMs:F0} ms.", flow.Name, totalMs);
             Emit(context, $"Flow '{flow.Name}' failed: {ex.Message}", FlowEventLevel.Error);
 
+            // Stamp the failure onto the statement that was mid-execution (a DDL group or the view refresh) and
+            // report it to the live sink, so both the artifact trace and the live rows mark which one broke. A
+            // failure outside any traced statement (the bulk load) leaves executingSequence 0 and blames nothing.
+            if (executingSequence > 0)
+            {
+                trace[executingSequence - 1] = trace[executingSequence - 1] with { Error = ex.Message };
+                statements.ReportFailure(executingSequence, ex.Message);
+            }
+
             return new FlowResult
             {
                 RunId = context.RunId,
                 FlowId = context.FlowId,
                 FlowName = flow.Name,
                 Status = FlowStatus.Failed,
+                SqlTrace = trace,
                 Trace = context.Trace,
                 TotalMs = totalMs,
                 Error = ex.Message,
+                Incremental = incrementalSummary,
             };
         }
     }
@@ -293,38 +378,134 @@ public sealed class FlowRunner
     /// Returns the flow unchanged when there is no incremental spec, a forced full load, or no prior watermark
     /// (empty/missing target).
     /// </summary>
-    private async Task<FlowDefinition> ApplyIncrementalAsync(FlowDefinition flow, string connectionString, RunContext context, CancellationToken ct)
+    private async Task<(FlowDefinition Flow, IncrementalSummary? Summary)> ApplyIncrementalAsync(
+        FlowDefinition flow, string connectionString, RelationalObject? watermarkTable, RunContext context, CancellationToken ct)
     {
         if (flow.Incremental is not { FullLoad: false } incremental)
         {
-            return flow;
+            // No incremental spec at all: no incremental surface to report. A declared/forced full load still has
+            // one, so the detail can state the watermark was bypassed rather than showing nothing.
+            var summary = flow.Incremental is null
+                ? null
+                : new IncrementalSummary { Mode = IncrementalModes.Full, Filter = "full load (watermark bypassed)" };
+            return (flow, summary);
         }
 
         var probeTable = string.IsNullOrWhiteSpace(incremental.Table) ? flow.Target.QualifiedName : incremental.Table!;
 
+        // Downstream anchoring (the default) applies only when the flow did not explicitly pin a probe table with
+        // incremental.table: an explicit override is a deliberate operator choice and wins over the lineage-derived
+        // silver table.
+        var downstream = string.IsNullOrWhiteSpace(incremental.Table) ? watermarkTable : null;
+
         if (!string.IsNullOrWhiteSpace(incremental.WatermarkColumn))
         {
-            return await ApplyRowWatermarkAsync(flow, connectionString, probeTable, incremental, context, ct).ConfigureAwait(false);
+            return await ApplyRowWatermarkAsync(flow, connectionString, probeTable, downstream, incremental, context, ct).ConfigureAwait(false);
         }
 
-        var watermark = await StageAsync("incremental.probe", context,
+        // Probe the silver table's file-date watermark first. Its MAX is the end-to-end high-water mark; the
+        // run-history floor below is deliberately NOT applied to it, so deleting rows from silver lets the mark
+        // regress and the source is re-pulled. A missing/empty silver table or a renamed/absent date column returns
+        // null and falls through to the flow's own target + run-history path.
+        if (downstream is not null)
+        {
+            var anchored = await TryDownstreamFileWatermarkAsync(flow, connectionString, downstream, incremental, context, ct).ConfigureAwait(false);
+            if (anchored is not null)
+            {
+                return anchored.Value;
+            }
+        }
+
+        var probed = await StageAsync("incremental.probe", context,
             () => _incrementalProbe.GetWatermarkAsync(connectionString, probeTable, incremental.DateColumn, incremental.OverlapDays, ct))
             .ConfigureAwait(false);
 
-        if (watermark is not { } mark)
+        // The durable, database-free floor: the newest file this flow has already processed, read from its own
+        // on-disk run history. A file flow's target is often a transient landing table (append-mode, truncated
+        // between stages), so probing it for MAX(DateColumn) returns null and the run would re-fetch every file;
+        // the run log survives that. The same overlap the probe applies server-side is applied here, then the
+        // higher (more recent) of the two marks wins, so the watermark never regresses below either source.
+        DateTimeOffset? logged = null;
+        if (!string.IsNullOrWhiteSpace(context.RunHistoryDirectory)
+            && RunHistoryReader.LastProcessedFileDate(context.RunHistoryDirectory!, flow.Name) is { } lastProcessed)
         {
-            Emit(context, "incremental: no prior watermark on the target; loading all available files");
-            return flow;
+            logged = lastProcessed.AddDays(-incremental.OverlapDays);
         }
 
-        Emit(context, $"incremental: target watermark {mark:u}; reading files newer than it (overlap {incremental.OverlapDays}d)");
+        var best = MostRecent(probed, logged);
+        if (best is not { } mark)
+        {
+            Emit(context, "incremental: no prior watermark (target empty and no run history); loading all available files");
+            return (flow, new IncrementalSummary { Mode = IncrementalModes.Full, Filter = "all files (no prior watermark)" });
+        }
+
+        var source = probed is { } p && mark == p ? "target" : "run log";
+        Emit(context, $"incremental: watermark {mark:u} (from {source}); reading files newer than it (overlap {incremental.OverlapDays}d)");
 
         var options = new Dictionary<string, string?>(flow.Source.Options, StringComparer.OrdinalIgnoreCase)
         {
             ["incrementalAfterDate"] = mark.UtcDateTime.ToString("o"),
         };
 
-        return flow with { Source = flow.Source with { Options = options } };
+        var dateSummary = new IncrementalSummary
+        {
+            Mode = IncrementalModes.Incremental,
+            Filter = $"files newer than {mark:u} (overlap {incremental.OverlapDays}d)",
+            Watermark = mark.UtcDateTime.ToString("u", CultureInfo.InvariantCulture),
+            WatermarkSource = source == "target" ? $"target MAX {probeTable}" : "run log",
+        };
+
+        return (flow with { Source = flow.Source with { Options = options } }, dateSummary);
+    }
+
+    // The more recent of two optional watermarks: the "best" incremental floor. Null only when both are null.
+    private static DateTimeOffset? MostRecent(DateTimeOffset? a, DateTimeOffset? b)
+        => a is null ? b : b is null ? a : (a.Value >= b.Value ? a : b);
+
+    /// <summary>
+    /// Probes the downstream (silver) table's file-date watermark for the default downstream anchoring. Its MAX is
+    /// authoritative and, unlike the target probe, is NOT floored by the run history: the whole point is that the
+    /// watermark tracks the silver table and regresses with it, so deleting rows from silver re-opens the read
+    /// window and the source is re-pulled. Returns null (so the caller falls back to the flow's own target +
+    /// run-history path) when the silver table is missing or empty, or when its date column is renamed/absent or an
+    /// unsuitable type (the probe throws, caught here) - never failing the run or forcing a blind full reload.
+    /// </summary>
+    private async Task<(FlowDefinition Flow, IncrementalSummary? Summary)?> TryDownstreamFileWatermarkAsync(
+        FlowDefinition flow, string connectionString, RelationalObject watermarkTable, IncrementalSpec incremental, RunContext context, CancellationToken ct)
+    {
+        DateTimeOffset? probed;
+        try
+        {
+            probed = await _incrementalProbe
+                .GetWatermarkAsync(connectionString, watermarkTable.QualifiedName, incremental.DateColumn, incremental.OverlapDays, ct)
+                .ConfigureAwait(false);
+        }
+        catch (SqlFlowException)
+        {
+            return null;
+        }
+
+        if (probed is not { } mark)
+        {
+            return null;
+        }
+
+        Emit(context, $"incremental: downstream watermark {mark:u} (from {watermarkTable.QualifiedName}); reading files newer than it (overlap {incremental.OverlapDays}d)");
+
+        var options = new Dictionary<string, string?>(flow.Source.Options, StringComparer.OrdinalIgnoreCase)
+        {
+            ["incrementalAfterDate"] = mark.UtcDateTime.ToString("o"),
+        };
+
+        var summary = new IncrementalSummary
+        {
+            Mode = IncrementalModes.Incremental,
+            Filter = $"files newer than {mark:u} (overlap {incremental.OverlapDays}d)",
+            Watermark = mark.UtcDateTime.ToString("u", CultureInfo.InvariantCulture),
+            WatermarkSource = $"downstream MAX {watermarkTable.QualifiedName}",
+        };
+
+        return (flow with { Source = flow.Source with { Options = options } }, summary);
     }
 
     /// <summary>
@@ -332,10 +513,51 @@ public sealed class FlowRunner
     /// source options. DuckDB renders them into a pushdown predicate (so it reads almost nothing past the bound
     /// on a large dataset); every reader is then filtered row by row against the same bound by the engine.
     /// </summary>
-    private async Task<FlowDefinition> ApplyRowWatermarkAsync(
-        FlowDefinition flow, string connectionString, string probeTable, IncrementalSpec incremental, RunContext context, CancellationToken ct)
+    private async Task<(FlowDefinition Flow, IncrementalSummary? Summary)> ApplyRowWatermarkAsync(
+        FlowDefinition flow, string connectionString, string probeTable, RelationalObject? watermarkTable, IncrementalSpec incremental, RunContext context, CancellationToken ct)
     {
         var column = incremental.WatermarkColumn!;
+
+        // Downstream anchoring (the default): probe the silver table's row-level MAX. A missing/empty table or a
+        // renamed/absent column falls back to the flow's own target probe below.
+        if (watermarkTable is not null)
+        {
+            WatermarkValue? downstreamBound;
+            try
+            {
+                downstreamBound = await _incrementalProbe
+                    .GetRowWatermarkAsync(connectionString, watermarkTable.QualifiedName, column, incremental.WatermarkOverlap, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (SqlFlowException)
+            {
+                downstreamBound = null;
+            }
+
+            if (downstreamBound is { } dwn)
+            {
+                var canonicalDownstream = WatermarkPredicate.Format(dwn);
+                Emit(context, $"incremental: downstream watermark {column} > {canonicalDownstream} (from {watermarkTable.QualifiedName}); reading only rows past it");
+
+                var downstreamOptions = new Dictionary<string, string?>(flow.Source.Options, StringComparer.OrdinalIgnoreCase)
+                {
+                    [WatermarkPredicate.ColumnOption] = column,
+                    [WatermarkPredicate.ValueOption] = canonicalDownstream,
+                    [WatermarkPredicate.KindOption] = dwn.Kind.ToString(),
+                };
+
+                var downstreamSummary = new IncrementalSummary
+                {
+                    Mode = IncrementalModes.Incremental,
+                    Filter = $"rows where {column} > {canonicalDownstream}",
+                    Watermark = canonicalDownstream,
+                    WatermarkSource = $"downstream MAX {watermarkTable.QualifiedName}",
+                };
+
+                return (flow with { Source = flow.Source with { Options = downstreamOptions } }, downstreamSummary);
+            }
+        }
+
         var bound = await StageAsync("incremental.probe", context,
             () => _incrementalProbe.GetRowWatermarkAsync(connectionString, probeTable, column, incremental.WatermarkOverlap, ct))
             .ConfigureAwait(false);
@@ -343,7 +565,7 @@ public sealed class FlowRunner
         if (bound is null)
         {
             Emit(context, $"incremental: no prior watermark on the target for column '{column}'; loading all available rows");
-            return flow;
+            return (flow, new IncrementalSummary { Mode = IncrementalModes.Full, Filter = "all rows (no prior watermark)" });
         }
 
         var canonical = WatermarkPredicate.Format(bound);
@@ -356,7 +578,15 @@ public sealed class FlowRunner
             [WatermarkPredicate.KindOption] = bound.Kind.ToString(),
         };
 
-        return flow with { Source = flow.Source with { Options = options } };
+        var summary = new IncrementalSummary
+        {
+            Mode = IncrementalModes.Incremental,
+            Filter = $"rows where {column} > {canonical}",
+            Watermark = canonical,
+            WatermarkSource = $"target MAX {probeTable}",
+        };
+
+        return (flow with { Source = flow.Source with { Options = options } }, summary);
     }
 
     /// <summary>
@@ -382,7 +612,10 @@ public sealed class FlowRunner
     /// refreshes <c>[schema].[v&lt;Table&gt;]</c> with the resolved projection. The view is what the downstream
     /// chained flow reads, so the resolved columns ride back on the result for the run log and the catalog.
     /// </summary>
-    private async Task<TransformViewResult> GenerateTransformViewAsync(FlowDefinition flow, string connectionString, CancellationToken ct)
+    /// <summary>Builds the transformation view's <c>CREATE OR ALTER VIEW</c> DDL and resolved projection without
+    /// executing it; the caller traces the statement and runs it (trace-then-execute) so a failure is attributed
+    /// to the exact view statement and the live sink observes it before it runs.</summary>
+    private async Task<TransformViewResult> BuildTransformViewAsync(FlowDefinition flow, string connectionString, CancellationToken ct)
     {
         var table = await _schema.GetTableSchemaAsync(connectionString, flow.Target.Schema, flow.Target.Table, ct).ConfigureAwait(false)
             ?? throw new SqlFlowException(
@@ -415,7 +648,6 @@ public sealed class FlowRunner
         var resolved = ColumnTransformResolver.Resolve(tableColumns, flow.Inference, inferred);
         var viewName = $"v_{flow.Target.Table}";
         var ddl = TransformViewBuilder.Build(flow.Target.Schema, viewName, flow.Target.Schema, flow.Target.Table, resolved);
-        await _schema.ExecuteDdlAsync(connectionString, [ddl], ct).ConfigureAwait(false);
 
         return new TransformViewResult { ViewName = viewName, Ddl = ddl, Columns = resolved };
     }
@@ -524,11 +756,17 @@ public sealed class FlowRunner
            ?? throw new SqlFlowException($"No source reader is registered for source type '{sourceType}'.");
 
     /// <summary>Per-run state. A fresh instance per run/plan call keeps concurrent runs isolated.</summary>
-    private sealed class RunContext(Guid runId, Guid flowId, string flowName)
+    private sealed class RunContext(Guid runId, Guid flowId, string flowName, string? runHistoryDirectory = null)
     {
         public Guid RunId { get; } = runId;
         public Guid FlowId { get; } = flowId;
         public string FlowName { get; } = flowName;
+
+        /// <summary>The directory this flow's on-disk run history is anchored to (the flow document's folder),
+        /// so the incremental probe can read the durable last-processed watermark from prior runs. Null when the
+        /// caller has no on-disk history (a pure in-memory run), which falls back to the target-table probe.</summary>
+        public string? RunHistoryDirectory { get; } = runHistoryDirectory;
+
         public List<TraceEntry> Trace { get; } = [];
     }
 }

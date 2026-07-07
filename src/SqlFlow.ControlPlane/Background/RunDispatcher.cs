@@ -15,11 +15,21 @@ public interface IRunDispatcher
     /// point a client at <c>GET /api/v1/runs/{runId}</c>.</summary>
     Task<Guid> EnqueueAsync(CatalogDbContext catalog, RunEnqueueRequest request, CancellationToken ct = default);
 
+    /// <summary>Enqueues a whole run group (a Node or Batch execution) as one wave-ordered set and returns the group
+    /// id with its member run ids, so the caller can point a client at the group view. Like a single enqueue this
+    /// nudges the worker so the first wave is picked up immediately.</summary>
+    Task<RunGroupEnqueueResult> EnqueueGroupAsync(
+        CatalogDbContext catalog, RunGroupEnqueueRequest request, CancellationToken ct = default);
+
     /// <summary>Cancels a run: a still-queued run is dequeued outright; a run already executing has a durable cancel
     /// request stamped for its owning node to honor. Returns the precise <see cref="CancelOutcome"/> so the endpoint
     /// can answer 200 / 202 / 404 / 409. Goes through the dispatcher (not the store directly) so the in-process
     /// backend can also nudge the local worker to observe the request without waiting out its poll interval.</summary>
     Task<CancelOutcome> CancelAsync(CatalogDbContext catalog, Guid runId, CancellationToken ct = default);
+
+    /// <summary>Cancels a whole run group: every queued member is dequeued and every running member gets a durable
+    /// cancel request. Returns whether the group existed and how many members were affected.</summary>
+    Task<GroupCancelResult> CancelGroupAsync(CatalogDbContext catalog, Guid groupId, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -50,6 +60,16 @@ public sealed class InProcessRunDispatcher : IRunDispatcher
         return runId;
     }
 
+    public async Task<RunGroupEnqueueResult> EnqueueGroupAsync(
+        CatalogDbContext catalog, RunGroupEnqueueRequest request, CancellationToken ct = default)
+    {
+        var result = await RunQueueStore
+            .EnqueueGroupAsync(catalog, request, _clock.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+        _signal.Signal();
+        return result;
+    }
+
     public async Task<CancelOutcome> CancelAsync(CatalogDbContext catalog, Guid runId, CancellationToken ct = default)
     {
         var outcome = await RunQueueStore
@@ -65,6 +85,22 @@ public sealed class InProcessRunDispatcher : IRunDispatcher
         }
 
         return outcome;
+    }
+
+    public async Task<GroupCancelResult> CancelGroupAsync(
+        CatalogDbContext catalog, Guid groupId, CancellationToken ct = default)
+    {
+        var result = await RunQueueStore
+            .CancelGroupAsync(catalog, groupId, _clock.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+
+        // Nudge the worker so any running members observe their cancel request at once (like the single-run path).
+        if (result.RequestedRunning > 0)
+        {
+            _signal.Signal();
+        }
+
+        return result;
     }
 }
 

@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlflow_lang::features::{self, CompletionKind, Severity, SymbolKind as EngineSymbolKind};
+use sqlflow_lang::features::{
+    self, CompletionKind, SemanticTokenKind, Severity, SymbolKind as EngineSymbolKind,
+};
 use sqlflow_lang::text::{Position as EPos, Range as ERange};
 use sqlflow_lang::FlowDocument;
 use tokio::sync::Mutex;
@@ -75,6 +77,17 @@ impl LanguageServer for SqlFlowLsp {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                        legend: SemanticTokensLegend {
+                            token_types: semantic_token_legend(),
+                            token_modifiers: Vec::new(),
+                        },
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        range: Some(false),
+                        ..Default::default()
+                    }),
+                ),
                 ..Default::default()
             },
         })
@@ -202,6 +215,22 @@ impl LanguageServer for SqlFlowLsp {
             .collect::<Vec<_>>();
         Ok(Some(actions))
     }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> RpcResult<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let Some(source) = self.source_of(&uri).await else {
+            return Ok(None);
+        };
+        let doc = FlowDocument::parse(&source);
+        let data = encode_semantic_tokens(features::semantic_tokens(&doc));
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        })))
+    }
 }
 
 // --- Conversions -----------------------------------------------------------
@@ -271,6 +300,54 @@ fn to_lsp_completion(c: features::CompletionItem) -> CompletionItem {
         sort_text: Some(c.sort_text),
         ..Default::default()
     }
+}
+
+/// The semantic-token legend, in the index order the encoder relies on. The two
+/// SQLFlow-specific roles (unknown key, invalid value) are custom types the
+/// VSCode extension themes; the other two are standard.
+fn semantic_token_legend() -> Vec<SemanticTokenType> {
+    vec![
+        SemanticTokenType::PROPERTY,          // 0: Property
+        SemanticTokenType::new("unknownKey"), // 1: UnknownKey
+        SemanticTokenType::ENUM_MEMBER,       // 2: EnumMember
+        SemanticTokenType::new("invalidValue"), // 3: InvalidValue
+    ]
+}
+
+/// Index of a token kind into [`semantic_token_legend`].
+fn semantic_token_type(kind: SemanticTokenKind) -> u32 {
+    match kind {
+        SemanticTokenKind::Property => 0,
+        SemanticTokenKind::UnknownKey => 1,
+        SemanticTokenKind::EnumMember => 2,
+        SemanticTokenKind::InvalidValue => 3,
+    }
+}
+
+/// Encode engine tokens (already sorted, single-line, non-overlapping) into the
+/// LSP delta form: each token is relative to the previous one.
+fn encode_semantic_tokens(tokens: Vec<features::SemanticToken>) -> Vec<SemanticToken> {
+    let mut data = Vec::with_capacity(tokens.len());
+    let mut prev_line = 0u32;
+    let mut prev_start = 0u32;
+    for tok in tokens {
+        let line = tok.range.start.line;
+        let start = tok.range.start.character;
+        // Engine tokens never span lines, so end.character is on the same line.
+        let length = tok.range.end.character.saturating_sub(start);
+        let delta_line = line - prev_line;
+        let delta_start = if delta_line == 0 { start - prev_start } else { start };
+        data.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type: semantic_token_type(tok.kind),
+            token_modifiers_bitset: 0,
+        });
+        prev_line = line;
+        prev_start = start;
+    }
+    data
 }
 
 fn to_lsp_symbol(s: features::DocumentSymbol) -> DocumentSymbol {

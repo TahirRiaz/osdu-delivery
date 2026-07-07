@@ -1,0 +1,315 @@
+using Microsoft.EntityFrameworkCore;
+using SqlFlow.Catalog;
+using SqlFlow.Core.Identity;
+using Xunit;
+
+namespace SqlFlow.ControlPlane.Tests;
+
+/// <summary>
+/// The multi-flow run group over the real catalog database: enqueuing a set as one wave-ordered group, the claim's
+/// wave gating (a higher-wave member is never claimed before its lower-wave siblings finish), the on-failure skip of
+/// a failed flow's dependents (while independent branches keep running), cancelling a whole group, and the scope
+/// expander that turns Flow / Node / Batch into the concrete member set. Gated on a reachable catalog database like
+/// the other DB-backed tests; each test removes its own repo's rows.
+/// </summary>
+[Trait("Category", "Integration")]
+public sealed class RunGroupQueueTests
+{
+    private const string Node = "test-group-node";
+
+    [SkippableFact]
+    public async Task EnqueueGroup_InsertsHeaderAndMembers_QueuedInWaveOrder()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var members = new List<RunScopeMember>
+            {
+                new($"a_{suffix}", "ing", 0),
+                new($"b_{suffix}", "ing", 1),
+            };
+            var now = DateTime.UtcNow;
+            var result = await RunQueueStore.EnqueueGroupAsync(
+                db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Node, $"a_{suffix}", members), now);
+
+            Assert.Equal(2, result.RunIds.Count);
+            var header = await db.RunGroups.AsNoTracking().FirstOrDefaultAsync(g => g.GroupId == result.GroupId);
+            Assert.NotNull(header);
+            Assert.Equal(RunGroupModes.Node, header.Mode);
+            Assert.Equal(2, header.MemberCount);
+
+            var runs = await db.Runs.AsNoTracking()
+                .Where(r => r.GroupId == result.GroupId).OrderBy(r => r.GroupWave).ToListAsync();
+            Assert.Equal(2, runs.Count);
+            Assert.All(runs, r => Assert.Equal(RunStatuses.Queued, r.Status));
+            Assert.Equal(0, runs[0].GroupWave);
+            Assert.Equal(1, runs[1].GroupWave);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Claim_GatesByWave_HigherWaveWaitsForLowerWaveToSucceed()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+        var dir = NewTempDir();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var members = new List<RunScopeMember>
+            {
+                new($"a_{suffix}", "ing", 0),
+                new($"b_{suffix}", "ing", 1),
+            };
+            var result = await RunQueueStore.EnqueueGroupAsync(
+                db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Node, $"a_{suffix}", members), DateTime.UtcNow);
+            var (runA, runB) = (result.RunIds[0], result.RunIds[1]);
+
+            // Only the wave-0 member is claimable; the wave-1 member is gated behind it.
+            Assert.Equal(runA, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Null(await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(RunStatuses.Queued, (await Reload(db, runB)).Status);
+
+            // Once wave 0 succeeds, the wave-1 member becomes claimable.
+            await CompleteSuccess(db, runA, repoId, $"a_{suffix}", dir);
+            Assert.Equal(runB, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, dir);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Fail_SkipsDependents_ButLeavesIndependentBranchesRunnable()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
+            // B depends on A (wave 1 behind wave 0); C is an independent wave-1 flow with no dependency on A.
+            await SeedDependencyAsync(db, repoId, A, B);
+
+            var members = new List<RunScopeMember>
+            {
+                new(A, "ing", 0),
+                new(B, "ing", 1),
+                new(C, "ing", 1),
+            };
+            var result = await RunQueueStore.EnqueueGroupAsync(
+                db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Node, A, members), DateTime.UtcNow);
+            var (runA, runB, runC) = (result.RunIds[0], result.RunIds[1], result.RunIds[2]);
+
+            Assert.Equal(runA, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+
+            // A fails: its dependent B is skipped; the independent C stays queued and is now claimable.
+            await RunQueueStore.FailAsync(db, runA, "boom", DateTime.UtcNow);
+            Assert.Equal(RunStatuses.Failed, (await Reload(db, runA)).Status);
+            Assert.Equal(RunStatuses.Skipped, (await Reload(db, runB)).Status);
+            Assert.Equal(RunStatuses.Queued, (await Reload(db, runC)).Status);
+            Assert.Equal(runC, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task CancelGroup_CancelsQueuedMembers_AndReportsUnknownGroup()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var members = new List<RunScopeMember>
+            {
+                new($"a_{suffix}", "ing", 0),
+                new($"b_{suffix}", "ing", 1),
+            };
+            var result = await RunQueueStore.EnqueueGroupAsync(
+                db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Batch, $"bt_{suffix}", members), DateTime.UtcNow);
+
+            var cancelled = await RunQueueStore.CancelGroupAsync(db, result.GroupId, DateTime.UtcNow);
+            Assert.True(cancelled.Found);
+            Assert.Equal(2, cancelled.CancelledQueued);
+            Assert.Equal(0, cancelled.RequestedRunning);
+            var runs = await db.Runs.AsNoTracking().Where(r => r.GroupId == result.GroupId).ToListAsync();
+            Assert.All(runs, r => Assert.Equal(RunStatuses.Cancelled, r.Status));
+
+            var unknown = await RunQueueStore.CancelGroupAsync(db, Guid.NewGuid(), DateTime.UtcNow);
+            Assert.False(unknown.Found);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Expand_Node_ReturnsAnchorAndTransitiveDescendants()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
+            await SeedPipelineAsync(db, repoId, A, wave: 0, batch: $"bt_{suffix}");
+            await SeedPipelineAsync(db, repoId, B, wave: 1, batch: $"bt_{suffix}");
+            await SeedPipelineAsync(db, repoId, C, wave: 1, batch: $"bt_{suffix}");
+            await SeedDependencyAsync(db, repoId, A, B);
+
+            var node = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Node, null);
+            Assert.Equal(new[] { A, B }, node.Members.Select(m => m.FlowName).OrderBy(x => x).ToArray());
+
+            var flow = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Flow, null);
+            Assert.Equal(new[] { A }, flow.Members.Select(m => m.FlowName).ToArray());
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Expand_Batch_ReturnsEveryActiveFlowInTheBatch()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
+            var batch = $"bt_{suffix}";
+            await SeedPipelineAsync(db, repoId, A, wave: 0, batch: batch);
+            await SeedPipelineAsync(db, repoId, B, wave: 1, batch: batch);
+            // C belongs to a different batch, so it is not part of this batch run.
+            await SeedPipelineAsync(db, repoId, C, wave: 0, batch: $"other_{suffix}");
+
+            var expansion = await RunScopeExpander.ExpandAsync(db, repoId, null, RunScope.Batch, batch);
+            Assert.Equal(batch, expansion.Anchor);
+            Assert.Equal(new[] { A, B }, expansion.Members.Select(m => m.FlowName).OrderBy(x => x).ToArray());
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    private static (Guid RepoId, string Suffix) NewRepo()
+    {
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        return (FlowIdentity.FromName("grp_" + suffix), suffix);
+    }
+
+    private static async Task SeedPipelineAsync(
+        CatalogDbContext db, Guid repoId, string name, int wave, string batch)
+    {
+        db.Pipelines.Add(new CatalogPipeline
+        {
+            Id = CatalogIdentity.Pipeline(repoId, name),
+            RepoId = repoId,
+            Name = name,
+            Kind = "ing",
+            Batch = batch,
+            RelativePath = $"flows/{name}.flow.yaml",
+            Active = true,
+            Wave = wave,
+            FirstSeenUtc = DateTime.UtcNow,
+            LastSeenUtc = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task SeedDependencyAsync(CatalogDbContext db, Guid repoId, string from, string to)
+    {
+        db.FlowDependencies.Add(new CatalogFlowDependency
+        {
+            RepoId = repoId,
+            FromFlow = from,
+            ToFlow = to,
+            FromPipelineId = CatalogIdentity.Pipeline(repoId, from),
+            ToPipelineId = CatalogIdentity.Pipeline(repoId, to),
+            ViaObjects = string.Empty,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task CompleteSuccess(
+        CatalogDbContext db, Guid runId, Guid repoId, string flowName, string dir)
+    {
+        var runJson = Path.Combine(dir, $"run_{runId:N}.json");
+        await File.WriteAllTextAsync(runJson, $$"""
+            {
+              "schemaVersion": 1,
+              "flowKind": "ing",
+              "flowName": "{{flowName}}",
+              "runId": "{{runId}}",
+              "success": true,
+              "writtenUtc": "2026-06-19T10:00:00Z",
+              "result": { "rowsLoaded": 1, "durationSeconds": 1.0 }
+            }
+            """);
+        Assert.True(await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
+    }
+
+    private static async Task<CatalogRun> Reload(CatalogDbContext db, Guid runId)
+    {
+        var run = await db.Runs.AsNoTracking().FirstOrDefaultAsync(r => r.RunId == runId);
+        Assert.NotNull(run);
+        return run;
+    }
+
+    private static string NewTempDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "sqlflow_grp_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static async Task Cleanup(string cs, Guid repoId, string? dir = null)
+    {
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            await db.RunGroups.Where(g => g.RepoId == repoId).ExecuteDeleteAsync();
+            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+        }
+
+        if (dir is not null && Directory.Exists(dir))
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A transient lock on the temp file must not fail the test.
+            }
+        }
+    }
+}

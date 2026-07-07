@@ -42,6 +42,7 @@ public sealed class ExportFlowRunner
         var runId = options.RunId ?? Guid.NewGuid();
         var startUtc = DateTime.UtcNow;
         var events = options.Events ?? NullRunEventSink.Instance;
+        var statements = options.StatementSink ?? NullRunStatementSink.Instance;
 
         // The generated-SQL trace is captured unconditionally (the result carries it on success AND failure;
         // a failed export is exactly when the generated SQL matters) and woven into the event log at Trace
@@ -51,8 +52,10 @@ public sealed class ExportFlowRunner
         {
             if (!string.IsNullOrWhiteSpace(sql))
             {
-                trace.Add(new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql });
+                var entry = new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql };
+                trace.Add(entry);
                 events.Log(RunLogLevel.Trace, step, sql);
+                statements.Report(entry);
             }
         }
 
@@ -164,6 +167,7 @@ public sealed class ExportFlowRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            SqlTrace.MarkLastFailed(trace, statements, ex.Message);
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
             events.Log(RunLogLevel.Info, "run.end", $"FAILED after {duration}s: {ex.Message}");

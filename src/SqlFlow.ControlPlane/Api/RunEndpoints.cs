@@ -16,11 +16,12 @@ public sealed record RunSummaryDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
-    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted);
+    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, Guid? GroupId);
 
 /// <summary>One run with its full header for the detail view: the summary plus the lifecycle fields (status, when it
 /// was enqueued, the node that claimed it), the schema version, the start/end window, the host, the error, and the
-/// run's substitution parameters (the built-in backfill's audit trail: full load, window, file pattern).
+/// run's substitution parameters (the built-in backfill's audit trail: full load, window, file pattern), and the
+/// engine-computed incremental scope the run actually applied (mode, filter, resolved watermark and its source).
 /// <see cref="Batch"/> and <see cref="Wave"/> follow the same pipeline-join semantics as
 /// <see cref="RunSummaryDto"/>.</summary>
 public sealed record RunDetailDto(
@@ -28,8 +29,10 @@ public sealed record RunDetailDto(
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
-    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
-    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern);
+    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, string? Error, string? Host,
+    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern,
+    string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
+    int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);
 
 /// <summary>One file a run processed (file flows): a drill-down row under a run.</summary>
 public sealed record RunFileDto(
@@ -39,9 +42,10 @@ public sealed record RunFileDto(
 public sealed record RunAssertionDto(
     long Id, Guid RunId, Guid? RepoId, string Name, string Result, string AssertedValue, bool Evaluated, string? Error);
 
-/// <summary>One generated SQL statement a run executed, in execution order: a drill-down row under a run.</summary>
+/// <summary>One generated SQL statement a run executed, in execution order: a drill-down row under a run.
+/// <see cref="Error"/> is set only on the one statement that threw (the run's failure point), null otherwise.</summary>
 public sealed record RunStatementDto(
-    long Id, Guid RunId, Guid? RepoId, int Ordinal, string Step, string Sql);
+    long Id, Guid RunId, Guid? RepoId, int Ordinal, string Step, string Sql, string? Error);
 
 /// <summary>One surrogate-key generation outcome of a run (ingestion flows): a drill-down row under a run.</summary>
 public sealed record RunSurrogateKeyDto(
@@ -52,6 +56,26 @@ public sealed record RunSurrogateKeyDto(
 public sealed record RunHealthCheckMetricDto(
     long Id, Guid RunId, Guid? RepoId, string Name, int SeriesPoints, int ImputedPoints, int ImmaturePoints,
     int Anomalies, int LevelShifts, bool ModelTrained, string? ModelTrainer, string? Error);
+
+/// <summary>One flow a scope expansion would run, with the wave that orders it in the set.</summary>
+public sealed record RunScopePreviewMemberDto(string FlowName, string FlowKind, int Wave);
+
+/// <summary>What a Node or Batch run would enqueue, without enqueuing anything: the resolved anchor, the member
+/// count, how many waves they span, and the ordered members. The dialog and the lineage graph show this so an
+/// operator sees "will run N flows across M waves" before committing.</summary>
+public sealed record RunScopePreviewDto(
+    string Scope, string Anchor, int MemberCount, int WaveCount, IReadOnlyList<RunScopePreviewMemberDto> Members);
+
+/// <summary>A run group's member counts by lifecycle state, for the group view's rollup.</summary>
+public sealed record RunGroupCountsDto(
+    int Total, int Queued, int Running, int Succeeded, int Failed, int Cancelled, int Skipped);
+
+/// <summary>One run group's header: what it was (mode, anchor), when it was enqueued, the commit every member is
+/// pinned to, and the live rollup of its members' states. The members themselves come from the runs list filtered
+/// by this group id.</summary>
+public sealed record RunGroupDto(
+    Guid GroupId, Guid RepoId, string Mode, string Anchor, int MemberCount, string? CommitSha, DateTime EnqueuedUtc,
+    RunGroupCountsDto Counts);
 
 /// <summary>
 /// The read API over the shadow catalog's run history: the run headers and their drill-down detail (the files a run
@@ -68,6 +92,8 @@ public static class RunEndpoints
 
         var runs = group.MapGroup("/runs").WithTags("Runs");
         runs.MapGet("/", ListRunsAsync).WithName("ListRuns");
+        runs.MapGet("/preview", PreviewScopeAsync).WithName("PreviewRunScope");
+        runs.MapGet("/groups/{groupId:guid}", GetRunGroupAsync).WithName("GetRunGroup");
         runs.MapGet("/{runId:guid}", GetRunAsync).WithName("GetRun");
         runs.MapGet("/{runId:guid}/files", GetRunFilesAsync).WithName("GetRunFiles");
         runs.MapGet("/{runId:guid}/assertions", GetRunAssertionsAsync).WithName("GetRunAssertions");
@@ -80,7 +106,7 @@ public static class RunEndpoints
 
     private static async Task<Ok<PagedResult<RunSummaryDto>>> ListRunsAsync(
         CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? flowKind, string? status, bool? success,
-        string? flowName, string? batch, bool? latest, int? page, int? pageSize, CancellationToken ct)
+        string? flowName, string? batch, Guid? groupId, bool? latest, int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -93,6 +119,12 @@ public static class RunEndpoints
         if (pipelineId is { } pid)
         {
             query = query.Where(x => x.PipelineId == pid);
+        }
+
+        // A group's member runs, for the group view: every run stamped with this GroupId, in wave order below.
+        if (groupId is { } gid)
+        {
+            query = query.Where(x => x.GroupId == gid);
         }
 
         if (!string.IsNullOrWhiteSpace(flowKind))
@@ -157,10 +189,13 @@ public static class RunEndpoints
         }
 
         // The history inbox reads newest-first; the status board (latest=true) reads in report order, batch then
-        // lineage step then flow, so each batch lists once, its steps ascending, exactly like the batch report.
+        // lineage step then flow. A group view (groupId set) reads in execution order: by the member's wave then
+        // flow name, so the set lists exactly as it runs.
         var ordered = latest == true
             ? joined.OrderBy(x => x.Batch).ThenBy(x => x.Wave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId)
-            : joined.OrderByDescending(x => x.Run.WrittenUtc).ThenBy(x => x.Run.RunId);
+            : groupId is not null
+                ? joined.OrderBy(x => x.Run.GroupWave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId)
+                : joined.OrderByDescending(x => x.Run.WrittenUtc).ThenBy(x => x.Run.RunId);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
@@ -168,7 +203,8 @@ public static class RunEndpoints
                 x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
                 x.Run.Status, x.Run.Success,
                 x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
-                x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted))
+                x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
+                db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunSummaryDto>(items, p, size, total));
     }
@@ -188,10 +224,103 @@ public static class RunEndpoints
                     run.Status, run.Success,
                     run.TargetPool, run.CommitSha, run.EnqueuedUtc, run.ClaimedByNode, run.CancelRequestedUtc,
                     run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
-                    run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host,
-                    run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern))
+                    run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted,
+                    db.RunFiles.Count(f => f.RunId == run.RunId), run.Error, run.Host,
+                    run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern,
+                    run.IncrementalMode, run.IncrementalFilter, run.IncrementalWatermark, run.IncrementalWatermarkSource,
+                    null, null, null, run.GroupId))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        return dto is null ? NotFound("run", runId) : TypedResults.Ok(dto);
+        if (dto is null)
+        {
+            return NotFound("run", runId);
+        }
+
+        // On a failed run, surface the exact statement that threw alongside the header, so the detail view can show
+        // the offending SQL next to the error banner instead of making the operator hunt for it in the Statements
+        // list. This is the one statement whose projection carries an Error (there is at most one per run); the
+        // lookup is skipped for every non-failed run.
+        if (dto.Status == RunStatuses.Failed)
+        {
+            var failed = await db.RunStatements.AsNoTracking()
+                .Where(s => s.RunId == runId && s.Error != null)
+                .OrderBy(s => s.Ordinal)
+                .Select(s => new { s.Ordinal, s.Step, s.Sql })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (failed is not null)
+            {
+                dto = dto with
+                {
+                    FailedStatementOrdinal = failed.Ordinal,
+                    FailedStatementStep = failed.Step,
+                    FailedStatementSql = failed.Sql,
+                };
+            }
+        }
+
+        return TypedResults.Ok(dto);
+    }
+
+    private static async Task<Results<Ok<RunScopePreviewDto>, ProblemHttpResult>> PreviewScopeAsync(
+        CatalogDbContext db, Guid repoId, string? flowName, string? scope, string? batch, CancellationToken ct)
+    {
+        var parsed = RunScopeExpander.TryParseScope(scope);
+        if (parsed is null)
+        {
+            return TypedResults.Problem(
+                detail: "scope must be one of 'flow', 'node', or 'batch'.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        RunScopeExpansion expansion;
+        try
+        {
+            expansion = await RunScopeExpander.ExpandAsync(
+                    db, repoId,
+                    string.IsNullOrWhiteSpace(flowName) ? null : flowName.Trim(), parsed.Value,
+                    string.IsNullOrWhiteSpace(batch) ? null : batch.Trim(), ct)
+                .ConfigureAwait(false);
+        }
+        catch (ArgumentException ex)
+        {
+            return TypedResults.Problem(
+                detail: ex.Message, statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        var members = expansion.Members
+            .Select(m => new RunScopePreviewMemberDto(m.FlowName, m.FlowKind, m.Wave))
+            .ToList();
+        var waveCount = members.Select(m => m.Wave).Distinct().Count();
+        return TypedResults.Ok(new RunScopePreviewDto(
+            parsed.Value.ToString().ToLowerInvariant(), expansion.Anchor, members.Count, waveCount, members));
+    }
+
+    private static async Task<Results<Ok<RunGroupDto>, ProblemHttpResult>> GetRunGroupAsync(
+        Guid groupId, CatalogDbContext db, CancellationToken ct)
+    {
+        var group = await db.RunGroups.AsNoTracking()
+            .Where(g => g.GroupId == groupId)
+            .Select(g => new { g.GroupId, g.RepoId, g.Mode, g.Anchor, g.MemberCount, g.CommitSha, g.EnqueuedUtc })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (group is null)
+        {
+            return NotFound("run group", groupId);
+        }
+
+        // The live rollup: the members' current lifecycle states, counted in one grouped pass.
+        var byStatus = await db.Runs.AsNoTracking()
+            .Where(r => r.GroupId == groupId)
+            .GroupBy(r => r.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(ct).ConfigureAwait(false);
+        int CountOf(string status) => byStatus.FirstOrDefault(x => x.Status == status)?.Count ?? 0;
+        var counts = new RunGroupCountsDto(
+            byStatus.Sum(x => x.Count),
+            CountOf(RunStatuses.Queued), CountOf(RunStatuses.Running), CountOf(RunStatuses.Succeeded),
+            CountOf(RunStatuses.Failed), CountOf(RunStatuses.Cancelled), CountOf(RunStatuses.Skipped));
+
+        return TypedResults.Ok(new RunGroupDto(
+            group.GroupId, group.RepoId, group.Mode, group.Anchor, group.MemberCount, group.CommitSha,
+            group.EnqueuedUtc, counts));
     }
 
     // Every drill-down endpoint first verifies the run exists and returns 404 when it does not, so an unknown run id
@@ -251,7 +380,7 @@ public static class RunEndpoints
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
-            .Select(x => new RunStatementDto(x.Id, x.RunId, x.RepoId, x.Ordinal, x.Step, x.Sql))
+            .Select(x => new RunStatementDto(x.Id, x.RunId, x.RepoId, x.Ordinal, x.Step, x.Sql, x.Error))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunStatementDto>(items, p, size, total));
     }

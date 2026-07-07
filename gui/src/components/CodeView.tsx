@@ -1,13 +1,28 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { type Monaco } from "@monaco-editor/react";
+import type { editor } from "monaco-editor";
 import Box from "@mui/material/Box";
+import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
+import IconButton from "@mui/material/IconButton";
+import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { useTheme } from "@mui/material/styles";
+import { useSnackbar } from "notistack";
+import { format as formatSql } from "sql-formatter";
 import "../lib/monacoSetup";
+import { markFlowModel, refreshDiagnostics, registerSqlflowYamlProviders } from "../lib/lsp/sqlflowLsp";
 
 interface CodeViewProps {
   value: string;
   language: "yaml" | "json" | "sql";
   height?: number | string;
+  /**
+   * Enable SQLFlow flow-YAML language intelligence (hover docs per attribute,
+   * census-driven colouring, and validation squiggles), served by the wasm
+   * analysis engine. Only meaningful for `language: "yaml"` flow documents.
+   */
+  lsp?: boolean;
   "data-testid"?: string;
 }
 
@@ -43,6 +58,13 @@ function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
       { token: "delimiter", foreground: rule("--sf-text-secondary", "#4d5a6a") },
       { token: "tag", foreground: rule("--sf-primary", "#2f6fce") },
       { token: "attribute.name", foreground: rule("--sf-info", "#0a6aa3") },
+      // Semantic tokens from the flow-YAML analysis engine (see lib/lsp). These
+      // carry census knowledge the YAML grammar cannot: a documented key, a key
+      // the loader will ignore, and valid vs invalid enum values.
+      { token: "property", foreground: rule("--sf-info", "#0a6aa3") },
+      { token: "unknownKey", foreground: rule("--sf-warning", "#9a7d0a"), fontStyle: "italic" },
+      { token: "enumMember", foreground: rule("--sf-success", "#2e7d32") },
+      { token: "invalidValue", foreground: rule("--sf-error", "#c62828"), fontStyle: "underline" },
     ],
     colors: {
       "editor.background": color("--sf-paper", mode === "dark" ? "#182434" : "#ffffff"),
@@ -58,19 +80,75 @@ function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
 }
 
 /**
+ * Pretty-prints captured T-SQL for display. The control plane executes against SQL Server, so captured
+ * statements are Transact-SQL and are stored as single-line blobs (UPDATE/MERGE with long HASHBYTES/CONCAT
+ * expressions). Formatting is best-effort: any input the parser rejects is returned unchanged so the viewer
+ * always shows the real SQL rather than an error.
+ */
+function prettyPrintSql(sql: string): string {
+  try {
+    return formatSql(sql, {
+      language: "transactsql",
+      keywordCase: "upper",
+      tabWidth: 2,
+      linesBetweenQueries: 1,
+    });
+  } catch {
+    return sql;
+  }
+}
+
+/**
  * Read-only Monaco view for YAML documents, definition JSON, and generated SQL: syntax highlight, folding, and
  * in-editor search, themed with the app's brand palette in both light and dark. YAML stays read-only by design
- * (git is the authoring surface).
+ * (git is the authoring surface). For SQL, a toolbar offers pretty-printing (on by default, since captured
+ * statements arrive as unformatted single-line blobs) and copy-to-clipboard of whatever is currently shown.
  */
-export function CodeView({ value, language, height = 480, "data-testid": testId }: CodeViewProps) {
+export function CodeView({ value, language, height = 480, lsp = false, "data-testid": testId }: CodeViewProps) {
   const theme = useTheme();
   const mode = theme.palette.mode;
   const monacoRef = useRef<Monaco | null>(null);
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const { enqueueSnackbar } = useSnackbar();
+  const isSql = language === "sql";
+  const lspOn = lsp && language === "yaml";
+  const [formatSqlOn, setFormatSqlOn] = useState(true);
 
   const handleBeforeMount = useCallback((monaco: Monaco) => {
     monacoRef.current = monaco;
     defineSqlflowTheme(monaco, mode);
-  }, [mode]);
+    if (lspOn) {
+      registerSqlflowYamlProviders(monaco);
+    }
+  }, [mode, lspOn]);
+
+  const handleMount = useCallback((editorInstance: editor.IStandaloneCodeEditor, monaco: Monaco) => {
+    editorRef.current = editorInstance;
+    if (!lspOn) {
+      return;
+    }
+    const model = editorInstance.getModel();
+    if (model) {
+      markFlowModel(model);
+      void refreshDiagnostics(monaco, model);
+    }
+  }, [lspOn]);
+
+  // Re-validate when the document changes (navigating between flows swaps the
+  // value on the same read-only model); semantic-token colouring re-pulls on its
+  // own. On unmount, drop this model's markers.
+  useEffect(() => {
+    if (!lspOn) {
+      return;
+    }
+    const monaco = monacoRef.current;
+    const model = editorRef.current?.getModel();
+    if (monaco && model) {
+      markFlowModel(model);
+      void refreshDiagnostics(monaco, model);
+      return () => monaco.editor.setModelMarkers(model, "sqlflow", []);
+    }
+  }, [lspOn, value]);
 
   // The brand tokens change when the app toggles; re-define and re-apply so the editor tracks the theme.
   useEffect(() => {
@@ -80,13 +158,67 @@ export function CodeView({ value, language, height = 480, "data-testid": testId 
     }
   }, [mode]);
 
+  const displayValue = useMemo(
+    () => (isSql && formatSqlOn ? prettyPrintSql(value) : value),
+    [isSql, formatSqlOn, value],
+  );
+
+  const handleCopy = useCallback(() => {
+    void navigator.clipboard
+      .writeText(displayValue)
+      .then(() => enqueueSnackbar("Copied to clipboard", { variant: "success" }))
+      .catch(() => enqueueSnackbar("Could not copy to clipboard", { variant: "error" }));
+  }, [displayValue, enqueueSnackbar]);
+
   return (
-    <Box data-testid={testId ?? "code-view"} sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
+    <Box
+      data-testid={testId ?? "code-view"}
+      sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}
+    >
+      <Stack
+        direction="row"
+        spacing={0.5}
+        justifyContent="flex-end"
+        alignItems="center"
+        sx={{
+          px: 0.5,
+          py: 0.25,
+          borderBottom: 1,
+          borderColor: "divider",
+          bgcolor: "action.hover",
+        }}
+      >
+        {isSql && (
+          <Tooltip title={formatSqlOn ? "Show original SQL" : "Format SQL"}>
+            <IconButton
+              size="small"
+              color={formatSqlOn ? "primary" : "default"}
+              aria-label={formatSqlOn ? "Show original SQL" : "Format SQL"}
+              aria-pressed={formatSqlOn}
+              onClick={() => setFormatSqlOn((on) => !on)}
+              data-testid="code-view-format"
+            >
+              <AutoFixHighIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
+        <Tooltip title="Copy">
+          <IconButton
+            size="small"
+            aria-label="Copy to clipboard"
+            onClick={handleCopy}
+            data-testid="code-view-copy"
+          >
+            <ContentCopyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Stack>
       <Editor
-        value={value}
+        value={displayValue}
         language={language}
         height={height}
         beforeMount={handleBeforeMount}
+        onMount={handleMount}
         theme="sqlflow"
         options={{
           readOnly: true,
@@ -97,6 +229,7 @@ export function CodeView({ value, language, height = 480, "data-testid": testId 
           padding: { top: 12, bottom: 12 },
           renderLineHighlight: "none",
           smoothScrolling: true,
+          "semanticHighlighting.enabled": true,
         }}
       />
     </Box>

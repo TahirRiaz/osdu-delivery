@@ -10,9 +10,11 @@ import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
+import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -20,7 +22,7 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import { isApiError } from "../../api/client";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
-import type { RunSummary, Schedule } from "../../api/types";
+import type { PipelineFile, RunSummary, Schedule } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
@@ -31,7 +33,7 @@ import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge, RunStatusBadge, ScheduleStateBadge } from "../../components/StatusBadge";
-import { formatDurationSeconds } from "../../lib/time";
+import { formatBytes, formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 
@@ -65,6 +67,10 @@ const runColumns = (): Column<RunSummary>[] => [
     render: (row) => (row.durationSeconds !== null ? formatDurationSeconds(row.durationSeconds) : "-"),
   },
   { id: "rowsLoaded", header: "Rows loaded", align: "right", render: (row) => row.rowsLoaded ?? "-" },
+  { id: "rowsInserted", header: "Inserted", align: "right", render: (row) => row.rowsInserted ?? "-" },
+  { id: "rowsUpdated", header: "Updated", align: "right", render: (row) => row.rowsUpdated ?? "-" },
+  { id: "rowsDeleted", header: "Deleted", align: "right", render: (row) => row.rowsDeleted ?? "-" },
+  { id: "fileCount", header: "Files", align: "right", render: (row) => (row.fileCount > 0 ? row.fileCount : "-") },
   {
     id: "commit",
     header: "Commit",
@@ -170,6 +176,55 @@ function TransformsTab({ pipelineId }: { pipelineId: string }) {
   );
 }
 
+const fileColumns: Column<PipelineFile>[] = [
+  {
+    id: "name",
+    header: "Name",
+    render: (row) => (
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+        <Tooltip title={row.path ?? row.name}>
+          <Typography variant="body2" component="span" noWrap sx={{ fontFamily: "monospace" }}>
+            {row.name}
+          </Typography>
+        </Tooltip>
+        {row.lastRun && <Chip size="small" color="primary" variant="outlined" label="last run" />}
+      </Stack>
+    ),
+  },
+  { id: "modified", header: "Modified", render: (row) => <RelativeTime value={row.modified} /> },
+  { id: "rows", header: "Rows", align: "right", render: (row) => (row.rows > 0 ? row.rows : "-") },
+  { id: "size", header: "Size", align: "right", render: (row) => formatBytes(row.sizeBytes) },
+  { id: "lastProcessed", header: "Last processed", render: (row) => <RelativeTime value={row.lastProcessedUtc} /> },
+];
+
+/** Every file this pipeline has processed across its run history, newest-modified first and searchable. Files
+ * touched by the pipeline's most recent file-bearing run carry a "last run" badge, so the last run's inputs stand
+ * out from everything ever seen. The universe is recorded run history, not a live listing of the source. */
+function FilesTab({ pipelineId }: { pipelineId: string }) {
+  const [search, setSearch] = useState("");
+  return (
+    <Stack spacing={1.5}>
+      <TextField
+        size="small"
+        placeholder="Search files by name or path"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        data-testid="pipeline-files-search"
+        sx={{ maxWidth: 360 }}
+      />
+      <PagedTable
+        queryKey={["pipelines", "files", pipelineId, search]}
+        fetchPage={(page, pageSize) =>
+          pipelineApi.files(pipelineId, { search: search.trim() || undefined, page, pageSize })}
+        columns={fileColumns}
+        rowKey={(row) => `${row.path ?? ""}|${row.name}`}
+        emptyMessage="This pipeline has processed no files yet."
+        data-testid="pipeline-files-table"
+      />
+    </Stack>
+  );
+}
+
 const scheduleColumns: Column<Schedule>[] = [
   { id: "trigger", header: "Trigger", render: (row) => scheduleTrigger(row) },
   { id: "timezone", header: "Timezone", render: (row) => row.timezone },
@@ -236,14 +291,25 @@ export default function PipelineDetailPage() {
           </>
         )}
         actions={(
-          <Button
-            variant="contained"
-            startIcon={<PlayArrowIcon />}
-            onClick={() => setTriggerOpen(true)}
-            data-testid="open-trigger-run"
-          >
-            Trigger run
-          </Button>
+          <>
+            <Button
+              variant="outlined"
+              startIcon={<AccountTreeIcon />}
+              component={RouterLink}
+              to={`/lineage?repoId=${encodeURIComponent(detail.repoId)}&focus=${encodeURIComponent(pipelineId)}`}
+              data-testid="pipeline-view-lineage"
+            >
+              View in lineage
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<PlayArrowIcon />}
+              onClick={() => setTriggerOpen(true)}
+              data-testid="open-trigger-run"
+            >
+              Trigger run
+            </Button>
+          </>
         )}
       >
         <DetailPair label="Repo">
@@ -275,10 +341,11 @@ export default function PipelineDetailPage() {
         <Tab label="Definition" data-testid="pipeline-tab-definition" />
         <Tab label="Transforms" data-testid="pipeline-tab-transforms" />
         <Tab label="Runs" data-testid="pipeline-tab-runs" />
+        <Tab label="Files" data-testid="pipeline-tab-files" />
         <Tab label="Schedules" data-testid="pipeline-tab-schedules" />
       </Tabs>
 
-      {tab === 0 && <CodeView value={detail.yaml} language="yaml" height={560} data-testid="pipeline-yaml" />}
+      {tab === 0 && <CodeView value={detail.yaml} language="yaml" height={560} lsp data-testid="pipeline-yaml" />}
       {tab === 1 && (
         <CodeView value={prettyJson(detail.definitionJson)} language="json" height={560} data-testid="pipeline-definition" />
       )}
@@ -294,7 +361,8 @@ export default function PipelineDetailPage() {
           emptyMessage="This pipeline has not run yet."
         />
       )}
-      {tab === 4 && (
+      {tab === 4 && <FilesTab pipelineId={pipelineId} />}
+      {tab === 5 && (
         <PagedTable
           queryKey={["schedules", "by-pipeline", pipelineId]}
           fetchPage={(page, pageSize) => scheduleApi.list({ pipelineId, page, pageSize })}

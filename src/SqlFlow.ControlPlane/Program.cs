@@ -247,6 +247,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.
 v1.MapGroup(string.Empty).RequireAuthorization("operate")
+    .MapCatalogWriteEndpoints()
     .MapRunTriggerEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints();

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "sqlflow-lang",
+    "sqlflow-lang-wasm",
     "sqlflow-lsp",
     "sqlflow-mcp",
 ]

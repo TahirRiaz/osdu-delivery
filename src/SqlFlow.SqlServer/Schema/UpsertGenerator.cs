@@ -69,10 +69,6 @@ public sealed record UpsertOptions
     /// predicate and rewrites all matched rows (legacy semantics: better to over-update than never update).</summary>
     public IReadOnlySet<string> ExcludeFromChecksum { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Deduplicate identical staged rows on insert with SELECT DISTINCT (legacy parity). Turn off
-    /// when a column's type cannot participate in DISTINCT (xml, geography, image and kin).</summary>
-    public bool DeduplicateStagedRows { get; init; }
-
     /// <summary>Apply through key-windowed batches to keep each DML under the lock-escalation threshold
     /// (the legacy #UpdateKeys / #InsertKeys pattern). Each batch commits on its own, trading the single-
     /// transaction atomicity of the default apply for lock friendliness on large deltas.</summary>
@@ -233,13 +229,12 @@ public static class UpsertGenerator
 
             var insertColumnList = string.Join(", ", insertColumns.Select(c => $"[{Escape(c)}]"));
             var selectList = string.Join(", ", selectColumns);
-            var distinct = options.DeduplicateStagedRows ? "DISTINCT " : string.Empty;
 
             statements.Add(options.BatchToAvoidLockEscalation
                 ? new UpsertStatement
                 {
                     Kind = UpsertStatementKind.Insert,
-                    Sql = BatchedInsertScript(trg, stg, options, keyEquality, insertColumnList, selectList, distinct),
+                    Sql = BatchedInsertScript(trg, stg, options, keyEquality, insertColumnList, selectList),
                     CountFromScalar = true,
                 }
                 : new UpsertStatement
@@ -247,8 +242,8 @@ public static class UpsertGenerator
                     Kind = UpsertStatementKind.Insert,
                     Sql =
                         $"INSERT INTO {trg} ({insertColumnList}) " +
-                        $"SELECT {distinct}{selectList} FROM {stg} AS src " +
-                        $"WHERE NOT EXISTS (SELECT 1 FROM {trg} AS trg WHERE {keyEquality});",
+                        $"SELECT {selectList} FROM {OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns)} AS src " +
+                        $"WHERE src._rn = 1 AND NOT EXISTS (SELECT 1 FROM {trg} AS trg WHERE {keyEquality});",
                 });
         }
 
@@ -347,8 +342,6 @@ public static class UpsertGenerator
             selectColumns.Add("'I'");
         }
 
-        var partition = string.Join(", ", options.KeyColumns.Select(k => $"[{Escape(k)}]"));
-        var dedupSelect = string.Join(", ", options.DataColumns.Select(c => $"[{Escape(c)}]"));
         var insertColumnList = string.Join(", ", insertColumns.Select(c => $"[{Escape(c)}]"));
         var selectList = string.Join(", ", selectColumns);
 
@@ -356,9 +349,9 @@ public static class UpsertGenerator
         {
             Kind = UpsertStatementKind.Insert,
             Sql =
-                $"INSERT INTO {trg} ({insertColumnList}) SELECT {selectList} FROM (" +
-                $"SELECT {dedupSelect}, ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY (SELECT NULL)) AS _rn FROM {stg}" +
-                $") AS src WHERE src._rn = 1 AND NOT EXISTS (" +
+                $"INSERT INTO {trg} ({insertColumnList}) " +
+                $"SELECT {selectList} FROM {OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns)} AS src " +
+                $"WHERE src._rn = 1 AND NOT EXISTS (" +
                 $"SELECT 1 FROM {trg} AS trg WHERE {keyEquality} AND trg.[{cf}] = 1);",
         });
 
@@ -616,11 +609,12 @@ public static class UpsertGenerator
     }
 
     private static string BatchedInsertScript(
-        string trg, string stg, UpsertOptions options, string keyEquality, string insertColumnList, string selectList, string distinct)
+        string trg, string stg, UpsertOptions options, string keyEquality, string insertColumnList, string selectList)
     {
         var keySelect = string.Join(", ", options.KeyColumns.Select(k => $"src.[{Escape(k)}]"));
         var keyList = string.Join(", ", options.KeyColumns.Select(k => $"[{Escape(k)}]"));
         var windowJoin = KeyEquality(options.KeyColumns, "src", "k");
+        var dedupedSource = OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns);
 
         return $"""
             SET NOCOUNT ON;
@@ -636,10 +630,10 @@ public static class UpsertGenerator
             WHILE @Start <= @Total
             BEGIN
                 INSERT INTO {trg} ({insertColumnList})
-                SELECT {distinct}{selectList}
-                FROM {stg} AS src
+                SELECT {selectList}
+                FROM {dedupedSource} AS src
                 INNER JOIN #UpsertKeysI AS k ON {windowJoin}
-                WHERE k.RowNum BETWEEN @Start AND @End;
+                WHERE src._rn = 1 AND k.RowNum BETWEEN @Start AND @End;
                 SET @Affected = @Affected + @@ROWCOUNT;
                 SET @Start = @End + 1;
                 SET @End = @End + {options.BatchRowCount};
@@ -647,6 +641,20 @@ public static class UpsertGenerator
             DROP TABLE #UpsertKeysI;
             SELECT @Affected;
             """;
+    }
+
+    // Staging reduced to one row per business key, as a derived table exposing _rn (keep the row where _rn = 1).
+    // An incremental read over an append-mode landing source legitimately carries several rows with the same key
+    // (the same key landed by more than one file or window), but the target enforces one row per key, so the
+    // keyed INSERT must add exactly one or it violates the target's unique key. A plain SELECT DISTINCT is not
+    // enough: rows that share the key but differ in any non-key or provenance column (FileDate_DW and kin) survive
+    // it and then collide. Partitioning on the (always comparable) key columns collapses them, and carries any
+    // non-comparable data column along unpartitioned, so it holds even for xml/geography/image staging.
+    private static string OneRowPerKeySource(string stg, IReadOnlyList<string> dataColumns, IReadOnlyList<string> keyColumns)
+    {
+        var columns = string.Join(", ", dataColumns.Select(c => $"[{Escape(c)}]"));
+        var partition = string.Join(", ", keyColumns.Select(k => $"[{Escape(k)}]"));
+        return $"(SELECT {columns}, ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY (SELECT NULL)) AS _rn FROM {stg})";
     }
 
     private static string KeyEquality(IReadOnlyList<string> keys, string left, string right)

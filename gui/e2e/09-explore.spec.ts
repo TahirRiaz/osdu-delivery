@@ -94,13 +94,18 @@ test.describe("explore", () => {
     }
   });
 
-  test("search runs across all three tabs and deep-links into lineage", async ({ adminPage }) => {
+  test("global search runs across every surface and deep-links into lineage", async ({ adminPage }) => {
     await adminPage.getByTestId("global-search").fill("Csv_Basic");
     await adminPage.getByTestId("global-search").press("Enter");
     await expect(adminPage.getByTestId("page-search")).toBeVisible();
 
+    // The landing tab is the unified All view: one query fanned across objects, columns, code, files, and flows.
+    await expect(
+      adminPage.getByTestId("search-all").or(adminPage.getByTestId("search-all-empty")),
+    ).toBeVisible({ timeout: 30_000 });
+
     const tabs = adminPage.getByTestId("search-tabs");
-    for (const tab of [/objects/i, /columns/i, /definitions/i]) {
+    for (const tab of [/^objects$/i, /^columns$/i, /^definitions$/i, /^files$/i, /^flows$/i]) {
       await tabs.getByRole("tab", { name: tab }).click();
       await expect(
         adminPage.getByTestId("table-row").first().or(adminPage.getByTestId("empty-message")),

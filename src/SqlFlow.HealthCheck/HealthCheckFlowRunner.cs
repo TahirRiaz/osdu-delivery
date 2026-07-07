@@ -76,14 +76,17 @@ public sealed class HealthCheckFlowRunner
         var startUtc = DateTime.UtcNow;
         var asOfDate = (asOfUtc ?? startUtc).Date;
         var events = options.Events ?? NullRunEventSink.Instance;
+        var statements = options.StatementSink ?? NullRunStatementSink.Instance;
 
         // The executed SQL is captured unconditionally (the result carries it on success AND failure) and
         // woven into the event log at Trace level, the same dual feed as every other runner.
         var trace = new List<SqlTraceEntry>();
         void Trace(string step, string sql)
         {
-            trace.Add(new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql });
+            var entry = new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql };
+            trace.Add(entry);
             events.Log(RunLogLevel.Trace, step, sql);
+            statements.Report(entry);
         }
 
         var seriesSql = HealthCheckSqlBuilder.SeriesSelect(flow, asOfDate);
@@ -200,6 +203,7 @@ public sealed class HealthCheckFlowRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            SqlTrace.MarkLastFailed(trace, statements, ex.Message);
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
             events.Log(RunLogLevel.Info, "run.end", $"FAILED after {duration}s: {ex.Message}");

@@ -166,6 +166,21 @@ sqlflow run orders-ingestion.flow.yaml --full
 
 Default `false`. When on, the resolver additionally probes `MIN` of the watermark columns on the source (the date mark shifted back by the same `overlapDays`, so the comparison is symmetric). If the source MIN is below the target MAX, the window widens back to the source minimum with a `>=` comparison, reprocessing the whole source through the upsert. Use it when history in the source can be restated.
 
+### Downstream watermark anchoring (automatic)
+
+In a chained `pre -> ods` topology the landing (pre) flow's durable record of "what has already been ingested end to end" effectively lives in the ods (silver) table it feeds, not in the pre table it writes. So by default, whenever lineage resolves a single downstream table for an incremental flow, the high-water `MAX` is probed from that downstream (silver) table instead of the flow's own target. Deleting rows from the ods table lowers the watermark and the corresponding source rows are re-pulled on the next run: a self-healing backfill triggered by a downstream delete rather than a manual reload. There is no YAML key to enable this; bronze is driven by what silver holds. It applies to both `ing` flows (`IncrementalWindowResolver`) and file flows (`FlowRunner`).
+
+The downstream table is resolved from the shadow catalog's lineage graph by the control plane and handed to the run (the execution engine has no catalog of its own): it is the single unambiguous table that the flow's downstream consumers write, found by walking the flow-level dependencies and their `Writes`/`Creates` edges (`ResolveDownstreamWatermarkTableAsync` in src/SqlFlow.Node/RunWorker.cs). The anchor is applied only when exactly one such table resolves; a fan-out to several downstream tables, or a chain lineage has not computed yet, leaves the probe on the flow's own target.
+
+Two safety properties hold, so the anchor can never make a run worse than the flow's own-target default:
+
+- Column-safe: if the downstream table renamed or dropped the watermark column (a typed view's output alias differs from the source column name), the resolver falls back to the flow's own target rather than probing a `MAX` over a column that is not there.
+- Reachability-safe: if the downstream table is not reachable on the target connection (a different server, or not created yet) or is empty, the resolver falls back to the flow's own target rather than mistaking an absent object for an empty target and forcing a full reload.
+
+For a file flow the anchor is also authoritative over the on-disk run-history floor: the whole point is that the watermark tracks the silver table and regresses with it, so a downstream delete re-opens the window (the run-history floor, which normally prevents regression, is bypassed while anchored). An explicit `incremental.table` override on the flow (a deliberate operator choice) still wins over the lineage-derived downstream table.
+
+A direct CLI run has no lineage graph to resolve the downstream table from, so `sqlflow run` simply probes the flow's own target. The feature is exercised end to end by the control-plane worker. The run detail's watermark source reads `downstream MAX [schema].[table]` when the anchor applied, and `target MAX [schema].[table]` when it fell back.
+
 ## initLoad section
 
 A one-time chunked backfill (the legacy InitLoad family): it bounds a large historical load and splits the source read into segments so no single read has to move the entire table. When `enabled: true`, the run ignores the incremental watermark and instead executes the segment plan built by src/SqlFlow.SqlServer/Ingestion/InitLoadPlanner.cs; all segments feed the same staging table, so the rest of the run (schema sync, upsert, assertions) is unchanged.

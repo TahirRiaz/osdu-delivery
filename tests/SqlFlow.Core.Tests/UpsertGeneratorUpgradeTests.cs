@@ -45,11 +45,17 @@ public sealed class UpsertGeneratorUpgradeTests
     }
 
     [Fact]
-    public void DeduplicateStagedRows_AddsDistinct()
+    public void Insert_CollapsesStagingToOneRowPerKey()
     {
-        var statements = UpsertGenerator.GenerateStatements(Target, Staging, Options() with { DeduplicateStagedRows = true });
+        // Staging can legitimately carry several rows with the same business key (an incremental read over an
+        // append-mode landing source: the same key across multiple file loads). The keyed INSERT must add one
+        // row per key or it violates the target's unique key, so it partitions by key and keeps _rn = 1 rather
+        // than relying on a full-row SELECT DISTINCT (which same-key rows differing in a provenance column pass).
+        var statements = UpsertGenerator.GenerateStatements(Target, Staging, Options());
         var insert = Assert.Single(statements, s => s.Kind == UpsertStatementKind.Insert).Sql;
-        Assert.Contains("SELECT DISTINCT src.[Id]", insert, StringComparison.Ordinal);
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [Id]", insert, StringComparison.Ordinal);
+        Assert.Contains("WHERE src._rn = 1 AND NOT EXISTS", insert, StringComparison.Ordinal);
+        Assert.DoesNotContain("SELECT DISTINCT", insert, StringComparison.Ordinal);
     }
 
     [Fact]

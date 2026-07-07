@@ -23,6 +23,8 @@ export function RunStatusBadge({ status }: { status: RunStatus | string }) {
       return <Chip size="small" label="failed" color="error" data-testid="status-badge" />;
     case "cancelled":
       return <Chip size="small" label="cancelled" color="warning" variant="outlined" data-testid="status-badge" />;
+    case "skipped":
+      return <Chip size="small" label="skipped" color="default" variant="outlined" data-testid="status-badge" />;
     default:
       return <Chip size="small" label={status} data-testid="status-badge" />;
   }

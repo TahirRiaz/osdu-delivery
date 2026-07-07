@@ -9,6 +9,7 @@ import AppShell from "./layout/AppShell";
 const DashboardPage = lazy(() => import("./features/dashboard/DashboardPage"));
 const RunsPage = lazy(() => import("./features/runs/RunsPage"));
 const RunDetailPage = lazy(() => import("./features/runs/RunDetailPage"));
+const RunGroupPage = lazy(() => import("./features/runs/RunGroupPage"));
 const NodesPage = lazy(() => import("./features/nodes/NodesPage"));
 const ReposPage = lazy(() => import("./features/repos/ReposPage"));
 const RepoDetailPage = lazy(() => import("./features/repos/RepoDetailPage"));
@@ -41,6 +42,7 @@ export default function App() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/runs" element={<RunsPage />} />
+          <Route path="/runs/groups/:groupId" element={<RunGroupPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />
           <Route path="/nodes" element={<NodesPage />} />
           <Route path="/repos" element={<ReposPage />} />

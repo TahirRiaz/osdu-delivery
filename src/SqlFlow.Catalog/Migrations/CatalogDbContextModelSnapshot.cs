@@ -618,7 +618,29 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<bool>("FullLoad")
                         .HasColumnType("bit");
 
+                    b.Property<Guid?>("GroupId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("GroupWave")
+                        .HasColumnType("int");
+
                     b.Property<string>("Host")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("IncrementalFilter")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("IncrementalMode")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("IncrementalWatermark")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<string>("IncrementalWatermarkSource")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
 
@@ -672,6 +694,8 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("WrittenUtc");
 
                     b.HasIndex("Status", "EnqueuedUtc");
+
+                    b.HasIndex("GroupId", "GroupWave", "Status");
 
                     b.HasIndex("PipelineId", "WrittenUtc", "RunId")
                         .IsDescending(false, true, true);
@@ -732,6 +756,9 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<int>("Columns")
                         .HasColumnType("int");
 
+                    b.Property<DateTimeOffset?>("Modified")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(512)
@@ -758,6 +785,42 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("RunId");
 
                     b.ToTable("RunFile", "catalog");
+                });
+
+            modelBuilder.Entity("SqlFlow.Catalog.CatalogRunGroup", b =>
+                {
+                    b.Property<Guid>("GroupId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Anchor")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("CommitSha")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("EnqueuedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("MemberCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("RepoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("GroupId");
+
+                    b.HasIndex("RepoId", "EnqueuedUtc");
+
+                    b.ToTable("RunGroup", "catalog");
                 });
 
             modelBuilder.Entity("SqlFlow.Catalog.CatalogRunHealthCheckMetric", b =>
@@ -818,6 +881,9 @@ namespace SqlFlow.Catalog.Migrations
                         .HasColumnType("bigint");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Error")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("Ordinal")
                         .HasColumnType("int");

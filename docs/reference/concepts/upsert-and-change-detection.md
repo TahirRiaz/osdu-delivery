@@ -63,7 +63,7 @@ Columns are excluded from the checksum in two ways (`IngestionFlowRunner.BuildLo
 
 Excluded columns are still copied by the UPDATE's SET list; they just do not count as "changed". When every comparable column is excluded, the UPDATE drops its change predicate entirely and rewrites all matched rows (legacy semantics: better to over-update than never update). The exclusion list is logged at debug level as `upsert.plan`.
 
-Staged rows are deduplicated on insert with `SELECT DISTINCT`, unless any staging column's type does not support comparison (`xml`, `geography`, `geometry`, `image`, `text`, `ntext`), in which case the dedupe is suppressed and a debug message notes it.
+Staging is collapsed to one row per business key on insert with `ROW_NUMBER() OVER (PARTITION BY <keys>)`, keeping `_rn = 1`. This matters because an incremental read over an append-mode landing source legitimately returns several rows with the same key (the same key landed by more than one file or window); the target enforces one row per key, so the anti-join INSERT must add exactly one or it fails with a duplicate-key violation. Partitioning on the key columns (always comparable) collapses them and carries any non-comparable data column (`xml`, `geography`, `image` and kin) along unpartitioned, so it holds for every staging shape. The SCD2 and dataset-loop inserts use the same collapse.
 
 ### System-column stamping
 

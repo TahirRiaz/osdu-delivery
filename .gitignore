@@ -52,3 +52,10 @@ secrets.json
 docker/mysql/initdb/*.sql
 docker/postgres/initdb/*.sql
 docker/oracle/sakila-sql/*.sql
+
+## GUI local run logs and e2e artifacts (generated when running the control plane / Playwright locally)
+gui/control-plane.log
+gui/control-plane.err.log
+gui/e2e-node.log
+gui/e2e-run.log
+gui/e2e-artifacts/

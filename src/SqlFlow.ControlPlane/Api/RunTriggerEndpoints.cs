@@ -22,11 +22,17 @@ namespace SqlFlow.ControlPlane.Api;
 /// for this run. None of them touches the definition in git.</para></summary>
 public sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
-    bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null);
+    bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
+    string? Scope = null, string? Batch = null);
 
 /// <summary>The accepted-run acknowledgement: the minted run id and its queued status. The run executes
 /// asynchronously; poll <c>GET /api/v1/runs/{runId}</c> (the <c>Location</c> header) for the outcome.</summary>
 public sealed record RunTriggerAccepted(Guid RunId, string Status);
+
+/// <summary>The accepted-group acknowledgement for a multi-flow run (Node / Batch): the minted group id, how many
+/// member flows were queued, and the status. Poll <c>GET /api/v1/runs/groups/{groupId}</c> (the <c>Location</c>
+/// header) for the group's live state.</summary>
+public sealed record RunGroupAccepted(Guid GroupId, int MemberCount, string Status);
 
 /// <summary>
 /// The run-trigger surface: <c>POST /api/v1/runs</c>. It validates the request (a non-blank flow name, and an
@@ -51,16 +57,31 @@ public static class RunTriggerEndpoints
             .WithName("CancelRun")
             .RequireAuthorization("operate");
 
+        group.MapPost("/runs/groups/{groupId:guid}/cancel", CancelGroupAsync)
+            .WithTags("Runs")
+            .WithName("CancelRunGroup")
+            .RequireAuthorization("operate");
+
         return group;
     }
 
-    private static async Task<Results<Accepted<RunTriggerAccepted>, ProblemHttpResult>> TriggerRunAsync(
+    private static async Task<Results<Accepted<RunTriggerAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> TriggerRunAsync(
         RunTriggerRequest request, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.FlowName))
+        if (request is null)
         {
             return TypedResults.Problem(
-                detail: "A run trigger requires a non-blank flowName.",
+                detail: "A run trigger requires a request body.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
+        // The scope selects Flow (one flow), Node (a flow and its descendants), or Batch (a whole data source).
+        var scope = RunScopeExpander.TryParseScope(request.Scope);
+        if (scope is null)
+        {
+            return TypedResults.Problem(
+                detail: "scope must be one of 'flow', 'node', or 'batch' (or omitted for a single flow).",
                 statusCode: StatusCodes.Status400BadRequest,
                 title: "Invalid request");
         }
@@ -75,8 +96,25 @@ public static class RunTriggerEndpoints
                 title: "Invalid request");
         }
 
+        return scope.Value == RunScope.Flow
+            ? await TriggerSingleFlowAsync(request, db, dispatcher, ct).ConfigureAwait(false)
+            : await TriggerGroupAsync(request, scope.Value, db, dispatcher, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<Results<Accepted<RunTriggerAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> TriggerSingleFlowAsync(
+        RunTriggerRequest request, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.FlowName))
+        {
+            return TypedResults.Problem(
+                detail: "A run trigger requires a non-blank flowName.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
         // The substitution parameters are validated at this trust boundary, so a run no engine path could honor
-        // (an inverted window, a control character in a glob) is refused before it is ever queued.
+        // (an inverted window, a control character in a glob) is refused before it is ever queued. The built-in
+        // backfill is a single-flow concept, so it lives only on this path (a group always runs default parameters).
         var parameters = new RunParameters
         {
             FullLoad = request.FullLoad,
@@ -119,8 +157,86 @@ public static class RunTriggerEndpoints
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new RunTriggerAccepted(runId, "queued"));
     }
 
+    private static async Task<Results<Accepted<RunTriggerAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> TriggerGroupAsync(
+        RunTriggerRequest request, RunScope scope, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
+    {
+        // Node needs an anchor flow; Batch needs either the batch label or an anchor flow to read the label from.
+        var anchorFlow = string.IsNullOrWhiteSpace(request.FlowName) ? null : request.FlowName.Trim();
+        var batch = string.IsNullOrWhiteSpace(request.Batch) ? null : request.Batch.Trim();
+        if (scope == RunScope.Node && anchorFlow is null)
+        {
+            return TypedResults.Problem(
+                detail: "A node-scoped run requires a non-blank flowName to expand descendants from.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
+        if (scope == RunScope.Batch && anchorFlow is null && batch is null)
+        {
+            return TypedResults.Problem(
+                detail: "A batch-scoped run requires either a batch label or a flowName to read the batch from.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
+        RunScopeExpansion expansion;
+        try
+        {
+            expansion = await RunScopeExpander
+                .ExpandAsync(db, request.RepoId, anchorFlow, scope, batch, ct)
+                .ConfigureAwait(false);
+        }
+        catch (ArgumentException ex)
+        {
+            return TypedResults.Problem(
+                detail: ex.Message, statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        if (expansion.Members.Count == 0)
+        {
+            var what = scope == RunScope.Node
+                ? $"flow '{anchorFlow}' (it is not an active pipeline in this repo)"
+                : $"batch '{expansion.Anchor}' (no active flows)";
+            return TypedResults.Problem(
+                detail: $"Nothing to run for {what}.",
+                statusCode: StatusCodes.Status404NotFound,
+                title: "Not found");
+        }
+
+        var mode = scope == RunScope.Node ? RunGroupModes.Node : RunGroupModes.Batch;
+        var result = await dispatcher.EnqueueGroupAsync(
+            db,
+            new RunGroupEnqueueRequest(
+                request.RepoId, mode, expansion.Anchor, expansion.Members, request.Pool, request.CommitSha),
+            ct).ConfigureAwait(false);
+
+        // 202 with the group location: GET /api/v1/runs/groups/{groupId} reflects the whole set as it executes.
+        return TypedResults.Accepted(
+            $"/api/v1/runs/groups/{result.GroupId}",
+            new RunGroupAccepted(result.GroupId, expansion.Members.Count, "queued"));
+    }
+
     private static bool IsPlausibleCommitSha(string sha)
         => sha.Length is >= 4 and <= 64 && sha.All(char.IsAsciiHexDigit);
+
+    private static async Task<Results<Ok<RunGroupAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> CancelGroupAsync(
+        Guid groupId, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
+    {
+        var result = await dispatcher.CancelGroupAsync(db, groupId, ct).ConfigureAwait(false);
+        if (!result.Found)
+        {
+            return TypedResults.Problem(
+                detail: $"No run group '{groupId}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        var affected = result.CancelledQueued + result.RequestedRunning;
+        // A running member's cancel is asynchronous (its node aborts the in-flight statement), so report "cancelling"
+        // and 202 when any member is still running; otherwise every member was queued and is now cancelled outright.
+        return result.RequestedRunning > 0
+            ? TypedResults.Accepted(
+                $"/api/v1/runs/groups/{groupId}", new RunGroupAccepted(groupId, affected, "cancelling"))
+            : TypedResults.Ok(new RunGroupAccepted(groupId, affected, "cancelled"));
+    }
 
     private static async Task<Results<Ok<RunTriggerAccepted>, Accepted<RunTriggerAccepted>, ProblemHttpResult>> CancelRunAsync(
         Guid runId, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)

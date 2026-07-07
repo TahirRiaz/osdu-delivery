@@ -38,6 +38,7 @@ public sealed class StoredProcedureFlowRunner
         var runId = options.RunId ?? Guid.NewGuid();
         var startUtc = DateTime.UtcNow;
         var events = options.Events ?? NullRunEventSink.Instance;
+        var statements = options.StatementSink ?? NullRunStatementSink.Instance;
 
         // The executed SQL is captured unconditionally (the result carries it on success AND failure) and
         // woven into the event log at Trace level, the same dual feed as every other runner.
@@ -46,8 +47,10 @@ public sealed class StoredProcedureFlowRunner
         {
             if (!string.IsNullOrWhiteSpace(sql))
             {
-                trace.Add(new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql });
+                var entry = new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql };
+                trace.Add(entry);
                 events.Log(RunLogLevel.Trace, step, sql);
+                statements.Report(entry);
             }
         }
 
@@ -85,6 +88,7 @@ public sealed class StoredProcedureFlowRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            SqlTrace.MarkLastFailed(trace, statements, ex.Message);
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
             events.Log(RunLogLevel.Info, "run.end", $"FAILED after {duration}s: {ex.Message}");

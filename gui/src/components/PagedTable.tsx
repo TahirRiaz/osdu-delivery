@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import TablePagination from "@mui/material/TablePagination";
 import Typography from "@mui/material/Typography";
-import { useState } from "react";
+import { type CSSProperties, useState } from "react";
 import type { PagedResult } from "../api/types";
 import { isApiError } from "../api/client";
 import { pollingInterval } from "../hooks/usePolling";
@@ -20,6 +20,8 @@ interface PagedTableProps<T> {
   onRowClick?: (row: T) => void;
   /** Poll cadence for live views (runs, nodes); omit for on-demand pages. */
   pollMs?: number;
+  /** Optional per-row style (a failed statement tints red, say); return undefined for the default styling. */
+  rowSx?: (row: T) => CSSProperties | undefined;
   emptyMessage: string;
   grouping?: TableGrouping<T>;
   "data-testid"?: string;
@@ -31,7 +33,7 @@ interface PagedTableProps<T> {
  * with optional polling for live views. Pages that already hold their rows render DataTable directly instead.
  */
 export function PagedTable<T>({
-  queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, emptyMessage, grouping, "data-testid": testId,
+  queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, grouping, "data-testid": testId,
 }: PagedTableProps<T>) {
   const [page, setPage] = useState(0); // MUI pagination is 0-based; the API is 1-based
   const [pageSize, setPageSize] = useState(50);
@@ -56,6 +58,7 @@ export function PagedTable<T>({
       rows={result?.items}
       rowKey={rowKey}
       onRowClick={onRowClick}
+      rowSx={rowSx}
       emptyMessage={emptyMessage}
       grouping={grouping}
       data-testid={testId ?? "paged-table"}

@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import Paper from "@mui/material/Paper";
 import Skeleton from "@mui/material/Skeleton";
@@ -43,6 +43,8 @@ interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   /** Which rows respond to clicks (hover + pointer + onRowClick); defaults to all when onRowClick is set. */
   rowClickable?: (row: T) => boolean;
+  /** Optional per-row style (a failed statement tints red, say); return undefined for the default styling. */
+  rowSx?: (row: T) => CSSProperties | undefined;
   emptyMessage: string;
   grouping?: TableGrouping<T>;
   /** Rendered inside the bordered surface, below the table (the PagedTable pagination lives here). */
@@ -92,7 +94,7 @@ const TREE_INDENT = 3.5;
  * table code path instead of several hand-rolled shells.
  */
 export function DataTable<T>({
-  columns, rows, rowKey, onRowClick, rowClickable, emptyMessage, grouping, footer,
+  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer,
   skeletonRows = 5, "data-testid": testId,
 }: DataTableProps<T>) {
   // Collapsed node ids: node key + first row key, so the state survives refreshes of the same data (a
@@ -123,7 +125,7 @@ export function DataTable<T>({
         key={rowKey(row)}
         hover={canClick}
         onClick={canClick ? () => onRowClick!(row) : undefined}
-        sx={canClick ? { cursor: "pointer" } : undefined}
+        sx={{ ...(canClick ? { cursor: "pointer" } : {}), ...(rowSx?.(row) ?? {}) }}
         data-testid="table-row"
       >
         {columns.map((column, i) => (

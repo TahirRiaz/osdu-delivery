@@ -188,6 +188,13 @@ public sealed class BootstrapOptions
     /// scripts out of band; pending migrations are then logged as a warning.</summary>
     public bool ApplyMigrations { get; set; } = true;
 
+    /// <summary>Whether startup may CREATE the catalog database when it does not exist (and initialise the catalog
+    /// schema into an empty database). Default <c>false</c>: startup only migrates an EXISTING catalog and refuses
+    /// to conjure a database or inject catalog tables into a populated non-catalog database, so a wrong or mistyped
+    /// connection fails loudly instead of provisioning against the wrong (possibly production) server. Set
+    /// <c>true</c> only for first-time provisioning or ephemeral/test databases.</summary>
+    public bool AllowCreate { get; set; }
+
     /// <summary>The initial admin's sign-in name. Set together with <see cref="AdminPasswordReference"/>.</summary>
     public string? AdminUsername { get; set; }
 

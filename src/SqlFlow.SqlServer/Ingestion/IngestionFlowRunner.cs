@@ -74,6 +74,10 @@ public sealed record IngestionRunResult
     /// resolved column projection; null when the flow does not generate one (the native SQL-to-SQL default).</summary>
     public TransformViewResult? TransformView { get; init; }
 
+    /// <summary>The incremental read scope this run computed and applied (mode, source WHERE filter, and the
+    /// resolved watermark with its probed object); null on the failure path, where it may not have resolved.</summary>
+    public IncrementalSummary? Incremental { get; init; }
+
     /// <summary>The failure message (already redacted of any secret), or null on success.</summary>
     public string? Error { get; init; }
 }
@@ -185,6 +189,7 @@ public sealed class IngestionFlowRunner
         // Each captured statement is also emitted to the canonical run log at Trace level, so one call site
         // feeds both the trace.sql artifact and the timeline.
         var events = options.Events ?? NullRunEventSink.Instance;
+        var statements = options.StatementSink ?? NullRunStatementSink.Instance;
         void Info(string step, string message) => events.Log(RunLogLevel.Info, step, message);
         void Dbg(string step, string message) => events.Log(RunLogLevel.Debug, step, message);
         var trace = new List<SqlTraceEntry>();
@@ -192,9 +197,34 @@ public sealed class IngestionFlowRunner
         {
             if (!string.IsNullOrWhiteSpace(sql))
             {
-                trace.Add(new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql });
+                var entry = new SqlTraceEntry { Sequence = trace.Count + 1, Step = step, Sql = sql };
+                trace.Add(entry);
                 events.Log(RunLogLevel.Trace, step, sql);
+                statements.Report(entry);
             }
+        }
+
+        // Attribute a run failure to the exact statement that raised it, so the trace records not just what the run
+        // generated but which one broke. ApplyLoadAsync raises a LoadStatementException carrying the offending
+        // statement (the load batch traces every statement up front, so "the last one" would be imprecise); every
+        // other step is trace-then-execute, so the most recent entry is the one that was running.
+        void MarkFailure(Exception failure)
+        {
+            if (trace.Count == 0)
+            {
+                return;
+            }
+
+            var index = failure is LoadStatementException load
+                ? trace.FindLastIndex(e => string.Equals(e.Sql, load.Statement.Sql, StringComparison.Ordinal))
+                : trace.Count - 1;
+            if (index < 0)
+            {
+                index = trace.Count - 1;
+            }
+
+            trace[index] = trace[index] with { Error = failure.Message };
+            statements.ReportFailure(trace[index].Sequence, failure.Message);
         }
 
         try
@@ -309,10 +339,15 @@ public sealed class IngestionFlowRunner
             }
             else
             {
-                window = await incremental.ResolveAsync(flow, resolvedSource, targetConnectionString, sourceColumns, sourceDialect, options.Parameters, ct).ConfigureAwait(false);
+                window = await incremental.ResolveAsync(flow, resolvedSource, targetConnectionString, sourceColumns, sourceDialect, options.Parameters, options.WatermarkSourceTable, ct).ConfigureAwait(false);
                 if (!options.Parameters.IsDefault)
                 {
                     Info("incremental.window", $"run parameters applied: {options.Parameters.Describe()}");
+                }
+
+                if (window.WatermarkSource is { } source && source.StartsWith("downstream ", StringComparison.Ordinal))
+                {
+                    Info("incremental.window", $"watermark anchored to the downstream table: {source}");
                 }
 
                 Info("incremental.window", window.RunFullLoad
@@ -597,12 +632,15 @@ public sealed class IngestionFlowRunner
                 SurrogateKeys = surrogateResults,
                 SqlTrace = trace,
                 TransformView = transformView,
+                Incremental = BuildIncrementalSummary(flow, options, window),
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Keep the staging table on failure: it holds the data needed to debug what went wrong. The SQL
-            // trace captured so far rides along; the failure case is where it matters most.
+            // trace captured so far rides along, with the offending statement marked; the failure case is where it
+            // matters most.
+            MarkFailure(ex);
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
             Info("run.end", $"FAILED after {duration}s: {ex.Message} (staging {SchemaQualified(staging)} kept)");
@@ -639,13 +677,6 @@ public sealed class IngestionFlowRunner
     {
         "xml", "geography", "geometry", "hierarchyid", "image", "text", "ntext",
         "varbinary", "binary", "rowversion", "timestamp", "sql_variant",
-    };
-
-    // Type families that cannot participate in SELECT DISTINCT (no comparison support), which suppresses the
-    // staged-row dedupe exactly as legacy suppressed it for image types.
-    private static readonly IReadOnlySet<string> NonComparableTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "xml", "geography", "geometry", "image", "text", "ntext",
     };
 
     // The key-match pass (legacy MatchKeysInSrcTrg, re-engineered): the comparison runs in SQL on the target
@@ -877,15 +908,9 @@ public sealed class IngestionFlowRunner
             }
         }
 
-        var deduplicate = !stagingColumns.Any(c => NonComparableTypes.Contains(c.DataType.BaseType));
         if (excludeFromChecksum.Count > 0)
         {
             events.Log(RunLogLevel.Debug, "upsert.plan", "excluded from change detection: " + string.Join(", ", excludeFromChecksum.Order(StringComparer.OrdinalIgnoreCase)));
-        }
-
-        if (!deduplicate)
-        {
-            events.Log(RunLogLevel.Debug, "upsert.plan", "staged-row dedupe (DISTINCT) suppressed: a column type does not support comparison");
         }
 
         // SCD2 tracked attributes are declared with SOURCE names; map them to target names like the hash
@@ -896,10 +921,12 @@ public sealed class IngestionFlowRunner
             : (IReadOnlyList<string>)[];
 
         // Keyed flow: always apply through the two-step upsert (or the SCD2 close+insert when versioning is on).
-        // Its INSERT is an anti-join (WHERE NOT EXISTS on the keys), so it can never duplicate an existing row
-        // regardless of target state (empty, partially loaded, or a full reload over a NULL watermark) while
-        // still reconciling changed rows. This deliberately improves on the legacy full-load branch, which did
-        // a blind insert that duplicated rows when the target watermark was NULL.
+        // Its INSERT is an anti-join (WHERE NOT EXISTS on the keys) over staging collapsed to one row per key, so
+        // it can never duplicate an existing target row (regardless of target state: empty, partially loaded, or a
+        // full reload over a NULL watermark) NOR insert two same-key rows from a single staging batch (which an
+        // incremental read over an append-mode landing source produces: the same key across several file loads),
+        // while still reconciling changed rows. This deliberately improves on the legacy full-load branch, which
+        // did a blind insert that duplicated rows when the target watermark was NULL.
         return UpsertGenerator.GenerateStatements(flow.Target.Table, staging, new UpsertOptions
         {
             DataColumns = dataColumnNames,
@@ -911,7 +938,6 @@ public sealed class IngestionFlowRunner
             UpdatedDateColumn = flow.SystemColumns.UpdatedDate ? "UpdatedDate_DW" : null,
             RowStatusColumn = flow.SystemColumns.RowStatus ? "RowStatus_DW" : null,
             ExcludeFromChecksum = excludeFromChecksum,
-            DeduplicateStagedRows = deduplicate,
             BatchToAvoidLockEscalation = flow.Load.BatchUpsertToAvoidLockEscalation,
             BatchRowCount = flow.Load.BatchUpsertRowCount,
             Scd2Enabled = scd2.Enabled,
@@ -1074,39 +1100,48 @@ public sealed class IngestionFlowRunner
         {
             foreach (var statement in statements)
             {
-                await using var command = new SqlCommand(statement.Sql, connection, transaction) { CommandTimeout = 0 };
-
-                // The dataset-partitioned loop reports both totals as one row with Inserts and Updates columns.
-                if (statement.CountFromResultSet)
+                try
                 {
-                    await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-                    if (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    await using var command = new SqlCommand(statement.Sql, connection, transaction) { CommandTimeout = 0 };
+
+                    // The dataset-partitioned loop reports both totals as one row with Inserts and Updates columns.
+                    if (statement.CountFromResultSet)
                     {
-                        inserted += Convert.ToInt64(reader["Inserts"], CultureInfo.InvariantCulture);
-                        updated += Convert.ToInt64(reader["Updates"], CultureInfo.InvariantCulture);
+                        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                        if (await reader.ReadAsync(ct).ConfigureAwait(false))
+                        {
+                            inserted += Convert.ToInt64(reader["Inserts"], CultureInfo.InvariantCulture);
+                            updated += Convert.ToInt64(reader["Updates"], CultureInfo.InvariantCulture);
+                        }
+
+                        continue;
                     }
 
-                    continue;
-                }
+                    long affected;
+                    if (statement.CountFromScalar)
+                    {
+                        var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                        affected = scalar is null or DBNull ? 0 : Convert.ToInt64(scalar, CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                    }
 
-                long affected;
-                if (statement.CountFromScalar)
-                {
-                    var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-                    affected = scalar is null or DBNull ? 0 : Convert.ToInt64(scalar, CultureInfo.InvariantCulture);
+                    if (statement.Kind == LoadKind.Update)
+                    {
+                        updated += affected;
+                    }
+                    else
+                    {
+                        inserted += affected;
+                    }
                 }
-                else
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                }
-
-                if (statement.Kind == LoadKind.Update)
-                {
-                    updated += affected;
-                }
-                else
-                {
-                    inserted += affected;
+                    // Surface exactly which load statement broke so the runner marks the precise trace entry (the
+                    // batch traced them all up front). The outer catch still rolls back the enclosing transaction.
+                    throw new LoadStatementException(statement, ex);
                 }
             }
 
@@ -1141,6 +1176,15 @@ public sealed class IngestionFlowRunner
 
     private static Task DropStagingAsync(string connectionString, RelationalObject staging, CancellationToken ct)
         => ExecuteAsync(connectionString, $"DROP TABLE IF EXISTS {SchemaQualified(staging)};", ct);
+
+    /// <summary>Raised by <see cref="ApplyLoadAsync"/> when one load statement fails, carrying the offending
+    /// statement so the run's failure is attributed to the exact trace entry rather than "the last one". The
+    /// message is the underlying error verbatim, so the run's recorded error is unchanged.</summary>
+    private sealed class LoadStatementException(LoadStatement statement, Exception inner)
+        : Exception(inner.Message, inner)
+    {
+        public LoadStatement Statement { get; } = statement;
+    }
 
     // The connection is already on the source database, so introspection uses the current-database OBJECT_ID
     // path (Database left null) rather than switching context.
@@ -1178,6 +1222,40 @@ public sealed class IngestionFlowRunner
 
     private static decimal FlowRateOf(long rowsFetched, int durationSeconds)
         => durationSeconds > 0 ? Math.Round((decimal)rowsFetched / durationSeconds, 2) : 0m;
+
+    /// <summary>The incremental read scope this run resolved to, for the run detail: the operator's full-load /
+    /// backfill substitution takes precedence (matching the resolver's own precedence), then the init-load chunk
+    /// plan, then the watermark-derived window. The filter is the exact source WHERE the read used; the watermark
+    /// is the value the MAX/MIN probe returned and which object it came from.</summary>
+    private static IncrementalSummary BuildIncrementalSummary(IngestionFlow flow, IngestionRunOptions options, IncrementalWindow window)
+    {
+        var filter = window.SourceWhere.Length > 0 ? $"WHERE 1=1{window.SourceWhere}" : null;
+
+        if (options.Parameters.FullLoad)
+        {
+            return new IncrementalSummary { Mode = IncrementalModes.Full, Filter = "full load (watermark bypassed by run parameter)" };
+        }
+
+        if (options.Parameters.BackfillFrom is not null)
+        {
+            return new IncrementalSummary { Mode = IncrementalModes.Backfill, Filter = filter };
+        }
+
+        if (flow.InitLoad.Enabled)
+        {
+            var from = flow.InitLoad.FromDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "beginning";
+            var to = flow.InitLoad.ToDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "now";
+            return new IncrementalSummary { Mode = IncrementalModes.InitLoad, Filter = $"init-load window {from} .. {to}" };
+        }
+
+        return new IncrementalSummary
+        {
+            Mode = filter is not null ? IncrementalModes.Incremental : IncrementalModes.Full,
+            Filter = filter ?? "full read (no incremental bound)",
+            Watermark = window.Watermark,
+            WatermarkSource = window.WatermarkSource,
+        };
+    }
 
     private static IngestionRunRecord BuildRunRecord(
         IngestionFlow flow,

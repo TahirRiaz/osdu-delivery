@@ -1319,6 +1319,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlflow-lang-wasm"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlflow-lang",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "sqlflow-lsp"
 version = "0.1.0"
 dependencies = [

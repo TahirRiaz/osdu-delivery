@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -22,6 +22,7 @@ import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
 import FormControl from "@mui/material/FormControl";
+import GlobalStyles from "@mui/material/GlobalStyles";
 import IconButton from "@mui/material/IconButton";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
@@ -41,11 +42,11 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import { isApiError } from "../../api/client";
 import { lineageApi, repoApi } from "../../api/endpoints";
-import type { LineageEdge } from "../../api/types";
+import type { LineageEdge, RunScope } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
-import { PageHeader } from "../../components/PageHeader";
+import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { brandToken, seriesColor } from "../../theme/branding";
 import "@xyflow/react/dist/style.css";
 
@@ -53,9 +54,10 @@ const NODE_WIDTH = 200;
 const NODE_HEIGHT = 56;
 const LAYER_SPACING = 150; // vertical gap between layers (rows, top to bottom); clears NODE_HEIGHT + edge/label room
 const NODE_SPACING = 260;  // horizontal gap between nodes within a layer; clears NODE_WIDTH
-// The page fills the viewport below the app chrome (fixed app bar + main padding) so the canvas is as large as
-// possible; the two breakpoints match AppShell's toolbar height and padding on mobile vs desktop.
-const PAGE_HEIGHT = { xs: "calc(100vh - 88px)", md: "calc(100vh - 112px)" } as const;
+// The canvas is full-bleed: it fills the whole content area below the fixed app bar, with the toolbar and details
+// floating on top of it (no page header). The height subtracts only the app bar (56 xs / 64 md); negative margins
+// on the container (see the return) cancel AppShell's main padding so the graph reaches every edge.
+const CANVAS_HEIGHT = { xs: "calc(100vh - 56px)", md: "calc(100vh - 64px)" } as const;
 
 type GraphView = "flows" | "objects";
 
@@ -320,7 +322,7 @@ interface CanvasProps {
   focus: FocusState | null;
   colorMode: "light" | "dark";
   /** Bumps when the node search picks a node, so the canvas centers on it. */
-  centerRequest: { id: string; nonce: number } | null;
+  centerRequest: { id: string; nonce: number; zoom?: number } | null;
   onFocus: (id: string | null) => void;
   onOpen: (id: string) => void;
   /** Right-click on a node: opens the node context menu at the pointer. */
@@ -349,15 +351,21 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
     const node = view.getNodes().find((candidate) => candidate.id === centerRequest.id);
     if (node) {
       void view.setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + NODE_HEIGHT / 2, {
-        zoom: Math.max(view.getZoom(), 1),
-        duration: 400,
+        // A deep-link jump requests a firm zoom so the landed-on node dominates the view; the in-graph search and
+        // wave chips omit it and keep the user's current zoom (never zooming out below 1).
+        zoom: centerRequest.zoom ?? Math.max(view.getZoom(), 1),
+        duration: 500,
       });
     }
   }, [centerRequest, view]);
 
   const styledNodes = useMemo(() => {
     if (focus === null) {
-      return flowNodes.map((node) => ({ ...node, style: { ...node.style, opacity: 1, boxShadow: undefined } }));
+      return flowNodes.map((node) => ({
+        ...node,
+        className: undefined,
+        style: { ...node.style, opacity: 1, boxShadow: undefined, zIndex: undefined },
+      }));
     }
     return flowNodes.map((node) => {
       const isFocus = node.id === focus.id;
@@ -371,10 +379,20 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
           : brandToken("--sf-series-7");
       return {
         ...node,
+        // The focused node gets a bold ring + outer glow (and the one-shot pulse via the class) so it clearly
+        // stands out from its upstream/downstream neighbours; related nodes get a thin accent ring; the rest dim.
+        className: isFocus ? "sf-focus-node" : undefined,
         style: {
           ...node.style,
           opacity: related ? 1 : 0.15,
-          boxShadow: related ? `0 0 0 2px ${accent}` : undefined,
+          zIndex: isFocus ? 10 : undefined,
+          // The focused node is filled solid with the primary color (its label text is forced to the contrast
+          // color via the .sf-focus-node rule) plus a ring and outer glow, so it is unmistakable; related nodes
+          // keep a thin accent ring, the rest dim.
+          backgroundColor: isFocus ? accent : undefined,
+          boxShadow: isFocus
+            ? `0 0 0 3px ${accent}, 0 0 18px 5px ${accent}`
+            : related ? `0 0 0 2px ${accent}` : undefined,
         },
       };
     });
@@ -435,12 +453,17 @@ export default function LineageGraphPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const repoId = searchParams.get("repoId") ?? "";
   const graphView: GraphView = searchParams.get("view") === "objects" ? "objects" : "flows";
+  // A deep-link (from search) can target a node to focus: an object key or a pipeline id. When it arrives without
+  // a repo (an object hit carries no repo, since an object is global), the repo is resolved below and filled in.
+  const focusParam = searchParams.get("focus") ?? "";
   const [focus, setFocus] = useState<FocusState | null>(null);
-  const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number; zoom?: number } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   // Right-click context menu on a node, and the node whose script is open in the drawer.
   const [nodeMenu, setNodeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [scriptKey, setScriptKey] = useState<string | null>(null);
+  // A flow node's Run action opens the trigger dialog prefilled with that flow and the chosen scope.
+  const [runDialog, setRunDialog] = useState<{ flowName: string; scope: RunScope } | null>(null);
 
   const scriptQuery = useQuery({
     queryKey: ["lineage-node-script", scriptKey],
@@ -451,6 +474,15 @@ export default function LineageGraphPage() {
   const repos = useQuery({
     queryKey: ["repos", "for-lineage-graph"],
     queryFn: () => repoApi.list({ page: 1, pageSize: 200 }),
+  });
+
+  // Resolve which repo's graph to draw for a focus target that arrived without one: an object hit from search
+  // carries only the global object key, so ask which repos reference it (writing repo ranked first) and adopt the
+  // best. Only runs while a focus is pending and no repo is chosen yet; a pipeline focus already carries its repo.
+  const focusRepos = useQuery({
+    queryKey: ["lineage-object-repos", focusParam],
+    queryFn: () => lineageApi.objectRepos(focusParam),
+    enabled: focusParam !== "" && repoId === "",
   });
 
   const waves = useQuery({
@@ -491,6 +523,18 @@ export default function LineageGraphPage() {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
+
+  // Once the focus target's repos resolve, adopt the best one (writing repo first) into ?repoId= so the graph
+  // draws it; the focus param rides along and is applied once that repo's graph contains the node.
+  useEffect(() => {
+    if (focusParam === "" || repoId !== "") {
+      return;
+    }
+    const best = focusRepos.data?.[0];
+    if (best) {
+      setParam("repoId", best.repoId);
+    }
+  }, [focusParam, repoId, focusRepos.data, setParam]);
 
   const repoItems = repos.data?.items ?? [];
   const selectValue = repoItems.some((repo) => repo.id === repoId) ? repoId : "";
@@ -887,6 +931,24 @@ export default function LineageGraphPage() {
     });
   }, [graph]);
 
+  // Apply a deep-linked focus once the drawn graph actually contains the node (waves/edges have loaded and, for an
+  // object hit, the resolved repo has been adopted). Applied once per focus value so the user's later interaction
+  // (clicking elsewhere, switching view) is not overridden.
+  const appliedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (focusParam === "" || graph === null || appliedFocus.current === focusParam) {
+      return;
+    }
+    if (!graph.names.has(focusParam)) {
+      return;
+    }
+    appliedFocus.current = focusParam;
+    focusNode(focusParam);
+    // A deep-link jump zooms in firmly on the landed-on node so it dominates the view (the highlight then makes it
+    // unmistakable); in-graph search and wave chips keep the user's current zoom instead.
+    setCenterRequest((previous) => ({ id: focusParam, nonce: (previous?.nonce ?? 0) + 1, zoom: 1.9 }));
+  }, [focusParam, graph, focusNode]);
+
   const openNode = useCallback((id: string) => {
     if (graph !== null) {
       navigate(graph.openTarget(id).to);
@@ -899,9 +961,14 @@ export default function LineageGraphPage() {
     [graph],
   );
 
-  const queryError = [repos, waves, objectEdges].find((query) => query.isError)?.error;
+  const queryError = [repos, waves, objectEdges, focusRepos].find((query) => query.isError)?.error;
   const loadingGraph = repoId !== "" && (waves.isPending || objectEdges.isPending);
   const hasContent = graph !== null && graph.nodes.length > 0;
+  // A focus target that arrived without a repo: resolving which repo to draw, or resolved to none (the object has
+  // no lineage edges, so it is in no graph).
+  const resolvingFocus = focusParam !== "" && repoId === "" && focusRepos.isPending;
+  const focusHasNoRepo = focusParam !== "" && repoId === ""
+    && focusRepos.isSuccess && focusRepos.data.length === 0;
   const repoName = repoItems.find((repo) => repo.id === repoId)?.name ?? repoId;
 
   // Export the drawn graph as an SVG vector of the current layout (nodes, edges, labels) in the active theme,
@@ -940,8 +1007,9 @@ export default function LineageGraphPage() {
       data-testid="graph-side-panel"
       sx={{
         width: 300,
-        // Bounded to the visible canvas so a long wave list scrolls inside the panel rather than off the graph.
-        maxHeight: { xs: "calc(100vh - 200px)", md: "calc(100vh - 224px)" },
+        // Bounded to the visible canvas so a long wave list scrolls inside the panel rather than off the graph;
+        // the canvas now fills the viewport below the app bar, leaving room for the React Flow panel margins.
+        maxHeight: { xs: "calc(100vh - 96px)", md: "calc(100vh - 104px)" },
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -1047,129 +1115,183 @@ export default function LineageGraphPage() {
   return (
     <Box
       data-testid="page-lineage-graph"
-      sx={{ display: "flex", flexDirection: "column", gap: 2, height: PAGE_HEIGHT, minWidth: 0 }}
+      sx={{
+        position: "relative",
+        // Full-bleed: negative margins cancel AppShell's main padding (2 xs / 3 md) so the canvas runs edge to
+        // edge, and the height claims the whole viewport below the app bar.
+        height: CANVAS_HEIGHT,
+        mt: { xs: -2, md: -3 },
+        mb: { xs: -2, md: -3 },
+        mx: { xs: -2, md: -3 },
+        minWidth: 0,
+        overflow: "hidden",
+        bgcolor: "background.paper",
+      }}
     >
-      <PageHeader
-        title="Lineage graph"
-        actions={(
-          <>
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<TableRowsIcon />}
-              onClick={() => navigate("/lineage/objects")}
-              data-testid="open-lineage-objects"
-            >
-              Explorer
-            </Button>
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={graphView}
-              onChange={(_, value: GraphView | null) => {
-                if (value !== null) {
-                  setParam("view", value === "flows" ? "" : value);
-                }
-              }}
-              data-testid="graph-view-toggle"
-            >
-              <ToggleButton value="flows" data-testid="graph-view-flows">Flows</ToggleButton>
-              <ToggleButton value="objects" data-testid="graph-view-objects">Objects</ToggleButton>
-            </ToggleButtonGroup>
-            {graphView === "flows" && sortedWaves.length > 0 && (
-              <FormControl size="small" sx={{ minWidth: 150 }}>
-                <Select
-                  value={selectedWave === null ? "" : String(selectedWave)}
-                  onChange={(event) => setParam("wave", event.target.value)}
-                  displayEmpty
-                  inputProps={{ "aria-label": "Wave" }}
-                  data-testid="graph-wave-filter"
-                >
-                  <MenuItem value=""><em>All waves</em></MenuItem>
-                  {sortedWaves.map((wave) => (
-                    <MenuItem key={wave.wave} value={String(wave.wave)}>
-                      {wave.wave === -1 ? "Unwaved" : `Wave ${wave.wave}`}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
-            {hasContent && (
-              <Autocomplete
-                size="small"
-                sx={{ width: 240 }}
-                options={searchOptions}
-                getOptionLabel={(option) => option.name}
-                isOptionEqualToValue={(a, b) => a.id === b.id}
-                onChange={(_, option) => {
-                  if (option) {
-                    focusNode(option.id);
-                    setCenterRequest((previous) => ({ id: option.id, nonce: (previous?.nonce ?? 0) + 1 }));
-                  }
-                }}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    placeholder="Find a node"
-                    inputProps={{ ...params.inputProps, "data-testid": "graph-node-search" }}
-                  />
-                )}
-              />
-            )}
-            {hasContent && (
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<DownloadIcon />}
-                onClick={downloadLineage}
-                data-testid="download-lineage"
-              >
-                Download SVG
-              </Button>
-            )}
-            <FormControl size="small" sx={{ minWidth: 220 }}>
-              <Select
-                value={selectValue}
-                onChange={(event) => setParam("repoId", event.target.value)}
-                displayEmpty
-                inputProps={{ "aria-label": "Repo" }}
-                data-testid="graph-repo-select"
-              >
-                <MenuItem value=""><em>Select a repo</em></MenuItem>
-                {repoItems.map((repo) => (
-                  <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </>
-        )}
+      {/* The focused node's emphasis: its label text is forced to the primary contrast color (it sits on a solid
+          primary fill), and it plays a brief glow pulse when it becomes the focus so the eye lands on it. */}
+      <GlobalStyles
+        styles={{
+          "@keyframes sfFocusPulse": {
+            "0%": { filter: "drop-shadow(0 0 2px var(--sf-primary))" },
+            "50%": { filter: "drop-shadow(0 0 16px var(--sf-primary))" },
+            "100%": { filter: "drop-shadow(0 0 2px var(--sf-primary))" },
+          },
+          ".react-flow__node.sf-focus-node": { animation: "sfFocusPulse 1.3s ease-in-out 3" },
+          ".react-flow__node.sf-focus-node .MuiTypography-root": {
+            color: "var(--sf-primary-contrast) !important",
+          },
+        }}
       />
-
-      {queryError !== undefined && (
-        isApiError(queryError)
-          ? <CorrelationError error={queryError} />
-          : <Typography color="error">{String(queryError)}</Typography>
-      )}
-
-      <Box
-        data-testid="lineage-graph-canvas"
+      {/* The toolbar floats over the canvas (top-left) instead of sitting in a page header, so the graph itself
+          fills the whole page; the details panel floats at top-right via a React Flow <Panel>. The toolbar's max
+          width leaves a clear column on the right for that panel (wider when it is open, narrow for its collapsed
+          icon), so a wrapping toolbar can never slide underneath it. */}
+      <Paper
+        elevation={4}
+        data-testid="graph-toolbar"
         sx={{
-          position: "relative",
-          flexGrow: 1,
-          minHeight: 0,
-          border: 1,
-          borderColor: "divider",
-          borderRadius: 1,
-          overflow: "hidden",
+          position: "absolute",
+          top: 12,
+          left: 12,
+          zIndex: 6,
+          maxWidth: panelOpen ? "calc(100% - 340px)" : "calc(100% - 84px)",
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 1,
+          px: 1.5,
+          py: 1,
           bgcolor: "background.paper",
         }}
       >
-        {repoId === "" && !repos.isError && (
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<TableRowsIcon />}
+          onClick={() => navigate("/lineage/objects")}
+          data-testid="open-lineage-objects"
+        >
+          Explorer
+        </Button>
+        <ToggleButtonGroup
+          exclusive
+          size="small"
+          value={graphView}
+          onChange={(_, value: GraphView | null) => {
+            if (value !== null) {
+              setParam("view", value === "flows" ? "" : value);
+            }
+          }}
+          data-testid="graph-view-toggle"
+        >
+          <ToggleButton value="flows" data-testid="graph-view-flows">Flows</ToggleButton>
+          <ToggleButton value="objects" data-testid="graph-view-objects">Objects</ToggleButton>
+        </ToggleButtonGroup>
+        {graphView === "flows" && sortedWaves.length > 0 && (
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <Select
+              value={selectedWave === null ? "" : String(selectedWave)}
+              onChange={(event) => setParam("wave", event.target.value)}
+              displayEmpty
+              inputProps={{ "aria-label": "Wave" }}
+              data-testid="graph-wave-filter"
+            >
+              <MenuItem value=""><em>All waves</em></MenuItem>
+              {sortedWaves.map((wave) => (
+                <MenuItem key={wave.wave} value={String(wave.wave)}>
+                  {wave.wave === -1 ? "Unwaved" : `Wave ${wave.wave}`}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+        {hasContent && (
+          <Autocomplete
+            size="small"
+            sx={{ width: 240 }}
+            options={searchOptions}
+            getOptionLabel={(option) => option.name}
+            isOptionEqualToValue={(a, b) => a.id === b.id}
+            onChange={(_, option) => {
+              if (option) {
+                focusNode(option.id);
+                setCenterRequest((previous) => ({ id: option.id, nonce: (previous?.nonce ?? 0) + 1 }));
+              }
+            }}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                placeholder="Find a node"
+                inputProps={{ ...params.inputProps, "data-testid": "graph-node-search" }}
+              />
+            )}
+          />
+        )}
+        {hasContent && (
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<DownloadIcon />}
+            onClick={downloadLineage}
+            data-testid="download-lineage"
+          >
+            Download SVG
+          </Button>
+        )}
+        <FormControl size="small" sx={{ minWidth: 220 }}>
+          <Select
+            value={selectValue}
+            onChange={(event) => setParam("repoId", event.target.value)}
+            displayEmpty
+            inputProps={{ "aria-label": "Repo" }}
+            data-testid="graph-repo-select"
+          >
+            <MenuItem value=""><em>Select a repo</em></MenuItem>
+            {repoItems.map((repo) => (
+              <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Paper>
+
+      {queryError !== undefined && (
+        <Box sx={{ position: "absolute", top: 68, left: 12, right: 12, zIndex: 6, maxWidth: 640 }}>
+          {isApiError(queryError)
+            ? <CorrelationError error={queryError} />
+            : <Typography color="error">{String(queryError)}</Typography>}
+        </Box>
+      )}
+
+      {repoId === "" && !repos.isError && (
           <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-empty">
-            <EmptyState
-              title="Pick a repo to draw its graph"
-              description="The lineage graph is computed per repo: select one above to see its pipelines and the objects that connect them. Click a node to trace what feeds it and what depends on it."
-            />
+            {resolvingFocus ? (
+              <Stack alignItems="center" spacing={2} data-testid="graph-resolving-focus">
+                <CircularProgress size={28} />
+                <Typography variant="body2" color="text.secondary">Locating the object in the lineage graph…</Typography>
+              </Stack>
+            ) : focusHasNoRepo ? (
+              <EmptyState
+                data-testid="graph-focus-no-repo"
+                title="No lineage graph references this object yet"
+                description="This object has no recorded lineage edges, so it does not appear in any repo's graph. Open it in the object explorer to see its definition and columns."
+                action={(
+                  <Button
+                    variant="outlined"
+                    startIcon={<TableRowsIcon />}
+                    onClick={() => navigate("/lineage/objects")}
+                    data-testid="graph-focus-open-explorer"
+                  >
+                    Open explorer
+                  </Button>
+                )}
+              />
+            ) : (
+              <EmptyState
+                title="Pick a repo to draw its graph"
+                description="The lineage graph is computed per repo: select one above to see its pipelines and the objects that connect them. Click a node to trace what feeds it and what depends on it."
+              />
+            )}
           </Box>
         )}
 
@@ -1256,7 +1378,59 @@ export default function LineageGraphPage() {
           >
             Open details
           </MenuItem>
+          {nodeMenu !== null && repoId !== "" && graph !== null
+            && graph.openTarget(nodeMenu.id).label === "Open pipeline"
+            && [
+              <Divider key="run-divider" />,
+              <MenuItem
+                key="run-flow"
+                data-testid="node-menu-run-flow"
+                onClick={() => {
+                  const flowName = graph.names.get(nodeMenu.id);
+                  if (flowName) {
+                    setRunDialog({ flowName, scope: "flow" });
+                  }
+                  setNodeMenu(null);
+                }}
+              >
+                Run flow
+              </MenuItem>,
+              <MenuItem
+                key="run-node"
+                data-testid="node-menu-run-node"
+                onClick={() => {
+                  const flowName = graph.names.get(nodeMenu.id);
+                  if (flowName) {
+                    setRunDialog({ flowName, scope: "node" });
+                  }
+                  setNodeMenu(null);
+                }}
+              >
+                Run flow + descendants
+              </MenuItem>,
+              <MenuItem
+                key="run-batch"
+                data-testid="node-menu-run-batch"
+                onClick={() => {
+                  const flowName = graph.names.get(nodeMenu.id);
+                  if (flowName) {
+                    setRunDialog({ flowName, scope: "batch" });
+                  }
+                  setNodeMenu(null);
+                }}
+              >
+                Run batch
+              </MenuItem>,
+            ]}
         </Menu>
+
+        <TriggerRunDialog
+          open={runDialog !== null}
+          onClose={() => setRunDialog(null)}
+          repoId={repoId || undefined}
+          flowName={runDialog?.flowName}
+          scope={runDialog?.scope}
+        />
 
         <Drawer
           anchor="right"
@@ -1277,14 +1451,6 @@ export default function LineageGraphPage() {
                 )}
               </Box>
               <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={!scriptQuery.data?.script}
-                  onClick={() => { void navigator.clipboard.writeText(scriptQuery.data?.script ?? ""); }}
-                >
-                  Copy
-                </Button>
                 <Button size="small" variant="contained" onClick={() => setScriptKey(null)}>Close</Button>
               </Stack>
             </Stack>
@@ -1306,7 +1472,6 @@ export default function LineageGraphPage() {
             </Box>
           </Box>
         </Drawer>
-      </Box>
     </Box>
   );
 }

@@ -75,6 +75,22 @@ export interface Repo {
   lastSyncUtc: string;
 }
 
+/** The outcome of a manual local-path repo sync: the pipeline reconciliation counts and lineage tallies, whether the
+ * derived tier connected to the live database, and any warnings the pass surfaced (bounded). */
+export interface RepoSyncResult {
+  pipelinesAdded: number;
+  pipelinesUpdated: number;
+  pipelinesUnchanged: number;
+  pipelinesDeactivated: number;
+  objects: number;
+  columns: number;
+  edges: number;
+  waves: number;
+  dependencies: number;
+  connected: boolean;
+  warnings: string[];
+}
+
 export interface PipelineSummary {
   id: string;
   repoId: string;
@@ -113,7 +129,10 @@ export interface PipelineColumn {
 
 // ---- Runs -----------------------------------------------------------------------------------------------------------
 
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+
+/** How a run was scoped: one flow, a flow and its descendants (Node), or a whole batch / data source. */
+export type RunScope = "flow" | "node" | "batch";
 
 export interface RunSummary {
   runId: string;
@@ -136,6 +155,11 @@ export interface RunSummary {
   rowsInserted: number | null;
   rowsUpdated: number | null;
   rowsDeleted: number | null;
+  /** How many source files this run processed (file flows); 0 for non-file flows. */
+  fileCount: number;
+  /** The run group this run belongs to when it was launched as one member of a Node or Batch run; null for a
+   * standalone single-flow run. */
+  groupId: string | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -152,6 +176,18 @@ export interface RunDetail extends RunSummary {
   backfillFrom: string | null;
   backfillTo: string | null;
   filePattern: string | null;
+  /** The incremental read scope the engine computed and applied this run: mode (full / incremental / backfill /
+   * init-load), the filter that bounded the read, and the resolved watermark with the object it was probed from.
+   * Null on flows with no incremental surface. Distinct from the operator's backfill parameters above. */
+  incrementalMode: string | null;
+  incrementalFilter: string | null;
+  incrementalWatermark: string | null;
+  incrementalWatermarkSource: string | null;
+  /** On a failed run, the exact statement that threw (the run's failure point), so the detail view can show the
+   * offending SQL next to the error banner. Null on every non-failed run, or when no statement was attributed. */
+  failedStatementOrdinal: number | null;
+  failedStatementStep: string | null;
+  failedStatementSql: string | null;
 }
 
 export interface RunFile {
@@ -163,6 +199,16 @@ export interface RunFile {
   rows: number;
   columns: number;
   sizeBytes: number;
+}
+
+export interface PipelineFile {
+  name: string;
+  path: string | null;
+  modified: string | null;
+  rows: number;
+  sizeBytes: number;
+  lastRun: boolean;
+  lastProcessedUtc: string | null;
 }
 
 export interface RunAssertion {
@@ -183,6 +229,9 @@ export interface RunStatement {
   ordinal: number;
   step: string;
   sql: string;
+  /** The error this statement raised, or null when it succeeded (or was never reached). Set on exactly one
+   * statement of a failed run: the one whose execution threw. */
+  error: string | null;
 }
 
 export interface RunSurrogateKey {
@@ -219,16 +268,63 @@ export interface RunTriggerRequest {
   flowName: string;
   pool?: string | null;
   commitSha?: string | null;
-  // The built-in backfill: per-run substitution parameters, all optional and audited on the run.
+  // The built-in backfill: per-run substitution parameters, all optional and audited on the run. Honored only for
+  // a single flow (scope "flow" or omitted); a Node or Batch run always runs its members with default parameters.
   fullLoad?: boolean;
   backfillFrom?: string | null;
   backfillTo?: string | null;
   filePattern?: string | null;
+  /** The execution scope: one flow (default), a flow and its descendants (node), or a whole batch (batch). */
+  scope?: RunScope;
+  /** The batch label for a batch-scoped run; when omitted the anchor flow's own batch is used. */
+  batch?: string | null;
 }
 
+/** The trigger response covers both a single flow (runId set) and a Node/Batch group (groupId + memberCount set). */
 export interface RunTriggerAccepted {
-  runId: string;
+  runId?: string | null;
+  groupId?: string | null;
+  memberCount?: number | null;
   status: string;
+}
+
+/** One flow a scope expansion would run, with the wave that orders it. */
+export interface RunScopePreviewMember {
+  flowName: string;
+  flowKind: string;
+  wave: number;
+}
+
+/** What a Node or Batch run would enqueue, without enqueuing: the resolved anchor and the ordered members. */
+export interface RunScopePreview {
+  scope: RunScope;
+  anchor: string;
+  memberCount: number;
+  waveCount: number;
+  members: RunScopePreviewMember[];
+}
+
+/** A run group's member counts by lifecycle state. */
+export interface RunGroupCounts {
+  total: number;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  skipped: number;
+}
+
+/** One run group's header and the live rollup of its members. The members come from the runs list by groupId. */
+export interface RunGroup {
+  groupId: string;
+  repoId: string;
+  mode: "node" | "batch";
+  anchor: string;
+  memberCount: number;
+  commitSha: string | null;
+  enqueuedUtc: string;
+  counts: RunGroupCounts;
 }
 
 // ---- Schedules -------------------------------------------------------------------------------------------------------
@@ -395,6 +491,30 @@ export interface Wave {
   pipelines: WavePipeline[];
 }
 
+/** One repo whose lineage references an object: how many of its edges touch the object and whether a flow there
+ * writes/creates it. Ranked writing-repo-first so a search jump to the lineage graph opens on the repo that shows
+ * how the object is populated. */
+export interface ObjectRepo {
+  repoId: string;
+  repoName: string;
+  edgeCount: number;
+  writes: boolean;
+}
+
+/** A file-ingestion pipeline whose source spec matches a file: the flow that would ingest it, resolved from the
+ * flow definitions in the catalog (no run required). `pathConfirmed` is true when the full path (not just the file
+ * name) was matched, so a definitively-located match ranks above a name-only one. */
+export interface FilePipelineMatch {
+  pipelineId: string;
+  pipelineName: string;
+  repoId: string;
+  repoName: string;
+  sourceType: string;
+  sourceLocation: string | null;
+  pattern: string;
+  pathConfirmed: boolean;
+}
+
 export interface FlowDependency {
   id: number;
   repoId: string;
@@ -429,6 +549,52 @@ export interface DefinitionHit {
   name: string;
   kind: string;
   snippet: string;
+  // Which body carried the match: "Module" (the live sys.sql_modules definition) or "Script" (the emitted DDL).
+  source: string;
+}
+
+export interface FileHit {
+  name: string;
+  path: string | null;
+  runId: string;
+  flowName: string;
+  flowKind: string;
+  rows: number;
+  columns: number;
+  sizeBytes: number;
+  runUtc: string | null;
+  // The flow that ingested the file and its repo, so the hit can jump to that flow's node in the lineage graph.
+  pipelineId: string;
+  repoId: string | null;
+  repoName: string | null;
+}
+
+export interface FlowHit {
+  id: string;
+  name: string;
+  kind: string;
+  batch: string | null;
+  relativePath: string;
+  repoId: string;
+  repoName: string;
+  // Where the term matched: "Name", "Path", or "Body" (inside the YAML).
+  matchedIn: string;
+  snippet: string;
+}
+
+// One category of a combined search: the full match count plus a short preview of the top hits.
+export interface SearchCategory<T> {
+  total: number;
+  items: T[];
+}
+
+// The combined result of a single global search across every catalog surface.
+export interface AllSearchResult {
+  objects: SearchCategory<ObjectHit>;
+  columns: SearchCategory<ColumnHit>;
+  definitions: SearchCategory<DefinitionHit>;
+  files: SearchCategory<FileHit>;
+  flows: SearchCategory<FlowHit>;
 }
 
 // ---- Users ---------------------------------------------------------------------------------------------------------------

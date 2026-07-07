@@ -25,6 +25,15 @@ public sealed record IncrementalWindow
 
     /// <summary>The MIN watermark probe run against the source (FetchMinValuesFromSource), null when none ran.</summary>
     public string? SourceMinProbeSql { get; init; }
+
+    /// <summary>The resolved watermark values the source WHERE was built from, rendered as
+    /// <c>column: value</c> pairs; null when no probe bounded the read (full load / empty target). This is the
+    /// result of the MAX (or MIN, on reprocess) probe, surfaced for the run detail.</summary>
+    public string? Watermark { get; init; }
+
+    /// <summary>Where the resolved watermark came from, including the probed object: <c>target MAX
+    /// [schema].[table]</c> or <c>source MIN [schema].[table]</c>. Null when there is no watermark.</summary>
+    public string? WatermarkSource { get; init; }
 }
 
 /// <summary>
@@ -59,6 +68,7 @@ public sealed class IncrementalWindowResolver
         IReadOnlyList<SqlColumn> sourceColumns,
         ISourceSqlDialect? sourceDialect = null,
         RunParameters? parameters = null,
+        RelationalObject? watermarkTable = null,
         CancellationToken ct = default)
     {
         sourceDialect ??= new SqlServerSourceDialect();
@@ -121,6 +131,8 @@ public sealed class IncrementalWindowResolver
         bool targetEmpty;
         string? maxProbeSql = null;
         string? minProbeSql = null;
+        string? watermark = null;
+        string? watermarkSource = null;
 
         if (!flow.Incremental.IsIncremental)
         {
@@ -133,7 +145,23 @@ public sealed class IncrementalWindowResolver
             var typesByName = sourceColumns.ToDictionary(c => c.Name, c => c.DataType, StringComparer.OrdinalIgnoreCase);
             var marks = BuildMarkList(flow, typesByName);
 
-            var (targetExists, maxMarks, probeSql) = await ProbeMaxAsync(flow, targetConnectionString, marks, ct).ConfigureAwait(false);
+            // Choose the object the high-water MAX is read from. By default the control plane resolves the next
+            // durable table downstream in the lineage graph (the ods/silver table this flow feeds) and hands it in:
+            // its MAX is the end-to-end high-water mark, so deleting rows there re-opens the window and the source
+            // is re-pulled. Only when there is no such table (no lineage, an ambiguous chain, or a direct CLI run)
+            // is the flow's own target probed. The check is column-safe and reachability-safe, so a renamed/absent
+            // column or an unreachable table silently falls back to the target rather than erroring or forcing a
+            // full reload.
+            var probeObject = flow.Target.Table;
+            var probeLabel = "target";
+            if (watermarkTable is not null
+                && await DownstreamCarriesMarksAsync(watermarkTable, targetConnectionString, marks, ct).ConfigureAwait(false))
+            {
+                probeObject = watermarkTable;
+                probeLabel = "downstream";
+            }
+
+            var (targetExists, maxMarks, probeSql) = await ProbeMaxAsync(flow, probeObject, targetConnectionString, marks, ct).ConfigureAwait(false);
             maxProbeSql = probeSql;
             if (!targetExists || maxMarks.All(m => m.Value is null))
             {
@@ -145,6 +173,7 @@ public sealed class IncrementalWindowResolver
                 targetEmpty = false;
                 var effective = maxMarks;
                 var op = ">";
+                watermarkSource = $"{probeLabel} MAX {SchemaQualified(probeObject)}";
 
                 if (flow.Incremental.FetchMinValuesFromSource)
                 {
@@ -155,23 +184,53 @@ public sealed class IncrementalWindowResolver
                         // Reprocess history: widen the window back to the source minimum.
                         effective = minMarks;
                         op = ">=";
+                        watermarkSource = $"source MIN {sourceDialect.QualifyObject(flow.Source.Table)}";
                     }
                 }
 
                 (incExp, dateExp) = BuildPredicates(effective, op, sourceDialect);
+                watermark = DescribeMarks(effective);
             }
         }
 
         var runFullLoad = targetEmpty || (incExp.Length == 0 && dateExp.Length == 0 && keyless);
         var sourceWhere = AssembleWhere(flow.Source, flow.Incremental.FullLoad, incExp, dateExp, targetEmpty);
+
+        // The resolved watermark is reported only when its predicate is actually the bound applied to the read:
+        // a replace-filter (a non-append user filter) or the declared full-load flag discards it, exactly as
+        // AssembleWhere does, so the run detail never shows a watermark the read did not honor.
+        var filterOverrides = !string.IsNullOrWhiteSpace(flow.Source.Filter) && !flow.Source.FilterIsAppend;
+        var predicateApplied = !filterOverrides && !flow.Incremental.FullLoad && (incExp.Length > 0 || dateExp.Length > 0);
         return new IncrementalWindow
         {
             SourceWhere = sourceWhere,
             RunFullLoad = runFullLoad,
             TargetMaxProbeSql = maxProbeSql,
             SourceMinProbeSql = minProbeSql,
+            Watermark = predicateApplied ? watermark : null,
+            WatermarkSource = predicateApplied ? watermarkSource : null,
         };
     }
+
+    /// <summary>Renders the resolved (non-null) watermark values as <c>column: value</c> pairs for display; the
+    /// invariant string form of each probed value, so the run detail shows exactly what the MAX/MIN probe returned.</summary>
+    private static string? DescribeMarks(IReadOnlyList<Watermark> marks)
+    {
+        var parts = marks
+            .Where(m => m.Value is not null)
+            .Select(m => $"{m.Column}: {FormatValue(m.Value!)}")
+            .ToList();
+        return parts.Count > 0 ? string.Join(", ", parts) : null;
+    }
+
+    private static string FormatValue(object value) => value switch
+    {
+        DateTime dt => dt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture),
+        DateTimeOffset dto => dto.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture),
+        byte[] bytes => "0x" + Convert.ToHexString(bytes),
+        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? string.Empty,
+    };
 
     // Precedence is load-bearing and matches legacy ProcessIngestion exactly: replace-filter, then the
     // FullLoad flag, then empty target, then the incremental predicate, then the date predicate; the
@@ -213,12 +272,12 @@ public sealed class IncrementalWindowResolver
     }
 
     private async Task<(bool Exists, IReadOnlyList<Watermark> Marks, string? Sql)> ProbeMaxAsync(
-        IngestionFlow flow, string targetConnectionString, IReadOnlyList<Watermark> marks, CancellationToken ct)
+        IngestionFlow flow, RelationalObject probeObject, string targetConnectionString, IReadOnlyList<Watermark> marks, CancellationToken ct)
     {
         await using var connection = new SqlConnection(targetConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
-        var live = await _catalog.IntrospectObjectAsync(connection, ToName(flow.Target.Table), ct).ConfigureAwait(false);
+        var live = await _catalog.IntrospectObjectAsync(connection, ToName(probeObject), ct).ConfigureAwait(false);
         if (live is null)
         {
             return (false, NoMarks, null);
@@ -232,9 +291,36 @@ public sealed class IncrementalWindowResolver
         var projections = marks.Select(m => m.IsDate
             ? $"DATEADD(day, -{flow.Incremental.OverlapDays}, MAX([{Escape(m.Column)}])) AS [{Escape(m.Column)}]"
             : $"MAX([{Escape(m.Column)}]) AS [{Escape(m.Column)}]");
-        var sql = $"SELECT {string.Join(", ", projections)} FROM {SchemaQualified(flow.Target.Table)} WHERE 1=1{Clause(flow.Source.IncrementalClause)};";
+        var sql = $"SELECT {string.Join(", ", projections)} FROM {SchemaQualified(probeObject)} WHERE 1=1{Clause(flow.Source.IncrementalClause)};";
 
         return (true, await ReadMarksAsync(connection, sql, marks, ct).ConfigureAwait(false), sql);
+    }
+
+    /// <summary>Whether the resolved downstream (silver) table is a safe object to probe the watermark from: it
+    /// exists on the target connection AND carries every watermark column by name. A downstream table that is
+    /// unreachable/absent (introspection returns null) or that renamed/dropped a watermark column (a typed view's
+    /// output alias differs from the source column) returns false, so the caller falls back to the flow's own
+    /// target rather than probing a MAX over a column that is not there (which would fail the run) or reading an
+    /// absent object (which would be mistaken for an empty target and force a full reload).</summary>
+    private async Task<bool> DownstreamCarriesMarksAsync(
+        RelationalObject downstream, string targetConnectionString, IReadOnlyList<Watermark> marks, CancellationToken ct)
+    {
+        if (marks.Count == 0)
+        {
+            return false;
+        }
+
+        await using var connection = new SqlConnection(targetConnectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        var live = await _catalog.IntrospectObjectAsync(connection, ToName(downstream), ct).ConfigureAwait(false);
+        if (live is null)
+        {
+            return false;
+        }
+
+        var columns = new HashSet<string>(live.Columns.Select(c => c.Name), StringComparer.OrdinalIgnoreCase);
+        return marks.All(m => columns.Contains(m.Column));
     }
 
     private async Task<(IReadOnlyList<Watermark> Marks, string? Sql)> ProbeMinAsync(

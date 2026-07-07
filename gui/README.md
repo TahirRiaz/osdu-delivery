@@ -53,6 +53,48 @@ Bootstrap provisioning applies catalog migrations, seeds the roles, and (when
 compute node mode, start a worker: `sqlflow worker --db "<catalog connection>"`; it appears on the Nodes page
 within a heartbeat.
 
+## Flow-YAML language intelligence (the in-browser LSP)
+
+The read-only Monaco view of a pipeline's YAML (the Pipelines detail page, YAML tab) has full language
+intelligence: hover any attribute for its documentation, census-driven colouring (documented key vs a key the
+loader will ignore, and valid vs invalid enum values), and validation squiggles for unknown keys, bad enum
+values, and missing required keys.
+
+**There is no separate LSP server process.** This is the `sqlflow-lang` analysis engine (the same engine behind
+the `tools/sqlflow-lsp` language server that VS Code uses) compiled to WebAssembly and run in a Monaco web
+worker in the browser. The engine is the single source of truth: the stdio LSP, the MCP `validate_flow` tool,
+and this GUI are three bindings onto it, so a hover or diagnostic here matches the editor and the CLI exactly.
+Because it is wasm, it needs no network and works in an offline/air-gapped deployment.
+
+Layout:
+
+- `tools/sqlflow-lang-wasm` (Rust) exposes `hover` / `diagnostics` / `semantic_tokens` over the engine.
+- `src/lib/lsp/pkg/` is the generated wasm + JS glue, committed so a GUI-only build needs no Rust toolchain
+  (as `tools/sqlflow-vscode` commits its binaries).
+- `src/lib/lsp/worker.ts` loads the wasm off the UI thread; `src/lib/lsp/sqlflowLsp.ts` registers the Monaco
+  hover, semantic-token, and diagnostics providers. `CodeView` opts a flow model in via its `lsp` prop.
+
+### Booting it for testing
+
+The GUI carries the LSP, so "start the LSP" means: run the control plane (to serve a flow's YAML) and the GUI
+(which runs the wasm). In VS Code, the **Run and Debug** compound `Dev: Control plane + GUI (flow LSP)` does
+both in one click: it debugs the control plane and starts the dev server after rebuilding the wasm, so you are
+always testing the current engine. Then open `http://localhost:5173`, go to a pipeline, and select the YAML
+tab. See `.vscode/launch.json`.
+
+From the command line, the equivalent is the control plane (see [Development](#development) above) plus:
+
+```bash
+cd gui
+npm run build:wasm   # after any change to the engine or the wasm bindings; needs the Rust wasm toolchain
+npm run dev          # http://localhost:5173
+```
+
+`npm run build:wasm` (`scripts/build-wasm.mjs`) recompiles `sqlflow-lang-wasm` and regenerates `src/lib/lsp/pkg`.
+It needs `cargo`, the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`), and a
+`wasm-bindgen` CLI matching the `wasm-bindgen` crate version. The generated `pkg/` is committed, so you only
+rerun this when the engine changes; a plain `npm run dev` uses whatever is committed.
+
 ## End-to-end tests (Playwright)
 
 ```bash

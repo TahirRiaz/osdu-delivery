@@ -14,9 +14,14 @@ public static class RunStatuses
     public const string Failed = "failed";
     public const string Cancelled = "cancelled";
 
+    /// <summary>A group member that was never run because a flow it depends on (transitively) failed or was
+    /// cancelled earlier in the same run group. Terminal and unsuccessful, but distinct from <c>failed</c>: this
+    /// run did not itself execute or error, it was passed over so a broken upstream is not fed downstream.</summary>
+    public const string Skipped = "skipped";
+
     /// <summary>The terminal states; a run in one of these is finished and will not change.</summary>
     public static bool IsTerminal(string status)
-        => status is Succeeded or Failed or Cancelled;
+        => status is Succeeded or Failed or Cancelled or Skipped;
 }
 
 /// <summary>The provenance of a <see cref="CatalogPipelineColumn"/>, stored as a short lowercase string (same
@@ -186,6 +191,18 @@ public class CatalogRun
     /// <summary>Per-run substitution: a glob narrowing which files a file flow reads this run.</summary>
     public string? FilePattern { get; set; }
 
+    /// <summary>The run group this run belongs to when it was enqueued as one member of a multi-flow execution
+    /// (a Node run: a flow and its descendants; or a Batch run: a whole data source), or null for a standalone
+    /// single-flow run. Members of a group share this id and are ordered by <see cref="GroupWave"/>: the queue
+    /// claim only makes a member claimable once every same-group member in a lower wave is terminal, so a
+    /// dependency never runs before what it depends on.</summary>
+    public Guid? GroupId { get; set; }
+
+    /// <summary>This member's execution wave within its <see cref="GroupId"/> (the flow's topological level from
+    /// lineage). Lower waves run first; members in the same wave run concurrently. Ignored for a standalone run
+    /// (<see cref="GroupId"/> null), where it stays 0.</summary>
+    public int GroupWave { get; set; }
+
     public int SchemaVersion { get; set; }
 
     public DateTime WrittenUtc { get; set; }
@@ -208,6 +225,64 @@ public class CatalogRun
 
     /// <summary>The host that produced the run, when the artifact records it (null until run.json carries it).</summary>
     public string? Host { get; set; }
+
+    /// <summary>The incremental read scope the run computed and applied (full / incremental / backfill / init-load):
+    /// the engine-derived counterpart to the operator's backfill parameters above, projected from
+    /// <c>result.incremental</c>. Null when the flow has no incremental surface (sp/hc flows).</summary>
+    public string? IncrementalMode { get; set; }
+
+    /// <summary>The filter that bounded the read this run: the source <c>WHERE</c> fragment for a relational flow,
+    /// or the "files newer than ..." window for a file flow. Null for a full read.</summary>
+    public string? IncrementalFilter { get; set; }
+
+    /// <summary>The resolved watermark value the filter was built from (the result of the MAX/MIN probe), null on a
+    /// full read or when no prior watermark existed.</summary>
+    public string? IncrementalWatermark { get; set; }
+
+    /// <summary>Where the watermark came from, including the probed object: e.g. <c>target MAX [dbo].[Orders]</c>,
+    /// <c>run log</c>, or <c>source MIN [dbo].[Orders]</c>. Null when there is no watermark.</summary>
+    public string? IncrementalWatermarkSource { get; set; }
+}
+
+/// <summary>The modes a run group can be launched in, stored as a short lowercase string (same convention as
+/// <see cref="RunStatuses"/>).</summary>
+public static class RunGroupModes
+{
+    /// <summary>A flow and all of its transitive descendants (the legacy "Node" execution), run in wave order.</summary>
+    public const string Node = "node";
+
+    /// <summary>Every active flow in one batch / data source (the legacy "Batch" execution), run in wave order.</summary>
+    public const string Batch = "batch";
+}
+
+/// <summary>
+/// The header of one multi-flow execution: a Node run (a flow plus its descendants) or a Batch run (a whole data
+/// source), enqueued as a set of <see cref="CatalogRun"/> members that share this row's <see cref="GroupId"/>. The
+/// members carry the ordering (<see cref="CatalogRun.GroupWave"/>) and the live per-flow state; this row is the
+/// durable header the GUI shows and cancels as a unit, and the record of what was asked for (mode, anchor, size).
+/// </summary>
+public class CatalogRunGroup
+{
+    public Guid GroupId { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The group mode (see <see cref="RunGroupModes"/>): whether the set was derived from a flow's
+    /// descendants (<c>node</c>) or a whole batch (<c>batch</c>).</summary>
+    public string Mode { get; set; } = string.Empty;
+
+    /// <summary>What the set was expanded from: the anchor flow name for a Node run, the batch label for a Batch
+    /// run. Kept for display and audit ("Node run of Orders", "Batch run of Baatbooking").</summary>
+    public string Anchor { get; set; } = string.Empty;
+
+    /// <summary>How many flow members were enqueued in this group.</summary>
+    public int MemberCount { get; set; }
+
+    /// <summary>The git commit every member was pinned to at enqueue time (as resolved by the queue), or null when
+    /// the members run unpinned from the node's local copy.</summary>
+    public string? CommitSha { get; set; }
+
+    public DateTime EnqueuedUtc { get; set; }
 }
 
 /// <summary>
@@ -332,6 +407,11 @@ public class CatalogRunFile
 
     public string? Path { get; set; }
 
+    /// <summary>The source file's last-modified timestamp (a file flow's <c>processedFiles[].modified</c>); null
+    /// for an export output or a file whose store did not report one. Persisted so the pipeline-level file view
+    /// can sort by it and answer "what is the newest file this pipeline has seen".</summary>
+    public DateTimeOffset? Modified { get; set; }
+
     public long Rows { get; set; }
 
     public int Columns { get; set; }
@@ -384,6 +464,11 @@ public class CatalogRunStatement
     public string Step { get; set; } = string.Empty;
 
     public string Sql { get; set; } = string.Empty;
+
+    /// <summary>The error this exact statement raised, or null when it succeeded (or was never reached). Exactly
+    /// one statement per failed run carries this: the one whose execution threw. It lets the Statements view flag
+    /// the culprit instead of leaving every row looking identical.</summary>
+    public string? Error { get; set; }
 }
 
 /// <summary>One surrogate-key generation outcome of a run (ingestion flows): the IDENTITY-backed lookup-table

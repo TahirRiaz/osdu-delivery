@@ -79,6 +79,31 @@ pub struct CodeAction {
     pub edits: Vec<TextEdit>,
 }
 
+/// The semantic role of a token, for editor colouring beyond what a syntactic
+/// tokenizer can infer. These distinctions are census-driven: only the analysis
+/// engine knows whether a key is documented for this flow type or whether a
+/// value is a legal member of its key's enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticTokenKind {
+    /// A mapping key that resolves to a documented attribute or a valid
+    /// container/open-dictionary member for the document's flow type.
+    Property,
+    /// A mapping key that resolves to nothing in the census for this flow type
+    /// (the loader will ignore it).
+    UnknownKey,
+    /// A scalar value that is a legal member of its key's enum.
+    EnumMember,
+    /// A scalar value under an enum-typed key that is not one of the allowed
+    /// members.
+    InvalidValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticToken {
+    pub range: Range,
+    pub kind: SemanticTokenKind,
+}
+
 const KNOWN_FLOW_TYPES: &[&str] = &["ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
 // --- Rendering -------------------------------------------------------------
@@ -422,6 +447,56 @@ fn enum_ok(path: &str, value: &str, allowed: &[String]) -> bool {
     })
 }
 
+// --- Semantic tokens -------------------------------------------------------
+
+/// Classify each authored key and enum value into a [`SemanticTokenKind`] so an
+/// editor can colour them by census knowledge: documented vs unknown keys, and
+/// valid vs invalid enum members. Only tokens carrying information the syntactic
+/// tokenizer lacks are emitted (keys, and scalar values under enum-typed keys);
+/// strings, numbers, and structural punctuation are left to the base grammar.
+///
+/// The result is sorted by start position and free of overlaps (a key token and
+/// its value token never share a range), which is what the LSP delta encoding
+/// and Monaco's provider both require.
+pub fn semantic_tokens(doc: &FlowDocument) -> Vec<SemanticToken> {
+    // A document that failed to parse has no reliable node index; colouring a
+    // half-parsed tree would flag correct keys as unknown, so emit nothing.
+    if doc.parse_error.is_some() {
+        return Vec::new();
+    }
+
+    let census = Census::for_flow_type(doc.flow_type.as_deref());
+    let mut out = Vec::new();
+
+    for loc in &doc.locations {
+        if let Some(key_range) = loc.key_range {
+            let kind = match census.resolve(&loc.path) {
+                Resolution::Unknown => SemanticTokenKind::UnknownKey,
+                _ => SemanticTokenKind::Property,
+            };
+            out.push(SemanticToken { range: key_range, kind });
+        }
+
+        // Colour a scalar value only when its key declares an enum, so the
+        // colour tells the author whether the value is one of the allowed set.
+        if let (Resolution::Exact(entry), Some(value), NodeKind::Scalar) =
+            (census.resolve(&loc.path), &loc.value, loc.value_kind)
+        {
+            if let Some(values) = &entry.enum_values {
+                let kind = if enum_ok(&entry.path, value, values) {
+                    SemanticTokenKind::EnumMember
+                } else {
+                    SemanticTokenKind::InvalidValue
+                };
+                out.push(SemanticToken { range: loc.value_range, kind });
+            }
+        }
+    }
+
+    out.sort_by_key(|t| (t.range.start.line, t.range.start.character));
+    out
+}
+
 // --- Document symbols ------------------------------------------------------
 
 pub fn document_symbols(doc: &FlowDocument) -> Vec<DocumentSymbol> {
@@ -576,5 +651,50 @@ mod tests {
         let doc = FlowDocument::parse(src);
         let items = completion(&doc, Position { line: 2, character: 2 });
         assert!(items.iter().any(|i| i.label == "type"));
+    }
+
+    #[test]
+    fn semantic_tokens_classify_keys_and_enum_values() {
+        // `load.mode: append` is a valid enum member; `bogusKey` is unknown.
+        let src = "name: demo\nload:\n  mode: append\nbogusKey: 1\n";
+        let doc = FlowDocument::parse(src);
+        let toks = semantic_tokens(&doc);
+
+        // The unknown root key is flagged.
+        let bogus = toks
+            .iter()
+            .find(|t| t.range.start.line == 3)
+            .expect("token on the bogusKey line");
+        assert_eq!(bogus.kind, SemanticTokenKind::UnknownKey);
+
+        // `append` on the mode line is a valid enum member.
+        let mode_value = toks
+            .iter()
+            .find(|t| t.kind == SemanticTokenKind::EnumMember)
+            .expect("an enum-member value token");
+        assert_eq!(mode_value.range.start.line, 2);
+
+        // Every documented key (name, load, mode) is a Property.
+        assert!(toks.iter().any(|t| t.kind == SemanticTokenKind::Property));
+        // Tokens are sorted by position for delta encoding.
+        assert!(toks.windows(2).all(|w| {
+            (w[0].range.start.line, w[0].range.start.character)
+                <= (w[1].range.start.line, w[1].range.start.character)
+        }));
+    }
+
+    #[test]
+    fn semantic_tokens_flag_invalid_enum_value() {
+        let src = "name: demo\nload:\n  mode: nonsense\n";
+        let doc = FlowDocument::parse(src);
+        let toks = semantic_tokens(&doc);
+        assert!(toks.iter().any(|t| t.kind == SemanticTokenKind::InvalidValue));
+    }
+
+    #[test]
+    fn semantic_tokens_empty_on_parse_error() {
+        let doc = FlowDocument::parse("name: demo\n  bad: : :\n:\n");
+        assert!(doc.parse_error.is_some());
+        assert!(semantic_tokens(&doc).is_empty());
     }
 }

@@ -9,12 +9,15 @@ import Dialog from "@mui/material/Dialog";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import Link from "@mui/material/Link";
+import Paper from "@mui/material/Paper";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
+import { alpha, useTheme } from "@mui/material/styles";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import type {
   RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey,
 } from "../../api/types";
@@ -30,12 +33,27 @@ import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
+import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
 import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
 
 /** A compact UTC stamp for a backfill window bound (the API sends UTC timestamps). */
 function fmtBound(value: string): string {
   return parseUtc(value).toISOString().replace("T", " ").replace(/:\d\d\.\d+Z$/, "");
+}
+
+/** The chip color for an incremental mode: an incremental read is the notable case (primary), a full read is
+ * neutral, and the operator-driven backfill / init-load modes echo the backfill banner's warning tone. */
+function incrementalModeColor(mode: string): "primary" | "default" | "warning" {
+  if (mode === "incremental") {
+    return "primary";
+  }
+
+  if (mode === "backfill" || mode === "init-load") {
+    return "warning";
+  }
+
+  return "default";
 }
 
 function YesNo({ value }: { value: boolean }) {
@@ -46,25 +64,37 @@ function YesNo({ value }: { value: boolean }) {
 
 const statementColumns: Column<RunStatement>[] = [
   { id: "ordinal", header: "Ordinal", width: 90, render: (row) => row.ordinal },
-  { id: "step", header: "Step", width: 200, render: (row) => row.step },
+  {
+    id: "step",
+    header: "Step",
+    width: 220,
+    render: (row) => (row.error
+      ? (
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          <ErrorOutlineIcon fontSize="small" color="error" />
+          <Typography component="span" variant="body2" color="error" fontWeight={600}>{row.step}</Typography>
+        </Stack>
+      )
+      : row.step),
+  },
   {
     id: "sql",
     header: "SQL",
-    render: (row) => <Mono>{row.sql.length > 120 ? `${row.sql.slice(0, 120)}…` : row.sql}</Mono>,
+    render: (row) => <TruncatedText text={row.sql} mono maxWidth={640} />,
   },
 ];
 
 const assertionColumns: Column<RunAssertion>[] = [
   { id: "name", header: "Name", render: (row) => row.name },
   { id: "result", header: "Result", render: (row) => row.result },
-  { id: "assertedValue", header: "Asserted value", render: (row) => row.assertedValue },
+  { id: "assertedValue", header: "Asserted value", render: (row) => <TruncatedText text={row.assertedValue} maxWidth={280} /> },
   { id: "evaluated", header: "Evaluated", render: (row) => <YesNo value={row.evaluated} /> },
-  { id: "error", header: "Error", render: (row) => row.error ?? "-" },
+  { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
 ];
 
 const fileColumns: Column<RunFile>[] = [
   { id: "name", header: "Name", render: (row) => row.name },
-  { id: "path", header: "Path", render: (row) => row.path ?? "-" },
+  { id: "path", header: "Path", render: (row) => <TruncatedText text={row.path} mono maxWidth={520} /> },
   { id: "rows", header: "Rows", align: "right", render: (row) => row.rows },
   { id: "columns", header: "Columns", align: "right", render: (row) => row.columns },
   { id: "size", header: "Size", align: "right", render: (row) => formatBytes(row.sizeBytes) },
@@ -77,7 +107,7 @@ const surrogateKeyColumns: Column<RunSurrogateKey>[] = [
   { id: "rowsStamped", header: "Rows stamped", align: "right", render: (row) => row.rowsStamped },
   { id: "isRemote", header: "Remote", render: (row) => <YesNo value={row.isRemote} /> },
   { id: "executed", header: "Executed", render: (row) => <YesNo value={row.executed} /> },
-  { id: "error", header: "Error", render: (row) => row.error ?? "-" },
+  { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
 ];
 
 const healthMetricColumns: Column<RunHealthCheckMetric>[] = [
@@ -89,7 +119,7 @@ const healthMetricColumns: Column<RunHealthCheckMetric>[] = [
   { id: "levelShifts", header: "Level shifts", align: "right", render: (row) => row.levelShifts },
   { id: "modelTrained", header: "Model trained", render: (row) => <YesNo value={row.modelTrained} /> },
   { id: "modelTrainer", header: "Trainer", render: (row) => row.modelTrainer ?? "-" },
-  { id: "error", header: "Error", render: (row) => row.error ?? "-" },
+  { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
 ];
 
 /** Everything the API recorded about one run: live header while active, detail tables once results land. */
@@ -108,6 +138,9 @@ function RunDetailContent({ runId }: { runId: string }) {
   const [tab, setTab] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [statement, setStatement] = useState<RunStatement | null>(null);
+  const theme = useTheme();
+  // A soft red wash marking the one statement that threw (see rowSx on the Statements table below).
+  const failedRowStyle = { backgroundColor: alpha(theme.palette.error.main, 0.14) };
 
   const query = useQuery({
     queryKey: ["runs", runId],
@@ -198,6 +231,13 @@ function RunDetailContent({ runId }: { runId: string }) {
             {run.pipelineId}
           </Link>
         </DetailPair>
+        {run.groupId && (
+          <DetailPair label="Run group">
+            <Link component={RouterLink} to={`/runs/groups/${run.groupId}`} data-testid="run-group-link">
+              {run.groupId}
+            </Link>
+          </DetailPair>
+        )}
         <DetailPair label="Batch">{run.batch}</DetailPair>
         <DetailPair label="Step">{run.wave >= 0 ? run.wave : "-"}</DetailPair>
         <DetailPair label="Enqueued"><RelativeTime value={run.enqueuedUtc} /></DetailPair>
@@ -226,6 +266,15 @@ function RunDetailContent({ runId }: { runId: string }) {
         <Alert severity="error" data-testid="run-error">{run.error}</Alert>
       )}
 
+      {run.status === "failed" && run.failedStatementSql !== null && (
+        <Paper variant="outlined" sx={{ p: 1.5, borderColor: "error.main" }} data-testid="run-failed-statement">
+          <Typography variant="subtitle2" color="error" gutterBottom>
+            Failing statement {run.failedStatementOrdinal}: {run.failedStatementStep}
+          </Typography>
+          <CodeView value={run.failedStatementSql} language="sql" data-testid="run-error-sql" />
+        </Paper>
+      )}
+
       {(run.fullLoad || run.backfillFrom || run.filePattern) && (
         <Alert severity="info" icon={false} data-testid="run-backfill">
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
@@ -242,6 +291,26 @@ function RunDetailContent({ runId }: { runId: string }) {
             {run.filePattern && <Chip size="small" label={`files '${run.filePattern}'`} />}
           </Stack>
         </Alert>
+      )}
+
+      {run.incrementalMode && (
+        <Paper variant="outlined" sx={{ p: 1.5 }} data-testid="run-incremental">
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+            <Typography variant="subtitle2">Incremental load</Typography>
+            <Chip size="small" label={run.incrementalMode} color={incrementalModeColor(run.incrementalMode)} />
+          </Stack>
+          <Stack spacing={0.75}>
+            {run.incrementalFilter && (
+              <DetailPair label="Filter"><Mono>{run.incrementalFilter}</Mono></DetailPair>
+            )}
+            {run.incrementalWatermark && (
+              <DetailPair label="Watermark"><Mono>{run.incrementalWatermark}</Mono></DetailPair>
+            )}
+            {run.incrementalWatermarkSource && (
+              <DetailPair label="Watermark source"><Mono>{run.incrementalWatermarkSource}</Mono></DetailPair>
+            )}
+          </Stack>
+        </Paper>
       )}
 
       <Tabs
@@ -265,7 +334,13 @@ function RunDetailContent({ runId }: { runId: string }) {
           columns={statementColumns}
           rowKey={(row) => row.id}
           onRowClick={(row) => setStatement(row)}
-          emptyMessage="No statements were recorded for this run."
+          // While the run is executing, the node streams each statement into the catalog as it runs, so poll to
+          // show them live; polling stops once the run reaches a terminal state.
+          pollMs={run.status === "running" ? 3000 : undefined}
+          rowSx={(row) => (row.error ? failedRowStyle : undefined)}
+          emptyMessage={run.status === "running"
+            ? "Statements will appear here as the run executes."
+            : "No statements were recorded for this run."}
           data-testid="statements-table"
         />
       )}
@@ -321,6 +396,9 @@ function RunDetailContent({ runId }: { runId: string }) {
           {statement ? `Statement ${statement.ordinal}: ${statement.step}` : ""}
         </DialogTitle>
         <DialogContent>
+          {statement?.error && (
+            <Alert severity="error" sx={{ mb: 2 }} data-testid="statement-error">{statement.error}</Alert>
+          )}
           {statement && <CodeView value={statement.sql} language="sql" data-testid="statement-sql" />}
         </DialogContent>
       </Dialog>

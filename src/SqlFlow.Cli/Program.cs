@@ -53,7 +53,7 @@ internal static class Program
         // 'healthcheck' addresses its table through --source/--object, 'auth' is a pure environment check, and 'db'
         // takes a subcommand (migrate/sync/status); none take a pipeline file.
         var command = positional.Length > 0 ? positional[0].ToLowerInvariant() : string.Empty;
-        var needsFile = command is not ("healthcheck" or "auth" or "db" or "detect-unique-key");
+        var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "detect-unique-key");
         if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
         {
             PrintUsage();
@@ -178,9 +178,20 @@ internal static class Program
                 {
                     var json = args.Contains("--json");
                     var loaded = DocumentLoader.Load(documents, file, Console.Error.WriteLine);
+
+                    // Ctrl+C aborts the in-flight run rather than killing the process: intercept it and trip the token
+                    // the engine already threads into every SqlCommand, so the running statement is cancelled and its
+                    // transaction rolled back, then report a clean interrupted exit (130, the conventional SIGINT code).
+                    using var cts = new CancellationTokenSource();
+                    Console.CancelKeyPress += (_, eventArgs) =>
+                    {
+                        eventArgs.Cancel = true;
+                        cts.Cancel();
+                    };
+
                     if (loaded is BatchFlowDocument batch)
                     {
-                        return await RunBatchAsync(provider, batch.Document.Flow, file, args, json).ConfigureAwait(false);
+                        return await RunBatchAsync(provider, batch.Document.Flow, file, args, json, cts.Token).ConfigureAwait(false);
                     }
 
                     RunParameters parameters;
@@ -204,8 +215,18 @@ internal static class Program
                         Parameters = parameters,
                     };
 
-                    var exec = await provider.GetRequiredService<DocumentExecutor>()
-                        .ExecuteAsync(loaded, file, options).ConfigureAwait(false);
+                    DocumentExecutionResult exec;
+                    try
+                    {
+                        exec = await provider.GetRequiredService<DocumentExecutor>()
+                            .ExecuteAsync(loaded, file, options, cts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                    {
+                        Console.Error.WriteLine(
+                            "CANCELLED  the run was interrupted (Ctrl+C); the in-flight statement was aborted and rolled back.");
+                        return 130;
+                    }
 
                     if (json)
                     {
@@ -339,6 +360,9 @@ internal static class Program
                 case "worker":
                     return await RunWorkerAsync(provider, args, verbose).ConfigureAwait(false);
 
+                case "runs":
+                    return await RunRunsAsync(provider, positional, args).ConfigureAwait(false);
+
                 default:
                     Console.Error.WriteLine($"Unknown command '{command}'.");
                     PrintUsage();
@@ -466,12 +490,88 @@ internal static class Program
     }
 
     /// <summary>
+    /// Operations against runs in the shadow catalog's durable queue: <c>sqlflow runs cancel &lt;runId&gt; [--db
+    /// &lt;ref&gt;]</c>. Cancelling honors the run's lifecycle exactly as the control plane does (it shares
+    /// <see cref="RunQueueStore.CancelAsync"/>): a still-queued run is dequeued outright; a run already executing has a
+    /// durable cancel request stamped for its owning node to observe, abort the in-flight statement, and record
+    /// cancelled. Like the <c>worker</c> and <c>db</c> verbs it talks to the catalog directly (no control-plane HTTP
+    /// hop), so it works from any host that can reach the catalog database; the connection is a reference (default
+    /// <c>${env:SQLFLOW_CATALOG_DB}</c>), never an embedded secret.
+    /// </summary>
+    private static async Task<int> RunRunsAsync(IServiceProvider provider, string[] positional, string[] args)
+    {
+        var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+        if (sub != "cancel")
+        {
+            Console.Error.WriteLine("ERROR  'runs' supports: cancel <runId>. Usage: sqlflow runs cancel <runId> [--db <conn-ref>]");
+            return 1;
+        }
+
+        if (positional.Length < 3 || !Guid.TryParse(positional[2], out var runId))
+        {
+            Console.Error.WriteLine("ERROR  'runs cancel' requires a run id: sqlflow runs cancel <runId> [--db <conn-ref>]");
+            return 1;
+        }
+
+        var reference = GetOption(args, "--db") ?? "${env:SQLFLOW_CATALOG_DB}";
+        if (SecretHygiene.LooksLikeEmbeddedSecret(reference))
+        {
+            Console.Error.WriteLine(
+                "WARN  --db embeds a credential on the command line (it lands in shell history). Prefer the canonical " +
+                "${env:SQLFLOW_CATALOG_DB}, an explicit ${env:NAME} or ${keyvault:vault/secret} reference, with local " +
+                "values in the git-ignored .sqlflow/env file.");
+        }
+
+        string connectionString;
+        try
+        {
+            connectionString = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+
+        // EF Core throws SqlException / InvalidOperationException (not SqlFlowException) on a bad connection or
+        // permission; catch them here so the verb reports a clean, redacted message instead of a stack trace.
+        try
+        {
+            await using var db = CatalogDatabase.Create(connectionString);
+            var outcome = await RunQueueStore.CancelAsync(db, runId, DateTime.UtcNow).ConfigureAwait(false);
+            switch (outcome)
+            {
+                case CancelOutcome.Cancelled:
+                    Console.WriteLine($"OK   run {runId} was queued and is now cancelled.");
+                    return 0;
+                case CancelOutcome.CancelRequested:
+                    Console.WriteLine(
+                        $"OK   run {runId} is running; cancellation requested. Its node will abort the in-flight statement " +
+                        "and record it cancelled.");
+                    return 0;
+                case CancelOutcome.NotFound:
+                    Console.Error.WriteLine($"ERROR  no run '{runId}'.");
+                    return 1;
+                default:
+                    Console.Error.WriteLine($"ERROR  run '{runId}' has already finished and cannot be cancelled.");
+                    return 1;
+            }
+        }
+        catch (Exception ex) when (ex is not SqlFlowException)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+    }
+
+    /// <summary>
     /// The shadow-catalog (database mode) operations: <c>sqlflow db migrate|sync|status [path] [--db &lt;ref&gt;]</c>.
     /// The catalog is an EF-managed read-model of the git/YAML estate and the on-disk run history; git stays the
-    /// source of truth. <c>migrate</c> bootstraps an empty database and upgrades an existing one to the current
-    /// schema version; <c>sync</c> projects the estate + run.json artifacts into it (migrating first); <c>status</c>
-    /// reports applied vs pending migrations. The connection is a reference (default <c>${env:SQLFLOW_CATALOG_DB}</c>),
-    /// never an embedded secret.
+    /// source of truth. <c>migrate</c> upgrades an existing catalog to the current schema version, and with
+    /// <c>--create</c> provisions a new one (create the database, or initialise the catalog in an empty database);
+    /// without <c>--create</c> a missing or non-catalog database is refused. <c>sync</c> projects the estate +
+    /// run.json artifacts into an existing catalog (upgrading it first); <c>status</c> reports applied vs pending
+    /// migrations. The connection is a reference (default <c>${env:SQLFLOW_CATALOG_DB}</c>), never an embedded secret.
     /// </summary>
     private static async Task<int> RunDbAsync(IServiceProvider provider, string[] positional, string[] args)
     {
@@ -505,7 +605,18 @@ internal static class Program
             {
                 case "migrate":
                 {
-                    await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+                    // Creating the database (or initialising the catalog in an empty one) requires the explicit
+                    // --create flag, so a mistyped --db can never silently provision the wrong database. Without
+                    // it, migrate upgrades an EXISTING catalog only and refuses anything else.
+                    if (args.Contains("--create"))
+                    {
+                        await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
+                    }
+
                     var (applied, pending) = await CatalogDatabase.StatusAsync(connectionString).ConfigureAwait(false);
                     Console.WriteLine(
                         $"OK   catalog database current at '{(applied.Count > 0 ? applied[^1] : "(none)")}' " +
@@ -535,8 +646,9 @@ internal static class Program
                     // --connect adds the derived lineage tier: object metadata is fetched from the live database
                     // (catalog + sys.sql_modules), which links flows across repos through the shared objects.
                     var connect = args.Contains("--connect");
-                    // Bootstrap/upgrade the schema first, so a sync against a fresh server just works.
-                    await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+                    // Upgrade an existing catalog's schema first, so a sync just works. Never creates: point at an
+                    // existing catalog, or provision one with 'sqlflow db migrate --create'.
+                    await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
                     await using var context = CatalogDatabase.Create(connectionString);
                     var result = await new CatalogSync().SyncAsync(
                         context, directory, repoName, repoUrl, DateTime.UtcNow,
@@ -560,7 +672,7 @@ internal static class Program
                 }
 
                 default:
-                    Console.Error.WriteLine("Usage: sqlflow db <migrate|sync|status> [path] [--db <conn-ref>]");
+                    Console.Error.WriteLine("Usage: sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--create]");
                     return 1;
             }
         }
@@ -621,8 +733,10 @@ internal static class Program
             var repoUrl = GetOption(args, "--repo-url");
 
             var connectionString = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
-            // Bootstrap/upgrade the schema once, so the first configured run just works.
-            await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+            // Upgrade an existing catalog's schema once, so a configured run's write-back just works. Never
+            // creates: a mistyped SQLFLOW_CATALOG_DB must not silently conjure a catalog during a run. (This whole
+            // block is best-effort; a refusal surfaces as a warning and never changes the run's exit code.)
+            await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
 
             var sync = new CatalogSync();
             var recorded = 0;
@@ -1584,7 +1698,7 @@ internal static class Program
             Usage:
               sqlflow validate <pipeline.yaml>   Validate a pipeline definition
               sqlflow plan     <pipeline.yaml>   Show the SQL that would run (changes nothing; file flows)
-              sqlflow run      <pipeline.yaml>   Execute the pipeline
+              sqlflow run      <pipeline.yaml>   Execute the pipeline (Ctrl+C aborts the in-flight statement and rolls back)
                                [--full]          Backfill: ignore the watermark, read everything the flow selects
                                [--from <date>]   Backfill: externally-bounded window low bound (file date /
                                                  incremental date column / export or init-load chunk plan)
@@ -1627,18 +1741,22 @@ internal static class Program
                                                  acquires a token for the scope (default storage), through the one
                                                  credential factory Key Vault, invoke, and DuckDB cloud reads all
                                                  use. Exit 0 on a token, 1 on failure.
-              sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--repo name] [--repo-url url] [--connect]
+              sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--create] [--repo name] [--repo-url url] [--connect]
                                                  Database mode: the EF-managed shadow catalog (a read-model of the
                                                  git/YAML estate + on-disk run history + lineage, for the GUI).
                                                  Each YAML flow is mapped into a row (kind, source/target, the full
                                                  definition as queryable JSON) and lineage objects/edges, so you can
-                                                 query across files and repos. 'migrate' bootstraps an empty database
-                                                 and upgrades an existing one to the current schema version; 'sync'
-                                                 projects the estate, run.json detail, and lineage under [path] into
-                                                 it (migrating first), attributed to --repo (default: the folder
-                                                 name); --connect adds the derived lineage tier (fetches object
-                                                 metadata from the live database, linking flows across repos through
-                                                 shared objects); 'status' lists applied vs pending migrations.
+                                                 query across files and repos. 'migrate' upgrades an EXISTING catalog
+                                                 to the current schema version; add --create to provision a new one
+                                                 (create the database, or initialise the catalog in an empty
+                                                 database) - without --create a missing or non-catalog database is
+                                                 refused, so a mistyped --db never provisions the wrong (possibly
+                                                 production) server; 'sync' projects the estate, run.json detail, and
+                                                 lineage under [path] into it (upgrading an existing catalog first),
+                                                 attributed to --repo (default: the folder name); --connect adds the
+                                                 derived lineage tier (fetches object metadata from the live
+                                                 database, linking flows across repos through shared objects);
+                                                 'status' lists applied vs pending migrations.
                                                  --db defaults to ${env:SQLFLOW_CATALOG_DB}.
               sqlflow worker   [--db <conn-ref>] [--poll-seconds N] [--pool a,b]
                                                  Run as a self-hosted compute node: drain the shadow catalog's
@@ -1648,6 +1766,13 @@ internal static class Program
                                                  number of workers safe at once; runs until Ctrl+C. --pool sets the
                                                  pools this node serves (it always drains untargeted runs; with
                                                  --pool it also drains runs routed to those pools). --db defaults to
+                                                 ${env:SQLFLOW_CATALOG_DB}.
+              sqlflow runs cancel <runId> [--db <conn-ref>]
+                                                 Cancel a run in the shadow catalog's durable queue. A still-queued run
+                                                 is dequeued outright; a run already executing has a cancel request
+                                                 stamped that its node observes to abort the in-flight statement and
+                                                 record it cancelled. Talks to the catalog directly (like 'worker'), so
+                                                 it works from any host that can reach it. --db defaults to
                                                  ${env:SQLFLOW_CATALOG_DB}.
 
             Six pipeline kinds share validate/run, discriminated by the document's flowType key:
@@ -2138,7 +2263,8 @@ internal static class Program
     /// <summary>Runs a batch document: the orchestrator computes lineage waves over the members and runs them
     /// through the same <see cref="DocumentExecutor"/> a direct run uses. Writes the canonical batch artifacts
     /// (run.json, run.log, batch.json) and prints the per-wave outcome.</summary>
-    private static async Task<int> RunBatchAsync(IServiceProvider provider, BatchFlow flow, string file, string[] args, bool json)
+    private static async Task<int> RunBatchAsync(
+        IServiceProvider provider, BatchFlow flow, string file, string[] args, bool json, CancellationToken ct = default)
     {
         RunParameters parameters;
         try
@@ -2163,9 +2289,19 @@ internal static class Program
             Parameters = parameters,
         };
 
-        var result = await orchestrator
-            .RunAsync(flow, file, provider.GetRequiredService<ISecretResolver>(), memberOptions)
-            .ConfigureAwait(false);
+        BatchRunResult result;
+        try
+        {
+            result = await orchestrator
+                .RunAsync(flow, file, provider.GetRequiredService<ISecretResolver>(), memberOptions, ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Console.Error.WriteLine(
+                "CANCELLED  the batch was interrupted (Ctrl+C); the in-flight member's statement was aborted and rolled back.");
+            return 130;
+        }
 
         var runDirectory = RunHistory.Write(file, flow.SysAlias, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {

@@ -21,7 +21,7 @@ import { RunStatusBadge } from "../../components/StatusBadge";
 import { formatDurationSeconds } from "../../lib/time";
 import { TriggerRunDialog } from "./TriggerRunDialog";
 
-const statuses: RunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled"];
+const statuses: RunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled", "skipped"];
 const kinds = ["all", "file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
 const baseColumns: Column<RunSummary>[] = [
@@ -108,13 +108,27 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
 
 // The batch-report layout carried over from classic SQLFlow: each pipeline's LAST run clusters under its batch,
 // then under the lineage step, so the grouped view answers "what failed, what needs fixing" at a glance. Full
-// run history lives in the flat view and on the pipeline detail page.
-const batchGrouping: TableGrouping<RunSummary> = {
+// run history lives in the flat view and on the pipeline detail page. The "Run batch" action launches the whole
+// data source (every flow in the batch, in dependency order) as one run group.
+function makeBatchGrouping(onRunBatch: (repoId: string | null, batch: string) => void): TableGrouping<RunSummary> {
+  return {
   groupKey: (row) => row.batch,
   renderGroupHeader: (rows) => (
     <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="batch-group-header">
       <Typography variant="body2" sx={{ fontWeight: 700 }}>Batch: {rows[0].batch}</Typography>
       <GroupStatsInline rows={rows} />
+      <Button
+        size="small"
+        variant="outlined"
+        sx={{ ml: "auto" }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onRunBatch(rows[0].repoId, rows[0].batch);
+        }}
+        data-testid="run-batch"
+      >
+        Run batch
+      </Button>
     </Stack>
   ),
   subKey: (row) => row.wave,
@@ -126,7 +140,8 @@ const batchGrouping: TableGrouping<RunSummary> = {
       <GroupStatsInline rows={rows} />
     </Stack>
   ),
-};
+  };
+}
 
 /** The run inbox: live-polled list with status/flow/kind/batch filters and the entry point for triggering runs.
  * Grouped by batch (the default) it is a status board: each pipeline's latest run under its batch and lineage
@@ -134,6 +149,7 @@ const batchGrouping: TableGrouping<RunSummary> = {
 export default function RunsPage() {
   const navigate = useNavigate();
   const [triggerOpen, setTriggerOpen] = useState(false);
+  const [batchRun, setBatchRun] = useState<{ repoId: string | null; batch: string } | null>(null);
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [kind, setKind] = useState("all");
   const [flowNameInput, setFlowNameInput] = useState("");
@@ -232,11 +248,20 @@ export default function RunsPage() {
         onRowClick={(row) => navigate(`/runs/${row.runId}`)}
         pollMs={5000}
         emptyMessage="No runs match the current filters."
-        grouping={groupByBatch ? batchGrouping : undefined}
+        grouping={groupByBatch
+          ? makeBatchGrouping((repoId, batch) => setBatchRun({ repoId, batch }))
+          : undefined}
         data-testid="runs-table"
       />
 
       <TriggerRunDialog open={triggerOpen} onClose={() => setTriggerOpen(false)} />
+      <TriggerRunDialog
+        open={batchRun !== null}
+        onClose={() => setBatchRun(null)}
+        repoId={batchRun?.repoId ?? undefined}
+        batch={batchRun?.batch}
+        scope="batch"
+      />
     </Page>
   );
 }

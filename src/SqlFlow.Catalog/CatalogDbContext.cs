@@ -22,6 +22,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRun> Runs => Set<CatalogRun>();
 
+    public DbSet<CatalogRunGroup> RunGroups => Set<CatalogRunGroup>();
+
     public DbSet<CatalogObject> Objects => Set<CatalogObject>();
 
     public DbSet<CatalogLineageEdge> LineageEdges => Set<CatalogLineageEdge>();
@@ -101,6 +103,10 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.CommitSha).HasMaxLength(64);
             entity.Property(r => r.FilePattern).HasMaxLength(200);
             entity.Property(r => r.Host).HasMaxLength(256);
+            entity.Property(r => r.IncrementalMode).HasMaxLength(16);
+            entity.Property(r => r.IncrementalFilter).HasMaxLength(2048);
+            entity.Property(r => r.IncrementalWatermark).HasMaxLength(512);
+            entity.Property(r => r.IncrementalWatermarkSource).HasMaxLength(256);
             // PipelineId is a soft link (no FK): a run can outlive its pipeline being removed from git, so the
             // history stays even when the Pipeline row is gone. The GUI left-joins on it; it is indexed for that.
             entity.HasIndex(r => r.PipelineId);
@@ -114,6 +120,21 @@ public sealed class CatalogDbContext : DbContext
             // The latest-run board resolves each pipeline's newest run (top-1 per pipeline by WrittenUtc, then
             // RunId): this composite serves that as a per-pipeline seek in exactly the query's order.
             entity.HasIndex(r => new { r.PipelineId, r.WrittenUtc, r.RunId }).IsDescending(false, true, true);
+            // The group-gating claim subquery asks "does this group have an unfinished member in a lower wave":
+            // WHERE GroupId = @g AND GroupWave < @w AND Status IN ('queued','running'). This composite makes that
+            // a seek, and also serves the group-detail board (a group's members by wave) and the groupId filter.
+            entity.HasIndex(r => new { r.GroupId, r.GroupWave, r.Status });
+        });
+
+        modelBuilder.Entity<CatalogRunGroup>(entity =>
+        {
+            entity.ToTable("RunGroup");
+            entity.HasKey(g => g.GroupId);
+            entity.Property(g => g.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(g => g.Anchor).HasMaxLength(400).IsRequired();
+            entity.Property(g => g.CommitSha).HasMaxLength(64);
+            // A repo's run groups, newest first, for the group board.
+            entity.HasIndex(g => new { g.RepoId, g.EnqueuedUtc });
         });
 
         modelBuilder.Entity<CatalogObject>(entity =>
@@ -191,6 +212,8 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.Step).HasMaxLength(128).IsRequired();
             // Sql is nvarchar(max): a generated statement (a CREATE TABLE, a MERGE) has no useful length bound.
             entity.Property(s => s.Sql).IsRequired();
+            // Error is nvarchar(max), null: only the one statement that threw carries it, holding the raw engine
+            // error (a SqlException message can be long), so no length bound applies.
             entity.HasIndex(s => s.RunId);
         });
 

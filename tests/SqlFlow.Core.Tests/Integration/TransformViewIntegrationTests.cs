@@ -74,6 +74,15 @@ public sealed class TransformViewIntegrationTests
             Assert.Contains(result.TransformView.Columns, c => c.ColumnName == "vehicle_type_clean");
             Assert.Contains("CREATE OR ALTER VIEW [dbo].[" + view + "]", result.TransformView.Ddl, StringComparison.Ordinal);
 
+            // The run's statement trace records every SQL statement it executed, in order, so the node streams
+            // them live and the Statements view is populated at completion. The first run creates the table, so it
+            // carries the schema DDL AND the view refresh; the traced view statement is exactly the view DDL, and
+            // sequences are contiguous from 1.
+            Assert.Contains(result.SqlTrace, t => t.Step == "schema.apply-ddl");
+            var viewEntry = Assert.Single(result.SqlTrace, t => t.Step == "transform.view");
+            Assert.Equal(result.TransformView.Ddl, viewEntry.Sql);
+            Assert.Equal(Enumerable.Range(1, result.SqlTrace.Count), result.SqlTrace.Select(e => e.Sequence));
+
             // The view exists, is queryable, and carries the typed projection: the declared cast renames and
             // types vehicle_type, and inference types the numeric/date columns the author never named.
             Assert.Equal(3L, await IntegrationDb.ScalarAsync<long>(cs, $"SELECT COUNT_BIG(*) FROM [dbo].[{view}];"));
@@ -88,6 +97,12 @@ public sealed class TransformViewIntegrationTests
             var second = await IntegrationDb.RealRunner().RunAsync(flow);
             Assert.Equal(FlowStatus.Success, second.Status);
             Assert.NotNull(second.TransformView);
+
+            // The re-run changes no schema (the table already exists), so it executes no schema DDL - exactly the
+            // case that previously left the Statements view empty. The view refresh still runs every time, so the
+            // trace is never empty: it carries the transform.view statement.
+            Assert.DoesNotContain(second.SqlTrace, t => t.Step == "schema.apply-ddl");
+            Assert.Contains(second.SqlTrace, t => t.Step == "transform.view");
         }
         finally
         {

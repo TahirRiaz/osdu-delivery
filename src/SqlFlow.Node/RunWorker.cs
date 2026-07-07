@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
+using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Execution;
@@ -313,6 +314,7 @@ public sealed partial class RunWorker
                     select new
                     {
                         r.RepoId,
+                        r.PipelineId,
                         r.FlowName,
                         r.CommitSha,
                         r.FullLoad,
@@ -410,11 +412,52 @@ public sealed partial class RunWorker
                 LogParameters(runId, parameters.Describe());
             }
 
-            var options = new DocumentExecutionOptions { RunId = runId, Echo = null, Parameters = parameters };
-            // The executor runs under the per-run token: an operator cancel aborts the in-flight statement here (and
-            // only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel never
-            // corrupts the completion write.
-            var exec = await _executor.ExecuteAsync(document, flowFile, options, runCt).ConfigureAwait(false);
+            // Downstream-anchored watermark (the default for every incremental flow): the flow reads its
+            // high-water MAX from the next durable table in the lineage chain (the ods/silver table it feeds), not
+            // its own target, so deleting rows there re-opens the window and the source is re-pulled. Bronze is
+            // driven by what silver holds. The downstream table is resolved here, where the catalog's lineage graph
+            // is available; the engine tier has no catalog, so this is the single point that can compute it. A null
+            // result (no lineage, an ambiguous chain, or a direct CLI run) leaves the probe on the flow's own
+            // target. Both flow kinds that carry an incremental watermark participate: file flows (FlowRunner) and
+            // relational ingestion flows (IngestionFlowRunner).
+            var (incrementalWatermark, ownSchema, ownName) = document switch
+            {
+                IngestionFlowDocument ing when ing.Document.Flow.Incremental.IsIncremental
+                    => (true, ing.Document.Flow.Target.Table.Schema, ing.Document.Flow.Target.Table.Name),
+                FileFlowDocument fileDoc when fileDoc.Flow.Incremental is { FullLoad: false }
+                    => (true, fileDoc.Flow.Target.Schema, fileDoc.Flow.Target.Table),
+                _ => (false, string.Empty, string.Empty),
+            };
+
+            RelationalObject? watermarkSourceTable = null;
+            if (incrementalWatermark)
+            {
+                watermarkSourceTable = await ResolveDownstreamWatermarkTableAsync(
+                    catalog, repoId, run.PipelineId, ownSchema, ownName, ct).ConfigureAwait(false);
+                if (watermarkSourceTable is not null)
+                {
+                    LogDownstreamWatermark(runId, watermarkSourceTable.QualifiedName);
+                }
+            }
+
+            // The node streams the run's generated SQL into the catalog live: as each statement executes, a
+            // CatalogRunStatement row is written on the sink's own scope/context, so the Statements view updates
+            // while the run is still running and the trace survives even a mid-run crash. The sink is disposed at
+            // the end of this block (draining every queued write) BEFORE the completion write-back below, which
+            // deletes these live rows and re-projects them from run.json: the artifact stays authoritative.
+            DocumentExecutionResult exec;
+            await using (var statementSink = new CatalogRunStatementSink(_services, runId, repoId, _logger))
+            {
+                var options = new DocumentExecutionOptions
+                {
+                    RunId = runId, Echo = null, Parameters = parameters, StatementSink = statementSink,
+                    WatermarkSourceTable = watermarkSourceTable,
+                };
+                // The executor runs under the per-run token: an operator cancel aborts the in-flight statement here
+                // (and only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel
+                // never corrupts the completion write.
+                exec = await _executor.ExecuteAsync(document, flowFile, options, runCt).ConfigureAwait(false);
+            }
 
             var now = _clock.GetUtcNow().UtcDateTime;
             if (exec.RunDirectory is { } runDirectory)
@@ -460,6 +503,71 @@ public sealed partial class RunWorker
         }
     }
 
+    /// <summary>
+    /// Resolves the next durable table downstream of this flow in the lineage chain, for downstream-anchored
+    /// watermarking (incremental.watermarkFromDownstream). It walks the persisted lineage the sync already
+    /// computed: the flow-level dependencies name the flows that consume this one (they read an object it
+    /// writes/creates), and each of those flows' Writes/Creates edges name the durable tables they populate. The
+    /// flow's own target is excluded (a downstream flow writing back to it is not a "next" table). Anchoring is
+    /// applied only when exactly one such table resolves with a full three-part identity: an ambiguous chain (a
+    /// fan-out to several tables) or a partially-identified object is left to fall back to the flow's own target,
+    /// so the watermark is never anchored to a guessed table. Returns null when there is no unambiguous next table.
+    /// </summary>
+    private static async Task<RelationalObject?> ResolveDownstreamWatermarkTableAsync(
+        CatalogDbContext catalog, Guid repoId, Guid pipelineId, string ownSchema, string ownName, CancellationToken ct)
+    {
+        var downstreamPipelineIds = await catalog.FlowDependencies.AsNoTracking()
+            .Where(d => d.RepoId == repoId && d.FromPipelineId == pipelineId)
+            .Select(d => d.ToPipelineId)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (downstreamPipelineIds.Count == 0)
+        {
+            return null;
+        }
+
+        var writeKeys = await catalog.LineageEdges.AsNoTracking()
+            .Where(e => e.RepoId == repoId
+                && e.PipelineId != null && downstreamPipelineIds.Contains(e.PipelineId.Value)
+                && (e.Relation == "Writes" || e.Relation == "Creates"))
+            .Select(e => e.ObjectKey)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (writeKeys.Count == 0)
+        {
+            return null;
+        }
+
+        // Resolve the write targets to fully-identified table objects (a table, with a database and schema, so the
+        // engine can introspect and probe it). Views and partially-resolved objects are dropped here.
+        var candidates = await catalog.Objects.AsNoTracking()
+            .Where(o => writeKeys.Contains(o.Key)
+                && o.Kind == "Table"
+                && o.Database != null && o.Schema != null)
+            .Select(o => new { o.Database, o.Schema, o.Name })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        // Exclude the flow's own target (a downstream flow writing back to it is not a "next" table). Matched on
+        // schema + name only: a file flow's target carries no database part, and a table's schema-qualified name
+        // is unique enough within a repo's estate to identify "this is my own target".
+        var distinct = candidates
+            .Where(c => !(string.Equals(c.Schema, ownSchema, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(c.Name, ownName, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(c => (
+                c.Database!.ToLowerInvariant(),
+                c.Schema!.ToLowerInvariant(),
+                c.Name.ToLowerInvariant()))
+            .Select(g => g.First())
+            .ToList();
+        if (distinct.Count != 1)
+        {
+            return null;
+        }
+
+        var only = distinct[0];
+        return new RelationalObject { Database = only.Database!, Schema = only.Schema!, Name = only.Name };
+    }
+
     private Task FailAsync(CatalogDbContext catalog, Guid runId, string error, CancellationToken ct)
         => RunQueueStore.FailAsync(catalog, runId, error, _clock.GetUtcNow().UtcDateTime, ct);
 
@@ -498,6 +606,9 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: substitution parameters applied: {Parameters}.")]
     private partial void LogParameters(Guid runId, string parameters);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: watermark anchored to downstream table {Table} (incremental.watermarkFromDownstream).")]
+    private partial void LogDownstreamWatermark(Guid runId, string table);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId} starting: flow '{FlowName}' in repo '{Repo}'.")]
     private partial void LogStarting(Guid runId, string flowName, string repo);

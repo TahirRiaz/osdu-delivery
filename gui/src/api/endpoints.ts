@@ -3,12 +3,14 @@
 
 import { del, get, getAnonymous, post, postAnonymous, type QueryParams } from "./client";
 import type {
-  AccessToken, AuthProviders, ColumnHit, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
+  AccessToken, AllSearchResult, AuthProviders, ColumnHit, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, DefinitionHit, DiscoveredFlow,
-  DiscoverRepoRequest, FlowDependency,
-  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, NodeScript, ObjectHit, PagedResult,
-  PipelineColumn, PipelineDetail, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, Role,
-  RunAssertion, RunDetail, RunFile, RunHealthCheckMetric, RunStatement, RunSummary, RunSurrogateKey,
+  DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
+  FilePipelineMatch,
+  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, NodeScript, ObjectHit, ObjectRepo, PagedResult,
+  PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
+  RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement,
+  RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse, User, Wave,
 } from "./types";
 
@@ -39,6 +41,9 @@ export const summaryApi = {
 export const repoApi = {
   list: (query: PageQuery = {}) => get<PagedResult<Repo>>("/api/v1/repos", query as QueryParams),
   getById: (id: string) => get<Repo>(`/api/v1/repos/${id}`),
+  // Re-sync a CLI/local-path repo from its recorded root path (connected: reads the live database for the derived
+  // lineage tier). Refused server-side for a git-source-managed repo, which syncs via its source instead.
+  syncLocal: (id: string) => post<RepoSyncResult>(`/api/v1/repos/${id}/sync`),
 };
 
 export interface PipelineListQuery extends PageQuery {
@@ -52,7 +57,13 @@ export const pipelineApi = {
   list: (query: PipelineListQuery = {}) => get<PagedResult<PipelineSummary>>("/api/v1/pipelines", query as QueryParams),
   getById: (id: string) => get<PipelineDetail>(`/api/v1/pipelines/${id}`),
   columns: (id: string) => get<PipelineColumn[]>(`/api/v1/pipelines/${id}/columns`),
+  files: (id: string, query: PipelineFilesQuery = {}) =>
+    get<PagedResult<PipelineFile>>(`/api/v1/pipelines/${id}/files`, query as QueryParams),
 };
+
+export interface PipelineFilesQuery extends PageQuery {
+  search?: string;
+}
 
 // ---- Runs ----------------------------------------------------------------------------------------------------------------
 
@@ -64,8 +75,17 @@ export interface RunListQuery extends PageQuery {
   success?: boolean;
   flowName?: string;
   batch?: string;
+  /** Keep only this run group's members (the group view), returned in wave order. */
+  groupId?: string;
   /** Keep only each pipeline's newest run (the batch status board); status filters apply to that latest run. */
   latest?: boolean;
+}
+
+export interface RunScopePreviewQuery {
+  repoId: string;
+  flowName?: string;
+  scope: RunScope;
+  batch?: string;
 }
 
 export const runApi = {
@@ -83,6 +103,10 @@ export const runApi = {
     get<PagedResult<RunHealthCheckMetric>>(`/api/v1/runs/${runId}/health-metrics`, query as QueryParams),
   trigger: (request: RunTriggerRequest) => post<RunTriggerAccepted>("/api/v1/runs", request),
   cancel: (runId: string) => post<RunTriggerAccepted>(`/api/v1/runs/${runId}/cancel`),
+  previewScope: (query: RunScopePreviewQuery) =>
+    get<RunScopePreview>("/api/v1/runs/preview", query as unknown as QueryParams),
+  group: (groupId: string) => get<RunGroup>(`/api/v1/runs/groups/${groupId}`),
+  cancelGroup: (groupId: string) => post<RunTriggerAccepted>(`/api/v1/runs/groups/${groupId}/cancel`),
 };
 
 // ---- Schedules ---------------------------------------------------------------------------------------------------------------
@@ -141,6 +165,8 @@ export const lineageApi = {
   script: (key: string) => get<NodeScript>("/api/v1/lineage/script", { key }),
   objectColumns: (key: string, query: PageQuery = {}) =>
     get<PagedResult<LineageObjectColumn>>("/api/v1/lineage/objects/columns", { key, ...query } as QueryParams),
+  objectRepos: (key: string) => get<ObjectRepo[]>("/api/v1/lineage/objects/repos", { key }),
+  filePipelines: (file: string) => get<FilePipelineMatch[]>("/api/v1/lineage/file-pipelines", { file }),
   edges: (repoId: string, query: LineageEdgeQuery = {}) =>
     get<PagedResult<LineageEdge>>(`/api/v1/repos/${repoId}/lineage/edges`, query as QueryParams),
   waves: (repoId: string) => get<Wave[]>(`/api/v1/repos/${repoId}/waves`),
@@ -151,12 +177,17 @@ export const lineageApi = {
 // ---- Search --------------------------------------------------------------------------------------------------------------------
 
 export const searchApi = {
+  all: (q: string) => get<AllSearchResult>("/api/v1/search/all", { q }),
   objects: (name: string, query: PageQuery = {}) =>
     get<PagedResult<ObjectHit>>("/api/v1/search/objects", { name, ...query } as QueryParams),
   columns: (name: string, query: PageQuery = {}) =>
     get<PagedResult<ColumnHit>>("/api/v1/search/columns", { name, ...query } as QueryParams),
   definitions: (q: string, query: PageQuery = {}) =>
     get<PagedResult<DefinitionHit>>("/api/v1/search/definitions", { q, ...query } as QueryParams),
+  files: (name: string, query: PageQuery = {}) =>
+    get<PagedResult<FileHit>>("/api/v1/search/files", { name, ...query } as QueryParams),
+  flows: (q: string, query: PageQuery = {}) =>
+    get<PagedResult<FlowHit>>("/api/v1/search/flows", { q, ...query } as QueryParams),
 };
 
 // ---- Users ---------------------------------------------------------------------------------------------------------------------

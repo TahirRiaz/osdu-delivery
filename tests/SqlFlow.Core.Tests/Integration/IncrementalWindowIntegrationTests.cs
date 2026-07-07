@@ -224,6 +224,101 @@ public sealed class IncrementalWindowIntegrationTests
         }
     }
 
+    [SkippableFact]
+    public async Task DownstreamWatermark_AnchorsToDownstreamTable_RepullsDeletedRows()
+    {
+        // The opt-in downstream anchor: a chained pre -> ods flow reads its high-water MAX from the ods (silver)
+        // table, not its own pre target. Deleting rows from the ods table lowers the watermark, so the source rows
+        // are re-pulled automatically on the next run (the self-healing backfill this feature exists for).
+        const int flowId = 20;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc7_Src";
+        const string pre = "_SfInc7_Pre";
+        const string ods = "_SfInc7_Ods";
+        await Reset(cs, src, pre, flowId, "[Id] int NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.DropTableAsync(cs, ods);
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var flow = Flow(flowId, src, pre, new IncrementalPolicy { Columns = ["Id"] });
+
+            // First run with no downstream table resolved (a CLI run, or before the ods table exists): the flow
+            // behaves exactly as normal and full-loads Id 1..5 into the pre table (MAX 5).
+            Assert.True((await runner.RunAsync(flow)).Success);
+            Assert.Equal(5, await IntegrationDb.RowCountAsync(cs, pre));
+
+            // The downstream ods table holds only Id 1..3 (its rows 4,5 were deleted). MAX(ods.Id) = 3.
+            await IntegrationDb.ExecuteAsync(cs, $"CREATE TABLE [dbo].[{ods}] ([Id] int NOT NULL, [Val] nvarchar(20) NULL);");
+            await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{ods}] VALUES (1,'a'),(2,'b'),(3,'c');");
+            var silver = new RelationalObject { Database = "db", Schema = "dbo", Name = ods };
+
+            // Anchored to the downstream table, the watermark is MAX(ods.Id)=3, NOT MAX(pre.Id)=5, so the deleted
+            // rows 4,5 are read again from the source.
+            var second = await runner.RunAsync(flow, new IngestionRunOptions { WatermarkSourceTable = silver });
+            Assert.True(second.Success, second.Error);
+            Assert.Equal(" AND [Id] > 3", second.SourceWhere);
+            Assert.Equal(2, second.RowsStaged);
+            Assert.NotNull(second.Incremental);
+            Assert.StartsWith("downstream MAX", second.Incremental!.WatermarkSource);
+        }
+        finally
+        {
+            await IntegrationDb.DropTableAsync(cs, ods);
+            await Cleanup(cs, src, pre, flowId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task DownstreamWatermark_FallsBackToOwnTarget_WhenDownstreamLacksTheColumnOrIsAbsent()
+    {
+        // Safety: the anchor is column-safe and reachability-safe. A downstream table that renamed/dropped the
+        // watermark column, or that is not reachable at all, must fall back to probing the flow's own target,
+        // never probe a MAX over a missing column (which would fail) or read an absent object (which would be
+        // mistaken for an empty target and force a full reload).
+        const int flowId = 21;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc8_Src";
+        const string pre = "_SfInc8_Pre";
+        const string bad = "_SfInc8_Bad";
+        await Reset(cs, src, pre, flowId, "[Id] int NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.DropTableAsync(cs, bad);
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var flow = Flow(flowId, src, pre, new IncrementalPolicy { Columns = ["Id"] });
+
+            // Establish the pre watermark (MAX(pre.Id) = 5).
+            Assert.True((await runner.RunAsync(flow)).Success);
+
+            // A downstream table that does NOT carry the [Id] watermark column (it was renamed to [Sid]).
+            await IntegrationDb.ExecuteAsync(cs, $"CREATE TABLE [dbo].[{bad}] ([Sid] int NOT NULL, [Val] nvarchar(20) NULL);");
+            await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{bad}] VALUES (1,'a');");
+            var renamed = new RelationalObject { Database = "db", Schema = "dbo", Name = bad };
+
+            var missingColumn = await runner.RunAsync(flow, new IngestionRunOptions { WatermarkSourceTable = renamed });
+            Assert.True(missingColumn.Success, missingColumn.Error);
+            Assert.Equal(" AND [Id] > 5", missingColumn.SourceWhere);
+            Assert.StartsWith("target MAX", missingColumn.Incremental!.WatermarkSource);
+
+            // An unreachable/absent downstream table falls back the same way (never forces a full reload).
+            var absent = new RelationalObject { Database = "db", Schema = "dbo", Name = "_SfInc8_DoesNotExist" };
+            var missingTable = await runner.RunAsync(flow, new IngestionRunOptions { WatermarkSourceTable = absent });
+            Assert.True(missingTable.Success, missingTable.Error);
+            Assert.False(missingTable.RunFullLoad);
+            Assert.Equal(" AND [Id] > 5", missingTable.SourceWhere);
+            Assert.StartsWith("target MAX", missingTable.Incremental!.WatermarkSource);
+        }
+        finally
+        {
+            await IntegrationDb.DropTableAsync(cs, bad);
+            await Cleanup(cs, src, pre, flowId);
+        }
+    }
+
     private static async Task Reset(string cs, string src, string trg, int flowId, string sourceColumns)
     {
         await IntegrationDb.DropTableAsync(cs, src);

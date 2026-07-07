@@ -53,7 +53,8 @@ public sealed class SqlServerIncrementalProbe : IIncrementalProbe
         {
             throw new SqlFlowException(
                 $"Incremental dateColumn '{dateColumn}' on {table} is type '{probe.TypeName}'; the file-date watermark "
-                + "requires a date/time column or a string column carrying the engine's provenance date encoding.");
+                + "requires a date/time column, a string column, or a numeric column carrying the engine's provenance "
+                + "date encoding (yyyyMMddHHmmss).");
         }
 
         if (probe.Max is null)
@@ -62,14 +63,20 @@ public sealed class SqlServerIncrementalProbe : IIncrementalProbe
         }
 
         // The raw landing layer stamps FileDate_DW as a string (yyyyMMddHHmmss), where lexicographic MAX is
-        // chronological MAX, so string columns parse the maximum back to a UTC instant here. Typed columns keep
-        // the pre-existing UTC-instant semantics, with datetimeoffset carrying its own offset. The overlap is
-        // applied client-side, which is equivalent to the former DATEADD on the server.
+        // chronological MAX, so string columns parse the maximum back to a UTC instant here. Legacy layers (and
+        // silver/ods tables carried over from them) store the same yyyyMMddHHmmss stamp in a NUMERIC column
+        // (decimal/bigint), whose numeric MAX is also chronological; those parse identically after rendering the
+        // integer value as its digit string. Typed columns keep the pre-existing UTC-instant semantics, with
+        // datetimeoffset carrying its own offset. The overlap is applied client-side, which is equivalent to the
+        // former DATEADD on the server.
         var mark = probe.Max switch
         {
             DateTime dt => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc)),
             DateTimeOffset dto => dto,
             string text => ParseFileDateWatermark(text, dateColumn, table),
+            decimal dec => ParseFileDateWatermark(dec.ToString("F0", CultureInfo.InvariantCulture), dateColumn, table),
+            long l => ParseFileDateWatermark(l.ToString(CultureInfo.InvariantCulture), dateColumn, table),
+            int i => ParseFileDateWatermark(i.ToString(CultureInfo.InvariantCulture), dateColumn, table),
             _ => throw new SqlFlowException(
                 $"Incremental dateColumn '{dateColumn}' on {table} produced an unexpected MAX value of type "
                 + $"'{probe.Max.GetType().Name}'."),
@@ -196,9 +203,12 @@ public sealed class SqlServerIncrementalProbe : IIncrementalProbe
 
     // The file-date watermark's accepted type names; also gates the batched MAX (only these types run it).
     // String types are accepted because the raw landing layer stamps FileDate_DW as a fixed-length
-    // yyyyMMddHHmmss string (see FileSourceReaderBase), whose lexicographic MAX is its chronological MAX.
+    // yyyyMMddHHmmss string (see FileSourceReaderBase), whose lexicographic MAX is its chronological MAX. Numeric
+    // types (decimal/numeric/bigint/int) are accepted for the same encoding stored as a number, which legacy
+    // layers and the silver/ods tables carried over from them commonly use; their numeric MAX is chronological too.
     private static readonly string[] FileDateTypeNames =
-        ["date", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "char", "varchar", "nchar", "nvarchar"];
+        ["date", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "char", "varchar", "nchar", "nvarchar",
+         "decimal", "numeric", "bigint", "int"];
 
     /// <summary>Parses a string-typed file-date watermark back to a UTC instant, accepting the encodings the
     /// engine writes plus the common ISO shapes the file-date bound parser accepts on the read side.</summary>

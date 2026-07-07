@@ -63,6 +63,16 @@ public sealed class BootstrapProvisioningService : BackgroundService
             {
                 return;
             }
+            catch (CatalogProvisioningException ex)
+            {
+                // A deterministic configuration mistake (the target database is missing, or is not a catalog).
+                // Retrying cannot fix it and creating the database is exactly what we refuse to do, so stop and
+                // surface it. Readiness stays red, signalling the misconfiguration without touching the database.
+                _logger.LogCritical(
+                    "Bootstrap provisioning refused: {Error} Set ControlPlane:Bootstrap:AllowCreate=true only if you intend to provision this exact database.",
+                    ex.Message);
+                return;
+            }
             catch (Exception ex)
             {
                 var delay = attempt < RetryDelays.Length ? RetryDelays[attempt] : MaxRetryDelay;
@@ -85,17 +95,29 @@ public sealed class BootstrapProvisioningService : BackgroundService
     {
         var connectionString = _connection.ConnectionString;
 
+        // Always announce the resolved target up front (secret-free), so an operator can see at a glance which
+        // database this control plane is about to bootstrap, before any schema or seed work happens.
+        _logger.LogInformation(
+            "Catalog target: {Target} (Bootstrap:AllowCreate={AllowCreate}).",
+            CatalogDatabase.DescribeTarget(connectionString), _options.Bootstrap.AllowCreate);
+
         if (_options.Bootstrap.ApplyMigrations)
         {
-            var (_, pendingBefore) = await CatalogDatabase.StatusAsync(connectionString, ct).ConfigureAwait(false);
-            if (pendingBefore.Count > 0)
+            if (_options.Bootstrap.AllowCreate)
             {
-                _logger.LogInformation(
-                    "Applying {Count} pending catalog migration(s): {Migrations}.",
-                    pendingBefore.Count, string.Join(", ", pendingBefore));
+                // Explicit opt-in: create the database and initialise the catalog when absent. Reserved for
+                // first-time provisioning and ephemeral/test catalogs.
+                _logger.LogWarning(
+                    "Bootstrap:AllowCreate is enabled: the catalog database will be created if it does not exist ({Target}).",
+                    CatalogDatabase.DescribeTarget(connectionString));
+                await CatalogDatabase.MigrateAsync(connectionString, ct).ConfigureAwait(false);
             }
-
-            await CatalogDatabase.MigrateAsync(connectionString, ct).ConfigureAwait(false);
+            else
+            {
+                // Guarded default: migrate an existing catalog only. A missing database or a populated
+                // non-catalog database raises CatalogProvisioningException instead of being provisioned.
+                await CatalogDatabase.MigrateExistingAsync(connectionString, ct).ConfigureAwait(false);
+            }
         }
         else
         {

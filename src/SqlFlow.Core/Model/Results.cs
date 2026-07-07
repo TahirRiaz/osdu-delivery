@@ -1,9 +1,56 @@
+using System.Text.Json.Serialization;
+using SqlFlow.Core.Ingestion;
+
 namespace SqlFlow.Core.Model;
 
 public enum FlowStatus
 {
     Success,
     Failed,
+}
+
+/// <summary>
+/// The incremental read scope a run actually computed and applied: which apply path it resolved to, the filter that
+/// bounded the read, the watermark value the filter was built from, and where that watermark came from. This is the
+/// audit trail for "which filter ran against the source data or the file system": the thing the engine derives at
+/// run time from the target/source state, distinct from the operator-supplied backfill parameters. Null on a run
+/// with no incremental surface (a stored-procedure or health-check flow). Serialized into run.json under
+/// <c>result.incremental</c> and projected onto the run so the detail view can show it at a glance.
+/// </summary>
+public sealed record IncrementalSummary
+{
+    /// <summary>The read scope the run resolved to: <see cref="IncrementalModes"/> (full / incremental / backfill /
+    /// init-load).</summary>
+    public required string Mode { get; init; }
+
+    /// <summary>The human-readable predicate or window that bounded the read: the source <c>WHERE</c> fragment for a
+    /// relational flow, or the "files newer than ..." window for a file flow. Null for an unbounded full read.</summary>
+    public string? Filter { get; init; }
+
+    /// <summary>The resolved watermark value the filter was built from (a timestamp or key literal), null when the
+    /// run took a full read or found no prior watermark. This is the result of the MAX/MIN probe.</summary>
+    public string? Watermark { get; init; }
+
+    /// <summary>Where the watermark came from, including the probed object: e.g. <c>target MAX [dbo].[Orders]</c>,
+    /// <c>run log</c>, or <c>source MIN [dbo].[Orders]</c> (reprocess history). Null when there is no watermark.</summary>
+    public string? WatermarkSource { get; init; }
+}
+
+/// <summary>The <see cref="IncrementalSummary.Mode"/> values, one per resolved read scope.</summary>
+public static class IncrementalModes
+{
+    /// <summary>The run read everything the definition selects (no usable watermark, an empty target, or a forced
+    /// full load).</summary>
+    public const string Full = "full";
+
+    /// <summary>The run bounded its read to data past a resolved watermark.</summary>
+    public const string Incremental = "incremental";
+
+    /// <summary>The run's scope was an operator-supplied backfill window (an explicit external bound).</summary>
+    public const string Backfill = "backfill";
+
+    /// <summary>The run replayed history through the init-load chunk plan.</summary>
+    public const string InitLoad = "init-load";
 }
 
 /// <summary>One traced operation: what ran, how long it took, and whether it succeeded.</summary>
@@ -43,7 +90,19 @@ public sealed record FlowResult
     public required string FlowName { get; init; }
     public FlowStatus Status { get; init; } = FlowStatus.Success;
     public long RowsLoaded { get; init; }
+
+    /// <summary>The schema-diff DDL the run applied (create table / add columns). An in-process summary field
+    /// (the CLI's "N DDL statement(s)" line); it is a strict subset of <see cref="SqlTrace"/>, so it is kept out
+    /// of the run.json artifact to avoid the completion projection counting the same schema statements twice
+    /// (once from the trace, once from here).</summary>
+    [JsonIgnore]
     public IReadOnlyList<string> DdlExecuted { get; init; } = [];
+
+    /// <summary>Every SQL statement the run executed against the target, in execution order: the schema DDL, the
+    /// pre/post-process DDL, and the transformation-view refresh. This is the file flow's statement trace, the
+    /// same contract the ingestion/export/sp/hc runners expose, so it streams live to the node's statement sink
+    /// during the run and is the authoritative record projected from the artifact at completion.</summary>
+    public IReadOnlyList<SqlTraceEntry> SqlTrace { get; init; } = [];
 
     /// <summary>The files processed by this run (the in-result "file log" for stateless mode).</summary>
     public IReadOnlyList<ProcessedFile> ProcessedFiles { get; init; } = [];
@@ -58,6 +117,11 @@ public sealed record FlowResult
     /// the catalog records for the pipeline - and the exact DDL that ran.
     /// </summary>
     public TransformViewResult? TransformView { get; init; }
+
+    /// <summary>The incremental read scope this run computed and applied (the watermark-derived filter, or the
+    /// full-read decision), null when the flow has no incremental spec. Surfaced so the run detail can show which
+    /// filter ran against the file system without hunting through the log.</summary>
+    public IncrementalSummary? Incremental { get; init; }
 }
 
 /// <summary>
