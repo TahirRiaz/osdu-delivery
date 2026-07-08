@@ -7,6 +7,9 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+    <!-- PasswordHasher (PBKDF2) for local SQLFlow users: the one hashing implementation shared by the control
+         plane (via DI) and the CLI's offline 'user' command, so a CLI-set hash verifies at login unchanged. -->
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" />
     <!-- Cronos: DST-aware cron parsing for the schedule clock (the scheduling domain - table, store, clock - lives here). -->
     <PackageReference Include="Cronos" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">

@@ -264,6 +264,66 @@ public sealed class CatalogProjectionTests
     }
 
     [Fact]
+    public void RunStatements_CarriesTheTraceTimestamp_AndToleratesItsAbsence()
+    {
+        var runId = Guid.Parse("99999999-9999-9999-9999-999999999998");
+        var statements = CatalogProjection.RunStatements(Json($$"""
+            {
+              "flowKind": "ing", "flowName": "x", "runId": "{{runId}}", "success": true, "writtenUtc": "2026-06-17T10:00:00Z",
+              "result": {
+                "sqlTrace": [ { "sequence": 1, "timestampUtc": "2026-07-08T12:00:00.123Z", "step": "staging.create", "sql": "CREATE TABLE #s" },
+                              { "sequence": 2, "step": "upsert.update", "sql": "UPDATE t" } ]
+              }
+            }
+            """), runId, Repo);
+
+        Assert.Equal(2, statements.Count);
+        // The timestamp is the interleave key that places the statement in the Events timeline.
+        Assert.Equal(new DateTime(2026, 7, 8, 12, 0, 0, 123, DateTimeKind.Utc), statements[0].TimestampUtc);
+        Assert.Null(statements[1].TimestampUtc); // a legacy artifact predating the timestamped trace
+    }
+
+    [Fact]
+    public void RunEvents_FromTheArtifactEventsArray_InOrder_SkippingMalformedEntries()
+    {
+        var runId = Guid.Parse("99999999-9999-9999-9999-999999999997");
+        var events = CatalogProjection.RunEvents(Json($$"""
+            {
+              "flowKind": "file", "flowName": "x", "runId": "{{runId}}", "success": true, "writtenUtc": "2026-07-08T10:00:00Z",
+              "events": [
+                { "timestampUtc": "2026-07-08T09:59:01Z", "level": "info", "step": "source.open",
+                  "message": "read 'a.csv' (31 row(s))", "rows": 31 },
+                { "timestampUtc": "2026-07-08T09:59:02.5Z", "level": "warning", "message": "index skipped", "elapsedMs": 12.5 },
+                { "level": "info", "message": "no timestamp: skipped" },
+                { "timestampUtc": "2026-07-08T09:59:03Z", "level": "info", "message": "" }
+              ]
+            }
+            """), runId, Repo);
+
+        Assert.Equal(2, events.Count);
+        Assert.Equal([1, 2], events.Select(e => e.Ordinal));
+        Assert.Equal("info", events[0].Level);
+        Assert.Equal("source.open", events[0].Step);
+        Assert.Equal("read 'a.csv' (31 row(s))", events[0].Message);
+        Assert.Equal(31, events[0].Rows);
+        Assert.Null(events[0].ElapsedMs);
+        Assert.Equal("warning", events[1].Level);
+        Assert.Null(events[1].Step); // a flow-level event with no stage
+        Assert.Equal(12.5, events[1].ElapsedMs);
+        Assert.All(events, e => Assert.Equal(runId, e.RunId));
+        Assert.All(events, e => Assert.Equal(Repo, e.RepoId));
+    }
+
+    [Fact]
+    public void RunEvents_WithoutTheArray_ProjectsNothing()
+    {
+        var runId = Guid.Parse("99999999-9999-9999-9999-999999999996");
+        Assert.Empty(CatalogProjection.RunEvents(Json($$"""
+            { "flowKind": "scm", "flowName": "x", "runId": "{{runId}}", "success": true, "writtenUtc": "2026-07-08T10:00:00Z", "result": {} }
+            """), runId, Repo));
+    }
+
+    [Fact]
     public void RunSurrogateKeys_FromResult()
     {
         var runId = Guid.Parse("aaaaaaaa-0000-0000-0000-000000000001");

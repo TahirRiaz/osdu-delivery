@@ -39,14 +39,15 @@ function useDebounced(value: string, delayMs: number): string {
 }
 
 const objectTableColumns: Column<LineageObject>[] = [
+  { id: "database", header: "Database", render: (row) => row.database ?? "-" },
+  { id: "schema", header: "Schema", render: (row) => row.schema ?? "-" },
   {
     id: "name",
     header: "Name",
     render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
   },
+  { id: "level", header: "Level", render: (row) => row.level ?? "-", width: 72 },
   { id: "kind", header: "Kind", render: (row) => <Chip label={row.kind} size="small" /> },
-  { id: "schema", header: "Schema", render: (row) => row.schema ?? "-" },
-  { id: "database", header: "Database", render: (row) => row.database ?? "-" },
   { id: "serverRef", header: "Server", render: (row) => row.serverRef },
   { id: "lastSeen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
 ];
@@ -108,6 +109,7 @@ function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
         <DetailPair label="Server">{data.serverRef}</DetailPair>
         <DetailPair label="Database">{data.database ?? "-"}</DetailPair>
         <DetailPair label="Schema">{data.schema ?? "-"}</DetailPair>
+        <DetailPair label="Level">{data.level ?? "-"}</DetailPair>
         <DetailPair label="First seen"><RelativeTime value={data.firstSeenUtc} /></DetailPair>
         <DetailPair label="Last seen"><RelativeTime value={data.lastSeenUtc} /></DetailPair>
       </Box>

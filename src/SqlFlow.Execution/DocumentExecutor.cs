@@ -138,15 +138,20 @@ public sealed class DocumentExecutor : IDocumentRunner
         var runner = _provider.GetRequiredService<FlowRunner>();
         var flow = ApplyFileRunParameters(doc.Flow, options.Parameters);
 
+        // The file flow publishes its canonical events (file reads, watermark decisions, stage summaries)
+        // natively; the collector rides alongside the host-wide sink so they land in run.json and, when the node
+        // attached a live sink, in the catalog while the run executes.
+        var events = new RunEventCollector(options.EventSink);
+
         // The run-history anchor (the flow document's folder) is the same one RunHistory.Write uses below, so the
         // incremental probe reads the durable last-processed watermark from exactly the runs written here.
         var runHistoryDirectory = Path.GetDirectoryName(Path.GetFullPath(flowFile)) ?? Directory.GetCurrentDirectory();
-        var result = await runner.RunAsync(flow, options.RunId, options.StatementSink, runHistoryDirectory, options.WatermarkSourceTable, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(flow, options.RunId, options.StatementSink, runHistoryDirectory, options.WatermarkSourceTable, events, ct).ConfigureAwait(false);
         var trace = SqlTrace.Render(result.SqlTrace);
 
         var runDirectory = RunHistory.Write(flowFile, doc.Flow.Name, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("file", doc.Flow.Name, result.RunId, result.Status == FlowStatus.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("file", doc.Flow.Name, result.RunId, result.Status == FlowStatus.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = RunLogRenderer.RenderFileFlowLog(result),
             ["trace.sql"] = trace,
         }, _warningSink);
@@ -168,13 +173,25 @@ public sealed class DocumentExecutor : IDocumentRunner
     /// <summary>A run-log notice for flow kinds that have no window/selection surface, so supplied parameters
     /// are visibly acknowledged rather than silently dropped (the run detail's log answers "did my backfill
     /// apply?" definitively).</summary>
-    private static void NoteInapplicableParameters(RunLogger runLogger, RunParameters parameters, string flowKind)
+    private static void NoteInapplicableParameters(IRunEventSink events, RunParameters parameters, string flowKind)
     {
         if (!parameters.IsDefault)
         {
-            runLogger.Log(RunLogLevel.Info, "parameters",
+            events.Log(RunLogLevel.Info, "parameters",
                 $"run parameters '{parameters.Describe()}' do not apply to flowType '{flowKind}'; the flow runs as defined.");
         }
+    }
+
+    /// <summary>Builds the per-run event plumbing shared by every run-log-driven flow kind: the canonical
+    /// <see cref="RunLogger"/> (rendered to <c>run.log</c>), the collector whose records become the run.json
+    /// <c>events</c> array (forwarding live to the node's sink when one is attached), and the bridge the runner
+    /// logs through so one <c>Log</c> call feeds both.</summary>
+    private static (RunLogger RunLogger, RunEventCollector Events, RunLogEventBridge Sink) BuildEventPlumbing(
+        DocumentExecutionOptions options, string flowName)
+    {
+        var runLogger = new RunLogger(options.LogLevel, options.Echo);
+        var events = new RunEventCollector(options.EventSink);
+        return (runLogger, events, new RunLogEventBridge(runLogger, events, options.RunId, flowName));
     }
 
     /// <summary>
@@ -227,7 +244,8 @@ public sealed class DocumentExecutor : IDocumentRunner
 
     private async Task<DocumentExecutionResult> ExecuteIngestionAsync(IngestionFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
-        var runLogger = new RunLogger(options.LogLevel, options.Echo);
+        var flowName = doc.Document.Flow.SysAlias ?? doc.Document.Flow.Target.Table.Name;
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, flowName);
         var runner = WithoutDatabaseIngestion.BuildRunner(
             doc.Document.Connections,
             doc.Document.AssertionDefinitions,
@@ -239,15 +257,14 @@ public sealed class DocumentExecutor : IDocumentRunner
             doc.Document.Flow,
             new IngestionRunOptions
             {
-                ExecMode = "cli", Events = runLogger, RunId = options.RunId, Parameters = options.Parameters,
+                ExecMode = "cli", Events = eventSink, RunId = options.RunId, Parameters = options.Parameters,
                 StatementSink = options.StatementSink, WatermarkSourceTable = options.WatermarkSourceTable,
             },
             ct).ConfigureAwait(false);
 
-        var flowName = doc.Document.Flow.SysAlias ?? doc.Document.Flow.Target.Table.Name;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("ing", flowName, result.RunId, result.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("ing", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = runLogger.Render(),
             ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
         }, _warningSink);
@@ -268,7 +285,7 @@ public sealed class DocumentExecutor : IDocumentRunner
 
     private async Task<DocumentExecutionResult> ExecuteExportAsync(ExportFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
-        var runLogger = new RunLogger(options.LogLevel, options.Echo);
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, doc.Document.Flow.SysAlias);
         var runner = WithoutDatabaseExport.BuildRunner(
             doc.Document.Connections,
             _provider.GetRequiredService<ISecretResolver>(),
@@ -286,20 +303,20 @@ public sealed class DocumentExecutor : IDocumentRunner
                 FromDate = DateOnly.FromDateTime(exportFrom),
                 ToDate = options.Parameters.BackfillTo is { } exportTo ? DateOnly.FromDateTime(exportTo) : exportFlow.ToDate,
             };
-            runLogger.Log(RunLogLevel.Info, "parameters", $"export window overridden by run parameters: {options.Parameters.Describe()}");
+            eventSink.Log(RunLogLevel.Info, "parameters", $"export window overridden by run parameters: {options.Parameters.Describe()}");
         }
         else if (!options.Parameters.IsDefault)
         {
-            runLogger.Log(RunLogLevel.Info, "parameters",
+            eventSink.Log(RunLogLevel.Info, "parameters",
                 $"run parameters '{options.Parameters.Describe()}' do not apply to an export flow (only a backfill window does); running as defined.");
         }
 
-        var result = await runner.RunAsync(exportFlow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, StatementSink = options.StatementSink }, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(exportFlow, new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, StatementSink = options.StatementSink }, ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("exp", flowName, result.RunId, result.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("exp", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = runLogger.Render(),
             ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
         }, _warningSink);
@@ -320,19 +337,19 @@ public sealed class DocumentExecutor : IDocumentRunner
 
     private async Task<DocumentExecutionResult> ExecuteStoredProcedureAsync(StoredProcedureFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
-        var runLogger = new RunLogger(options.LogLevel, options.Echo);
-        NoteInapplicableParameters(runLogger, options.Parameters, "sp");
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, doc.Document.Flow.SysAlias);
+        NoteInapplicableParameters(eventSink, options.Parameters, "sp");
         var runner = WithoutDatabaseStoredProcedure.BuildRunner(
             doc.Document.Connections,
             _provider.GetRequiredService<ISecretResolver>(),
             doc.Document.Invokes,
             InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals));
-        var result = await runner.RunAsync(doc.Document.Flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, StatementSink = options.StatementSink }, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(doc.Document.Flow, new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, StatementSink = options.StatementSink }, ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("sp", flowName, result.RunId, result.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("sp", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = runLogger.Render(),
             ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
         }, _warningSink);
@@ -353,20 +370,20 @@ public sealed class DocumentExecutor : IDocumentRunner
 
     private async Task<DocumentExecutionResult> ExecuteHealthCheckAsync(HealthCheckFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
-        var runLogger = new RunLogger(options.LogLevel, options.Echo);
-        NoteInapplicableParameters(runLogger, options.Parameters, "hc");
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, doc.Document.Flow.SysAlias);
+        NoteInapplicableParameters(eventSink, options.Parameters, "hc");
         var anchor = Path.GetDirectoryName(Path.GetFullPath(flowFile)) ?? Directory.GetCurrentDirectory();
         var runner = WithoutDatabaseHealthCheck.BuildRunner(
             doc.Document.Connections, anchor, _provider.GetRequiredService<ISecretResolver>());
         var flow = options.Retrain ? doc.Document.Flow with { Training = HealthCheckTraining.Always } : doc.Document.Flow;
 
-        var outcome = await runner.RunAsync(flow, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId, StatementSink = options.StatementSink }, ct: ct).ConfigureAwait(false);
+        var outcome = await runner.RunAsync(flow, new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, StatementSink = options.StatementSink }, ct: ct).ConfigureAwait(false);
         var result = outcome.Result;
 
         var flowName = flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("hc", flowName, result.RunId, result.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("hc", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = runLogger.Render(),
             ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
             ["healthcheck.json"] = outcome.Report is null ? string.Empty : JsonSerializer.Serialize(outcome.Report, ExecutionJson.Options),
@@ -389,19 +406,19 @@ public sealed class DocumentExecutor : IDocumentRunner
 
     private async Task<DocumentExecutionResult> ExecuteInvokeAsync(InvokeFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
-        var runLogger = new RunLogger(options.LogLevel, options.Echo);
-        NoteInapplicableParameters(runLogger, options.Parameters, "inv");
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, doc.Document.Definition.InvokeAlias);
+        NoteInapplicableParameters(eventSink, options.Parameters, "inv");
         var runner = WithoutDatabaseInvoke.BuildRunner(
             AzureInvokeExecutors.Create(
                 new SqlFlow.Core.Connections.InMemoryServicePrincipalStore(doc.Document.ServicePrincipals),
                 _provider.GetRequiredService<ISecretResolver>(),
                 _provider.GetRequiredService<IAzureCredentialFactory>()));
-        var result = await runner.RunAsync(doc.Document.Definition, new IngestionRunOptions { ExecMode = "cli", Events = runLogger, RunId = options.RunId }, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(doc.Document.Definition, new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId }, ct).ConfigureAwait(false);
 
         var flowName = doc.Document.Definition.InvokeAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("inv", flowName, result.RunId, result.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("inv", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = runLogger.Render(),
             ["trace.sql"] = string.Empty,
         }, _warningSink);
@@ -447,7 +464,9 @@ public sealed class DocumentExecutor : IDocumentRunner
         };
     }
 
-    private static RunArtifact Artifact(string kind, string flowName, Guid runId, bool success, string? error, object result)
+    private static RunArtifact Artifact(
+        string kind, string flowName, Guid runId, bool success, string? error, object result,
+        IReadOnlyList<RunEventRecord>? events = null)
         => new()
         {
             FlowKind = kind,
@@ -457,6 +476,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             WrittenUtc = DateTime.UtcNow,
             Error = error,
             Result = result,
+            Events = events ?? [],
         };
 
     private static SqlFlow.Core.SourceControl.SourceControlFlow ResolveRelativeRepositoryPath(SqlFlow.Core.SourceControl.SourceControlFlow flow, string file)

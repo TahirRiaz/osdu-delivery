@@ -75,10 +75,12 @@ internal sealed class IngestionLoadYaml
     public bool? BatchUpsert { get; set; }
     public int? BatchUpsertRowCount { get; set; }
     public string? DataSetColumn { get; set; }
+    public string? ReloadColumn { get; set; }
     public bool? StreamData { get; set; }
     public int? Threads { get; set; }
     public bool? KeepStagingTable { get; set; }
     public bool? TruncateStagingOnCompletion { get; set; }
+    public bool? TruncateSourceWhenConsolidated { get; set; }
 }
 
 internal sealed class IngestionChangeYaml

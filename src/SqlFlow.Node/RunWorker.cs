@@ -440,18 +440,21 @@ public sealed partial class RunWorker
                 }
             }
 
-            // The node streams the run's generated SQL into the catalog live: as each statement executes, a
-            // CatalogRunStatement row is written on the sink's own scope/context, so the Statements view updates
-            // while the run is still running and the trace survives even a mid-run crash. The sink is disposed at
-            // the end of this block (draining every queued write) BEFORE the completion write-back below, which
-            // deletes these live rows and re-projects them from run.json: the artifact stays authoritative.
+            // The node streams the run's generated SQL and its canonical events into the catalog live: as each
+            // statement executes a CatalogRunStatement row is written, and as each event is published (a file
+            // read, a resolved watermark, a stage summary) a CatalogRunEvent row is written, each on its sink's
+            // own scope/context, so the Statements and Events views update while the run is still running and
+            // both streams survive even a mid-run crash. The sinks are disposed at the end of this block
+            // (draining every queued write) BEFORE the completion write-back below, which deletes these live
+            // rows and re-projects them from run.json: the artifact stays authoritative.
             DocumentExecutionResult exec;
             await using (var statementSink = new CatalogRunStatementSink(_services, runId, repoId, _logger))
+            await using (var eventSink = new CatalogRunEventSink(_services, runId, repoId, _logger))
             {
                 var options = new DocumentExecutionOptions
                 {
                     RunId = runId, Echo = null, Parameters = parameters, StatementSink = statementSink,
-                    WatermarkSourceTable = watermarkSourceTable,
+                    EventSink = eventSink, WatermarkSourceTable = watermarkSourceTable,
                 };
                 // The executor runs under the per-run token: an operator cancel aborts the in-flight statement here
                 // (and only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel

@@ -1,7 +1,7 @@
 // Thin, typed wrappers over the control plane's /api/v1 surface: one function per endpoint, nothing else.
 // Auth, error shaping, and rate-limit handling live in client.ts; pages compose these with TanStack Query.
 
-import { del, get, getAnonymous, post, postAnonymous, type QueryParams } from "./client";
+import { del, get, getAnonymous, getText, post, postAnonymous, streamSse, type QueryParams, type SseFrame } from "./client";
 import type {
   AccessToken, AllSearchResult, AuthProviders, ColumnHit, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, DefinitionHit, DiscoveredFlow,
@@ -9,7 +9,7 @@ import type {
   FilePipelineMatch,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, NodeScript, ObjectHit, ObjectRepo, PagedResult,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
-  RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement,
+  RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse, User, Wave,
 } from "./types";
@@ -97,6 +97,19 @@ export const runApi = {
     get<PagedResult<RunAssertion>>(`/api/v1/runs/${runId}/assertions`, query as QueryParams),
   statements: (runId: string, query: PageQuery = {}) =>
     get<PagedResult<RunStatement>>(`/api/v1/runs/${runId}/statements`, query as QueryParams),
+  trace: (runId: string, query: PageQuery = {}) =>
+    get<PagedResult<RunTraceEntry>>(`/api/v1/runs/${runId}/trace`, query as QueryParams),
+  /** The whole trace rendered as one plain-text document (the Copy-trace surface; also handy for tickets). */
+  traceText: (runId: string) => getText(`/api/v1/runs/${runId}/trace/text`),
+  /** The live trace as SSE: `entry` frames while the run executes, one `end` frame at its terminal status.
+   * The cursors resume a dropped connection without replaying entries the caller already holds. */
+  streamTrace: (
+    runId: string,
+    cursors: { afterEventId?: number; afterStatementId?: number },
+    onFrame: (frame: SseFrame) => void,
+    signal: AbortSignal,
+    onOpen?: () => void,
+  ) => streamSse(`/api/v1/runs/${runId}/trace/stream`, cursors, onFrame, signal, onOpen),
   surrogateKeys: (runId: string, query: PageQuery = {}) =>
     get<PagedResult<RunSurrogateKey>>(`/api/v1/runs/${runId}/surrogate-keys`, query as QueryParams),
   healthMetrics: (runId: string, query: PageQuery = {}) =>
@@ -106,6 +119,10 @@ export const runApi = {
   previewScope: (query: RunScopePreviewQuery) =>
     get<RunScopePreview>("/api/v1/runs/preview", query as unknown as QueryParams),
   group: (groupId: string) => get<RunGroup>(`/api/v1/runs/groups/${groupId}`),
+  /** The live run group as SSE: a `member` frame (a RunSummary) whenever a member's summary changes (status,
+   * last action, rows, timing), a full snapshot on connect, one `end` frame once every member is terminal. */
+  streamGroup: (groupId: string, onFrame: (frame: SseFrame) => void, signal: AbortSignal, onOpen?: () => void) =>
+    streamSse(`/api/v1/runs/groups/${groupId}/stream`, undefined, onFrame, signal, onOpen),
   cancelGroup: (groupId: string) => post<RunTriggerAccepted>(`/api/v1/runs/groups/${groupId}/cancel`),
 };
 

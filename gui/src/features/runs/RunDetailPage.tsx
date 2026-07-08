@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link as RouterLink, Navigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSnackbar } from "notistack";
@@ -17,15 +17,17 @@ import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import type {
-  RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey,
+  RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey, RunTraceEntry,
 } from "../../api/types";
 import { isApiError } from "../../api/client";
 import { runApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DataTable } from "../../components/DataTable";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
 import { Mono } from "../../components/Mono";
@@ -36,6 +38,7 @@ import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
 import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
+import { useRunTraceStream } from "./useRunTraceStream";
 
 /** A compact UTC stamp for a backfill window bound (the API sends UTC timestamps). */
 function fmtBound(value: string): string {
@@ -61,6 +64,62 @@ function YesNo({ value }: { value: boolean }) {
     ? <Chip size="small" label="yes" color="success" variant="outlined" />
     : <Chip size="small" label="no" color="default" variant="outlined" />;
 }
+
+/** The chip color for a trace level: problems stand out, info is the normal case, engine detail is muted. */
+function traceLevelColor(level: RunTraceEntry["level"]): "default" | "info" | "warning" | "error" {
+  if (level === "error") {
+    return "error";
+  }
+
+  if (level === "warning") {
+    return "warning";
+  }
+
+  return level === "info" ? "info" : "default";
+}
+
+/** A compact UTC clock stamp (HH:mm:ss.fff) for a trace entry; legacy statements without one show "-". */
+function fmtEventTime(value: string | null): string {
+  return value ? parseUtc(value).toISOString().slice(11, 23) : "-";
+}
+
+const traceColumns: Column<RunTraceEntry>[] = [
+  { id: "time", header: "Time", width: 120, render: (row) => <Mono>{fmtEventTime(row.timestampUtc)}</Mono> },
+  {
+    id: "level",
+    header: "Level",
+    width: 100,
+    // A statement entry is labelled "sql" (its level is always trace); event entries show their own level.
+    render: (row) => (
+      <Chip
+        size="small"
+        variant="outlined"
+        label={row.kind === "statement" ? "sql" : row.level}
+        color={row.kind === "statement" ? "default" : traceLevelColor(row.level)}
+      />
+    ),
+  },
+  {
+    id: "step",
+    header: "Step",
+    width: 220,
+    render: (row) => (row.error
+      ? (
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          <ErrorOutlineIcon fontSize="small" color="error" />
+          <Typography component="span" variant="body2" color="error" fontWeight={600}>{row.step ?? "-"}</Typography>
+        </Stack>
+      )
+      : row.step ?? "-"),
+  },
+  {
+    id: "detail",
+    header: "Event",
+    render: (row) => (row.kind === "statement"
+      ? <TruncatedText text={row.sql} mono maxWidth={640} />
+      : <TruncatedText text={row.message} maxWidth={640} />),
+  },
+];
 
 const statementColumns: Column<RunStatement>[] = [
   { id: "ordinal", header: "Ordinal", width: 90, render: (row) => row.ordinal },
@@ -138,6 +197,7 @@ function RunDetailContent({ runId }: { runId: string }) {
   const [tab, setTab] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [statement, setStatement] = useState<RunStatement | null>(null);
+  const [traceEntry, setTraceEntry] = useState<RunTraceEntry | null>(null);
   const theme = useTheme();
   // A soft red wash marking the one statement that threw (see rowSx on the Statements table below).
   const failedRowStyle = { backgroundColor: alpha(theme.palette.error.main, 0.14) };
@@ -152,6 +212,45 @@ function RunDetailContent({ runId }: { runId: string }) {
       }
 
       return pollingInterval(3000)();
+    },
+  });
+
+  // The live trace: while the run is queued or running, the Trace tab is fed by the SSE stream (entries
+  // arrive the moment the executing node persists them); once the run ends, the stream's end frame (or the
+  // header poll observing the terminal status, whichever lands first) refetches everything under this run so
+  // every tab shows the authoritative re-projected result without a manual reload.
+  const status = query.data?.status;
+  const live = status === "queued" || status === "running";
+  const refreshRun = useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: ["runs", runId] }),
+    [queryClient, runId],
+  );
+  const { entries: liveEntries, connected: streamConnected } = useRunTraceStream(runId, live, refreshRun);
+  const wasLive = useRef(false);
+  useEffect(() => {
+    if (live) {
+      wasLive.current = true;
+    } else if (wasLive.current) {
+      wasLive.current = false;
+      refreshRun();
+    }
+  }, [live, refreshRun]);
+
+  // "Copy trace" fetches the server-rendered plain-text trace (the same document the LLM-facing
+  // /trace/text endpoint serves) and puts it on the clipboard, so what is pasted into a ticket or a chat is
+  // always the complete, canonical rendering rather than whatever page the table happens to show.
+  const copyTrace = useMutation({
+    mutationFn: () => runApi.traceText(runId),
+    onSuccess: async (text) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        enqueueSnackbar("Trace copied to clipboard.", { variant: "success" });
+      } catch {
+        enqueueSnackbar("The browser blocked clipboard access.", { variant: "error" });
+      }
+    },
+    onError: (error) => {
+      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
     },
   });
 
@@ -320,14 +419,86 @@ function RunDetailContent({ runId }: { runId: string }) {
         allowScrollButtonsMobile
         data-testid="run-tabs"
       >
-        <Tab label="Statements" data-testid="tab-statements" />
-        <Tab label="Assertions" data-testid="tab-assertions" />
+        <Tab label="Trace" data-testid="tab-trace" />
         <Tab label="Files" data-testid="tab-files" />
-        <Tab label="Surrogate keys" data-testid="tab-surrogate-keys" />
-        <Tab label="Health metrics" data-testid="tab-health-metrics" />
+        <Tab label="Statements" data-testid="tab-statements" />
+        <Tab label="Surrogate" data-testid="tab-surrogate-keys" />
+        <Tab label="Assertions" data-testid="tab-assertions" />
+        <Tab label="Health" data-testid="tab-health-metrics" />
       </Tabs>
 
       {tab === 0 && (
+        <Stack spacing={1}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            {live && (
+              <>
+                <Chip
+                  size="small"
+                  color={streamConnected ? "success" : "warning"}
+                  variant="outlined"
+                  label={streamConnected ? "live" : "reconnecting"}
+                  data-testid="trace-stream-state"
+                />
+                <Typography variant="body2" color="text.secondary">
+                  {streamConnected
+                    ? "Streaming the trace as the run executes."
+                    : "Connection lost; resuming the stream."}
+                </Typography>
+              </>
+            )}
+            <Stack sx={{ flexGrow: 1 }} />
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<ContentCopyIcon fontSize="small" />}
+              onClick={() => copyTrace.mutate()}
+              disabled={copyTrace.isPending}
+              data-testid="copy-trace"
+            >
+              Copy trace
+            </Button>
+          </Stack>
+          {live
+            ? (
+              // Live mode: the SSE stream pushes each entry the moment the executing node persists it. No paging
+              // while streaming (a run's trace is bounded); the end frame swaps this for the paged view below.
+              <DataTable
+                columns={traceColumns}
+                rows={liveEntries}
+                rowKey={(row) => `${row.kind}-${row.id}`}
+                onRowClick={(row) => setTraceEntry(row)}
+                rowSx={(row) => (row.error ? failedRowStyle : undefined)}
+                emptyMessage={run.status === "queued"
+                  ? "The run is queued; the trace streams in once a node claims it."
+                  : "Waiting for the first trace entry."}
+                data-testid="trace-live-table"
+              />
+            )
+            : (
+              <PagedTable
+                queryKey={["runs", runId, "trace"]}
+                fetchPage={(page, pageSize) => runApi.trace(runId, { page, pageSize })}
+                columns={traceColumns}
+                rowKey={(row) => `${row.kind}-${row.id}`}
+                onRowClick={(row) => setTraceEntry(row)}
+                rowSx={(row) => (row.error ? failedRowStyle : undefined)}
+                emptyMessage="No trace was recorded for this run."
+                data-testid="trace-table"
+              />
+            )}
+        </Stack>
+      )}
+      {tab === 1 && (
+        <PagedTable
+          queryKey={["runs", runId, "files"]}
+          fetchPage={(page, pageSize) => runApi.files(runId, { page, pageSize })}
+          columns={fileColumns}
+          rowKey={(row) => row.id}
+          emptyMessage="No files were recorded for this run."
+          data-testid="files-table"
+        />
+      )}
+      {tab === 2 && (
         <PagedTable
           queryKey={["runs", runId, "statements"]}
           fetchPage={(page, pageSize) => runApi.statements(runId, { page, pageSize })}
@@ -344,26 +515,6 @@ function RunDetailContent({ runId }: { runId: string }) {
           data-testid="statements-table"
         />
       )}
-      {tab === 1 && (
-        <PagedTable
-          queryKey={["runs", runId, "assertions"]}
-          fetchPage={(page, pageSize) => runApi.assertions(runId, { page, pageSize })}
-          columns={assertionColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="No assertions were recorded for this run."
-          data-testid="assertions-table"
-        />
-      )}
-      {tab === 2 && (
-        <PagedTable
-          queryKey={["runs", runId, "files"]}
-          fetchPage={(page, pageSize) => runApi.files(runId, { page, pageSize })}
-          columns={fileColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="No files were recorded for this run."
-          data-testid="files-table"
-        />
-      )}
       {tab === 3 && (
         <PagedTable
           queryKey={["runs", runId, "surrogate-keys"]}
@@ -376,6 +527,16 @@ function RunDetailContent({ runId }: { runId: string }) {
       )}
       {tab === 4 && (
         <PagedTable
+          queryKey={["runs", runId, "assertions"]}
+          fetchPage={(page, pageSize) => runApi.assertions(runId, { page, pageSize })}
+          columns={assertionColumns}
+          rowKey={(row) => row.id}
+          emptyMessage="No assertions were recorded for this run."
+          data-testid="assertions-table"
+        />
+      )}
+      {tab === 5 && (
+        <PagedTable
           queryKey={["runs", runId, "health-metrics"]}
           fetchPage={(page, pageSize) => runApi.healthMetrics(runId, { page, pageSize })}
           columns={healthMetricColumns}
@@ -384,6 +545,35 @@ function RunDetailContent({ runId }: { runId: string }) {
           data-testid="health-metrics-table"
         />
       )}
+
+      <Dialog
+        open={traceEntry !== null}
+        onClose={() => setTraceEntry(null)}
+        maxWidth="lg"
+        fullWidth
+        data-testid="trace-entry-dialog"
+      >
+        <DialogTitle>
+          {traceEntry
+            ? (traceEntry.kind === "statement"
+              ? `Statement ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`
+              : `Event ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`)
+            : ""}
+        </DialogTitle>
+        <DialogContent>
+          {traceEntry?.error && (
+            <Alert severity="error" sx={{ mb: 2 }} data-testid="trace-entry-error">{traceEntry.error}</Alert>
+          )}
+          {traceEntry?.kind === "statement" && traceEntry.sql !== null && (
+            <CodeView value={traceEntry.sql} language="sql" data-testid="trace-entry-sql" />
+          )}
+          {traceEntry?.kind === "event" && (
+            <Typography variant="body2" whiteSpace="pre-wrap" data-testid="trace-entry-message">
+              {traceEntry.message}
+            </Typography>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={statement !== null}

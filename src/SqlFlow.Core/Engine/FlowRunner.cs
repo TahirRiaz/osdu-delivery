@@ -4,6 +4,7 @@ using System.Globalization;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Diagnostics;
+using SqlFlow.Core.Events;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Model;
 using SqlFlow.Core.Runs;
@@ -68,7 +69,7 @@ public sealed class FlowRunner
     public async Task<FlowPlan> PlanAsync(FlowDefinition flow, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var context = new RunContext(Guid.CreateVersion7(), flow.FlowId, flow.Name);
+        var context = new RunContext(Guid.CreateVersion7(), flow.FlowId, flow.Name, _events);
         using var scope = _logger.BeginScope("Flow {FlowName} ({RunId})", flow.Name, context.RunId);
         return await PlanCoreAsync(flow, context, ct).ConfigureAwait(false);
     }
@@ -80,11 +81,11 @@ public sealed class FlowRunner
         => RunAsync(flow, runId, null, null, ct);
 
     public Task<FlowResult> RunAsync(FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, CancellationToken ct = default)
-        => RunAsync(flow, runId, statementSink, null, null, ct);
+        => RunAsync(flow, runId, statementSink, null, null, null, ct);
 
     public Task<FlowResult> RunAsync(
         FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, string? runHistoryDirectory, CancellationToken ct = default)
-        => RunAsync(flow, runId, statementSink, runHistoryDirectory, null, ct);
+        => RunAsync(flow, runId, statementSink, runHistoryDirectory, null, null, ct);
 
     /// <param name="flow">The validated flow to run.</param>
     /// <param name="runId">An orchestrator-assigned run id stamped on the run instead of minting one; the
@@ -102,14 +103,19 @@ public sealed class FlowRunner
     /// table instead of the flow's own target, so deleting rows there re-opens the read window (bronze is driven
     /// by what silver holds). Null (a direct CLI run, or no unambiguous downstream table) probes the flow's own
     /// target. The anchor is column-safe and reachability-safe: an absent table/column falls back to the target.</param>
+    /// <param name="events">A per-run event sink attached ALONGSIDE the host-wide one (the executor's artifact
+    /// collector, and through it the node's live catalog writer), so this run's canonical events reach the
+    /// run.json <c>events</c> array and the control plane's Events view while the CLI console keeps its own
+    /// stream. Null (a plain library caller) publishes to the host-wide sink only.</param>
     /// <param name="ct">Cancellation for the run.</param>
     public async Task<FlowResult> RunAsync(
         FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, string? runHistoryDirectory,
-        RelationalObject? watermarkTable, CancellationToken ct = default)
+        RelationalObject? watermarkTable, IFlowEventSink? events = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
 
-        var context = new RunContext(runId ?? Guid.CreateVersion7(), flow.FlowId, flow.Name, runHistoryDirectory);
+        var runEvents = events is null ? _events : new CompositeFlowEventSink(_events, events);
+        var context = new RunContext(runId ?? Guid.CreateVersion7(), flow.FlowId, flow.Name, runEvents, runHistoryDirectory);
         var startedAt = Stopwatch.GetTimestamp();
         string? connectionString = null;
         IncrementalSummary? incrementalSummary = null;
@@ -702,7 +708,7 @@ public sealed class FlowRunner
             activity?.SetTag("rows", rowCount);
             context.Trace.Add(new TraceEntry { Operation = operation, ElapsedMs = elapsedMs, Succeeded = true, Rows = rowCount });
             _logger.LogDebug("Stage '{Stage}' ok in {ElapsedMs:F1} ms.", operation, elapsedMs);
-            _events.Publish(new FlowEvent
+            context.Events.Publish(new FlowEvent
             {
                 RunId = context.RunId,
                 FlowId = context.FlowId,
@@ -719,7 +725,7 @@ public sealed class FlowRunner
             var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             context.Trace.Add(new TraceEntry { Operation = operation, ElapsedMs = elapsedMs, Succeeded = false, Detail = ex.Message });
-            _events.Publish(new FlowEvent
+            context.Events.Publish(new FlowEvent
             {
                 RunId = context.RunId,
                 FlowId = context.FlowId,
@@ -740,8 +746,8 @@ public sealed class FlowRunner
             return true;
         });
 
-    private void Emit(RunContext context, string message, FlowEventLevel level = FlowEventLevel.Info, string? stage = null)
-        => _events.Publish(new FlowEvent
+    private static void Emit(RunContext context, string message, FlowEventLevel level = FlowEventLevel.Info, string? stage = null)
+        => context.Events.Publish(new FlowEvent
         {
             RunId = context.RunId,
             FlowId = context.FlowId,
@@ -756,11 +762,17 @@ public sealed class FlowRunner
            ?? throw new SqlFlowException($"No source reader is registered for source type '{sourceType}'.");
 
     /// <summary>Per-run state. A fresh instance per run/plan call keeps concurrent runs isolated.</summary>
-    private sealed class RunContext(Guid runId, Guid flowId, string flowName, string? runHistoryDirectory = null)
+    private sealed class RunContext(
+        Guid runId, Guid flowId, string flowName, IFlowEventSink events, string? runHistoryDirectory = null)
     {
         public Guid RunId { get; } = runId;
         public Guid FlowId { get; } = flowId;
         public string FlowName { get; } = flowName;
+
+        /// <summary>This run's event sink: the host-wide sink plus any per-run sink the caller attached (the
+        /// executor's artifact collector, the node's live catalog writer). Carried on the context so concurrent
+        /// runs on the singleton runner never see each other's sinks.</summary>
+        public IFlowEventSink Events { get; } = events;
 
         /// <summary>The directory this flow's on-disk run history is anchored to (the flow document's folder),
         /// so the incremental probe can read the durable last-processed watermark from prior runs. Null when the

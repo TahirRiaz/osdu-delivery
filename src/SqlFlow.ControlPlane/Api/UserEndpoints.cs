@@ -14,9 +14,10 @@ namespace SqlFlow.ControlPlane.Api;
 /// </summary>
 public static class UserEndpoints
 {
-    /// <summary>Local passwords must be at least this long. Length is the one composition rule that measurably
-    /// helps; character-class rules are deliberately not imposed.</summary>
-    public const int MinPasswordLength = 12;
+    /// <summary>Local passwords must be at least this long. The rule lives in <see cref="LocalPasswords"/> so the
+    /// API and the CLI's offline <c>user</c> command enforce the same length; this alias keeps the existing call
+    /// sites unchanged.</summary>
+    public const int MinPasswordLength = LocalPasswords.MinLength;
 
     public static RouteGroupBuilder MapUserEndpoints(this RouteGroupBuilder group)
     {

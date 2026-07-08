@@ -35,6 +35,24 @@ public sealed record IngestionLoadPolicy
     /// combinable with SCD2 versioning. Null (the default) applies the plain set-based upsert.</summary>
     public string? DataSetColumn { get; init; }
 
+    /// <summary>
+    /// Per-file (per-dataset) full replace: the column that identifies a source file/dataset, typically
+    /// <c>FileName_DW</c> (set the pre flow's <c>showPathWithFileName</c> so it carries the full path, the safe
+    /// identity that never collides across folders). When set, the apply becomes a purge-then-insert scoped to
+    /// the incoming batch: before inserting, the engine deletes every target row whose <see cref="ReloadColumn"/>
+    /// value is present in the staged batch (a set-based <c>DELETE ... WHERE EXISTS</c>, NULL-safe so rows with no
+    /// file identity are never touched), then inserts the staged rows. A resent file therefore fully replaces its
+    /// prior version - including records the new version dropped, which a keyed upsert would leave orphaned -
+    /// while files absent from this run's batch are untouched. It supersedes the keyed upsert (there is nothing to
+    /// update after the purge); when <see cref="KeyColumns"/> are also declared, the insert collapses the batch to
+    /// one row per key so the target's unique key is not violated. Not combinable with
+    /// <see cref="DataSetColumn"/> (the ordered upsert loop), SCD2 versioning, the match-key delete pass, or
+    /// <c>target.truncateBeforeLoad</c>. Null (the default) applies the normal upsert. Designed for the chained
+    /// file landing pattern where the ods flow reads <c>[pre].[v&lt;Table&gt;]</c> and the provenance columns ride
+    /// through the view onto the target.
+    /// </summary>
+    public string? ReloadColumn { get; init; }
+
     /// <summary>Stream rows from source to target (legacy StreamData, default true). When false the engine
     /// buffers in memory and writes on <see cref="Threads"/> parallel writers.</summary>
     public bool StreamData { get; init; } = true;
@@ -52,6 +70,22 @@ public sealed record IngestionLoadPolicy
     /// <summary>Keep the run-scoped staging table after a SUCCESSFUL run (default false: drop on success). A
     /// FAILED run always keeps its staging table for debugging, regardless of this flag.</summary>
     public bool KeepStagingTable { get; init; }
+
+    /// <summary>
+    /// After a SUCCESSFUL load, truncate the upstream landing ("pre") table that feeds this flow's source, but
+    /// only once the target has caught up: the truncate fires only when MAX(the incremental watermark) in the
+    /// target is greater than or equal to MAX in the landing table, proving every landed row has been
+    /// consolidated. Designed for the chained file landing pattern
+    /// (<c>file -&gt; [pre].[&lt;Table&gt;] -&gt; view [pre].[v&lt;Table&gt;] -&gt; target</c>): the source is the
+    /// typed view <c>[pre].[v&lt;Table&gt;]</c> and the table truncated is the landing table <c>[pre].[&lt;Table&gt;]</c>
+    /// (the leading <c>v_</c> is stripped; a source that is already a base table is truncated as-is). A FAILED
+    /// run never truncates (the truncate is on the success path); an empty landing table is a no-op; a target
+    /// that has NOT caught up leaves the landing table intact so no un-consolidated data is lost. Requires an
+    /// incremental watermark column (<see cref="IncrementalPolicy.Columns"/> or
+    /// <see cref="IncrementalPolicy.DateColumn"/>) and a SQL Server source (the landing truncate is issued as
+    /// T-SQL on the source connection); both are enforced at run start. Off by default.
+    /// </summary>
+    public bool TruncateSourceWhenConsolidated { get; init; }
 }
 
 /// <summary>

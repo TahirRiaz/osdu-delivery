@@ -75,6 +75,11 @@ public sealed record UniqueKeyCandidate
     /// <summary>True when the verdict was measured against the whole table; false when only a sample was seen.</summary>
     public required bool Verified { get; init; }
 
+    /// <summary>True when the set came from the store's own metadata (an enforced unique index or constraint) rather
+    /// than from profiling the rows. A declared key is proven by the engine that maintains it, so it is reported
+    /// verified without a scan.</summary>
+    public bool Declared { get; init; }
+
     public required long Distinct { get; init; }
 
     public required long Nulls { get; init; }
@@ -88,6 +93,16 @@ public sealed record UniqueKeyCandidate
     public bool Estimated { get; init; }
 
     public double Selectivity => Rows - Nulls > 0 ? (double)Distinct / (Rows - Nulls) : 0d;
+}
+
+/// <summary>A column removed from the search before any row was read, with the reason: a type that cannot form a
+/// practical key (LOB, floating point, CLR, rowversion, sql_variant, a non-persisted computed column), or a column
+/// the live object no longer exposes. Surfaced in the report so an ignored column explains itself.</summary>
+public sealed record ExcludedColumn
+{
+    public required string Column { get; init; }
+
+    public required string Reason { get; init; }
 }
 
 /// <summary>The result of detection: the table's size, whether a sample was used, the per-column cardinalities, and
@@ -107,6 +122,10 @@ public sealed record UniqueKeyReport
     public required IReadOnlyList<ColumnCardinality> Columns { get; init; }
 
     public required IReadOnlyList<UniqueKeyCandidate> Candidates { get; init; }
+
+    /// <summary>Columns removed from the search before any row was read, each with its reason (empty when all the
+    /// requested columns were searchable). Populated by callers that know the exclusions, such as the CLI.</summary>
+    public IReadOnlyList<ExcludedColumn> ExcludedColumns { get; init; } = [];
 
     public string? Note { get; init; }
 }
@@ -146,6 +165,11 @@ public interface IUniquenessProbe : IAsyncDisposable
 
     /// <summary>True when the working set is a sample smaller than the whole table.</summary>
     bool Sampled { get; }
+
+    /// <summary>Column sets the store itself already enforces as unique (an enabled, unfiltered unique index or
+    /// constraint), empty when none exist or the store has no such metadata. A declared set is proven by the engine
+    /// that maintains it, so the detector reports it without reading a single row.</summary>
+    IReadOnlyList<IReadOnlyList<string>> DeclaredUniqueKeys { get; }
 
     /// <summary>Measures every given column set over the working set in a single pass (empty input returns empty).</summary>
     Task<IReadOnlyList<SetMeasure>> MeasureManyAsync(IReadOnlyList<IReadOnlyList<string>> sets, CancellationToken ct = default);

@@ -53,7 +53,7 @@ internal static class Program
         // 'healthcheck' addresses its table through --source/--object, 'auth' is a pure environment check, and 'db'
         // takes a subcommand (migrate/sync/status); none take a pipeline file.
         var command = positional.Length > 0 ? positional[0].ToLowerInvariant() : string.Empty;
-        var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "detect-unique-key");
+        var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "user" or "detect-unique-key");
         if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
         {
             PrintUsage();
@@ -363,6 +363,9 @@ internal static class Program
                 case "runs":
                     return await RunRunsAsync(provider, positional, args).ConfigureAwait(false);
 
+                case "user":
+                    return await RunUserAsync(provider, positional, args).ConfigureAwait(false);
+
                 default:
                     Console.Error.WriteLine($"Unknown command '{command}'.");
                     PrintUsage();
@@ -565,6 +568,193 @@ internal static class Program
     }
 
     /// <summary>
+    /// Local-user administration straight against the shadow catalog: <c>sqlflow user reset-password &lt;username&gt;
+    /// [--db &lt;ref&gt;]</c>. Like <c>db</c>, <c>worker</c>, and <c>runs</c>, it talks to the catalog directly (no
+    /// control-plane HTTP hop, no bearer token), so it works from any host that can reach the catalog database and
+    /// needs only database access, not a running control plane. That makes it the recovery path when no admin can
+    /// sign in, and it removes the reason to keep a break-glass bootstrap secret enabled: the new password is read
+    /// from a hidden interactive prompt (never a flag, so it stays out of shell history) and hashed with the exact
+    /// same hasher the control plane verifies against. The connection is a reference (default
+    /// <c>${env:SQLFLOW_CATALOG_DB}</c>), never an embedded secret.
+    /// </summary>
+    private static async Task<int> RunUserAsync(IServiceProvider provider, string[] positional, string[] args)
+    {
+        var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+        if (sub != "reset-password")
+        {
+            Console.Error.WriteLine(
+                "ERROR  'user' supports: reset-password <username>. Usage: sqlflow user reset-password <username> [--db <conn-ref>]");
+            return 1;
+        }
+
+        if (positional.Length < 3 || string.IsNullOrWhiteSpace(positional[2]))
+        {
+            Console.Error.WriteLine("ERROR  'user reset-password' requires a username: sqlflow user reset-password <username> [--db <conn-ref>]");
+            return 1;
+        }
+
+        var username = positional[2];
+        var reference = GetOption(args, "--db") ?? "${env:SQLFLOW_CATALOG_DB}";
+        if (SecretHygiene.LooksLikeEmbeddedSecret(reference))
+        {
+            Console.Error.WriteLine(
+                "WARN  --db embeds a credential on the command line (it lands in shell history). Prefer the canonical " +
+                "${env:SQLFLOW_CATALOG_DB}, an explicit ${env:NAME} or ${keyvault:vault/secret} reference, with local " +
+                "values in the git-ignored .sqlflow/env file.");
+        }
+
+        string connectionString;
+        try
+        {
+            connectionString = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
+        }
+        catch (SqlFlowException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+
+        // EF Core throws SqlException / InvalidOperationException (not SqlFlowException) on a bad connection or
+        // permission; catch them here so the verb reports a clean, redacted message instead of a stack trace.
+        try
+        {
+            await using var db = CatalogDatabase.Create(connectionString);
+            var user = await UserStore.FindByUsernameAsync(db, username).ConfigureAwait(false);
+            if (user is null)
+            {
+                Console.Error.WriteLine($"ERROR  no user '{username}' in the catalog.");
+                return 1;
+            }
+
+            // Only local users hold a password here; an SSO (Entra) user's credential lives in the external
+            // provider, so refuse before prompting rather than after. (UserStore.SetPasswordHashAsync enforces the
+            // same rule as a backstop.)
+            if (user.Provider != UserProviders.Local)
+            {
+                Console.Error.WriteLine(
+                    $"ERROR  user '{user.Username}' signs in through '{user.Provider}', not a local password; reset it in that provider.");
+                return 1;
+            }
+
+            if (!user.Active)
+            {
+                Console.Error.WriteLine(
+                    $"NOTE  user '{user.Username}' is currently deactivated; the reset succeeds but they cannot sign in until reactivated.");
+            }
+
+            var password = PromptForNewPassword();
+            if (password is null)
+            {
+                // The prompt already explained why (mismatch, too short, or empty); treat as a clean abort.
+                return 1;
+            }
+
+            var hash = LocalPasswords.Hash(user, password);
+            var nowUtc = DateTime.UtcNow;
+            var outcome = await UserStore.SetPasswordHashAsync(db, user.Id, hash, nowUtc).ConfigureAwait(false);
+            switch (outcome)
+            {
+                case UserMutation.Applied:
+                    Console.WriteLine($"OK   password reset for '{user.Username}' ({user.Role}).");
+                    // A break-glass credential change is exactly what enterprise policy expects audited. There is no
+                    // catalog audit table (the API's own reset writes none either), so emit a structured, secret-free
+                    // record of who/what/when/where to the console the operator's session capture (PAM/bastion) logs.
+                    // DescribeTarget is secret-free (server + database only); the password never appears anywhere.
+                    Console.WriteLine(
+                        $"     audit: '{user.Username}' ({user.Role}) reset by {Environment.UserName}@{Environment.MachineName} " +
+                        $"on {CatalogDatabase.DescribeTarget(connectionString)} at {nowUtc.ToString("O", CultureInfo.InvariantCulture)}.");
+                    return 0;
+                case UserMutation.NotFound:
+                    // The row vanished between lookup and update (a concurrent deactivation-as-delete never removes
+                    // rows, so this is only a genuine delete outside the app); report it plainly.
+                    Console.Error.WriteLine($"ERROR  user '{user.Username}' no longer exists.");
+                    return 1;
+                case UserMutation.NotLocal:
+                    Console.Error.WriteLine($"ERROR  user '{user.Username}' is not a local-password account; nothing was changed.");
+                    return 1;
+                default:
+                    Console.Error.WriteLine($"ERROR  password reset for '{user.Username}' did not apply.");
+                    return 1;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not SqlFlowException)
+        {
+            Console.Error.WriteLine($"ERROR  user 'reset-password' failed: {SecretHygiene.RedactedMessage(ex.Message)}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Reads a new local password without echoing it, then confirms it, returning null (after printing why) on any
+    /// rejection so the caller aborts cleanly. When stdin is redirected (piped automation) a single line is read
+    /// instead: there is no terminal to mask or to confirm against, so the one line is taken as-is and still
+    /// length-checked. The value never touches a command-line flag, so it stays out of shell history either way.
+    /// </summary>
+    private static string? PromptForNewPassword()
+    {
+        if (Console.IsInputRedirected)
+        {
+            var piped = Console.ReadLine();
+            if (string.IsNullOrEmpty(piped) || piped.Length < LocalPasswords.MinLength)
+            {
+                Console.Error.WriteLine($"ERROR  the password must be at least {LocalPasswords.MinLength} characters.");
+                return null;
+            }
+
+            return piped;
+        }
+
+        Console.Write("New password: ");
+        var password = ReadHiddenLine();
+        if (password.Length < LocalPasswords.MinLength)
+        {
+            Console.Error.WriteLine($"ERROR  the password must be at least {LocalPasswords.MinLength} characters.");
+            return null;
+        }
+
+        Console.Write("Confirm password: ");
+        var confirm = ReadHiddenLine();
+        if (!string.Equals(password, confirm, StringComparison.Ordinal))
+        {
+            Console.Error.WriteLine("ERROR  the two entries did not match; nothing was changed.");
+            return null;
+        }
+
+        return password;
+    }
+
+    /// <summary>Reads one line from the terminal without echoing keystrokes. Backspace edits the buffer; Enter
+    /// finishes. Control characters (arrows, tab) are ignored rather than injected into the password.</summary>
+    private static string ReadHiddenLine()
+    {
+        var builder = new StringBuilder();
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            if (key.Key == ConsoleKey.Enter)
+            {
+                Console.WriteLine();
+                return builder.ToString();
+            }
+
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Length--;
+                }
+
+                continue;
+            }
+
+            if (!char.IsControl(key.KeyChar))
+            {
+                builder.Append(key.KeyChar);
+            }
+        }
+    }
+
+    /// <summary>
     /// The shadow-catalog (database mode) operations: <c>sqlflow db migrate|sync|status [path] [--db &lt;ref&gt;]</c>.
     /// The catalog is an EF-managed read-model of the git/YAML estate and the on-disk run history; git stays the
     /// source of truth. <c>migrate</c> upgrades an existing catalog to the current schema version, and with
@@ -657,7 +847,7 @@ internal static class Program
                         $"OK   synced '{directory}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
                         $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated; runs +{result.RunsAdded} added " +
                         $"({result.RunFilesAdded} files, {result.RunAssertionsAdded} assertions, {result.RunStatementsAdded} statements, " +
-                        $"{result.RunSurrogateKeysAdded} surrogate-keys, {result.RunHealthCheckMetricsAdded} hc-metrics), " +
+                        $"{result.RunEventsAdded} events, {result.RunSurrogateKeysAdded} surrogate-keys, {result.RunHealthCheckMetricsAdded} hc-metrics), " +
                         $"{result.RunsSkipped} known, {result.RunsFailed} unreadable; " +
                         $"lineage {result.ObjectsUpserted} objects, {result.ObjectColumns} columns, {result.LineageEdges} edges, " +
                         $"{result.Waves} waves, {result.FlowDependencies} dependencies" +
@@ -1353,10 +1543,13 @@ internal static class Program
     /// <summary>
     /// <c>sqlflow detect-unique-key --source &lt;ref&gt; --object [db.]schema.table [--sample N] [--max-columns K]</c>:
     /// finds the minimal column set(s) that uniquely identify the table's rows, with no prior knowledge of its keys.
-    /// Columns are ranked by how identifying they are; an already-unique single column wins outright, else a composite
-    /// is grown greedily and reduced to a minimal key. A <c>--sample</c> run profiles a slice for speed and then
-    /// verifies each surviving candidate against the whole table, so a reported key is never merely sample-based. The
-    /// profiling is T-SQL, so the source must be SQL Server / Azure SQL. Exit 0 when a unique key is found, 2 when not.
+    /// A key the database itself declares (an enabled, unfiltered unique index or constraint) is reported straight
+    /// from metadata without reading a row (<c>--no-metadata</c> forces profiling instead); columns whose types can
+    /// never form a practical key are excluded up front. Otherwise columns are ranked by how identifying they are; an
+    /// already-unique single column wins outright, else a composite is grown greedily and reduced to a minimal key. A
+    /// <c>--sample</c> run profiles a random sample for speed and then verifies each surviving candidate against the
+    /// whole table, so a reported key is never merely sample-based. The profiling is T-SQL, so the source must be
+    /// SQL Server / Azure SQL. Exit 0 when a unique key is found, 2 when not.
     /// </summary>
     private static async Task<int> RunDetectUniqueKeyAsync(IServiceProvider provider, string[] args)
     {
@@ -1406,9 +1599,11 @@ internal static class Program
             .ResolveAsync(source, ConnectionRole.Source, kind).ConfigureAwait(false);
 
         await using var probe = await SqlServerUniquenessProbe
-            .CreateAsync(resolved.CanonicalString, name.QualifiedName, columns, SampleOption(args))
+            .CreateAsync(resolved.CanonicalString, name.QualifiedName, columns, SampleOption(args),
+                trustDeclaredKeys: !args.Contains("--no-metadata"))
             .ConfigureAwait(false);
-        var report = (await UniqueKeyDetector.DetectAsync(probe, columns, options).ConfigureAwait(false)) with { ObjectName = name.QualifiedName };
+        var report = (await UniqueKeyDetector.DetectAsync(probe, probe.EligibleColumns, options).ConfigureAwait(false))
+            with { ObjectName = name.QualifiedName, ExcludedColumns = probe.ExcludedColumns };
 
         if (GetOption(args, "--out", "-o") is { } outPath)
         {
@@ -1450,13 +1645,19 @@ internal static class Program
             {
                 var approx = candidate.Estimated ? "~" : string.Empty;
                 var status = candidate.IsUnique
-                    ? candidate.Verified ? "UNIQUE" : "unique on the sample (unverified)"
+                    ? candidate.Declared ? "UNIQUE (declared)" : candidate.Verified ? "UNIQUE" : "unique on the sample (unverified)"
                     : $"not unique ({approx}{candidate.Duplicates} duplicate row(s)"
                       + (candidate.Nulls > 0 ? $", {approx}{candidate.Nulls} null row(s)" : string.Empty)
                       + (candidate.Estimated ? ", sample estimate" : string.Empty) + ")";
                 Console.WriteLine(
                     $"   {rank++}. [{string.Join(", ", candidate.Columns)}]  {status}  selectivity {approx}{candidate.Selectivity.ToString("0.####", CultureInfo.InvariantCulture)}");
             }
+        }
+
+        if (report.ExcludedColumns.Count > 0)
+        {
+            Console.WriteLine(
+                $"  excluded from the search: {string.Join(", ", report.ExcludedColumns.Select(e => $"{e.Column} ({e.Reason})"))}");
         }
 
         if (report.Note is not null)
@@ -1479,7 +1680,7 @@ internal static class Program
             .ResolveAsync(source, ConnectionRole.Source, kind).ConfigureAwait(false);
         await using var probe = await SqlServerUniquenessProbe
             .CreateAsync(resolved.CanonicalString, name.QualifiedName, columns, sample).ConfigureAwait(false);
-        var report = await UniqueKeyDetector.DetectAsync(probe, columns, new UniqueKeyOptions()).ConfigureAwait(false);
+        var report = await UniqueKeyDetector.DetectAsync(probe, probe.EligibleColumns, new UniqueKeyOptions()).ConfigureAwait(false);
 
         return report.Candidates.FirstOrDefault(c => c.IsUnique && c.Verified)?.Columns.ToArray() ?? [];
     }
@@ -1716,14 +1917,17 @@ internal static class Program
                                                  (--source defaults to the canonical ${env:SQLFLOW_SOURCE})
               sqlflow detect-unique-key --object [db.]schema.table [--source <ref>] [--sample N] [--max-columns K]
                                                  Find the minimal column set(s) that uniquely identify a table's
-                                                 rows, with no prior key knowledge: ranks columns, takes an
-                                                 already-unique single column or grows a minimal composite. The
-                                                 whole search runs in one pass per step against a sample (large
-                                                 tables auto-sample; --sample N sets the size, --sample 0 forces a
-                                                 full scan), then each finalist is confirmed against the whole table
-                                                 with a short-circuiting duplicate probe (--no-verify skips that and
-                                                 returns fast, sample-only candidates). T-SQL source. Exit 0 when a
-                                                 unique key is found, 2 when none is.
+                                                 rows, with no prior key knowledge. A key the database already
+                                                 declares (unique index/constraint) is answered from metadata
+                                                 without reading a row (--no-metadata forces profiling); unkeyable
+                                                 column types (LOB, float, CLR, ...) are excluded up front. Else
+                                                 ranks columns, takes an already-unique single column or grows a
+                                                 minimal composite, searching a random sample in batched passes
+                                                 (large tables auto-sample; --sample N sets the size, --sample 0
+                                                 forces a full scan), then each finalist is confirmed against the
+                                                 whole table (--no-verify skips that and returns fast, sample-only
+                                                 candidates). T-SQL source. Exit 0 when a unique key is found, 2
+                                                 when none is.
               sqlflow lineage  <folder>          AST-based lineage over a flow estate: declared (YAML) plus
                                                  observed (run artifacts) offline; --connect adds the derived tier
                                                  (catalog + sys.sql_modules parsed with ScriptDom: views and proc
@@ -1774,6 +1978,15 @@ internal static class Program
                                                  record it cancelled. Talks to the catalog directly (like 'worker'), so
                                                  it works from any host that can reach it. --db defaults to
                                                  ${env:SQLFLOW_CATALOG_DB}.
+              sqlflow user reset-password <username> [--db <conn-ref>]
+                                                 Reset a local user's password straight against the catalog (no
+                                                 control plane, no token; needs only database access), so an admin
+                                                 who is locked out can recover without the break-glass bootstrap
+                                                 secret. The new password is read from a hidden prompt (confirmed,
+                                                 never a flag, so it stays out of shell history), length-checked, and
+                                                 hashed exactly as the control plane verifies it. SSO (Entra) users
+                                                 are refused (their credential lives in the provider). --db defaults
+                                                 to ${env:SQLFLOW_CATALOG_DB}.
 
             Six pipeline kinds share validate/run, discriminated by the document's flowType key:
               (none)         a file flow: CSV/JSON/XML/XLS/Parquet into SQL Server (the default)

@@ -294,6 +294,7 @@ public sealed class RunGroupQueueTests
         await using (var db = CatalogDatabase.Create(cs))
         {
             await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+            await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunGroups.Where(g => g.RepoId == repoId).ExecuteDeleteAsync();
             await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();

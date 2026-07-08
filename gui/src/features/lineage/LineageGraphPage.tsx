@@ -67,14 +67,14 @@ function truncate(value: string, max: number): string {
 
 /**
  * A top-to-bottom layered (Sugiyama) layout - the layout that makes data flow readable: sources at the top,
- * consumers below, one row per level. The level ("layer") is the authoritative one when supplied via
- * <c>layerOf</c> - for the flows view that is the pipeline's execution WAVE, exactly the level the backend
- * already computes by topological sort - and otherwise falls back to a longest-path layering derived from the
- * edges (the objects view, which has no waves). Within each layer, several barycenter passes order nodes by the
- * average position of their neighbours to minimize edge crossings. Ported from the DeltaForge forge-graph
- * hierarchical layout; independent of any layout library so the wave alignment is exact.
+ * consumers below, one row per level. Levels come from a longest-path layering over the lineage edges, with
+ * cycles broken first (a DFS drops the edges that close a cycle from the level calculation, so a flow that
+ * reads a view derived from its own output still gets a real level instead of collapsing onto the top row).
+ * Within each layer, several barycenter passes order nodes by the average position of their neighbours to
+ * minimize edge crossings. Ported from the DeltaForge forge-graph hierarchical layout; independent of any
+ * layout library so the level alignment is exact.
  */
-function layeredLayout(nodes: FlowNode[], edges: FlowEdge[], layerOf?: Map<string, number>): FlowNode[] {
+function layeredLayout(nodes: FlowNode[], edges: FlowEdge[]): FlowNode[] {
   if (nodes.length === 0) {
     return nodes;
   }
@@ -93,49 +93,85 @@ function layeredLayout(nodes: FlowNode[], edges: FlowEdge[], layerOf?: Map<strin
     }
   }
 
-  // ---- Layer assignment: the supplied levels (waves) when present, else longest-path via Kahn. --------------
-  const layer = new Map<string, number>();
-  if (layerOf && [...ids].some((id) => layerOf.has(id))) {
-    for (const id of ids) {
-      layer.set(id, layerOf.get(id) ?? 0);
-    }
-  } else {
-    const remaining = new Map<string, number>();
-    for (const id of ids) {
-      remaining.set(id, incoming.get(id)!.length);
-    }
-    const queue: string[] = [];
-    for (const id of ids) {
-      if (remaining.get(id) === 0) {
-        layer.set(id, 0);
-        queue.push(id);
-      }
-    }
-    for (let head = 0; head < queue.length; head++) {
-      const id = queue[head];
-      const level = layer.get(id)!;
-      for (const child of outgoing.get(id)!) {
-        layer.set(child, Math.max(layer.get(child) ?? 0, level + 1));
-        const rem = remaining.get(child)! - 1;
-        remaining.set(child, rem);
-        if (rem <= 0) {
-          queue.push(child);
-        }
-      }
-    }
-    for (const id of ids) {
-      if (!layer.has(id)) {
-        layer.set(id, 0); // a node in a cycle the queue never drained: pin to the first layer
+  // De-duplicated adjacency for the level calculation: the objects view records the same source->target pair
+  // once per flow, and a duplicate edge must not be mistaken for a cycle by the DFS below.
+  const uniqueOut = new Map<string, string[]>();
+  const layerInDegree = new Map<string, number>();
+  for (const id of ids) {
+    uniqueOut.set(id, []);
+    layerInDegree.set(id, 0);
+  }
+  for (const [source, targets] of outgoing) {
+    const seen = new Set<string>();
+    for (const target of targets) {
+      if (!seen.has(target)) {
+        seen.add(target);
+        uniqueOut.get(source)!.push(target);
+        layerInDegree.set(target, layerInDegree.get(target)! + 1);
       }
     }
   }
 
-  // Compress sparse/negative levels (e.g. an unwaved -1, or waves 0,2,4) to consecutive 0,1,2,... so the
-  // columns are evenly spaced.
-  const uniqueLevels = [...new Set(layer.values())].sort((a, b) => a - b);
-  const compress = new Map(uniqueLevels.map((v, i) => [v, i]));
-  for (const [id, v] of layer) {
-    layer.set(id, compress.get(v)!);
+  // ---- Layer assignment: longest path, with cycles broken first. --------------------------------------------
+  // A cyclic subgraph (e.g. a flow that reads the view derived from its own output table) would leave Kahn's
+  // queue undrained and pin every node of the cycle to the top row. A DFS therefore marks each edge that closes
+  // back onto its own stack; those edges are excluded from the level calculation (they still draw, as upward
+  // curves), so the remaining graph is a DAG and every node gets a real level. Nodes with the fewest inbound
+  // edges are visited first so cycles break in the natural flow direction.
+  const backTargets = new Map<string, Set<string>>();
+  const state = new Map<string, number>(); // 1 = on the DFS stack, 2 = finished
+  const roots = [...ids].sort((a, b) => layerInDegree.get(a)! - layerInDegree.get(b)!);
+  for (const root of roots) {
+    if (state.has(root)) {
+      continue;
+    }
+    const stack: Array<{ id: string; next: number }> = [{ id: root, next: 0 }];
+    state.set(root, 1);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      const children = uniqueOut.get(frame.id)!;
+      if (frame.next < children.length) {
+        const child = children[frame.next];
+        frame.next += 1;
+        const childState = state.get(child);
+        if (childState === 1) {
+          (backTargets.get(frame.id) ?? backTargets.set(frame.id, new Set()).get(frame.id)!).add(child);
+          layerInDegree.set(child, layerInDegree.get(child)! - 1);
+        } else if (childState === undefined) {
+          state.set(child, 1);
+          stack.push({ id: child, next: 0 });
+        }
+      } else {
+        state.set(frame.id, 2);
+        stack.pop();
+      }
+    }
+  }
+
+  // Longest-path layering over the acyclic remainder: a node sits one row below its deepest producer, so the
+  // levels are consecutive from 0 and every row reads top to bottom in dependency order.
+  const layer = new Map<string, number>();
+  const queue: string[] = [];
+  for (const id of ids) {
+    if (layerInDegree.get(id) === 0) {
+      layer.set(id, 0);
+      queue.push(id);
+    }
+  }
+  for (let head = 0; head < queue.length; head++) {
+    const id = queue[head];
+    const level = layer.get(id)!;
+    for (const child of uniqueOut.get(id)!) {
+      if (backTargets.get(id)?.has(child)) {
+        continue;
+      }
+      layer.set(child, Math.max(layer.get(child) ?? 0, level + 1));
+      const rem = layerInDegree.get(child)! - 1;
+      layerInDegree.set(child, rem);
+      if (rem === 0) {
+        queue.push(child);
+      }
+    }
   }
 
   const groups = new Map<number, string[]>();
@@ -1052,9 +1088,12 @@ export default function LineageGraphPage() {
                 sx={{ bgcolor: brandToken("--sf-series-7"), color: brandToken("--sf-primary-contrast") }}
               />
             </Stack>
-            <Stack direction="row" spacing={1}>
+            <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
               <Button size="small" variant="contained" onClick={() => openNode(focus.id)} data-testid="graph-open-selected">
                 {graph.openTarget(focus.id).label}
+              </Button>
+              <Button size="small" onClick={() => setScriptKey(focus.id)} data-testid="graph-view-script">
+                View script
               </Button>
               <Button size="small" onClick={() => focusNode(null)} data-testid="graph-clear-focus">
                 Clear

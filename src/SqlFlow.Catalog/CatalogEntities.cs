@@ -332,6 +332,13 @@ public class CatalogObject
     /// <summary>When <see cref="Script"/> was last refreshed. Null when there is no script.</summary>
     public DateTime? ScriptUpdatedUtc { get; set; }
 
+    /// <summary>The object's depth in the estate-wide data-movement graph, computed by the lineage sync: 0 for
+    /// a source nothing produces (a file, a pre-existing table), and one more than the deepest object it is
+    /// derived from (through a flow's read-to-write movement or a view's base-table derivation). Global across
+    /// repos, so a table produced in one repo keeps its depth when another repo only reads it. Null when the
+    /// object takes part in no data movement (a procedure a flow requires, or lineage not computed yet).</summary>
+    public int? Level { get; set; }
+
     public DateTime FirstSeenUtc { get; set; }
 
     public DateTime LastSeenUtc { get; set; }
@@ -459,6 +466,11 @@ public class CatalogRunStatement
     /// <summary>1-based position in the run's execution order (across every source, in projection order).</summary>
     public int Ordinal { get; set; }
 
+    /// <summary>When the statement was generated (UTC): the interleave key that places it at its point in the
+    /// run's event timeline (the Events view merges statements and <see cref="CatalogRunEvent"/> rows by this
+    /// instant). Null on rows projected from an artifact that predates the timestamped trace.</summary>
+    public DateTime? TimestampUtc { get; set; }
+
     /// <summary>The run step that produced the statement (for example staging.create, target.evolve, schema.ddl,
     /// surrogateKey).</summary>
     public string Step { get; set; } = string.Empty;
@@ -469,6 +481,44 @@ public class CatalogRunStatement
     /// one statement per failed run carries this: the one whose execution threw. It lets the Statements view flag
     /// the culprit instead of leaving every row looking identical.</summary>
     public string? Error { get; set; }
+}
+
+/// <summary>
+/// One canonical run event: a progress, decision, or warning event the engine published while the run executed
+/// (a file it started reading, the watermark it resolved, a stage summary with rows and timing, an engine
+/// decision, a warning). Projected from the run.json <c>events</c> array at completion; while a run is live the
+/// node streams these rows in as the events happen, so the run detail's Events view updates in flight. Generated
+/// SQL is deliberately not duplicated here: statements live in <see cref="CatalogRunStatement"/> and the two
+/// streams are interleaved by timestamp when the timeline is shown. Drill-down under a <see cref="CatalogRun"/>.
+/// </summary>
+public class CatalogRunEvent
+{
+    public long Id { get; set; }
+
+    public Guid RunId { get; set; }
+
+    public Guid? RepoId { get; set; }
+
+    /// <summary>1-based position in the run's event order (publication order).</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>When the event happened (UTC).</summary>
+    public DateTime TimestampUtc { get; set; }
+
+    /// <summary>The event's level: trace, debug, info, warning, or error (see RunEventLevels in SqlFlow.Core).</summary>
+    public string Level { get; set; } = string.Empty;
+
+    /// <summary>The run step or stage the event belongs to (for example source.open, incremental,
+    /// target.evolve); null for flow-level events that have no stage.</summary>
+    public string? Step { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>Row count attached to the event (a stage summary, a file read), when the emitter measured one.</summary>
+    public long? Rows { get; set; }
+
+    /// <summary>Elapsed milliseconds attached to the event (a stage summary), when the emitter measured one.</summary>
+    public double? ElapsedMs { get; set; }
 }
 
 /// <summary>One surrogate-key generation outcome of a run (ingestion flows): the IDENTITY-backed lookup-table

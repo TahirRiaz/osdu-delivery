@@ -170,6 +170,130 @@ export function get<T>(path: string, query?: QueryParams, signal?: AbortSignal):
   return request<T>({ method: "GET", path, query, signal });
 }
 
+/** GET for a text/plain endpoint (the rendered run trace): same auth and error shaping, raw string body. */
+export async function getText(path: string, signal?: AbortSignal): Promise<string> {
+  const base = runtimeConfig().apiBaseUrl;
+  const url = new URL(`${base}${path}`);
+  const headers: Record<string, string> = { Accept: "text/plain" };
+  if (currentToken) {
+    headers.Authorization = `Bearer ${currentToken}`;
+  }
+
+  const response = await fetch(url, { method: "GET", headers, signal: signal ?? null });
+  if (response.status === 401 && currentToken) {
+    onUnauthorized?.();
+  }
+
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("Retry-After");
+    pauseForRateLimit(retryAfter ? Number.parseInt(retryAfter, 10) || null : null);
+  }
+
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+
+  return response.text();
+}
+
+// ---- Server-Sent Events ---------------------------------------------------------------------------------------------
+
+/** One parsed SSE frame: the event name (default "message") and the joined data payload. */
+export interface SseFrame {
+  event: string;
+  data: string;
+}
+
+/**
+ * Opens an authenticated SSE stream and invokes `onFrame` for every frame until the server closes it or the
+ * signal aborts. Built on fetch (not EventSource) so the bearer token travels in the Authorization header like
+ * every other call; the caller owns reconnect policy. Heartbeat comments are consumed silently. Resolves when
+ * the server ends the stream; rejects with an AbortError on cancellation and an ApiError on a failed handshake.
+ */
+export async function streamSse(
+  path: string,
+  query: QueryParams | undefined,
+  onFrame: (frame: SseFrame) => void,
+  signal: AbortSignal,
+  onOpen?: () => void,
+): Promise<void> {
+  const base = runtimeConfig().apiBaseUrl;
+  const url = new URL(`${base}${path}`);
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== null && value !== undefined && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+
+  const headers: Record<string, string> = { Accept: "text/event-stream" };
+  if (currentToken) {
+    headers.Authorization = `Bearer ${currentToken}`;
+  }
+
+  const response = await fetch(url, { method: "GET", headers, signal });
+  if (response.status === 401 && currentToken) {
+    onUnauthorized?.();
+  }
+
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+
+  if (!response.body) {
+    throw new ApiError(0, "Streaming unsupported", "The response exposes no readable body.", null);
+  }
+
+  // The handshake succeeded and the body is readable: the stream is genuinely open (a "live" indicator
+  // flipped here is honest, unlike one set before the request).
+  onOpen?.();
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      return;
+    }
+
+    // The server writes LF; normalizing CRLF too keeps the parser correct behind any proxy that rewrites lines.
+    buffer += decoder.decode(value, { stream: true }).replaceAll("\r\n", "\n");
+    for (;;) {
+      const separator = buffer.indexOf("\n\n");
+      if (separator < 0) {
+        break;
+      }
+
+      const frame = parseSseFrame(buffer.slice(0, separator));
+      buffer = buffer.slice(separator + 2);
+      if (frame !== null) {
+        onFrame(frame);
+      }
+    }
+  }
+}
+
+/** Parses one raw SSE frame; returns null for comment-only frames (heartbeats). */
+function parseSseFrame(raw: string): SseFrame | null {
+  let event = "message";
+  const data: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith(":")) {
+      continue;
+    }
+
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      data.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  return data.length === 0 ? null : { event, data: data.join("\n") };
+}
+
 export function post<T>(path: string, body?: unknown): Promise<T> {
   return request<T>({ method: "POST", path, body });
 }

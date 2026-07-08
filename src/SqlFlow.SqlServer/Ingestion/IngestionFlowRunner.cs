@@ -234,6 +234,27 @@ public sealed class IngestionFlowRunner
             // here (the universal path for YAML, control-DB, and legacy sources) rather than silently ignored.
             EnsureSupportedFeatures(flow);
 
+            // The consolidation-gated landing truncate (step 8c) needs a watermark to compare the two sides and a
+            // SQL Server source to issue the T-SQL truncate on. Validate both here, before any data work, so a
+            // misconfigured flow fails immediately rather than after a committed load.
+            if (flow.Load.TruncateSourceWhenConsolidated)
+            {
+                if (ConsolidationWatermarkColumn(flow) is null)
+                {
+                    throw new SqlFlowException(
+                        "load.truncateSourceWhenConsolidated requires an incremental watermark (incremental.columns or " +
+                        "incremental.dateColumn): the landing table is truncated only once the target's MAX(watermark) has " +
+                        "caught up to it, so a watermark column is mandatory.");
+                }
+
+                if (resolvedSource.Kind != DataSourceKind.MSSQL)
+                {
+                    throw new SqlFlowException(
+                        $"load.truncateSourceWhenConsolidated is supported only for SQL Server sources (the [pre] landing " +
+                        $"database), not '{resolvedSource.Kind}': the landing truncate is issued as T-SQL on the source connection.");
+                }
+            }
+
             Info("run.start",
                 $"ingestion '{flow.SysAlias ?? flow.Target.Table.Name}' (flow {flow.FlowId}, run {runToken}): " +
                 $"{flow.Source.Table.QualifiedName} -> {flow.Target.Table.QualifiedName}, staging {SchemaQualified(staging)}");
@@ -401,7 +422,8 @@ public sealed class IngestionFlowRunner
                     hasUpdatedDateColumn: HasColumn(targetSchema.Columns, "UpdatedDate_DW"),
                     flow.Target.ColumnStoreIndex,
                     hasIdentityPrimaryKey: targetSchema.Columns.Any(c => c.IsPrimaryKey),
-                    scd2Enabled: flow.Versioning.Scd2.Enabled);
+                    scd2Enabled: flow.Versioning.Scd2.Enabled,
+                    reloadColumn: MapNameOrNull(nameMap, flow.Load.ReloadColumn));
                 Info("target.index.canonical", $"{canonical.Count} canonical index(es) on the new target");
                 foreach (var statement in canonical)
                 {
@@ -447,6 +469,7 @@ public sealed class IngestionFlowRunner
                     LoadKind.Update => "upsert.update",
                     LoadKind.Insert => "upsert.insert",
                     LoadKind.UpsertLoop => "upsert.dataset-loop",
+                    LoadKind.Purge => "upsert.purge",
                     _ => "upsert.insert-all",
                 }, statement.Sql);
             }
@@ -458,10 +481,16 @@ public sealed class IngestionFlowRunner
                 (true, true) => $"batched apply: key windows of {flow.Load.BatchUpsertRowCount} row(s), per-window commits (no enclosing transaction)",
                 _ => "single-transaction apply",
             });
-            var (rowsInserted, rowsUpdated) = await ApplyLoadAsync(
-                targetConnectionString, loadStatements, useTransaction: !flow.Load.BatchUpsertToAvoidLockEscalation, ct).ConfigureAwait(false);
-            Info("upsert.apply", $"{rowsInserted} inserted, {rowsUpdated} updated");
-            var insertCmd = loadStatements.FirstOrDefault(s => s.Kind != LoadKind.Update)?.Sql;
+            // Per-file replace always runs in one transaction so the purge and the insert are atomic (old rows
+            // gone and new rows in, or neither); it never uses the per-window-commit batched apply.
+            var reloadReplace = !string.IsNullOrWhiteSpace(flow.Load.ReloadColumn);
+            var (rowsInserted, rowsUpdated, rowsPurged) = await ApplyLoadAsync(
+                targetConnectionString, loadStatements,
+                useTransaction: reloadReplace || !flow.Load.BatchUpsertToAvoidLockEscalation, ct).ConfigureAwait(false);
+            Info("upsert.apply", reloadReplace
+                ? $"per-file replace on [{flow.Load.ReloadColumn}]: {rowsPurged} purged, {rowsInserted} inserted"
+                : $"{rowsInserted} inserted, {rowsUpdated} updated");
+            var insertCmd = loadStatements.FirstOrDefault(s => s.Kind is not LoadKind.Update and not LoadKind.Purge)?.Sql;
             var updateCmd = loadStatements.FirstOrDefault(s => s.Kind == LoadKind.Update)?.Sql;
 
             // 7a. PostProcessOnTarget: raw T-SQL on the target, after the load commits, outside the load
@@ -493,7 +522,9 @@ public sealed class IngestionFlowRunner
             //      source. Runs after the load and the surrogate keys (legacy order) on EVERY run, including
             //      incremental ones: the key fetch never uses the incremental window, so a row deleted outside
             //      the window is still detected. The threshold guard skips a suspicious mass delete loudly.
-            long rowsDeleted = 0;
+            // Rows removed by the per-file replace purge count as deletions (match keys and reloadColumn are
+            // mutually exclusive by validation, so these never double-count).
+            long rowsDeleted = rowsPurged;
             RelationalObject? matchKeyTable = null;
             if (flow.Load.MatchKeysInSourceAndTarget)
             {
@@ -599,6 +630,44 @@ public sealed class IngestionFlowRunner
                 Info("transform.view", $"transformation view [{flow.Target.Table.Schema}].[{transformView.ViewName}] refreshed "
                     + $"({transformView.Columns.Count} column(s), {transformView.Columns.Count(c => c.Converted)} typed)");
                 Trace("transform.view", transformView.Ddl);
+            }
+
+            // 8c. Consolidation-gated landing truncate (load.truncateSourceWhenConsolidated). Empty the upstream
+            //     [pre] landing table that feeds the source view, but ONLY once the target has caught up: compare
+            //     MAX(watermark) on both sides and truncate the landing table only when the target's mark is at
+            //     least the landing table's. This is the safe alternative to an unconditional truncate: a target
+            //     that has not yet consolidated the landed rows keeps them (nothing is lost), while a caught-up
+            //     target reclaims the landing table so it stops growing across runs. It runs only on the success
+            //     path (a failed run's catch below never reaches here) and after the load has committed, so the
+            //     landing rows are already durably in the target before they are discarded.
+            if (flow.Load.TruncateSourceWhenConsolidated)
+            {
+                var wmColumn = ConsolidationWatermarkColumn(flow)!;   // non-null: validated at run start
+                var landing = LandingTableOf(flow.Source.Table);
+                var landingSql = SchemaQualified(landing);
+                var sourceMax = await ReadMaxAsync(resolvedSource.CanonicalString, landingSql, wmColumn, ct).ConfigureAwait(false);
+
+                if (sourceMax is null)
+                {
+                    Info("source.truncate", $"landing table {landingSql} is empty; nothing to truncate");
+                }
+                else
+                {
+                    var targetMax = await ReadMaxAsync(targetConnectionString, SchemaQualified(flow.Target.Table), wmColumn, ct).ConfigureAwait(false);
+                    if (targetMax is null || CompareWatermarks(targetMax, sourceMax) < 0)
+                    {
+                        Info("source.truncate",
+                            $"landing table {landingSql} retained: target MAX([{wmColumn}]) {Describe(targetMax)} has not caught up to landing MAX {Describe(sourceMax)}");
+                    }
+                    else
+                    {
+                        var truncateSql = $"TRUNCATE TABLE {landingSql};";
+                        Trace("source.truncate", truncateSql);
+                        await ExecuteAsync(resolvedSource.CanonicalString, truncateSql, ct).ConfigureAwait(false);
+                        Info("source.truncate",
+                            $"landing table {landingSql} truncated: target MAX([{wmColumn}]) {Describe(targetMax)} >= landing MAX {Describe(sourceMax)}");
+                    }
+                }
             }
 
             // 9. Record the run. A write failure on a SUCCESSFUL run surfaces (logging is part of the contract
@@ -881,6 +950,27 @@ public sealed class IngestionFlowRunner
         IReadOnlyDictionary<string, string> nameMap,
         IRunEventSink events)
     {
+        // Per-file replace (load.reloadColumn): purge the batch's datasets from the target, then insert the
+        // batch. It supersedes the keyed upsert (nothing to update after the purge) and works with or without
+        // key columns, so it is resolved before the keyless insert-all path below. The reload column is declared
+        // with the SOURCE name; map it to the target name the same way the dataset column is.
+        if (!string.IsNullOrWhiteSpace(flow.Load.ReloadColumn))
+        {
+            var reloadColumn = MapNameOrNull(nameMap, flow.Load.ReloadColumn!) ?? flow.Load.ReloadColumn!;
+            return UpsertGenerator.GenerateStatements(flow.Target.Table, staging, new UpsertOptions
+            {
+                DataColumns = dataColumnNames,
+                KeyColumns = EffectiveKeyColumns(flow),
+                ReloadColumn = reloadColumn,
+                SkipInsert = flow.Load.SkipInsertNew,
+                InsertedDateColumn = flow.SystemColumns.InsertedDate ? "InsertedDate_DW" : null,
+                RowStatusColumn = flow.SystemColumns.RowStatus ? "RowStatus_DW" : null,
+                HashAlgorithm = string.IsNullOrWhiteSpace(flow.Change.HashType) ? HashKey.DefaultAlgorithm : flow.Change.HashType!,
+            })
+            .Select(ToLoadStatement)
+            .ToList();
+        }
+
         if (EffectiveKeyColumns(flow).Count == 0)
         {
             // Keyless flow: there is no key to match on, so append every staged row (the legacy keyless
@@ -950,18 +1040,22 @@ public sealed class IngestionFlowRunner
                 ? null
                 : MapNameOrNull(nameMap, flow.Load.DataSetColumn!) ?? flow.Load.DataSetColumn,
         })
-        .Select(s => new LoadStatement(
+        .Select(ToLoadStatement)
+        .ToList();
+    }
+
+    private static LoadStatement ToLoadStatement(UpsertStatement s)
+        => new(
             s.Kind switch
             {
                 UpsertStatementKind.Update => LoadKind.Update,
                 UpsertStatementKind.Combined => LoadKind.UpsertLoop,
+                UpsertStatementKind.Purge => LoadKind.Purge,
                 _ => LoadKind.Insert,
             },
             s.Sql,
             s.CountFromScalar,
-            s.CountFromResultSet))
-        .ToList();
-    }
+            s.CountFromResultSet);
 
     private static string BuildInsertAll(RelationalObject target, RelationalObject staging, IReadOnlyList<string> dataColumns, SystemColumnsPolicy system)
     {
@@ -1080,16 +1174,17 @@ public sealed class IngestionFlowRunner
     // WITHOUT an enclosing transaction by design: its whole purpose is that each key window commits and
     // releases its locks on its own, trading atomicity for lock friendliness (the legacy contract of
     // BatchUpsertToAvoidLockEscalation). A batched script reports its total as a scalar result.
-    private static async Task<(long Inserted, long Updated)> ApplyLoadAsync(
+    private static async Task<(long Inserted, long Updated, long Deleted)> ApplyLoadAsync(
         string connectionString, IReadOnlyList<LoadStatement> statements, bool useTransaction, CancellationToken ct)
     {
         if (statements.Count == 0)
         {
-            return (0, 0);
+            return (0, 0, 0);
         }
 
         long inserted = 0;
         long updated = 0;
+        long deleted = 0;
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
@@ -1132,6 +1227,10 @@ public sealed class IngestionFlowRunner
                     {
                         updated += affected;
                     }
+                    else if (statement.Kind == LoadKind.Purge)
+                    {
+                        deleted += affected;
+                    }
                     else
                     {
                         inserted += affected;
@@ -1163,7 +1262,7 @@ public sealed class IngestionFlowRunner
             }
         }
 
-        return (inserted, updated);
+        return (inserted, updated, deleted);
     }
 
     private static async Task ExecuteAsync(string connectionString, string sql, CancellationToken ct)
@@ -1216,6 +1315,54 @@ public sealed class IngestionFlowRunner
         => $"[{Escape(relationalObject.Schema)}].[{Escape(relationalObject.Name)}]";
 
     private static string Escape(string identifier) => identifier.Replace("]", "]]", StringComparison.Ordinal);
+
+    // The single high-water column that governs the consolidation gate (load.truncateSourceWhenConsolidated):
+    // the first incremental column, else the date column. Null when the flow declares neither, which the run-start
+    // guard rejects. Both landing and target carry this column under the same name in the chained landing pattern
+    // (FileDate_DW and its siblings are clean, un-renamed system columns), so it addresses both sides directly.
+    private static string? ConsolidationWatermarkColumn(IngestionFlow flow)
+        => flow.Incremental.Columns.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c))
+           ?? (string.IsNullOrWhiteSpace(flow.Incremental.DateColumn) ? null : flow.Incremental.DateColumn);
+
+    // The [pre] landing table behind a chained flow's source view [pre].[v<Table>]: the same database and schema
+    // with the leading "v_" view prefix stripped. A source that is already a base table (no prefix) is returned
+    // unchanged, so the truncate targets it directly.
+    private static RelationalObject LandingTableOf(RelationalObject sourceObject)
+        => sourceObject.Name.StartsWith("v_", StringComparison.OrdinalIgnoreCase)
+            ? sourceObject with { Name = sourceObject.Name[2..] }
+            : sourceObject;
+
+    // MAX(column) from a two-part-qualified table on the given connection, or null when the table is empty (the
+    // scalar is NULL). Used to compare the landing and target high-water marks across their two databases.
+    private static async Task<object?> ReadMaxAsync(string connectionString, string qualifiedTable, string column, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new SqlCommand($"SELECT MAX([{Escape(column)}]) FROM {qualifiedTable};", connection) { CommandTimeout = 0 };
+        var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return scalar is null or DBNull ? null : scalar;
+    }
+
+    // Order two high-water marks read from the same (schema-synced) column. The numeric family is normalized to
+    // decimal so an int-vs-decimal skew between the two MAX reads still orders correctly; other comparable types
+    // (datetime2/date, string) compare directly. Both arguments are non-null at the single call site.
+    private static int CompareWatermarks(object left, object right)
+        => IsNumeric(left) && IsNumeric(right)
+            ? Convert.ToDecimal(left, CultureInfo.InvariantCulture).CompareTo(Convert.ToDecimal(right, CultureInfo.InvariantCulture))
+            : ((IComparable)left).CompareTo(right);
+
+    private static bool IsNumeric(object value)
+        => value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
+
+    // A culture-invariant rendering of a watermark for the run log (so a decimal FileDate_DW or a datetime2 reads
+    // the same regardless of the runner's locale); "(empty)" for the absent (target-not-yet-loaded) mark.
+    private static string Describe(object? watermark)
+        => watermark switch
+        {
+            null => "(empty)",
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+            _ => watermark.ToString() ?? "(empty)",
+        };
 
     private static int DurationSeconds(DateTime startUtc, DateTime endUtc)
         => (int)Math.Max(0, (endUtc - startUtc).TotalSeconds);
@@ -1312,6 +1459,10 @@ public sealed class IngestionFlowRunner
         /// <summary>The dataset-partitioned loop: one script doing both branches, reporting its Inserts/Updates
         /// totals as a single result-set row.</summary>
         UpsertLoop,
+
+        /// <summary>The per-file replace purge (load.reloadColumn): a set-based DELETE of the batch's datasets
+        /// whose affected-row count is attributed to rows deleted, not inserted or updated.</summary>
+        Purge,
     }
 
     private sealed record LoadStatement(LoadKind Kind, string Sql, bool CountFromScalar = false, bool CountFromResultSet = false);

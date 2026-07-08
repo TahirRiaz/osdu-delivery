@@ -99,6 +99,160 @@ public sealed class YamlIngestionLoaderTests
         => Assert.Null(Loader.Parse(Minimal).Flow.Load.DataSetColumn);
 
     [Fact]
+    public void ReloadColumn_MapsFromYaml()
+    {
+        const string yaml = """
+            flowType: ing
+            name: orders
+            connections:
+              src: ${env:SRC}
+              dwh: ${env:DWH}
+            source:
+              server: src
+              object: db.pre.vOrders
+            target:
+              server: dwh
+              object: dw.arc.Orders
+            load:
+              keyColumns: [OrderID]
+              reloadColumn: FileName_DW
+            """;
+
+        Assert.Equal("FileName_DW", Loader.Parse(yaml).Flow.Load.ReloadColumn);
+    }
+
+    [Fact]
+    public void ReloadColumn_DefaultsToNull()
+        => Assert.Null(Loader.Parse(Minimal).Flow.Load.ReloadColumn);
+
+    [Fact]
+    public void ReloadColumn_BlankMapsToNull()
+    {
+        const string yaml = """
+            flowType: ing
+            name: orders
+            connections:
+              src: ${env:SRC}
+              dwh: ${env:DWH}
+            source:
+              server: src
+              object: db.dbo.Orders
+            target:
+              server: dwh
+              object: dw.raw.Orders
+            load:
+              keyColumns: [OrderID]
+              reloadColumn: "   "
+            """;
+
+        Assert.Null(Loader.Parse(yaml).Flow.Load.ReloadColumn);
+    }
+
+    [Fact]
+    public void ReloadColumn_NeedsNoKeyColumns()
+    {
+        const string yaml = """
+            flowType: ing
+            name: orders
+            connections:
+              src: ${env:SRC}
+              dwh: ${env:DWH}
+            source:
+              server: src
+              object: db.pre.vOrders
+            target:
+              server: dwh
+              object: dw.arc.Orders
+            load:
+              reloadColumn: FileName_DW
+            """;
+
+        var flow = Loader.Parse(yaml).Flow;
+        Assert.Equal("FileName_DW", flow.Load.ReloadColumn);
+        Assert.Empty(flow.Load.KeyColumns);
+    }
+
+    [Theory]
+    [InlineData("  dataSetColumn: SourceFile", "load.dataSetColumn")]
+    [InlineData("  matchKeysInSourceAndTarget: true", "load.matchKeysInSourceAndTarget")]
+    public void ReloadColumn_ConflictingLoadOption_Throws(string extraLoadLine, string expectedInMessage)
+    {
+        var yaml = """
+            flowType: ing
+            name: orders
+            connections:
+              src: ${env:SRC}
+              dwh: ${env:DWH}
+            source:
+              server: src
+              object: db.pre.vOrders
+            target:
+              server: dwh
+              object: dw.arc.Orders
+            load:
+              keyColumns: [OrderID]
+              reloadColumn: FileName_DW
+            __EXTRA__
+            """.Replace("__EXTRA__", extraLoadLine, StringComparison.Ordinal);
+
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(yaml));
+        Assert.Contains("reloadColumn", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(expectedInMessage, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReloadColumn_WithTruncateBeforeLoad_Throws()
+    {
+        const string yaml = """
+            flowType: ing
+            name: orders
+            connections:
+              src: ${env:SRC}
+              dwh: ${env:DWH}
+            source:
+              server: src
+              object: db.pre.vOrders
+            target:
+              server: dwh
+              object: dw.arc.Orders
+              truncateBeforeLoad: true
+            load:
+              keyColumns: [OrderID]
+              reloadColumn: FileName_DW
+            """;
+
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(yaml));
+        Assert.Contains("truncateBeforeLoad", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReloadColumn_WithScd2_Throws()
+    {
+        const string yaml = """
+            flowType: ing
+            name: orders
+            connections:
+              src: ${env:SRC}
+              dwh: ${env:DWH}
+            source:
+              server: src
+              object: db.pre.vOrders
+            target:
+              server: dwh
+              object: dw.arc.Orders
+            load:
+              keyColumns: [OrderID]
+              reloadColumn: FileName_DW
+            versioning:
+              scd2:
+                enabled: true
+            """;
+
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(yaml));
+        Assert.Contains("scd2", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DirectConnection_SynthesizesNamedConnection()
     {
         var doc = Loader.Parse("""
@@ -153,6 +307,7 @@ public sealed class YamlIngestionLoaderTests
               threads: 4
               keepStagingTable: true
               truncateStagingOnCompletion: true
+              truncateSourceWhenConsolidated: true
             change:
               hashColumns: [Amount]
               hashType: SHA2_512
@@ -228,6 +383,7 @@ public sealed class YamlIngestionLoaderTests
         Assert.Equal(4, flow.Load.Threads);
         Assert.True(flow.Load.KeepStagingTable);
         Assert.True(flow.Load.TruncatePreTableOnCompletion);
+        Assert.True(flow.Load.TruncateSourceWhenConsolidated);
         Assert.Equal(["Amount"], flow.Change.HashColumns);
         Assert.Equal("SHA2_512", flow.Change.HashType);
         Assert.Equal(["Comment"], flow.Change.IgnoreColumnsInHash);

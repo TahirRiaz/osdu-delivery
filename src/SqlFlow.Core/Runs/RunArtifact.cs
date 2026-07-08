@@ -37,4 +37,11 @@ public sealed record RunArtifact
     /// <summary>The full kind-specific result (an IngestionRunResult, FlowResult, ExportRunResult,
     /// StoredProcedureRunResult, InvokeResult, or HealthCheckRunResult), serialized as-is.</summary>
     public required object Result { get; init; }
+
+    /// <summary>The run's canonical event timeline: every progress, decision, and warning event the engine
+    /// published while the run executed (file reads, resolved watermarks, stage summaries), uniform across flow
+    /// kinds. Generated SQL is not duplicated here; it lives in the result's <c>sqlTrace</c> and is interleaved
+    /// by timestamp when a full timeline is shown. Empty for kinds that publish no events (scm). A
+    /// backward-compatible header addition: readers treat an absent array as no events.</summary>
+    public IReadOnlyList<RunEventRecord> Events { get; init; } = [];
 }

@@ -19,16 +19,17 @@ public sealed record FilePipelineMatchDto(
 
 /// <summary>A lineage object as it appears in lists: the canonical identity and metadata, without the heavy module
 /// body (<c>Definition</c>). Keyed by <see cref="Key"/>, the global identity that joins the same physical object
-/// across every repo.</summary>
+/// across every repo. <see cref="Level"/> is the object's depth in the estate-wide data-movement graph (0 for a
+/// source nothing produces); null when the object takes part in no data movement.</summary>
 public sealed record ObjectDto(
-    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind,
+    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind, int? Level,
     DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
 /// <summary>A single lineage object with its full module body (<c>Definition</c>) and generating script
 /// (<c>Script</c>) for the detail view; the definition is null for plain tables, an unconnected sync, or an
 /// encrypted module, and the script is null when no tier saw the object created.</summary>
 public sealed record ObjectDetailDto(
-    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind,
+    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind, int? Level,
     string? Definition, string? Script, string? ScriptTier, DateTime? ScriptUpdatedUtc,
     DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
@@ -175,12 +176,17 @@ public static class LineageEndpoints
             query = query.Where(o => o.Kind == kind);
         }
 
-        var ordered = query.OrderBy(o => o.Name).ThenBy(o => o.Key);
+        // Dependency order: by level (an object's depth in the data-movement graph, sources first), objects
+        // outside the movement graph (null level) last, then by identity so a page boundary is deterministic.
+        var ordered = query
+            .OrderBy(o => o.Level == null)
+            .ThenBy(o => o.Level)
+            .ThenBy(o => o.Database).ThenBy(o => o.Schema).ThenBy(o => o.Name).ThenBy(o => o.Key);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
             .Select(o => new ObjectDto(
-                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.FirstSeenUtc, o.LastSeenUtc))
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Level, o.FirstSeenUtc, o.LastSeenUtc))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<ObjectDto>(items, p, size, total));
     }
@@ -190,8 +196,8 @@ public static class LineageEndpoints
     {
         var dto = await db.Objects.AsNoTracking().Where(o => o.Key == key)
             .Select(o => new ObjectDetailDto(
-                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Definition, o.Script, o.ScriptTier,
-                o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Level, o.Definition, o.Script,
+                o.ScriptTier, o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("object", key) : TypedResults.Ok(dto);
     }
@@ -515,8 +521,8 @@ public static class LineageEndpoints
     {
         var detail = await db.Objects.AsNoTracking().Where(o => o.Key == key)
             .Select(o => new ObjectDetailDto(
-                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Definition, o.Script, o.ScriptTier,
-                o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
+                o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Level, o.Definition, o.Script,
+                o.ScriptTier, o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (detail is null)
         {

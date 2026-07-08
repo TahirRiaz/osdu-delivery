@@ -222,6 +222,9 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<DateTime>("LastSeenUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int?>("Level")
+                        .HasColumnType("int");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(512)
@@ -745,6 +748,52 @@ namespace SqlFlow.Catalog.Migrations
                     b.ToTable("RunAssertion", "catalog");
                 });
 
+            modelBuilder.Entity("SqlFlow.Catalog.CatalogRunEvent", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<double?>("ElapsedMs")
+                        .HasColumnType("float");
+
+                    b.Property<string>("Level")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("RepoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long?>("Rows")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Step")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime>("TimestampUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RunId");
+
+                    b.ToTable("RunEvent", "catalog");
+                });
+
             modelBuilder.Entity("SqlFlow.Catalog.CatalogRunFile", b =>
                 {
                     b.Property<long>("Id")
@@ -902,6 +951,9 @@ namespace SqlFlow.Catalog.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime?>("TimestampUtc")
+                        .HasColumnType("datetime2");
 
                     b.HasKey("Id");
 

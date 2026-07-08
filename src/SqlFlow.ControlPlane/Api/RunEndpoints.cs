@@ -1,7 +1,10 @@
+using System.Globalization;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
 
 namespace SqlFlow.ControlPlane.Api;
@@ -11,12 +14,16 @@ namespace SqlFlow.ControlPlane.Api;
 /// <see cref="Wave"/> are joined in from the run's pipeline row at query time, the same way the batch report
 /// combines the run log with the batch label and the lineage step: a flow whose YAML declares no batch, or a run
 /// whose pipeline row left the catalog, reports under <see cref="CatalogPipeline.DefaultBatch"/>; a wave of -1
-/// means lineage has not been computed for the repo (or the pipeline row is gone).</summary>
+/// means lineage has not been computed for the repo (or the pipeline row is gone).
+/// <see cref="LastAction"/>/<see cref="LastActionUtc"/> are the run's newest trace event (a stage summary, a
+/// file read, a decision): while the run executes they answer "what is it doing right now", at rest "what did it
+/// do last". Null for a run that recorded no events (one that predates the event stream, or is still queued).</summary>
 public sealed record RunSummaryDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
-    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, Guid? GroupId);
+    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, Guid? GroupId,
+    string? LastAction, DateTime? LastActionUtc);
 
 /// <summary>One run with its full header for the detail view: the summary plus the lifecycle fields (status, when it
 /// was enqueued, the node that claimed it), the schema version, the start/end window, the host, the error, and the
@@ -43,9 +50,37 @@ public sealed record RunAssertionDto(
     long Id, Guid RunId, Guid? RepoId, string Name, string Result, string AssertedValue, bool Evaluated, string? Error);
 
 /// <summary>One generated SQL statement a run executed, in execution order: a drill-down row under a run.
-/// <see cref="Error"/> is set only on the one statement that threw (the run's failure point), null otherwise.</summary>
+/// <see cref="Error"/> is set only on the one statement that threw (the run's failure point), null otherwise.
+/// <see cref="TimestampUtc"/> is when the statement was generated; null on rows projected from an artifact that
+/// predates the timestamped trace.</summary>
 public sealed record RunStatementDto(
-    long Id, Guid RunId, Guid? RepoId, int Ordinal, string Step, string Sql, string? Error);
+    long Id, Guid RunId, Guid? RepoId, int Ordinal, DateTime? TimestampUtc, string Step, string Sql, string? Error);
+
+/// <summary>
+/// One entry of a run's consolidated trace: either a canonical run event (<see cref="Kind"/> is
+/// <c>event</c>: file progress, a resolved watermark, an engine decision, a stage summary, a warning) or a
+/// generated SQL statement (<see cref="Kind"/> is <c>statement</c>), the two streams interleaved by
+/// <see cref="TimestampUtc"/> so the Trace view shows everything the run did in one ordered feed. An event
+/// carries <see cref="Message"/> (plus optional <see cref="Rows"/>/<see cref="ElapsedMs"/>); a statement carries
+/// <see cref="Sql"/> (plus <see cref="Error"/> on the one that threw). <see cref="Ordinal"/> is the 1-based
+/// position within the entry's own stream. <see cref="TimestampUtc"/> is null only on statement rows projected
+/// from an artifact that predates the timestamped trace; those sort first, in ordinal order.
+/// </summary>
+public sealed record RunTraceEntryDto(
+    long Id, Guid RunId, Guid? RepoId, string Kind, int Ordinal, DateTime? TimestampUtc, string Level,
+    string? Step, string? Message, string? Sql, string? Error, long? Rows, double? ElapsedMs);
+
+/// <summary>The two kinds of <see cref="RunTraceEntryDto"/>.</summary>
+public static class RunTraceKinds
+{
+    public const string Event = "event";
+    public const string Statement = "statement";
+}
+
+/// <summary>The payload of the live trace stream's final <c>end</c> event: the run's terminal status. On
+/// receiving it the client refetches the paged trace, which by then holds the authoritative re-projection
+/// from the run artifact.</summary>
+public sealed record RunTraceStreamEndDto(string Status);
 
 /// <summary>One surrogate-key generation outcome of a run (ingestion flows): a drill-down row under a run.</summary>
 public sealed record RunSurrogateKeyDto(
@@ -94,10 +129,21 @@ public static class RunEndpoints
         runs.MapGet("/", ListRunsAsync).WithName("ListRuns");
         runs.MapGet("/preview", PreviewScopeAsync).WithName("PreviewRunScope");
         runs.MapGet("/groups/{groupId:guid}", GetRunGroupAsync).WithName("GetRunGroup");
+        runs.MapGet("/groups/{groupId:guid}/stream", StreamRunGroupAsync).WithName("StreamRunGroup");
         runs.MapGet("/{runId:guid}", GetRunAsync).WithName("GetRun");
         runs.MapGet("/{runId:guid}/files", GetRunFilesAsync).WithName("GetRunFiles");
         runs.MapGet("/{runId:guid}/assertions", GetRunAssertionsAsync).WithName("GetRunAssertions");
         runs.MapGet("/{runId:guid}/statements", GetRunStatementsAsync).WithName("GetRunStatements");
+        runs.MapGet("/{runId:guid}/trace", GetRunTraceAsync).WithName("GetRunTrace");
+        runs.MapGet("/{runId:guid}/trace/text", GetRunTraceTextAsync).WithName("GetRunTraceText");
+        runs.MapGet("/{runId:guid}/trace/stream", StreamRunTraceAsync).WithName("StreamRunTrace");
+
+        // The pipeline-anchored trace: the latest run's consolidated trace without knowing a run id up front,
+        // the entry point for debugging a pipeline ("show me what its last run did"). The text form renders the
+        // whole trace as one plain-text document, made for pasting into a ticket or handing to an LLM.
+        var pipelines = group.MapGroup("/pipelines").WithTags("Runs");
+        pipelines.MapGet("/{pipelineId:guid}/trace", GetPipelineTraceAsync).WithName("GetPipelineLatestRunTrace");
+        pipelines.MapGet("/{pipelineId:guid}/trace/text", GetPipelineTraceTextAsync).WithName("GetPipelineLatestRunTraceText");
         runs.MapGet("/{runId:guid}/surrogate-keys", GetRunSurrogateKeysAsync).WithName("GetRunSurrogateKeys");
         runs.MapGet("/{runId:guid}/health-metrics", GetRunHealthMetricsAsync).WithName("GetRunHealthMetrics");
 
@@ -167,21 +213,7 @@ public static class RunEndpoints
             query = query.Where(x => x.Success == s);
         }
 
-        // The batch label and the lineage wave live on the pipeline row (git/YAML is their source of truth), so
-        // they are joined in at query time rather than denormalized onto every run: one source, always current,
-        // and a run whose pipeline left the estate still lists (left join) under the default batch. A missing
-        // label coalesces to CatalogPipeline.DefaultBatch so every run belongs to a batch group.
-        var joined =
-            from run in query
-            join pipeline in db.Pipelines.AsNoTracking() on run.PipelineId equals pipeline.Id into pipelines
-            from pipeline in pipelines.DefaultIfEmpty()
-            select new
-            {
-                Run = run,
-                Batch = pipeline != null && pipeline.Batch != null ? pipeline.Batch : CatalogPipeline.DefaultBatch,
-                Wave = pipeline != null ? pipeline.Wave : -1,
-            };
-
+        var joined = JoinPipelines(db, query);
         if (!string.IsNullOrWhiteSpace(batch))
         {
             var batchFilter = batch.Trim();
@@ -197,17 +229,59 @@ public static class RunEndpoints
                 ? joined.OrderBy(x => x.Run.GroupWave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId)
                 : joined.OrderByDescending(x => x.Run.WrittenUtc).ThenBy(x => x.Run.RunId);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
-        var items = await ordered
-            .Skip((p - 1) * size).Take(size)
-            .Select(x => new RunSummaryDto(
-                x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
-                x.Run.Status, x.Run.Success,
-                x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
-                x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
-                db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId))
+        var items = await ProjectSummaries(db, ordered.Skip((p - 1) * size).Take(size))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunSummaryDto>(items, p, size, total));
     }
+
+    /// <summary>The run row paired with its pipeline's batch label and lineage wave: the intermediate shape the
+    /// summary projection reads. A named class (not an anonymous type) so the join, the filters, and the final
+    /// projection compose across the runs list and the group stream without duplicating the query.</summary>
+    private sealed class SummarySource
+    {
+        public required CatalogRun Run { get; init; }
+
+        public required string Batch { get; init; }
+
+        public int Wave { get; init; }
+    }
+
+    /// <summary>The batch label and the lineage wave live on the pipeline row (git/YAML is their source of
+    /// truth), so they are joined in at query time rather than denormalized onto every run: one source, always
+    /// current, and a run whose pipeline left the estate still lists (left join) under the default batch. A
+    /// missing label coalesces to <see cref="CatalogPipeline.DefaultBatch"/> so every run belongs to a batch
+    /// group.</summary>
+    private static IQueryable<SummarySource> JoinPipelines(CatalogDbContext db, IQueryable<CatalogRun> runs)
+        => from run in runs
+           join pipeline in db.Pipelines.AsNoTracking() on run.PipelineId equals pipeline.Id into pipelines
+           from pipeline in pipelines.DefaultIfEmpty()
+           select new SummarySource
+           {
+               Run = run,
+               Batch = pipeline != null && pipeline.Batch != null ? pipeline.Batch : CatalogPipeline.DefaultBatch,
+               Wave = pipeline != null ? pipeline.Wave : -1,
+           };
+
+    /// <summary>Projects joined run rows to <see cref="RunSummaryDto"/>: the single summary shape the runs list
+    /// and the group stream both serve. The per-row subqueries (the file count and the newest trace event, the
+    /// "last action") are TOP-1/COUNT seeks on the RunId indexes.</summary>
+    private static IQueryable<RunSummaryDto> ProjectSummaries(CatalogDbContext db, IQueryable<SummarySource> source)
+        => source.Select(x => new RunSummaryDto(
+            x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
+            x.Run.Status, x.Run.Success,
+            x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
+            x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
+            db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId,
+            db.RunEvents.Where(e => e.RunId == x.Run.RunId)
+                .OrderByDescending(e => e.Id).Select(e => (string?)e.Message).FirstOrDefault(),
+            db.RunEvents.Where(e => e.RunId == x.Run.RunId)
+                .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault()));
+
+    /// <summary>A group's member summaries in execution order: the shape both the group view's member list and
+    /// the group stream serve.</summary>
+    private static IQueryable<RunSummaryDto> GroupMembersQuery(CatalogDbContext db, Guid groupId)
+        => ProjectSummaries(db, JoinPipelines(db, db.Runs.AsNoTracking().Where(r => r.GroupId == groupId))
+            .OrderBy(x => x.Run.GroupWave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId));
 
     private static async Task<Results<Ok<RunDetailDto>, ProblemHttpResult>> GetRunAsync(
         Guid runId, CatalogDbContext db, CancellationToken ct)
@@ -380,9 +454,388 @@ public static class RunEndpoints
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
-            .Select(x => new RunStatementDto(x.Id, x.RunId, x.RepoId, x.Ordinal, x.Step, x.Sql, x.Error))
+            .Select(x => new RunStatementDto(x.Id, x.RunId, x.RepoId, x.Ordinal, x.TimestampUtc, x.Step, x.Sql, x.Error))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunStatementDto>(items, p, size, total));
+    }
+
+    /// <summary>The run's consolidated trace as one SQL-side query: the UNION of the two live-streamed
+    /// drill-down streams (canonical events and generated statements), interleaved by timestamp. Both sides
+    /// project to the same anonymous shape (EF's supported form for set operations) so the Concat translates to
+    /// a single UNION ALL and ordering, counting, and paging all stay in SQL. Statement rows carry their SQL;
+    /// event rows carry their message: the two never overlap, so nothing is duplicated. Legacy statement rows
+    /// without a timestamp sort first (MinValue), in ordinal order; on a timestamp tie events sort before
+    /// statements ("event" &lt; "statement"), and Id makes the order fully deterministic.</summary>
+    private static IQueryable<RunTraceEntryDto> TraceQuery(CatalogDbContext db, Guid runId)
+    {
+        var events = db.RunEvents.AsNoTracking().Where(x => x.RunId == runId)
+            .Select(x => new
+            {
+                x.Id, x.RunId, x.RepoId, Kind = RunTraceKinds.Event, x.Ordinal,
+                TimestampUtc = (DateTime?)x.TimestampUtc, x.Level, x.Step, Message = (string?)x.Message,
+                Sql = (string?)null, Error = (string?)null, x.Rows, x.ElapsedMs,
+            });
+        var statements = db.RunStatements.AsNoTracking().Where(x => x.RunId == runId)
+            .Select(x => new
+            {
+                x.Id, x.RunId, x.RepoId, Kind = RunTraceKinds.Statement, x.Ordinal,
+                x.TimestampUtc, Level = "trace", Step = (string?)x.Step, Message = (string?)null,
+                Sql = (string?)x.Sql, x.Error, Rows = (long?)null, ElapsedMs = (double?)null,
+            });
+
+        return events.Concat(statements)
+            .OrderBy(x => x.TimestampUtc ?? DateTime.MinValue)
+            .ThenBy(x => x.Ordinal).ThenBy(x => x.Kind).ThenBy(x => x.Id)
+            .Select(x => new RunTraceEntryDto(
+                x.Id, x.RunId, x.RepoId, x.Kind, x.Ordinal, x.TimestampUtc, x.Level, x.Step, x.Message,
+                x.Sql, x.Error, x.Rows, x.ElapsedMs));
+    }
+
+    private static async Task<Ok<PagedResult<RunTraceEntryDto>>> PageTraceAsync(
+        CatalogDbContext db, Guid runId, int? page, int? pageSize, CancellationToken ct)
+    {
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var trace = TraceQuery(db, runId);
+        var total = await trace.LongCountAsync(ct).ConfigureAwait(false);
+        var items = await trace.Skip((p - 1) * size).Take(size).ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<RunTraceEntryDto>(items, p, size, total));
+    }
+
+    private static async Task<Results<Ok<PagedResult<RunTraceEntryDto>>, ProblemHttpResult>> GetRunTraceAsync(
+        Guid runId, CatalogDbContext db, int? page, int? pageSize, CancellationToken ct)
+    {
+        if (!await RunExistsAsync(db, runId, ct).ConfigureAwait(false))
+        {
+            return NotFound("run", runId);
+        }
+
+        return await PageTraceAsync(db, runId, page, pageSize, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> GetRunTraceTextAsync(
+        Guid runId, CatalogDbContext db, CancellationToken ct)
+    {
+        var run = await db.Runs.AsNoTracking().FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
+        if (run is null)
+        {
+            return NotFound("run", runId);
+        }
+
+        return await TraceTextAsync(db, run, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The latest run's paged trace for a pipeline, so a caller can go from "this pipeline" straight to
+    /// "what its last run did" without resolving a run id first.</summary>
+    private static async Task<Results<Ok<PagedResult<RunTraceEntryDto>>, ProblemHttpResult>> GetPipelineTraceAsync(
+        Guid pipelineId, CatalogDbContext db, int? page, int? pageSize, CancellationToken ct)
+    {
+        var run = await LatestRunAsync(db, pipelineId, ct).ConfigureAwait(false);
+        if (run is null)
+        {
+            return NoRunForPipeline(pipelineId);
+        }
+
+        return await PageTraceAsync(db, run.RunId, page, pageSize, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> GetPipelineTraceTextAsync(
+        Guid pipelineId, CatalogDbContext db, CancellationToken ct)
+    {
+        var run = await LatestRunAsync(db, pipelineId, ct).ConfigureAwait(false);
+        if (run is null)
+        {
+            return NoRunForPipeline(pipelineId);
+        }
+
+        return await TraceTextAsync(db, run, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The pipeline's newest run header, by the same ordering the runs list uses (newest WrittenUtc
+    /// first); null when the pipeline has no recorded runs (or does not exist, which reads identically).</summary>
+    private static Task<CatalogRun?> LatestRunAsync(CatalogDbContext db, Guid pipelineId, CancellationToken ct)
+        => db.Runs.AsNoTracking()
+            .Where(r => r.PipelineId == pipelineId)
+            .OrderByDescending(r => r.WrittenUtc).ThenByDescending(r => r.RunId)
+            .FirstOrDefaultAsync(ct);
+
+    private static ProblemHttpResult NoRunForPipeline(Guid pipelineId)
+        => TypedResults.Problem(
+            detail: $"No run is recorded for pipeline '{pipelineId}'.",
+            statusCode: StatusCodes.Status404NotFound,
+            title: "Not found");
+
+    private static async Task<ContentHttpResult> TraceTextAsync(CatalogDbContext db, CatalogRun run, CancellationToken ct)
+    {
+        var entries = await TraceQuery(db, run.RunId).ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Text(RenderTraceText(run, entries), "text/plain; charset=utf-8");
+    }
+
+    /// <summary>
+    /// Renders a run's consolidated trace as one plain-text document: a header identifying the run (flow, kind,
+    /// status, window, rows, error), then one line per entry in timeline order, with generated SQL and
+    /// multi-line messages indented under their entry line. This single rendering serves every text consumer:
+    /// the GUI's "Copy trace" button, a ticket paste, and an LLM debugging a pipeline from its last run.
+    /// </summary>
+    private static string RenderTraceText(CatalogRun run, IReadOnlyList<RunTraceEntryDto> entries)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("run ").Append(run.RunId)
+          .Append(" flow '").Append(run.FlowName).Append("' (").Append(run.FlowKind).Append(')')
+          .Append(" status ").Append(run.Status);
+        if (run.StartUtc is { } start)
+        {
+            sb.Append(" started ").Append(start.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)).Append('Z');
+        }
+
+        if (run.DurationSeconds is { } duration)
+        {
+            sb.Append(" duration ").Append(duration.ToString("0.###", CultureInfo.InvariantCulture)).Append('s');
+        }
+
+        if (run.RowsLoaded is { } rows)
+        {
+            sb.Append(" rows ").Append(rows.ToString(CultureInfo.InvariantCulture));
+        }
+
+        sb.AppendLine();
+        if (!string.IsNullOrWhiteSpace(run.Error))
+        {
+            sb.Append("error: ").AppendLine(run.Error.ReplaceLineEndings(" ").Trim());
+        }
+
+        foreach (var entry in entries)
+        {
+            var stamp = entry.TimestampUtc is { } ts
+                ? ts.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + "Z"
+                : new string('-', 24);
+            var label = entry.Kind == RunTraceKinds.Statement ? "sql" : entry.Level;
+            sb.Append(stamp).Append(' ')
+              .Append(label.ToUpperInvariant().PadRight(7)).Append(' ')
+              .Append((entry.Step ?? "-").PadRight(24)).Append(' ');
+
+            var body = entry.Kind == RunTraceKinds.Statement
+                ? $"statement {entry.Ordinal}"
+                : entry.Message ?? string.Empty;
+            var lines = body.ReplaceLineEndings("\n").Split('\n');
+            sb.AppendLine(lines[0]);
+            foreach (var line in lines.Skip(1))
+            {
+                sb.Append("    | ").AppendLine(line);
+            }
+
+            if (entry.Sql is { } sql)
+            {
+                foreach (var line in sql.ReplaceLineEndings("\n").TrimEnd().Split('\n'))
+                {
+                    sb.Append("    ").AppendLine(line);
+                }
+            }
+
+            if (entry.Error is { } entryError)
+            {
+                sb.Append("    !! error: ").AppendLine(entryError.ReplaceLineEndings(" ").Trim());
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    // The server-side tail cadence of the live stream: short enough that an entry reaches the browser well under
+    // a second after the node persisted it, long enough that one open run view costs a handful of cheap indexed
+    // reads per second. The heartbeat keeps idle proxies from reaping the connection during a long quiet stage.
+    private static readonly TimeSpan StreamTailInterval = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan StreamHeartbeatInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// The live run trace as Server-Sent Events: one <c>entry</c> event per new trace entry (the same shape as
+    /// <see cref="RunTraceEntryDto"/>) as the executing node streams it into the catalog, then a single
+    /// <c>end</c> event carrying the terminal status once the run completes, after which the paged endpoint
+    /// holds the authoritative re-projected trace and the client should refetch it. The
+    /// <paramref name="afterEventId"/>/<paramref name="afterStatementId"/> cursors resume a dropped connection
+    /// without replaying entries the client already holds. The stream tails the same catalog rows the paged
+    /// endpoint reads, so it works identically for the in-process worker and a self-hosted node.
+    /// </summary>
+    private static async Task<IResult> StreamRunTraceAsync(
+        Guid runId, CatalogDbContext db, HttpContext http,
+        IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json,
+        long? afterEventId, long? afterStatementId, CancellationToken ct)
+    {
+        if (!await RunExistsAsync(db, runId, ct).ConfigureAwait(false))
+        {
+            return NotFound("run", runId);
+        }
+
+        var response = http.Response;
+        response.Headers.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        // Tell buffering reverse proxies (nginx) to pass frames through as they are written.
+        response.Headers["X-Accel-Buffering"] = "no";
+
+        var serializer = json.Value.SerializerOptions;
+        var lastEventId = afterEventId ?? 0L;
+        var lastStatementId = afterStatementId ?? 0L;
+        var lastHeartbeat = DateTime.UtcNow;
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Status first, deltas second: when the completion transaction lands between the two reads, the
+                // delta can briefly include re-projected rows, which is harmless because the end event makes the
+                // client refetch the authoritative paged timeline anyway. Reading in the other order could end
+                // the stream while entries written just before completion were never sent.
+                var status = await db.Runs.AsNoTracking()
+                    .Where(r => r.RunId == runId).Select(r => r.Status)
+                    .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                var terminal = status is null || (status != RunStatuses.Queued && status != RunStatuses.Running);
+
+                if (!terminal)
+                {
+                    var newEvents = await db.RunEvents.AsNoTracking()
+                        .Where(x => x.RunId == runId && x.Id > lastEventId).OrderBy(x => x.Id)
+                        .Select(x => new RunTraceEntryDto(
+                            x.Id, x.RunId, x.RepoId, RunTraceKinds.Event, x.Ordinal, x.TimestampUtc, x.Level,
+                            x.Step, x.Message, null, null, x.Rows, x.ElapsedMs))
+                        .ToListAsync(ct).ConfigureAwait(false);
+                    var newStatements = await db.RunStatements.AsNoTracking()
+                        .Where(x => x.RunId == runId && x.Id > lastStatementId).OrderBy(x => x.Id)
+                        .Select(x => new RunTraceEntryDto(
+                            x.Id, x.RunId, x.RepoId, RunTraceKinds.Statement, x.Ordinal, x.TimestampUtc, "trace",
+                            x.Step, null, x.Sql, x.Error, null, null))
+                        .ToListAsync(ct).ConfigureAwait(false);
+
+                    if (newEvents.Count > 0)
+                    {
+                        lastEventId = newEvents[^1].Id;
+                    }
+
+                    if (newStatements.Count > 0)
+                    {
+                        lastStatementId = newStatements[^1].Id;
+                    }
+
+                    // The same interleave order as the paged endpoint, applied to this tick's delta.
+                    var batch = newEvents.Concat(newStatements)
+                        .OrderBy(x => x.TimestampUtc ?? DateTime.MinValue)
+                        .ThenBy(x => x.Ordinal).ThenBy(x => x.Kind).ThenBy(x => x.Id);
+                    foreach (var entry in batch)
+                    {
+                        await WriteSseAsync(response, "entry", JsonSerializer.Serialize(entry, serializer), ct)
+                            .ConfigureAwait(false);
+                        lastHeartbeat = DateTime.UtcNow;
+                    }
+                }
+                else
+                {
+                    // Terminal (or the run row vanished, which only a manual catalog cleanup can cause): tell the
+                    // client to swap to the authoritative paged trace and stop.
+                    await WriteSseAsync(
+                        response, "end",
+                        JsonSerializer.Serialize(new RunTraceStreamEndDto(status ?? "unknown"), serializer), ct)
+                        .ConfigureAwait(false);
+                    break;
+                }
+
+                if (DateTime.UtcNow - lastHeartbeat >= StreamHeartbeatInterval)
+                {
+                    await response.WriteAsync(": hb\n\n", ct).ConfigureAwait(false);
+                    await response.Body.FlushAsync(ct).ConfigureAwait(false);
+                    lastHeartbeat = DateTime.UtcNow;
+                }
+
+                await Task.Delay(StreamTailInterval, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The client went away (tab closed, navigation): the normal way a live stream ends mid-run.
+        }
+
+        return TypedResults.Empty;
+    }
+
+    private static async Task WriteSseAsync(HttpResponse response, string eventName, string data, CancellationToken ct)
+    {
+        await response.WriteAsync($"event: {eventName}\ndata: {data}\n\n", ct).ConfigureAwait(false);
+        await response.Body.FlushAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The live run group as Server-Sent Events: one <c>member</c> event (a <see cref="RunSummaryDto"/>) for
+    /// every member whose summary changed since the previous tick (status transitions, the newest trace event
+    /// as the "last action", durations and row counts), a full snapshot on connect, then a single <c>end</c>
+    /// event carrying the final <see cref="RunGroupCountsDto"/> rollup once every member is terminal. The batch
+    /// overview feeds its member table from this, so each row shows what its flow is doing the moment it does
+    /// it. Reconnecting simply replays the current snapshot: the diffing state is per connection.
+    /// </summary>
+    private static async Task<IResult> StreamRunGroupAsync(
+        Guid groupId, CatalogDbContext db, HttpContext http,
+        IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json, CancellationToken ct)
+    {
+        if (!await db.RunGroups.AsNoTracking().AnyAsync(g => g.GroupId == groupId, ct).ConfigureAwait(false))
+        {
+            return NotFound("run group", groupId);
+        }
+
+        var response = http.Response;
+        response.Headers.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        response.Headers["X-Accel-Buffering"] = "no";
+
+        var serializer = json.Value.SerializerOptions;
+        // Per-member fingerprint of the last frame sent: the serialized summary itself, so change detection and
+        // emission share one serialization and any changed field (status, last action, rows, timing) republishes.
+        var sent = new Dictionary<Guid, string>();
+        var lastHeartbeat = DateTime.UtcNow;
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var members = await GroupMembersQuery(db, groupId).ToListAsync(ct).ConfigureAwait(false);
+                foreach (var member in members)
+                {
+                    var payload = JsonSerializer.Serialize(member, serializer);
+                    if (!sent.TryGetValue(member.RunId, out var previous) || previous != payload)
+                    {
+                        sent[member.RunId] = payload;
+                        await WriteSseAsync(response, "member", payload, ct).ConfigureAwait(false);
+                        lastHeartbeat = DateTime.UtcNow;
+                    }
+                }
+
+                // Terminal once every member has left the queue and the worker: the completion projections have
+                // landed by then (each member's status flips in the same transaction as its re-projection), so
+                // the last member frames sent above already carry the final summaries. An empty member list can
+                // only mean a manual catalog cleanup mid-stream; it ends the stream the same way.
+                if (members.Count == 0 || members.All(m => RunStatuses.IsTerminal(m.Status)))
+                {
+                    int CountOf(string status) => members.Count(m => m.Status == status);
+                    var counts = new RunGroupCountsDto(
+                        members.Count,
+                        CountOf(RunStatuses.Queued), CountOf(RunStatuses.Running), CountOf(RunStatuses.Succeeded),
+                        CountOf(RunStatuses.Failed), CountOf(RunStatuses.Cancelled), CountOf(RunStatuses.Skipped));
+                    await WriteSseAsync(response, "end", JsonSerializer.Serialize(counts, serializer), ct)
+                        .ConfigureAwait(false);
+                    break;
+                }
+
+                if (DateTime.UtcNow - lastHeartbeat >= StreamHeartbeatInterval)
+                {
+                    await response.WriteAsync(": hb\n\n", ct).ConfigureAwait(false);
+                    await response.Body.FlushAsync(ct).ConfigureAwait(false);
+                    lastHeartbeat = DateTime.UtcNow;
+                }
+
+                await Task.Delay(StreamTailInterval, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The client went away (tab closed, navigation): the normal way a live stream ends mid-group.
+        }
+
+        return TypedResults.Empty;
     }
 
     private static async Task<Results<Ok<PagedResult<RunSurrogateKeyDto>>, ProblemHttpResult>> GetRunSurrogateKeysAsync(

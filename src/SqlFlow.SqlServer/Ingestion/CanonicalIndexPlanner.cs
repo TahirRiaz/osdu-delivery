@@ -22,7 +22,8 @@ public static class CanonicalIndexPlanner
         bool hasUpdatedDateColumn,
         bool columnStore,
         bool hasIdentityPrimaryKey,
-        bool scd2Enabled = false)
+        bool scd2Enabled = false,
+        string? reloadColumn = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(keyColumns);
@@ -52,6 +53,17 @@ public static class CanonicalIndexPlanner
         if (hasUpdatedDateColumn)
         {
             statements.Add(CreateIndex("NCI_UpdatedDate_DW", qualified, objectId, ["UpdatedDate_DW"], unique: false));
+        }
+
+        // Per-file replace (load.reloadColumn) purges the target by this column on every run; index it so the
+        // DELETE seeks instead of scans. Skipped when the column is already the leading column of the key, date,
+        // or dataset index (that index already serves the seek), so no redundant duplicate is created.
+        if (!string.IsNullOrWhiteSpace(reloadColumn)
+            && !string.Equals(reloadColumn, dateColumn, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(reloadColumn, dataSetColumn, StringComparison.OrdinalIgnoreCase)
+            && (keyColumns.Count == 0 || !string.Equals(reloadColumn, keyColumns[0], StringComparison.OrdinalIgnoreCase)))
+        {
+            statements.Add(CreateIndex("NCI_ReloadColumn", qualified, objectId, [reloadColumn], unique: false));
         }
 
         // A clustered columnstore index cannot coexist with a clustered rowstore primary key; the identity PK

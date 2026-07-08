@@ -446,6 +446,15 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
                 Assert.True(a.Wave >= 0);
                 Assert.True(b.Wave > a.Wave, $"expected B (wave {b.Wave}) to run after A (wave {a.Wave})");
                 Assert.True(await db.FlowDependencies.AnyAsync(d => d.RepoId == repoId && d.FromPipelineId == a.Id && d.ToPipelineId == b.Id));
+
+                // The stamped object levels mirror the movement chain: the raw source (nothing produces it) is
+                // level 0, the staging table A writes is level 1, and the final table B writes is level 2.
+                var levelByName = await db.Objects
+                    .Where(o => o.Name == $"Raw_{suffix}" || o.Name == $"Staging_{suffix}" || o.Name == $"Final_{suffix}")
+                    .ToDictionaryAsync(o => o.Name, o => o.Level);
+                Assert.Equal((int?)0, levelByName[$"Raw_{suffix}"]);
+                Assert.Equal((int?)1, levelByName[$"Staging_{suffix}"]);
+                Assert.Equal((int?)2, levelByName[$"Final_{suffix}"]);
             }
         }
         finally

@@ -67,10 +67,12 @@ With `load.keyColumns` set, matched rows whose data changed are updated and new 
 | `batchUpsert` | bool | no | `false` | Apply the upsert in key windows to avoid lock escalation. |
 | `batchUpsertRowCount` | int | no | `2000` | Rows per window when `batchUpsert` is on. |
 | `dataSetColumn` | string | no | none | Apply staging one dataset at a time, partitioned by this column. |
+| `reloadColumn` | string | no | none | Per-file (per-dataset) full replace keyed on this column (typically `FileName_DW`): purge the target rows for the datasets in the incoming batch, then insert the batch. Supersedes the keyed upsert. |
 | `streamData` | bool | no | `true` | Parsed and stored for legacy fidelity. The current engine always streams a live reader into the bulk copy and does not vary behavior on this flag. |
 | `threads` | int | no | none | Concurrency cap for `initLoad` backfill segments only (default 1 when unset); a normal run always uses a single reader/writer pair. Values `<= 0` collapse to null. |
 | `keepStagingTable` | bool | no | `false` | Keep the run-scoped staging table after a successful run. |
 | `truncateStagingOnCompletion` | bool | no | `false` | Truncate a kept staging table after a successful run. |
+| `truncateSourceWhenConsolidated` | bool | no | `false` | After a successful load, truncate the upstream landing (`pre`) table feeding this flow's source, but only once the target's `MAX(watermark)` has caught up to the landing table's. Requires an incremental watermark and a SQL Server source. |
 
 ### matchKeys
 
@@ -125,6 +127,36 @@ When set, staging is applied to the target one dataset at a time, partitioned by
 
 Note that `source.dataSetColumn` is a separate key on the `source` section; the `load.dataSetColumn` key is the one that drives the dataset-partitioned apply.
 
+### load.reloadColumn
+
+Per-file (per-dataset) full replace, for the chained file-landing pattern where a file is the unit of data and a resent file must fully replace its prior version. When set, the apply is not a keyed upsert but a purge-then-insert scoped to the incoming batch:
+
+1. Purge: `DELETE trg FROM [target] AS trg WHERE EXISTS (SELECT 1 FROM <staging> AS src WHERE src.[reloadColumn] = trg.[reloadColumn])`. The join is a plain equality, so it is NULL-safe: a target or staging row with no file identity is never matched, and files absent from this run's batch are untouched.
+2. Insert the staged rows. When `load.keyColumns` are declared, the insert first collapses staging to one row per key so a key recurring across the batch's files cannot violate the target's unique key; without keys, every staged row is inserted.
+
+The two statements always run in one transaction, so a resend is atomic (the old rows are gone and the new ones in, or neither). Purged rows are reported as `RowsDeleted`.
+
+Use `FileName_DW` as the reload column, and set the upstream pre flow's `showPathWithFileName` so `FileName_DW` carries the full path, the collision-free identity (two files with the same name in different folders stay distinct). The provenance columns ride through the `[pre].[v<Table>]` view onto this ods target, so the reload column is a real target column here. Combined with an incremental watermark on `FileDate_DW`, only the resent file (its rows carry a newer file date) is read into staging, so only that file is purged and reloaded; the other landed files are never touched. This is the crucial difference from a keyed upsert, which would leave behind records that the new version of the file dropped.
+
+On the run that creates the target, an `NCI_ReloadColumn` nonclustered index is added so the purge seeks (skipped when the column is already the leading column of the key, date, or dataset index).
+
+`reloadColumn` supersedes the keyed upsert and is therefore rejected in combination with `load.dataSetColumn` (the ordered dataset-upsert loop), `versioning.scd2`, `load.matchKeysInSourceAndTarget`, and `target.truncateBeforeLoad`, each with a specific validation message. It does not require `load.keyColumns` (the file is the unit of replacement). At run time, a `reloadColumn` that is not a bulk-copied target column fails with `ReloadColumn '<name>' is not among the data columns.`
+
+```yaml
+source:
+  server: dwpre
+  object: dw-pre-prod.pre.vBaatbooking_sess   # the typed view; carries FileName_DW (full path)
+target:
+  server: dwh
+  object: dw-dwh-prod.arc.Baatbooking_sess
+load:
+  reloadColumn: FileName_DW
+  keyColumns: [SESS_ID]        # optional: dedups within a file
+incremental:
+  columns: [FileDate_DW]       # only the resent file is read into staging
+  overlapDays: 0
+```
+
 ### load.streamData and load.threads
 
 `streamData` is parsed and stored (default `true`), but the current engine does not branch on it: staging is always populated by streaming a live reader straight into the bulk copy (`SqlBulkCopy` with `EnableStreaming = true`), regardless of the flag's value (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs). `threads` has one effect: when `initLoad.enabled: true`, the chunked backfill segments fan out concurrently, capped at `threads` (default 1 when unset), each segment opening its own source and target connection and streaming into the same run-scoped staging table. A normal run without `initLoad` always uses a single reader/writer pair, so `threads` has no effect there. `threads` values `<= 0` are treated the same as unset.
@@ -132,6 +164,19 @@ Note that `source.dataSetColumn` is a separate key on the `source` section; the 
 ### load.keepStagingTable and load.truncateStagingOnCompletion
 
 By default the run-scoped staging table (and the match-keys key table, when present) is dropped after a successful run. A failed run always keeps the staging table for debugging, regardless of this flag. `keepStagingTable: true` keeps it on success too; `truncateStagingOnCompletion: true` (model property `TruncatePreTableOnCompletion`) then empties the kept table after a successful load so it carries structure without the run's data. When the table is not kept, the flag has no effect: dropping already discards the data.
+
+This governs the per-run `stg_` staging table only. It is unrelated to `truncateSourceWhenConsolidated` below, which governs the upstream landing table.
+
+### load.truncateSourceWhenConsolidated
+
+For the chained landing pattern `file -> [pre].[<Table>] -> view [pre].[v<Table>] -> target`, the landing (`pre`) table is written by a file flow and read by this ingestion flow through the typed view. Left alone it grows without bound, because a landing table is never emptied on its own. Setting `truncateSourceWhenConsolidated: true` reclaims it safely: after a successful load, the engine compares `MAX(watermark)` in the landing table against `MAX(watermark)` in the target and truncates the landing table only when the target has caught up (target mark `>=` landing mark). The watermark is the first `incremental.columns` entry, else `incremental.dateColumn`, and must exist under the same name on both sides (the clean `FileDate_DW` system column and its siblings do). The landing table is the source object with a leading `v_` stripped; a source that is already a base table is truncated as-is.
+
+This is the safe alternative to `target.truncateBeforeLoad` on the landing flow: it never removes un-consolidated data. A failed run never truncates (the step is on the success path, after the load commits); an empty landing table is a no-op; and a target that has not caught up leaves the landing rows in place, so the next run re-consolidates them rather than losing them. The flag requires an incremental watermark and a SQL Server source; both are checked at run start, so a misconfigured flow fails immediately rather than after a committed load:
+
+```text
+load.truncateSourceWhenConsolidated requires an incremental watermark (incremental.columns or incremental.dateColumn) ...
+load.truncateSourceWhenConsolidated is supported only for SQL Server sources ...
+```
 
 ## matchKeys details
 

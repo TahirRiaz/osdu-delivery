@@ -337,12 +337,15 @@ public static class RunQueueStore
                             catalog.Runs.Add(target);
                         }
 
-                        // The node may have streamed this run's statements into the catalog live as it executed.
-                        // Those rows are a real-time preview; run.json is the authoritative final trace (it carries
-                        // the full order and the failure marker), so clear any live rows before re-projecting from
-                        // the artifact. A no-op for CLI runs and any run with no live feed, and atomic with the rest
-                        // of the completion inside this serializable transaction.
+                        // The node may have streamed this run's statements and canonical events into the catalog
+                        // live as it executed. Those rows are a real-time preview; run.json is the authoritative
+                        // final record (it carries the full order, the failure marker, and the events array), so
+                        // clear any live rows before re-projecting from the artifact. A no-op for CLI runs and any
+                        // run with no live feed, and atomic with the rest of the completion inside this
+                        // serializable transaction.
                         await catalog.RunStatements.Where(s => s.RunId == runId)
+                            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                        await catalog.RunEvents.Where(e => e.RunId == runId)
                             .ExecuteDeleteAsync(ct).ConfigureAwait(false);
                         CatalogSync.AddRunDetail(catalog, document.RootElement, runId, repoId);
                         // A failed group member strands its dependents: skip them in the same transaction so the

@@ -10,6 +10,11 @@ public enum UpsertStatementKind
     Update,
     Insert,
 
+    /// <summary>A set-based DELETE that purges the target rows belonging to the datasets present in the staged
+    /// batch (the per-file replace, <see cref="UpsertOptions.ReloadColumn"/>). Its affected-row count is a
+    /// deletion, not an insert or update, so the caller attributes it to rows removed.</summary>
+    Purge,
+
     /// <summary>A single script that performs both the update and the insert (the dataset-partitioned loop):
     /// it reports its affected-row totals as one row with <c>Inserts</c> and <c>Updates</c> columns rather than
     /// via a rows-affected count, so the caller reads both counts from the result set.</summary>
@@ -86,6 +91,14 @@ public sealed record UpsertOptions
     /// <see cref="DataColumns"/>. Null applies the plain set-based upsert.</summary>
     public string? DataSetColumn { get; init; }
 
+    /// <summary>When set, the apply is a per-file (per-dataset) full replace keyed on this column instead of a
+    /// keyed upsert: a set-based <c>DELETE</c> purges every target row whose <see cref="ReloadColumn"/> value is
+    /// present in staging (NULL-safe), then the staged rows are inserted. With <see cref="KeyColumns"/> the insert
+    /// collapses staging to one row per key so the target's unique key holds; without keys every staged row is
+    /// inserted. Must be one of <see cref="DataColumns"/>. Not combinable with <see cref="DataSetColumn"/> or
+    /// <see cref="Scd2Enabled"/>. Null applies the normal upsert.</summary>
+    public string? ReloadColumn { get; init; }
+
     /// <summary>Maintain application-managed SCD Type 2 history instead of a plain upsert: close the changed
     /// current rows and insert new current versions (the dimension-history load). When set, the SCD2 columns
     /// below are required and <see cref="SkipUpdate"/>/<see cref="SkipInsert"/> do not apply.</summary>
@@ -125,6 +138,31 @@ public static class UpsertGenerator
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(staging);
         ArgumentNullException.ThrowIfNull(options);
+
+        // Per-file replace (purge-then-insert) is its own apply shape: it needs no business key (the file is the
+        // unit of replacement), so it is resolved before the keyed-upsert key requirement below.
+        if (!string.IsNullOrEmpty(options.ReloadColumn))
+        {
+            if (options.Scd2Enabled)
+            {
+                throw new SqlFlowException("A per-file replace (ReloadColumn) cannot be combined with SCD2 versioning.");
+            }
+
+            if (!string.IsNullOrEmpty(options.DataSetColumn))
+            {
+                throw new SqlFlowException("A per-file replace (ReloadColumn) cannot be combined with the dataset-upsert loop (DataSetColumn).");
+            }
+
+            if (!options.DataColumns.Contains(options.ReloadColumn, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new SqlFlowException($"ReloadColumn '{options.ReloadColumn}' is not among the data columns.");
+            }
+
+            // Validate the hash algorithm for parity with the other branches (it is unused here, but a bad value
+            // should still fail the same way rather than silently pass).
+            _ = HashKey.BinaryTypeFor(options.HashAlgorithm);
+            return GenerateReloadStatements(Qualify(target), Qualify(staging), options);
+        }
 
         if (options.KeyColumns.Count == 0)
         {
@@ -245,6 +283,66 @@ public static class UpsertGenerator
                         $"SELECT {selectList} FROM {OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns)} AS src " +
                         $"WHERE src._rn = 1 AND NOT EXISTS (SELECT 1 FROM {trg} AS trg WHERE {keyEquality});",
                 });
+        }
+
+        return statements;
+    }
+
+    /// <summary>
+    /// The per-file (per-dataset) full replace (<see cref="UpsertOptions.ReloadColumn"/>): a purge that deletes
+    /// every target row whose dataset key is present in the staged batch, then an insert of the batch. The purge
+    /// join is a plain equality (<c>=</c>), so NULL keys never match: a target or staging row with no file
+    /// identity is never purged, and other files' rows (absent from this batch) are untouched. When key columns
+    /// are declared the insert collapses staging to one row per key (the same anti-duplication the keyed upsert
+    /// uses), so the target's unique key is not violated by a key that recurs across the batch's files; without
+    /// keys every staged row is inserted. The two statements are meant to run in one transaction (the caller
+    /// forces it) so a resend is atomic - old rows gone and new rows in, or neither.
+    /// </summary>
+    private static IReadOnlyList<UpsertStatement> GenerateReloadStatements(string trg, string stg, UpsertOptions options)
+    {
+        var rc = Escape(options.ReloadColumn!);
+
+        var statements = new List<UpsertStatement>
+        {
+            new()
+            {
+                Kind = UpsertStatementKind.Purge,
+                Sql =
+                    $"DELETE trg FROM {trg} AS trg " +
+                    $"WHERE EXISTS (SELECT 1 FROM {stg} AS src WHERE src.[{rc}] = trg.[{rc}]);",
+            },
+        };
+
+        if (!options.SkipInsert)
+        {
+            var insertColumns = new List<string>(options.DataColumns);
+            var selectColumns = options.DataColumns.Select(c => $"src.[{Escape(c)}]").ToList();
+            if (!string.IsNullOrEmpty(options.InsertedDateColumn))
+            {
+                insertColumns.Add(options.InsertedDateColumn);
+                selectColumns.Add("SYSUTCDATETIME()");
+            }
+
+            if (!string.IsNullOrEmpty(options.RowStatusColumn))
+            {
+                insertColumns.Add(options.RowStatusColumn);
+                selectColumns.Add("'I'");
+            }
+
+            var insertColumnList = string.Join(", ", insertColumns.Select(c => $"[{Escape(c)}]"));
+            var selectList = string.Join(", ", selectColumns);
+
+            // With keys, one row per key (last-wins within the batch) so a key recurring across the batch's files
+            // cannot violate the target's unique key; without keys, every staged row is inserted.
+            var fromClause = options.KeyColumns.Count > 0
+                ? $"{OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns)} AS src WHERE src._rn = 1"
+                : $"{stg} AS src";
+
+            statements.Add(new UpsertStatement
+            {
+                Kind = UpsertStatementKind.Insert,
+                Sql = $"INSERT INTO {trg} ({insertColumnList}) SELECT {selectList} FROM {fromClause};",
+            });
         }
 
         return statements;

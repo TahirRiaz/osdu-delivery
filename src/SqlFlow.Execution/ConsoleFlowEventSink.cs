@@ -10,7 +10,7 @@ public sealed class ConsoleFlowEventSink : IFlowEventSink
 {
     public void Publish(FlowEvent flowEvent)
     {
-        if (flowEvent.Level == FlowEventLevel.Trace)
+        if (flowEvent.Level is FlowEventLevel.Trace or FlowEventLevel.Debug)
         {
             return;
         }

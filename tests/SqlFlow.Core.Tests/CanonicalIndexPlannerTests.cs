@@ -44,4 +44,34 @@ public sealed class CanonicalIndexPlannerTests
         var statements = CanonicalIndexPlanner.Plan(Target(), ["Id"], null, null, hasUpdatedDateColumn: false, columnStore: true, hasIdentityPrimaryKey: true);
         Assert.DoesNotContain(statements, s => s.Contains("COLUMNSTORE", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void ReloadColumn_EmitsIndexSoThePurgeSeeks()
+    {
+        var statements = CanonicalIndexPlanner.Plan(
+            Target(), ["Id"], null, null, hasUpdatedDateColumn: false, columnStore: false, hasIdentityPrimaryKey: false,
+            reloadColumn: "FileName_DW");
+        Assert.Contains(statements, s => s.Contains("[NCI_ReloadColumn]", StringComparison.Ordinal) && s.Contains("([FileName_DW])", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("Id", null, null)]       // already the key's leading column
+    [InlineData(null, "FileDate", null)] // already the date column
+    [InlineData(null, null, "FileDate")] // already the dataset column
+    public void ReloadColumn_AlreadyCoveredByAnotherIndex_IsNotDuplicated(string? keyName, string? dateColumn, string? dataSetColumn)
+    {
+        var keys = keyName is null ? (IReadOnlyList<string>)[] : [keyName];
+        var reloadColumn = keyName ?? dateColumn ?? dataSetColumn!;
+        var statements = CanonicalIndexPlanner.Plan(
+            Target(), keys, dateColumn, dataSetColumn, hasUpdatedDateColumn: false, columnStore: false, hasIdentityPrimaryKey: false,
+            reloadColumn: reloadColumn);
+        Assert.DoesNotContain(statements, s => s.Contains("[NCI_ReloadColumn]", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ReloadColumn_Unset_EmitsNoReloadIndex()
+    {
+        var statements = CanonicalIndexPlanner.Plan(Target(), ["Id"], null, null, hasUpdatedDateColumn: false, columnStore: false, hasIdentityPrimaryKey: false);
+        Assert.DoesNotContain(statements, s => s.Contains("[NCI_ReloadColumn]", StringComparison.Ordinal));
+    }
 }

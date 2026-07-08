@@ -278,6 +278,26 @@ public sealed class RunTriggerApiTests
             Assert.Equal(runId, recordedRunId);
             // And the run genuinely executed (the CSV loaded into the temp table), proving the happy path end to end.
             Assert.Equal("succeeded", status);
+
+            // The executed run also produced its consolidated trace: the engine's canonical events (published
+            // live by the worker's sink, then re-projected from the run.json events array at completion) come back
+            // from GET /runs/{id}/trace, including the per-file progress the file flow emitted.
+            using (var request = new HttpRequestMessage(HttpMethod.Get, new Uri($"/api/v1/runs/{runId}/trace?pageSize=200", UriKind.Relative)))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                using var eventsResponse = await client.SendAsync(request);
+                Assert.Equal(HttpStatusCode.OK, eventsResponse.StatusCode);
+                using var timeline = JsonDocument.Parse(await eventsResponse.Content.ReadAsStringAsync());
+                var entries = timeline.RootElement.GetProperty("items").EnumerateArray().ToList();
+                Assert.NotEmpty(entries);
+                var eventEntries = entries.Where(e => e.GetProperty("kind").GetString() == "event").ToList();
+                Assert.NotEmpty(eventEntries);
+                // The file flow's canonical progress is in the feed: it read data.csv (the source.open event).
+                Assert.Contains(eventEntries, e =>
+                    e.GetProperty("message").GetString()!.Contains("data.csv", StringComparison.OrdinalIgnoreCase));
+                Assert.All(eventEntries, e =>
+                    Assert.False(string.IsNullOrWhiteSpace(e.GetProperty("level").GetString())));
+            }
         }
         finally
         {
@@ -297,6 +317,9 @@ public sealed class RunTriggerApiTests
 
             await using (var db = CatalogDatabase.Create(cs))
             {
+                await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+                await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+                await db.RunFiles.Where(f => f.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();

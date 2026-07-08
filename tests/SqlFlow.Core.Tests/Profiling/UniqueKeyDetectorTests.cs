@@ -1,111 +1,20 @@
-using System.Globalization;
 using SqlFlow.Core.Profiling;
 using Xunit;
+using FakeProbe = SqlFlow.Tests.Profiling.FakeUniquenessProbe;
 
 namespace SqlFlow.Tests.Profiling;
 
 /// <summary>
-/// The storage-agnostic unique-key detection algorithm, exercised against in-memory tables through a fake probe:
-/// single-column keys, minimal composite keys (redundancy removed), the no-key outcome, and the sampling contract
-/// that a candidate unique only on the sample is verified against the whole table before it is reported as unique.
+/// The storage-agnostic unique-key detection algorithm, exercised against in-memory tables through
+/// <see cref="FakeUniquenessProbe"/>: single-column keys, minimal composite keys (redundancy removed), the declared
+/// metadata fast path, the no-key outcome, and the sampling contract that a candidate unique only on the sample is
+/// verified against the whole table before it is reported as unique. <see cref="UniqueKeyEdgeCaseTests"/> holds the
+/// deeper edge-case matrix.
 /// </summary>
 public sealed class UniqueKeyDetectorTests
 {
-    /// <summary>A probe over in-memory rows: the sample is the first N rows, mirroring the SQL probe's TOP(N).</summary>
-    private sealed class FakeProbe : IUniquenessProbe
-    {
-        private readonly IReadOnlyList<IReadOnlyDictionary<string, object?>> _full;
-        private readonly IReadOnlyList<IReadOnlyDictionary<string, object?>> _working;
-
-        public FakeProbe(IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, int sampleSize)
-        {
-            _full = rows;
-            if (sampleSize > 0 && rows.Count > sampleSize)
-            {
-                _working = rows.Take(sampleSize).ToList();
-                Sampled = true;
-            }
-            else
-            {
-                _working = rows;
-                Sampled = false;
-            }
-
-            TotalRows = _full.Count;
-            WorkingRows = _working.Count;
-        }
-
-        public long TotalRows { get; }
-
-        public long WorkingRows { get; }
-
-        public bool Sampled { get; }
-
-        /// <summary>How many measurement passes (batched queries) the detector issued.</summary>
-        public int MeasurePasses { get; private set; }
-
-        public Task<IReadOnlyList<SetMeasure>> MeasureManyAsync(IReadOnlyList<IReadOnlyList<string>> sets, CancellationToken ct = default)
-        {
-            MeasurePasses++;
-            return Task.FromResult<IReadOnlyList<SetMeasure>>(sets.Select(s => Measure(_working, s, exact: !Sampled)).ToList());
-        }
-
-        public Task<SetVerdict> VerifyAsync(IReadOnlyList<string> columns, CancellationToken ct = default)
-        {
-            var m = Measure(_full, columns, exact: true);
-            return Task.FromResult(new SetVerdict
-            {
-                Columns = columns.ToList(),
-                IsUnique = m.IsUnique,
-                HasNulls = m.Nulls > 0,
-                Rows = m.Scanned,
-            });
-        }
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-        private static SetMeasure Measure(IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, IReadOnlyList<string> columns, bool exact)
-        {
-            long nulls = 0;
-            var distinct = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var row in rows)
-            {
-                if (columns.Any(c => row[c] is null))
-                {
-                    nulls++;
-                    continue;
-                }
-
-                // A length-prefixed join so ("a","bc") and ("ab","c") never alias to the same tuple key.
-                distinct.Add(string.Concat(columns.Select(c =>
-                {
-                    var text = Convert.ToString(row[c], CultureInfo.InvariantCulture) ?? string.Empty;
-                    return text.Length.ToString(CultureInfo.InvariantCulture) + ":" + text + "|";
-                })));
-            }
-
-            return new SetMeasure
-            {
-                Columns = columns.ToList(),
-                Scanned = rows.Count,
-                Distinct = distinct.Count,
-                Nulls = nulls,
-                Exact = exact,
-            };
-        }
-    }
-
     private static IReadOnlyList<IReadOnlyDictionary<string, object?>> Table(IReadOnlyList<string> columns, params object?[][] rows)
-        => rows.Select(r =>
-        {
-            var d = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < columns.Count; i++)
-            {
-                d[columns[i]] = r[i];
-            }
-
-            return (IReadOnlyDictionary<string, object?>)d;
-        }).ToList();
+        => FakeUniquenessProbe.Table(columns, rows);
 
     private static Task<UniqueKeyReport> DetectAsync(FakeProbe probe, IReadOnlyList<string> columns, UniqueKeyOptions? options = null)
         => UniqueKeyDetector.DetectAsync(probe, columns, options ?? new UniqueKeyOptions());
@@ -245,6 +154,45 @@ public sealed class UniqueKeyDetectorTests
         // One pass for all singles, then a bounded handful for the greedy levels and reduction: never the O(combinations)
         // of the naive approach.
         Assert.True(probe.MeasurePasses <= 12, $"expected a small number of batched passes, got {probe.MeasurePasses}");
+    }
+
+    [Fact]
+    public async Task DeclaredKeys_ShortCircuit_WithoutAnyMeasurement()
+    {
+        var columns = new[] { "Id", "A", "B" };
+        // The rows would NOT support "Id" as a key (a duplicate), proving the declared answer never touches them:
+        // a declared key is trusted because the engine enforces it, not because the sample agrees.
+        var rows = Table(columns, [1, "x", "y"], [1, "x", "z"]);
+        var probe = new FakeProbe(rows, 0) { DeclaredUniqueKeys = [["Id"], ["A", "B"], ["B", "A"]] };
+        var report = await DetectAsync(probe, columns);
+
+        Assert.Equal(0, probe.MeasurePasses);
+        Assert.Equal(0, report.ScannedRows);
+        Assert.Empty(report.Columns);
+        Assert.Contains("metadata", report.Note!, StringComparison.OrdinalIgnoreCase);
+
+        // Narrowest first, and the order-insensitive duplicate set (B,A) is collapsed into (A,B).
+        Assert.Equal(2, report.Candidates.Count);
+        Assert.Equal(new[] { "Id" }, report.Candidates[0].Columns);
+        Assert.Equal(new[] { "A", "B" }, report.Candidates[1].Columns);
+        Assert.All(report.Candidates, c =>
+        {
+            Assert.True(c.IsUnique);
+            Assert.True(c.Verified);
+            Assert.True(c.Declared);
+        });
+    }
+
+    [Fact]
+    public async Task DeclaredKeys_RespectMaxCandidates()
+    {
+        var columns = new[] { "Id", "Alt" };
+        var rows = Table(columns, [1, 10], [2, 20]);
+        var probe = new FakeProbe(rows, 0) { DeclaredUniqueKeys = [["Id"], ["Alt"]] };
+        var report = await DetectAsync(probe, columns, new UniqueKeyOptions { MaxCandidates = 1 });
+
+        var candidate = Assert.Single(report.Candidates);
+        Assert.Equal(new[] { "Alt" }, candidate.Columns); // ties on width break alphabetically
     }
 
     [Fact]

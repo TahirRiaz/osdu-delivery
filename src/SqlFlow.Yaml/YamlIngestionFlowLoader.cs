@@ -137,6 +137,37 @@ public sealed class YamlIngestionFlowLoader
             }
         }
 
+        // Per-file replace (load.reloadColumn) is a purge-then-insert scoped to the incoming batch. It supersedes
+        // the keyed upsert, so it cannot be layered on the mechanisms that assume that upsert: the ordered
+        // dataset-upsert loop, SCD2 history, the match-key delete pass, or a full-reload truncate (which already
+        // wipes everything, making a per-file purge meaningless). Reject the combinations loudly at parse time.
+        if (!string.IsNullOrWhiteSpace(load.ReloadColumn))
+        {
+            if (!string.IsNullOrWhiteSpace(load.DataSetColumn))
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'load.reloadColumn' (per-file replace) cannot be combined with 'load.dataSetColumn' (the ordered dataset-upsert loop); use one or the other.");
+            }
+
+            if (versioning.Scd2.Enabled)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'load.reloadColumn' cannot be combined with 'versioning.scd2'; a per-file purge would erase the dimension history.");
+            }
+
+            if (load.MatchKeysInSourceAndTarget)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'load.reloadColumn' cannot be combined with 'load.matchKeysInSourceAndTarget'; both delete target rows and their scopes conflict (per-file vs. whole-source key reconciliation).");
+            }
+
+            if (targetYaml.TruncateBeforeLoad ?? false)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'load.reloadColumn' cannot be combined with 'target.truncateBeforeLoad'; truncating already replaces the whole target, so a per-file purge is redundant.");
+            }
+        }
+
         // Tag mode soft-deletes by stamping DeletedDate_DW; the column must be on the target. Auto-enable it
         // here (same as the legacy mapper does) so the user does not need to set both flags independently.
         if (load.MatchKeysInSourceAndTarget && matchKeys.Action == MatchKeyAction.Tag)
@@ -244,10 +275,12 @@ public sealed class YamlIngestionFlowLoader
             BatchUpsertToAvoidLockEscalation = y.BatchUpsert ?? false,
             BatchUpsertRowCount = y.BatchUpsertRowCount ?? 2000,
             DataSetColumn = string.IsNullOrWhiteSpace(y.DataSetColumn) ? null : y.DataSetColumn.Trim(),
+            ReloadColumn = string.IsNullOrWhiteSpace(y.ReloadColumn) ? null : y.ReloadColumn.Trim(),
             StreamData = y.StreamData ?? true,
             Threads = y.Threads is > 0 ? y.Threads : null,
             KeepStagingTable = y.KeepStagingTable ?? false,
             TruncatePreTableOnCompletion = y.TruncateStagingOnCompletion ?? false,
+            TruncateSourceWhenConsolidated = y.TruncateSourceWhenConsolidated ?? false,
         };
     }
 

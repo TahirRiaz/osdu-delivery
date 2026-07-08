@@ -3,6 +3,11 @@ namespace SqlFlow.Core.Model;
 public enum FlowEventLevel
 {
     Trace,
+
+    /// <summary>The engine's decisions (resolved windows, column mappings, apply-mode choices), bridged from the
+    /// canonical run log's Debug level. More detail than Info, but not the per-statement Trace chatter.</summary>
+    Debug,
+
     Info,
     Warning,
     Error,

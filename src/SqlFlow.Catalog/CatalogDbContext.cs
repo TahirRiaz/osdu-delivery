@@ -36,6 +36,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRunStatement> RunStatements => Set<CatalogRunStatement>();
 
+    public DbSet<CatalogRunEvent> RunEvents => Set<CatalogRunEvent>();
+
     public DbSet<CatalogRunSurrogateKey> RunSurrogateKeys => Set<CatalogRunSurrogateKey>();
 
     public DbSet<CatalogRunHealthCheckMetric> RunHealthCheckMetrics => Set<CatalogRunHealthCheckMetric>();
@@ -215,6 +217,18 @@ public sealed class CatalogDbContext : DbContext
             // Error is nvarchar(max), null: only the one statement that threw carries it, holding the raw engine
             // error (a SqlException message can be long), so no length bound applies.
             entity.HasIndex(s => s.RunId);
+        });
+
+        modelBuilder.Entity<CatalogRunEvent>(entity =>
+        {
+            entity.ToTable("RunEvent");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Level).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.Step).HasMaxLength(128);
+            // Message is nvarchar(max): an event message (an engine decision, an error detail) has no useful
+            // length bound.
+            entity.Property(e => e.Message).IsRequired();
+            entity.HasIndex(e => e.RunId);
         });
 
         modelBuilder.Entity<CatalogRunSurrogateKey>(entity =>

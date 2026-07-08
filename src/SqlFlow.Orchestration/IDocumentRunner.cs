@@ -1,3 +1,4 @@
+using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Runs;
 
@@ -44,6 +45,13 @@ public sealed record DocumentExecutionOptions
     /// streams the trace into the catalog during the run). Null (the default) records nothing live, so a direct
     /// CLI run is unchanged; the trace is still written to the artifact and projected at completion.</summary>
     public IRunStatementSink? StatementSink { get; init; }
+
+    /// <summary>Receives every canonical run event as it happens (file progress, resolved watermarks, engine
+    /// decisions, stage summaries, warnings), for live persistence: the node streams them into the catalog so
+    /// the run detail's Events view updates while the run executes. Null (the default, and every direct CLI run)
+    /// records nothing live; the events are still collected into the run.json <c>events</c> array and projected
+    /// at completion, so the artifact stays authoritative either way.</summary>
+    public IFlowEventSink? EventSink { get; init; }
 }
 
 /// <summary>The uniform outcome of running one flow document, whatever its kind. The batch needs only the

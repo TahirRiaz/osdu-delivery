@@ -23,7 +23,8 @@ namespace SqlFlow.Node;
 /// </remarks>
 internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposable
 {
-    private readonly record struct Event(int Sequence, string Step, string Sql, string? Error, bool IsFailure);
+    private readonly record struct Event(
+        int Sequence, DateTime TimestampUtc, string Step, string Sql, string? Error, bool IsFailure);
 
     private readonly Guid _runId;
     private readonly Guid _repoId;
@@ -55,12 +56,12 @@ internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposa
         ArgumentNullException.ThrowIfNull(entry);
         // TryWrite on an unbounded channel only fails once the writer is completed (post-dispose); dropping then is
         // correct, and it never throws, honouring the "must not break the run" contract.
-        _channel.Writer.TryWrite(new Event(entry.Sequence, entry.Step, entry.Sql, entry.Error, IsFailure: false));
+        _channel.Writer.TryWrite(new Event(entry.Sequence, entry.TimestampUtc, entry.Step, entry.Sql, entry.Error, IsFailure: false));
     }
 
     public void ReportFailure(int sequence, string error)
     {
-        _channel.Writer.TryWrite(new Event(sequence, string.Empty, string.Empty, error, IsFailure: true));
+        _channel.Writer.TryWrite(new Event(sequence, default, string.Empty, string.Empty, error, IsFailure: true));
     }
 
     public async ValueTask DisposeAsync()
@@ -112,6 +113,7 @@ internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposa
                             RunId = _runId,
                             RepoId = _repoId,
                             Ordinal = ev.Sequence,
+                            TimestampUtc = ev.TimestampUtc,
                             // The Step column is capped at 128 (see CatalogDbContext); match the projection's bound.
                             Step = ev.Step.Length > 128 ? ev.Step[..128] : ev.Step,
                             Sql = ev.Sql,

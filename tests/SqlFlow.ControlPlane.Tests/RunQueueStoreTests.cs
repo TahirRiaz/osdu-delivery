@@ -318,7 +318,7 @@ public sealed class RunQueueStoreTests
     }
 
     [SkippableFact]
-    public async Task CompleteFromArtifact_ReplacesLiveStatementsWithTheProjectedTrace()
+    public async Task CompleteFromArtifact_ReplacesLiveStatementsAndEventsWithTheProjectedArtifact()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -331,7 +331,7 @@ public sealed class RunQueueStoreTests
             var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
             await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow);
 
-            // Simulate the node's live feed: statement rows written into the catalog while the run was executing.
+            // Simulate the node's live feeds: statement and event rows written while the run was executing.
             db.RunStatements.Add(new CatalogRunStatement
             {
                 RunId = runId, RepoId = repoId, Ordinal = 1, Step = "staging.create", Sql = "CREATE TABLE #stale;",
@@ -339,6 +339,11 @@ public sealed class RunQueueStoreTests
             db.RunStatements.Add(new CatalogRunStatement
             {
                 RunId = runId, RepoId = repoId, Ordinal = 2, Step = "upsert.insert", Sql = "INSERT INTO stale;",
+            });
+            db.RunEvents.Add(new CatalogRunEvent
+            {
+                RunId = runId, RepoId = repoId, Ordinal = 1, TimestampUtc = DateTime.UtcNow, Level = "info",
+                Step = "stale", Message = "stale live event",
             });
             await db.SaveChangesAsync();
 
@@ -349,11 +354,21 @@ public sealed class RunQueueStoreTests
             var projected = await db.RunStatements.AsNoTracking()
                 .Where(s => s.RunId == runId).OrderBy(s => s.Ordinal).ToListAsync();
             // The live preview rows were cleared and replaced by exactly the artifact's trace (no duplication), with
-            // the failure attributed to the one statement that threw.
+            // the failure attributed to the one statement that threw, and its timestamp carried over.
             Assert.Equal(2, projected.Count);
             Assert.Equal("INSERT INTO t;", projected[1].Sql);
             Assert.Null(projected[0].Error);
             Assert.Equal("Cannot insert duplicate key", projected[1].Error);
+            Assert.Equal(new DateTime(2026, 6, 19, 9, 59, 58, DateTimeKind.Utc), projected[0].TimestampUtc);
+
+            // The live event rows were likewise cleared and re-projected from the artifact's events array.
+            var events = await db.RunEvents.AsNoTracking()
+                .Where(e => e.RunId == runId).OrderBy(e => e.Ordinal).ToListAsync();
+            Assert.Equal(2, events.Count);
+            Assert.Equal("incremental", events[0].Step);
+            Assert.Equal("watermark resolved to 2026-06-18", events[0].Message);
+            Assert.Equal("error", events[1].Level);
+            Assert.DoesNotContain(events, e => e.Message == "stale live event");
 
             var run = await Reload(db, runId);
             Assert.Equal(RunStatuses.Failed, run.Status);
@@ -392,6 +407,7 @@ public sealed class RunQueueStoreTests
 
     // A failed ingestion artifact whose SQL trace attributes the failure to the second statement (the upsert
     // insert), mirroring a real duplicate-key failure: the projection stamps its Error onto that entry only.
+    // Carries a canonical events array too, so the completion's event re-projection is exercised alongside.
     private static string FailedArtifactWithTrace(Guid runId, string flowName)
         => $$"""
             {
@@ -405,10 +421,14 @@ public sealed class RunQueueStoreTests
               "result": {
                 "durationSeconds": 2.0,
                 "sqlTrace": [
-                  { "sequence": 1, "step": "staging.create", "sql": "CREATE TABLE #s;" },
-                  { "sequence": 2, "step": "upsert.insert", "sql": "INSERT INTO t;", "error": "Cannot insert duplicate key" }
+                  { "sequence": 1, "timestampUtc": "2026-06-19T09:59:58Z", "step": "staging.create", "sql": "CREATE TABLE #s;" },
+                  { "sequence": 2, "timestampUtc": "2026-06-19T09:59:59Z", "step": "upsert.insert", "sql": "INSERT INTO t;", "error": "Cannot insert duplicate key" }
                 ]
-              }
+              },
+              "events": [
+                { "timestampUtc": "2026-06-19T09:59:57Z", "level": "info", "step": "incremental", "message": "watermark resolved to 2026-06-18" },
+                { "timestampUtc": "2026-06-19T10:00:00Z", "level": "error", "step": "upsert.insert", "message": "run failed: Cannot insert duplicate key" }
+              ]
             }
             """;
 
@@ -424,6 +444,7 @@ public sealed class RunQueueStoreTests
         await using (var db = CatalogDatabase.Create(cs))
         {
             await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+            await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunFiles.Where(f => f.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunAssertions.Where(a => a.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunSurrogateKeys.Where(k => k.RepoId == repoId).ExecuteDeleteAsync();

@@ -7,12 +7,13 @@ namespace SqlFlow.Core.Profiling;
 /// dropped), take any single column that is already unique, else grow a composite greedily from the most-identifying
 /// columns until it is unique and strip every column that is not needed to leave a minimal key.
 ///
-/// The cost discipline is what makes it usable at scale: the probe measures a whole level of trial combinations in a
-/// single pass (not one scan per trial), the entire search runs against the probe's working set (a sample when the
-/// table is large), a distinct-count product bound rules out "no key is possible" without a single query, and only
-/// the handful of surviving candidates are confirmed against the whole table - with a short-circuiting duplicate probe
-/// rather than a full distinct count. All measurement is delegated to an <see cref="IUniquenessProbe"/>, so the
-/// algorithm is storage-agnostic and unit-testable against in-memory data.
+/// The cost discipline is what makes it usable at scale: keys the store itself declares (an enforced unique index or
+/// constraint) are reported straight from metadata without reading a row, the probe measures a whole level of trial
+/// combinations in a single pass (not one scan per trial), the entire search runs against the probe's working set (a
+/// sample when the table is large), a distinct-count product bound rules out "no key is possible" without a single
+/// query, and only the handful of surviving candidates are confirmed against the whole table - with a
+/// short-circuiting duplicate probe rather than a full distinct count. All measurement is delegated to an
+/// <see cref="IUniquenessProbe"/>, so the algorithm is storage-agnostic and unit-testable against in-memory data.
 /// </summary>
 public static class UniqueKeyDetector
 {
@@ -22,6 +23,45 @@ public static class UniqueKeyDetector
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentNullException.ThrowIfNull(columns);
         ArgumentNullException.ThrowIfNull(options);
+
+        // 0. Declared keys. A set the store itself enforces as unique is already proven by the engine that maintains
+        // it, so it is reported without scanning: the answer on any table, at any size, in metadata time.
+        if (probe.DeclaredUniqueKeys.Count > 0)
+        {
+            var declared = new List<UniqueKeyCandidate>();
+            foreach (var key in probe.DeclaredUniqueKeys.Where(k => k.Count > 0))
+            {
+                if (declared.Any(c => SameSet(c.Columns, key)))
+                {
+                    continue;
+                }
+
+                declared.Add(new UniqueKeyCandidate
+                {
+                    Columns = key.ToList(), IsUnique = true, Verified = true, Declared = true,
+                    Distinct = probe.TotalRows, Nulls = 0, Rows = probe.TotalRows, Duplicates = 0,
+                });
+            }
+
+            if (declared.Count > 0)
+            {
+                return new UniqueKeyReport
+                {
+                    TotalRows = probe.TotalRows,
+                    ScannedRows = 0,
+                    Sampled = false,
+                    Columns = [],
+                    Candidates = declared
+                        .OrderBy(c => c.Columns.Count)
+                        .ThenBy(c => string.Join(",", c.Columns), StringComparer.OrdinalIgnoreCase)
+                        .Take(Math.Max(1, options.MaxCandidates))
+                        .ToList(),
+                    Note = "The database metadata declares these column set(s) unique (a primary key or an enabled, "
+                        + "unfiltered unique index/constraint), so the rows were not profiled. Use --no-metadata to "
+                        + "profile the data anyway.",
+                };
+            }
+        }
 
         var working = probe.WorkingRows;
         if (columns.Count == 0 || working == 0)

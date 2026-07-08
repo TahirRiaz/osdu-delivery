@@ -80,6 +80,21 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
         Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
     }
 
+    [Fact]
+    public void LocalPasswords_ProduceAHash_TheFrameworkHasherVerifies()
+    {
+        // The CLI's `sqlflow user reset-password` hashes through the shared LocalPasswords helper, while the control
+        // plane verifies logins with a framework PasswordHasher<CatalogUser>. This locks that compatibility contract
+        // so changing the hashing in one place can never silently make CLI-set passwords unloginable. No database
+        // needed, so it guards the contract on every CI run, not only where a catalog is reachable.
+        var user = new CatalogUser { Username = "hash-contract" };
+        var hash = LocalPasswords.Hash(user, "a-long-enough-password");
+
+        var verifier = new PasswordHasher<CatalogUser>();
+        Assert.NotEqual(PasswordVerificationResult.Failed, verifier.VerifyHashedPassword(user, hash, "a-long-enough-password"));
+        Assert.Equal(PasswordVerificationResult.Failed, verifier.VerifyHashedPassword(user, hash, "the-wrong-password"));
+    }
+
     // ---- Local login against the real catalog ------------------------------------------------------------------
 
     [SkippableFact]
@@ -148,6 +163,52 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
             using var locked = await client.PostAsJsonAsync(
                 new Uri("/api/v1/auth/login", UriKind.Relative), new LoginRequest(username, password));
             Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
+        }
+        finally
+        {
+            await CleanupUsersAsync(cs, username);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ResetPassword_AppliedThroughTheCliPath_SignsInWithTheNewPassword_AndRejectsTheOld()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var username = $"reset-test-{Guid.NewGuid():N}";
+        const string oldPassword = "old-password-1234567";
+        const string newPassword = "new-password-7654321";
+
+        try
+        {
+            await SeedLocalUserAsync(cs, username, oldPassword, RoleNames.Admin);
+
+            // Apply the reset exactly as `sqlflow user reset-password` does: hash with the shared LocalPasswords
+            // helper and persist through UserStore.SetPasswordHashAsync (the command's entire database mutation).
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var user = await UserStore.FindByUsernameAsync(db, username);
+                Assert.NotNull(user);
+                var hash = LocalPasswords.Hash(user, newPassword);
+                Assert.Equal(UserMutation.Applied, await UserStore.SetPasswordHashAsync(db, user.Id, hash, DateTime.UtcNow));
+            }
+
+            using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+            using var client = factory.CreateClient();
+
+            // The new password signs in through the real endpoint: proof the CLI-set hash is login-compatible.
+            using var withNew = await client.PostAsJsonAsync(
+                new Uri("/api/v1/auth/login", UriKind.Relative), new LoginRequest(username, newPassword));
+            Assert.Equal(HttpStatusCode.OK, withNew.StatusCode);
+            var session = await withNew.Content.ReadFromJsonAsync<SessionResponse>();
+            Assert.NotNull(session);
+            Assert.Equal(username, session.Subject);
+            Assert.Equal(RoleNames.Admin, session.Role);
+
+            // The superseded password no longer works.
+            using var withOld = await client.PostAsJsonAsync(
+                new Uri("/api/v1/auth/login", UriKind.Relative), new LoginRequest(username, oldPassword));
+            Assert.Equal(HttpStatusCode.Unauthorized, withOld.StatusCode);
         }
         finally
         {

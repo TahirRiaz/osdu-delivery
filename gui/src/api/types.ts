@@ -160,6 +160,11 @@ export interface RunSummary {
   /** The run group this run belongs to when it was launched as one member of a Node or Batch run; null for a
    * standalone single-flow run. */
   groupId: string | null;
+  /** The run's newest trace event (a stage summary, a file read, a decision): what the run is doing right now
+   * while it executes, what it did last once it ended. Null when no events were recorded (a queued run, or one
+   * that predates the event stream). */
+  lastAction: string | null;
+  lastActionUtc: string | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -227,11 +232,35 @@ export interface RunStatement {
   runId: string;
   repoId: string | null;
   ordinal: number;
+  /** When the statement was generated (UTC); null on statements recorded before the trace carried timestamps. */
+  timestampUtc: string | null;
   step: string;
   sql: string;
   /** The error this statement raised, or null when it succeeded (or was never reached). Set on exactly one
    * statement of a failed run: the one whose execution threw. */
   error: string | null;
+}
+
+/** One entry of a run's consolidated trace: a canonical run event (kind "event": file progress, a resolved
+ * watermark, an engine decision, a stage summary, a warning) or a generated SQL statement (kind "statement"),
+ * the two streams interleaved by timestamp. An event carries message (plus optional rows/elapsedMs); a
+ * statement carries sql (plus error on the one that threw). */
+export interface RunTraceEntry {
+  id: number;
+  runId: string;
+  repoId: string | null;
+  kind: "event" | "statement";
+  /** 1-based position within the entry's own stream (events and statements count separately). */
+  ordinal: number;
+  /** Null only on statements recorded before the trace carried timestamps; those sort first. */
+  timestampUtc: string | null;
+  level: "trace" | "debug" | "info" | "warning" | "error";
+  step: string | null;
+  message: string | null;
+  sql: string | null;
+  error: string | null;
+  rows: number | null;
+  elapsedMs: number | null;
 }
 
 export interface RunSurrogateKey {
@@ -442,6 +471,9 @@ export interface LineageObject {
   schema: string | null;
   name: string;
   kind: string;
+  /** The object's depth in the estate-wide data-movement graph (0 = a source nothing produces); null when the
+   * object takes part in no data movement. */
+  level: number | null;
   firstSeenUtc: string;
   lastSeenUtc: string;
 }

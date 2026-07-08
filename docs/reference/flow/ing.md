@@ -73,7 +73,7 @@ sqlflow run orders-ingestion.flow.yaml
 | `connections` | map | no | empty | Named connections referenced by `server:` on source, target, and surrogate keys. |
 | `source` | map | yes | none | The source endpoint. Error when missing: `'source' is required.` |
 | `target` | map | yes | none | The target endpoint (must resolve to SQL Server). Error when missing: `'target' is required.` |
-| `load` | map | no | defaults | Upsert behavior: `keyColumns`, `skipUpdateExisting`, `skipInsertNew`, `matchKeysInSourceAndTarget`, `batchUpsert`, `batchUpsertRowCount` (default 2000), `dataSetColumn`, `streamData` (default true), `threads`, `keepStagingTable`, `truncateStagingOnCompletion`. See [ing-load.md](ing-load.md). |
+| `load` | map | no | defaults | Upsert behavior: `keyColumns`, `skipUpdateExisting`, `skipInsertNew`, `matchKeysInSourceAndTarget`, `batchUpsert`, `batchUpsertRowCount` (default 2000), `dataSetColumn`, `reloadColumn` (per-file replace), `streamData` (default true), `threads`, `keepStagingTable`, `truncateStagingOnCompletion`, `truncateSourceWhenConsolidated`. See [ing-load.md](ing-load.md). |
 | `matchKeys` | map | no | defaults | Deleted-row detection pass: `action` (`tag` or `delete`), `keyColumns`, `thresholdPercent` (default 20), `ignoreDeletedRowsAfterMonths`, `dateColumn`, `sourceFilter`, `targetFilter`. See [ing-load.md](ing-load.md). |
 | `change` | map | no | defaults | Hash-based change detection: `hashColumns`, `hashType`, `ignoreColumnsInHash`. |
 | `systemColumns` | map | no | defaults | Audit columns: `insertedDate` (default true), `updatedDate` (default true), `deletedDate` (default false), `rowStatus` (default false). |

@@ -33,6 +33,7 @@ public sealed record CatalogSyncResult
     public int RunFilesAdded { get; init; }
     public int RunAssertionsAdded { get; init; }
     public int RunStatementsAdded { get; init; }
+    public int RunEventsAdded { get; init; }
     public int RunSurrogateKeysAdded { get; init; }
     public int RunHealthCheckMetricsAdded { get; init; }
     public bool LineageConnected { get; init; }
@@ -41,7 +42,7 @@ public sealed record CatalogSyncResult
 
 /// <summary>The per-pass tally of run artifacts and the drill-down detail rows projected from them.</summary>
 internal readonly record struct RunSyncTally(
-    int Added, int Skipped, int Failed, int Files, int Assertions, int Statements, int SurrogateKeys, int Metrics);
+    int Added, int Skipped, int Failed, int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics);
 
 /// <summary>What a per-run write-back did to the flow's pipeline row.</summary>
 public enum PipelineChange
@@ -60,6 +61,7 @@ public sealed record RecordRunResult
     public int RunFilesAdded { get; init; }
     public int RunAssertionsAdded { get; init; }
     public int RunStatementsAdded { get; init; }
+    public int RunEventsAdded { get; init; }
     public int RunSurrogateKeysAdded { get; init; }
     public int RunHealthCheckMetricsAdded { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -260,6 +262,7 @@ public sealed class CatalogSync
                     RunFilesAdded = runTally.Files,
                     RunAssertionsAdded = runTally.Assertions,
                     RunStatementsAdded = runTally.Statements,
+                    RunEventsAdded = runTally.Events,
                     RunSurrogateKeysAdded = runTally.SurrogateKeys,
                     RunHealthCheckMetricsAdded = runTally.Metrics,
                     ObjectsUpserted = lineage.Objects,
@@ -612,6 +615,7 @@ public sealed class CatalogSync
         var files = 0;
         var assertions = 0;
         var statements = 0;
+        var events = 0;
         var surrogateKeys = 0;
         var metrics = 0;
 
@@ -643,6 +647,7 @@ public sealed class CatalogSync
             files += detail.Files;
             assertions += detail.Assertions;
             statements += detail.Statements;
+            events += detail.Events;
             surrogateKeys += detail.SurrogateKeys;
             metrics += detail.Metrics;
 
@@ -674,18 +679,19 @@ public sealed class CatalogSync
             }
         }
 
-        return new RunSyncTally(added, skipped, failedInScan, files, assertions, statements, surrogateKeys, metrics);
+        return new RunSyncTally(added, skipped, failedInScan, files, assertions, statements, events, surrogateKeys, metrics);
     }
 
-    /// <summary>Adds the immutable drill-down detail of one run (files, assertions, generated SQL, surrogate keys,
-    /// health-check metrics) projected from its run.json root. Shared by the full estate sync and the per-run
-    /// write-back, so the detail projection is wired in exactly one place.</summary>
-    internal static (int Files, int Assertions, int Statements, int SurrogateKeys, int Metrics) AddRunDetail(
+    /// <summary>Adds the immutable drill-down detail of one run (files, assertions, generated SQL, canonical
+    /// events, surrogate keys, health-check metrics) projected from its run.json root. Shared by the full estate
+    /// sync and the per-run write-back, so the detail projection is wired in exactly one place.</summary>
+    internal static (int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics) AddRunDetail(
         CatalogDbContext context, JsonElement root, Guid runId, Guid repoId)
     {
         var files = 0;
         var assertions = 0;
         var statements = 0;
+        var events = 0;
         var surrogateKeys = 0;
         var metrics = 0;
 
@@ -707,6 +713,12 @@ public sealed class CatalogSync
             statements++;
         }
 
+        foreach (var runEvent in CatalogProjection.RunEvents(root, runId, repoId))
+        {
+            context.RunEvents.Add(runEvent);
+            events++;
+        }
+
         foreach (var surrogateKey in CatalogProjection.RunSurrogateKeys(root, runId, repoId))
         {
             context.RunSurrogateKeys.Add(surrogateKey);
@@ -719,7 +731,7 @@ public sealed class CatalogSync
             metrics++;
         }
 
-        return (files, assertions, statements, surrogateKeys, metrics);
+        return (files, assertions, statements, events, surrogateKeys, metrics);
     }
 
     /// <summary>
@@ -755,7 +767,7 @@ public sealed class CatalogSync
             var pipelineChange = await UpsertSinglePipelineAsync(context, root, fullFlowPath, repoId, nowUtc, warnings, ct).ConfigureAwait(false);
 
             var runRecorded = false;
-            var detail = (Files: 0, Assertions: 0, Statements: 0, SurrogateKeys: 0, Metrics: 0);
+            var detail = (Files: 0, Assertions: 0, Statements: 0, Events: 0, SurrogateKeys: 0, Metrics: 0);
 
             // A corrupt, oversized, or unreadable run.json is reported as a warning and the run is simply not
             // recorded; the pipeline upsert above still commits (consistent with how the full sync treats a bad
@@ -817,6 +829,7 @@ public sealed class CatalogSync
                 RunFilesAdded = detail.Files,
                 RunAssertionsAdded = detail.Assertions,
                 RunStatementsAdded = detail.Statements,
+                RunEventsAdded = detail.Events,
                 RunSurrogateKeysAdded = detail.SurrogateKeys,
                 RunHealthCheckMetricsAdded = detail.Metrics,
                 Warnings = warnings,
@@ -986,6 +999,8 @@ public sealed class CatalogSync
         var existingObjects = (await SelectByKeysAsync(
                 keys, chunk => context.Objects.Where(o => chunk.Contains(o.Key)).AsTracking().ToListAsync(ct))
             .ConfigureAwait(false)).ToDictionary(o => o.Key);
+        // Every row this report touches (updated or inserted), so the level stamping below reaches both.
+        var touchedObjects = new Dictionary<string, CatalogObject>(StringComparer.Ordinal);
         foreach (var node in report.Objects)
         {
             if (existingObjects.TryGetValue(node.Key, out var row))
@@ -1013,10 +1028,13 @@ public sealed class CatalogSync
                 }
 
                 row.LastSeenUtc = nowUtc;
+                touchedObjects[node.Key] = row;
             }
             else
             {
-                context.Objects.Add(CatalogProjection.MapObject(node, nowUtc));
+                var added = CatalogProjection.MapObject(node, nowUtc);
+                context.Objects.Add(added);
+                touchedObjects[node.Key] = added;
             }
         }
 
@@ -1084,6 +1102,36 @@ public sealed class CatalogSync
             var name = objectNames.TryGetValue(edge.ObjectKey, out var n) ? n : edge.ObjectKey;
             context.LineageEdges.Add(CatalogProjection.Edge(edge, repoId, name));
             edges++;
+        }
+
+        // Object levels: each object's depth in the ESTATE-WIDE data-movement graph, so the explorer lists and
+        // sorts objects in dependency order (sources first, then everything derived from them, row by row).
+        // The graph merges this report's edges (pending in the change tracker; this repo's stored edges were
+        // deleted above) with every other repo's stored edges, so a table produced in one repo keeps its depth
+        // when this repo only reads it. Report objects are stamped on their tracked/added rows; objects outside
+        // the report whose depth shifted through a cross-repo chain are updated in place, grouped by level (the
+        // distinct level count is small). An object that leaves the movement graph entirely keeps its last
+        // level until its own repo resyncs, matching the catalog's additive, staleness-tolerant object registry.
+        var otherRepoFacts = await context.LineageEdges.AsNoTracking()
+            .Where(e => e.RepoId != repoId)
+            .Select(e => new MovementFact(e.RepoId, e.Flow, e.ViaModule, e.Relation, e.ObjectKey))
+            .ToListAsync(ct).ConfigureAwait(false);
+        var levels = ComputeObjectLevels(otherRepoFacts.Concat(report.Edges.Select(e =>
+            new MovementFact(repoId, NullIfBlank(e.Flow), NullIfBlank(e.ViaModule), e.Relation.ToString(), e.ObjectKey))));
+        foreach (var (key, row) in touchedObjects)
+        {
+            row.Level = levels.TryGetValue(key, out var level) ? level : null;
+        }
+
+        foreach (var group in levels.Where(kv => !touchedObjects.ContainsKey(kv.Key)).GroupBy(kv => kv.Value))
+        {
+            var levelValue = group.Key;
+            await ExecuteByKeysAsync(
+                    group.Select(kv => kv.Key).ToList(),
+                    chunk => context.Objects
+                        .Where(o => chunk.Contains(o.Key) && o.Level != levelValue)
+                        .ExecuteUpdateAsync(s => s.SetProperty(o => o.Level, levelValue), ct))
+                .ConfigureAwait(false);
         }
 
         // Identity healing: a key that now carries its database (or schema) supersedes the weaker key an
@@ -1161,6 +1209,208 @@ public sealed class CatalogSync
         nameof(Core.Lineage.LineageTier.Declared) => 0,
         _ => -1,
     };
+
+    /// <summary>One lineage fact reduced to what the object-level computation needs: which flow (repo-scoped)
+    /// or module related to which object, and how. Flows are grouped by (repo, flow) because flow names are
+    /// only unique within a repo.</summary>
+    private sealed record MovementFact(Guid RepoId, string? Flow, string? ViaModule, string Relation, string ObjectKey);
+
+    /// <summary>
+    /// Computes every object's depth in the data-movement graph the facts describe, mirroring how the GUI's
+    /// object lineage graph is built: data moves from each object a flow reads to each table it writes, a
+    /// module-derived read connects a VIEW to its base table (a view target is fed by its base, never by the
+    /// file the flow read), and a <c>Requires</c> fact is a code dependency that moves no data. Levels are a
+    /// longest-path layering with cycles broken first (a DFS drops the edges that close a cycle, so a flow that
+    /// reads a view derived from its own output still levels cleanly): 0 for a source nothing produces, and one
+    /// more than the deepest producer otherwise. Objects that take part in no movement get no entry.
+    /// </summary>
+    private static Dictionary<string, int> ComputeObjectLevels(IEnumerable<MovementFact> facts)
+    {
+        var byFlow = new Dictionary<(Guid RepoId, string Flow), (List<string> Reads, List<string> Writes)>();
+        var moduleReads = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var writtenKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var fact in facts)
+        {
+            if (!string.IsNullOrEmpty(fact.Flow))
+            {
+                if (!byFlow.TryGetValue((fact.RepoId, fact.Flow), out var group))
+                {
+                    group = (new List<string>(), new List<string>());
+                    byFlow[(fact.RepoId, fact.Flow)] = group;
+                }
+
+                if (fact.Relation == nameof(Core.Lineage.LineageRelation.Reads))
+                {
+                    group.Reads.Add(fact.ObjectKey);
+                }
+                else if (fact.Relation is nameof(Core.Lineage.LineageRelation.Writes)
+                         or nameof(Core.Lineage.LineageRelation.Creates))
+                {
+                    group.Writes.Add(fact.ObjectKey);
+                    writtenKeys.Add(fact.ObjectKey);
+                }
+            }
+            else if (fact.ViaModule is { Length: > 0 } module
+                     && fact.Relation == nameof(Core.Lineage.LineageRelation.Reads))
+            {
+                if (!moduleReads.TryGetValue(module, out var bases))
+                {
+                    bases = new HashSet<string>(StringComparer.Ordinal);
+                    moduleReads[module] = bases;
+                }
+
+                bases.Add(fact.ObjectKey);
+            }
+        }
+
+        // A view is a module a flow also writes/creates; a procedure is only required, so it stays out.
+        var viewKeys = new HashSet<string>(moduleReads.Keys.Where(writtenKeys.Contains), StringComparer.Ordinal);
+
+        var outgoing = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var inDegree = new Dictionary<string, int>(StringComparer.Ordinal);
+        var seenPairs = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        void AddMovement(string source, string target)
+        {
+            if (source == target)
+            {
+                return;
+            }
+
+            if (!seenPairs.TryGetValue(source, out var targets))
+            {
+                targets = new HashSet<string>(StringComparer.Ordinal);
+                seenPairs[source] = targets;
+            }
+
+            if (!targets.Add(target))
+            {
+                return;
+            }
+
+            if (!outgoing.TryGetValue(source, out var list))
+            {
+                list = new List<string>();
+                outgoing[source] = list;
+            }
+
+            list.Add(target);
+            outgoing.TryAdd(target, new List<string>());
+            inDegree[source] = inDegree.TryGetValue(source, out var s) ? s : 0;
+            inDegree[target] = inDegree.TryGetValue(target, out var t) ? t + 1 : 1;
+        }
+
+        foreach (var group in byFlow.Values)
+        {
+            foreach (var read in group.Reads)
+            {
+                foreach (var write in group.Writes)
+                {
+                    if (!viewKeys.Contains(write))
+                    {
+                        AddMovement(read, write);
+                    }
+                }
+            }
+        }
+
+        foreach (var (view, bases) in moduleReads)
+        {
+            if (viewKeys.Contains(view))
+            {
+                foreach (var baseKey in bases)
+                {
+                    AddMovement(baseKey, view);
+                }
+            }
+        }
+
+        // Break cycles: an iterative DFS marks every edge that closes back onto its own stack; those edges are
+        // excluded below, so the remainder is a DAG. Nodes with the fewest inbound edges root the DFS first so
+        // cycles break in the natural flow direction, and the ordering is deterministic (ordinal key tiebreak).
+        var backTargets = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var state = new Dictionary<string, int>(StringComparer.Ordinal); // 1 = on the DFS stack, 2 = finished
+        var roots = outgoing.Keys
+            .OrderBy(id => inDegree[id])
+            .ThenBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        foreach (var root in roots)
+        {
+            if (state.ContainsKey(root))
+            {
+                continue;
+            }
+
+            var stack = new List<(string Id, int Next)> { (root, 0) };
+            state[root] = 1;
+            while (stack.Count > 0)
+            {
+                var (id, next) = stack[^1];
+                var children = outgoing[id];
+                if (next < children.Count)
+                {
+                    stack[^1] = (id, next + 1);
+                    var child = children[next];
+                    if (state.TryGetValue(child, out var childState))
+                    {
+                        if (childState == 1)
+                        {
+                            if (!backTargets.TryGetValue(id, out var targets))
+                            {
+                                targets = new HashSet<string>(StringComparer.Ordinal);
+                                backTargets[id] = targets;
+                            }
+
+                            targets.Add(child);
+                            inDegree[child]--;
+                        }
+                    }
+                    else
+                    {
+                        state[child] = 1;
+                        stack.Add((child, 0));
+                    }
+                }
+                else
+                {
+                    state[id] = 2;
+                    stack.RemoveAt(stack.Count - 1);
+                }
+            }
+        }
+
+        // Longest-path layering over the acyclic remainder: a node sits one level below its deepest producer.
+        var levels = new Dictionary<string, int>(StringComparer.Ordinal);
+        var queue = new List<string>();
+        foreach (var id in outgoing.Keys)
+        {
+            if (inDegree[id] == 0)
+            {
+                levels[id] = 0;
+                queue.Add(id);
+            }
+        }
+
+        for (var head = 0; head < queue.Count; head++)
+        {
+            var id = queue[head];
+            var level = levels[id];
+            foreach (var child in outgoing[id])
+            {
+                if (backTargets.TryGetValue(id, out var backs) && backs.Contains(child))
+                {
+                    continue;
+                }
+
+                levels[child] = Math.Max(levels.TryGetValue(child, out var existing) ? existing : 0, level + 1);
+                if (--inDegree[child] == 0)
+                {
+                    queue.Add(child);
+                }
+            }
+        }
+
+        return levels;
+    }
 
     /// <summary>Runs a keyed membership query per <see cref="KeyChunkSize"/> chunk and unions the rows, so a
     /// large key set never approaches SQL Server's per-command parameter limit. The chunks partition the keys,

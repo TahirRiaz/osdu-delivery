@@ -81,6 +81,11 @@ Read surface (policy `read`):
 | `GET /pipelines/{id}/columns` | Declared and detected pre-ingestion transform columns |
 | `GET /runs`, `GET /runs/{runId}` | Run history and detail (filters include `repoId`, `pipelineId`, `flowKind`, `status`, `success`, `flowName`, `batch`, `latest`) |
 | `GET /runs/{runId}/files` `/assertions` `/statements` `/surrogate-keys` `/health-metrics` | Per-run drill-down |
+| `GET /runs/{runId}/trace` | The run's consolidated trace: canonical engine events (file progress, resolved watermarks, decisions, stage summaries, warnings) interleaved with the generated SQL statements by timestamp |
+| `GET /runs/{runId}/trace/text` | The whole trace rendered as one plain-text document (run header, then every entry with SQL inline): the Copy-trace surface, and the form to hand an LLM when debugging a run |
+| `GET /runs/{runId}/trace/stream` | The trace as Server-Sent Events while the run executes: one `entry` frame per new trace entry, a final `end` frame at the terminal status (the client then refetches the paged endpoint, which holds the authoritative re-projection); `afterEventId`/`afterStatementId` cursors resume a dropped connection |
+| `GET /pipelines/{pipelineId}/trace`, `/trace/text` | The pipeline's LATEST run's trace (paged JSON or plain text) without resolving a run id first: the entry point for "show me what its last run did" when debugging a pipeline, by hand or from an LLM tool |
+| `GET /runs/groups/{groupId}/stream` | The run group as Server-Sent Events while it executes: a `member` frame (a run summary with its newest trace event as the "last action") whenever a member changes, a full snapshot on connect, one `end` frame with the final rollup once every member is terminal |
 | `GET /lineage/objects`, `/lineage/objects/detail`, `/lineage/objects/columns` | Lineage objects |
 | `GET /repos/{repoId}/lineage/edges`, `/repos/{repoId}/waves`, `/repos/{repoId}/dependencies` | Repo-scoped lineage |
 | `GET /search/objects`, `/search/columns`, `/search/definitions` | Cross-repo data dictionary and code search |
@@ -210,7 +215,7 @@ API:
 
 src/SqlFlow.ControlPlane/Api/LineageEndpoints.cs serves the catalog's lineage graph:
 
-- `GET /lineage/objects`: paged object list with `name` (contains), `serverRef`, and `kind` filters. `ObjectDto` deliberately omits the heavy `Definition` field.
+- `GET /lineage/objects`: paged object list with `name` (contains), `serverRef`, and `kind` filters, ordered by `level` (the object's depth in the estate-wide data-movement graph, sources first; null level last), then database/schema/name. `ObjectDto` deliberately omits the heavy `Definition` field.
 - `GET /lineage/objects/detail?key=...`: one object with its full module body; `definition` is null for plain tables, an unconnected sync, or an encrypted module.
 - `GET /lineage/objects/columns?key=...`: paged columns of one object, ordered by ordinal.
 - `GET /repos/{repoId}/lineage/edges`: paged attributed edges with `pipelineId`, `objectKey`, `relation`, and `tier` filters.

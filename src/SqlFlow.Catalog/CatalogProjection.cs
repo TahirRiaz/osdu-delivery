@@ -277,7 +277,7 @@ public static class CatalogProjection
 
         var list = new List<CatalogRunStatement>();
 
-        void Add(string step, string? sql, string? error)
+        void Add(string step, string? sql, string? error, DateTime? timestampUtc)
         {
             if (string.IsNullOrWhiteSpace(sql))
             {
@@ -289,6 +289,7 @@ public static class CatalogProjection
                 RunId = runId,
                 RepoId = repoId,
                 Ordinal = list.Count + 1,
+                TimestampUtc = timestampUtc,
                 Step = Truncate(step, 128),
                 Sql = sql,
                 Error = error,
@@ -299,7 +300,7 @@ public static class CatalogProjection
         {
             foreach (var entry in trace.EnumerateArray())
             {
-                Add(Str(entry, "step") ?? "sql", Str(entry, "sql"), Str(entry, "error"));
+                Add(Str(entry, "step") ?? "sql", Str(entry, "sql"), Str(entry, "error"), Date(entry, "timestampUtc"));
             }
         }
 
@@ -309,9 +310,47 @@ public static class CatalogProjection
             {
                 if (statement.ValueKind == JsonValueKind.String)
                 {
-                    Add("schema.ddl", statement.GetString(), null);
+                    Add("schema.ddl", statement.GetString(), null, null);
                 }
             }
+        }
+
+        return list;
+    }
+
+    /// <summary>The canonical event timeline of a run, read from the artifact's top-level <c>events</c> array
+    /// (see RunEventRecord in SqlFlow.Core): file progress, resolved watermarks, engine decisions, stage
+    /// summaries, warnings. Ordinals are assigned in array (publication) order. Absent on artifacts that predate
+    /// the event stream and on kinds that publish no events (scm): both project to no rows, best-effort like
+    /// every other run detail.</summary>
+    public static IReadOnlyList<CatalogRunEvent> RunEvents(JsonElement root, Guid runId, Guid repoId)
+    {
+        if (Prop(root, "events") is not { ValueKind: JsonValueKind.Array } events)
+        {
+            return [];
+        }
+
+        var list = new List<CatalogRunEvent>();
+        foreach (var entry in events.EnumerateArray())
+        {
+            var message = Str(entry, "message");
+            if (string.IsNullOrWhiteSpace(message) || Date(entry, "timestampUtc") is not { } timestampUtc)
+            {
+                continue;
+            }
+
+            list.Add(new CatalogRunEvent
+            {
+                RunId = runId,
+                RepoId = repoId,
+                Ordinal = list.Count + 1,
+                TimestampUtc = timestampUtc,
+                Level = Truncate(Str(entry, "level") ?? "info", 16),
+                Step = NullIfBlank(Str(entry, "step")) is { } step ? Truncate(step, 128) : null,
+                Message = message,
+                Rows = Long(entry, "rows"),
+                ElapsedMs = Dbl(entry, "elapsedMs"),
+            });
         }
 
         return list;
@@ -532,6 +571,9 @@ public static class CatalogProjection
 
     private static long? Long(JsonElement element, string name)
         => Prop(element, name) is { ValueKind: JsonValueKind.Number } p && p.TryGetInt64(out var v) ? v : null;
+
+    private static double? Dbl(JsonElement element, string name)
+        => Prop(element, name) is { ValueKind: JsonValueKind.Number } p && p.TryGetDouble(out var v) ? v : null;
 
     private static DateTime? Date(JsonElement element, string name)
         => Prop(element, name) is { ValueKind: JsonValueKind.String } p && p.TryGetDateTime(out var v) ? v : null;

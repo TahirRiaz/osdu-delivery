@@ -11,6 +11,11 @@ public sealed record SqlTraceEntry
     /// <summary>1-based position in the run's execution order.</summary>
     public required int Sequence { get; init; }
 
+    /// <summary>When the statement was generated (UTC), stamped at capture. It is the interleave key that places
+    /// the statement at its point in the run's canonical event timeline (the Events view merges statements and
+    /// run events by this instant).</summary>
+    public DateTime TimestampUtc { get; init; } = DateTime.UtcNow;
+
     /// <summary>The run step that produced the statement (for example "staging.create", "target.evolve",
     /// "upsert.update").</summary>
     public required string Step { get; init; }
