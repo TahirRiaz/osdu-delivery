@@ -961,6 +961,11 @@ internal static class RemoteVerbs
             Console.WriteLine($"  incremental: {run.IncrementalMode}{(run.IncrementalWatermark is null ? string.Empty : $", watermark {run.IncrementalWatermark} ({run.IncrementalWatermarkSource})")}{(run.IncrementalFilter is null ? string.Empty : $", filter {run.IncrementalFilter}")}");
         }
 
+        if (run.DataSetConvention is not null)
+        {
+            Console.WriteLine($"  dataset:     {run.DataSetConvention}");
+        }
+
         if (run.Error is not null)
         {
             Console.WriteLine($"  error:       {run.Error}");

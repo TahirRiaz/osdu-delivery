@@ -25,9 +25,13 @@ internal static class CredentialStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>The credential file's location, under the user profile so it is per-user and off the repo.</summary>
+    /// <summary>The credential file's location: <c>SQLFLOW_CREDENTIALS_FILE</c> when set (containers and CI
+    /// mount their secret store wherever they like, and tests isolate themselves from the operator's own
+    /// file), else under the user profile so it is per-user and off the repo.</summary>
     internal static string FilePath
-        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".sqlflow", "credentials.json");
+        => Environment.GetEnvironmentVariable("SQLFLOW_CREDENTIALS_FILE") is { Length: > 0 } configured
+            ? configured
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".sqlflow", "credentials.json");
 
     /// <summary>The stored credential for a control-plane URL, or null when none is stored.</summary>
     public static StoredCredential? Load(Uri url)

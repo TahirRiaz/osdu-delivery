@@ -20,4 +20,9 @@
     <ProjectReference Include="..\..\src\SqlFlow.Cli\SqlFlow.Cli.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The one CLI child-process harness, shared with the engine suite so there is a single code path. -->
+    <Compile Include="..\SqlFlow.Core.Tests\Integration\CliBinary.cs" Link="CliBinary.cs" />
+  </ItemGroup>
+
 </Project>

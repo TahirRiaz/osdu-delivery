@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Xunit;
 
 namespace SqlFlow.Tests.Integration;
@@ -6,7 +5,9 @@ namespace SqlFlow.Tests.Integration;
 /// <summary>
 /// Exercises the actual compiled CLI binary (not just the library): argument parsing, the DI
 /// composition root, exit codes, and a real end-to-end run against the sink. Skips when the built CLI
-/// or the sink is unavailable, so the default unit run is unaffected.
+/// or the sink is unavailable, so the default unit run is unaffected. The broader per-verb suites live in
+/// <see cref="CliOfflineVerbTests"/>, <see cref="CliRunVerbTests"/>, <see cref="CliCatalogProbeTests"/>, and
+/// <see cref="CliCatalogDbVerbTests"/>; this file keeps the two original smoke paths.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class CliBinaryTests : IDisposable
@@ -18,24 +19,24 @@ public sealed class CliBinaryTests : IDisposable
     [SkippableFact]
     public async Task Cli_Validate_ParsesAndExitsZero()
     {
-        var dll = CliDllPath();
+        var dll = CliBinary.DllPath();
         Skip.If(dll is null, "Built CLI not found; run 'dotnet build -c Release' first.");
 
         var csv = Path.Combine(_dir, "orders.csv");
         File.WriteAllText(csv, "OrderId,Customer\n1,Acme\n");
         var yaml = WriteYaml("cli_validate", csv, "Cli_Validate", "Server=localhost;Database=Db;Trusted_Connection=True;TrustServerCertificate=True");
 
-        var (exit, stdout, stderr) = await RunCliAsync(dll!, ["validate", yaml]);
+        var result = await CliBinary.RunAsync(dll!, ["validate", yaml], workingDirectory: _dir);
 
-        Assert.True(exit == 0, $"validate exit={exit}, stderr={stderr}");
-        Assert.Contains("OK", stdout, StringComparison.Ordinal);
+        Assert.True(result.Exit == 0, $"validate exit={result.Exit}, stderr={result.StdErr}");
+        Assert.Contains("OK", result.StdOut, StringComparison.Ordinal);
     }
 
     [SkippableFact]
     public async Task Cli_Run_LoadsTableAgainstSink()
     {
         var cs = IntegrationDb.Require();
-        var dll = CliDllPath();
+        var dll = CliBinary.DllPath();
         Skip.If(dll is null, "Built CLI not found; run 'dotnet build -c Release' first.");
 
         var table = "IT_Cli_" + Guid.NewGuid().ToString("N")[..8];
@@ -47,9 +48,10 @@ public sealed class CliBinaryTests : IDisposable
 
         try
         {
-            var (exit, stdout, stderr) = await RunCliAsync(dll!, ["run", yaml], ("SQLFlowSinkConStr", cs));
+            var result = await CliBinary.RunAsync(
+                dll!, ["run", yaml], env: [("SQLFlowSinkConStr", cs)], workingDirectory: _dir);
 
-            Assert.True(exit == 0, $"run exit={exit}, stdout={stdout}, stderr={stderr}");
+            Assert.True(result.Exit == 0, $"run exit={result.Exit}, output={result.AllOutput}");
             Assert.True(await IntegrationDb.TableExistsAsync(cs, table));
             Assert.Equal(3, await IntegrationDb.RowCountAsync(cs, table));
         }
@@ -74,61 +76,6 @@ public sealed class CliBinaryTests : IDisposable
             """;
         File.WriteAllText(path, yaml);
         return path;
-    }
-
-    private static string? CliDllPath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            var projectBin = Path.Combine(dir.FullName, "src", "SqlFlow.Cli", "bin");
-            if (Directory.Exists(projectBin))
-            {
-                // The CLI project's assembly name is 'sqlflow' (sqlflow.dll / sqlflow.exe).
-                foreach (var config in new[] { "Release", "Debug" })
-                {
-                    var candidate = Path.Combine(projectBin, config, "net9.0", "sqlflow.dll");
-                    if (File.Exists(candidate))
-                    {
-                        return candidate;
-                    }
-                }
-            }
-
-            dir = dir.Parent;
-        }
-
-        return null;
-    }
-
-    private static async Task<(int Exit, string StdOut, string StdErr)> RunCliAsync(string dll, string[] args, params (string Name, string Value)[] env)
-    {
-        var psi = new ProcessStartInfo("dotnet")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            WorkingDirectory = Path.GetDirectoryName(dll)!,
-        };
-        psi.ArgumentList.Add("exec");
-        psi.ArgumentList.Add(dll);
-        foreach (var a in args)
-        {
-            psi.ArgumentList.Add(a);
-        }
-
-        foreach (var (name, value) in env)
-        {
-            psi.Environment[name] = value;
-        }
-
-        using var process = Process.Start(psi)!;
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-        await process.WaitForExitAsync(cts.Token);
-
-        return (process.ExitCode, await stdoutTask, await stderrTask);
     }
 
     public void Dispose()

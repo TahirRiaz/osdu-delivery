@@ -90,7 +90,7 @@ internal static class Program
             return 1;
         }
 
-        using var provider = BuildServiceProvider(verbose);
+        using var provider = BuildServiceProvider(verbose, json: args.Contains("--json"));
         var loader = provider.GetRequiredService<YamlFlowLoader>();
         var documents = provider.GetRequiredService<YamlDocumentLoader>();
         var runner = provider.GetRequiredService<FlowRunner>();
@@ -484,14 +484,19 @@ internal static class Program
         // catalog context per claim, and the shared RunWorker drain loop. The DocumentExecutor gets the stderr
         // warning sink exactly as the CLI's own runs do (a later registration wins over the engine's sink-less one).
         var services = new ServiceCollection();
-        services.AddLogging(builder => builder
-            .AddSimpleConsole(options =>
+        services.AddLogging(builder =>
+        {
+            builder.AddSimpleConsole(options =>
             {
                 options.SingleLine = true;
                 options.TimestampFormat = "HH:mm:ss ";
                 options.IncludeScopes = true;
-            })
-            .SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information));
+            });
+            // Diagnostics on stderr, like every CLI path.
+            builder.Services.Configure<Microsoft.Extensions.Logging.Console.ConsoleLoggerOptions>(
+                options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+            builder.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information);
+        });
         services.AddSqlFlowEngine();
         services.AddSingleton(sp => new DocumentExecutor(sp, Console.Error.WriteLine));
         services.AddSingleton(TimeProvider.System);
@@ -1806,25 +1811,36 @@ internal static class Program
         }
     }
 
-    private static ServiceProvider BuildServiceProvider(bool verbose)
+    private static ServiceProvider BuildServiceProvider(bool verbose, bool json)
     {
         var services = new ServiceCollection();
 
-        services.AddLogging(builder => builder
-            .AddSimpleConsole(options =>
+        services.AddLogging(builder =>
+        {
+            builder.AddSimpleConsole(options =>
             {
                 options.SingleLine = true;
                 options.TimestampFormat = "HH:mm:ss ";
                 options.IncludeScopes = true;
-            })
-            .SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information));
+            });
+            // Diagnostics belong on stderr for a CLI: stdout carries the verb's own output (tables, YAML,
+            // and especially --json payloads a script pipes into a parser).
+            builder.Services.Configure<Microsoft.Extensions.Logging.Console.ConsoleLoggerOptions>(
+                options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+            builder.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information);
+        });
 
         // The engine is wired once in SqlFlow.Execution and shared by every host (CLI, control plane, workers),
         // so there is a single engine composition to maintain. The CLI then overrides the DocumentExecutor
         // registration so its hygiene/history warnings reach standard error (the extension registers it with no
-        // sink); a later registration of the same service wins.
+        // sink); a later registration of the same service wins. With --json the engine's live event stream is
+        // re-aimed at stderr too, so stdout is exactly one parsable JSON document.
         services.AddSqlFlowEngine();
         services.AddSingleton(sp => new DocumentExecutor(sp, Console.Error.WriteLine));
+        if (json)
+        {
+            services.AddSingleton<IFlowEventSink>(new ConsoleFlowEventSink(Console.Error));
+        }
 
         return services.BuildServiceProvider();
     }
@@ -1991,7 +2007,8 @@ internal static class Program
             Control plane (remote): the same API the GUI uses, so anything verified in the browser can be
             verified from a terminal or a test script. The target resolves from --url or SQLFLOW_URL; the
             credential from --token, then SQLFLOW_TOKEN (both suppliable via the git-ignored .sqlflow/env),
-            then the per-URL store 'login' writes. Human output on stdout, notes on stderr; --json switches
+            then the per-URL store 'login' writes (~/.sqlflow/credentials.json, relocatable with
+            SQLFLOW_CREDENTIALS_FILE). Human output on stdout, notes on stderr; --json switches
             stdout to the raw API shapes. Exit codes: 0 ok, 1 error or a followed run that did not succeed,
             130 on Ctrl+C.
               sqlflow health                     Probe /health/live and /health/ready (anonymous). Exit 0 when both pass.

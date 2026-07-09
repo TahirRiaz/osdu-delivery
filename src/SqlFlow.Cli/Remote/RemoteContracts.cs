@@ -92,6 +92,7 @@ internal sealed record RunDetailDto(
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, string? Error, string? Host,
     bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern,
     string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
+    string? DataSetConvention,
     int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);
 
 /// <summary>One file a run processed (file flows).</summary>
