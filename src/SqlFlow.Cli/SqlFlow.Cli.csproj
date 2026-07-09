@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SqlFlow.Core.Tests" />
+    <InternalsVisibleTo Include="SqlFlow.ControlPlane.Tests" />
   </ItemGroup>
 
   <ItemGroup>

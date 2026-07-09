@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SqlFlow.ControlPlane\SqlFlow.ControlPlane.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Cli\SqlFlow.Cli.csproj" />
   </ItemGroup>
 
 </Project>

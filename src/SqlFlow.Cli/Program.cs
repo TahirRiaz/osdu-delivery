@@ -40,6 +40,7 @@ using SqlFlow.SqlServer.Ingestion;
 using SqlFlow.SqlServer.Profiling;
 using SqlFlow.SqlServer.StoredProcedures;
 using SqlFlow.Yaml;
+using SqlFlow.Cli.Remote;
 
 namespace SqlFlow.Cli;
 
@@ -50,10 +51,12 @@ internal static class Program
         var verbose = args.Any(a => a is "-v" or "--verbose");
         var positional = PositionalArguments(args);
 
-        // 'healthcheck' addresses its table through --source/--object, 'auth' is a pure environment check, and 'db'
-        // takes a subcommand (migrate/sync/status); none take a pipeline file.
+        // 'healthcheck' addresses its table through --source/--object, 'auth' is a pure environment check, 'db'
+        // takes a subcommand (migrate/sync/status), and the control-plane verbs (health/login/logout/trigger/
+        // runs/groups) address the remote API through flags; none take a pipeline file.
         var command = positional.Length > 0 ? positional[0].ToLowerInvariant() : string.Empty;
-        var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "user" or "detect-unique-key");
+        var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "user" or "detect-unique-key"
+            or "health" or "login" or "logout" or "trigger" or "groups");
         if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
         {
             PrintUsage();
@@ -361,7 +364,34 @@ internal static class Program
                     return await RunWorkerAsync(provider, args, verbose).ConfigureAwait(false);
 
                 case "runs":
-                    return await RunRunsAsync(provider, positional, args).ConfigureAwait(false);
+                {
+                    // 'runs cancel' keeps its direct-catalog path as the break-glass route (it works when the
+                    // control plane itself is down): it is used when --db is passed explicitly or when no
+                    // control plane is configured. Everything else on 'runs' (list/show/trace, and cancel with
+                    // a configured URL) goes through the control plane, the same API the GUI uses.
+                    var runsSub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+                    if (runsSub == "cancel" && (GetOption(args, "--db") is not null || !RemoteVerbs.IsConfigured(args)))
+                    {
+                        return await RunRunsAsync(provider, positional, args).ConfigureAwait(false);
+                    }
+
+                    return await RemoteVerbs.RunsAsync(positional, args).ConfigureAwait(false);
+                }
+
+                case "health":
+                    return await RemoteVerbs.HealthAsync(args).ConfigureAwait(false);
+
+                case "login":
+                    return await RemoteVerbs.LoginAsync(args).ConfigureAwait(false);
+
+                case "logout":
+                    return await RemoteVerbs.LogoutAsync(args).ConfigureAwait(false);
+
+                case "trigger":
+                    return await RemoteVerbs.TriggerAsync(args).ConfigureAwait(false);
+
+                case "groups":
+                    return await RemoteVerbs.GroupsAsync(positional, args).ConfigureAwait(false);
 
                 case "user":
                     return await RunUserAsync(provider, positional, args).ConfigureAwait(false);
@@ -705,7 +735,7 @@ internal static class Program
         }
 
         Console.Write("New password: ");
-        var password = ReadHiddenLine();
+        var password = CliConsole.ReadHiddenLine();
         if (password.Length < LocalPasswords.MinLength)
         {
             Console.Error.WriteLine($"ERROR  the password must be at least {LocalPasswords.MinLength} characters.");
@@ -713,7 +743,7 @@ internal static class Program
         }
 
         Console.Write("Confirm password: ");
-        var confirm = ReadHiddenLine();
+        var confirm = CliConsole.ReadHiddenLine();
         if (!string.Equals(password, confirm, StringComparison.Ordinal))
         {
             Console.Error.WriteLine("ERROR  the two entries did not match; nothing was changed.");
@@ -721,37 +751,6 @@ internal static class Program
         }
 
         return password;
-    }
-
-    /// <summary>Reads one line from the terminal without echoing keystrokes. Backspace edits the buffer; Enter
-    /// finishes. Control characters (arrows, tab) are ignored rather than injected into the password.</summary>
-    private static string ReadHiddenLine()
-    {
-        var builder = new StringBuilder();
-        while (true)
-        {
-            var key = Console.ReadKey(intercept: true);
-            if (key.Key == ConsoleKey.Enter)
-            {
-                Console.WriteLine();
-                return builder.ToString();
-            }
-
-            if (key.Key == ConsoleKey.Backspace)
-            {
-                if (builder.Length > 0)
-                {
-                    builder.Length--;
-                }
-
-                continue;
-            }
-
-            if (!char.IsControl(key.KeyChar))
-            {
-                builder.Append(key.KeyChar);
-            }
-        }
     }
 
     /// <summary>
@@ -1972,12 +1971,13 @@ internal static class Program
                                                  --pool it also drains runs routed to those pools). --db defaults to
                                                  ${env:SQLFLOW_CATALOG_DB}.
               sqlflow runs cancel <runId> [--db <conn-ref>]
-                                                 Cancel a run in the shadow catalog's durable queue. A still-queued run
+                                                 Cancel a run. With a control plane configured (--url/SQLFLOW_URL)
+                                                 this goes through the API; with --db, or with no control plane
+                                                 configured, it talks to the shadow catalog directly (the break-glass
+                                                 route that works when the control plane is down). A still-queued run
                                                  is dequeued outright; a run already executing has a cancel request
                                                  stamped that its node observes to abort the in-flight statement and
-                                                 record it cancelled. Talks to the catalog directly (like 'worker'), so
-                                                 it works from any host that can reach it. --db defaults to
-                                                 ${env:SQLFLOW_CATALOG_DB}.
+                                                 record it cancelled. --db defaults to ${env:SQLFLOW_CATALOG_DB}.
               sqlflow user reset-password <username> [--db <conn-ref>]
                                                  Reset a local user's password straight against the catalog (no
                                                  control plane, no token; needs only database access), so an admin
@@ -1987,6 +1987,41 @@ internal static class Program
                                                  hashed exactly as the control plane verifies it. SSO (Entra) users
                                                  are refused (their credential lives in the provider). --db defaults
                                                  to ${env:SQLFLOW_CATALOG_DB}.
+
+            Control plane (remote): the same API the GUI uses, so anything verified in the browser can be
+            verified from a terminal or a test script. The target resolves from --url or SQLFLOW_URL; the
+            credential from --token, then SQLFLOW_TOKEN (both suppliable via the git-ignored .sqlflow/env),
+            then the per-URL store 'login' writes. Human output on stdout, notes on stderr; --json switches
+            stdout to the raw API shapes. Exit codes: 0 ok, 1 error or a followed run that did not succeed,
+            130 on Ctrl+C.
+              sqlflow health                     Probe /health/live and /health/ready (anonymous). Exit 0 when both pass.
+              sqlflow login    [--username <u>] [--device] [--with-token]
+                               [--token-name <n>] [--expires-days <N>|--no-expiry] [--scopes "read operate"] [--no-store]
+                                                 Sign in and store a personal access token for the URL. Default path:
+                                                 username + password (hidden prompt or piped stdin; never a flag); the
+                                                 short-lived session then mints a PAT, and the PAT is what is stored
+                                                 (revocable server-side; the password is never written). --device runs
+                                                 the browser device grant (for SSO/Entra accounts); --with-token stores
+                                                 a pasted PAT. --no-store prints the minted secret once instead (CI).
+              sqlflow logout                     Revoke the stored token server-side and remove it locally.
+              sqlflow trigger  --repo <name|id> --flow <f> [--scope flow|node|batch] [--batch <label>]
+                               [--pool <p>] [--commit <sha>] [--full] [--from <date>] [--to <date>]
+                               [--file-pattern <glob>] [--preview] [--follow]
+                                                 Enqueue a run on the fleet (POST /runs), exactly as the GUI's trigger
+                                                 dialog does: scope flow (default), node (the flow + its lineage
+                                                 descendants), or batch (a whole label). --preview shows the members
+                                                 and waves without enqueuing; backfill flags are the same as a local
+                                                 run; --follow attaches to the live trace (or the group's member
+                                                 stream) and exits by the terminal outcome.
+              sqlflow runs list [--status s] [--flow name] [--batch b] [--kind k] [--repo r] [--group g] [--latest]
+              sqlflow runs show <runId> [--files --statements --assertions --keys --metrics]
+              sqlflow runs trace <runId> [--follow]
+                                                 The run inbox, one run's full header (with drill-down sections), and
+                                                 the consolidated trace: plain text at rest, live streamed with
+                                                 --follow (reconnects with resume cursors on a drop).
+              sqlflow groups show <groupId> [--follow] | cancel <groupId> | rerun <groupId> [--follow]
+                                                 A node/batch run group: rollup + members (live with --follow), group
+                                                 cancellation, and rerun (a fresh re-expansion of the same anchor).
 
             Six pipeline kinds share validate/run, discriminated by the document's flowType key:
               (none)         a file flow: CSV/JSON/XML/XLS/Parquet into SQL Server (the default)
@@ -2686,7 +2721,7 @@ internal static class Program
     /// <see cref="RunParameters"/> contract the control-plane trigger validates, so both entry points refuse
     /// exactly the same nonsense. A batch run passes them to every member.
     /// </summary>
-    private static RunParameters ParseRunParameters(string[] args)
+    internal static RunParameters ParseRunParameters(string[] args)
     {
         static DateTime? ParseDate(string? value, string flag)
         {
@@ -2845,6 +2880,10 @@ internal static class Program
         "--date-column", "--base-value", "--filter", "--threshold", "--alpha", "--budget", "--maturity", "--state-dir",
         "--of", "--explain",
         "--db", "--repo", "--repo-url",
+        // The control-plane verbs (health/login/logout/trigger/runs/groups).
+        "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
+        "--scope", "--batch", "--pool", "--commit", "--flow", "--status", "--kind", "--group",
+        "--page", "--page-size", "--from", "--to", "--file-pattern",
     };
 
     internal static string[] PositionalArguments(string[] args)
@@ -2868,7 +2907,7 @@ internal static class Program
         return [.. positional];
     }
 
-    private static string? GetOption(string[] args, params string[] names)
+    internal static string? GetOption(string[] args, params string[] names)
     {
         var index = Array.FindIndex(args, a => names.Contains(a));
         if (index < 0 || index + 1 >= args.Length)
@@ -2882,7 +2921,7 @@ internal static class Program
         return value.Length > 1 && value[0] == '-' ? null : value;
     }
 
-    private static int ParseIntOption(string[] args, int fallback, params string[] names)
+    internal static int ParseIntOption(string[] args, int fallback, params string[] names)
     {
         var value = GetOption(args, names);
         return value is not null && int.TryParse(value, out var parsed) && parsed >= 0 ? parsed : fallback;
