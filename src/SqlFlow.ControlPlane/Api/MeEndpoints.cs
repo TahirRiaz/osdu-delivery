@@ -27,11 +27,30 @@ public static class MeEndpoints
     {
         ArgumentNullException.ThrowIfNull(group);
 
+        group.MapGet("/me", GetIdentity).WithTags("Access tokens").WithName("GetMyIdentity");
         group.MapGet("/me/tokens", ListTokensAsync).WithTags("Access tokens").WithName("ListMyAccessTokens");
         group.MapPost("/me/tokens", CreateTokenAsync).WithTags("Access tokens").WithName("CreateMyAccessToken");
         group.MapDelete("/me/tokens/{id:guid}", RevokeTokenAsync).WithTags("Access tokens").WithName("RevokeMyAccessToken");
 
         return group;
+    }
+
+    /// <summary>Who the presented bearer credential authenticates as: the subject, role, effective scopes, and
+    /// whether a catalog user account backs it (a bootstrap token has none). The claims are already resolved by
+    /// the authentication handler (for a PAT, scopes are the token's cap intersected with the owner's CURRENT
+    /// role), so this is a pure read of the principal: the cheapest authoritative "whoami" a headless client
+    /// (CLI, MCP, automation) can ask before doing real work.</summary>
+    private static Ok<IdentityDto> GetIdentity(HttpContext httpContext)
+    {
+        var user = httpContext.User;
+        var scopes = user.FindFirstValue("scope") is { Length: > 0 } scope
+            ? scope.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [];
+        return TypedResults.Ok(new IdentityDto(
+            user.FindFirstValue("sub") ?? user.FindFirstValue(ClaimTypes.NameIdentifier) ?? "(unknown)",
+            user.FindFirstValue("role"),
+            scopes,
+            TryGetUserId(user, out var userId) ? userId : null));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<AccessTokenDto>>, ProblemHttpResult>> ListTokensAsync(

@@ -167,6 +167,18 @@ OK  'leaky' is valid (source: csv, target: [dbo].[Orders]).
 | 0 | The document loaded and validated; one `OK` line printed to stdout. Secret-hygiene warnings do not affect the exit code. |
 | 1 | No file argument was given (usage printed); the file does not exist; the YAML failed to parse; the document failed kind dispatch or per-kind validation; or the `.sqlflow/env` file failed to apply. One redacted `ERROR` line prints to stderr. |
 
+## Validating a whole estate
+
+`validate` also accepts a folder: every `*.yaml` / `*.yml` under it (the `.sqlflow` work area excluded) is
+validated through the exact same loader, one line per document, and the exit code is 0 only when every
+document parses. With `--json` (on a folder or a single file) stdout becomes a machine-readable report array
+of `{file, ok, kind, name, error}`, so a CI step can gate on it structurally:
+
+```
+sqlflow validate ./flows            # OK/BROKEN line per document, exit 1 if any is broken
+sqlflow validate ./flows --json     # the report array for CI
+```
+
 ## See also
 
 - [sqlflow run](./run.md): execute the validated document.

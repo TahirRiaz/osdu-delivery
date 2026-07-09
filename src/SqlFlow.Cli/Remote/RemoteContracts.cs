@@ -133,3 +133,155 @@ internal sealed record RunGroupCountsDto(
 internal sealed record RunGroupDto(
     Guid GroupId, Guid RepoId, string Mode, string Anchor, int MemberCount, string? CommitSha, DateTime EnqueuedUtc,
     RunGroupCountsDto Counts);
+
+/// <summary>Who the presented credential authenticates as (<c>GET /api/v1/me</c>).</summary>
+internal sealed record IdentityDto(string Subject, string? Role, IReadOnlyList<string> Scopes, Guid? UserId);
+
+/// <summary>The dashboard rollup (<c>GET /api/v1/summary</c>).</summary>
+internal sealed record RunCountsDto(long Queued, long Running, long Succeeded, long Failed, long Cancelled, long Last24h);
+
+/// <summary>The control-plane landing rollup: estate size, run queue, fleet, scheduling, managed sync.</summary>
+internal sealed record DashboardDto(
+    long Repos, long Pipelines, long ActivePipelines, RunCountsDto Runs,
+    long NodesOnline, long NodesTotal, long SchedulesEnabled, long SchedulesPaused,
+    long RepoSources, long RepoSourcesWithErrors, DateTime AsOfUtc);
+
+/// <summary>A worker node as the fleet view lists it.</summary>
+internal sealed record NodeDto(string Name, DateTime FirstSeenUtc, DateTime LastSeenUtc, string? Version, bool Online);
+
+/// <summary>A schedule as the catalog holds it.</summary>
+internal sealed record ScheduleDto(
+    Guid Id, Guid RepoId, Guid PipelineId, string FlowName, string? Cron, int? IntervalSeconds, string Timezone,
+    bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
+    DateTime CreatedUtc, DateTime UpdatedUtc);
+
+/// <summary>Creates a schedule (exactly one of cron / interval).</summary>
+internal sealed record CreateScheduleRequest(
+    Guid RepoId, string FlowName, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled, bool? Catchup);
+
+/// <summary>The created-schedule acknowledgement.</summary>
+internal sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
+
+/// <summary>A managed git source the control plane keeps the catalog synced from.</summary>
+internal sealed record RepoSourceDto(
+    Guid Id, string Name, string RemoteUrl, string Branch, bool Enabled, int SyncIntervalSeconds,
+    DateTime? NextSyncUtc, DateTime? LastSyncUtc, string? LastSyncedSha, string? LastError,
+    string? CredentialReference, string? CredentialUsername, IReadOnlyList<string> ExcludedFlowPaths,
+    DateTime CreatedUtc, DateTime UpdatedUtc);
+
+/// <summary>Registers (upserts by name) a managed git source; the credential is a ${...} reference, never a raw token.</summary>
+internal sealed record RegisterRepoSourceRequest(
+    string Name, string RemoteUrl, string? Branch, int? SyncIntervalSeconds, bool? Enabled,
+    string? CredentialReference, string? CredentialUsername, string[]? ExcludedFlowPaths);
+
+/// <summary>The registered-source acknowledgement.</summary>
+internal sealed record RepoSourceRegistered(Guid Id);
+
+/// <summary>Previews a remote's flows without importing anything.</summary>
+internal sealed record DiscoverRepoRequest(string RemoteUrl, string? Branch, string? CredentialReference, string? CredentialUsername);
+
+/// <summary>One flow a discover found: parsed identity or the parse error, for the selection step.</summary>
+internal sealed record DiscoveredFlowDto(
+    string RelativePath, string? FlowName, string? Kind, long SizeBytes, bool ParseOk, string? ParseError, string? Content);
+
+/// <summary>The outcome of a manual local-path repo sync.</summary>
+internal sealed record RepoSyncResultDto(
+    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated,
+    int Objects, int Columns, int Edges, int Waves, int Dependencies,
+    bool Connected, IReadOnlyList<string> Warnings);
+
+/// <summary>A pipeline as the registry lists it.</summary>
+internal sealed record PipelineSummaryDto(
+    Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
+    string? SourceServer, string? TargetServer, string RelativePath, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>A single pipeline with its full (secret-redacted) definition.</summary>
+internal sealed record PipelineDetailDto(
+    Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
+    string? SourceServer, string? TargetServer, string RelativePath, string ContentHash,
+    string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>One declared or detected column of a pipeline.</summary>
+internal sealed record PipelineColumnDto(
+    string Kind, int Ordinal, string ColumnName, string? SourceColumn, string? Expression, string? DataType,
+    int? SortOrder, bool IsVirtual, bool ExcludeFromView, bool Converted);
+
+/// <summary>One distinct file a pipeline has processed across its run history.</summary>
+internal sealed record PipelineFileDto(
+    string Name, string? Path, DateTimeOffset? Modified, long Rows, long SizeBytes, bool LastRun, DateTime? LastProcessedUtc);
+
+/// <summary>A datasource reference the estate declares (<c>GET /api/v1/datasources</c>).</summary>
+internal sealed record DatasourceDto(
+    string Reference, string? Kind, bool Resolvable, int SourcePipelines, int TargetPipelines);
+
+/// <summary>Queues one ad-hoc compute task on a worker node (<c>POST /api/v1/datasources/tasks</c>).</summary>
+internal sealed record ComputeTaskRequest(
+    string? Reference, string? Operation, string? Kind, string? Pool,
+    string? Database, string? Schema, string? ObjectName, string? NameLike, string? SearchTerm,
+    bool IncludeTables = true, bool IncludeViews = true, bool IncludeSystem = false,
+    int Offset = 0, int Limit = 200, long? SampleSize = null, int MaxKeyColumns = 4, int MaxCandidates = 5,
+    bool VerifyCandidates = true, bool TrustDeclaredKeys = true);
+
+/// <summary>The accepted-task acknowledgement.</summary>
+internal sealed record ComputeTaskAccepted(Guid TaskId, string Status);
+
+/// <summary>A compute task as the task list shows it (no result body).</summary>
+internal sealed record ComputeTaskSummaryDto(
+    Guid TaskId, string Operation, string SourceRef, string? ProviderKind, string? Pool, string Status,
+    string? RequestedBy, DateTime EnqueuedUtc, DateTime? StartUtc, DateTime? EndUtc, string? ClaimedByNode,
+    DateTime? CancelRequestedUtc, string? Error, bool HasResult, string? Target);
+
+/// <summary>A single compute task with its operation-shaped JSON result once succeeded.</summary>
+internal sealed record ComputeTaskDto(
+    Guid TaskId, string Operation, string SourceRef, string? ProviderKind, string? Pool, string Status,
+    string? RequestedBy, DateTime EnqueuedUtc, DateTime? StartUtc, DateTime? EndUtc, string? ClaimedByNode,
+    DateTime? CancelRequestedUtc, string? Error, System.Text.Json.JsonElement? Result, string? Target);
+
+/// <summary>A lineage object as it appears in lists.</summary>
+internal sealed record ObjectDto(
+    string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind, int? Level,
+    DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>One attributed lineage edge: a flow (or module) relating to an object.</summary>
+internal sealed record EdgeDto(
+    long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule,
+    string Relation, string ObjectKey, string ObjectName, string? ObjectDatabase, string? ObjectSchema, string Tier);
+
+/// <summary>One pipeline within an execution wave.</summary>
+internal sealed record WavePipelineDto(Guid Id, string Name, string Kind);
+
+/// <summary>One execution wave of a repo's plan.</summary>
+internal sealed record WaveDto(int Wave, IReadOnlyList<WavePipelineDto> Pipelines);
+
+/// <summary>The code behind any lineage node (a pipeline's YAML or an object's SQL), one consistent shape.</summary>
+internal sealed record NodeScriptDto(string Key, string Kind, string Language, string? Script, string? Source, string? Name);
+
+/// <summary>An object that matched a global search.</summary>
+internal sealed record ObjectHitDto(string Key, string Name, string Kind, string ServerRef, string? Database, string? Schema);
+
+/// <summary>A column that matched a name search, with its owning object.</summary>
+internal sealed record ColumnHitDto(string ObjectKey, string ObjectName, string ColumnName, string? DataType, bool Nullable);
+
+/// <summary>An object whose code matched a definition search, with an excerpt.</summary>
+internal sealed record DefinitionHitDto(string Key, string Name, string Kind, string Snippet, string Source);
+
+/// <summary>A processed file that matched, deep-linkable to its run and pipeline.</summary>
+internal sealed record FileHitDto(
+    string Name, string? Path, string RunId, string FlowName, string FlowKind,
+    long Rows, int Columns, long SizeBytes, DateTime? RunUtc, string PipelineId, string? RepoId, string? RepoName);
+
+/// <summary>A flow (YAML) that matched by name, path, or body.</summary>
+internal sealed record FlowHitDto(
+    string Id, string Name, string Kind, string? Batch, string RelativePath, string RepoId, string RepoName,
+    string MatchedIn, string Snippet);
+
+/// <summary>One category of a combined search: the full count plus a preview of top hits.</summary>
+internal sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items);
+
+/// <summary>The combined result of one global search across every catalog surface.</summary>
+internal sealed record AllSearchDto(
+    SearchCategoryDto<ObjectHitDto> Objects,
+    SearchCategoryDto<ColumnHitDto> Columns,
+    SearchCategoryDto<DefinitionHitDto> Definitions,
+    SearchCategoryDto<FileHitDto> Files,
+    SearchCategoryDto<FlowHitDto> Flows);

@@ -485,6 +485,102 @@ public sealed class CliOfflineVerbTests : IDisposable
         Assert.Contains("requires a run id", cancel.StdErr, StringComparison.Ordinal);
     }
 
+    // ---- estate-wide validate, doctor, completions ----------------------------------------------------------
+
+    [SkippableFact]
+    public async Task Validate_Folder_ReportsEveryDocument_Exit1WhenAnyIsBroken()
+    {
+        RequireCli();
+        var estate = Path.Combine(_dir, "mixed");
+        Directory.CreateDirectory(estate);
+        var csv = Path.Combine(estate, "ok.csv");
+        File.WriteAllText(csv, "Id\n1\n");
+        File.WriteAllText(Path.Combine(estate, "good.flow.yaml"), $"""
+            name: EstateGood
+            source:
+              type: csv
+              location: {Fwd(csv)}
+            target:
+              connection: "Server=localhost;Database=Db;Trusted_Connection=True;TrustServerCertificate=True"
+              schema: dbo
+              table: EstateGood
+            """);
+        File.WriteAllText(Path.Combine(estate, "bad.flow.yaml"), "name: [broken\n");
+
+        var result = await CliBinary.RunAsync(_dll, ["validate", estate], workingDirectory: _dir);
+
+        Assert.Equal(1, result.Exit);
+        Assert.Contains("OK      good.flow.yaml", result.StdOut, StringComparison.Ordinal);
+        Assert.Contains("BROKEN  bad.flow.yaml", result.StdOut, StringComparison.Ordinal);
+        Assert.Contains("1 valid, 1 broken of 2", result.StdOut, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Validate_Folder_Json_EmitsTheMachineReadableReport()
+    {
+        RequireCli();
+        var estate = Path.Combine(_dir, "jsonestate");
+        Directory.CreateDirectory(estate);
+        var csv = Path.Combine(estate, "ok.csv");
+        File.WriteAllText(csv, "Id\n1\n");
+        File.WriteAllText(Path.Combine(estate, "only.flow.yaml"), $"""
+            name: EstateJson
+            source:
+              type: csv
+              location: {Fwd(csv)}
+            target:
+              connection: "Server=localhost;Database=Db;Trusted_Connection=True;TrustServerCertificate=True"
+              schema: dbo
+              table: EstateJson
+            """);
+
+        var result = await CliBinary.RunAsync(_dll, ["validate", estate, "--json"], workingDirectory: _dir);
+
+        Assert.True(result.Exit == 0, result.AllOutput);
+        using var report = JsonDocument.Parse(result.StdOut);
+        var entry = Assert.Single(report.RootElement.EnumerateArray());
+        Assert.True(entry.GetProperty("ok").GetBoolean());
+        Assert.Equal("file", entry.GetProperty("kind").GetString());
+        Assert.Equal("EstateJson", entry.GetProperty("name").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Doctor_NothingConfigured_SkipsEverySurface_Exit0()
+    {
+        RequireCli();
+        var result = await CliBinary.RunAsync(_dll, ["doctor"], workingDirectory: _dir);
+
+        Assert.True(result.Exit == 0, result.AllOutput);
+        Assert.Contains("control plane: SKIP", result.StdOut, StringComparison.Ordinal);
+        Assert.Contains("catalog db:    SKIP", result.StdOut, StringComparison.Ordinal);
+        Assert.Contains("checks out", result.StdOut, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Completions_EachShell_Exit0_CoversTheVerbs()
+    {
+        RequireCli();
+        foreach (var shell in new[] { "bash", "zsh", "powershell" })
+        {
+            var result = await CliBinary.RunAsync(_dll, ["completions", shell], workingDirectory: _dir);
+            Assert.True(result.Exit == 0, $"{shell}: {result.AllOutput}");
+            Assert.Contains("trigger", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("schedules", result.StdOut, StringComparison.Ordinal);
+        }
+
+        var unknown = await CliBinary.RunAsync(_dll, ["completions", "fish"], workingDirectory: _dir);
+        Assert.Equal(1, unknown.Exit);
+    }
+
+    [SkippableFact]
+    public async Task RunsLocal_EmptyFolder_Exit0_ReportsZero()
+    {
+        RequireCli();
+        var result = await CliBinary.RunAsync(_dll, ["runs", "local", _dir], workingDirectory: _dir);
+        Assert.True(result.Exit == 0, result.AllOutput);
+        Assert.Contains("(0 of 0 local run(s)", result.StdOut, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task Logout_WithNothingStored_IsIdempotent_Exit0()
     {

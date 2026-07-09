@@ -56,7 +56,9 @@ internal static class Program
         // runs/groups) address the remote API through flags; none take a pipeline file.
         var command = positional.Length > 0 ? positional[0].ToLowerInvariant() : string.Empty;
         var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "user" or "detect-unique-key"
-            or "health" or "login" or "logout" or "trigger" or "groups");
+            or "health" or "login" or "logout" or "trigger" or "groups"
+            or "whoami" or "doctor" or "summary" or "nodes" or "schedules" or "repos" or "pipelines"
+            or "datasources" or "search" or "completions");
         if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
         {
             PrintUsage();
@@ -101,6 +103,13 @@ internal static class Program
             {
                 case "validate":
                 {
+                    // A directory validates the whole estate in one pass (the CI gate), and --json switches
+                    // either shape to the machine-readable report; a single file keeps its detailed line.
+                    if (Directory.Exists(file) || args.Contains("--json"))
+                    {
+                        return await LocalInspectVerbs.ValidateEstateAsync(documents, file, args.Contains("--json")).ConfigureAwait(false);
+                    }
+
                     switch (DocumentLoader.Load(documents, file, Console.Error.WriteLine))
                     {
                         case FileFlowDocument doc:
@@ -352,7 +361,18 @@ internal static class Program
                     return await RunAdHocHealthCheckAsync(provider, args).ConfigureAwait(false);
 
                 case "lineage":
+                {
+                    // The graph-as-data subcommands query the control plane's synced view; anything else is
+                    // the offline computation over a local flow folder. A folder named like a subcommand still
+                    // resolves offline when it exists on disk (the concrete path wins over the keyword).
+                    var lineageSub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+                    if (lineageSub is "objects" or "edges" or "waves" or "script" && !Directory.Exists(file))
+                    {
+                        return await RemoteVerbs.LineageRemoteAsync(positional, args).ConfigureAwait(false);
+                    }
+
                     return await RunLineageAsync(provider, file, args).ConfigureAwait(false);
+                }
 
                 case "auth":
                     return await RunAuthCheckAsync(provider, args).ConfigureAwait(false);
@@ -365,11 +385,17 @@ internal static class Program
 
                 case "runs":
                 {
-                    // 'runs cancel' keeps its direct-catalog path as the break-glass route (it works when the
-                    // control plane itself is down): it is used when --db is passed explicitly or when no
-                    // control plane is configured. Everything else on 'runs' (list/show/trace, and cancel with
-                    // a configured URL) goes through the control plane, the same API the GUI uses.
+                    // 'runs local' reads the on-disk artifacts (no catalog, no control plane); 'runs cancel'
+                    // keeps its direct-catalog path as the break-glass route (it works when the control plane
+                    // itself is down): used when --db is passed explicitly or when no control plane is
+                    // configured. Everything else on 'runs' (list/show/trace, and cancel with a configured
+                    // URL) goes through the control plane, the same API the GUI uses.
                     var runsSub = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+                    if (runsSub == "local")
+                    {
+                        return await LocalInspectVerbs.ListLocalRunsAsync(positional, args).ConfigureAwait(false);
+                    }
+
                     if (runsSub == "cancel" && (GetOption(args, "--db") is not null || !RemoteVerbs.IsConfigured(args)))
                     {
                         return await RunRunsAsync(provider, positional, args).ConfigureAwait(false);
@@ -392,6 +418,36 @@ internal static class Program
 
                 case "groups":
                     return await RemoteVerbs.GroupsAsync(positional, args).ConfigureAwait(false);
+
+                case "whoami":
+                    return await RemoteVerbs.WhoAmIAsync(args).ConfigureAwait(false);
+
+                case "doctor":
+                    return await RemoteVerbs.DoctorAsync(args).ConfigureAwait(false);
+
+                case "summary":
+                    return await RemoteVerbs.SummaryAsync(args).ConfigureAwait(false);
+
+                case "nodes":
+                    return await RemoteVerbs.NodesAsync(args).ConfigureAwait(false);
+
+                case "schedules":
+                    return await RemoteVerbs.SchedulesAsync(positional, args).ConfigureAwait(false);
+
+                case "repos":
+                    return await RemoteVerbs.ReposAsync(positional, args).ConfigureAwait(false);
+
+                case "pipelines":
+                    return await RemoteVerbs.PipelinesAsync(positional, args).ConfigureAwait(false);
+
+                case "datasources":
+                    return await RemoteVerbs.DatasourcesAsync(positional, args).ConfigureAwait(false);
+
+                case "search":
+                    return await RemoteVerbs.SearchAsync(positional, args).ConfigureAwait(false);
+
+                case "completions":
+                    return CliCompletions.Print(positional);
 
                 case "user":
                     return await RunUserAsync(provider, positional, args).ConfigureAwait(false);
@@ -1922,6 +1978,8 @@ internal static class Program
                                [--file-pattern <glob>]  Backfill: narrow a file flow to one glob this run
                                [--assertions-only]      Evaluate the flow's data-quality assertions (manual-mode
                                                  ones included) against the current target; loads nothing (ing flows)
+                               [--health-check]  Run the flow's embedded healthCheck: block (the derived hc
+                                                 pipeline) instead of the load; nothing is loaded (ing flows)
               sqlflow infer    <pipeline.yaml>   Profile the loaded table and output inferred types (JSON)
               sqlflow discover <pipeline.yaml>   Scan a JSON/XML source, auto-detect the record grain, and report its path structure
               sqlflow paths    <file|folder>     List every path in a JSON/NDJSON/XML file or folder
@@ -2041,6 +2099,51 @@ internal static class Program
               sqlflow groups show <groupId> [--follow] | cancel <groupId> | rerun <groupId> [--follow]
                                                  A node/batch run group: rollup + members (live with --follow), group
                                                  cancellation, and rerun (a fresh re-expansion of the same anchor).
+              sqlflow whoami                     Who the resolved credential authenticates as (subject, role, scopes)
+                                                 and where the credential came from (--token / SQLFLOW_TOKEN / store).
+              sqlflow summary                    The dashboard rollup: estate size, run queue, fleet, schedules, sync.
+              sqlflow nodes                      The worker fleet with heartbeat-derived online/offline state.
+              sqlflow schedules list | show <id> | create --repo r --flow f (--cron <expr>|--interval <seconds>)
+                               [--timezone tz] [--disabled] [--catchup] | pause <id> | resume <id> | delete <id>
+                                                 The scheduling surface (cron or fixed interval per flow).
+              sqlflow repos    list | show <name|id> | sync <name|id>
+                               | register --name r --remote-url u [--branch b] [--interval s]
+                                 [--credential-ref ${env:GIT_TOKEN}] [--credential-user u] [--disabled]
+                               | discover --remote-url u [--branch b] [--credential-ref ...]
+                                                 Synced repos and their managed git sources: register a source (the
+                                                 credential is always a ${...} reference), preview a remote's flows
+                                                 without importing, and force a sync (git source or local re-sync).
+              sqlflow pipelines list [--repo r --kind k --active true|false --name x]
+                               | show <id> [--yaml|--definition] | columns <id> [--kind declared|detected]
+                               | files <id> [--search x]         The pipeline registry; --yaml/--definition print the
+                                                 raw document on stdout (pipe- and LLM-friendly).
+              sqlflow datasources list | test|databases|schemas|objects|search|introspect|detect-unique-key
+                                 --ref <${env:NAME}|@alias> [--kind k] [--pool p] [--database d] [--schema s]
+                                 [--object [schema.]name] [--like x] [--term x] [--limit n] [--no-wait]
+                               | tasks [--status s] | task <id> | cancel <id>
+                                                 The remote twins of 'catalog'/'detect-unique-key': queued compute
+                                                 tasks executed by a worker node INSIDE the network (no direct DB
+                                                 reachability needed here); the worker's JSON result prints on stdout.
+              sqlflow search <term> [--objects|--columns|--definitions|--files|--flows]
+                                                 Global catalog search; default shows every category's count + top hits.
+              sqlflow lineage objects|edges|waves|script ...
+                                                 The synced lineage graph as DATA (a console cannot draw the GUI's
+                                                 graph, but the dataset prints and --json feeds an LLM or a test):
+                                                 objects [--name --server --database --schema --kind]; edges --repo r
+                                                 [--object key --relation read|write --tier t]; waves --repo r (the
+                                                 execution plan); script <key|flow> (the code behind any node).
+              sqlflow doctor                     One pass over this machine's SQLFlow setup: the resolved .sqlflow/env,
+                                                 which SQLFLOW_* variables are set (values never printed), control
+                                                 plane live/ready + credential identity, and catalog DB reachability
+                                                 with schema currency. Unconfigured surfaces are SKIP, not failures.
+              sqlflow runs local [folder] [--flow x] [--last N]
+                                                 The on-disk run history (.sqlflow/runs artifacts) next to the
+                                                 pipeline files, newest first; no catalog or control plane needed.
+              sqlflow completions bash|zsh|powershell
+                                                 Print a shell completion script (e.g. source <(sqlflow completions bash)).
+
+            'validate' also accepts a FOLDER (and --json on either shape): every *.yaml/*.yml under it is
+            validated through the same loader, one line per document, exit 0 only when all parse; the CI gate.
 
             Six pipeline kinds share validate/run, discriminated by the document's flowType key:
               (none)         a file flow: CSV/JSON/XML/XLS/Parquet into SQL Server (the default)
@@ -2622,6 +2725,11 @@ internal static class Program
             case FileFlowDocument:
                 PrintResult((FlowResult)exec.Result);
                 break;
+            // An ingestion document can also have executed its embedded health check (--health-check); the
+            // executor's FlowKind says which flow actually ran, so print by that, not by the document type.
+            case IngestionFlowDocument when exec.FlowKind == "hc":
+                PrintHealthCheckResult((HealthCheckRunResult)exec.Result, exec.HealthCheckReport);
+                break;
             case IngestionFlowDocument doc:
                 PrintIngestionResult(doc.Document.Flow, (IngestionRunResult)exec.Result);
                 break;
@@ -2662,7 +2770,7 @@ internal static class Program
     }
 
     private static int ExitCodeForExecution(FlowDocument document, DocumentExecutionResult exec, string[] args)
-        => document is HealthCheckFlowDocument
+        => document is HealthCheckFlowDocument || exec.FlowKind == "hc"
             ? HealthCheckExitCode((HealthCheckRunResult)exec.Result, args.Contains("--fail-on-anomaly"))
             : exec.Success ? 0 : 1;
 
@@ -2904,10 +3012,13 @@ internal static class Program
         "--date-column", "--base-value", "--filter", "--threshold", "--alpha", "--budget", "--maturity", "--state-dir",
         "--of", "--explain",
         "--db", "--repo", "--repo-url",
-        // The control-plane verbs (health/login/logout/trigger/runs/groups).
+        // The control-plane verbs (health/login/logout/trigger/runs/groups and the estate family).
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
         "--scope", "--batch", "--pool", "--commit", "--flow", "--status", "--kind", "--group",
         "--page", "--page-size", "--from", "--to", "--file-pattern",
+        "--cron", "--interval", "--timezone", "--remote-url", "--credential-ref", "--credential-user",
+        "--ref", "--sample", "--max-columns", "--max-candidates", "--active", "--enabled",
+        "--search", "--relation", "--tier", "--server", "--operation", "--last",
     };
 
     internal static string[] PositionalArguments(string[] args)

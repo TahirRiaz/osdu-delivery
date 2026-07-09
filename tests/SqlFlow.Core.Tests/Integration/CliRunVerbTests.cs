@@ -69,6 +69,14 @@ public sealed class CliRunVerbTests : IDisposable
                 .Single(d => Directory.GetFiles(d, "run.json").Length > 0);
             Assert.True(File.Exists(Path.Combine(runDir, "run.log")), "run.log missing");
             Assert.True(File.Exists(Path.Combine(runDir, "trace.sql")), "trace.sql missing");
+
+            // 'runs local' browses exactly these artifacts: the run must appear, newest first, machine-readable.
+            var local = await CliBinary.RunAsync(dll, ["runs", "local", _dir, "--json"], workingDirectory: _dir);
+            Assert.True(local.Exit == 0, local.AllOutput);
+            using var rows = JsonDocument.Parse(local.StdOut);
+            var row = Assert.Single(rows.RootElement.EnumerateArray());
+            Assert.Equal(table, row.GetProperty("flowName").GetString());
+            Assert.True(row.GetProperty("success").GetBoolean());
         }
         finally
         {

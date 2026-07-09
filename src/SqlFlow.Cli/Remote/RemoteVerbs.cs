@@ -17,7 +17,7 @@ namespace SqlFlow.Cli.Remote;
 /// scripts and tests can assert on them. Exit codes: 0 success, 1 error or a followed run that did not
 /// succeed, 130 on Ctrl+C.
 /// </summary>
-internal static class RemoteVerbs
+internal static partial class RemoteVerbs
 {
     /// <summary>True when a control-plane URL is configured (flag or environment), which routes shared verbs
     /// (runs cancel) to the remote path instead of the direct-catalog fallback.</summary>

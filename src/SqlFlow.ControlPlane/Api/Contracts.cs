@@ -109,3 +109,8 @@ public sealed record CreateAccessTokenRequest(string Name, IReadOnlyList<string>
 /// <summary>The response to creating a token: the listing view plus the one-time <see cref="Secret"/>. The secret is
 /// shown exactly once here and is never retrievable again.</summary>
 public sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret);
+
+/// <summary>Who a bearer credential authenticates as: the resolved subject, role, and effective scopes, plus
+/// the backing catalog user id (null for a bootstrap token, which has no account). A headless client's
+/// "whoami": one call that answers "am I signed in, as whom, and what am I allowed to do".</summary>
+public sealed record IdentityDto(string Subject, string? Role, IReadOnlyList<string> Scopes, Guid? UserId);
