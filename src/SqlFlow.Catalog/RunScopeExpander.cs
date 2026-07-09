@@ -28,7 +28,9 @@ public sealed record RunScopeExpansion(RunScope Scope, string Anchor, IReadOnlyL
 /// trigger endpoint so the two can never disagree. It reads exactly the data the lineage graph does: the flow-to-flow
 /// dependency edges (<see cref="CatalogFlowDependency"/>) for descendants, the batch label for a batch, and the
 /// topological wave (<see cref="CatalogPipeline.Wave"/>) for ordering. Only active pipelines are ever selected, so a
-/// flow that has left the estate is never enqueued. Stateless, like the rest of the catalog stores.
+/// flow that has left the estate is never enqueued; a <c>mode: manual</c> pipeline is likewise excluded from group
+/// membership (a Node's anchor is the one exception: naming it IS the manual trigger). Stateless, like the rest of
+/// the catalog stores.
 /// </summary>
 public static class RunScopeExpander
 {
@@ -129,7 +131,9 @@ public static class RunScopeExpander
             }
         }
 
-        var members = await MembersByIdAsync(catalog, repoId, reachable, ct).ConfigureAwait(false);
+        // Manual-mode descendants are excluded (a group is automatic execution); the anchor itself is kept even
+        // when manual, because the caller named it explicitly and a direct request IS the manual trigger.
+        var members = await MembersByIdAsync(catalog, repoId, reachable, anchorId, ct).ConfigureAwait(false);
         return new RunScopeExpansion(RunScope.Node, flowName, members);
     }
 
@@ -150,8 +154,10 @@ public static class RunScopeExpander
             label = string.IsNullOrWhiteSpace(label) ? CatalogPipeline.DefaultBatch : label;
         }
 
+        // Manual-mode flows never join a batch execution: their own document reserved them for a direct trigger.
         var members = await catalog.Pipelines.AsNoTracking()
             .Where(p => p.RepoId == repoId && p.Active
+                        && p.ExecutionMode != PipelineExecutionModes.Manual
                         && (p.Batch ?? CatalogPipeline.DefaultBatch) == label)
             .OrderBy(p => p.Wave < 0 ? 0 : p.Wave).ThenBy(p => p.Name)
             .Select(p => new RunScopeMember(p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave))
@@ -160,7 +166,7 @@ public static class RunScopeExpander
     }
 
     private static async Task<IReadOnlyList<RunScopeMember>> MembersByIdAsync(
-        CatalogDbContext catalog, Guid repoId, IReadOnlyCollection<Guid> pipelineIds, CancellationToken ct)
+        CatalogDbContext catalog, Guid repoId, IReadOnlyCollection<Guid> pipelineIds, Guid anchorId, CancellationToken ct)
     {
         if (pipelineIds.Count == 0)
         {
@@ -169,7 +175,8 @@ public static class RunScopeExpander
 
         var ids = pipelineIds.ToList();
         return await catalog.Pipelines.AsNoTracking()
-            .Where(p => p.RepoId == repoId && p.Active && ids.Contains(p.Id))
+            .Where(p => p.RepoId == repoId && p.Active && ids.Contains(p.Id)
+                        && (p.Id == anchorId || p.ExecutionMode != PipelineExecutionModes.Manual))
             .OrderBy(p => p.Wave < 0 ? 0 : p.Wave).ThenBy(p => p.Name)
             .Select(p => new RunScopeMember(p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave))
             .ToListAsync(ct).ConfigureAwait(false);

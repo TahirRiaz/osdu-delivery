@@ -65,6 +65,19 @@ public class CatalogRepo
 /// secret-redacted on the way in. <see cref="Id"/> is the flow's stable identity (the deterministic GUID the
 /// engine derives from the name), so runs join to it with no run-time database round-trip.
 /// </summary>
+/// <summary>The catalog spellings of a flow's execution mode (the YAML <c>mode:</c>), stored as a string so the
+/// column reads plainly in SQL. Mapped from <c>SqlFlow.Core.Runs.ExecutionMode</c> at sync time.</summary>
+public static class PipelineExecutionModes
+{
+    public const string Auto = "auto";
+
+    public const string Manual = "manual";
+
+    /// <summary>The stored spelling of a core execution mode.</summary>
+    public static string From(Core.Runs.ExecutionMode mode)
+        => mode == Core.Runs.ExecutionMode.Manual ? Manual : Auto;
+}
+
 public class CatalogPipeline
 {
     /// <summary>The batch label a flow reports under when its YAML declares no <c>batch</c>: every run belongs to
@@ -88,6 +101,11 @@ public class CatalogPipeline
 
     /// <summary>The flow document path relative to the repo root (forward-slashed).</summary>
     public string RelativePath { get; set; } = string.Empty;
+
+    /// <summary>How the flow executes (see <see cref="PipelineExecutionModes"/>): <c>auto</c> (the default)
+    /// participates in schedules and batch/node group runs; <c>manual</c> (a health-check flow's
+    /// <c>mode: manual</c>) is excluded from every automatic dispatch and runs only when triggered directly.</summary>
+    public string ExecutionMode { get; set; } = PipelineExecutionModes.Auto;
 
     /// <summary>The source connection/server reference, for display and grouping; null when not applicable.</summary>
     public string? SourceServer { get; set; }
@@ -191,6 +209,11 @@ public class CatalogRun
     /// <summary>Per-run substitution: a glob narrowing which files a file flow reads this run.</summary>
     public string? FilePattern { get; set; }
 
+    /// <summary>Per-run substitution: evaluate the flow's data-quality assertions against the current target
+    /// and load nothing (the on-demand path for <c>mode: manual</c> assertions). Recorded on the run so an
+    /// assertions-only execution is distinguishable from a load in the history.</summary>
+    public bool AssertionsOnly { get; set; }
+
     /// <summary>The run group this run belongs to when it was enqueued as one member of a multi-flow execution
     /// (a Node run: a flow and its descendants; or a Batch run: a whole data source), or null for a standalone
     /// single-flow run. Members of a group share this id and are ordered by <see cref="GroupWave"/>: the queue
@@ -242,6 +265,11 @@ public class CatalogRun
     /// <summary>Where the watermark came from, including the probed object: e.g. <c>target MAX [dbo].[Orders]</c>,
     /// <c>run log</c>, or <c>source MIN [dbo].[Orders]</c>. Null when there is no watermark.</summary>
     public string? IncrementalWatermarkSource { get; set; }
+
+    /// <summary>How <c>DataSet_DW</c> was derived for a file run (e.g. <c>filename dates; month-first (inferred from
+    /// file set)</c> or <c>last-modified</c>), projected from <c>result.dataSetConvention</c>. Null for a flow that
+    /// emits no <c>DataSet_DW</c> (relational ingestion, sp/hc flows).</summary>
+    public string? DataSetConvention { get; set; }
 }
 
 /// <summary>The modes a run group can be launched in, stored as a short lowercase string (same convention as

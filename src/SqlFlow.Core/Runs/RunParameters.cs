@@ -40,15 +40,29 @@ public sealed record RunParameters
     /// <summary>A glob narrowing which files a file flow reads this run (for example <c>orders_2023-01*.csv</c>).</summary>
     public string? FilePattern { get; init; }
 
+    /// <summary>Evaluate the flow's data-quality assertions against the CURRENT target and do nothing else: no
+    /// source read, no staging, no load. The on-demand path for assertions declared <c>mode: manual</c> (an
+    /// assertions-only run evaluates the flow's whole assertion list, auto and manual alike). Ingestion flows
+    /// only; every other kind refuses the run rather than loading data the caller did not ask for.</summary>
+    public bool AssertionsOnly { get; init; }
+
     /// <summary>True when nothing is overridden: the run behaves exactly as its definition says.</summary>
     public bool IsDefault
-        => !FullLoad && BackfillFrom is null && BackfillTo is null && string.IsNullOrWhiteSpace(FilePattern);
+        => !FullLoad && BackfillFrom is null && BackfillTo is null && string.IsNullOrWhiteSpace(FilePattern)
+           && !AssertionsOnly;
 
     /// <summary>Validates the combination, throwing <see cref="SqlFlowException"/> with a caller-safe message.
     /// Called at every trust boundary (API trigger, CLI flags) so a run can never be queued with parameters no
     /// engine path could honor.</summary>
     public void Validate()
     {
+        if (AssertionsOnly && (FullLoad || BackfillFrom is not null || BackfillTo is not null || FilePattern is not null))
+        {
+            throw new SqlFlowException(
+                "assertionsOnly cannot be combined with fullLoad, a backfill window, or a file pattern: an " +
+                "assertions-only run reads no source data, so a selection override has nothing to apply to.");
+        }
+
         if (FullLoad && (BackfillFrom is not null || BackfillTo is not null))
         {
             throw new SqlFlowException(
@@ -87,7 +101,12 @@ public sealed record RunParameters
             return "none";
         }
 
-        var parts = new List<string>(3);
+        var parts = new List<string>(4);
+        if (AssertionsOnly)
+        {
+            parts.Add("assertions only");
+        }
+
         if (FullLoad)
         {
             parts.Add("full load");

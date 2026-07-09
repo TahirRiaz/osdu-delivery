@@ -11,6 +11,10 @@ internal sealed class HealthCheckYaml
     public string? Description { get; set; }
     public string? Batch { get; set; }
 
+    /// <summary>auto (default) lets schedules and batch/node group runs execute the check; manual reserves it
+    /// for a direct trigger (the GUI's run button, a single-flow API trigger, or a direct CLI run).</summary>
+    public string? Mode { get; set; }
+
     /// <summary>Each value is either a plain string (a SQL Server connection reference, the back-compatible
     /// form) or a map with 'provider' and 'connection' keys; the loader disambiguates.</summary>
     public Dictionary<string, object>? Connections { get; set; }

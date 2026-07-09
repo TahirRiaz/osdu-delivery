@@ -462,7 +462,8 @@ public sealed class CatalogSync
             var flow = prepared.Flow;
             var projected = CatalogProjection.Pipeline(
                 repoId, flow.Node.Name, flow.Node.Kind, flow.Node.Batch, Normalize(flow.Node.File),
-                flow.SourceServerRef, flow.TargetServerRef, prepared.ContentHash, prepared.Yaml, prepared.DefinitionJson, nowUtc);
+                flow.SourceServerRef, flow.TargetServerRef, prepared.ContentHash, prepared.Yaml, prepared.DefinitionJson, nowUtc,
+                flow.Node.Mode);
 
             if (row is not null)
             {
@@ -470,6 +471,7 @@ public sealed class CatalogSync
                 row.Kind = projected.Kind;
                 row.Batch = projected.Batch;
                 row.RelativePath = projected.RelativePath;
+                row.ExecutionMode = projected.ExecutionMode;
                 row.SourceServer = projected.SourceServer;
                 row.TargetServer = projected.TargetServer;
                 row.ContentHash = projected.ContentHash;
@@ -901,7 +903,8 @@ public sealed class CatalogSync
         var definitionJson = SerializeDefinition(document, fullFlowPath, warnings);
         var projected = CatalogProjection.Pipeline(
             repoId, header.Name, header.Kind, header.Batch, Normalize(relativePath),
-            header.SourceServer, header.TargetServer, hash, yaml, definitionJson, nowUtc);
+            header.SourceServer, header.TargetServer, hash, yaml, definitionJson, nowUtc,
+            header.Mode);
 
         if (row is not null)
         {
@@ -909,6 +912,7 @@ public sealed class CatalogSync
             row.Kind = projected.Kind;
             row.Batch = projected.Batch;
             row.RelativePath = projected.RelativePath;
+            row.ExecutionMode = projected.ExecutionMode;
             row.SourceServer = projected.SourceServer;
             row.TargetServer = projected.TargetServer;
             row.ContentHash = projected.ContentHash;
@@ -925,7 +929,9 @@ public sealed class CatalogSync
 
     /// <summary>The pipeline-projection header of one flow document: the fields a catalog row derives from the
     /// document itself, shaped exactly like the estate scan's flow nodes.</summary>
-    private sealed record FlowHeader(string Name, string Kind, string? Batch, string? SourceServer, string? TargetServer);
+    private sealed record FlowHeader(
+        string Name, string Kind, string? Batch, string? SourceServer, string? TargetServer,
+        Core.Runs.ExecutionMode Mode = Core.Runs.ExecutionMode.Auto);
 
     /// <summary>Projects one already-loaded document into its pipeline header, mirroring how
     /// <see cref="FlowSetCollector"/> shapes each kind's flow node (name, kind, batch, server identities), so the
@@ -963,7 +969,7 @@ public sealed class CatalogSync
             {
                 var flow = doc.Document.Flow;
                 var refs = ConnectionRefs(doc.Document.Connections);
-                return new FlowHeader(flow.SysAlias, "hc", flow.Batch, null, ServerIdentity.From(refs[flow.Server]));
+                return new FlowHeader(flow.SysAlias, "hc", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), flow.Mode);
             }
 
             case FileFlowDocument doc:

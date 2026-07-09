@@ -120,6 +120,16 @@ public sealed class DocumentExecutor : IDocumentRunner
     {
         ArgumentNullException.ThrowIfNull(document);
 
+        // Unlike the advisory backfill parameters (which flow kinds without a window surface as a run-log
+        // notice), assertionsOnly changes WHAT the run does: honoring it on a kind without assertions would
+        // silently run a full load the caller explicitly did not ask for, so any kind but ingestion refuses.
+        if (options.Parameters.AssertionsOnly && document is not IngestionFlowDocument)
+        {
+            throw new SqlFlowException(
+                "assertionsOnly applies only to ingestion flows (flowType: ing): assertions are declared on and " +
+                "evaluated against an ingestion flow's target.");
+        }
+
         return document switch
         {
             FileFlowDocument doc => await ExecuteFileAsync(doc, flowFile, options, ct).ConfigureAwait(false),

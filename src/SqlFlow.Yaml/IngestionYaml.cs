@@ -182,6 +182,10 @@ internal sealed class IngestionAssertionYaml
 {
     public string? Name { get; set; }
     public string? Expression { get; set; }
+
+    /// <summary>auto (default) evaluates with every ingestion run; manual reserves the assertion for an
+    /// on-demand assertions-only run.</summary>
+    public string? Mode { get; set; }
 }
 
 internal sealed class IngestionSurrogateKeyYaml

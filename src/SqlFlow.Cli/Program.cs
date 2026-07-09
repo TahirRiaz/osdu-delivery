@@ -1920,6 +1920,8 @@ internal static class Program
                                                  incremental date column / export or init-load chunk plan)
                                [--to <date>]     Backfill: the window's high bound (requires --from)
                                [--file-pattern <glob>]  Backfill: narrow a file flow to one glob this run
+                               [--assertions-only]      Evaluate the flow's data-quality assertions (manual-mode
+                                                 ones included) against the current target; loads nothing (ing flows)
               sqlflow infer    <pipeline.yaml>   Profile the loaded table and output inferred types (JSON)
               sqlflow discover <pipeline.yaml>   Scan a JSON/XML source, auto-detect the record grain, and report its path structure
               sqlflow paths    <file|folder>     List every path in a JSON/NDJSON/XML file or folder
@@ -2023,7 +2025,7 @@ internal static class Program
               sqlflow logout                     Revoke the stored token server-side and remove it locally.
               sqlflow trigger  --repo <name|id> --flow <f> [--scope flow|node|batch] [--batch <label>]
                                [--pool <p>] [--commit <sha>] [--full] [--from <date>] [--to <date>]
-                               [--file-pattern <glob>] [--preview] [--follow]
+                               [--file-pattern <glob>] [--assertions-only] [--preview] [--follow]
                                                  Enqueue a run on the fleet (POST /runs), exactly as the GUI's trigger
                                                  dialog does: scope flow (default), node (the flow + its lineage
                                                  descendants), or batch (a whole label). --preview shows the members
@@ -2673,21 +2675,23 @@ internal static class Program
         }
 
         var status = result.Success ? "OK" : "FAILED";
+        var manual = result.Manual > 0 ? $", {result.Manual} manual" : string.Empty;
         Console.WriteLine(
             $"{status}  batch '{result.BatchName}': {result.Waves.Count} wave(s); " +
-            $"{result.Succeeded} succeeded, {result.Failed} failed, {result.Skipped} skipped, {result.Inactive} inactive (onError {result.OnError.ToLowerInvariant()}) in {result.DurationSeconds}s.");
+            $"{result.Succeeded} succeeded, {result.Failed} failed, {result.Skipped} skipped, {result.Inactive} inactive{manual} (onError {result.OnError.ToLowerInvariant()}) in {result.DurationSeconds}s.");
 
         foreach (var wave in result.Waves)
         {
             Console.WriteLine($"  wave {wave.Wave}: {string.Join(", ", wave.Members)}");
         }
 
-        foreach (var member in result.Members.Where(m => m.Status is BatchMemberStatus.Failed or BatchMemberStatus.FailedIgnored or BatchMemberStatus.Skipped))
+        foreach (var member in result.Members.Where(m => m.Status is BatchMemberStatus.Failed or BatchMemberStatus.FailedIgnored or BatchMemberStatus.Skipped or BatchMemberStatus.Manual))
         {
             var label = member.Status switch
             {
                 BatchMemberStatus.Failed => "FAILED",
                 BatchMemberStatus.FailedIgnored => "FAILED (ignored)",
+                BatchMemberStatus.Manual => "MANUAL (not run; trigger it directly)",
                 _ => "SKIPPED",
             };
             Console.WriteLine($"  {label}  {member.FlowName}{(member.Error is null ? string.Empty : $": {member.Error}")}");
@@ -2733,10 +2737,12 @@ internal static class Program
 
     /// <summary>
     /// The built-in backfill's CLI surface: <c>--full</c> ignores the watermark, <c>--from</c>/<c>--to</c> is an
-    /// externally-bounded window, <c>--file-pattern</c> narrows a file flow to one glob. Parsed and validated
-    /// here (dates are invariant-culture, e.g. <c>2023-01-15</c> or <c>2023-01-15 06:00:00</c>), the same
-    /// <see cref="RunParameters"/> contract the control-plane trigger validates, so both entry points refuse
-    /// exactly the same nonsense. A batch run passes them to every member.
+    /// externally-bounded window, <c>--file-pattern</c> narrows a file flow to one glob, and
+    /// <c>--assertions-only</c> evaluates an ingestion flow's assertions (manual-mode ones included) against the
+    /// current target without loading anything. Parsed and validated here (dates are invariant-culture, e.g.
+    /// <c>2023-01-15</c> or <c>2023-01-15 06:00:00</c>), the same <see cref="RunParameters"/> contract the
+    /// control-plane trigger validates, so both entry points refuse exactly the same nonsense. A batch run
+    /// passes them to every member.
     /// </summary>
     internal static RunParameters ParseRunParameters(string[] args)
     {
@@ -2761,6 +2767,7 @@ internal static class Program
             BackfillFrom = ParseDate(GetOption(args, "--from"), "--from"),
             BackfillTo = ParseDate(GetOption(args, "--to"), "--to"),
             FilePattern = GetOption(args, "--file-pattern"),
+            AssertionsOnly = args.Contains("--assertions-only"),
         };
         parameters.Validate();
         return parameters;

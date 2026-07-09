@@ -309,6 +309,7 @@ public sealed class FlowRunner
                 TotalMs = totalMs,
                 TransformView = transformView,
                 Incremental = incrementalSummary,
+                DataSetConvention = read.DataSetConvention,
             };
         }
         catch (NoSourceFilesException ex) when (flow.Incremental is { FullLoad: false })

@@ -25,7 +25,7 @@ public sealed class DataSetDateSpecTests
     [InlineData("data_2024_01_01.csv", "2024-01-01T00:00:00")]
     [InlineData("x2024.01.01.csv", "2024-01-01T00:00:00")]
     [InlineData("single_2024-1-5.csv", "2024-01-05T00:00:00")]                // variable-width M/d
-    [InlineData("monthly_2024-01.csv", "2024-01-01T00:00:00")]                // delimited year-month
+    [InlineData("monthly_2024-01.csv", null)]                                 // year-month is opt-in, not a default
     // date + time (most specific wins over the date-only prefix)
     [InlineData("report20240101120000.log", "2024-01-01T12:00:00")]
     [InlineData("dump_20240101_120000.bak", "2024-01-01T12:00:00")]
@@ -135,5 +135,167 @@ public sealed class DataSetDateSpecTests
     {
         var spec = DataSetDateSpec.FromOptions(new Dictionary<string, string?> { ["dataSetFromFileName"] = "false" });
         Assert.Same(DataSetDateSpec.ModifiedOnly, spec);
+    }
+
+    [Theory]
+    // Calendar validity: TryParseExact rejects impossible dates rather than the regex guessing.
+    [InlineData("d_2024-13-01.csv", null)]                                    // month 13
+    [InlineData("d_2024-00-10.csv", null)]                                    // month 00
+    [InlineData("d_2024-02-30.csv", null)]                                    // Feb 30
+    [InlineData("d_20240230.csv", null)]                                      // Feb 30, compact
+    // Digit-gluing boundaries: a date must be isolated from surrounding digits.
+    [InlineData("glued_2024010112.csv", null)]                               // 10 contiguous digits: no isolated 8/14
+    [InlineData("mid20240101.csv", "2024-01-01T00:00:00")]                    // glued to letters (letters are a boundary)
+    [InlineData("2024010199_x.csv", null)]                                    // 10 digits: not an 8-digit date
+    // Year sentinel then day-first fallthrough (European): yyyyMMdd fails, ddMMyyyy wins.
+    [InlineData("report_03042020.csv", "2020-04-03T00:00:00")]               // dd=03 MM=04 yyyy=2020
+    // Specificity beats position: the longest format wins even when it matches later in the name.
+    [InlineData("later_2024-05_full_2024-05-06.csv", "2024-05-06T00:00:00")]
+    // Every occurrence of a format is tried: an id that fits the shape but is not a valid date does not stop a
+    // real later date of the same format from being found.
+    [InlineData("id99999999_20240101.csv", "2024-01-01T00:00:00")]
+    public void TryExtract_EdgeCases(string fileName, string? expectedIso)
+    {
+        var result = Default.TryExtract(fileName);
+
+        if (expectedIso is null)
+        {
+            Assert.Null(result);
+        }
+        else
+        {
+            Assert.Equal(DateTime.ParseExact(expectedIso, "yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture), result);
+        }
+    }
+
+    [Fact]
+    public void TryExtract_UnicodeDigits_DoNotThrow_AndAreNotAccepted()
+    {
+        // Arabic-Indic 20240101: \d may match but TryParseExact(InvariantCulture) does not parse non-ASCII digits.
+        Assert.Null(Default.TryExtract("sess_٢٠٢٤٠١٠١.csv"));
+    }
+
+    [Fact]
+    public void FromOptions_MalformedOrUnsupportedCustomFormats_DoNotThrow_AndBuiltInsStillApply()
+    {
+        // Month-NAME tokens (MMM) and junk formats are accepted as configuration but never match numeric names
+        // (the extractor is numeric-token only, matching legacy); they must not crash and must not disable the
+        // built-ins.
+        var spec = DataSetDateSpec.FromOptions(new Dictionary<string, string?>
+        {
+            ["dataSetFormats"] = "ddMMMyyyy | garbage | ]][[ | \\",
+        });
+
+        Assert.Null(spec.TryExtract("no_date_here.csv"));
+        Assert.Equal(new DateTime(2024, 1, 1), spec.TryExtract("sess_20240101.csv"));
+    }
+
+    [Fact]
+    public void YearMonth_IsOptInViaDataSetFormats()
+    {
+        var spec = DataSetDateSpec.FromOptions(new Dictionary<string, string?> { ["dataSetFormats"] = "yyyy-MM" });
+        Assert.Equal(new DateTime(2024, 5, 1), spec.TryExtract("monthly_2024-05.csv"));
+    }
+
+    [Fact]
+    public void TryExtract_VeryLongName_IsLinear_AndDoesNotHang()
+    {
+        // No nested quantifiers, so a pathological name cannot backtrack catastrophically.
+        var name = new string('9', 5000) + "_2024-01-01_" + new string('7', 5000) + ".csv";
+        Assert.Equal(new DateTime(2024, 1, 1), Default.TryExtract(name));
+    }
+
+    // ---- File-set inference of the ambiguous day-first vs month-first reading ----
+
+    [Fact]
+    public void ForFileSet_InfersMonthFirst_FromUnambiguousSibling()
+    {
+        // 03-15-2024 can only be MM-dd (month 15 is impossible the other way): it teaches the set month-first,
+        // which then applies to the otherwise-ambiguous 01-02-2024.
+        var spec = Default.ForFileSet(["03-15-2024.csv", "01-02-2024.csv"]);
+        Assert.Equal(new DateTime(2024, 1, 2), spec.TryExtract("01-02-2024.csv"));
+    }
+
+    [Fact]
+    public void ForFileSet_KeepsDayFirst_WithDayFirstEvidence()
+    {
+        // 15-03-2024 forces day-first; the ambiguous sibling stays day-first (1 February).
+        var spec = Default.ForFileSet(["15-03-2024.csv", "01-02-2024.csv"]);
+        Assert.Equal(new DateTime(2024, 2, 1), spec.TryExtract("01-02-2024.csv"));
+    }
+
+    [Fact]
+    public void ForFileSet_DefaultsToDayFirst_WithNoEvidence()
+    {
+        var spec = Default.ForFileSet(["01-02-2024.csv", "05-06-2024.csv"]);   // every name ambiguous
+        Assert.Equal(new DateTime(2024, 2, 1), spec.TryExtract("01-02-2024.csv"));
+    }
+
+    [Fact]
+    public void ForFileSet_DefaultsToDayFirst_OnContradictoryEvidence()
+    {
+        // The set contains both a day-forced and a month-forced name: it has no single convention, so the
+        // ambiguous name falls back to the day-first default, while the forced names still resolve per file.
+        var spec = Default.ForFileSet(["15-03-2024.csv", "03-15-2024.csv", "01-02-2024.csv"]);
+        Assert.Equal(new DateTime(2024, 2, 1), spec.TryExtract("01-02-2024.csv"));
+        Assert.Equal(new DateTime(2024, 3, 15), spec.TryExtract("15-03-2024.csv"));
+        Assert.Equal(new DateTime(2024, 3, 15), spec.TryExtract("03-15-2024.csv"));
+    }
+
+    [Fact]
+    public void ForFileSet_InfersCompactFamily_Independently()
+    {
+        // The compact ddMMyyyy/MMddyyyy family is inferred separately: 03152024 forces month-first.
+        var spec = Default.ForFileSet(["03152024.csv", "01022024.csv"]);
+        Assert.Equal(new DateTime(2024, 1, 2), spec.TryExtract("01022024.csv"));
+    }
+
+    [Fact]
+    public void ForFileSet_IsNoOp_WhenOptedOutOrEmpty()
+    {
+        Assert.Same(DataSetDateSpec.ModifiedOnly, DataSetDateSpec.ModifiedOnly.ForFileSet(["03-15-2024.csv"]));
+        Assert.Equal(new DateTime(2024, 2, 1), Default.ForFileSet([]).TryExtract("01-02-2024.csv"));
+    }
+
+    [Fact]
+    public void DayFirstLock_False_ForcesMonthFirst_WithoutAFileSet()
+    {
+        // The explicit lock applies immediately (a single-file read never calls ForFileSet).
+        var spec = DataSetDateSpec.FromOptions(new Dictionary<string, string?> { ["dataSetDayFirst"] = "false" });
+        Assert.Equal(new DateTime(2024, 1, 2), spec.TryExtract("01-02-2024.csv"));
+    }
+
+    [Fact]
+    public void DayFirstLock_True_OverridesFileSetEvidence()
+    {
+        // Locked day-first: month-first evidence in the set is ignored.
+        var spec = DataSetDateSpec.FromOptions(new Dictionary<string, string?> { ["dataSetDayFirst"] = "true" })
+            .ForFileSet(["03-15-2024.csv", "01-02-2024.csv"]);
+        Assert.Equal(new DateTime(2024, 2, 1), spec.TryExtract("01-02-2024.csv"));
+    }
+
+    // ---- The detected-convention audit line (surfaced to run.json and the catalog) ----
+
+    [Fact]
+    public void Convention_ReportsLastModified_WhenOptedOut()
+        => Assert.Equal("last-modified", DataSetDateSpec.ModifiedOnly.Convention);
+
+    [Fact]
+    public void Convention_ReportsDayFirstDefault()
+        => Assert.Equal("filename dates; day-first", Default.Convention);
+
+    [Fact]
+    public void Convention_ReportsMonthFirstInferred_AfterFileSet()
+        => Assert.Equal(
+            "filename dates; month-first (inferred from file set)",
+            Default.ForFileSet(["03-15-2024.csv", "01-02-2024.csv"]).Convention);
+
+    [Fact]
+    public void Convention_ReportsLocked_BothDirections()
+    {
+        Assert.Equal("filename dates; day-first (locked)",
+            DataSetDateSpec.FromOptions(new Dictionary<string, string?> { ["dataSetDayFirst"] = "true" }).Convention);
+        Assert.Equal("filename dates; month-first (locked)",
+            DataSetDateSpec.FromOptions(new Dictionary<string, string?> { ["dataSetDayFirst"] = "false" }).Convention);
     }
 }

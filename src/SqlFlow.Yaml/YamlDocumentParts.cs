@@ -2,6 +2,7 @@ using SqlFlow.Core;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Identity;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 
 namespace SqlFlow.Yaml;
 
@@ -13,6 +14,17 @@ namespace SqlFlow.Yaml;
 /// </summary>
 internal static class YamlDocumentParts
 {
+    /// <summary>Parses a <c>mode:</c> value (auto | manual; blank/absent is auto). One vocabulary for every
+    /// place a definition opts out of automatic execution: a health-check flow and an ingestion assertion.</summary>
+    public static ExecutionMode ParseExecutionMode(string? value, string property, string source)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "auto" => ExecutionMode.Auto,
+            "manual" => ExecutionMode.Manual,
+            _ => throw new FlowValidationException(
+                $"{source}: '{property}' has unknown value '{value}'. Allowed: auto, manual."),
+        };
+
     /// <summary>Maps the document's <c>connections:</c> block. Each value is either a plain string (SQL Server,
     /// the back-compatible form), a map with 'provider' and 'connection' keys, or NOTHING: a bare alias
     /// resolves <c>${env:SQLFLOW_CONN_&lt;NAME&gt;}</c> by the canonical convention, so an enterprise document

@@ -1,4 +1,5 @@
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 
 namespace SqlFlow.Core.HealthChecks;
 
@@ -96,6 +97,12 @@ public sealed record HealthCheckFlow
     /// <summary>Rows dated before this are counted as sentinel-date rows by the data-quality probe (the
     /// 1900-01-01 placeholders that creep into warehouse date columns).</summary>
     public DateOnly SentinelDateFloor { get; init; } = new(1990, 1, 1);
+
+    /// <summary>When the health check executes: <see cref="ExecutionMode.Auto"/> (the default) lets schedules
+    /// and batch/node group runs pick the flow up like any other; <see cref="ExecutionMode.Manual"/> excludes it
+    /// from every automatic dispatch (the scheduler, group expansion, local batch membership), so it runs only
+    /// when triggered directly (the GUI's run button, a single-flow API trigger, or a direct CLI run).</summary>
+    public ExecutionMode Mode { get; init; } = ExecutionMode.Auto;
 
     public HealthCheckTraining Training { get; init; } = HealthCheckTraining.Auto;
 

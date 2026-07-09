@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 
 namespace SqlFlow.SqlServer.Ingestion;
 
@@ -24,7 +25,8 @@ public sealed class AssertionRunner : IAssertionRunner
         _store = store;
     }
 
-    public async Task<IReadOnlyList<AssertionResult>> RunAsync(IngestionFlow flow, string targetConnectionString, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AssertionResult>> RunAsync(
+        IngestionFlow flow, string targetConnectionString, bool includeManual = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
 
@@ -42,6 +44,13 @@ public sealed class AssertionRunner : IAssertionRunner
         {
             // Unknown names are dropped (the legacy INNER JOIN), preserving the original list order.
             if (!definitions.TryGetValue(name, out var definition))
+            {
+                continue;
+            }
+
+            // A manual-mode assertion is reserved for the on-demand assertions-only run; an automatic ingestion
+            // run (includeManual: false) skips it entirely, recording no result for it.
+            if (definition.Mode == ExecutionMode.Manual && !includeManual)
             {
                 continue;
             }

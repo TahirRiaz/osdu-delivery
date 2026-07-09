@@ -56,6 +56,11 @@ public sealed record LineageFlowNode
     public required string File { get; init; }
 
     public string? Batch { get; init; }
+
+    /// <summary>The flow's execution mode (today only a health-check flow can declare <c>mode: manual</c>).
+    /// Manual flows are excluded from automatic dispatch (local batch membership, control-plane group
+    /// expansion, the scheduler); a direct single-flow trigger runs them regardless.</summary>
+    public Runs.ExecutionMode Mode { get; init; } = Runs.ExecutionMode.Auto;
 }
 
 /// <summary>One catalog or file object participating in the graph. The key is the canonical node identity:

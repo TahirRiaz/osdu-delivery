@@ -37,8 +37,9 @@ public sealed record RunDetailDto(
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, string? Error, string? Host,
-    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern,
+    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern, bool AssertionsOnly,
     string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
+    string? DataSetConvention,
     int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);
 
 /// <summary>One file a run processed (file flows): a drill-down row under a run.</summary>
@@ -300,8 +301,9 @@ public static class RunEndpoints
                     run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
                     run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted,
                     db.RunFiles.Count(f => f.RunId == run.RunId), run.Error, run.Host,
-                    run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern,
+                    run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern, run.AssertionsOnly,
                     run.IncrementalMode, run.IncrementalFilter, run.IncrementalWatermark, run.IncrementalWatermarkSource,
+                    run.DataSetConvention,
                     null, null, null, run.GroupId))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (dto is null)

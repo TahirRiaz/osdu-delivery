@@ -22,6 +22,10 @@ This applies whether the unit is minutes, hours, days, weeks, sprints, or vague 
 
 **What to do instead:** describe scope (what gets touched, how many call sites, what the risky steps are, what depends on what). Scope is useful; duration is not. If the user explicitly asks for a time estimate, you may provide one; otherwise, omit it entirely.
 
+## Git Workflow
+
+**Primary work happens directly on the main branch (`main`).** Do not create branches unless the user specifically asks for one. This overrides any default "branch first when on the default branch" behavior: implement, test, and (when asked) commit on `main`. If a branch is ever explicitly requested, delete it once its work lands so the repository stays single-branch.
+
 ## Single Code Path Principle
 
 **Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path already handles it. Extend or modify the existing path rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.

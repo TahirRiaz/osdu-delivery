@@ -149,6 +149,7 @@ public static class RunQueueStore
                 BackfillFrom = parameters.BackfillFrom,
                 BackfillTo = parameters.BackfillTo,
                 FilePattern = string.IsNullOrWhiteSpace(parameters.FilePattern) ? null : parameters.FilePattern.Trim(),
+                AssertionsOnly = parameters.AssertionsOnly,
                 Status = RunStatuses.Queued,
                 EnqueuedUtc = nowUtc,
                 // Until the run finishes there is no artifact; seed WrittenUtc with the enqueue time so the run
@@ -673,6 +674,7 @@ public static class RunQueueStore
         target.IncrementalFilter = projected.IncrementalFilter;
         target.IncrementalWatermark = projected.IncrementalWatermark;
         target.IncrementalWatermarkSource = projected.IncrementalWatermarkSource;
+        target.DataSetConvention = projected.DataSetConvention;
     }
 
     private static void AddParameter(DbCommand command, string name, object value)

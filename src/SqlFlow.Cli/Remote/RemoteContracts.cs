@@ -60,7 +60,7 @@ internal sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret
 internal sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
     bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
-    string? Scope = null, string? Batch = null);
+    string? Scope = null, string? Batch = null, bool AssertionsOnly = false);
 
 /// <summary>The accepted-run acknowledgement for a single-flow trigger.</summary>
 internal sealed record RunTriggerAccepted(Guid RunId, string Status);
@@ -90,7 +90,7 @@ internal sealed record RunDetailDto(
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, string? Error, string? Host,
-    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern,
+    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern, bool AssertionsOnly,
     string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
     string? DataSetConvention,
     int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);

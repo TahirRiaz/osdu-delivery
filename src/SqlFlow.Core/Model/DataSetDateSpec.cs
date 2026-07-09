@@ -39,8 +39,9 @@ public sealed class DataSetDateSpec
         "yyyy-M-d", "yyyy_M_d",
         // date only, compact
         "yyyyMMdd", "ddMMyyyy", "MMddyyyy",
-        // year-month, delimited only (a bare 6-digit run is too ambiguous to assume a date)
-        "yyyy-MM", "yyyy_MM",
+        // Note: no year-month format ships by default. A delimited "yyyy-MM" is a prefix of "yyyy-MM-dd", so it
+        // would claim the "2024-02" of an invalid "2024-02-30" and silently degrade a bad full date to a
+        // year-month. A flow that genuinely lands monthly files adds "yyyy-MM" (or "yyyyMM") via dataSetFormats.
     ];
 
     // Format tokens, longest first, so MM is never read as two M and fff before ff before f. Case-sensitive
@@ -60,14 +61,42 @@ public sealed class DataSetDateSpec
 
     /// <summary>The spec that never reads the file name: <c>DataSet_DW</c> is always the last-modified timestamp
     /// (the behavior for a flow that opts out with <c>dataSetFromFileName: false</c>).</summary>
-    public static readonly DataSetDateSpec ModifiedOnly = new(fromFileName: false, []);
+    public static readonly DataSetDateSpec ModifiedOnly = new(fromFileName: false, [], null, ConventionKind.Modified);
+
+    // The day-first vs month-first families that a single file cannot disambiguate (both components <= 12). The
+    // file SET disambiguates them: an unambiguous sibling (a component > 12) forces one ordering, and that ordering
+    // is applied to the ambiguous files too. Underscore/dot and ISO (year-first) forms are not ambiguous, so only
+    // these two families need resolving.
+    private static readonly (string DayFirst, string MonthFirst)[] AmbiguousFamilies =
+    [
+        ("dd-MM-yyyy", "MM-dd-yyyy"),
+        ("ddMMyyyy", "MMddyyyy"),
+    ];
+
+    /// <summary>How the ambiguous day/month reading was decided, for the run's detected-convention audit line.</summary>
+    private enum ConventionKind
+    {
+        Modified,           // DataSet_DW is the last-modified timestamp (filename detection off)
+        DayFirstDefault,    // filename dates, ambiguous reads left day-first (no evidence, or day-first evidence)
+        MonthFirstInferred, // filename dates, a family read month-first because the file set proved it
+        DayFirstLocked,     // filename dates, day-first pinned by dataSetDayFirst
+        MonthFirstLocked,   // filename dates, month-first pinned by dataSetDayFirst
+    }
 
     private readonly IReadOnlyList<(string Format, Regex Regex)> _formats;
 
-    private DataSetDateSpec(bool fromFileName, IReadOnlyList<(string Format, Regex Regex)> formats)
+    // null: infer the day/month order from the file set; true/false: hard-lock day-first / month-first regardless
+    // of the set (the deterministic override, dataSetDayFirst).
+    private readonly bool? _dayFirstLock;
+
+    private readonly ConventionKind _convention;
+
+    private DataSetDateSpec(bool fromFileName, IReadOnlyList<(string Format, Regex Regex)> formats, bool? dayFirstLock, ConventionKind convention)
     {
         FromFileName = fromFileName;
         _formats = formats;
+        _dayFirstLock = dayFirstLock;
+        _convention = convention;
     }
 
     /// <summary>True when <c>DataSet_DW</c> is derived from the file name (with last-modified as the fallback).</summary>
@@ -76,10 +105,25 @@ public sealed class DataSetDateSpec
     /// <summary>The effective format vocabulary, most-specific (longest) first: custom formats then built-ins.</summary>
     public IReadOnlyList<string> Formats => _formats.Select(f => f.Format).ToList();
 
+    /// <summary>A short, human-readable statement of how <c>DataSet_DW</c> was derived for this run, for the run
+    /// artifact and catalog (e.g. <c>filename dates; month-first (inferred from file set)</c> or
+    /// <c>last-modified</c>). Surfaced so an operator can see what the reader detected.</summary>
+    public string Convention => _convention switch
+    {
+        ConventionKind.Modified => "last-modified",
+        ConventionKind.DayFirstDefault => "filename dates; day-first",
+        ConventionKind.MonthFirstInferred => "filename dates; month-first (inferred from file set)",
+        ConventionKind.DayFirstLocked => "filename dates; day-first (locked)",
+        ConventionKind.MonthFirstLocked => "filename dates; month-first (locked)",
+        _ => "filename dates",
+    };
+
     /// <summary>
     /// Parses the <c>dataSet.*</c> flat options. <c>dataSetFromFileName</c> (default true) toggles filename-date
     /// derivation; <c>dataSetFormats</c> is an optional comma- or pipe-separated list of extra .NET date formats,
-    /// tried ahead of the built-ins. Returns <see cref="ModifiedOnly"/> when derivation is off.
+    /// tried ahead of the built-ins; <c>dataSetDayFirst</c> hard-locks the day-first (<c>true</c>) or month-first
+    /// (<c>false</c>) reading of an ambiguous same-length date, and when absent the reading is inferred from the
+    /// file set. Returns <see cref="ModifiedOnly"/> when derivation is off.
     /// </summary>
     public static DataSetDateSpec FromOptions(IReadOnlyDictionary<string, string?> options)
     {
@@ -93,7 +137,46 @@ public sealed class DataSetDateSpec
         var compiled = extra.Count == 0
             ? BuiltInCompiled
             : OrderBySpecificity([.. Compile(extra), .. BuiltInCompiled]);
-        return new DataSetDateSpec(fromFileName: true, compiled);
+
+        var dayFirstLock = ParseNullableBool(options, "dataSetDayFirst");
+        var convention = ConventionKind.DayFirstDefault;
+        if (dayFirstLock is { } locked)
+        {
+            // Apply the hard lock to every ambiguous family up front, so it holds even for a single-file read
+            // that never calls ForFileSet.
+            compiled = ApplyOrder(compiled, AmbiguousFamilies.Select(f => (f, preferMonthFirst: !locked)));
+            convention = locked ? ConventionKind.DayFirstLocked : ConventionKind.MonthFirstLocked;
+        }
+
+        return new DataSetDateSpec(fromFileName: true, compiled, dayFirstLock, convention);
+    }
+
+    /// <summary>
+    /// Resolves the day/month reading of the ambiguous same-length date families against the whole file set, then
+    /// returns the spec to use for those files. When <c>dataSetDayFirst</c> is set this is a no-op (the lock was
+    /// already applied). Otherwise each ambiguous family is decided independently from the set's own evidence: a
+    /// file where exactly one ordering yields a valid date (a component &gt; 12) votes for that ordering; the
+    /// family is read month-first only when the set gives month-first evidence and none for day-first, so a set
+    /// with no evidence, or contradictory evidence, keeps the day-first default. Cheap: it scans file NAMES only,
+    /// no I/O, and reuses the already-compiled formats.
+    /// </summary>
+    public DataSetDateSpec ForFileSet(IReadOnlyList<string> fileNames)
+    {
+        ArgumentNullException.ThrowIfNull(fileNames);
+        if (!FromFileName || _dayFirstLock is not null || _formats.Count == 0 || fileNames.Count == 0)
+        {
+            return this;
+        }
+
+        var decisions = AmbiguousFamilies
+            .Select(family => (family, preferMonthFirst: InferMonthFirst(family, fileNames)))
+            .ToList();
+        if (decisions.All(d => !d.preferMonthFirst))
+        {
+            return this;   // every family stays day-first (the base order): nothing to rebuild
+        }
+
+        return new DataSetDateSpec(FromFileName, ApplyOrder(_formats, decisions), _dayFirstLock, ConventionKind.MonthFirstInferred);
     }
 
     /// <summary>The DataSet date for a file: the filename date when one is detected, else the last-modified
@@ -109,19 +192,107 @@ public sealed class DataSetDateSpec
             return null;
         }
 
+        // Most specific (longest) format first; within a format, every occurrence left to right, so an earlier
+        // non-date run that happens to fit the shape (an id that is not a valid date) does not stop a real date
+        // later in the name from being found.
         foreach (var (format, regex) in _formats)
         {
-            var match = regex.Match(fileName);
-            if (match.Success
-                && DateTime.TryParseExact(match.Value, format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
-                && value.Year >= MinYear)
+            foreach (Match match in regex.Matches(fileName))
             {
-                return value;
+                if (DateTime.TryParseExact(match.Value, format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
+                    && value.Year >= MinYear)
+                {
+                    return value;
+                }
             }
         }
 
         return null;
     }
+
+    // Whether the file set's own evidence says an ambiguous family should be read month-first: at least one file
+    // where only the month-first ordering yields a valid date (a component > 12 in the day slot of the day-first
+    // reading), and no file where only day-first does. Both orderings valid (a truly ambiguous name) or both
+    // failing is not evidence; contradictory evidence keeps the day-first default.
+    private bool InferMonthFirst((string DayFirst, string MonthFirst) family, IReadOnlyList<string> fileNames)
+    {
+        var day = _formats.FirstOrDefault(f => f.Format == family.DayFirst);
+        var month = _formats.FirstOrDefault(f => f.Format == family.MonthFirst);
+        if (day.Format is null || month.Format is null)
+        {
+            return false;   // the family is not in this spec's vocabulary
+        }
+
+        var dayEvidence = false;
+        var monthEvidence = false;
+        foreach (var name in fileNames)
+        {
+            var dayOk = MatchesValidly(day, name);
+            var monthOk = MatchesValidly(month, name);
+            if (dayOk && !monthOk)
+            {
+                dayEvidence = true;
+            }
+            else if (monthOk && !dayOk)
+            {
+                monthEvidence = true;
+            }
+
+            if (dayEvidence && monthEvidence)
+            {
+                return false;   // the set uses both orderings: keep the day-first default for ambiguous names
+            }
+        }
+
+        return monthEvidence;
+    }
+
+    private static bool MatchesValidly((string Format, Regex Regex) format, string name)
+    {
+        foreach (Match match in format.Regex.Matches(name))
+        {
+            if (DateTime.TryParseExact(match.Value, format.Format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
+                && value.Year >= MinYear)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Reorder so, for each family flagged month-first, the month-first format precedes the day-first one. They are
+    // the same length, so this only changes which wins for a both-components-<=-12 date; all other formats keep
+    // their order.
+    private static IReadOnlyList<(string Format, Regex Regex)> ApplyOrder(
+        IReadOnlyList<(string Format, Regex Regex)> formats,
+        IEnumerable<((string DayFirst, string MonthFirst) Family, bool PreferMonthFirst)> decisions)
+    {
+        var list = formats.ToList();
+        foreach (var (family, preferMonthFirst) in decisions)
+        {
+            if (!preferMonthFirst)
+            {
+                continue;
+            }
+
+            var dayIdx = list.FindIndex(f => f.Format == family.DayFirst);
+            var monthIdx = list.FindIndex(f => f.Format == family.MonthFirst);
+            if (dayIdx < 0 || monthIdx < 0 || monthIdx < dayIdx)
+            {
+                continue;   // missing, or month already first
+            }
+
+            var item = list[monthIdx];
+            list.RemoveAt(monthIdx);
+            list.Insert(dayIdx, item);   // dayIdx is unchanged: monthIdx > dayIdx, so the removal was after it
+        }
+
+        return list;
+    }
+
+    private static bool? ParseNullableBool(IReadOnlyDictionary<string, string?> options, string key)
+        => options.TryGetValue(key, out var v) && bool.TryParse(v, out var b) ? b : null;
 
     private static List<string> ParseFormats(string raw)
         => [.. raw.Split(['|', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
@@ -136,7 +307,10 @@ public sealed class DataSetDateSpec
 
     // Convert a .NET custom date/time format into a precise regex that locates just that segment in a longer
     // string. Numeric tokens map to fixed/variable digit runs, tt to AM/PM, everything else is a literal. The
-    // match is bounded by digit look-arounds so a date is never matched inside a longer run of digits.
+    // match is bounded by digit look-arounds so a date is never matched inside a longer run of digits (an id or
+    // version number). It deliberately allows a separator-delimited neighbour (e.g. "..._2024-01-01_..."), so a
+    // cleanly delimited date is still found; the built-in vocabulary carries no format that is a delimited prefix
+    // of another, so this cannot degrade a full date to a partial one.
     private static string BuildPattern(string format)
     {
         var sb = new StringBuilder("(?<!\\d)");

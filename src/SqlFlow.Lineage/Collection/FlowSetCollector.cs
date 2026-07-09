@@ -166,7 +166,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "hc", File = file, Batch = flow.Batch },
+                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "hc", File = file, Batch = flow.Batch, Mode = flow.Mode },
                     TargetServerRef = server,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,

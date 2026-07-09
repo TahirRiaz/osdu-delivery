@@ -122,6 +122,12 @@ public sealed record FlowResult
     /// full-read decision), null when the flow has no incremental spec. Surfaced so the run detail can show which
     /// filter ran against the file system without hunting through the log.</summary>
     public IncrementalSummary? Incremental { get; init; }
+
+    /// <summary>How <c>DataSet_DW</c> was derived for this run (e.g. <c>filename dates; month-first (inferred from
+    /// file set)</c> or <c>last-modified</c>), null for a flow that emits no <c>DataSet_DW</c>. Serialized into
+    /// run.json under <c>result.dataSetConvention</c> and projected onto the run so the detail view shows what the
+    /// reader detected.</summary>
+    public string? DataSetConvention { get; init; }
 }
 
 /// <summary>

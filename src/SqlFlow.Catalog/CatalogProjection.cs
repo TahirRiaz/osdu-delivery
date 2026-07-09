@@ -20,7 +20,8 @@ public static class CatalogProjection
     /// The YAML and definition JSON are passed already secret-redacted by the caller.</summary>
     public static CatalogPipeline Pipeline(
         Guid repoId, string name, string kind, string? batch, string relativePath,
-        string? sourceServer, string? targetServer, string contentHash, string yaml, string definitionJson, DateTime nowUtc)
+        string? sourceServer, string? targetServer, string contentHash, string yaml, string definitionJson, DateTime nowUtc,
+        Core.Runs.ExecutionMode executionMode = Core.Runs.ExecutionMode.Auto)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         return new CatalogPipeline
@@ -31,6 +32,7 @@ public static class CatalogProjection
             Kind = kind ?? string.Empty,
             Batch = NullIfBlank(batch),
             RelativePath = relativePath ?? string.Empty,
+            ExecutionMode = PipelineExecutionModes.From(executionMode),
             SourceServer = NullIfBlank(sourceServer),
             TargetServer = NullIfBlank(targetServer),
             ContentHash = contentHash ?? string.Empty,
@@ -516,6 +518,7 @@ public static class CatalogProjection
             IncrementalFilter = incremental is { } i2 ? Truncate2048(Str(i2, "filter")) : null,
             IncrementalWatermark = incremental is { } i3 ? NullIfBlank(Str(i3, "watermark")) : null,
             IncrementalWatermarkSource = incremental is { } i4 ? NullIfBlank(Str(i4, "watermarkSource")) : null,
+            DataSetConvention = result is { } r7 ? NullIfBlank(Str(r7, "dataSetConvention")) : null,
         };
     }
 

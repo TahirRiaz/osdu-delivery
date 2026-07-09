@@ -165,11 +165,20 @@ public sealed partial class SchedulerService : BackgroundService
         // fire has already advanced, so it simply tries again on its next occurrence).
         var pipeline = await catalog.Pipelines.AsNoTracking()
             .Where(p => p.Id == schedule.PipelineId && p.RepoId == schedule.RepoId)
-            .Select(p => new { p.Active, p.Kind })
+            .Select(p => new { p.Active, p.Kind, p.ExecutionMode })
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (pipeline is not { Active: true })
         {
             LogPipelineInactive(schedule.Id, schedule.FlowName);
+            return;
+        }
+
+        // A manual-mode flow (mode: manual in its document) opted out of every automatic dispatch, and a schedule
+        // is exactly that. The YAML is the source of truth, so the mode wins over a lingering schedule row: the
+        // occurrence is skipped (loudly, so the contradiction is visible) and the cadence simply advances.
+        if (string.Equals(pipeline.ExecutionMode, PipelineExecutionModes.Manual, StringComparison.OrdinalIgnoreCase))
+        {
+            LogPipelineManual(schedule.Id, schedule.FlowName);
             return;
         }
 
@@ -189,6 +198,9 @@ public sealed partial class SchedulerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: flow '{FlowName}' is inactive or removed; not enqueued this occurrence.")]
     private partial void LogPipelineInactive(Guid scheduleId, string flowName);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: flow '{FlowName}' declares mode: manual, so the schedule never fires it; trigger it directly or remove the schedule.")]
+    private partial void LogPipelineManual(Guid scheduleId, string flowName);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Scheduler tick error: {Error}")]
     private partial void LogTickError(string error);

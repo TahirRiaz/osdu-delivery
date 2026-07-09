@@ -524,6 +524,7 @@ public sealed partial class RunWorker
                         r.BackfillFrom,
                         r.BackfillTo,
                         r.FilePattern,
+                        r.AssertionsOnly,
                         RepoName = repo != null ? repo.Name : null,
                         RepoRemoteUrl = repo != null ? repo.RemoteUrl : null,
                         RepoRootPath = repo != null ? repo.RootPath : null,
@@ -609,6 +610,7 @@ public sealed partial class RunWorker
                 BackfillFrom = run.BackfillFrom,
                 BackfillTo = run.BackfillTo,
                 FilePattern = run.FilePattern,
+                AssertionsOnly = run.AssertionsOnly,
             };
             if (!parameters.IsDefault)
             {

@@ -144,6 +144,7 @@ Matched files are processed in ascending modified-date order (name as tiebreaker
 | `showPathWithFileName` | bool | `false` | Put the full path (not just the name) into `FileName_DW`. |
 | `dataSetFromFileName` | bool | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date). `false` makes `DataSet_DW` equal `FileDate_DW`. |
 | `dataSetFormats` | string | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
+| `dataSetDayFirst` | bool | (inferred) | Hard-lock day-first (`true`) or month-first (`false`) for ambiguous same-length dates; inferred from the file set when unset. |
 
 ### Synthetic keys
 

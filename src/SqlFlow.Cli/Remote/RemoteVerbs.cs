@@ -249,7 +249,8 @@ internal static class RemoteVerbs
                 BackfillTo: parameters.BackfillTo,
                 FilePattern: parameters.FilePattern,
                 Scope: scope,
-                Batch: batch);
+                Batch: batch,
+                AssertionsOnly: parameters.AssertionsOnly);
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
             if (outcome.Run is { } run)
@@ -949,6 +950,11 @@ internal static class RemoteVerbs
         if (run.RowsLoaded is not null || run.RowsInserted is not null || run.RowsUpdated is not null || run.RowsDeleted is not null || run.FileCount > 0)
         {
             Console.WriteLine($"  rows:        {FormatCount(run.RowsLoaded)} loaded, {FormatCount(run.RowsInserted)} inserted, {FormatCount(run.RowsUpdated)} updated, {FormatCount(run.RowsDeleted)} deleted, {run.FileCount} file(s)");
+        }
+
+        if (run.AssertionsOnly)
+        {
+            Console.WriteLine("  parameters:  assertions only (evaluated against the current target; nothing was loaded)");
         }
 
         if (run.FullLoad || run.BackfillFrom is not null || run.BackfillTo is not null || run.FilePattern is not null)

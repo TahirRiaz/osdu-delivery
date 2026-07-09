@@ -18,6 +18,10 @@ public enum BatchMemberStatus
 
     /// <summary>Declared in the batch but deactivated this run (the <c>inactive</c> list).</summary>
     Inactive = 4,
+
+    /// <summary>Declared <c>mode: manual</c> by its own document: a batch never runs it; it executes only when
+    /// triggered directly (the GUI's run button, a single-flow API trigger, or a direct CLI run).</summary>
+    Manual = 5,
 }
 
 /// <summary>The outcome of one member within the batch, with the wave it was scheduled into.</summary>
@@ -85,6 +89,9 @@ public sealed record BatchRunResult
     public int Failed { get; init; }
     public int Skipped { get; init; }
     public int Inactive { get; init; }
+
+    /// <summary>Members excluded because their own document declares <c>mode: manual</c>.</summary>
+    public int Manual { get; init; }
 
     public double DurationSeconds { get; init; }
 }

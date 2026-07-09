@@ -44,6 +44,25 @@ public sealed class CatalogProjectionTests
     }
 
     [Fact]
+    public void RunFromJson_File_MapsDataSetConvention()
+    {
+        var run = CatalogProjection.RunFromJson(Json("""
+            {
+              "schemaVersion": 1,
+              "flowKind": "file",
+              "flowName": "orders",
+              "runId": "33333333-3333-3333-3333-333333333333",
+              "success": true,
+              "writtenUtc": "2026-06-17T10:00:00Z",
+              "result": { "rowsLoaded": 5, "dataSetConvention": "filename dates; month-first (inferred from file set)" }
+            }
+            """), Repo);
+
+        Assert.NotNull(run);
+        Assert.Equal("filename dates; month-first (inferred from file set)", run!.DataSetConvention);
+    }
+
+    [Fact]
     public void RunFromJson_Ingestion_MapsGranularCountsAndSeconds()
     {
         var run = CatalogProjection.RunFromJson(Json("""

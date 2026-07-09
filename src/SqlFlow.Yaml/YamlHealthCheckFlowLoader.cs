@@ -166,6 +166,7 @@ public sealed class YamlHealthCheckFlowLoader
             MaxAnomalyFraction = maxAnomalyFraction,
             MaturityDays = maturityDays,
             SentinelDateFloor = sentinelFloor,
+            Mode = YamlDocumentParts.ParseExecutionMode(y.Mode, "mode", source),
             Training = training,
             RetrainAfterDays = ml.RetrainAfterDays,
             Holidays = MapHolidays(y.Holidays, source),

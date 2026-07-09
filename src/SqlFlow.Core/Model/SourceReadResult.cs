@@ -25,4 +25,9 @@ public sealed record SourceReadResult
 {
     public required DbDataReader Reader { get; init; }
     public IReadOnlyList<ProcessedFile> ProcessedFiles { get; init; } = [];
+
+    /// <summary>How <c>DataSet_DW</c> was derived for this read (e.g. <c>filename dates; month-first (inferred from
+    /// file set)</c> or <c>last-modified</c>), for the run's detected-convention audit line. Null when the reader
+    /// produces no <c>DataSet_DW</c> column.</summary>
+    public string? DataSetConvention { get; init; }
 }

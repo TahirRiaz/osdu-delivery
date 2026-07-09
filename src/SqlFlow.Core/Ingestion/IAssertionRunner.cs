@@ -8,7 +8,11 @@ namespace SqlFlow.Core.Ingestion;
 /// </summary>
 public interface IAssertionRunner
 {
-    Task<IReadOnlyList<AssertionResult>> RunAsync(IngestionFlow flow, string targetConnectionString, CancellationToken ct = default);
+    /// <param name="includeManual">False (every automatic ingestion run) evaluates only the assertions declared
+    /// <c>mode: auto</c>; true (an on-demand assertions-only run) evaluates the flow's whole list, auto and
+    /// manual alike.</param>
+    Task<IReadOnlyList<AssertionResult>> RunAsync(
+        IngestionFlow flow, string targetConnectionString, bool includeManual = false, CancellationToken ct = default);
 }
 
 /// <summary>The without-database default: evaluates no assertions.</summary>
@@ -16,6 +20,7 @@ public sealed class NullAssertionRunner : IAssertionRunner
 {
     public static readonly NullAssertionRunner Instance = new();
 
-    public Task<IReadOnlyList<AssertionResult>> RunAsync(IngestionFlow flow, string targetConnectionString, CancellationToken ct = default)
+    public Task<IReadOnlyList<AssertionResult>> RunAsync(
+        IngestionFlow flow, string targetConnectionString, bool includeManual = false, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<AssertionResult>>([]);
 }

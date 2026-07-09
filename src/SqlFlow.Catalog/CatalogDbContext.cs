@@ -82,6 +82,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(p => p.Name).HasMaxLength(400).IsRequired();
             entity.Property(p => p.Kind).HasMaxLength(16).IsRequired();
             entity.Property(p => p.Batch).HasMaxLength(250);
+            entity.Property(p => p.ExecutionMode).HasMaxLength(16).IsRequired();
             entity.Property(p => p.RelativePath).HasMaxLength(1024).IsRequired();
             entity.Property(p => p.SourceServer).HasMaxLength(512);
             entity.Property(p => p.TargetServer).HasMaxLength(512);
@@ -111,6 +112,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.IncrementalFilter).HasMaxLength(2048);
             entity.Property(r => r.IncrementalWatermark).HasMaxLength(512);
             entity.Property(r => r.IncrementalWatermarkSource).HasMaxLength(256);
+            entity.Property(r => r.DataSetConvention).HasMaxLength(128);
             // PipelineId is a soft link (no FK): a run can outlive its pipeline being removed from git, so the
             // history stays even when the Pipeline row is gone. The GUI left-joins on it; it is indexed for that.
             entity.HasIndex(r => r.PipelineId);

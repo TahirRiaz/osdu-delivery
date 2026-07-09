@@ -125,6 +125,7 @@ All toggles below default to `true` except `includeFileLineNumber` and `showPath
 | `showPathWithFileName` | | | Store the full path instead of just the name in `FileName_DW`. Default `false`. |
 | `dataSetFromFileName` | | | Derive `DataSet_DW` from a date in the file name (fallback: modified date). Default `true`; `false` makes `DataSet_DW` equal `FileDate_DW`. |
 | `dataSetFormats` | | | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
+| `dataSetDayFirst` | | | Hard-lock the day-first (`true`) or month-first (`false`) reading of an ambiguous same-length date; inferred from the file set when unset. |
 
 A source column whose name collides with an enabled provenance or key column fails the flow with an error telling you to rename the source column or disable that system column; a disabled toggle leaves a same-named source column alone.
 

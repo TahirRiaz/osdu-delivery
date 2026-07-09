@@ -19,11 +19,13 @@ namespace SqlFlow.ControlPlane.Api;
 /// run: <c>fullLoad</c> ignores the watermark and reads everything the definition selects; <c>backfillFrom</c> /
 /// <c>backfillTo</c> is an externally-bounded window (file dates for file flows, the incremental date column for
 /// ingestion flows, the chunk plan for exports and InitLoads); <c>filePattern</c> narrows a file flow to one glob
-/// for this run. None of them touches the definition in git.</para></summary>
+/// for this run. <c>assertionsOnly</c> (ingestion flows only) evaluates the flow's data-quality assertions,
+/// manual-mode ones included, against the current target without loading anything. None of them touches the
+/// definition in git.</para></summary>
 public sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
     bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
-    string? Scope = null, string? Batch = null);
+    string? Scope = null, string? Batch = null, bool AssertionsOnly = false);
 
 /// <summary>The accepted-run acknowledgement: the minted run id and its queued status. The run executes
 /// asynchronously; poll <c>GET /api/v1/runs/{runId}</c> (the <c>Location</c> header) for the outcome.</summary>
@@ -121,6 +123,7 @@ public static class RunTriggerEndpoints
             BackfillFrom = request.BackfillFrom,
             BackfillTo = request.BackfillTo,
             FilePattern = string.IsNullOrWhiteSpace(request.FilePattern) ? null : request.FilePattern.Trim(),
+            AssertionsOnly = request.AssertionsOnly,
         };
         try
         {
@@ -149,6 +152,16 @@ public static class RunTriggerEndpoints
                 title: "Not found");
         }
 
+        // Assertions are an ingestion concept (they evaluate against the ingestion target); refusing here keeps a
+        // run that no engine path could honor out of the queue, exactly like the parameter validation above.
+        if (parameters.AssertionsOnly && !string.Equals(pipeline.Kind, "ing", StringComparison.OrdinalIgnoreCase))
+        {
+            return TypedResults.Problem(
+                detail: $"assertionsOnly applies only to ingestion flows; '{flowName}' is a '{pipeline.Kind}' flow.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid run parameters");
+        }
+
         var runId = await dispatcher.EnqueueAsync(
             db, new RunEnqueueRequest(request.RepoId, flowName, pipeline.Kind, request.Pool, request.CommitSha, parameters), ct).ConfigureAwait(false);
 
@@ -160,6 +173,16 @@ public static class RunTriggerEndpoints
     private static async Task<Results<Accepted<RunTriggerAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> TriggerGroupAsync(
         RunTriggerRequest request, RunScope scope, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
     {
+        // An assertions-only execution is a single-flow concept (like the built-in backfill); refusing beats
+        // silently load-running a whole group the caller asked to only assert on.
+        if (request.AssertionsOnly)
+        {
+            return TypedResults.Problem(
+                detail: "assertionsOnly applies to a single ingestion flow; a node/batch scope always runs its members normally.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid run parameters");
+        }
+
         // Node needs an anchor flow; Batch needs either the batch label or an anchor flow to read the label from.
         var anchorFlow = string.IsNullOrWhiteSpace(request.FlowName) ? null : request.FlowName.Trim();
         var batch = string.IsNullOrWhiteSpace(request.Batch) ? null : request.Batch.Trim();

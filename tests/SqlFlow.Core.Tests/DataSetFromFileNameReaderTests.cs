@@ -27,6 +27,34 @@ public sealed class DataSetFromFileNameReaderTests : IDisposable
         return new SourceSpec { Type = "csv", Location = path, Options = options ?? new Dictionary<string, string?>() };
     }
 
+    private void WriteCsv(string fileName, DateTime modifiedUtc)
+    {
+        var path = Path.Combine(_dir, fileName);
+        File.WriteAllText(path, "OrderId,Amount\n1,9.5\n");
+        File.SetLastWriteTimeUtc(path, modifiedUtc);
+    }
+
+    private async Task<(List<string> Columns, List<object?[]> Rows)> ReadAllAsync(SourceSpec source)
+    {
+        var columns = (await _reader.GetColumnsAsync(source)).Select(c => c.Name).ToList();
+        var read = await _reader.OpenAsync(source, await _reader.GetColumnsAsync(source));
+        await using var data = read.Reader;
+
+        var rows = new List<object?[]>();
+        while (await data.ReadAsync())
+        {
+            var row = new object?[data.FieldCount];
+            for (var i = 0; i < data.FieldCount; i++)
+            {
+                row[i] = data.IsDBNull(i) ? null : data.GetValue(i);
+            }
+
+            rows.Add(row);
+        }
+
+        return (columns, rows);
+    }
+
     private async Task<(int FileDate, int DataSet, List<object?[]> Rows)> ReadAsync(SourceSpec source)
     {
         var columns = (await _reader.GetColumnsAsync(source)).Select(c => c.Name).ToList();
@@ -95,6 +123,52 @@ public sealed class DataSetFromFileNameReaderTests : IDisposable
 
         Assert.NotEmpty(rows);
         Assert.All(rows, r => Assert.Equal("20240301000000", r[dataSet]));   // yyMMdd -> 2024-03-01
+    }
+
+    [Fact]
+    public async Task DataSet_InfersMonthFirst_FromSiblingFile_AcrossTheSet()
+    {
+        var modified = new DateTime(2024, 6, 15, 9, 0, 0, DateTimeKind.Utc);
+        // 03-15-2024 can only be MM-dd (month 15 impossible the other way); it teaches the whole set month-first,
+        // which then decides the otherwise-ambiguous 01-02-2024 in the SAME run.
+        WriteCsv("03-15-2024.csv", modified);
+        WriteCsv("01-02-2024.csv", modified);
+        var source = new SourceSpec
+        {
+            Type = "csv",
+            Location = _dir,
+            Options = new Dictionary<string, string?> { ["srcFile"] = "*.csv" },
+        };
+
+        var (columns, rows) = await ReadAllAsync(source);
+        var nameIdx = columns.IndexOf("FileName_DW");
+        var dataSetIdx = columns.IndexOf("DataSet_DW");
+
+        var ambiguous = rows.Where(r => ((string)r[nameIdx]!).Contains("01-02-2024")).ToList();
+        var forced = rows.Where(r => ((string)r[nameIdx]!).Contains("03-15-2024")).ToList();
+        Assert.NotEmpty(ambiguous);
+        Assert.All(ambiguous, r => Assert.Equal("20240102000000", r[dataSetIdx]));   // Jan 2, month-first inferred
+        Assert.All(forced, r => Assert.Equal("20240315000000", r[dataSetIdx]));       // March 15, resolved per file
+    }
+
+    [Fact]
+    public async Task ReadResult_CarriesDetectedConvention_ForTheRunLog()
+    {
+        var modified = new DateTime(2024, 6, 15, 9, 0, 0, DateTimeKind.Utc);
+        WriteCsv("03-15-2024.csv", modified);   // forces month-first for the set
+        WriteCsv("01-02-2024.csv", modified);
+        var source = new SourceSpec
+        {
+            Type = "csv",
+            Location = _dir,
+            Options = new Dictionary<string, string?> { ["srcFile"] = "*.csv" },
+        };
+
+        var read = await _reader.OpenAsync(source, await _reader.GetColumnsAsync(source));
+        await read.Reader.DisposeAsync();
+
+        // The convention rides out on the read result so the FlowRunner can put it in run.json / the catalog.
+        Assert.Equal("filename dates; month-first (inferred from file set)", read.DataSetConvention);
     }
 
     public void Dispose()

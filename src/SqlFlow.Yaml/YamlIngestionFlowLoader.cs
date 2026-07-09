@@ -505,7 +505,12 @@ public sealed class YamlIngestionFlowLoader
             }
 
             names.Add(name);
-            definitions.Add(new AssertionDefinition { Name = name, Expression = expression });
+            definitions.Add(new AssertionDefinition
+            {
+                Name = name,
+                Expression = expression,
+                Mode = YamlDocumentParts.ParseExecutionMode(item.Mode, $"assertions[{i}].mode", source),
+            });
         }
 
         return (names, definitions);

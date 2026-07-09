@@ -1,3 +1,5 @@
+using SqlFlow.Core.Runs;
+
 namespace SqlFlow.Core.Ingestion;
 
 /// <summary>One assertion definition (the legacy flw.Assertion row): a name and a SQL expression template that
@@ -7,6 +9,12 @@ public sealed record AssertionDefinition
     public required string Name { get; init; }
 
     public required string Expression { get; init; }
+
+    /// <summary>When the assertion evaluates: <see cref="ExecutionMode.Auto"/> (the default, and every legacy
+    /// flw.Assertion row) runs it as step 7c of each ingestion run; <see cref="ExecutionMode.Manual"/> reserves
+    /// it for an on-demand assertions-only run (see <c>RunParameters.AssertionsOnly</c>), which evaluates the
+    /// flow's whole assertion list, auto and manual alike.</summary>
+    public ExecutionMode Mode { get; init; } = ExecutionMode.Auto;
 }
 
 /// <summary>

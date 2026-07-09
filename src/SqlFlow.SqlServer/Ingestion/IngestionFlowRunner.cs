@@ -175,6 +175,14 @@ public sealed class IngestionFlowRunner
         };
         var applyOptions = new SchemaApplyOptions();
 
+        // An assertions-only run (RunParameters.AssertionsOnly) evaluates the flow's declared assertions against
+        // the CURRENT target and does nothing else: no source read, no staging rebuild, no load. It branches off
+        // before the source connection resolves, so a broken source can never block an on-demand quality check.
+        if (options.Parameters.AssertionsOnly)
+        {
+            return await RunAssertionsOnlyAsync(flow, options, runId, startUtc, staging, ct).ConfigureAwait(false);
+        }
+
         var resolvedSource = await _resolver.ResolveAsync(flow.Source.ConnectionReference, ConnectionRole.Source, ct: ct).ConfigureAwait(false);
         var resolvedTarget = await _resolver.ResolveAsync(flow.Target.ConnectionReference, ConnectionRole.Target, ct: ct).ConfigureAwait(false);
         var targetConnectionString = resolvedTarget.CanonicalString;
@@ -583,8 +591,9 @@ public sealed class IngestionFlowRunner
             }
 
             // 7c. Run data-quality assertions against the loaded target. Legacy parity: log-only and
-            //     non-blocking, so Success is unaffected; one assertion failing does not stop the others.
-            var assertionResults = await _assertions.RunAsync(flow, targetConnectionString, ct).ConfigureAwait(false);
+            //     non-blocking, so Success is unaffected; one assertion failing does not stop the others. Only
+            //     the auto-mode assertions run here; manual-mode ones wait for an assertions-only trigger.
+            var assertionResults = await _assertions.RunAsync(flow, targetConnectionString, includeManual: false, ct).ConfigureAwait(false);
             foreach (var assertion in assertionResults)
             {
                 Info($"assertion", assertion.Error is not null
@@ -750,6 +759,93 @@ public sealed class IngestionFlowRunner
                 Success = false,
                 StagingTable = SchemaQualified(staging),
                 StagingRetained = true,
+                Error = ex.Message,
+                StartTimeUtc = startUtc,
+                EndTimeUtc = endUtc,
+                DurationSeconds = duration,
+                SqlTrace = trace,
+            };
+        }
+    }
+
+    /// <summary>
+    /// The assertions-only execution (RunParameters.AssertionsOnly): resolve the target connection, evaluate the
+    /// flow's WHOLE assertion list (auto and manual alike; the on-demand run is precisely how a manual assertion
+    /// is meant to execute), and record the run. The log-only contract carries over per assertion: a failing or
+    /// erroring assertion is recorded on its own result and never fails the run; only an infrastructure failure
+    /// (an unresolvable connection, an unreachable target) fails the run itself. The target is never written.
+    /// </summary>
+    private async Task<IngestionRunResult> RunAssertionsOnlyAsync(
+        IngestionFlow flow, IngestionRunOptions options, Guid runId, DateTime startUtc, RelationalObject staging, CancellationToken ct)
+    {
+        var events = options.Events ?? NullRunEventSink.Instance;
+        var statements = options.StatementSink ?? NullRunStatementSink.Instance;
+        void Info(string step, string message) => events.Log(RunLogLevel.Info, step, message);
+        var trace = new List<SqlTraceEntry>();
+
+        try
+        {
+            var resolvedTarget = await _resolver.ResolveAsync(flow.Target.ConnectionReference, ConnectionRole.Target, ct: ct).ConfigureAwait(false);
+
+            Info("run.start",
+                $"assertions-only run '{flow.SysAlias ?? flow.Target.Table.Name}' (flow {flow.FlowId}, run {runId.ToString("N", CultureInfo.InvariantCulture)[..8]}): " +
+                $"{flow.Assertions.Count} declared assertion(s) against {flow.Target.Table.QualifiedName}");
+
+            var assertionResults = await _assertions.RunAsync(flow, resolvedTarget.CanonicalString, includeManual: true, ct).ConfigureAwait(false);
+            foreach (var assertion in assertionResults)
+            {
+                Info("assertion", assertion.Error is not null
+                    ? $"{assertion.Name}: FAILED - {assertion.Error}"
+                    : assertion.Evaluated ? $"{assertion.Name}: result {assertion.Result}" : $"{assertion.Name}: skipped");
+                if (!string.IsNullOrWhiteSpace(assertion.MaterializedSql))
+                {
+                    var entry = new SqlTraceEntry { Sequence = trace.Count + 1, Step = $"assertion.{assertion.Name}", Sql = assertion.MaterializedSql };
+                    trace.Add(entry);
+                    events.Log(RunLogLevel.Trace, entry.Step, entry.Sql);
+                    statements.Report(entry);
+                }
+            }
+
+            var endUtc = DateTime.UtcNow;
+            var duration = DurationSeconds(startUtc, endUtc);
+            Info("run.end", $"SUCCESS in {duration}s ({assertionResults.Count} assertion(s) evaluated)");
+            await _runLog.WriteAsync(
+                BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, 0, 0, 0, 0, success: true, error: null, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
+                ct).ConfigureAwait(false);
+
+            return new IngestionRunResult
+            {
+                RunId = runId,
+                Success = true,
+                StagingTable = SchemaQualified(staging),
+                StartTimeUtc = startUtc,
+                EndTimeUtc = endUtc,
+                DurationSeconds = duration,
+                Assertions = assertionResults,
+                SqlTrace = trace,
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var endUtc = DateTime.UtcNow;
+            var duration = DurationSeconds(startUtc, endUtc);
+            Info("run.end", $"FAILED after {duration}s: {ex.Message}");
+            try
+            {
+                await _runLog.WriteAsync(
+                    BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, 0, 0, 0, 0, success: false, error: ex.Message, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
+                    ct).ConfigureAwait(false);
+            }
+            catch (Exception logEx) when (logEx is not OperationCanceledException)
+            {
+                // Best-effort: a run-log write failure must not mask the real run error, which is returned below.
+            }
+
+            return new IngestionRunResult
+            {
+                RunId = runId,
+                Success = false,
+                StagingTable = SchemaQualified(staging),
                 Error = ex.Message,
                 StartTimeUtc = startUtc,
                 EndTimeUtc = endUtc,

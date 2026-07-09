@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.FileSystemGlobbing;
 using SqlFlow.Core.Batch;
 using SqlFlow.Core.Lineage;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Lineage;
 
@@ -76,7 +77,7 @@ public sealed class BatchOrchestrator
                 $"({string.Join(", ", duplicate.Files)}); names must be unique within a batch.");
         }
 
-        var active = members.Where(m => !m.Inactive).ToList();
+        var active = members.Where(m => !m.Inactive && !m.Manual).ToList();
         var (waves, unordered) = ComputeMemberWaves(active.Select(m => m.Name).ToList(), report.FlowDependencies);
         if (unordered.Count > 0)
         {
@@ -229,6 +230,21 @@ public sealed class BatchOrchestrator
             };
         }
 
+        // ---- Manual members: their own document opted out of automatic execution (mode: manual), so the
+        //      batch reports them without running them; they execute only when triggered directly. An
+        //      inactive declaration wins (deactivated is stronger than deferred).
+        foreach (var member in members.Where(m => m.Manual && !m.Inactive))
+        {
+            memberResults[member.Name] = new BatchMemberResult
+            {
+                FlowName = member.Name,
+                FlowKind = member.Kind,
+                File = member.File,
+                Wave = 0,
+                Status = BatchMemberStatus.Manual,
+            };
+        }
+
         stopwatch.Stop();
         var ordered = memberResults.Values
             .OrderBy(m => m.Wave)
@@ -252,6 +268,7 @@ public sealed class BatchOrchestrator
             Failed = failed,
             Skipped = skipped,
             Inactive = ordered.Count(m => m.Status == BatchMemberStatus.Inactive),
+            Manual = ordered.Count(m => m.Status == BatchMemberStatus.Manual),
             DurationSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3),
         };
     }
@@ -356,7 +373,9 @@ public sealed class BatchOrchestrator
 
         return report.Flows
             .Where(f => included.Contains(f.File))
-            .Select(f => new Member(f.Name, f.File, f.Kind, inactive.Contains(f.File), ignore.Contains(f.File)))
+            .Select(f => new Member(
+                f.Name, f.File, f.Kind, inactive.Contains(f.File), ignore.Contains(f.File),
+                f.Mode == ExecutionMode.Manual))
             .OrderBy(m => m.File, StringComparer.Ordinal)
             .ToList();
     }
@@ -514,5 +533,5 @@ public sealed class BatchOrchestrator
 
     private static string Quote(IReadOnlyList<string> patterns) => "[" + string.Join(", ", patterns) + "]";
 
-    private sealed record Member(string Name, string File, string Kind, bool Inactive, bool Ignorable);
+    private sealed record Member(string Name, string File, string Kind, bool Inactive, bool Ignorable, bool Manual);
 }

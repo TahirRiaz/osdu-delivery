@@ -458,6 +458,13 @@ function RunDetailContent({ runId }: { runId: string }) {
         </Paper>
       )}
 
+      {run.dataSetConvention && (
+        <Paper variant="outlined" sx={{ p: 1.5 }} data-testid="run-dataset-convention">
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>DataSet date detection</Typography>
+          <DetailPair label="Convention"><Mono>{run.dataSetConvention}</Mono></DetailPair>
+        </Paper>
+      )}
+
       <Tabs
         value={tab}
         onChange={(_, next: number) => setTab(next)}

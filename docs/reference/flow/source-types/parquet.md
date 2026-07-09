@@ -84,6 +84,7 @@ All options live under `source.options` and all values are YAML strings. Parquet
 | `includeRowNumber` | bool | `true` | Inject the `RowNumber_DW` provenance column. |
 | `dataSetFromFileName` | bool | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date). `false` makes `DataSet_DW` equal `FileDate_DW`. |
 | `dataSetFormats` | string | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
+| `dataSetDayFirst` | bool | (inferred) | Hard-lock day-first (`true`) or month-first (`false`) for ambiguous same-length dates; inferred from the file set when unset. |
 | `includeFileLineNumber` | bool | `false` | Inject the source row index as the `FileLineNumber` column. |
 | `includeHashKey` | bool | `false` | Inject the `HashKey_DW` synthetic hash key. |
 | `hashKeyColumns` | string | none | Columns the hash key is computed over. |

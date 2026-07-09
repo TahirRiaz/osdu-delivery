@@ -344,9 +344,19 @@ public abstract class FileSourceReaderBase : ISourceReader
             types[i] = columns[i].Type;
         }
 
-        var rows = StreamRowsAsync(run, store, files, columns, source, options, manifest, CancellationToken.None);
+        // Resolve DataSet_DW's ambiguous same-length date reading (day-first vs month-first) once against the whole
+        // resolved file set, here (not per file), so the chosen convention is known up front and can ride out on the
+        // result for the run artifact and catalog.
+        var dataSetSpec = options.DataSetDate.ForFileSet([.. files.Select(f => f.Name)]);
+
+        var rows = StreamRowsAsync(run, store, files, columns, source, options, dataSetSpec, manifest, CancellationToken.None);
         var reader = new StreamingDataReader(names, types, rows.GetAsyncEnumerator(ct));
-        return new SourceReadResult { Reader = reader, ProcessedFiles = manifest };
+        return new SourceReadResult
+        {
+            Reader = reader,
+            ProcessedFiles = manifest,
+            DataSetConvention = options.IncludeDataSet ? dataSetSpec.Convention : null,
+        };
     }
 
     /// <summary>A file opened (or failed) ahead of its turn: its schema, its line enumerator primed to the first
@@ -369,6 +379,7 @@ public abstract class FileSourceReaderBase : ISourceReader
         IReadOnlyList<SourceColumn> columns,
         SourceSpec source,
         FileSourceOptions options,
+        DataSetDateSpec dataSetSpec,
         List<ProcessedFile> manifest,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -470,7 +481,7 @@ public abstract class FileSourceReaderBase : ISourceReader
                     // FileDate_DW always uses. The string encodings match the transformation view's casts:
                     // FileDate_DW/DataSet_DW as yyyyMMddHHmmss (view CASTs to decimal(14,0)/numeric(14,0)),
                     // FileRowDate_DW as yyyy-MM-dd HH:mm:ss (view CONVERTs to datetime, style 20), FileSize_DW as digits.
-                    var dataSetUtc = options.DataSetDate.Resolve(file.Name, fileModifiedUtc);
+                    var dataSetUtc = dataSetSpec.Resolve(file.Name, fileModifiedUtc);
                     var fileDateValue = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
                     var fileRowDateValue = ingestedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
                     var fileSizeValue = file.Size.ToString(CultureInfo.InvariantCulture);

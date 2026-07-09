@@ -27,14 +27,16 @@ public sealed record RepoSyncResultDto(
     int Objects, int Columns, int Edges, int Waves, int Dependencies,
     bool Connected, IReadOnlyList<string> Warnings);
 
-/// <summary>A pipeline (flow) as it appears in lists: the hot dimensions, without the heavy YAML/definition body.</summary>
+/// <summary>A pipeline (flow) as it appears in lists: the hot dimensions, without the heavy YAML/definition body.
+/// <c>ExecutionMode</c> is <c>auto</c> or <c>manual</c> (the flow's YAML <c>mode:</c>); manual flows are excluded
+/// from schedules and group runs and execute only when triggered directly.</summary>
 public sealed record PipelineSummaryDto(
-    Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active,
+    Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
     string? SourceServer, string? TargetServer, string RelativePath, DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
 /// <summary>A single pipeline with its full (secret-redacted) definition for the detail view.</summary>
 public sealed record PipelineDetailDto(
-    Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active,
+    Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
     string? SourceServer, string? TargetServer, string RelativePath, string ContentHash,
     string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc);
 

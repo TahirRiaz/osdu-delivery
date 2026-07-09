@@ -188,6 +188,9 @@ export interface RunDetail extends RunSummary {
   incrementalFilter: string | null;
   incrementalWatermark: string | null;
   incrementalWatermarkSource: string | null;
+  /** How DataSet_DW was derived for a file run (e.g. "filename dates; month-first (inferred from file set)" or
+   * "last-modified"), so the detail view shows what the reader detected. Null for flows with no DataSet_DW. */
+  dataSetConvention: string | null;
   /** On a failed run, the exact statement that threw (the run's failure point), so the detail view can show the
    * offending SQL next to the error banner. Null on every non-failed run, or when no statement was attributed. */
   failedStatementOrdinal: number | null;
