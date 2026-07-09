@@ -10,6 +10,7 @@ const navTargets: Array<{ nav: string; page: string }> = [
   { nav: "nav-pipelines", page: "page-pipelines" },
   { nav: "nav-schedules", page: "page-schedules" },
   { nav: "nav-datasources", page: "page-datasources" },
+  { nav: "nav-key-detection", page: "page-key-detection" },
   { nav: "nav-lineage", page: "page-lineage-graph" },
   { nav: "nav-search", page: "page-search" },
   { nav: "nav-users", page: "page-users" },

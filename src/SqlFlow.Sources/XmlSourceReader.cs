@@ -39,6 +39,7 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
             InitToFileDate = meta.InitToFileDate,
             IncrementalAfterDate = meta.IncrementalAfterDate,
             FileDate = FileDateSpec.FromOptions(source.Options),
+            DataSetDate = DataSetDateSpec.FromOptions(source.Options),
             CopyToPath = meta.CopyToPath,
             ZipToPath = meta.ZipToPath,
             SrcDeleteIngested = meta.SrcDeleteIngested,

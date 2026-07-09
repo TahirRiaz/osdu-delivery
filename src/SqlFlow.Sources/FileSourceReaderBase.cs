@@ -464,6 +464,18 @@ public abstract class FileSourceReaderBase : ISourceReader
                     var ingestedUtc = DateTime.UtcNow;
                     var nameValue = options.ShowPathWithFileName ? file.Path : file.Name;
 
+                    // Provenance values are constant per file, so encode them once here rather than per row. The
+                    // DataSet date is the date detected in the file NAME (legacy pre-ingestion behavior) or, when
+                    // none is found or the flow opted out, the file's last-modified timestamp - the same fallback
+                    // FileDate_DW always uses. The string encodings match the transformation view's casts:
+                    // FileDate_DW/DataSet_DW as yyyyMMddHHmmss (view CASTs to decimal(14,0)/numeric(14,0)),
+                    // FileRowDate_DW as yyyy-MM-dd HH:mm:ss (view CONVERTs to datetime, style 20), FileSize_DW as digits.
+                    var dataSetUtc = options.DataSetDate.Resolve(file.Name, fileModifiedUtc);
+                    var fileDateValue = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+                    var fileRowDateValue = ingestedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+                    var fileSizeValue = file.Size.ToString(CultureInfo.InvariantCulture);
+                    var dataSetValue = dataSetUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+
                     var fileColumns = current.Schema!.Columns;
                     var fileColumnNames = new string[fileColumns.Count];
                     for (var i = 0; i < fileColumns.Count; i++)
@@ -498,13 +510,10 @@ public abstract class FileSourceReaderBase : ISourceReader
 
                         if (lineNumberIndex >= 0) row[lineNumberIndex] = line.LineNumber;
                         if (fileNameIndex >= 0) row[fileNameIndex] = nameValue;
-                        // Provenance dates/sizes are written as strings in the encoding the transformation view's casts
-                        // expect: FileDate_DW/DataSet_DW as yyyyMMddHHmmss (view CASTs to decimal(14,0)/numeric(14,0)),
-                        // FileRowDate_DW as yyyy-MM-dd HH:mm:ss (view CONVERTs to datetime, style 20), FileSize_DW as digits.
-                        if (fileDateIndex >= 0) row[fileDateIndex] = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
-                        if (fileRowDateIndex >= 0) row[fileRowDateIndex] = ingestedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
-                        if (fileSizeIndex >= 0) row[fileSizeIndex] = file.Size.ToString(CultureInfo.InvariantCulture);
-                        if (dataSetIndex >= 0) row[dataSetIndex] = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+                        if (fileDateIndex >= 0) row[fileDateIndex] = fileDateValue;
+                        if (fileRowDateIndex >= 0) row[fileRowDateIndex] = fileRowDateValue;
+                        if (fileSizeIndex >= 0) row[fileSizeIndex] = fileSizeValue;
+                        if (dataSetIndex >= 0) row[dataSetIndex] = dataSetValue;
                         if (rowNumberIndex >= 0) row[rowNumberIndex] = line.DataRowNumber;
 
                         if (concatKeyIndex >= 0) row[concatKeyIndex] = BuildConcatKey(row, concatInputIndices, options.ConcatKeySeparator);

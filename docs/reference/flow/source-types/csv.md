@@ -119,10 +119,12 @@ All toggles below default to `true` except `includeFileLineNumber` and `showPath
 | `includeFileDate` | `FileDate_DW` | datetime2 | Source file modified date (UTC). |
 | `includeFileRowDate` | `FileRowDate_DW` | datetime2 | Ingest timestamp (UTC). |
 | `includeFileSize` | `FileSize_DW` | bigint | File size in bytes. |
-| `includeDataSet` | `DataSet_DW` | datetime2 | Dataset date (the file modified date, UTC). |
+| `includeDataSet` | `DataSet_DW` | datetime2 | Dataset date: a date detected in the file name, else the file modified date (UTC). See [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename). |
 | `includeRowNumber` | `RowNumber_DW` | bigint | Data row number within each file. |
 | `includeFileLineNumber` | `FileLineNumber` | bigint | Physical line number in the source file. Default `false`. |
 | `showPathWithFileName` | | | Store the full path instead of just the name in `FileName_DW`. Default `false`. |
+| `dataSetFromFileName` | | | Derive `DataSet_DW` from a date in the file name (fallback: modified date). Default `true`; `false` makes `DataSet_DW` equal `FileDate_DW`. |
+| `dataSetFormats` | | | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
 
 A source column whose name collides with an enabled provenance or key column fails the flow with an error telling you to rename the source column or disable that system column; a disabled toggle leaves a same-named source column alone.
 

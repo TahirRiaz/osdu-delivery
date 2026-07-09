@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
@@ -10,11 +11,14 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import KeyIcon from "@mui/icons-material/VpnKey";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import type {
   ComputeTaskRequest, DatasourceObject, IntrospectionResult, UniqueKeyReport,
 } from "../../api/types";
 import { DataTable, type Column } from "../../components/DataTable";
 import { Mono } from "../../components/Mono";
+import { UniqueKeyReportView } from "./UniqueKeyReportView";
+import { keyDetectionPath } from "./keyDetectionLink";
 import { useCompute } from "./useCompute";
 
 interface ObjectInspectorProps {
@@ -51,24 +55,11 @@ const columnColumns: Column<ColumnRow>[] = [
   { id: "nullable", header: "Nullable", render: (row) => (row.isNullable ? "NULL" : "NOT NULL") },
 ];
 
-/** Renders one unique-key candidate line: the column set and how trustworthy the verdict is. */
-function candidateLabel(candidate: UniqueKeyReport["candidates"][number]): string {
-  if (candidate.isUnique) {
-    if (candidate.declared) {
-      return "UNIQUE (declared by the database)";
-    }
-
-    return candidate.verified ? "UNIQUE (verified against the whole table)" : "unique on the sample (unverified)";
-  }
-
-  const approx = candidate.estimated ? "~" : "";
-  return `not unique (${approx}${candidate.duplicates} duplicate row(s)${candidate.nulls > 0 ? `, ${approx}${candidate.nulls} null row(s)` : ""})`;
-}
-
 /**
  * The drill-down for one live object: full introspection (columns, indexes) fetched as a compute task when
  * the drawer opens, plus on-demand unique-key detection. Everything runs on a worker node against the live
- * source; the drawer only renders task results.
+ * source; the drawer only renders task results. The dedicated Key detection page (deep-linked from the
+ * section header) is the specialized surface with options, history, and the full report.
  */
 export function ObjectInspector({ reference, kind, database, object, onClose }: ObjectInspectorProps) {
   const introspect = useCompute<IntrospectionResult>();
@@ -154,19 +145,30 @@ export function ObjectInspector({ reference, kind, database, object, onClose }: 
 
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
               <Typography variant="subtitle2">Unique key detection</Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={detect.running ? <CircularProgress size={14} /> : <KeyIcon />}
-                disabled={detect.running || (kind !== null && kind !== "MSSQL" && kind !== "AZDB")}
-                onClick={() => {
-                  setDetectStarted(true);
-                  void detect.run({ ...base, operation: "detectUniqueKey" });
-                }}
-                data-testid="detect-unique-key"
-              >
-                {detect.running ? "Profiling..." : "Detect unique key"}
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  startIcon={<OpenInNewIcon />}
+                  component={RouterLink}
+                  to={keyDetectionPath({ reference, kind, database, schema: object.schema, objectName: object.name })}
+                  data-testid="open-key-detection"
+                >
+                  Open in Key detection
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={detect.running ? <CircularProgress size={14} /> : <KeyIcon />}
+                  disabled={detect.running || (kind !== null && kind !== "MSSQL" && kind !== "AZDB")}
+                  onClick={() => {
+                    setDetectStarted(true);
+                    void detect.run({ ...base, operation: "detectUniqueKey" });
+                  }}
+                  data-testid="detect-unique-key"
+                >
+                  {detect.running ? "Profiling..." : "Detect unique key"}
+                </Button>
+              </Stack>
             </Stack>
             {kind !== null && kind !== "MSSQL" && kind !== "AZDB" && (
               <Typography variant="body2" color="text.secondary">
@@ -175,38 +177,7 @@ export function ObjectInspector({ reference, kind, database, object, onClose }: 
             )}
             {detect.error !== null && <Alert severity="error" data-testid="detect-error">{detect.error}</Alert>}
             {detectStarted && detect.data !== null && (
-              <Stack spacing={1} data-testid="detect-report">
-                <Typography variant="body2" color="text.secondary">
-                  {detect.data.totalRows.toLocaleString()} row(s)
-                  {detect.data.sampled ? ` (profiled on a sample of ${detect.data.scannedRows.toLocaleString()})` : ""}
-                </Typography>
-                {detect.data.candidates.length === 0 && (
-                  <Alert severity="warning">No candidate key was found.</Alert>
-                )}
-                {detect.data.candidates.map((candidate, rank) => (
-                  <Alert
-                    key={candidate.columns.join("|")}
-                    severity={candidate.isUnique ? "success" : "info"}
-                    icon={false}
-                  >
-                    <Stack spacing={0.25}>
-                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                        <Typography variant="body2" fontWeight={600}>{rank + 1}.</Typography>
-                        <Mono sx={{ fontWeight: 600 }}>[{candidate.columns.join(", ")}]</Mono>
-                      </Stack>
-                      <Typography variant="body2">{candidateLabel(candidate)}</Typography>
-                    </Stack>
-                  </Alert>
-                ))}
-                {detect.data.excludedColumns.length > 0 && (
-                  <Typography variant="caption" color="text.secondary">
-                    Excluded from the search: {detect.data.excludedColumns.map((e) => `${e.column} (${e.reason})`).join(", ")}
-                  </Typography>
-                )}
-                {detect.data.note !== null && (
-                  <Typography variant="caption" color="text.secondary">{detect.data.note}</Typography>
-                )}
-              </Stack>
+              <UniqueKeyReportView report={detect.data} dense data-testid="detect-report" />
             )}
           </>
         )}

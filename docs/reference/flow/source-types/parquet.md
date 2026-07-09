@@ -80,8 +80,10 @@ All options live under `source.options` and all values are YAML strings. Parquet
 | `includeFileDate` | bool | `true` | Inject the `FileDate_DW` provenance column. |
 | `includeFileRowDate` | bool | `true` | Inject the `FileRowDate_DW` provenance column. |
 | `includeFileSize` | bool | `true` | Inject the `FileSize_DW` provenance column. |
-| `includeDataSet` | bool | `true` | Inject the `DataSet_DW` provenance column. |
+| `includeDataSet` | bool | `true` | Inject the `DataSet_DW` provenance column (a date detected in the file name, else the modified date; see [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename)). |
 | `includeRowNumber` | bool | `true` | Inject the `RowNumber_DW` provenance column. |
+| `dataSetFromFileName` | bool | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date). `false` makes `DataSet_DW` equal `FileDate_DW`. |
+| `dataSetFormats` | string | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
 | `includeFileLineNumber` | bool | `false` | Inject the source row index as the `FileLineNumber` column. |
 | `includeHashKey` | bool | `false` | Inject the `HashKey_DW` synthetic hash key. |
 | `hashKeyColumns` | string | none | Columns the hash key is computed over. |

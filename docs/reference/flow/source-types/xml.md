@@ -187,6 +187,8 @@ The XML reader rides the shared file-source base, so the common options bound by
 | `showPathWithFileName` | `false` | Include the path in the FileName_DW column. |
 | `includeFileName`, `includeFileDate`, `includeFileRowDate`, `includeFileSize`, `includeDataSet`, `includeRowNumber` | `true` | Provenance column toggles. |
 | `includeFileLineNumber` | `false` | Include the source record number as a column. |
+| `dataSetFromFileName` | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date); `false` makes it equal `FileDate_DW`. See [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename). |
+| `dataSetFormats` | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
 | `includeHashKey` / `hashKeyColumns` / `hashKeyType` | `false` / unset / `SHA2_512` | Synthetic hash key. |
 | `includeConcatKey` / `concatKeyColumns` / `concatKeySeparator` | `false` / unset / `\|` | Synthetic concatenated key. |
 | `expectedColumnCount` | `0` | Expected column count; 0 disables the check. |

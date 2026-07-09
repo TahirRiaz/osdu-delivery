@@ -10,6 +10,7 @@ import FolderIcon from "@mui/icons-material/Folder";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import StorageIcon from "@mui/icons-material/Storage";
+import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import HubIcon from "@mui/icons-material/Hub";
 import SearchIcon from "@mui/icons-material/Search";
 import PeopleIcon from "@mui/icons-material/People";
@@ -35,6 +36,7 @@ const catalog: NavItem[] = [
   { label: "Pipelines", to: "/pipelines", icon: <AccountTreeIcon />, testId: "nav-pipelines" },
   { label: "Schedules", to: "/schedules", icon: <ScheduleIcon />, testId: "nav-schedules" },
   { label: "Datasources", to: "/datasources", icon: <StorageIcon />, testId: "nav-datasources" },
+  { label: "Key detection", to: "/key-detection", icon: <VpnKeyIcon />, testId: "nav-key-detection" },
 ];
 
 const explore: NavItem[] = [

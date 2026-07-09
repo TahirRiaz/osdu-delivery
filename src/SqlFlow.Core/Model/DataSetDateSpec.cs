@@ -30,17 +30,17 @@ public sealed class DataSetDateSpec
     /// <c>dataSetFormats</c>, which are tried ahead of these.</summary>
     private static readonly string[] BuiltInFormats =
     [
-        // date + time
-        "yyyy-MM-dd_HH-mm-ss", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-ddTHH:mm:ss", "yyyy_MM_dd_HH_mm_ss",
-        "yyyyMMdd_HHmmss", "yyyyMMdd-HHmmss", "yyyyMMddHHmmss",
+        // date + time (only separators valid in a file name: '-', '_', or none; ':' and '/' cannot occur, and
+        // 'T'/space forms would need format-string escaping the segment tokenizer deliberately does not do)
+        "yyyy-MM-dd_HH-mm-ss", "yyyy_MM_dd_HH_mm_ss", "yyyyMMdd_HHmmss", "yyyyMMdd-HHmmss", "yyyyMMddHHmmss",
         // date only, delimited
-        "yyyy-MM-dd", "yyyy_MM_dd", "yyyy.MM.dd", "yyyy/MM/dd",
-        "dd-MM-yyyy", "dd_MM_yyyy", "dd.MM.yyyy", "MM-dd-yyyy", "MM/dd/yyyy",
+        "yyyy-MM-dd", "yyyy_MM_dd", "yyyy.MM.dd",
+        "dd-MM-yyyy", "dd_MM_yyyy", "dd.MM.yyyy", "MM-dd-yyyy",
         "yyyy-M-d", "yyyy_M_d",
         // date only, compact
         "yyyyMMdd", "ddMMyyyy", "MMddyyyy",
-        // year-month
-        "yyyy-MM", "yyyy_MM", "yyyyMM",
+        // year-month, delimited only (a bare 6-digit run is too ambiguous to assume a date)
+        "yyyy-MM", "yyyy_MM",
     ];
 
     // Format tokens, longest first, so MM is never read as two M and fff before ff before f. Case-sensitive

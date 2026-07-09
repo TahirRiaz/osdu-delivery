@@ -138,10 +138,12 @@ Matched files are processed in ascending modified-date order (name as tiebreaker
 | `includeFileDate` | bool | `true` | `FileDate_DW` (datetime2, the file's modified timestamp, UTC) |
 | `includeFileRowDate` | bool | `true` | `FileRowDate_DW` (datetime2, ingestion timestamp, UTC) |
 | `includeFileSize` | bool | `true` | `FileSize_DW` (bigint) |
-| `includeDataSet` | bool | `true` | `DataSet_DW` (datetime2, the file's modified timestamp, UTC) |
+| `includeDataSet` | bool | `true` | `DataSet_DW` (datetime2, a date detected in the file name, else the file's modified timestamp, UTC; see [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename)) |
 | `includeRowNumber` | bool | `true` | `RowNumber_DW` (bigint, 1-based data-row number within the file) |
 | `includeFileLineNumber` | bool | `false` | `FileLineNumber` (bigint, 1-based sheet row number of the row) |
 | `showPathWithFileName` | bool | `false` | Put the full path (not just the name) into `FileName_DW`. |
+| `dataSetFromFileName` | bool | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date). `false` makes `DataSet_DW` equal `FileDate_DW`. |
+| `dataSetFormats` | string | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
 
 ### Synthetic keys
 

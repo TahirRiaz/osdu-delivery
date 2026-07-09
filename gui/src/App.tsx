@@ -18,6 +18,7 @@ const PipelineDetailPage = lazy(() => import("./features/pipelines/PipelineDetai
 const SchedulesPage = lazy(() => import("./features/schedules/SchedulesPage"));
 const DatasourcesPage = lazy(() => import("./features/datasources/DatasourcesPage"));
 const DatasourceBrowsePage = lazy(() => import("./features/datasources/DatasourceBrowsePage"));
+const UniqueKeyDetectionPage = lazy(() => import("./features/datasources/UniqueKeyDetectionPage"));
 const LineagePage = lazy(() => import("./features/lineage/LineagePage"));
 const LineageGraphPage = lazy(() => import("./features/lineage/LineageGraphPage"));
 const SearchPage = lazy(() => import("./features/search/SearchPage"));
@@ -54,6 +55,8 @@ export default function App() {
           <Route path="/schedules" element={<SchedulesPage />} />
           <Route path="/datasources" element={<DatasourcesPage />} />
           <Route path="/datasources/browse" element={<DatasourceBrowsePage />} />
+          {/* Top-level path (not under /datasources) so the sidebar's startsWith selection stays unambiguous. */}
+          <Route path="/key-detection" element={<UniqueKeyDetectionPage />} />
           {/* Repo sources merged into the Repos page; keep the old path working for bookmarks. */}
           <Route path="/repo-sources" element={<Navigate to="/repos" replace />} />
           {/* The graph is the lineage landing; the searchable object catalog is the secondary explorer. */}

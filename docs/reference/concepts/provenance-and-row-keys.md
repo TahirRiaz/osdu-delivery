@@ -46,7 +46,7 @@ Six provenance columns are injected by default for every file source. Each has a
 | `FileDate_DW` | datetime2 | The file's modified time (UTC) | `includeFileDate` | `true` |
 | `FileRowDate_DW` | datetime2 | The ingest timestamp (UTC), captured once per file | `includeFileRowDate` | `true` |
 | `FileSize_DW` | bigint (CLR `long`) | File size in bytes | `includeFileSize` | `true` |
-| `DataSet_DW` | datetime2 | The dataset/partition date; equals the file's modified time (UTC) | `includeDataSet` | `true` |
+| `DataSet_DW` | datetime2 | The dataset/partition date: a date detected in the file NAME, else the file's modified time (UTC). See [DataSet_DW and dataSetFromFileName](#dataset_dw-and-datasetfromfilename) | `includeDataSet` | `true` |
 | `RowNumber_DW` | bigint (CLR `long`) | Data-row number within the file | `includeRowNumber` | `true` |
 
 One further traceability column is opt-in:
@@ -62,6 +62,23 @@ All option values are strings in YAML (`"true"` / `"false"`), matching the gener
 ### showPathWithFileName
 
 `options.showPathWithFileName` (default `false`) switches the value stored in `FileName_DW` from the bare file name to the full resolved path (samples/csv/csv-show-full-path.flow.yaml). It changes only the value, not the column.
+
+### DataSet_DW and dataSetFromFileName
+
+`DataSet_DW` is the file's dataset/partition date, the value a dataset-partitioned load (`load.dataSetColumn`) orders by so files apply in the order their data was produced. By default the engine reads that date from the file NAME: `options.dataSetFromFileName` (default `"true"`) turns on detection, and the file's last-modified timestamp is the fallback when the name carries no detectable date (`src/SqlFlow.Core/Model/DataSetDateSpec.cs`). `FileDate_DW` is unaffected: it is always the last-modified timestamp (and the incremental watermark).
+
+Detection is deterministic. For each format in a baked-in vocabulary, most specific (longest) first, a precise regex locates the matching segment anywhere in the name and `DateTime.TryParseExact` validates it; the first valid date (year `>= 1900`) wins. A segment is bounded by digit look-arounds, so a date is never matched inside a longer run of digits (an id or version number), and an invalid date (month 13, `20241301`) is rejected rather than guessed. The built-in vocabulary covers the filename-safe forms (separators `-`, `_`, `.`, or none; `:`/`/` cannot appear in a name): `yyyyMMdd`, `yyyy-MM-dd`, `yyyy_MM_dd`, `yyyy.MM.dd`, `yyyyMMddHHmmss`, `yyyyMMdd_HHmmss`, `yyyy-MM-dd_HH-mm-ss`, `dd-MM-yyyy` (and `.`/`_` variants), `MM-dd-yyyy`, `yyyy-M-d`, `ddMMyyyy`, `MMddyyyy`, and delimited `yyyy-MM`. When two formats of equal length both match, day-first (`dd-MM-yyyy`) wins over month-first, so `01-02-2024` reads as 1 February.
+
+`options.dataSetFormats` adds extra .NET date formats (comma- or pipe-separated), tried ahead of the built-ins, so a flow can support a house convention or override an ambiguous tie:
+
+```yaml
+source:
+  options:
+    dataSetFromFileName: "true"     # default; "false" makes DataSet_DW equal FileDate_DW (last-modified)
+    dataSetFormats: "yyMMdd|yyyyDDD"
+```
+
+To keep the pre-port behavior where `DataSet_DW` equals the last-modified timestamp, set `dataSetFromFileName: "false"`.
 
 ### Name collisions with source columns
 

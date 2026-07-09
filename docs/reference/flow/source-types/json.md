@@ -101,6 +101,8 @@ Shared file-source options, bound by `PreIngestionJsn.FromSource` and threaded i
 | `includeFileName`, `includeFileDate`, `includeFileRowDate`, `includeFileSize`, `includeDataSet`, `includeRowNumber` | `true` | Provenance column toggles. |
 | `includeFileLineNumber` | `false` | Adds the source record ordinal as a column. |
 | `showPathWithFileName` | `false` | Include the path with the file name in `FileName_DW`. |
+| `dataSetFromFileName` | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date); `false` makes it equal `FileDate_DW`. See [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename). |
+| `dataSetFormats` | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
 | `includeHashKey` | `false` | Add `HashKey_DW` over the flattened columns. |
 | `hashKeyColumns` | (all columns) | Columns feeding the hash key. |
 | `hashKeyType` | `SHA2_512` | Hash algorithm. |

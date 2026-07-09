@@ -38,18 +38,21 @@ public sealed record ComputeTaskRequest(
 /// result, optionally long-polling with <c>waitMs</c>.</summary>
 public sealed record ComputeTaskAccepted(Guid TaskId, string Status);
 
-/// <summary>A compute task as the task list shows it: everything but the (possibly large) result body.</summary>
+/// <summary>A compute task as the task list shows it: everything but the (possibly large) result body.
+/// <see cref="Target"/> is the object an object-scoped task (introspect, detect a unique key) ran against, as
+/// <c>[db.]schema.name</c>, so a task history names WHAT was inspected; null for list/search/test tasks.</summary>
 public sealed record ComputeTaskSummaryDto(
     Guid TaskId, string Operation, string SourceRef, string? ProviderKind, string? Pool, string Status,
     string? RequestedBy, DateTime EnqueuedUtc, DateTime? StartUtc, DateTime? EndUtc, string? ClaimedByNode,
-    DateTime? CancelRequestedUtc, string? Error, bool HasResult);
+    DateTime? CancelRequestedUtc, string? Error, bool HasResult, string? Target = null);
 
 /// <summary>A single compute task with its result: <see cref="Result"/> is the operation's JSON document
-/// (shape depends on the operation), present once the task succeeded.</summary>
+/// (shape depends on the operation), present once the task succeeded. <see cref="Target"/> as on the summary,
+/// so a failed task (no result to read a name from) still says what it ran against.</summary>
 public sealed record ComputeTaskDto(
     Guid TaskId, string Operation, string SourceRef, string? ProviderKind, string? Pool, string Status,
     string? RequestedBy, DateTime EnqueuedUtc, DateTime? StartUtc, DateTime? EndUtc, string? ClaimedByNode,
-    DateTime? CancelRequestedUtc, string? Error, JsonElement? Result);
+    DateTime? CancelRequestedUtc, string? Error, JsonElement? Result, string? Target = null);
 
 /// <summary>
 /// The datasource surface: the estate's datasources as the catalog knows them, and the ad-hoc compute queue
@@ -376,13 +379,23 @@ public static class DatasourceEndpoints
 
         var ordered = query.OrderByDescending(t => t.EnqueuedUtc).ThenByDescending(t => t.TaskId);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
-        var items = await ordered
+        // Projected without ResultJson (a result can be megabytes); ArgumentsJson rides along so the target
+        // object can be named in memory, page-bounded.
+        var rows = await ordered
             .Skip((p - 1) * size).Take(size)
+            .Select(t => new
+            {
+                t.TaskId, t.Operation, t.SourceRef, t.ProviderKind, t.TargetPool, t.Status, t.RequestedBy,
+                t.EnqueuedUtc, t.StartUtc, t.EndUtc, t.ClaimedByNode, t.CancelRequestedUtc, t.Error,
+                HasResult = t.ResultJson != null, t.ArgumentsJson,
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var items = rows
             .Select(t => new ComputeTaskSummaryDto(
                 t.TaskId, t.Operation, t.SourceRef, t.ProviderKind, t.TargetPool, t.Status, t.RequestedBy,
                 t.EnqueuedUtc, t.StartUtc, t.EndUtc, t.ClaimedByNode, t.CancelRequestedUtc, t.Error,
-                t.ResultJson != null))
-            .ToListAsync(ct).ConfigureAwait(false);
+                t.HasResult, TargetFromArguments(t.Operation, t.ArgumentsJson)))
+            .ToList();
         return TypedResults.Ok(new PagedResult<ComputeTaskSummaryDto>(items, p, size, total));
     }
 
@@ -424,7 +437,34 @@ public static class DatasourceEndpoints
         return new ComputeTaskDto(
             task.TaskId, task.Operation, task.SourceRef, task.ProviderKind, task.TargetPool, task.Status,
             task.RequestedBy, task.EnqueuedUtc, task.StartUtc, task.EndUtc, task.ClaimedByNode,
-            task.CancelRequestedUtc, task.Error, result);
+            task.CancelRequestedUtc, task.Error, result, TargetFromArguments(task.Operation, task.ArgumentsJson));
+    }
+
+    /// <summary>The <c>[db.]schema.name</c> an object-scoped task targets, parsed from its stored arguments
+    /// through the payload's own (validating) reader; null for non-object operations and for a row whose
+    /// arguments no longer validate (a legacy or hand-edited row must not break the listing).</summary>
+    private static string? TargetFromArguments(string operation, string argumentsJson)
+    {
+        if (operation is not (ComputeOperations.IntrospectObject or ComputeOperations.DetectUniqueKey))
+        {
+            return null;
+        }
+
+        try
+        {
+            var payload = ComputeTaskPayload.FromJson(argumentsJson);
+            if (string.IsNullOrWhiteSpace(payload.Schema) || string.IsNullOrWhiteSpace(payload.ObjectName))
+            {
+                return null;
+            }
+
+            return string.Join(".", new[] { payload.Database, payload.Schema, payload.ObjectName }
+                .Where(part => !string.IsNullOrWhiteSpace(part)));
+        }
+        catch (SqlFlowException)
+        {
+            return null;
+        }
     }
 
     private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

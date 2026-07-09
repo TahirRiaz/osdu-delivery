@@ -762,6 +762,8 @@ export interface ComputeTaskSummary {
   cancelRequestedUtc: string | null;
   error: string | null;
   hasResult: boolean;
+  /** The [db.]schema.name an object-scoped task ran against (introspect / detect key); null otherwise. */
+  target: string | null;
 }
 
 /** A single compute task; result is the operation's JSON document once the task succeeded. */
