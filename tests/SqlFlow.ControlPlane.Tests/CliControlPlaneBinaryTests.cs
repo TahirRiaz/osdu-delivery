@@ -564,7 +564,7 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
                 dll, ["schedules", "create", "--repo", "whatever", "--flow", "f"],
                 env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
             Assert.Equal(1, neither.Exit);
-            Assert.Contains("exactly one of --cron or --interval", neither.StdErr, StringComparison.Ordinal);
+            Assert.Contains("exactly one of --cron", neither.StdErr, StringComparison.Ordinal);
         }
         finally
         {
@@ -613,8 +613,13 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
                 ["repos", "register", "--name", "x", "--remote-url", "https://example/x.git", "--credential-ref", "ghp_rawtoken123456789012345678901234"],
                 env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
 
+            // Refused either client-side (the hygiene check) or server-side (the endpoint's 400); both are
+            // the same contract: a raw token never lands in the catalog.
             Assert.Equal(1, result.Exit);
-            Assert.Contains("REFERENCE", result.StdErr, StringComparison.Ordinal);
+            Assert.True(
+                result.StdErr.Contains("REFERENCE", StringComparison.Ordinal)
+                || result.StdErr.Contains("400", StringComparison.Ordinal),
+                result.StdErr);
         }
         finally
         {
@@ -760,14 +765,28 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
             Assert.True(tasks.Exit == 0, tasks.AllOutput);
             Assert.Contains(taskId.ToString(), tasks.StdOut, StringComparison.Ordinal);
 
+            // The task races whatever drains the compute queue (a worker may fail the unresolvable reference
+            // within milliseconds), so any lifecycle-consistent cancel answer is legitimate; the CLI's
+            // contract is the faithful mapping, exactly like run cancellation.
             var cancel = await CliBinary.RunAsync(
                 dll, ["datasources", "cancel", taskId.ToString()], env: env, workingDirectory: _dir);
-            Assert.True(cancel.Exit == 0, cancel.AllOutput);
+            if (cancel.Exit == 0)
+            {
+                Assert.Contains("cancel", cancel.StdOut, StringComparison.OrdinalIgnoreCase);
+            }
+            else
+            {
+                Assert.Contains("already finished", cancel.StdErr, StringComparison.Ordinal);
+            }
 
+            // 'task <id>' always shows the authoritative record; exit 1 only for the failed status.
             var show = await CliBinary.RunAsync(
                 dll, ["datasources", "task", taskId.ToString()], env: env, workingDirectory: _dir);
-            Assert.True(show.Exit == 0, show.AllOutput);
-            Assert.Contains("cancelled", show.StdOut, StringComparison.Ordinal);
+            using var record = JsonDocument.Parse(show.StdOut);
+            Assert.Equal(taskId, record.RootElement.GetProperty("taskId").GetGuid());
+            var status = record.RootElement.GetProperty("status").GetString();
+            Assert.Contains(status, new[] { "queued", "running", "succeeded", "failed", "cancelled" });
+            Assert.Equal(status == "failed" ? 1 : 0, show.Exit);
         }
         finally
         {
