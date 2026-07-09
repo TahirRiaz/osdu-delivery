@@ -99,9 +99,10 @@ public sealed class ScriptDependencies
     /// <summary>Names dropped by this script.</summary>
     public HashSet<string> ScriptDropped { get; } = new(StringComparer.Ordinal);
 
-    /// <summary>Names created and LATER dropped (in that order): the engine's run-scoped staging signature
-    /// (create/load/read/drop). Order matters: drop-then-create is a full REBUILD and must keep its
-    /// relations, which an order-blind created-and-dropped test would erase.</summary>
+    /// <summary>Names created and LATER dropped (in that order): the engine's transient staging signature
+    /// (create/load/read/drop; the canonical staging table's leading reset-drop precedes the create, so it
+    /// does not count). Order matters: drop-then-create with no later drop is a full REBUILD and must keep
+    /// its relations, which an order-blind created-and-dropped test would erase.</summary>
     public HashSet<string> CreatedThenDropped { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Per-statement source-to-target movements: insert-like statements only, three-part names on

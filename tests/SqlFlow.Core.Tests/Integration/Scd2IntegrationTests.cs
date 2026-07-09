@@ -16,8 +16,9 @@ public sealed class Scd2IntegrationTests
 {
     private static IngestionFlow BuildFlow(string src, string trg, bool scd2) => new()
     {
-        // Unique per test class: staging tables are named stg_<flowId>_* and harness cleanup drops by that
-        // prefix, so classes sharing a flow id drop each other's live staging when xunit runs them in parallel.
+        // Unique per test class: staging tables are named [raw].[<schema>_<table>_<flowId>] and harness cleanup
+        // drops by the flow-id suffix, so classes sharing a flow id drop each other's live staging when xunit
+        // runs them in parallel.
         FlowId = 9102,
         SysAlias = trg,
         Source = new IngestionSource { Server = "sink", Table = new RelationalObject { Database = "db", Schema = "dbo", Name = src } },

@@ -67,8 +67,9 @@ public sealed record IngestionLoadPolicy
     /// default) it is dropped outright, which already discards the data, so this flag has no effect there.</summary>
     public bool TruncatePreTableOnCompletion { get; init; }
 
-    /// <summary>Keep the run-scoped staging table after a SUCCESSFUL run (default false: drop on success). A
-    /// FAILED run always keeps its staging table for debugging, regardless of this flag.</summary>
+    /// <summary>Keep the flow's canonical staging table after a SUCCESSFUL run (default false: drop on
+    /// success). A FAILED run always keeps its staging table for debugging, regardless of this flag; either
+    /// way the next run's rebuild resets it.</summary>
     public bool KeepStagingTable { get; init; }
 
     /// <summary>

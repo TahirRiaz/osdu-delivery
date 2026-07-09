@@ -7,7 +7,7 @@ namespace SqlFlow.Tests.Integration;
 /// End-to-end coverage of the dataset-partitioned load through the full <see cref="IngestionFlowRunner"/>: a
 /// relational source whose rows carry a dataset column is staged and applied one dataset at a time, and a key
 /// that recurs across datasets ends at the last dataset carrying it. This exercises the whole wiring the
-/// generator-level tests do not: the YAML-shaped load policy, the run-scoped staging bulk copy, and the
+/// generator-level tests do not: the YAML-shaped load policy, the staging bulk copy, and the
 /// result-set count reader that attributes the loop's Inserts/Updates back onto the run result. Skips when the
 /// sink is unreachable.
 /// </summary>

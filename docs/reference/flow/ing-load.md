@@ -70,7 +70,7 @@ With `load.keyColumns` set, matched rows whose data changed are updated and new 
 | `reloadColumn` | string | no | none | Per-file (per-dataset) full replace keyed on this column (typically `FileName_DW`): purge the target rows for the datasets in the incoming batch, then insert the batch. Supersedes the keyed upsert. |
 | `streamData` | bool | no | `true` | Parsed and stored for legacy fidelity. The current engine always streams a live reader into the bulk copy and does not vary behavior on this flag. |
 | `threads` | int | no | none | Concurrency cap for `initLoad` backfill segments only (default 1 when unset); a normal run always uses a single reader/writer pair. Values `<= 0` collapse to null. |
-| `keepStagingTable` | bool | no | `false` | Keep the run-scoped staging table after a successful run. |
+| `keepStagingTable` | bool | no | `false` | Keep the flow's canonical staging table after a successful run. |
 | `truncateStagingOnCompletion` | bool | no | `false` | Truncate a kept staging table after a successful run. |
 | `truncateSourceWhenConsolidated` | bool | no | `false` | After a successful load, truncate the upstream landing (`pre`) table feeding this flow's source, but only once the target's `MAX(watermark)` has caught up to the landing table's. Requires an incremental watermark and a SQL Server source. |
 
@@ -159,13 +159,13 @@ incremental:
 
 ### load.streamData and load.threads
 
-`streamData` is parsed and stored (default `true`), but the current engine does not branch on it: staging is always populated by streaming a live reader straight into the bulk copy (`SqlBulkCopy` with `EnableStreaming = true`), regardless of the flag's value (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs). `threads` has one effect: when `initLoad.enabled: true`, the chunked backfill segments fan out concurrently, capped at `threads` (default 1 when unset), each segment opening its own source and target connection and streaming into the same run-scoped staging table. A normal run without `initLoad` always uses a single reader/writer pair, so `threads` has no effect there. `threads` values `<= 0` are treated the same as unset.
+`streamData` is parsed and stored (default `true`), but the current engine does not branch on it: staging is always populated by streaming a live reader straight into the bulk copy (`SqlBulkCopy` with `EnableStreaming = true`), regardless of the flag's value (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs). `threads` has one effect: when `initLoad.enabled: true`, the chunked backfill segments fan out concurrently, capped at `threads` (default 1 when unset), each segment opening its own source and target connection and streaming into the same staging table. A normal run without `initLoad` always uses a single reader/writer pair, so `threads` has no effect there. `threads` values `<= 0` are treated the same as unset.
 
 ### load.keepStagingTable and load.truncateStagingOnCompletion
 
-By default the run-scoped staging table (and the match-keys key table, when present) is dropped after a successful run. A failed run always keeps the staging table for debugging, regardless of this flag. `keepStagingTable: true` keeps it on success too; `truncateStagingOnCompletion: true` (model property `TruncatePreTableOnCompletion`) then empties the kept table after a successful load so it carries structure without the run's data. When the table is not kept, the flag has no effect: dropping already discards the data.
+By default the flow's canonical staging table (and the match-keys key table, when present) is dropped after a successful run. A failed run always keeps the staging table for debugging, regardless of this flag. `keepStagingTable: true` keeps it on success too; `truncateStagingOnCompletion: true` (model property `TruncatePreTableOnCompletion`) then empties the kept table after a successful load so it carries structure without the run's data. When the table is not kept, the flag has no effect: dropping already discards the data. A kept table (or one left by a failure) is reset by the next run's rebuild, so a flow never owns more than one staging table.
 
-This governs the per-run `stg_` staging table only. It is unrelated to `truncateSourceWhenConsolidated` below, which governs the upstream landing table.
+This governs the flow's staging table (`[raw].[<targetSchema>_<targetTable>_<flowId>]`) only. It is unrelated to `truncateSourceWhenConsolidated` below, which governs the upstream landing table.
 
 ### load.truncateSourceWhenConsolidated
 
@@ -180,7 +180,7 @@ load.truncateSourceWhenConsolidated is supported only for SQL Server sources ...
 
 ## matchKeys details
 
-Active only when `load.matchKeysInSourceAndTarget: true`. After the load, the engine lands the full distinct source key set in a run-scoped table and anti-joins the target against it: a target row whose key no longer exists in the source is tagged or deleted. The key read is bounded only by the static source filter, never the incremental window, so a row deleted outside the window is still detected. The key comparison is NULL-safe: a NULL key matches a NULL key. One script runs and reports one row of counters (total, candidates, affected, resurrected, threshold breached).
+Active only when `load.matchKeysInSourceAndTarget: true`. After the load, the engine lands the full distinct source key set in the flow's canonical `mkey_` table (in the `raw` schema, rebuilt per run) and anti-joins the target against it: a target row whose key no longer exists in the source is tagged or deleted. The key read is bounded only by the static source filter, never the incremental window, so a row deleted outside the window is still detected. The key comparison is NULL-safe: a NULL key matches a NULL key. One script runs and reports one row of counters (total, candidates, affected, resurrected, threshold breached).
 
 ### matchKeys.action
 

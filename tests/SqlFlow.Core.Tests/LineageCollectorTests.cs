@@ -7,7 +7,7 @@ namespace SqlFlow.Tests;
 /// <summary>
 /// The tiered collection: a flow estate on disk scans into declared facts per document kind (with hooks
 /// AST-extracted and broken files skipped loudly), the canonical run artifacts replay into observed facts
-/// (run-scoped staging dissolved, source steps attributed to the source server, staleness detected, corrupt
+/// (transient staging dissolved, source steps attributed to the source server, staleness detected, corrupt
 /// artifacts tolerated), and the identity rules (server references, node keys) hold everywhere.
 /// </summary>
 public sealed class LineageCollectorTests : IDisposable
@@ -157,7 +157,7 @@ public sealed class LineageCollectorTests : IDisposable
             && f.ServerRef == "${env:SQLFLOW_CONN_DWH}");
         Assert.Contains(observed.Facts, f => f.Relation == LineageRelation.Writes && f.Name == "LoadLog");
 
-        // The run-scoped staging table dissolved.
+        // The transient staging table dissolved.
         Assert.DoesNotContain(observed.Facts, f => f.Name.Contains("stg_", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(observed.Warnings, w => w.Contains("stale", StringComparison.OrdinalIgnoreCase));
     }

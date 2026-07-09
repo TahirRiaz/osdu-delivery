@@ -32,7 +32,7 @@ sourceRefs:
 
 # Table-to-table ingestion end to end
 
-This guide builds a `flowType: ing` pipeline from scratch: a relational source table copied into a SQL Server target through a run-scoped staging table. With the default `schema.sync: true`, the target is created on the first run and new source columns are added automatically on later runs; rows are applied with a keyed two-step upsert: matched rows whose data changed are UPDATEd, new rows are INSERTed. The engine never issues a T-SQL MERGE and never blindly reloads a keyed target. A single YAML file is the whole pipeline; no control database or registration is required.
+This guide builds a `flowType: ing` pipeline from scratch: a relational source table copied into a SQL Server target through the flow's canonical staging table in the `raw` schema. With the default `schema.sync: true`, the target is created on the first run and new source columns are added automatically on later runs; rows are applied with a keyed two-step upsert: matched rows whose data changed are UPDATEd, new rows are INSERTed. The engine never issues a T-SQL MERGE and never blindly reloads a keyed target. A single YAML file is the whole pipeline; no control database or registration is required.
 
 The target of an ingestion flow must be SQL Server (`mssql` or `azdb`); a foreign target is rejected at parse time with: `the target connection '<name>' is '<kind>'; an ingestion flow's target must be SQL Server (mssql or azdb).`
 
@@ -136,7 +136,7 @@ The runner (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) executes the
 
 1. Resolves the source and target connections through the registry.
 2. Introspects and shapes the source columns (applying `ignoreColumns`, virtual columns, and name cleaning).
-3. Creates a run-scoped staging table on the target; its name carries the flow id, a UTC timestamp, and a run token.
+3. Rebuilds the flow's canonical staging table on the target: `[raw].[<targetSchema>_<targetTable>_<flowId>]`, named after the target it feeds; one table per flow, reset each run.
 4. Streams the source into staging with SqlBulkCopy, appending `source.filter` and any incremental window to the read.
 5. Evolves the target schema, when `schema.sync` is true (the default): the target is created if absent, and new source columns are added if it already exists. A type-widening change (for example `int` to `bigint`) requires `schema.allowTableRewrite: true`; the default `false` refuses the rewrite because it holds a table lock for the full row rewrite and belongs in a maintenance window. With `schema.sync: false` this step is skipped entirely, so the target must already exist with a compatible shape.
 6. Applies staging to the target: a flow with key columns always takes the two-step keyed upsert (UPDATE changed rows, then INSERT new rows), regardless of whether the target is empty, partially loaded, or just created; a keyless flow instead appends every staged row (insert-all).
@@ -147,7 +147,7 @@ The runner (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) executes the
 
 ## 7. Detect deleted rows with matchKeys
 
-Set `load.matchKeysInSourceAndTarget: true` to detect rows that vanished from the source. After each load the engine lands the full distinct source key set in a run-scoped key table and compares it against the target in SQL on the target side; the key table is dropped in the same step as the staging table (governed by `load.keepStagingTable`). Target rows whose keys are gone from the source are handled per `matchKeys.action`:
+Set `load.matchKeysInSourceAndTarget: true` to detect rows that vanished from the source. After each load the engine lands the full distinct source key set in the flow's canonical `mkey_` key table (in the `raw` schema, rebuilt per run) and compares it against the target in SQL on the target side; the key table is dropped in the same step as the staging table (governed by `load.keepStagingTable`). Target rows whose keys are gone from the source are handled per `matchKeys.action`:
 
 - `tag` (the default): soft delete by stamping the `DeletedDate_DW` system column, which this mode auto-enables so you do not need to set `systemColumns.deletedDate` yourself. A tagged row whose key reappears in the source is un-tagged (resurrected).
 - `delete`: hard delete the row. Any other value fails validation with `'matchKeys.action' must be 'tag' or 'delete', got '<value>'.`

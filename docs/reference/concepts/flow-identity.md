@@ -58,7 +58,7 @@ Consequence: **renaming a flow yields a new identity by design.** History record
 
 `FlowRunner` stamps both ids on its logging scope (`Flow {FlowName} {FlowId} ({RunId})`) and on the diagnostic activity (`flow.id`, `flow.run_id` tags on both the `flow.plan` and `flow.run` activities), so a log line or trace span alone identifies the pipeline and the specific execution. `IngestionFlowRunner` carries no `ILogger` scope or `Activity` tags; it writes to its own run-event sink instead, and its `run.start` event embeds the identities as text: `ingestion '<name>' (flow <FlowId>, run <runToken>): ...`.
 
-The ingestion runner also embeds both identities in its staging table name: `stg_{FlowId}_{stamp}_{runToken}`, where `FlowId` here is the document's integer id (see below) and `runToken` is the first 8 hex characters of the RunId.
+The ingestion runner also embeds the flow identity in its canonical staging table name: `[raw].[{targetSchema}_{targetTable}_{FlowId}]`, where `FlowId` is the document's integer id (see below). The staging table is per flow, not per execution, so the RunId does not appear in it; the run identity lives in the run log and the `run.start` event.
 
 ## The integer flow id for relational document kinds
 

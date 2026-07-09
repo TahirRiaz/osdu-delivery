@@ -6,10 +6,18 @@ import { defineConfig, devices } from "@playwright/test";
 //  2. the GUI dev server, pointed at that control plane via VITE_API_BASE_URL (which wins in dev mode).
 // Requirements on the machine: a local SQL Server (integrated security) and the .NET SDK, same as the
 // DB-backed xUnit suites.
+//
+// Both ports are overridable so the suite can run next to a developer's own environment. This matters most
+// for the GUI port: a long-running `npm run dev` server on the default 5173 points at the DEV control plane
+// (public/config.json), and reuseExistingServer would silently reuse it, so every API call in the suite
+// would land on the wrong backend and fail with rejected e2e tokens.
+
+const apiPort = Number(process.env.SQLFLOW_E2E_API_PORT ?? 5299);
+const guiPort = Number(process.env.SQLFLOW_E2E_GUI_PORT ?? 5173);
 
 export const E2E = {
-  apiBaseUrl: "http://localhost:5299",
-  guiBaseUrl: "http://localhost:5173",
+  apiBaseUrl: `http://localhost:${apiPort}`,
+  guiBaseUrl: `http://localhost:${guiPort}`,
   adminUsername: "e2e-admin",
   adminPassword: "e2e-admin-password-123456",
   bootstrapSecret: "e2e-bootstrap-secret-0123456789-PADDING",
@@ -64,7 +72,9 @@ export default defineConfig({
       },
     },
     {
-      command: "npm run dev",
+      // The CLI port wins over vite.config.ts, so an overridden gui port really binds (strictPort keeps the
+      // failure loud if even that port is taken).
+      command: `npm run dev -- --port ${guiPort} --strictPort`,
       url: E2E.guiBaseUrl,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,

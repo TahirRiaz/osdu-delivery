@@ -65,13 +65,20 @@ internal static class RelationalIngestionHarness
             new SecretResolver([new EnvSecretProvider()]),
             [new SqlConnectionStringCanonicalizer()]);
 
+    /// <summary>Counts the flow's canonical staging tables in the raw schema (0 after a clean run, 1 when kept;
+    /// the flow-id suffix scopes the count, and the mkey_ match-key work table is excluded).</summary>
     public static Task<int?> StagingCountAsync(string cs, int flowId)
-        => IntegrationDb.ScalarAsync<int?>(cs, $"SELECT COUNT(*) FROM sys.tables WHERE name LIKE 'stg[_]{flowId}[_]%'");
+        => IntegrationDb.ScalarAsync<int?>(cs,
+            "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+            $"WHERE s.name = 'raw' AND t.name LIKE '%[_]{flowId}' AND t.name NOT LIKE 'mkey[_]%'");
 
+    /// <summary>Drops every work table the flow owns in the raw schema (staging and the mkey_ match-key table),
+    /// matched by the flow-id suffix.</summary>
     public static Task DropStagingAsync(string cs, int flowId)
         => IntegrationDb.ExecuteAsync(cs,
             $"DECLARE @sql nvarchar(max) = N''; " +
-            $"SELECT @sql += 'DROP TABLE [dbo].[' + name + '];' FROM sys.tables WHERE name LIKE 'stg[_]{flowId}[_]%'; " +
+            "SELECT @sql += 'DROP TABLE [raw].[' + t.name + '];' FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+            $"WHERE s.name = 'raw' AND t.name LIKE '%[_]{flowId}'; " +
             "IF LEN(@sql) > 0 EXEC sys.sp_executesql @sql;");
 
     private sealed class SinkStore : IDataSourceStore

@@ -4,9 +4,9 @@ using Xunit;
 namespace SqlFlow.Tests.Integration;
 
 /// <summary>
-/// Drives a full relational ingestion run against the real sink: introspect source, create the run-scoped
-/// staging table, bulk-copy source into staging, evolve and create the target, then upsert. A second run after
-/// the source changes proves the keyed update/insert and that staging is cleaned up on success.
+/// Drives a full relational ingestion run against the real sink: introspect source, rebuild the flow's
+/// canonical staging table, bulk-copy source into staging, evolve and create the target, then upsert. A second
+/// run after the source changes proves the keyed update/insert and that staging is cleaned up on success.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class IngestionFlowRunnerIntegrationTests

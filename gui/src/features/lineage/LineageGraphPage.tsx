@@ -667,12 +667,16 @@ export default function LineageGraphPage() {
     // module-derived read connects a VIEW to its base table; a `Requires` (a procedure a flow executes) is a
     // code dependency, not data, so it is excluded here (only the procedure's data reads/writes show).
     const nameByKey = new Map<string, string>();
+    const locationByKey = new Map<string, string>();
     const writtenKeys = new Set<string>();
     const writeOwner = new Map<string, string>();
     const moduleReads = new Map<string, Set<string>>();
     const byFlow = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
     for (const edge of objectEdges.data) {
       nameByKey.set(edge.objectKey, edge.objectName);
+      if (edge.objectDatabase !== null || edge.objectSchema !== null) {
+        locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
+      }
       if (edge.flow) {
         const group = byFlow.get(edge.flow) ?? byFlow.set(edge.flow, { reads: [], writes: [] }).get(edge.flow)!;
         if (edge.relation === "Reads") {
@@ -704,6 +708,9 @@ export default function LineageGraphPage() {
       }
       objectNodeIds.add(key);
       names.set(key, nameByKey.get(key) ?? key);
+      // The caption places the object: its kind plus where it lives (database.schema); a file has no location.
+      const location = locationByKey.get(key);
+      const caption = location ? `${objectKind(key)} · ${location}` : objectKind(key);
       nodes.push({
         id: key,
         position: { x: 0, y: 0 },
@@ -711,7 +718,7 @@ export default function LineageGraphPage() {
           label: (
             <Box sx={{ overflow: "hidden", textAlign: "left" }}>
               <Typography variant="body2" fontWeight={600} noWrap component="div">{nameByKey.get(key) ?? key}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">{objectKind(key)}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap component="div">{caption}</Typography>
             </Box>
           ),
         },
@@ -819,6 +826,11 @@ export default function LineageGraphPage() {
       }
       names.set(key, name);
       const serverRef = key.includes("|") ? key.slice(0, key.indexOf("|")) : "";
+      // The caption places the object: database.schema when the registry knows it, else the server reference
+      // (a file just says "file").
+      const caption = serverRef === "file"
+        ? "file"
+        : locationByKey.get(key) ?? truncate(serverRef, 30);
       nodes.push({
         id: key,
         position: { x: 0, y: 0 },
@@ -826,9 +838,7 @@ export default function LineageGraphPage() {
           label: (
             <Box sx={{ overflow: "hidden", textAlign: "left" }}>
               <Typography variant="body2" fontWeight={600} noWrap component="div">{name}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">
-                {serverRef === "file" ? "file" : truncate(serverRef, 30)}
-              </Typography>
+              <Typography variant="caption" color="text.secondary" noWrap component="div">{caption}</Typography>
             </Box>
           ),
         },
@@ -843,12 +853,16 @@ export default function LineageGraphPage() {
     // dependency (a procedure a flow executes), not data movement, so it is excluded.
     const byFlow = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
     const nameByKey = new Map<string, string>();
+    const locationByKey = new Map<string, string>(); // object -> "database.schema" from the global registry
     const writtenKeys = new Set<string>();          // objects a flow writes/creates (real data targets)
     const writeOwner = new Map<string, string>();   // object -> the flow that produces it
     const moduleReads = new Map<string, Set<string>>(); // module (view/proc) -> base objects its body reads
 
     for (const edge of objectEdges.data) {
       nameByKey.set(edge.objectKey, edge.objectName);
+      if (edge.objectDatabase !== null || edge.objectSchema !== null) {
+        locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
+      }
       if (edge.flow) {
         let group = byFlow.get(edge.flow);
         if (!group) {
@@ -1204,15 +1218,30 @@ export default function LineageGraphPage() {
           bgcolor: "background.paper",
         }}
       >
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={<TableRowsIcon />}
-          onClick={() => navigate("/lineage/objects")}
-          data-testid="open-lineage-objects"
-        >
-          Explorer
-        </Button>
+        <Tooltip title="Open explorer">
+          <IconButton
+            size="small"
+            color="primary"
+            onClick={() => navigate("/lineage/objects")}
+            aria-label="Open explorer"
+            data-testid="open-lineage-objects"
+          >
+            <TableRowsIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        {hasContent && (
+          <Tooltip title="Download SVG">
+            <IconButton
+              size="small"
+              color="primary"
+              onClick={downloadLineage}
+              aria-label="Download SVG"
+              data-testid="download-lineage"
+            >
+              <DownloadIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
         <ToggleButtonGroup
           exclusive
           size="small"
@@ -1266,17 +1295,6 @@ export default function LineageGraphPage() {
               />
             )}
           />
-        )}
-        {hasContent && (
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<DownloadIcon />}
-            onClick={downloadLineage}
-            data-testid="download-lineage"
-          >
-            Download SVG
-          </Button>
         )}
         <FormControl size="small" sx={{ minWidth: 220 }}>
           <Select

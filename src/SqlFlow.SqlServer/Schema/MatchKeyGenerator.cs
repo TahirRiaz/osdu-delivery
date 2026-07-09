@@ -52,8 +52,9 @@ public sealed record MatchKeyCounters
 }
 
 /// <summary>
-/// Generates the key-match (deleted-row detection) script: the target is anti-joined against a run-scoped
-/// table holding the full distinct SOURCE key set, and a target row whose key vanished from the source is
+/// Generates the key-match (deleted-row detection) script: the target is anti-joined against the flow's
+/// canonical key table holding the full distinct SOURCE key set (rebuilt per run by the ingestion runner),
+/// and a target row whose key vanished from the source is
 /// tagged (DeletedDate_DW, plus RowStatus_DW 'D') or hard-deleted, per the flow's policy. The comparison is
 /// NULL-safe (a NULL key matches a NULL key, as the legacy string comparison did). Improvements over the
 /// legacy client-side engine, deliberate: the comparison happens in SQL (no stream-misalignment false

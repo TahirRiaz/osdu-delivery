@@ -101,6 +101,44 @@ public sealed class RunQueueStoreTests
     }
 
     [SkippableFact]
+    public async Task ClaimNext_SamePipeline_NeverRunsTwiceConcurrently()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var otherFlow = flowName + "_other";
+        var dir = NewTempDir();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+
+            // Two queued runs of the SAME flow (a double-trigger) plus one run of a different flow.
+            var first = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            var duplicate = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            var unrelated = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, otherFlow, "ing"), DateTime.UtcNow);
+
+            // The oldest same-flow run is claimed; its duplicate is NOT claimable while it runs (each flow
+            // stages through one canonical work table, so executions must serialize), but the pipeline gate is
+            // per flow: the unrelated flow's run is handed out immediately.
+            Assert.Equal(first, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(unrelated, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Null(await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(RunStatuses.Queued, (await Reload(db, duplicate)).Status);
+
+            // Once the running execution reaches a terminal state, the duplicate becomes claimable.
+            var runJson = Path.Combine(dir, "run.json");
+            await File.WriteAllTextAsync(runJson, RunArtifact(first, flowName, success: true, rowsLoaded: 1));
+            Assert.True(await RunQueueStore.CompleteFromArtifactAsync(db, first, repoId, runJson, DateTime.UtcNow));
+            Assert.Equal(duplicate, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, dir);
+        }
+    }
+
+    [SkippableFact]
     public async Task ClaimNext_RoutesByPool_OnlyAnEligibleNodeClaimsATargetedRun()
     {
         var cs = CatalogTestDb.Require();

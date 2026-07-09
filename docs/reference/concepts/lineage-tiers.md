@@ -84,7 +84,7 @@ From `run.json`:
 
 - Statements come from `result.sqlTrace` entries. An entry whose `step` starts with `source.` is attributed to the flow's source server; everything else to the target server.
 - File flows contribute `result.ddlExecuted` (a plain string list) to the target side.
-- Each side's statements are joined with `GO` into ONE script before extraction, so the engine's run-scoped staging tables (created, loaded, read, then dropped within the run) dissolve through the extractor's local-dependency resolution instead of polluting the graph.
+- Each side's statements are joined with `GO` into ONE script before extraction, so the engine's transient staging tables (created, loaded, read, then dropped within the run) dissolve through the extractor's local-dependency resolution instead of polluting the graph.
 - Observed identities require at least `schema.name` (minimum two parts; the engine's generated SQL is fully qualified).
 - Every fact is stamped with the artifact's `runId` and `writtenUtc`, and `Step` is `trace/source` or `trace/target`.
 

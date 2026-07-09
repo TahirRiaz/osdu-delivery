@@ -8,7 +8,7 @@ namespace SqlFlow.Lineage.Collection;
 /// extractor (document hooks, run traces, harvested modules) so the relation semantics are identical
 /// everywhere. The relations themselves come from <see cref="ScriptDependencies.TypedRelations"/>, the
 /// exact DeltaForge lifecycle algorithm; this layer only applies graph hygiene: temp names and identities
-/// below the caller's part threshold stay out, and the engine's run-scoped staging (created and THEN
+/// below the caller's part threshold stay out, and the engine's transient staging (created and THEN
 /// dropped by the same script) never reaches the graph: a drop-then-create rebuild, by contrast, keeps its
 /// full relations.
 /// </summary>
@@ -53,7 +53,7 @@ public static class ScriptFactBuilder
     }
 
     /// <summary>The created-object artifacts of one script (the generating DDL and, for a table, its columns),
-    /// under the same identity threshold the facts use: temp names and run-scoped staging (created then
+    /// under the same identity threshold the facts use: temp names and transient staging (created then
     /// dropped) stay out, so only durable objects carry a script and column dictionary into the catalog.</summary>
     public static IEnumerable<CollectedObjectArtifact> ObjectArtifacts(
         ScriptDependencies deps, string serverRef, LineageTier tier, int minimumParts)

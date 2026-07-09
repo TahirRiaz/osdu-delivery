@@ -50,7 +50,7 @@ public sealed class LineageServiceTests
         Assert.Equal([["load-orders"], ["audit-watch"]], LineageEstateHarness.Waves(withObserved));
         Assert.Equal([["audit-watch", "load-orders"]], LineageEstateHarness.Waves(withoutObserved));
 
-        // The run-scoped staging table never reaches the graph; the observed edges carry their run stamp.
+        // The transient staging table never reaches the graph; the observed edges carry their run stamp.
         Assert.DoesNotContain(withObserved.Objects, o => o.Name.Contains("stg_", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(withObserved.Edges, e => e.Tier == LineageTier.Observed && e.ObservedRunId is not null);
     }

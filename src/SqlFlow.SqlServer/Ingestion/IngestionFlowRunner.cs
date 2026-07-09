@@ -24,7 +24,7 @@ public sealed record IngestionRunResult
     /// <summary>Rows bulk-copied from the source into staging.</summary>
     public long RowsStaged { get; init; }
 
-    /// <summary>The two-part name of the run-scoped staging table.</summary>
+    /// <summary>The two-part name of the flow's canonical staging table (in the raw schema).</summary>
     public required string StagingTable { get; init; }
 
     /// <summary>True when the staging table was left in place (always on failure; on success when the flow
@@ -85,15 +85,25 @@ public sealed record IngestionRunResult
 /// <summary>
 /// Runs one relational (SQL to SQL Server) ingestion flow end to end, the V3 execution of a flw.Ingestion row:
 /// resolve the source and target connections through the registry, introspect and shape the source columns,
-/// create a run-scoped staging table, stream the source into it with SqlBulkCopy, evolve the target schema,
-/// then apply staging to the target with the two-step keyed upsert (or an insert-all when there is no key).
-/// The staging table is per-execution (its name carries the flow id, a UTC timestamp, and a run token) and is
-/// dropped on success unless the flow opts to keep it; a failed run always keeps it for debugging. There is a
-/// single execution path: file flows use FlowRunner, relational flows use this runner, and both share the
-/// schema-evolution and upsert machinery.
+/// rebuild the flow's canonical staging table, stream the source into it with SqlBulkCopy, evolve the target
+/// schema, then apply staging to the target with the two-step keyed upsert (or an insert-all when there is no
+/// key). The staging table is canonical per flow, not per execution: it lives in the raw schema (which by
+/// itself marks it as staging, so the name carries no stg prefix) and is named after the target it feeds plus
+/// the flow id ([raw].[&lt;targetSchema&gt;_&lt;targetTable&gt;_&lt;flowId&gt;]), so it is traceable at a glance and every run
+/// rebuilds the same object instead of accumulating per-execution copies.
+/// It is dropped on success unless the flow opts to keep it; a failed run always keeps it for debugging, and
+/// the next run's rebuild resets it. There is a single execution path: file flows use FlowRunner, relational
+/// flows use this runner, and both share the schema-evolution and upsert machinery.
 /// </summary>
 public sealed class IngestionFlowRunner
 {
+    /// <summary>The schema hosting every flow's canonical staging and match-key work tables. The schema itself
+    /// marks its tables as staging, so the staging name carries no stg prefix.</summary>
+    public const string StagingSchemaName = "raw";
+
+    // SQL Server's identifier length cap (sysname), which the composed work-table name must respect.
+    private const int MaxIdentifierLength = 128;
+
     private static readonly IReadOnlySet<string> NoKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private readonly IConnectionResolver _resolver;
@@ -157,12 +167,11 @@ public sealed class IngestionFlowRunner
         var runId = options.RunId ?? Guid.NewGuid();
         var startUtc = DateTime.UtcNow;
         var runToken = runId.ToString("N", CultureInfo.InvariantCulture)[..8];
-        var stamp = startUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture);
         var staging = new RelationalObject
         {
             Database = flow.Target.Table.Database,
-            Schema = flow.Target.Table.Schema,
-            Name = $"stg_{flow.FlowId}_{stamp}_{runToken}",
+            Schema = StagingSchemaName,
+            Name = CanonicalWorkTableName(prefix: null, flow),
         };
         var applyOptions = new SchemaApplyOptions();
 
@@ -313,7 +322,17 @@ public sealed class IngestionFlowRunner
                 await TargetProcessHooks.RunAsync(targetConnectionString, flow.Process.PreProcessOnTarget!.Trim(), ct).ConfigureAwait(false);
             }
 
-            // 3. Create the run-scoped staging table (data columns only; fresh per execution).
+            // 3. Rebuild the flow's canonical staging table (data columns only). The raw schema is ensured
+            //    first (it also hosts the match-key table below), then the previous incarnation is dropped so
+            //    the create always yields a fresh table carrying THIS run's exact source shape: a kept or
+            //    failed prior table never leaks stale rows or a stale schema into the run, and a flow never
+            //    accumulates more than this one staging object.
+            var ensureSchemaSql = $"IF SCHEMA_ID(N'{StagingSchemaName}') IS NULL EXEC(N'CREATE SCHEMA [{StagingSchemaName}]');";
+            Trace("staging.schema", ensureSchemaSql);
+            await ExecuteAsync(targetConnectionString, ensureSchemaSql, ct).ConfigureAwait(false);
+            var resetSql = $"DROP TABLE IF EXISTS {SchemaQualified(staging)};";
+            Trace("staging.reset", resetSql);
+            await ExecuteAsync(targetConnectionString, resetSql, ct).ConfigureAwait(false);
             var stagingOutcome = await schemaSync.EvolveAsync(targetConnectionString, staging, stagingColumns, NoKeys, allowTableRewrite: false, applyOptions, ct).ConfigureAwait(false);
             Info("staging.create", $"staging table {SchemaQualified(staging)} created");
             foreach (var statement in stagingOutcome.AppliedStatements)
@@ -517,8 +536,8 @@ public sealed class IngestionFlowRunner
                 }
             }
 
-            // 7b2. Key match (deleted-row detection): land the full distinct SOURCE key set in a run-scoped
-            //      key table on the target, then tag or delete target rows whose keys vanished from the
+            // 7b2. Key match (deleted-row detection): land the full distinct SOURCE key set in the flow's
+            //      canonical key table on the target, then tag or delete target rows whose keys vanished from the
             //      source. Runs after the load and the surrogate keys (legacy order) on EVERY run, including
             //      incremental ones: the key fetch never uses the incremental window, so a row deleted outside
             //      the window is still detected. The threshold guard skips a suspicious mass delete loudly.
@@ -531,8 +550,8 @@ public sealed class IngestionFlowRunner
                 matchKeyTable = new RelationalObject
                 {
                     Database = flow.Target.Table.Database,
-                    Schema = flow.Target.Table.Schema,
-                    Name = $"mkey_{flow.FlowId}_{stamp}_{runToken}",
+                    Schema = StagingSchemaName,
+                    Name = CanonicalWorkTableName("mkey", flow),
                 };
                 rowsDeleted = await RunMatchKeysAsync(
                     flow, resolvedSource, targetConnectionString, matchKeyTable, nameMap, sourceDialect, Info, Dbg, Trace, ct).ConfigureAwait(false);
@@ -583,8 +602,9 @@ public sealed class IngestionFlowRunner
                 await _invoke.RunByAliasAsync(flow.Process.PostInvokeAlias!.Trim(), ct).ConfigureAwait(false);
             }
 
-            // 8. Drop the run-scoped staging and key-match tables on success unless the flow asked to keep
-            //    them (a failure keeps both for debugging, like staging always has been).
+            // 8. Drop the canonical staging and key-match tables on success unless the flow asked to keep
+            //    them (a failure keeps both for debugging, like staging always has been; the next run's
+            //    rebuild resets whatever was kept).
             if (!flow.Load.KeepStagingTable)
             {
                 var dropSql = $"DROP TABLE IF EXISTS {SchemaQualified(staging)};";
@@ -788,9 +808,13 @@ public sealed class IngestionFlowRunner
         var keyPairs = sourceKeys.Select(k => (Source: k, Target: MapName(nameMap, k))).ToList();
         var targetKeys = keyPairs.Select(p => p.Target).ToList();
 
-        // The run-scoped key table clones the target key columns' exact types and collations, indexed for the
-        // anti-join.
+        // The flow-canonical key table clones the target key columns' exact types and collations, indexed for
+        // the anti-join. Like staging it is rebuilt per run (the raw schema was ensured at staging create), so
+        // a prior kept incarnation never collides with the SELECT INTO.
         var keyColumnList = string.Join(", ", targetKeys.Select(k => $"[{Escape(k)}]"));
+        var resetKeysSql = $"DROP TABLE IF EXISTS {SchemaQualified(keyTable)};";
+        traceSql("matchkeys.keytable.reset", resetKeysSql);
+        await ExecuteAsync(targetConnectionString, resetKeysSql, ct).ConfigureAwait(false);
         var createSql =
             $"SELECT TOP (0) {keyColumnList} INTO {SchemaQualified(keyTable)} FROM {SchemaQualified(flow.Target.Table)}; " +
             $"CREATE CLUSTERED INDEX [IX_{Escape(keyTable.Name)}] ON {SchemaQualified(keyTable)} ({keyColumnList});";
@@ -1143,7 +1167,7 @@ public sealed class IngestionFlowRunner
 
         // TABLOCK + a heap staging table + one batch (BatchSize 0) is the minimally-logged bulk path; the bulk
         // update lock it takes is mutually compatible, so the parallel segment streams above load the same
-        // run-private staging table concurrently without row/page-lock contention. The BatchUpsertRowCount knob
+        // staging table concurrently without row/page-lock contention. The BatchUpsertRowCount knob
         // belongs to the APPLY step's key windows, not the staging load.
         using var bulkCopy = new SqlBulkCopy(targetConnection, SqlBulkCopyOptions.TableLock, externalTransaction: null)
         {
@@ -1310,6 +1334,29 @@ public sealed class IngestionFlowRunner
 
     private static bool HasColumn(IReadOnlyList<SqlColumn> columns, string name)
         => columns.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    // The canonical work-table name for a flow: the target it feeds plus the flow id, e.g. arc_Orders_279975153
+    // (one table per flow, rebuilt by every run, so executions never accumulate per-run copies and the owner is
+    // readable off the name). The match-key table passes "mkey" so it stays distinguishable from the staging
+    // table beside it in the raw schema. Characters outside A-Z/a-z/0-9/_ fold to '_' so any bracketed target
+    // identifier yields a plain name, and the traceable middle is trimmed when the composed name would exceed
+    // the 128-character identifier cap; the flow-id suffix is what guarantees uniqueness, so it is never trimmed.
+    private static string CanonicalWorkTableName(string? prefix, IngestionFlow flow)
+    {
+        var lead = string.IsNullOrEmpty(prefix) ? string.Empty : prefix + "_";
+        var middle = new string(
+            $"{flow.Target.Table.Schema}_{flow.Target.Table.Name}"
+                .Select(c => char.IsAsciiLetterOrDigit(c) || c == '_' ? c : '_')
+                .ToArray());
+        var suffix = $"_{flow.FlowId}";
+        var budget = MaxIdentifierLength - lead.Length - suffix.Length;
+        if (middle.Length > budget)
+        {
+            middle = middle[..budget];
+        }
+
+        return $"{lead}{middle}{suffix}";
+    }
 
     private static string SchemaQualified(RelationalObject relationalObject)
         => $"[{Escape(relationalObject.Schema)}].[{Escape(relationalObject.Name)}]";

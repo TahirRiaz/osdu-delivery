@@ -4,9 +4,9 @@ using Xunit;
 namespace SqlFlow.Tests.Integration;
 
 /// <summary>
-/// Verifies TruncatePreTableOnCompletion end-to-end: when the run-scoped staging table is kept, this flag empties
-/// it after a successful load (structure without the run's data), and when the flag is off the kept table retains
-/// its rows. Skips when the sink is unreachable.
+/// Verifies TruncatePreTableOnCompletion end-to-end: when the flow's canonical staging table is kept, this flag
+/// empties it after a successful load (structure without the run's data), and when the flag is off the kept table
+/// retains its rows. Skips when the sink is unreachable.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class TruncateStagingIntegrationTests
@@ -27,13 +27,14 @@ public sealed class TruncateStagingIntegrationTests
     private static async Task<long?> StagingRowCountAsync(string cs, int flowId)
     {
         var name = await IntegrationDb.ScalarAsync<string?>(cs,
-            $"SELECT TOP 1 name FROM sys.tables WHERE name LIKE 'stg[_]{flowId}[_]%' ORDER BY create_date DESC");
+            "SELECT TOP 1 t.name FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+            $"WHERE s.name = 'raw' AND t.name LIKE '%[_]{flowId}' AND t.name NOT LIKE 'mkey[_]%' ORDER BY t.create_date DESC");
         if (name is null)
         {
             return null;
         }
 
-        return await IntegrationDb.ScalarAsync<long>(cs, $"SELECT COUNT_BIG(*) FROM [dbo].[{name}]");
+        return await IntegrationDb.ScalarAsync<long>(cs, $"SELECT COUNT_BIG(*) FROM [raw].[{name}]");
     }
 
     [SkippableFact]

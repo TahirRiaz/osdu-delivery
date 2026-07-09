@@ -46,10 +46,12 @@ public sealed record ObjectColumnDto(int Ordinal, string Name, string? DataType,
 public sealed record NodeScriptDto(
     string Key, string Kind, string Language, string? Script, string? Source, string? Name);
 
-/// <summary>One attributed lineage fact: a flow (or a module body) relating to an object.</summary>
+/// <summary>One attributed lineage fact: a flow (or a module body) relating to an object. The object's
+/// database and schema are joined from the global object registry (proper-cased, unlike the normalized key)
+/// so a graph can label the object with where it lives; null for a file or a partially-resolved identity.</summary>
 public sealed record EdgeDto(
     long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule,
-    string Relation, string ObjectKey, string ObjectName, string Tier);
+    string Relation, string ObjectKey, string ObjectName, string? ObjectDatabase, string? ObjectSchema, string Tier);
 
 /// <summary>Everything known about one object in a single payload: its identity and metadata, its columns, its
 /// generating script and module body, and the lineage edges that reference it. This is the "ask about this
@@ -537,13 +539,15 @@ public static class LineageEndpoints
             .ToListAsync(ct).ConfigureAwait(false);
 
         // Object-level edges reference the key across every repo (the object is global): both what reads it and
-        // what writes it, so the model sees the flows on both sides.
+        // what writes it, so the model sees the flows on both sides. Every edge here points at THE dossier
+        // object, so its database/schema come straight from the detail row (no join needed).
         var edges = await db.LineageEdges.AsNoTracking()
             .Where(e => e.ObjectKey == key)
             .OrderBy(e => e.Relation).ThenBy(e => e.Flow).ThenBy(e => e.Id)
             .Take(MaxDossierRows)
             .Select(e => new EdgeDto(
-                e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName, e.Tier))
+                e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName,
+                detail.Database, detail.Schema, e.Tier))
             .ToListAsync(ct).ConfigureAwait(false);
 
         return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges));
@@ -583,10 +587,15 @@ public static class LineageEndpoints
 
         var ordered = query.OrderBy(e => e.ObjectName).ThenBy(e => e.Id);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
+        // Left-join the global object registry for each edge's database/schema (proper-cased, unlike the
+        // normalized key), so graph clients can label objects with where they live; an edge whose object row
+        // is missing (a race with identity healing) still returns, with nulls.
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
-            .Select(e => new EdgeDto(
-                e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName, e.Tier))
+            .GroupJoin(db.Objects.AsNoTracking(), e => e.ObjectKey, o => o.Key, (e, objects) => new { e, objects })
+            .SelectMany(x => x.objects.DefaultIfEmpty(), (x, o) => new EdgeDto(
+                x.e.Id, x.e.RepoId, x.e.Flow, x.e.PipelineId, x.e.ViaModule, x.e.Relation, x.e.ObjectKey,
+                x.e.ObjectName, o != null ? o.Database : null, o != null ? o.Schema : null, x.e.Tier))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<EdgeDto>(items, p, size, total));
     }

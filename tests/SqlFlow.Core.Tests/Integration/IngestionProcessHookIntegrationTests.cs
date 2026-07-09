@@ -25,7 +25,10 @@ public sealed class IngestionProcessHookIntegrationTests
     [SkippableFact]
     public async Task PreAndPostHooks_RunOnTarget_InOrder()
     {
-        const int flowId = 20;
+        // Unique across the integration suite (like Scd2's 9102): staging cleanup is keyed by flow id, so a
+        // flow id shared with another class (IncrementalWindow used to share 20/21) lets parallel classes
+        // drop each other's live staging.
+        const int flowId = 9120;
         var cs = IntegrationDb.Require();
         const string src = "_SfHook_Src";
         const string trg = "_SfHook_Trg";
@@ -62,7 +65,7 @@ public sealed class IngestionProcessHookIntegrationTests
     [SkippableFact]
     public async Task ShortHook_IsSkippedByTheLengthGate()
     {
-        const int flowId = 21;
+        const int flowId = 9121;
         var cs = IntegrationDb.Require();
         const string src = "_SfHookGate_Src";
         const string trg = "_SfHookGate_Trg";
@@ -90,7 +93,7 @@ public sealed class IngestionProcessHookIntegrationTests
     [SkippableFact]
     public async Task PostHookFailure_KeepsCommittedLoad_AndRetainsStaging()
     {
-        const int flowId = 22;
+        const int flowId = 9122;
         var cs = IntegrationDb.Require();
         const string src = "_SfHookFail_Src";
         const string trg = "_SfHookFail_Trg";
@@ -122,7 +125,7 @@ public sealed class IngestionProcessHookIntegrationTests
     [SkippableFact]
     public async Task InvokeAlias_Set_ButUnsupported_FailsClearly()
     {
-        const int flowId = 23;
+        const int flowId = 9123;
         var cs = IntegrationDb.Require();
         const string src = "_SfHookInv_Src";
         const string trg = "_SfHookInv_Trg";

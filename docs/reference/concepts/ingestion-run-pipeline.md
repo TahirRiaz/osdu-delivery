@@ -32,7 +32,7 @@ sourceRefs:
 
 # Ingestion run pipeline internals: staging, source SELECT, windows, InitLoad
 
-`IngestionFlowRunner` (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) executes one relational ingestion flow (`flowType: ing`) end to end: it resolves the source and target connections through the registry, introspects and shapes the source columns, creates a run-scoped staging table on the target, streams the source into it with `SqlBulkCopy`, evolves the target schema, and applies staging to the target with the keyed two-step upsert (or an insert-all when there is no key). There is a single execution path: file flows use `FlowRunner`, relational flows use this runner, and both share the schema-evolution and upsert machinery.
+`IngestionFlowRunner` (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) executes one relational ingestion flow (`flowType: ing`) end to end: it resolves the source and target connections through the registry, introspects and shapes the source columns, rebuilds the flow's canonical staging table on the target (in the `raw` schema), streams the source into it with `SqlBulkCopy`, evolves the target schema, and applies staging to the target with the keyed two-step upsert (or an insert-all when there is no key). There is a single execution path: file flows use `FlowRunner`, relational flows use this runner, and both share the schema-evolution and upsert machinery.
 
 This page covers the run's internal order of operations, how the source SELECT is built, how the incremental window and InitLoad chunk plans shape that SELECT, and the observability contract (the SQL trace and the run result).
 
@@ -45,7 +45,7 @@ One run of `IngestionFlowRunner.RunAsync` proceeds in this order. Every step tha
 3. **Source introspection and shaping**: the source object's columns are read through the source catalog reader; `source.ignoreColumns` are removed; the source's identity and primary-key facts are cleared so staging and the target never inherit them. Zero remaining columns fails with `Source object <name> exposes no columns to ingest.`
 4. **Desired-schema build**: `IngestionSchemaBuilder` produces the desired target schema and the bulk-copy name map (see below).
 5. **Target pre-process hook**: `preProcess` raw T-SQL runs on the target before any new data is staged. On a first-ever run the target does not exist yet, so a pre-hook that touches it must guard itself with `IF OBJECT_ID(...) IS NOT NULL`.
-6. **Create run-scoped staging**: a fresh staging table holding only the bulk-copied data columns is created in the target's schema.
+6. **Rebuild canonical staging**: the `raw` schema is ensured, the flow's canonical staging table is dropped if a prior incarnation exists, and a fresh table holding only the bulk-copied data columns is created, so the run always stages into an empty table with its exact source shape.
 7. **Fill staging**: either one incremental-windowed source read, or (when `initLoad.enabled`) a fan-out of chunked segment reads. Both paths feed the same staging table, so everything after this step is identical.
 8. **Evolve the target** (when `schema.sync` is on, the default): the target is created or altered to the desired schema.
 9. **Canonical indexes**: only on the run that created the target, the canonical indexes (key, date, dataset, `UpdatedDate_DW`, optional clustered columnstore) are created on the still-empty table.
@@ -54,7 +54,7 @@ One run of `IngestionFlowRunner.RunAsync` proceeds in this order. Every step tha
 12. **Apply**: the keyed two-step upsert (UPDATE then anti-join INSERT), the SCD2 close-and-insert, the dataset-partitioned loop, or the keyless insert-all. The default apply wraps the statements in one transaction; the batched apply (`load.batchUpsert: true`) deliberately runs without an enclosing transaction so each key window commits and releases its locks on its own.
 13. **Post-process hook**: `postProcess` raw T-SQL runs on the target after the load commits, outside the load transaction, and before staging is dropped.
 14. **Surrogate keys**: declared `surrogateKeys` are generated and stamped back; a per-spec failure is surfaced on the result, never a rollback of the committed load.
-15. **Match-keys pass**: when `load.matchKeysInSourceAndTarget` is on, the full distinct source key set (never bounded by the incremental window) is landed in a run-scoped key table and target rows whose keys vanished are tagged or deleted, subject to the threshold guard.
+15. **Match-keys pass**: when `load.matchKeysInSourceAndTarget` is on, the full distinct source key set (never bounded by the incremental window) is landed in the flow's canonical `mkey_` key table (in the `raw` schema, rebuilt per run like staging) and target rows whose keys vanished are tagged or deleted, subject to the threshold guard.
 16. **Desired indexes**: only on the run that created the target, the declared `target.desiredIndexes` script is applied; a failure is surfaced as a failed `IndexAction`, never a rollback.
 17. **Assertions**: declared data-quality assertions run against the loaded target; they are log-only and never affect `Success`.
 18. **Post-invoke**: `postInvoke` runs after the load commits and before staging is dropped; a failure reports the run as failed but the committed load stands.
@@ -66,13 +66,14 @@ A failure at any point keeps the staging table, writes a failure run record on a
 
 ## The staging table
 
-The staging table is named `stg_{flowId}_{yyyyMMddHHmmssfff}_{first-8-of-runId}` (UTC timestamp plus the first eight hex characters of the run id) and lives in the target table's schema. It is per-execution: two concurrent runs of the same flow cannot collide.
+The staging table is canonical per flow, not per execution: it lives in the `raw` schema (which by itself marks it as staging, so the name carries no prefix) and is named `{targetSchema}_{targetTable}_{flowId}`, e.g. `[raw].[arc_Orders_279975153]`. The name is traceable at a glance to the target it feeds, and because every run rebuilds the same object, executions never accumulate per-run copies in the database. Characters outside `A-Z a-z 0-9 _` in the target identifiers fold to `_`, and the traceable middle is trimmed if the composed name would exceed SQL Server's 128-character identifier cap (the flow-id suffix, which guarantees uniqueness, is never trimmed). The run queue serializes executions of the same flow (see the claim's pipeline gate in `RunQueueStore`), so two runs never contend for the table.
 
 Lifecycle:
 
+- The `raw` schema is ensured and any prior incarnation is dropped at run start, then the table is created fresh with the run's exact source shape.
 - Dropped on success by default (`DROP TABLE IF EXISTS`).
-- `load.keepStagingTable: true` keeps it after a successful run.
-- A FAILED run always keeps it for debugging, regardless of the flag.
+- `load.keepStagingTable: true` keeps it after a successful run; the next run's rebuild resets it.
+- A FAILED run always keeps it for debugging, regardless of the flag; the next run's rebuild resets it.
 - `load.truncateStagingOnCompletion: true` empties a KEPT staging table after success, so it carries structure without the run's data. It has no effect when staging is dropped (the drop is the stronger cleanup).
 
 The bulk copy into staging uses `SqlBulkCopy` with `TableLock`, `BatchSize = 0` (one batch, the minimally-logged path into the heap), `BulkCopyTimeout = 0`, and `EnableStreaming = true`. The bulk update lock taken under `TableLock` on a heap is mutually compatible, which is what lets InitLoad's parallel segment streams load the same staging table concurrently.

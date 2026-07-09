@@ -32,7 +32,7 @@ sourceRefs:
 
 # Ingestion flow (flowType: ing): document, source, target
 
-A `flowType: ing` document defines a relational (table to table) ingestion pipeline: a live relational source table is staged into a run-scoped staging table on the SQL Server target, the target schema is evolved to match, and rows are applied with a keyed two-step upsert (UPDATE changed, then INSERT new; never a T-SQL MERGE). The YAML file is the whole pipeline: parsing yields an `IngestionDocument` carrying the flow plus in-memory stores for the document's connections, assertion definitions, invokes, and service principals. No control database is involved (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs).
+A `flowType: ing` document defines a relational (table to table) ingestion pipeline: a live relational source table is staged into the flow's canonical staging table (`[raw].[<targetSchema>_<targetTable>_<flowId>]`, rebuilt per run) on the SQL Server target, the target schema is evolved to match, and rows are applied with a keyed two-step upsert (UPDATE changed, then INSERT new; never a T-SQL MERGE). The YAML file is the whole pipeline: parsing yields an `IngestionDocument` carrying the flow plus in-memory stores for the document's connections, assertion definitions, invokes, and service principals. No control database is involved (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs).
 
 Loading and validation live in src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs over the binding DTOs in src/SqlFlow.Yaml/IngestionYaml.cs; the validated model is src/SqlFlow.Core/Ingestion/IngestionFlow.cs. Unknown YAML keys are ignored (the deserializer runs with `IgnoreUnmatchedProperties`).
 

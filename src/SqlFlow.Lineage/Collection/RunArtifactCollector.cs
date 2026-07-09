@@ -11,7 +11,7 @@ namespace SqlFlow.Lineage.Collection;
 /// is ground truth: real incremental clauses, real staging-to-target movement, hooks as they ran, with the
 /// run id and time stamped on every fact: and it needs no connectivity at all. The trace is extracted as ONE
 /// script per side (source-step statements run on the source server, everything else on the target), so the
-/// run-scoped staging tables the engine creates dissolve through the extractor's local-deps resolution
+/// transient staging tables the engine creates dissolve through the extractor's local-deps resolution
 /// instead of polluting the graph. A corrupt or unreadable artifact is a warning, never a stop.
 /// </summary>
 public static class RunArtifactCollector
@@ -99,7 +99,7 @@ public static class RunArtifactCollector
         }
 
         // Source-step statements execute on the source server; everything else on the target. Each side is
-        // extracted as one script so the engine's run-scoped staging objects dissolve via local deps.
+        // extracted as one script so the engine's transient staging objects dissolve via local deps.
         var sourceSql = new List<string>();
         var targetSql = new List<string>();
 

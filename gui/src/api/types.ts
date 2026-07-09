@@ -509,6 +509,10 @@ export interface LineageEdge {
   relation: string;
   objectKey: string;
   objectName: string;
+  /** The object's database and schema from the global registry (proper-cased); null for a file or a
+   * partially-resolved identity. */
+  objectDatabase: string | null;
+  objectSchema: string | null;
   tier: string;
 }
 

@@ -718,17 +718,15 @@ The lock return code is captured and checked: a failure throws `SchemaLockTimeou
 
 ### 3.11 Staging lifecycle and same-flow concurrency
 
-Staging is run-scoped, created fresh each execution, and its lifecycle is driven by the run outcome.
+Staging is canonical per flow, rebuilt each execution, and its lifecycle is driven by the run outcome.
 
-**Naming (per-execution, self-describing for cleanup).** The staging object is `[<stagingSchema>].[stg_<flowId>_<utcStamp>_<runId8>]`, where `utcStamp` is a fixed-width UTC timestamp (`yyyyMMddHHmmssfff`, 17 digits) and `runId8` is the first 8 hex chars of the run GUID. The `utcStamp` makes the table's age readable straight from its name, so cleanup needs no `sys.tables.create_date` and has no server-local-timezone ambiguity; `runId8` guarantees uniqueness even when two runs of the same flow start in the same millisecond. The fixed `stg_` prefix and the `flowId` in a known position let per-flow cleanup match `stg_<flowId>_%` and let the sweep parse the timestamp from the fixed-width group. Only an optional trailing target tag is truncated or hashed if the 128-character identifier limit is hit; the prefix, flowId, stamp, and runId are never truncated.
+**Naming (canonical, traceable).** The staging object is `[raw].[<targetSchema>_<targetTable>_<flowId>]`. The `raw` schema by itself marks its tables as staging, so the name carries no `stg_` prefix, and the name reads straight back to the target it feeds (for example `[raw].[arc_Orders_279975153]` stages flow 279975153 into `[arc].[Orders]`). Characters outside `A-Z a-z 0-9 _` in the target identifiers fold to `_`; if the composed name would exceed the 128-character identifier limit, the traceable middle is trimmed and the `flowId` suffix, which guarantees uniqueness, never is. The match-keys key table is the same shape with an `mkey_` prefix, so the two work tables a flow can own stay distinguishable side by side.
 
-**Drop, create, and concurrency.** Create runs through `ApplyEvolutionAsync` (`IF OBJECT_ID IS NULL` guarded) under its own app lock keyed on the run-scoped staging name, so two simultaneous runs of one flow use different staging tables and different locks and cannot corrupt each other. The target lock stays keyed on the target object, so concurrent runs serialize target evolution but parallelize staging.
+**Rebuild, and concurrency.** Each run ensures the `raw` schema (guarded `CREATE SCHEMA`), drops the previous incarnation (`DROP TABLE IF EXISTS`), and creates the table fresh through `ApplyDdlAsync` (`IF OBJECT_ID IS NULL` guarded), so staging always starts empty with the run's exact source shape and a flow never owns more than one staging table. Same-flow concurrency is serialized at the run queue, not by naming: the claim's pipeline gate (`RunQueueStore.ClaimSqlTemplate`) never hands out a run whose pipeline already has a running execution, so two runs of one flow cannot contend for the canonical table. The target lock stays keyed on the target object, so distinct flows still parallelize freely.
 
 **Outcome-driven lifecycle (the debugging rule).** On SUCCESS the staging table is dropped by default; set `KeepStagingTable` to retain it. On FAILURE the staging table is ALWAYS kept, regardless of `KeepStagingTable`, because it holds the data needed to debug the failure (it is the forensic record). This replaces the legacy `TruncatePreTableOnCompletion` semantics: keep-and-truncate becomes the explicit opt-in, and drop-on-success is the default.
 
-**Automated orphan cleanup (bounds the retained tables).** Because per-execution names, plus kept-on-failure tables and hard crashes that skip the drop, would otherwise accumulate, an age-based sweep drops any staging table in the staging schema whose name-embedded `utcStamp` is older than a retention threshold (default 1 day). The sweep parses the timestamp from the name (UTC, compared to `UtcNow`), so it is provider-agnostic and never depends on a catalog timestamp; `sys.tables.create_date` is only a cross-check. A 1-day retention comfortably exceeds any single run, so the sweep can never drop a live run's table. It runs as a CLI `gc` step and, in full mode, a control-plane janitor.
-
-**Explicit cleanup functions.** Two operator-invokable functions on `IStagingMaintenance`, exposed via the CLI and the API: `CleanupFlowAsync(flowId)` drops all `stg_<flowId>_%` staging tables for one flow, and `CleanupAllAsync()` drops every staging table in the staging schema. Both skip tables newer than the retention threshold by default so an explicit cleanup cannot pull staging out from under a live run, with a `--force` / `includeActive` override to drop everything regardless. In full mode a control-DB staging registry (name, flowId, runId, created_utc, status) adds active-run awareness, so cleanup can tell a recent-but-live table from a recent orphan.
+**No orphan accumulation.** Because the name is canonical, kept-on-failure tables and hard crashes that skip the drop leave at most one staging table (plus one `mkey_` table) per flow, and the next run's rebuild resets it. No age-based sweep, name-embedded timestamp, or staging registry is needed; per-flow cleanup is a single `DROP TABLE IF EXISTS` of a deterministic name.
 
 ### 3.12 Plan / dry-run
 
@@ -757,7 +755,7 @@ The existing `FlowRunner` (file path) keeps `IDdlGenerator.Generate(TargetSpec, 
 1. Resolve source and target through the registry; open both connections.
 2. `ISourceSchemaReader.GetResultSchemaAsync(src, shapedSelect)` -> detected `SourceColumn[]` (true collation).
 3. `IngestionSchemaBuilder.Build(flow, Staging, detected)` -> staging `DesiredTable`.
-4. Drop+create the run-scoped staging table via `ApplyEvolutionAsync` under the staging lock (3.11).
+4. Drop+create the flow's canonical staging table via `ApplyEvolutionAsync` under the staging lock (3.11).
 5. Bulk-copy source into staging following `SourceToTargetNames` (bulk-copied columns only; virtual/system/hash columns are computed, not copied).
 6. `IntrospectObjectAsync(staging)` -> the staging live shape; build the target desired from it plus target injections (3.8); `Plan(targetDesired, targetLive)`.
 7. Evaluate `plan.Gate`; if blocked, fail before any target mutation (3.6).
@@ -774,7 +772,7 @@ The existing `FlowRunner` (file path) keeps `IDdlGenerator.Generate(TargetSpec, 
 | ALTER COLUMN on an indexed column | Bare ALTER fails at runtime inside the (non-)transaction; blocks every re-run | Planner reads `live.Indexes`/`Constraints`; drops and recreates dependent indexes around the ALTER in one tx, or reports `DependencyBlocksAlter` and leaves the column (3.4.1) |
 | ALTER blocked by PK/view/check/computed | Doomed ALTER | Not emitted; surfaced as drift / non-forced mismatch (3.4.1) |
 | Lock acquisition fails under load | `IF OBJECT_ID` + swallow 2714; no real lock; return code never existed | `sp_getapplock` return code captured and checked; `< 0` throws `SchemaLockTimeoutException`; DDL never runs unserialized (3.10) |
-| Two concurrent runs of same flow | Shared staging name, column-level races | Target lock on target object; run-scoped staging name + its own lock; no collision (3.11) |
+| Two concurrent runs of same flow | Shared staging name, column-level races | The run queue's pipeline gate serializes same-flow executions, so the canonical staging table is never shared by two live runs (3.11) |
 | Connection drops mid-DDL | Indeterminate | Session-owned lock auto-frees; transaction auto-rolls-back |
 | Virtual columns | Injected in legacy; absent from this design's first draft | Materialized as `Origin=Computed` columns, ordered before `_DW`, excluded from bulk copy, present in the upsert select-list (3.2 step 4) |
 | Source narrower than target | Forces source type, shrinks/truncates | `SqlTypeResolution` monotonic -> `Keep`, no DDL |
@@ -921,7 +919,7 @@ The implemented `TargetSpec.QualifiedName` (`src/SqlFlow.Core/Model/FlowDefiniti
 
    The resource is *not* the bracketed DDL name, so a `]` in an identifier cannot break the lock string, and it sidesteps escaping entirely for the lock. The bracketed (escaped) name is used only inside the DDL text. We never hand-format the bracketed name twice; the DDL uses `target.QualifiedName`.
 
-   For the per-execution staging table the resource is built from the staging schema and the run-scoped staging name `stg_{flowId}_{utcStamp}_{runId8}`, so target evolution serializes per object while staging parallelizes per run.
+   For the staging table the resource is built from the raw schema and the flow's canonical staging name `<targetSchema>_<targetTable>_<flowId>`, so target evolution and staging create serialize per object; distinct flows never share a staging name, and same-flow runs are already serialized by the run queue's pipeline gate.
 
 **Acquisition is polite (fail fast, no queue-blocking).** `sp_getapplock` is called with `@LockMode = Exclusive`, `@LockOwner = Session`, and `@LockTimeout` equal to the configured acquisition timeout (default 30000 ms). `Session` owner means the lock outlives the DDL transaction's commit/rollback so the same connection can run metadata-only and rewrite transactions back to back under one lock, and a dropped connection auto-frees it so a crashed run never wedges the next. The return code is checked: `0`/`1` acquired; any value `< 0` (`-1` timeout, `-2` caller cancelled, `-3` deadlock, `-999` validation) throws the typed `SchemaLockTimeoutException`, and no DDL runs unlocked.
 
@@ -1287,7 +1285,7 @@ public async Task ApplyDdlAsync(string connectionString, DdlBatch batch, SchemaA
 
 **`IScriptExecutor` (new, `SqlFlow.Core/Abstractions` + `SqlFlow.SqlServer`).** Runs user PreProcess/PostProcess on its own `SqlConnection`, each script its own `SqlCommand`, with no app lock and no `LOCK_TIMEOUT` override. Whether it wraps the scripts in one transaction is its own concern, independent of the schema lock; it does not borrow schema semantics.
 
-**Staging.** Staging create flows through the same `ApplyDdlAsync`, with `DdlBatch.Schema = stagingSchema` and `DdlBatch.Table = stg_{flowId}_{utcStamp}_{runId8}`, so the lock resource is the staging name, distinct from the target. Target evolution serializes per object; staging parallelizes per run. The drop-on-success / keep-on-failure / age-sweep lifecycle is unchanged; only staging create uses the object-keyed lock path.
+**Staging.** Staging create flows through the same `ApplyDdlAsync`, with `DdlBatch.Schema = "raw"` and `DdlBatch.Table = <targetSchema>_<targetTable>_<flowId>` (the flow's canonical staging name), so the lock resource is the staging name, distinct from the target. Distinct flows never share a staging name, and same-flow runs are serialized by the run queue's pipeline gate. The drop-on-success / keep-on-failure lifecycle (section 3.11) is unchanged; only staging create uses the object-keyed lock path.
 
 ### 3.12.6 Failure and edge handling
 

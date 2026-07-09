@@ -43,7 +43,7 @@ Every SQLFlow pipeline is a single YAML document. There is no control database a
 | flowType | Kind | Loader | What it does |
 | --- | --- | --- | --- |
 | (absent or empty) | file flow | `YamlFlowLoader` | Loads CSV/JSON/XML/XLS/Parquet files into a SQL Server table, with dynamic schema evolution |
-| `ing` | ingestion | `YamlIngestionFlowLoader` | Table-to-table copy through a run-scoped staging table: schema evolution, keyed upsert, incremental loading |
+| `ing` | ingestion | `YamlIngestionFlowLoader` | Table-to-table copy through the flow's canonical staging table in the `raw` schema: schema evolution, keyed upsert, incremental loading |
 | `exp` | export | `YamlExportFlowLoader` | Exports a SQL Server table or view to CSV or Parquet files, optionally chunked by day/month/key windows |
 | `sp` | stored procedure | `YamlStoredProcedureFlowLoader` | Executes one existing stored procedure (`EXEC`) on a resolved server |
 | `inv` | invoke | `YamlInvokeFlowLoader` | Triggers an Azure Data Factory pipeline or Automation runbook and waits for it to finish |

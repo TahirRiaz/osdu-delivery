@@ -212,7 +212,7 @@ public sealed class LineageExtractorTests
 
         var facts = ScriptFactBuilder.Facts(deps, "flow", null, "@srv", LineageTier.Observed, minimumParts: 2).ToList();
 
-        // The run-scoped staging table never reaches the graph; the true movement does.
+        // The transient staging table never reaches the graph; the true movement does.
         Assert.DoesNotContain(facts, f => f.Name.Equals("stg_run1", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(facts, f => f.Relation == LineageRelation.Writes && f.Name == "Final");
         Assert.Contains(facts, f => f.Relation == LineageRelation.Reads && f.Name == "Orders" && f.Database == "SRC");

@@ -80,6 +80,14 @@ public static class RunQueueStore
     // GroupWave is still queued or running). A standalone run (GroupId IS NULL) short-circuits the clause and is
     // claimable exactly as before. Because a blocked member simply is not selected (rather than locked), READPAST
     // still lets a worker move straight to the next eligible run - a not-yet-ready wave never stalls the queue.
+    //
+    // The pipeline-gating clause serializes executions of the SAME flow: a run is claimable only while no other run
+    // of its pipeline is executing, so a double-trigger (or a schedule firing while the previous run is still going)
+    // queues behind the running one instead of racing it. This is load-bearing for ingestion: each flow stages
+    // through one canonical work table ([raw].[<schema>_<table>_<flowId>]), which two overlapping executions of the
+    // flow would clobber. Like the group gate, a blocked duplicate is simply not selected, so the worker moves on to
+    // the next eligible run; node-restart recovery (RecoverStuckRunningAsync) requeues orphaned running rows, so a
+    // crashed run cannot wedge its pipeline.
     private const string ClaimSqlTemplate = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         UPDATE [catalog].[Run]
@@ -92,6 +100,9 @@ public static class RunQueueStore
                   SELECT 1 FROM [catalog].[Run] AS s
                   WHERE s.[GroupId] = r.[GroupId] AND s.[GroupWave] < r.[GroupWave]
                     AND s.[Status] IN (@queued, @running)))
+              AND NOT EXISTS (
+                  SELECT 1 FROM [catalog].[Run] AS p
+                  WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = @running)
             ORDER BY r.[EnqueuedUtc], r.[RunId]);
         """;
 
@@ -239,8 +250,9 @@ public static class RunQueueStore
 
     /// <summary>Atomically claims the oldest queued run this node is eligible for, flipping it to <c>running</c> and
     /// returning its id, or null when there is none. Eligibility: an untargeted run (no pool) is claimable by any
-    /// node; a pooled run only by a node that serves that pool (<paramref name="pools"/>). Safe to call
-    /// concurrently from many workers: each claim takes a different run (or none).</summary>
+    /// node; a pooled run only by a node that serves that pool (<paramref name="pools"/>); a run whose pipeline
+    /// already has a running execution waits its turn (same-flow runs never overlap, protecting the flow's canonical
+    /// staging table). Safe to call concurrently from many workers: each claim takes a different run (or none).</summary>
     public static async Task<Guid?> ClaimNextAsync(
         CatalogDbContext catalog, string node, IReadOnlyList<string> pools, DateTime nowUtc, CancellationToken ct = default)
     {

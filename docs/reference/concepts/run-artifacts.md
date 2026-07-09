@@ -133,7 +133,7 @@ Every run writes a `run.log`, but the rendering differs by kind. `ing`, `exp`, `
 Line format: `yyyy-MM-dd HH:mm:ss.fffZ LEVEL step message`, with the level padded to 5 characters and the step to 22. A multi-line message (SQL at trace level) continues on indented `    | ` lines, so the file stays both readable and greppable.
 
 ```text
-2026-06-17 14:04:17.728Z INFO  run.start              ingestion 'orders-dw' (flow 2058323265, run 54a16f70): [TestDB].[dbo].[Orders] -> [TestDB].[dbo].[Orders_DW], staging [dbo].[stg_2058323265_20260617140417695_54a16f70]
+2026-06-17 14:04:17.728Z INFO  run.start              ingestion 'orders-dw' (flow 2058323265, run 54a16f70): [TestDB].[dbo].[Orders] -> [TestDB].[dbo].[Orders_DW], staging [raw].[dbo_Orders_DW_2058323265]
 2026-06-17 14:04:18.847Z INFO  source.introspect      11 source column(s), 11 bulk-copied
 2026-06-17 14:04:19.703Z INFO  stage.copy             4 row(s) staged
 2026-06-17 14:04:20.195Z INFO  upsert.apply           4 inserted, 0 updated
@@ -150,19 +150,25 @@ Line format: `yyyy-MM-dd HH:mm:ss.fffZ LEVEL step message`, with the level padde
 
 Events above the enabled level are dropped at the source. `IRunEventSink` is the seam the runners emit through; `NullRunEventSink.Instance` is the no-op default, so a library caller that wants no log pays nothing.
 
-Ingestion step names (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) include `run.start`, `source.introspect`, `staging.create`, `incremental.window`, `source.select`, `stage.copy`, `target.evolve`, `target.index.canonical`, `target.truncate`, `upsert.update`, `upsert.insert`, `upsert.apply`, `matchkeys`, `target.index.desired`, `assertion`, `staging.drop`, `transform.view`, and `run.end`.
+Ingestion step names (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) include `run.start`, `source.introspect`, `staging.schema`, `staging.reset`, `staging.create`, `incremental.window`, `source.select`, `stage.copy`, `target.evolve`, `target.index.canonical`, `target.truncate`, `upsert.update`, `upsert.insert`, `upsert.apply`, `matchkeys`, `target.index.desired`, `assertion`, `staging.drop`, `transform.view`, and `run.end`.
 
 ### trace.sql: the generated SQL
 
 Every runner captures each generated SQL statement unconditionally as a `SqlTraceEntry { Sequence, Step, Sql }` on the run result, on success and (especially) on failure: the generated SQL is the debugging surface of a metadata-driven run. One call site feeds two outputs: the statement lands in the ordered trace that becomes `trace.sql`, and it is emitted to the run log at `Trace` level, so a trace-level `run.log` shows every statement at its exact point in the timeline.
 
-`SqlTrace.Render` (src/SqlFlow.Core/Ingestion/SqlTrace.cs) formats the file as a `-- [sequence] step` comment header followed by the statement. The first two entries from samples/seed/.sqlflow/runs/orders-dw/20260617-140420_54a16f70/trace.sql:
+`SqlTrace.Render` (src/SqlFlow.Core/Ingestion/SqlTrace.cs) formats the file as a `-- [sequence] step` comment header followed by the statement. The first entries of an ingestion run's trace.sql:
 
 ```sql
--- [1] staging.create
-IF OBJECT_ID(N'[dbo].[stg_2058323265_20260617140417695_54a16f70]', N'U') IS NULL
+-- [1] staging.schema
+IF SCHEMA_ID(N'raw') IS NULL EXEC(N'CREATE SCHEMA [raw]');
+
+-- [2] staging.reset
+DROP TABLE IF EXISTS [raw].[dbo_Orders_DW_2058323265];
+
+-- [3] staging.create
+IF OBJECT_ID(N'[raw].[dbo_Orders_DW_2058323265]', N'U') IS NULL
 BEGIN
-    CREATE TABLE [dbo].[stg_2058323265_20260617140417695_54a16f70] (
+    CREATE TABLE [raw].[dbo_Orders_DW_2058323265] (
         [OrderId] bigint NOT NULL,
         [Customer] varchar(255) NULL,
         [Amount] varchar(255) NULL,
@@ -177,7 +183,7 @@ BEGIN
     );
 END;
 
--- [2] source.select
+-- [4] source.select
 SELECT [OrderId], [Customer], [Amount], [OrderDate], [IsPaid], [FileName_DW], [FileDate_DW], [FileRowDate_DW], [FileSize_DW], [DataSet_DW], [RowNumber_DW] FROM [dbo].[Orders] WHERE 1=1
 ```
 

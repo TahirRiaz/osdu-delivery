@@ -48,9 +48,9 @@ public sealed class SqlTraceIntegrationTests
             Assert.DoesNotContain(-1, positions);
             Assert.Equal(positions.OrderBy(p => p), positions);
 
-            // The trace carries the real SQL (the upsert insert references the staging table).
+            // The trace carries the real SQL (the upsert insert references the flow's canonical staging table).
             var insertEntry = result.SqlTrace.Single(e => e.Step == "upsert.insert");
-            Assert.Contains($"stg_{flowId}_", insertEntry.Sql, StringComparison.Ordinal);
+            Assert.Contains($"[raw].[dbo_{trg}_{flowId}]", insertEntry.Sql, StringComparison.Ordinal);
         }
         finally
         {

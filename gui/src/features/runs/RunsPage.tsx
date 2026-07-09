@@ -114,7 +114,18 @@ function makeBatchGrouping(onRunBatch: (repoId: string | null, batch: string) =>
   return {
   groupKey: (row) => row.batch,
   renderGroupHeader: (rows) => (
-    <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="batch-group-header">
+    // flexGrow makes this stack fill the header row (it is a content-sized flex item inside the node row's
+    // cell), so the button's ml auto really pushes it to the right edge instead of leaving it mid-row where
+    // it would swallow clicks meant to collapse the group.
+    <Stack
+      direction="row"
+      spacing={1.5}
+      alignItems="baseline"
+      useFlexGap
+      flexWrap="wrap"
+      sx={{ flexGrow: 1 }}
+      data-testid="batch-group-header"
+    >
       <Typography variant="body2" sx={{ fontWeight: 700 }}>Batch: {rows[0].batch}</Typography>
       <GroupStatsInline rows={rows} />
       <Button

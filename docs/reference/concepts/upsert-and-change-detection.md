@@ -29,14 +29,14 @@ sourceRefs:
 
 # The two-step upsert, batching, hash change detection, and deleted-row matching
 
-An ingestion flow (`flowType: ing`) never writes source rows straight into the target. It stages them in a run-scoped staging table, then applies staging to the target with an explicit two-step upsert: an UPDATE of matched rows whose data changed, followed by an INSERT of rows that do not yet exist. The engine deliberately never emits a T-SQL `MERGE` (`src/SqlFlow.SqlServer/Schema/UpsertGenerator.cs` documents the choice: MERGE has known concurrency and trigger hazards, and the legacy engine avoided it too). Everything on this page is pure text generation in `UpsertGenerator` and `MatchKeyGenerator`, orchestrated by `src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs`.
+An ingestion flow (`flowType: ing`) never writes source rows straight into the target. It stages them in the flow's canonical staging table (`[raw].[<targetSchema>_<targetTable>_<flowId>]`, rebuilt per run), then applies staging to the target with an explicit two-step upsert: an UPDATE of matched rows whose data changed, followed by an INSERT of rows that do not yet exist. The engine deliberately never emits a T-SQL `MERGE` (`src/SqlFlow.SqlServer/Schema/UpsertGenerator.cs` documents the choice: MERGE has known concurrency and trigger hazards, and the legacy engine avoided it too). Everything on this page is pure text generation in `UpsertGenerator` and `MatchKeyGenerator`, orchestrated by `src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs`.
 
 A keyed flow (non-empty `load.keyColumns`, or `matchKeys.keyColumns` when the key-match pass is on and declares its own keys) always goes through the upsert. A keyless flow appends every staged row with a single INSERT (append-only by nature). The upsert's INSERT is an anti-join:
 
 ```sql
 INSERT INTO [dbo].[Orders] (...)
 SELECT DISTINCT src.[OrderID], src.[Status], ...
-FROM [dbo].[Orders_stg_...] AS src
+FROM [raw].[dbo_Orders_279975153] AS src
 WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Orders] AS trg WHERE src.[OrderID] = trg.[OrderID]);
 ```
 
@@ -140,12 +140,12 @@ The upsert validates the algorithm through `HashKey.BinaryTypeFor` before interp
 
 An upsert never removes anything, so a row deleted at the source lives on in the target forever. `load.matchKeysInSourceAndTarget: true` closes that gap. After every load, including incremental ones, the runner:
 
-1. Creates a run-scoped key table `mkey_{flowId}_{stamp}_{runToken}` in the target schema by cloning the target key columns' exact types and collations (`SELECT TOP (0) ... INTO`), with a clustered index on the keys.
+1. Rebuilds the flow's canonical key table `[raw].[mkey_{targetSchema}_{targetTable}_{flowId}]` (dropping any prior incarnation first) by cloning the target key columns' exact types and collations (`SELECT TOP (0) ... INTO`), with a clustered index on the keys.
 2. Lands the full distinct SOURCE key set in it. The key fetch is bounded only by the static filter, never the incremental window, so a row deleted outside the window is still detected.
 3. Runs one script (`MatchKeyGenerator.Generate`) that anti-joins the target against the key set with NULL-safe key equality (a NULL key matches a NULL key) and tags or deletes target rows whose keys vanished.
 4. Reads back one counter row: `TotalRows`, `CandidateRows`, `AffectedRows`, `ResurrectedRows`, `ThresholdBreached`.
 
-The key table is dropped on success unless `load.keepStagingTable` keeps the run's tables; a failed run keeps it for debugging.
+The key table is dropped on success unless `load.keepStagingTable` keeps the flow's work tables; a failed run keeps it for debugging, and the next run's rebuild resets it.
 
 ### Action, threshold, resurrection
 

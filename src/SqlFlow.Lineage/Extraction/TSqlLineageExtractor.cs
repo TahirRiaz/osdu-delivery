@@ -944,8 +944,10 @@ public static class TSqlLineageExtractor
             {
                 _deps.ScriptDropped.Add(table.Key);
 
-                // Create BEFORE drop is the engine's run-scoped staging signature; a drop followed by a
-                // (re)create is a rebuild and keeps its lifecycle relations.
+                // Create BEFORE drop is the engine's transient staging signature (the canonical staging
+                // table is created, loaded, read, and dropped within one run; its leading reset-drop
+                // precedes the create, so it does not trip this). A drop followed by a (re)create with no
+                // later drop is a rebuild and keeps its lifecycle relations.
                 if (_deps.ScriptCreated.Contains(table.Key))
                 {
                     _deps.CreatedThenDropped.Add(table.Key);

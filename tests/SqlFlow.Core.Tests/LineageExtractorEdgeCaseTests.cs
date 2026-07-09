@@ -9,7 +9,7 @@ namespace SqlFlow.Tests;
 /// Robustness edge cases for the operation-wise extractor, chosen to exercise corners the core specification
 /// does not already pin: APPLY operators, set operators, write-through-CTE and write-through-derived-table
 /// rejection, partition switch part-count gating, multi-statement chain dissolution through an uncreated
-/// intermediate, rebuild versus run-scoped-staging lifecycle, global temp objects, cursor bodies, BULK
+/// intermediate, rebuild versus transient-staging lifecycle, global temp objects, cursor bodies, BULK
 /// INSERT, an EXEC of a procedure held in a variable, identity case folding, and the fact-builder part
 /// threshold. Every case is pure in-memory (parse plus extract), so the suite always runs and stays
 /// deterministic.
@@ -323,7 +323,7 @@ public sealed class LineageExtractorEdgeCaseTests
         Assert.Equal([LineageRelation.Reads, LineageRelation.Creates], v1Relations);
     }
 
-    // ---- Lifecycle: rebuild vs run-scoped staging ------------------------------------------------------
+    // ---- Lifecycle: rebuild vs transient staging -------------------------------------------------------
 
     [Fact]
     public void DropThenCreateThenLoad_IsARebuild_NotCreatedThenDropped()
@@ -356,7 +356,7 @@ public sealed class LineageExtractorEdgeCaseTests
         Assert.Contains("dw.dbo.t", deps.CreatedThenDropped);
 
         // The staging filter lives in the fact builder, so TypedRelations still carries the raw write, but the
-        // facts hide the run-scoped table entirely.
+        // facts hide the transient table entirely.
         var facts = ScriptFactBuilder.Facts(deps, "flow", null, "@srv", LineageTier.Observed, minimumParts: 2).ToList();
         Assert.DoesNotContain(facts, f => f.Name.Equals("T", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(facts, f => f.Relation == LineageRelation.Reads && f.Name == "S");

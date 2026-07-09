@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link as RouterLink, Navigate, useParams } from "react-router-dom";
+import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSnackbar } from "notistack";
 import Alert from "@mui/material/Alert";
@@ -19,6 +19,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import ReplayIcon from "@mui/icons-material/Replay";
 import type {
   RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey, RunTraceEntry,
 } from "../../api/types";
@@ -193,6 +194,7 @@ export default function RunDetailPage() {
 
 function RunDetailContent({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
   const [tab, setTab] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -254,6 +256,38 @@ function RunDetailContent({ runId }: { runId: string }) {
     },
   });
 
+  // Re-run repeats this one flow with the same operator parameters the original run carried (full load,
+  // backfill window, file pattern, target pool) but against the current code, matching the group page's
+  // re-run semantics (no commit pin). The new execution is a new run; the button navigates there.
+  const rerun = useMutation({
+    mutationFn: () => {
+      const r = query.data;
+      if (!r?.repoId) {
+        throw new Error("The run has not loaded yet.");
+      }
+
+      return runApi.trigger({
+        repoId: r.repoId,
+        flowName: r.flowName,
+        scope: "flow",
+        pool: r.targetPool,
+        fullLoad: r.fullLoad,
+        backfillFrom: r.backfillFrom,
+        backfillTo: r.backfillTo,
+        filePattern: r.filePattern,
+      });
+    },
+    onSuccess: (accepted) => {
+      enqueueSnackbar("Re-run enqueued.", { variant: "success" });
+      if (accepted.runId) {
+        navigate(`/runs/${accepted.runId}`);
+      }
+    },
+    onError: (error) => {
+      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+    },
+  });
+
   const cancel = useMutation({
     mutationFn: () => runApi.cancel(runId),
     onSuccess: () => {
@@ -307,17 +341,29 @@ function RunDetailContent({ runId }: { runId: string }) {
             <Chip size="small" label={`batch: ${run.batch}`} variant="outlined" data-testid="run-batch" />
           </>
         )}
-        actions={cancellable && (
-          <Button
-            color="error"
-            variant="outlined"
-            onClick={() => setConfirmOpen(true)}
-            disabled={cancelling || cancel.isPending}
-            data-testid="cancel-run"
-          >
-            {cancelling ? "Cancelling…" : "Cancel run"}
-          </Button>
-        )}
+        actions={cancellable
+          ? (
+            <Button
+              color="error"
+              variant="outlined"
+              onClick={() => setConfirmOpen(true)}
+              disabled={cancelling || cancel.isPending}
+              data-testid="cancel-run"
+            >
+              {cancelling ? "Cancelling…" : "Cancel run"}
+            </Button>
+          )
+          : (run.repoId !== null && (
+            <Button
+              variant="outlined"
+              startIcon={<ReplayIcon fontSize="small" />}
+              onClick={() => rerun.mutate()}
+              disabled={rerun.isPending}
+              data-testid="rerun-run"
+            >
+              Re-run
+            </Button>
+          ))}
       >
         <DetailPair label="Run id"><Mono>{run.runId}</Mono></DetailPair>
         <DetailPair label="Repo">

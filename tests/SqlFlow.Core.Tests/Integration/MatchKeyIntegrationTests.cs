@@ -502,6 +502,7 @@ public sealed class MatchKeyIntegrationTests
     private static Task DropMatchKeyTablesAsync(string cs)
         => IntegrationDb.ExecuteAsync(cs,
             $"DECLARE @sql nvarchar(max) = N''; " +
-            $"SELECT @sql += 'DROP TABLE [dbo].[' + name + '];' FROM sys.tables WHERE name LIKE 'mkey[_]{FlowId}[_]%'; " +
+            "SELECT @sql += 'DROP TABLE [raw].[' + t.name + '];' FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+            $"WHERE s.name = 'raw' AND t.name LIKE 'mkey[_]%[_]{FlowId}'; " +
             "IF LEN(@sql) > 0 EXEC sys.sp_executesql @sql;");
 }

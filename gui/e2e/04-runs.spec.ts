@@ -118,6 +118,19 @@ test.describe.serial("runs", () => {
       .toBeVisible({ timeout: 30_000 });
     // A terminal run offers no cancel affordance.
     await expect(adminPage.getByTestId("cancel-run")).toHaveCount(0);
+
+    // A terminal run offers a re-run instead. The re-run repeats the run's own parameters, including the
+    // unserved pool, so the new run also stays queued; the page navigates to it. Cancel it to clean up.
+    const cancelledUrl = adminPage.url();
+    await adminPage.getByTestId("rerun-run").click();
+    await expect(adminPage).not.toHaveURL(cancelledUrl, { timeout: 15_000 });
+    await expect(adminPage.getByTestId("page-run-detail")).toBeVisible();
+    await expect(adminPage.getByTestId("status-badge").filter({ hasText: "queued" }).first())
+      .toBeVisible({ timeout: 15_000 });
+    await adminPage.getByTestId("cancel-run").click();
+    await adminPage.getByTestId("confirm-dialog-confirm").click();
+    await expect(adminPage.getByTestId("status-badge").filter({ hasText: "cancelled" }).first())
+      .toBeVisible({ timeout: 30_000 });
   });
 
   test("run detail links back to its pipeline and repo", async ({ adminPage }) => {

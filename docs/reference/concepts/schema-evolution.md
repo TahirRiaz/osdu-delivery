@@ -164,9 +164,9 @@ Generated statements are idempotent:
 
 ### How the ingestion run uses it
 
-`IngestionFlowRunner` (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) evolves schema in two passes through a run-scoped staging table:
+`IngestionFlowRunner` (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs) evolves schema in two passes through the flow's canonical staging table:
 
-1. **Staging**: a fresh per-execution table (its name carries the flow id, a UTC timestamp, and a run token) is created via `EvolveAsync` with `allowTableRewrite: false` and no key columns. Because the table never pre-exists, this is always a clean CREATE of the bulk-copied data columns only. On success the staging table is dropped (`DROP TABLE IF EXISTS`) unless `load.keepStagingTable: true`; on failure it is always kept for debugging.
+1. **Staging**: the flow's canonical table `[raw].[<targetSchema>_<targetTable>_<flowId>]` is rebuilt via `EvolveAsync` with `allowTableRewrite: false` and no key columns. Any prior incarnation is dropped first, so this is always a clean CREATE of the bulk-copied data columns only. On success the staging table is dropped (`DROP TABLE IF EXISTS`) unless `load.keepStagingTable: true`; on failure it is always kept for debugging, and the next run's rebuild resets it.
 2. **Target**: when `schema.sync` is true (the default), the persistent target takes the ADD/ALTER evolution path with the flow's `schema.allowTableRewrite` and effective key columns. Target-only columns are always retained.
 
 `IngestionSchemaBuilder` (src/SqlFlow.SqlServer/Schema/IngestionSchemaBuilder.cs) builds the desired schema from the shaped source columns and injects the engine-maintained columns:

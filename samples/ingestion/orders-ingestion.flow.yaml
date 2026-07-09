@@ -1,6 +1,7 @@
 # SQLFlow pipeline - table-to-table ingestion with dynamic schema evolution.
 #
-# Copies a SQL Server source table into a target table through a run-scoped staging table:
+# Copies a SQL Server source table into a target table through the flow's canonical staging
+# table (one per flow, in the raw schema, rebuilt each run):
 # the target is created on first run, NEW SOURCE COLUMNS ARE ADDED AUTOMATICALLY on later
 # runs (dynamic schema evolution, on by default), and rows are applied with a keyed
 # two-step upsert (update changed, insert new) - never a blind reload.
@@ -52,7 +53,7 @@ load:
 
 # ---- KEY-MATCH (deleted-row detection) -----------------------------------------
 # When load.matchKeysInSourceAndTarget: true, the engine lands the full distinct
-# source key set in a run-scoped table after each load and compares it against the
+# source key set in the flow's canonical key table after each load and compares it against the
 # target. Target rows whose keys are gone from the source are tagged (soft delete,
 # the default) or hard-deleted, depending on 'action'.
 #

@@ -160,11 +160,8 @@ public sealed class YamlIngestionEndToEndTests
         await IntegrationDb.DropTableAsync(cs, src);
         await IntegrationDb.DropTableAsync(cs, trg);
 
-        // Drop any staging leftovers for this flow's deterministic id.
+        // Drop any staging leftovers for this flow's deterministic id (canonical work tables in raw).
         var flowId = Loader.Parse(FlowYaml(flowName, src, trg)).Flow.FlowId;
-        await IntegrationDb.ExecuteAsync(cs,
-            $"DECLARE @sql nvarchar(max) = N''; " +
-            $"SELECT @sql += 'DROP TABLE [dbo].[' + name + '];' FROM sys.tables WHERE name LIKE 'stg[_]{flowId}[_]%'; " +
-            "IF LEN(@sql) > 0 EXEC sys.sp_executesql @sql;");
+        await RelationalIngestionHarness.DropStagingAsync(cs, flowId);
     }
 }

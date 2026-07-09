@@ -29,6 +29,7 @@ public sealed class LineageSchemaApiTests
         // An isolated server identity so the schema grouping and counts are deterministic in a shared catalog.
         var serverRef = "${env:SQLFLOW_TEST_" + suffix + "}";
         var ordersKey = $"{serverRef}|dw|dbo|orders";
+        var repoId = FlowIdentity.FromName("lineage_edges_" + suffix);
         var now = DateTime.UtcNow;
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
@@ -43,6 +44,20 @@ public sealed class LineageSchemaApiTests
 
                 db.ObjectColumns.Add(new CatalogObjectColumn { ObjectKey = ordersKey, Ordinal = 1, Name = "Id", DataType = "int", Nullable = false, Tier = "Observed" });
                 db.ObjectColumns.Add(new CatalogObjectColumn { ObjectKey = ordersKey, Ordinal = 2, Name = "Amount", DataType = "decimal(18,2)", Nullable = true, Tier = "Observed" });
+
+                // A repo with one edge onto the seeded object, and one onto an object the registry does not
+                // know, so the edge list's registry join is proven for both the hit and the miss.
+                db.Repos.Add(new CatalogRepo { Id = repoId, Name = "lineage_edges_" + suffix, FirstSeenUtc = now, LastSyncUtc = now });
+                db.LineageEdges.Add(new CatalogLineageEdge
+                {
+                    RepoId = repoId, Flow = "flow_" + suffix, Relation = "Writes",
+                    ObjectKey = ordersKey, ObjectName = "Orders", Tier = "Declared",
+                });
+                db.LineageEdges.Add(new CatalogLineageEdge
+                {
+                    RepoId = repoId, Flow = "flow_" + suffix, Relation = "Reads",
+                    ObjectKey = $"{serverRef}|dw|dbo|unregistered", ObjectName = "Unregistered", Tier = "Declared",
+                });
                 await db.SaveChangesAsync();
             }
 
@@ -70,12 +85,26 @@ public sealed class LineageSchemaApiTests
             Assert.Contains("CREATE TABLE", dossier.Object.Script ?? string.Empty, StringComparison.Ordinal);
             Assert.Equal(2, dossier.Columns.Count);
             Assert.Equal(["Amount", "Id"], dossier.Columns.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+            // The edge list joins the global registry for each object's proper-cased database/schema; an edge
+            // whose object is not registered still returns, with nulls.
+            var edges = await GetJsonAsync<PagedResult<EdgeDto>>(
+                client, token, $"/api/v1/repos/{repoId}/lineage/edges?pageSize=50");
+            Assert.Equal(2, edges.Total);
+            var registered = edges.Items.Single(e => e.ObjectKey == ordersKey);
+            Assert.Equal("DW", registered.ObjectDatabase);
+            Assert.Equal("dbo", registered.ObjectSchema);
+            var unregistered = edges.Items.Single(e => e.ObjectKey != ordersKey);
+            Assert.Null(unregistered.ObjectDatabase);
+            Assert.Null(unregistered.ObjectSchema);
         }
         finally
         {
             await using var db = CatalogDatabase.Create(cs);
             await db.ObjectColumns.Where(c => c.ObjectKey.StartsWith(serverRef)).ExecuteDeleteAsync();
             await db.Objects.Where(o => o.ServerRef == serverRef).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
         }
     }
 
