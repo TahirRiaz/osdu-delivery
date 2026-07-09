@@ -58,6 +58,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogAccessToken> AccessTokens => Set<CatalogAccessToken>();
 
+    public DbSet<CatalogComputeTask> ComputeTasks => Set<CatalogComputeTask>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -352,6 +354,29 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(u => u.Username).IsUnique();
             // JIT provisioning keys on the Entra object id; filtered unique so local users (null) do not collide.
             entity.HasIndex(u => u.ExternalObjectId).IsUnique().HasFilter("[ExternalObjectId] IS NOT NULL");
+        });
+
+        modelBuilder.Entity<CatalogComputeTask>(entity =>
+        {
+            entity.ToTable("ComputeTask");
+            entity.HasKey(t => t.TaskId);
+            entity.Property(t => t.Operation).HasMaxLength(32).IsRequired();
+            entity.Property(t => t.SourceRef).HasMaxLength(512).IsRequired();
+            entity.Property(t => t.ProviderKind).HasMaxLength(16);
+            // The payload is compact JSON of a bounded contract; nvarchar(max) only because a long ${keyvault:...}
+            // reference plus arguments has no single useful column bound.
+            entity.Property(t => t.ArgumentsJson).IsRequired();
+            entity.Property(t => t.TargetPool).HasMaxLength(128);
+            entity.Property(t => t.Status).HasMaxLength(16).IsRequired();
+            entity.Property(t => t.RequestedBy).HasMaxLength(256);
+            entity.Property(t => t.ClaimedByNode).HasMaxLength(256);
+            // Error and ResultJson are nvarchar(max): a provider error can be long, and the result is the
+            // operation's JSON document (bounded by the executor's result-size cap, not by a column length).
+            // The work-queue claim seeks the oldest queued task, exactly like the run claim.
+            entity.HasIndex(t => new { t.Status, t.EnqueuedUtc });
+            // The GUI lists recent tasks newest first, optionally per source.
+            entity.HasIndex(t => t.EnqueuedUtc);
+            entity.HasIndex(t => t.SourceRef);
         });
 
         modelBuilder.Entity<CatalogAccessToken>(entity =>

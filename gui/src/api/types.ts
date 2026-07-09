@@ -691,3 +691,181 @@ export interface CreatedAccessToken {
   token: AccessToken;
   secret: string;
 }
+
+// ---- Datasources and ad-hoc compute -------------------------------------------------------------------------------
+
+/** One datasource the estate declares: a connection reference plus how the catalog sees it used. */
+export interface Datasource {
+  /** The connection reference: a whole ${...} / @alias token, or the hashed identity of an inline literal. */
+  reference: string;
+  /** Best-effort provider kind read from the flow definitions (MSSQL / AZDB / MySQL / PostgreSQL / Oracle). */
+  kind: string | null;
+  /** True when a worker can resolve the reference for ad-hoc compute (only whole references can travel). */
+  resolvable: boolean;
+  sourcePipelines: number;
+  targetPipelines: number;
+}
+
+export type ComputeOperation =
+  | "testConnection"
+  | "listDatabases"
+  | "listSchemas"
+  | "listObjects"
+  | "searchObjects"
+  | "introspectObject"
+  | "detectUniqueKey";
+
+/** The body that requests an ad-hoc compute task. References only; a secret is never sent. */
+export interface ComputeTaskRequest {
+  reference: string;
+  operation: ComputeOperation;
+  /** Provider kind for a ${...} reference (default SQL Server); an @alias resolves its own kind. */
+  kind?: string | null;
+  /** Routes the task to a node serving this pool (a node that can reach the source); omit for any node. */
+  pool?: string | null;
+  database?: string | null;
+  schema?: string | null;
+  objectName?: string | null;
+  nameLike?: string | null;
+  searchTerm?: string | null;
+  includeTables?: boolean;
+  includeViews?: boolean;
+  includeSystem?: boolean;
+  offset?: number;
+  limit?: number;
+  /** detectUniqueKey: null auto-samples large tables, 0 forces a full scan, positive sets an explicit sample. */
+  sampleSize?: number | null;
+  maxKeyColumns?: number;
+  maxCandidates?: number;
+  verifyCandidates?: boolean;
+  trustDeclaredKeys?: boolean;
+}
+
+export interface ComputeTaskAccepted {
+  taskId: string;
+  status: string;
+}
+
+/** A compute task as the task list shows it (no result body). */
+export interface ComputeTaskSummary {
+  taskId: string;
+  operation: ComputeOperation;
+  sourceRef: string;
+  providerKind: string | null;
+  pool: string | null;
+  status: string;
+  requestedBy: string | null;
+  enqueuedUtc: string;
+  startUtc: string | null;
+  endUtc: string | null;
+  claimedByNode: string | null;
+  cancelRequestedUtc: string | null;
+  error: string | null;
+  hasResult: boolean;
+}
+
+/** A single compute task; result is the operation's JSON document once the task succeeded. */
+export interface ComputeTask extends Omit<ComputeTaskSummary, "hasResult"> {
+  result: unknown | null;
+}
+
+// ---- Compute result payloads (the shapes of ComputeTask.result per operation) --------------------------------------
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  kind: string;
+  serverVersion: string | null;
+  database: string | null;
+  elapsedMs: number;
+}
+
+export interface DatasourceDatabase {
+  name: string;
+  collation: string | null;
+  state: string | null;
+}
+
+export interface DatasourceSchema {
+  name: string;
+  owner: string | null;
+}
+
+export interface DatasourceObject {
+  schema: string;
+  name: string;
+  type: "Table" | "View";
+  approxRows: number;
+}
+
+export interface DatasourceObjectPage {
+  items: DatasourceObject[];
+  offset: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+}
+
+export interface DatasourceObjectMatch {
+  schema: string;
+  name: string;
+  type: "Table" | "View";
+  rank: number;
+}
+
+export interface IntrospectedColumn {
+  name: string;
+  ordinal: number;
+  nativeType: string;
+  isNullable: boolean;
+  collation: string | null;
+  isIdentity: boolean;
+  computedExpression: string | null;
+  defaultExpression: string | null;
+  isPrimaryKeyMember: boolean;
+}
+
+export interface IntrospectedIndex {
+  name: string;
+  isPrimaryKey: boolean;
+  isUnique: boolean;
+  isClustered: boolean;
+  isColumnStore: boolean;
+  keyColumns: string[];
+}
+
+export interface IntrospectedObject {
+  name: { database: string | null; schema: string; name: string; schemaQualified: string; qualifiedName: string };
+  type: "Table" | "View";
+  columns: IntrospectedColumn[];
+  indexes: IntrospectedIndex[];
+  isTemporal: boolean;
+}
+
+export interface IntrospectionResult {
+  found: boolean;
+  object?: IntrospectedObject;
+}
+
+export interface UniqueKeyCandidate {
+  columns: string[];
+  isUnique: boolean;
+  verified: boolean;
+  declared: boolean;
+  distinct: number;
+  nulls: number;
+  rows: number;
+  duplicates: number;
+  estimated: boolean;
+  selectivity: number;
+}
+
+export interface UniqueKeyReport {
+  objectName: string | null;
+  totalRows: number;
+  scannedRows: number;
+  sampled: boolean;
+  columns: { column: string; distinct: number; nulls: number; scanned: number; selectivity: number }[];
+  candidates: UniqueKeyCandidate[];
+  excludedColumns: { column: string; reason: string }[];
+  note: string | null;
+}

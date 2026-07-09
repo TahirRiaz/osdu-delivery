@@ -25,6 +25,14 @@ public sealed record FileSourceOptions
     /// </summary>
     public FileDateSpec? FileDate { get; init; }
 
+    /// <summary>
+    /// How <c>DataSet_DW</c> is derived: from a date detected in the file name (with last-modified as the
+    /// fallback), or the last-modified timestamp only. Defaults to <see cref="DataSetDateSpec.ModifiedOnly"/>;
+    /// each reader replaces it with <see cref="DataSetDateSpec.FromOptions"/> so a flow's <c>dataSetFromFileName</c>
+    /// / <c>dataSetFormats</c> options take effect.
+    /// </summary>
+    public DataSetDateSpec DataSetDate { get; init; } = DataSetDateSpec.ModifiedOnly;
+
     // --- Post-load lifecycle ---
     public string? CopyToPath { get; init; }
     public string? ZipToPath { get; init; }

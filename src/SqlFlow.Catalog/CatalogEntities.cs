@@ -747,6 +747,63 @@ public class CatalogNode
     public string? Version { get; set; }
 }
 
+/// <summary>
+/// One queued ad-hoc datasource compute task: an interactive inspection (list databases/schemas/tables, search,
+/// introspect an object, test connectivity, detect a unique key) requested through the control plane and executed
+/// by whichever worker node can reach the source. The row IS the queue entry, the live status, and the durable
+/// result, mirroring how <see cref="CatalogRun"/> works for flow runs: references only travel through it (the
+/// node resolves credentials from its own environment), the claim is atomic across concurrent workers, and the
+/// result/error is recorded on the same row the trigger returned, so <c>GET /datasources/tasks/{id}</c> reflects
+/// the task from queued to terminal. Lifecycle states reuse <see cref="RunStatuses"/>.
+/// </summary>
+public class CatalogComputeTask
+{
+    public Guid TaskId { get; set; }
+
+    /// <summary>The operation (one of the closed ComputeOperations set, e.g. <c>listObjects</c>).</summary>
+    public string Operation { get; set; } = string.Empty;
+
+    /// <summary>The connection reference the task runs against: a whole <c>${...}</c> reference or an
+    /// <c>@alias</c>, never an inline connection string and never a secret.</summary>
+    public string SourceRef { get; set; } = string.Empty;
+
+    /// <summary>The provider kind for a <c>${...}</c> reference (MSSQL / AZDB / MySQL / PostgreSQL / Oracle);
+    /// null defaults to SQL Server, and an <c>@alias</c> takes its kind from the registry regardless.</summary>
+    public string? ProviderKind { get; set; }
+
+    /// <summary>The full validated payload (operation arguments) as compact JSON: the single contract the
+    /// worker deserializes and executes, so the queue row is self-contained.</summary>
+    public string ArgumentsJson { get; set; } = string.Empty;
+
+    /// <summary>The pool this task is routed to (a node that can reach the source); null means any node.</summary>
+    public string? TargetPool { get; set; }
+
+    /// <summary>The task's lifecycle state (see <see cref="RunStatuses"/>).</summary>
+    public string Status { get; set; } = RunStatuses.Queued;
+
+    /// <summary>Who asked (the token subject), recorded so ad-hoc compute against live sources is auditable.</summary>
+    public string? RequestedBy { get; set; }
+
+    public DateTime EnqueuedUtc { get; set; }
+
+    public DateTime? StartUtc { get; set; }
+
+    public DateTime? EndUtc { get; set; }
+
+    /// <summary>The node that claimed the task; the basis for orphan recovery after a node restart.</summary>
+    public string? ClaimedByNode { get; set; }
+
+    /// <summary>When an operator asked to cancel the task while it was running (a queued task cancels
+    /// outright); the owning node observes it on its next poll and aborts the in-flight query.</summary>
+    public DateTime? CancelRequestedUtc { get; set; }
+
+    /// <summary>The failure message (secret-redacted); null unless the task failed.</summary>
+    public string? Error { get; set; }
+
+    /// <summary>The operation's result as JSON (shape depends on the operation); null until succeeded.</summary>
+    public string? ResultJson { get; set; }
+}
+
 /// <summary>The identity providers a <see cref="CatalogUser"/> can come from, stored as a short lowercase string
 /// (same convention as <see cref="RunStatuses"/>).</summary>
 public static class UserProviders

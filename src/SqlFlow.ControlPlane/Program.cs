@@ -239,6 +239,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapSearchEndpoints()
     .MapScheduleReadEndpoints()
     .MapNodeEndpoints()
+    .MapDatasourceReadEndpoints()
     .MapRepoSourceReadEndpoints()
     .MapSummaryEndpoints()
     // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own).
@@ -249,6 +250,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
 v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapCatalogWriteEndpoints()
     .MapRunTriggerEndpoints()
+    .MapDatasourceComputeEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints();
 

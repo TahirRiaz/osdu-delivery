@@ -3,8 +3,9 @@
 
 import { del, get, getAnonymous, getText, post, postAnonymous, streamSse, type QueryParams, type SseFrame } from "./client";
 import type {
-  AccessToken, AllSearchResult, AuthProviders, ColumnHit, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
-  CreateUserRequest, Dashboard, DefinitionHit, DiscoveredFlow,
+  AccessToken, AllSearchResult, AuthProviders, ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
+  ComputeTaskSummary, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
+  CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, NodeScript, ObjectHit, ObjectRepo, PagedResult,
@@ -149,6 +150,50 @@ export const scheduleApi = {
 export const nodeApi = {
   list: (query: PageQuery = {}) => get<PagedResult<Node>>("/api/v1/nodes", query as QueryParams),
 };
+
+// ---- Datasources and ad-hoc compute ---------------------------------------------------------------------------------
+
+export interface ComputeTaskListQuery extends PageQuery {
+  status?: string;
+  reference?: string;
+  operation?: string;
+}
+
+export const datasourceApi = {
+  list: () => get<Datasource[]>("/api/v1/datasources"),
+  tasks: (query: ComputeTaskListQuery = {}) =>
+    get<PagedResult<ComputeTaskSummary>>("/api/v1/datasources/tasks", query as QueryParams),
+  /** One task; waitMs long-polls the server (capped at 20s) so a result arrives in one round trip. */
+  task: (taskId: string, waitMs?: number, signal?: AbortSignal) =>
+    get<ComputeTask>(`/api/v1/datasources/tasks/${taskId}`, { waitMs }, signal),
+  createTask: (request: ComputeTaskRequest) => post<ComputeTaskAccepted>("/api/v1/datasources/tasks", request),
+  cancelTask: (taskId: string) => post<ComputeTaskAccepted>(`/api/v1/datasources/tasks/${taskId}/cancel`),
+};
+
+/**
+ * Runs one compute task end to end: enqueue, then long-poll until it reaches a terminal state. Resolves with
+ * the terminal task (the caller inspects status/result/error); rejects only on transport/auth errors or when
+ * the signal aborts. The abort signal also best-effort cancels the server-side task so an abandoned browse
+ * never keeps a worker busy.
+ */
+export async function executeComputeTask(request: ComputeTaskRequest, signal?: AbortSignal): Promise<ComputeTask> {
+  const accepted = await datasourceApi.createTask(request);
+  try {
+    for (;;) {
+      const task = await datasourceApi.task(accepted.taskId, 10_000, signal);
+      if (task.status === "succeeded" || task.status === "failed" || task.status === "cancelled" || task.status === "skipped") {
+        return task;
+      }
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      // The caller walked away (unmounted, changed scope): stop the server-side work too, best-effort.
+      datasourceApi.cancelTask(accepted.taskId).catch(() => undefined);
+    }
+
+    throw error;
+  }
+}
 
 // ---- Repo sources -------------------------------------------------------------------------------------------------------------
 

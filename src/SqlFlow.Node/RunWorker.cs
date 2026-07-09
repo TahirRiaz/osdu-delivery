@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
+using SqlFlow.Core;
+using SqlFlow.Core.Compute;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
@@ -34,6 +36,12 @@ public sealed partial class RunWorker
     /// <summary>The default bound on how many claimed runs a node executes at once (see <see cref="RunAsync"/>).</summary>
     public const int DefaultMaxConcurrentRuns = 4;
 
+    /// <summary>The default bound on how many claimed COMPUTE TASKS a node executes at once. Deliberately its
+    /// own small gate, separate from the run gate: compute tasks are interactive (an operator browsing a
+    /// datasource in the GUI), so a node saturated with long flow runs must still answer them promptly, and a
+    /// burst of browsing must never starve flow execution of its slots.</summary>
+    public const int DefaultMaxConcurrentComputeTasks = 2;
+
     private readonly IServiceProvider _services;
     private readonly DocumentExecutor _executor;
     private readonly TimeProvider _clock;
@@ -47,6 +55,11 @@ public sealed partial class RunWorker
     // aborts the in-flight statement; ExecuteClaimedAsync registers a run here before it starts and removes it when
     // it ends. Concurrent because the drain loop registers while executing tasks remove.
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _running = new();
+
+    // The compute tasks this node is currently executing, with the same per-item cancellation discipline as
+    // _running. A separate map because run ids and task ids come from different tables and are cancelled through
+    // different store calls.
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningTasks = new();
 
     public RunWorker(IServiceProvider services, DocumentExecutor executor, TimeProvider clock, ILogger<RunWorker> logger)
     {
@@ -77,16 +90,20 @@ public sealed partial class RunWorker
     /// </summary>
     public async Task RunAsync(
         TimeSpan pollInterval, IReadOnlyList<string> pools, Func<TimeSpan, CancellationToken, Task> waitForWork,
-        CancellationToken stoppingToken, int maxConcurrentRuns = DefaultMaxConcurrentRuns)
+        CancellationToken stoppingToken, int maxConcurrentRuns = DefaultMaxConcurrentRuns,
+        int maxConcurrentComputeTasks = DefaultMaxConcurrentComputeTasks)
     {
         ArgumentNullException.ThrowIfNull(pools);
         ArgumentNullException.ThrowIfNull(waitForWork);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentRuns, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentComputeTasks, 1);
 
         await RecoverOrphansAsync(stoppingToken).ConfigureAwait(false);
 
         using var gate = new SemaphoreSlim(maxConcurrentRuns, maxConcurrentRuns);
+        using var computeGate = new SemaphoreSlim(maxConcurrentComputeTasks, maxConcurrentComputeTasks);
         var inFlight = new ConcurrentDictionary<Guid, Task>();
+        var computeInFlight = new ConcurrentDictionary<Guid, Task>();
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -95,6 +112,9 @@ public sealed partial class RunWorker
 
             try
             {
+                // Compute tasks drain FIRST: they are interactive (an operator waiting in the GUI) and bounded by
+                // their own gate, so serving them ahead of the run queue costs flow throughput nothing.
+                await DrainComputeAsync(pools, computeGate, computeInFlight, stoppingToken).ConfigureAwait(false);
                 await DrainAsync(pools, gate, inFlight, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -117,11 +137,11 @@ public sealed partial class RunWorker
             }
         }
 
-        // Shutdown: claiming has stopped; wait for the in-flight runs. Each either finishes cleanly (recording
-        // its outcome) or observes the cancellation and leaves its row 'running' for the next start's recovery.
-        // The run tasks never fault (ExecuteClaimedAsync catches everything), so this wait cannot throw, and it
-        // keeps the gate alive until every slot is released.
-        var pending = inFlight.Values.ToArray();
+        // Shutdown: claiming has stopped; wait for the in-flight runs and compute tasks. Each either finishes
+        // cleanly (recording its outcome) or observes the cancellation and leaves its row 'running' for the next
+        // start's recovery. The tasks never fault (the execute wrappers catch everything), so this wait cannot
+        // throw, and it keeps both gates alive until every slot is released.
+        var pending = inFlight.Values.Concat(computeInFlight.Values).ToArray();
         if (pending.Length > 0)
         {
             await Task.WhenAll(pending).ConfigureAwait(false);
@@ -153,7 +173,7 @@ public sealed partial class RunWorker
     /// runs, and a transient catalog error is logged and retried on the next poll rather than stopping the loop.</summary>
     private async Task PollCancellationsAsync(CancellationToken ct)
     {
-        if (_running.IsEmpty)
+        if (_running.IsEmpty && _runningTasks.IsEmpty)
         {
             return;
         }
@@ -162,13 +182,29 @@ public sealed partial class RunWorker
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            var requested = await RunQueueStore.ListCancelRequestedAsync(catalog, _node, ct).ConfigureAwait(false);
-            foreach (var runId in requested)
+            if (!_running.IsEmpty)
             {
-                if (_running.TryGetValue(runId, out var cts) && !cts.IsCancellationRequested)
+                var requested = await RunQueueStore.ListCancelRequestedAsync(catalog, _node, ct).ConfigureAwait(false);
+                foreach (var runId in requested)
                 {
-                    LogCancelling(runId);
-                    cts.Cancel();
+                    if (_running.TryGetValue(runId, out var cts) && !cts.IsCancellationRequested)
+                    {
+                        LogCancelling(runId);
+                        cts.Cancel();
+                    }
+                }
+            }
+
+            if (!_runningTasks.IsEmpty)
+            {
+                var requested = await ComputeTaskStore.ListCancelRequestedAsync(catalog, _node, ct).ConfigureAwait(false);
+                foreach (var taskId in requested)
+                {
+                    if (_runningTasks.TryGetValue(taskId, out var cts) && !cts.IsCancellationRequested)
+                    {
+                        LogTaskCancelling(taskId);
+                        cts.Cancel();
+                    }
                 }
             }
         }
@@ -193,6 +229,12 @@ public sealed partial class RunWorker
             if (recovered > 0)
             {
                 LogRecovered(recovered);
+            }
+
+            var recoveredTasks = await ComputeTaskStore.RecoverStuckRunningAsync(catalog, _node, ct).ConfigureAwait(false);
+            if (recoveredTasks > 0)
+            {
+                LogRecoveredTasks(recoveredTasks);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -286,6 +328,167 @@ public sealed partial class RunWorker
         {
             _running.TryRemove(runId, out _);
             gate.Release();
+        }
+    }
+
+    /// <summary>Drains the compute-task queue exactly like <see cref="DrainAsync"/> drains runs: claim only while
+    /// a slot is free (a saturated node leaves queued tasks claimable by other nodes), execute each claimed task on
+    /// its own task with its own DI scope, and hand a finishing task's slot straight to the next one.</summary>
+    private async Task DrainComputeAsync(
+        IReadOnlyList<string> pools, SemaphoreSlim gate, ConcurrentDictionary<Guid, Task> inFlight, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+
+            var slotOwnedByTask = false;
+            try
+            {
+                Guid? taskId;
+                await using (var scope = _services.CreateAsyncScope())
+                {
+                    var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+                    taskId = await ComputeTaskStore.ClaimNextAsync(catalog, _node, pools, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                }
+
+                if (taskId is null)
+                {
+                    return; // queue drained
+                }
+
+                var task = ExecuteClaimedTaskAsync(taskId.Value, gate, ct);
+                slotOwnedByTask = true;
+                inFlight[taskId.Value] = task;
+                _ = task.ContinueWith(
+                    _ => inFlight.TryRemove(taskId.Value, out Task? _),
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+            finally
+            {
+                if (!slotOwnedByTask)
+                {
+                    gate.Release();
+                }
+            }
+        }
+    }
+
+    /// <summary>Executes one claimed compute task on its own DI scope and releases the slot when it reaches its
+    /// end state. Never throws, mirroring <see cref="ExecuteClaimedAsync"/>: a shutdown cancellation leaves the
+    /// task <c>running</c> for the next start's recovery; every other failure is driven terminal here.</summary>
+    private async Task ExecuteClaimedTaskAsync(Guid taskId, SemaphoreSlim gate, CancellationToken stoppingToken)
+    {
+        using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        _runningTasks[taskId] = taskCts;
+        try
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+            await RunClaimedTaskAsync(scope.ServiceProvider, catalog, taskId, stoppingToken, taskCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Shutdown cancelled the task mid-flight: it stays 'running' so the next start's recovery requeues it.
+        }
+        catch (Exception ex)
+        {
+            LogTaskError(taskId, SecretHygiene.RedactedMessage(ex.Message));
+        }
+        finally
+        {
+            _runningTasks.TryRemove(taskId, out _);
+            gate.Release();
+        }
+    }
+
+    /// <param name="shutdownCt">The node's shutdown token: a trip leaves the task <c>running</c> for recovery.</param>
+    /// <param name="taskCt">The per-task token (linked to shutdown): an operator cancel trips this alone, aborting
+    /// the in-flight query so the task records <c>cancelled</c> rather than requeued.</param>
+    private async Task RunClaimedTaskAsync(
+        IServiceProvider scope, CatalogDbContext catalog, Guid taskId, CancellationToken shutdownCt, CancellationToken taskCt)
+    {
+        var ct = shutdownCt;
+        try
+        {
+            var row = await catalog.ComputeTasks.AsNoTracking()
+                .Where(t => t.TaskId == taskId)
+                .Select(t => new { t.Operation, t.SourceRef, t.ArgumentsJson })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (row is null)
+            {
+                return; // removed between claim and load; nothing to run
+            }
+
+            LogTaskStarting(taskId, row.Operation, row.SourceRef);
+
+            // The queue row is data from the database: parse AND re-validate it here, so a malformed or
+            // hand-tampered payload fails the task with a precise message instead of reaching a provider.
+            ComputeTaskPayload payload;
+            try
+            {
+                payload = ComputeTaskPayload.FromJson(row.ArgumentsJson);
+            }
+            catch (SqlFlowException ex)
+            {
+                await ComputeTaskStore.FailAsync(
+                    catalog, taskId, SecretHygiene.RedactedMessage(ex.Message), _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                return;
+            }
+
+            var executor = scope.GetRequiredService<ComputeTaskExecutor>();
+            // The executor runs under the per-task token so an operator cancel aborts only the in-flight query,
+            // while the completion write below stays on the shutdown token (a late cancel never corrupts it).
+            var resultJson = await executor.ExecuteAsync(payload, taskCt).ConfigureAwait(false);
+
+            await ComputeTaskStore.CompleteAsync(catalog, taskId, resultJson, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            LogTaskSucceeded(taskId, row.Operation);
+        }
+        catch (OperationCanceledException) when (shutdownCt.IsCancellationRequested)
+        {
+            // Shutdown: leave the task 'running' so the next start's recovery requeues it.
+            throw;
+        }
+        catch (Exception) when (taskCt.IsCancellationRequested && !shutdownCt.IsCancellationRequested)
+        {
+            // The operator cancelled: the per-task token tripped and aborted the in-flight query (surfaced as
+            // OperationCanceledException or a provider exception). Record 'cancelled', not 'failed'.
+            LogTaskCancelled(taskId);
+            await TryCancelRunningTaskAsync(catalog, taskId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A failed task (unreachable source, bad object, provider error) must never kill the worker: drive it
+            // terminal (best-effort) and continue.
+            LogTaskError(taskId, SecretHygiene.RedactedMessage(ex.Message));
+            await TryFailTaskAsync(catalog, taskId, SecretHygiene.RedactedMessage(ex.Message)).ConfigureAwait(false);
+        }
+    }
+
+    private async Task TryFailTaskAsync(CatalogDbContext catalog, Guid taskId, string error)
+    {
+        try
+        {
+            // The original token may be tripped (or the failure a database blip): a short independent deadline
+            // still drives the task terminal where the catalog is reachable (mirrors TryFailAsync for runs).
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await ComputeTaskStore.FailAsync(catalog, taskId, error, _clock.GetUtcNow().UtcDateTime, cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+        }
+    }
+
+    private async Task TryCancelRunningTaskAsync(CatalogDbContext catalog, Guid taskId)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await ComputeTaskStore.CancelRunningAsync(catalog, taskId, _clock.GetUtcNow().UtcDateTime, cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
         }
     }
 
@@ -636,6 +839,24 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Recovered {Count} run(s) left running by a previous worker incarnation; requeued.")]
     private partial void LogRecovered(int count);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Recovered {Count} compute task(s) left running by a previous worker incarnation; requeued.")]
+    private partial void LogRecoveredTasks(int count);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId} starting: {Operation} against {SourceRef}.")]
+    private partial void LogTaskStarting(Guid taskId, string operation, string sourceRef);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId} succeeded ({Operation}).")]
+    private partial void LogTaskSucceeded(Guid taskId, string operation);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId}: operator cancel observed; aborting the in-flight query.")]
+    private partial void LogTaskCancelling(Guid taskId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId} cancelled by operator; recorded cancelled.")]
+    private partial void LogTaskCancelled(Guid taskId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Compute task {TaskId} threw and was driven to failed: {Error}")]
+    private partial void LogTaskError(Guid taskId, string error);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId}: {Message}")]
     private partial void LogHygiene(Guid runId, string message);

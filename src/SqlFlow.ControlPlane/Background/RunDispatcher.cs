@@ -30,6 +30,15 @@ public interface IRunDispatcher
     /// <summary>Cancels a whole run group: every queued member is dequeued and every running member gets a durable
     /// cancel request. Returns whether the group existed and how many members were affected.</summary>
     Task<GroupCancelResult> CancelGroupAsync(CatalogDbContext catalog, Guid groupId, CancellationToken ct = default);
+
+    /// <summary>Enqueues an ad-hoc datasource compute task (references only; the executing node resolves the
+    /// credentials) and returns the minted task id, so the caller can point a client at
+    /// <c>GET /api/v1/datasources/tasks/{taskId}</c>. Nudges the worker like a run enqueue does.</summary>
+    Task<Guid> EnqueueComputeTaskAsync(CatalogDbContext catalog, ComputeTaskEnqueueRequest request, CancellationToken ct = default);
+
+    /// <summary>Cancels a compute task: a still-queued task is dequeued outright; a running task gets a durable
+    /// cancel request stamped for its owning node, with a worker nudge so the abort happens at once.</summary>
+    Task<CancelOutcome> CancelComputeTaskAsync(CatalogDbContext catalog, Guid taskId, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -101,6 +110,32 @@ public sealed class InProcessRunDispatcher : IRunDispatcher
         }
 
         return result;
+    }
+
+    public async Task<Guid> EnqueueComputeTaskAsync(
+        CatalogDbContext catalog, ComputeTaskEnqueueRequest request, CancellationToken ct = default)
+    {
+        var taskId = await ComputeTaskStore
+            .EnqueueAsync(catalog, request, _clock.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+        _signal.Signal();
+        return taskId;
+    }
+
+    public async Task<CancelOutcome> CancelComputeTaskAsync(
+        CatalogDbContext catalog, Guid taskId, CancellationToken ct = default)
+    {
+        var outcome = await ComputeTaskStore
+            .CancelAsync(catalog, taskId, _clock.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+
+        // A running task's cancel is observed by the worker's poll: nudge it so the abort happens at once.
+        if (outcome == CancelOutcome.CancelRequested)
+        {
+            _signal.Signal();
+        }
+
+        return outcome;
     }
 }
 
