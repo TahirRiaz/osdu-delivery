@@ -13,7 +13,7 @@ import type {
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
-  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse,
+  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleRunAccepted, SessionResponse, TokenResponse,
   UpdateNotificationSubscriptionRequest, User, Wave,
 } from "./types";
 
@@ -87,6 +87,10 @@ export interface RunListQuery extends PageQuery {
   groupId?: string;
   /** Keep only each pipeline's newest run (the batch status board); status filters apply to that latest run. */
   latest?: boolean;
+  /** Inclusive lower bound on WrittenUtc (ISO 8601, UTC): the schedules timeline reads runs by day. */
+  from?: string;
+  /** Inclusive upper bound on WrittenUtc (ISO 8601, UTC): the schedules timeline reads runs by day. */
+  to?: string;
 }
 
 export interface RunScopePreviewQuery {
@@ -147,6 +151,8 @@ export const scheduleApi = {
   list: (query: ScheduleListQuery = {}) => get<PagedResult<Schedule>>("/api/v1/schedules", query as QueryParams),
   getById: (id: string) => get<Schedule>(`/api/v1/schedules/${id}`),
   create: (request: CreateScheduleRequest) => post<ScheduleCreated>("/api/v1/schedules", request),
+  // Fire the schedule now, on demand (to test it): enqueues a run of its flow without moving the next scheduled fire.
+  runNow: (id: string) => post<ScheduleRunAccepted>(`/api/v1/schedules/${id}/run`),
   pause: (id: string) => post<Schedule>(`/api/v1/schedules/${id}/pause`),
   resume: (id: string) => post<Schedule>(`/api/v1/schedules/${id}/resume`),
   remove: (id: string) => del<void>(`/api/v1/schedules/${id}`),

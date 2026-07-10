@@ -110,6 +110,78 @@ public sealed class LineageCollectorTests : IDisposable
         Assert.Contains(collected.Warnings, w => w.Contains("'load-orders' is declared by 2 documents", StringComparison.Ordinal));
     }
 
+    private static string IngestionFlow(string name, string scheduleLine) => $$"""
+        flowType: ing
+        name: {{name}}
+        connections:
+          src: ${env:SQLFLOW_CONN_SRC}
+          dwh: ${env:SQLFLOW_CONN_DWH}
+        source: { server: src, object: Staging.dbo.{{name}}Src }
+        target: { server: dwh, object: DW.dbo.{{name}}Tgt }
+        load:
+          keyColumns: [Id]
+        {{scheduleLine}}
+        """;
+
+    [Fact]
+    public void Schedules_ReferenceToDedicatedLibrary_ResolvesToTheNamedCadence()
+    {
+        Write("schedules.yaml", """
+            schedules:
+              nightly: { cron: "0 6 * * *", timezone: "Europe/Oslo" }
+            """);
+        Write("a.flow.yaml", IngestionFlow("alpha", "schedule: nightly"));
+        Write("b.flow.yaml", IngestionFlow("beta", "schedule: nightly"));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        foreach (var name in new[] { "alpha", "beta" })
+        {
+            var flow = collected.Flows.Single(f => f.Node.Name == name);
+            Assert.Equal("0 6 * * *", flow.Schedule!.Cron);
+            Assert.Equal("Europe/Oslo", flow.Schedule.Timezone);
+            Assert.Null(flow.Schedule.Ref);
+        }
+
+        // The library file is not itself a flow.
+        Assert.DoesNotContain(collected.Flows, f => f.Node.Name == "nightly");
+    }
+
+    [Fact]
+    public void Schedules_NamedInlineBlock_IsReusableByOtherFlowsByName()
+    {
+        Write("publisher.flow.yaml", IngestionFlow("publisher", """
+            schedule:
+              name: nightly
+              cron: "0 6 * * *"
+              timezone: "Europe/Oslo"
+            """));
+        Write("consumer.flow.yaml", IngestionFlow("consumer", "schedule: nightly"));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        // The publisher keeps its own inline schedule; the consumer resolves to the very same cadence by name.
+        var publisher = collected.Flows.Single(f => f.Node.Name == "publisher");
+        Assert.Equal("0 6 * * *", publisher.Schedule!.Cron);
+
+        var consumer = collected.Flows.Single(f => f.Node.Name == "consumer");
+        Assert.Equal("0 6 * * *", consumer.Schedule!.Cron);
+        Assert.Equal("Europe/Oslo", consumer.Schedule.Timezone);
+        Assert.Null(consumer.Schedule.Ref);
+    }
+
+    [Fact]
+    public void Schedules_UnknownReference_WarnsAndLeavesTheFlowUnscheduled()
+    {
+        Write("orphan.flow.yaml", IngestionFlow("orphan", "schedule: ghost"));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        var orphan = collected.Flows.Single(f => f.Node.Name == "orphan");
+        Assert.Null(orphan.Schedule);
+        Assert.Contains(collected.Warnings, w => w.Contains("references schedule 'ghost'", StringComparison.Ordinal));
+    }
+
     private void WriteRunArtifact(string flowName, string resultJson, DateTime writtenUtc)
     {
         var safe = Core.Runs.RunHistoryWriter.SafeName(flowName);

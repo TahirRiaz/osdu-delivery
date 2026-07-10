@@ -51,6 +51,36 @@ dateColumn: OrderDate
 baseValue: COUNT(*)
 ```
 
+## Embedded in an ingestion flow (the usual form)
+
+A health check over a table that an ingestion flow loads does not need its own file: declare it as the
+`healthCheck:` block of the ing document, so everything about the table lives in one place. The block is the
+same declaration body as this document minus `target`/`connections` (both come from the flow's own target),
+and it expands into a full sibling hc pipeline: its own runs, its own trained models, its own catalog row,
+ordered after the load by lineage.
+
+```yaml
+flowType: ing
+name: orders_dw
+# ... source / target / load ...
+
+healthCheck:            # derived pipeline 'orders_dw_hc' over the flow's target
+  dateColumn: OrderDate
+  baseValue: COUNT(*)
+  # mode: auto          # opt into schedules/batch runs; embedded checks default to manual (on demand)
+```
+
+Two deliberate differences from the standalone document:
+
+- **`mode` defaults to `manual`**: an embedded check is an on-demand instrument. Run it from the GUI (the
+  "Run health check" button on the flow's pipeline page or a run's Health tab), trigger the derived flow name
+  via `POST /api/v1/runs`, or locally with `sqlflow run <file> --health-check`. Declare `mode: auto` to have
+  batch/node group runs and schedules execute it like any flow (lineage orders it after the load).
+- **`name` is derived** (`<flowName>_hc`) unless overridden, and the flow must declare `name:`.
+
+Keep the standalone document for tables no single flow owns (a mart table built by an sp flow, a legacy table
+with no V3 pipeline); its `mode` defaults to `auto`.
+
 ## Keys reference
 
 | Key | Type | Required | Default | Description |
@@ -59,7 +89,7 @@ baseValue: COUNT(*)
 | `name` | string | yes | | The flow's identity: becomes `SysAlias` and seeds the stable flow id. Keys the state and run folders. |
 | `description` | string | no | none | Free-text description. |
 | `batch` | string | no | none | Batch label carried into the run record. |
-| `mode` | string | no | `auto` | When the flow runs: `auto` lets schedules and batch/node group runs pick it up like any other flow; `manual` excludes it from every automatic dispatch (scheduler, group expansion, local batch membership), so it runs only when triggered directly (the GUI's run button, a single-flow API trigger, or a direct CLI run). |
+| `mode` | string | no | `auto` | `auto` lets schedules and batch/node group runs execute the check like any flow. `manual` excludes it from every automatic dispatch (the scheduler skips its schedules with a warning; group expansion and local batch membership omit it), so it runs only when triggered directly: the GUI's "Run health check" button, a single-flow `POST /api/v1/runs`, or a direct CLI run. Case-insensitive; anything else fails with `'mode' has unknown value '<v>'. Allowed: auto, manual.` |
 | `connections` | map | no | empty | Named connections. Each value is a plain string (a SQL Server connection reference), a map with `provider` and `connection`, or bare (resolves `${env:SQLFLOW_CONN_<NAME>}` by convention). |
 | `target` | map | yes | | The monitored endpoint: `server` (or inline `connection` plus optional `provider`) and `object`. |
 | `target.server` | string | conditional | | Name of a declared connection in `connections`. |

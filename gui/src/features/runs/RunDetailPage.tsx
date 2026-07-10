@@ -19,12 +19,14 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import MonitorHeartIcon from "@mui/icons-material/MonitorHeart";
 import ReplayIcon from "@mui/icons-material/Replay";
+import RuleIcon from "@mui/icons-material/Rule";
 import type {
   RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey, RunTraceEntry,
 } from "../../api/types";
 import { isApiError } from "../../api/client";
-import { runApi } from "../../api/endpoints";
+import { pipelineApi, runApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -38,6 +40,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
+import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
 import { useRunTraceStream } from "./useRunTraceStream";
 
@@ -217,6 +220,16 @@ function RunDetailContent({ runId }: { runId: string }) {
     },
   });
 
+  // For an ingestion run, the pipeline's stored definition says whether the flow embeds a healthCheck: block;
+  // its derived flow name powers the Health tab's "Run health check" button (the check is a sibling pipeline,
+  // so its metrics live on its own runs). Cached under the same key the pipeline detail page uses.
+  const pipelineQuery = useQuery({
+    queryKey: ["pipelines", "detail", query.data?.pipelineId ?? ""],
+    queryFn: () => pipelineApi.getById(query.data!.pipelineId),
+    enabled: query.data?.flowKind === "ing",
+  });
+  const embeddedCheck = pipelineQuery.data ? embeddedHealthCheckName(pipelineQuery.data.definitionJson) : null;
+
   // The live trace: while the run is queued or running, the Trace tab is fed by the SSE stream (entries
   // arrive the moment the executing node persists them); once the run ends, the stream's end frame (or the
   // header poll observing the terminal status, whichever lands first) refetches everything under this run so
@@ -275,10 +288,41 @@ function RunDetailContent({ runId }: { runId: string }) {
         backfillFrom: r.backfillFrom,
         backfillTo: r.backfillTo,
         filePattern: r.filePattern,
+        assertionsOnly: r.assertionsOnly,
       });
     },
     onSuccess: (accepted) => {
       enqueueSnackbar("Re-run enqueued.", { variant: "success" });
+      if (accepted.runId) {
+        navigate(`/runs/${accepted.runId}`);
+      }
+    },
+    onError: (error) => {
+      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+    },
+  });
+
+  // The on-demand execution the Assertions and Health tabs offer: a fresh single-flow run of this run's
+  // pipeline against the current code. With assertionsOnly the engine evaluates the flow's declared assertions
+  // (manual-mode ones included) against the current target and loads nothing; without it, it is a plain run
+  // (the Health tab's "Run health check" for hc flows). The new execution is a new run; the button navigates there.
+  const triggerFlow = useMutation({
+    mutationFn: (parameters: { assertionsOnly?: boolean; flowName?: string }) => {
+      const r = query.data;
+      if (!r?.repoId) {
+        throw new Error("The run has not loaded yet.");
+      }
+
+      return runApi.trigger({
+        repoId: r.repoId,
+        flowName: parameters.flowName ?? r.flowName,
+        scope: "flow",
+        pool: r.targetPool,
+        assertionsOnly: parameters.assertionsOnly,
+      });
+    },
+    onSuccess: (accepted, parameters) => {
+      enqueueSnackbar(parameters.assertionsOnly ? "Assertion run enqueued." : "Health check enqueued.", { variant: "success" });
       if (accepted.runId) {
         navigate(`/runs/${accepted.runId}`);
       }
@@ -339,6 +383,9 @@ function RunDetailContent({ runId }: { runId: string }) {
             )}
             <Chip size="small" label={run.flowKind} variant="outlined" data-testid="run-kind" />
             <Chip size="small" label={`batch: ${run.batch}`} variant="outlined" data-testid="run-batch" />
+            {run.assertionsOnly && (
+              <Chip size="small" color="info" label="assertions only" data-testid="run-assertions-only" />
+            )}
           </>
         )}
         actions={cancellable
@@ -418,6 +465,13 @@ function RunDetailContent({ runId }: { runId: string }) {
           </Typography>
           <CodeView value={run.failedStatementSql} language="sql" data-testid="run-error-sql" />
         </Paper>
+      )}
+
+      {run.assertionsOnly && (
+        <Alert severity="info" icon={false} data-testid="run-assertions-only-banner">
+          Assertions-only run: the flow's declared assertions (manual-mode ones included) were evaluated against
+          the current target; no data was read or loaded.
+        </Alert>
       )}
 
       {(run.fullLoad || run.backfillFrom || run.filePattern) && (
@@ -579,24 +633,88 @@ function RunDetailContent({ runId }: { runId: string }) {
         />
       )}
       {tab === 4 && (
-        <PagedTable
-          queryKey={["runs", runId, "assertions"]}
-          fetchPage={(page, pageSize) => runApi.assertions(runId, { page, pageSize })}
-          columns={assertionColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="No assertions were recorded for this run."
-          data-testid="assertions-table"
-        />
+        <Stack spacing={1}>
+          {run.flowKind === "ing" && run.repoId !== null && (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="body2" color="text.secondary">
+                Run the flow's declared assertions on demand, including mode: manual ones; nothing is loaded.
+              </Typography>
+              <Stack sx={{ flexGrow: 1 }} />
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<RuleIcon fontSize="small" />}
+                onClick={() => triggerFlow.mutate({ assertionsOnly: true })}
+                disabled={triggerFlow.isPending}
+                data-testid="run-assertions"
+              >
+                Run assertions
+              </Button>
+            </Stack>
+          )}
+          <PagedTable
+            queryKey={["runs", runId, "assertions"]}
+            fetchPage={(page, pageSize) => runApi.assertions(runId, { page, pageSize })}
+            columns={assertionColumns}
+            rowKey={(row) => row.id}
+            emptyMessage={run.flowKind === "ing"
+              ? "No assertions were recorded for this run. Auto-mode assertions run with every load; manual-mode ones only in an assertions-only run."
+              : "No assertions were recorded for this run."}
+            data-testid="assertions-table"
+          />
+        </Stack>
       )}
       {tab === 5 && (
-        <PagedTable
-          queryKey={["runs", runId, "health-metrics"]}
-          fetchPage={(page, pageSize) => runApi.healthMetrics(runId, { page, pageSize })}
-          columns={healthMetricColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="No health metrics were recorded for this run."
-          data-testid="health-metrics-table"
-        />
+        <Stack spacing={1}>
+          {run.flowKind === "hc" && run.repoId !== null && (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="body2" color="text.secondary">
+                Run this health check on demand; manual-mode (mode: manual) checks execute only from here or a direct trigger.
+              </Typography>
+              <Stack sx={{ flexGrow: 1 }} />
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<MonitorHeartIcon fontSize="small" />}
+                onClick={() => triggerFlow.mutate({})}
+                disabled={triggerFlow.isPending}
+                data-testid="run-health-check"
+              >
+                Run health check
+              </Button>
+            </Stack>
+          )}
+          {run.flowKind === "ing" && embeddedCheck !== null && run.repoId !== null && (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="body2" color="text.secondary">
+                This flow embeds health check '{embeddedCheck}'; it runs on demand and records its metrics on its own runs.
+              </Typography>
+              <Stack sx={{ flexGrow: 1 }} />
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<MonitorHeartIcon fontSize="small" />}
+                onClick={() => triggerFlow.mutate({ flowName: embeddedCheck })}
+                disabled={triggerFlow.isPending}
+                data-testid="run-embedded-health-check"
+              >
+                Run health check
+              </Button>
+            </Stack>
+          )}
+          <PagedTable
+            queryKey={["runs", runId, "health-metrics"]}
+            fetchPage={(page, pageSize) => runApi.healthMetrics(runId, { page, pageSize })}
+            columns={healthMetricColumns}
+            rowKey={(row) => row.id}
+            emptyMessage={run.flowKind === "hc"
+              ? "No health metrics were recorded for this run."
+              : run.flowKind === "ing" && embeddedCheck !== null
+                ? `Health metrics are recorded on the embedded check's own runs ('${embeddedCheck}'); use Run health check to execute it now.`
+                : `Health metrics are produced by health-check (hc) flows; this is a '${run.flowKind}' run.`}
+            data-testid="health-metrics-table"
+          />
+        </Stack>
       )}
 
       <Dialog
@@ -620,10 +738,8 @@ function RunDetailContent({ runId }: { runId: string }) {
           {traceEntry?.kind === "statement" && traceEntry.sql !== null && (
             <CodeView value={traceEntry.sql} language="sql" data-testid="trace-entry-sql" />
           )}
-          {traceEntry?.kind === "event" && (
-            <Typography variant="body2" whiteSpace="pre-wrap" data-testid="trace-entry-message">
-              {traceEntry.message}
-            </Typography>
+          {traceEntry?.kind === "event" && traceEntry.message !== null && (
+            <CodeView value={traceEntry.message} language="plaintext" data-testid="trace-entry-message" />
           )}
         </DialogContent>
       </Dialog>

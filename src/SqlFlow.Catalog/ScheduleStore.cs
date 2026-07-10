@@ -150,6 +150,24 @@ public static class ScheduleStore
         catalog.Schedules.RemoveRange(stale);
     }
 
+    /// <summary>Stages the removal of ONE flow's YAML schedule, the single-flow counterpart to
+    /// <see cref="StageRemoveYamlSchedulesNotInAsync"/>: the per-run write-back calls this when a flow's YAML no
+    /// longer declares a usable schedule, so the mirror stops firing without touching any other flow's rows.
+    /// API-created schedules are never touched. Staged on the context; the caller's transaction commits it.</summary>
+    public static async Task StageRemoveYamlScheduleAsync(
+        CatalogDbContext catalog, Guid repoId, string flowName, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
+        var id = CatalogIdentity.YamlSchedule(repoId, flowName);
+        var row = await catalog.Schedules.AsTracking()
+            .FirstOrDefaultAsync(s => s.Id == id && s.Source == "yaml", ct).ConfigureAwait(false);
+        if (row is not null)
+        {
+            catalog.Schedules.Remove(row);
+        }
+    }
+
     /// <summary>Creates an ad-hoc API schedule with a fresh id; a flow can carry its git schedule plus API ones.</summary>
     public static Task<Guid> CreateApiScheduleAsync(
         CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,

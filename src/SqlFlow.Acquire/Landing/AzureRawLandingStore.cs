@@ -1,0 +1,150 @@
+using System.Collections.Concurrent;
+using Azure;
+using Azure.Identity;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using SqlFlow.Azure;
+using SqlFlow.Core;
+
+namespace SqlFlow.Acquire.Landing;
+
+/// <summary>
+/// Lands raw payloads to Azure Blob / ADLS Gen2 through the shared <see cref="IAzureCredentialFactory"/> (managed
+/// identity / az login / service principal) - the same credential the read-side store, Key Vault, and invoke use,
+/// so a landed file needs no per-flow storage secret. Accepts the <c>abfss</c>/<c>wasbs</c> authority form and the
+/// <c>https://&lt;account&gt;.blob|dfs.core.windows.net</c> URL form via <see cref="AzureBlobLocation"/>. One blob
+/// service client per account is cached for the store's lifetime so the token cache is reused across a run.
+/// </summary>
+public sealed class AzureRawLandingStore : IRawLandingStore
+{
+    private readonly IAzureCredentialFactory _credentials;
+    private readonly ConcurrentDictionary<Uri, Lazy<BlobServiceClient>> _services = new();
+
+    public AzureRawLandingStore(IAzureCredentialFactory credentials)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+        _credentials = credentials;
+    }
+
+    public bool CanHandle(string location) => AzureBlobLocation.IsAzureStorageUri(location);
+
+    public string Combine(string baseLocation, string relativePath)
+        => $"{baseLocation.TrimEnd('/')}/{relativePath.TrimStart('/')}";
+
+    public async Task<bool> ExistsAsync(string location, CancellationToken ct = default)
+    {
+        var blob = BlobClient(location);
+        try
+        {
+            return await blob.ExistsAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
+        {
+            throw Translate(location, ex);
+        }
+    }
+
+    public async Task PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct = default)
+    {
+        var blob = BlobClient(location);
+        try
+        {
+            var options = new BlobUploadOptions();
+            if (!overwrite)
+            {
+                // Fail (rather than clobber) if the blob already exists.
+                options.Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All };
+            }
+
+            using var stream = new ReadOnlyMemoryStream(content);
+            await blob.UploadAsync(stream, options, ct).ConfigureAwait(false);
+        }
+        catch (RequestFailedException ex) when (!overwrite && ex.Status == 409)
+        {
+            throw new SqlFlowException($"Landing blob '{location}' already exists and overwrite is disabled.", ex);
+        }
+        catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
+        {
+            throw Translate(location, ex);
+        }
+    }
+
+    private BlobClient BlobClient(string location)
+    {
+        var loc = AzureBlobLocation.Parse(location);
+        var service = _services.GetOrAdd(
+            loc.BlobServiceEndpoint,
+            endpoint => new Lazy<BlobServiceClient>(() => new BlobServiceClient(endpoint, _credentials.Create()))).Value;
+        return service.GetBlobContainerClient(loc.Container).GetBlobClient(loc.BlobPath);
+    }
+
+    private static SqlFlowException Translate(string location, Exception ex)
+    {
+        var cause = ex is AggregateException { InnerException: { } inner } ? inner : ex;
+        return cause switch
+        {
+            AuthenticationFailedException or CredentialUnavailableException => new SqlFlowException(
+                $"Azure authentication failed while landing to '{location}'. Sign in with 'az login', or set "
+                + $"SQLFLOW_AZURE_AUTH and the AZURE_* variables for a service principal or managed identity ({cause.Message}).", ex),
+            RequestFailedException rfe => new SqlFlowException(
+                $"Azure Storage request failed while landing to '{location}' (status {rfe.Status}): {rfe.Message}", ex),
+            _ => new SqlFlowException($"Could not land to Azure Storage location '{location}': {cause.Message}", ex),
+        };
+    }
+
+    /// <summary>A forward-only stream over a <see cref="ReadOnlyMemory{Byte}"/> so an in-memory payload uploads without a copy.</summary>
+    private sealed class ReadOnlyMemoryStream : Stream
+    {
+        private readonly ReadOnlyMemory<byte> _memory;
+        private int _position;
+
+        public ReadOnlyMemoryStream(ReadOnlyMemory<byte> memory) => _memory = memory;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length => _memory.Length;
+
+        public override long Position
+        {
+            get => _position;
+            set => _position = (int)value;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            var remaining = _memory.Length - _position;
+            if (remaining <= 0)
+            {
+                return 0;
+            }
+
+            var take = Math.Min(remaining, buffer.Length);
+            _memory.Span.Slice(_position, take).CopyTo(buffer);
+            _position += take;
+            return take;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            _position = origin switch
+            {
+                SeekOrigin.Begin => (int)offset,
+                SeekOrigin.Current => _position + (int)offset,
+                SeekOrigin.End => _memory.Length + (int)offset,
+                _ => _position,
+            };
+            return _position;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+}

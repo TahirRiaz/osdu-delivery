@@ -15,6 +15,7 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import type {
   ComputeTaskRequest, DatasourceObject, IntrospectionResult, UniqueKeyReport,
 } from "../../api/types";
+import { CopyButton } from "../../components/CopyButton";
 import { DataTable, type Column } from "../../components/DataTable";
 import { Mono } from "../../components/Mono";
 import { UniqueKeyReportView } from "./UniqueKeyReportView";
@@ -112,7 +113,16 @@ export function ObjectInspector({ reference, kind, database, object, onClose }: 
 
         {introspected !== null && (
           <>
-            <Typography variant="subtitle2">Columns ({introspected.columns.length})</Typography>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle2">Columns ({introspected.columns.length})</Typography>
+              {introspected.columns.length > 0 && (
+                <CopyButton
+                  label="Copy columns"
+                  text={() => introspected.columns.map((c) => c.name).join(", ")}
+                  testId="copy-column-names"
+                />
+              )}
+            </Stack>
             <DataTable
               columns={columnColumns}
               rows={introspected.columns}

@@ -12,7 +12,7 @@ public sealed class YamlDocumentScheduleTests
     private static readonly YamlDocumentLoader Loader = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader());
+        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
 
     [Fact]
     public void Parse_CronScheduleWithTimezone_IsCaptured()
@@ -87,6 +87,73 @@ public sealed class YamlDocumentScheduleTests
             name: orders
             schedule:
               timezone: "UTC"
+            source:
+              type: csv
+              location: ./orders.csv
+            target:
+              connection: ${env:SQLFLOW_CONN_DWH}
+              schema: dbo
+              table: Orders
+            """);
+
+        Assert.Null(doc.Schedule);
+    }
+
+    [Fact]
+    public void Parse_ScalarSchedule_IsCapturedAsAnUnresolvedReference()
+    {
+        // `schedule: nightly` is a bare scalar: a reference to a shared schedule by name. A single-file parse has no
+        // view of the library, so it carries the name and no cadence; the repo scan resolves it.
+        var doc = Loader.Parse("""
+            name: orders
+            schedule: nightly
+            source:
+              type: csv
+              location: ./orders.csv
+            target:
+              connection: ${env:SQLFLOW_CONN_DWH}
+              schema: dbo
+              table: Orders
+            """);
+
+        Assert.NotNull(doc.Schedule);
+        Assert.Equal("nightly", doc.Schedule!.Ref);
+        Assert.Null(doc.Schedule.Cron);
+        Assert.Null(doc.Schedule.IntervalSeconds);
+    }
+
+    [Fact]
+    public void Parse_NamedInlineSchedule_CapturesTheNameAlongsideTheCadence()
+    {
+        // An inline block may carry a name: to publish itself for other flows to reference by that name.
+        var doc = Loader.Parse("""
+            name: orders
+            schedule:
+              name: nightly
+              cron: "0 6 * * *"
+              timezone: "Europe/Oslo"
+            source:
+              type: csv
+              location: ./orders.csv
+            target:
+              connection: ${env:SQLFLOW_CONN_DWH}
+              schema: dbo
+              table: Orders
+            """);
+
+        Assert.NotNull(doc.Schedule);
+        Assert.Equal("nightly", doc.Schedule!.Name);
+        Assert.Equal("0 6 * * *", doc.Schedule.Cron);
+        Assert.Equal("Europe/Oslo", doc.Schedule.Timezone);
+        Assert.Null(doc.Schedule.Ref);
+    }
+
+    [Fact]
+    public void Parse_BlankScalarSchedule_LeavesScheduleNull()
+    {
+        var doc = Loader.Parse("""
+            name: orders
+            schedule: ""
             source:
               type: csv
               location: ./orders.csv

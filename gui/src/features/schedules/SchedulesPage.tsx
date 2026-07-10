@@ -24,6 +24,8 @@ import Typography from "@mui/material/Typography";
 import DeleteIcon from "@mui/icons-material/Delete";
 import PauseIcon from "@mui/icons-material/Pause";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
+import TimelineIcon from "@mui/icons-material/Timeline";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
 import type { Schedule } from "../../api/types";
@@ -219,6 +221,16 @@ export default function SchedulesPage() {
     onError: showError,
   });
 
+  const runNow = useMutation({
+    mutationFn: (row: Schedule) => scheduleApi.runNow(row.id),
+    onSuccess: (accepted) => {
+      enqueueSnackbar("Run started.", { variant: "success" });
+      void queryClient.invalidateQueries({ queryKey: ["schedules"] });
+      navigate(`/runs/${accepted.runId}`);
+    },
+    onError: showError,
+  });
+
   const remove = useMutation({
     mutationFn: (id: string) => scheduleApi.remove(id),
     onSuccess: () => {
@@ -299,6 +311,22 @@ export default function SchedulesPage() {
       align: "right",
       render: (row) => (
         <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+          <Tooltip title="Run now (enqueue a run to test this schedule)">
+            <span>
+              <IconButton
+                size="small"
+                color="primary"
+                disabled={runNow.isPending}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  runNow.mutate(row);
+                }}
+                data-testid="schedule-run-now"
+              >
+                <PlayCircleOutlineIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
           {row.paused ? (
             <Tooltip title="Resume schedule">
               <span>
@@ -357,9 +385,20 @@ export default function SchedulesPage() {
       <PageHeader
         title="Schedules"
         actions={(
-          <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-schedule">
-            Create schedule
-          </Button>
+          <>
+            <Button
+              component={RouterLink}
+              to="/schedules/timeline"
+              variant="outlined"
+              startIcon={<TimelineIcon />}
+              data-testid="open-schedule-timeline"
+            >
+              Timeline
+            </Button>
+            <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-schedule">
+              Create schedule
+            </Button>
+          </>
         )}
       />
 

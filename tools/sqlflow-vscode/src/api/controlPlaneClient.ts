@@ -109,6 +109,11 @@ export class ControlPlaneClient {
         return this.request('/api/v1/schedules');
     }
 
+    /** Fire a schedule now, enqueuing a run of its flow (to test the schedule) without moving its cadence. */
+    runSchedule(id: string): Promise<{ runId: string }> {
+        return this.request(`/api/v1/schedules/${id}/run`, { method: 'POST', body: {} });
+    }
+
     lineageEdges(repoId: string): Promise<unknown> {
         return this.request(`/api/v1/repos/${repoId}/lineage/edges`);
     }

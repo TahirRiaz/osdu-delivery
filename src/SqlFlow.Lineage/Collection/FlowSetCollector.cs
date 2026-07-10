@@ -19,7 +19,9 @@ public sealed class FlowSetCollector
     private readonly YamlDocumentLoader _documents = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader());
+        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
+
+    private readonly YamlScheduleLibraryLoader _scheduleLibraries = new();
 
     public CollectionResult Collect(string flowDirectory)
     {
@@ -55,6 +57,11 @@ public sealed class FlowSetCollector
 
         ReconcileFileLinks(result, producers, consumers, root);
 
+        // Shared schedules: build the repo-wide library (dedicated schedules.yaml files plus named inline blocks),
+        // then resolve every `schedule: <name>` reference to a concrete cadence. Done after the whole estate is
+        // collected because a reference can point at a definition in any file.
+        ResolveSchedules(result, root);
+
         var duplicates = result.Flows
             .GroupBy(f => f.Node.Name, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1);
@@ -66,6 +73,94 @@ public sealed class FlowSetCollector
         }
 
         return result;
+    }
+
+    /// <summary>Whether a file is a shared-schedule library: named <c>schedules.yaml</c> or ending in
+    /// <c>.schedules.yaml</c>. These are not flow documents (the flow scan globs <c>*.flow.yaml</c>) and never
+    /// become pipelines; they only publish named schedules for flows to reference.</summary>
+    private static bool IsScheduleLibraryFile(string path)
+    {
+        var name = Path.GetFileName(path);
+        return name.Equals("schedules.yaml", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".schedules.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Builds the repo's shared-schedule library and resolves each flow's <c>schedule: &lt;name&gt;</c> reference to
+    /// the referenced cadence, in place on the collected flows. A named schedule may be defined in a dedicated
+    /// <c>schedules.yaml</c> library file or as a <c>name:</c>d inline block on any flow; the two sources share one
+    /// namespace, and the first definition of a name wins (a redefinition is warned). A reference to an unknown name
+    /// leaves that flow unscheduled with a warning, never a broken schedule.
+    /// </summary>
+    private void ResolveSchedules(CollectionResult result, string root)
+    {
+        var library = new Dictionary<string, ScheduleSpec>(StringComparer.OrdinalIgnoreCase);
+
+        void Register(string name, ScheduleSpec spec, string origin)
+        {
+            if (!library.TryAdd(name, spec))
+            {
+                result.Warnings.Add(
+                    $"schedule name '{name}' is declared more than once ({origin} redefines an earlier definition); the first wins.");
+            }
+        }
+
+        // 1) Dedicated library files.
+        var libraryFiles = Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)
+            .Where(IsScheduleLibraryFile)
+            .OrderBy(f => f, StringComparer.Ordinal);
+        foreach (var file in libraryFiles)
+        {
+            var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            string yaml;
+            try
+            {
+                yaml = File.ReadAllText(file);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                result.Warnings.Add($"{relative}: skipped: {ex.Message}");
+                continue;
+            }
+
+            var parsed = _scheduleLibraries.Parse(yaml, relative);
+            result.Warnings.AddRange(parsed.Warnings);
+            foreach (var named in parsed.Schedules)
+            {
+                Register(named.Name, named.Spec, relative);
+            }
+        }
+
+        // 2) Named inline blocks a flow publishes for reuse (schedule: with a name: key).
+        foreach (var flow in result.Flows)
+        {
+            if (flow.Schedule is { Ref: null, Name: { Length: > 0 } name } inline)
+            {
+                Register(name, inline with { Ref = null }, $"'{flow.Node.Name}' ({flow.Node.File})");
+            }
+        }
+
+        // 3) Resolve references in place; strip the resolution metadata so a resolved schedule is a plain cadence.
+        for (var i = 0; i < result.Flows.Count; i++)
+        {
+            var flow = result.Flows[i];
+            if (flow.Schedule is not { Ref: { Length: > 0 } reference })
+            {
+                continue;
+            }
+
+            if (library.TryGetValue(reference, out var resolved))
+            {
+                result.Flows[i] = flow with { Schedule = resolved with { Name = null, Ref = null } };
+            }
+            else
+            {
+                result.Warnings.Add(
+                    $"'{flow.Node.Name}' ({flow.Node.File}) references schedule '{reference}', which no schedules.yaml or " +
+                    "named inline block defines; the flow is left unscheduled.");
+                result.Flows[i] = flow with { Schedule = null };
+            }
+        }
     }
 
     /// <summary>Registers a document's connections in the server inventory the derived tier connects to.</summary>
@@ -87,25 +182,43 @@ public sealed class FlowSetCollector
         CollectionResult result, FlowDocument document, string file, DateTime fileWriteUtc, string root,
         List<FileProducer> producers, List<FileConsumer> consumers)
     {
+        // The flow nodes come from the shared header projection, the single authority for what a document
+        // declares (name, kind, batch, servers, mode, lifecycle, schedule), shared with the catalog's per-run
+        // write-back so the two paths can never extract a document differently. An unknown document kind throws
+        // there and is reported by the per-file catch in Collect(directory). The switch below contributes only what
+        // lineage adds on top of the headers: the server inventory, the declared facts, and the file producers and
+        // consumers reconciled after the whole estate is scanned.
+        var headers = FlowDocumentHeaders.Project(document);
+        foreach (var header in headers)
+        {
+            result.Flows.Add(new CollectedFlow
+            {
+                Node = new LineageFlowNode
+                {
+                    Name = header.Name,
+                    Kind = header.Kind,
+                    File = file,
+                    Batch = header.Batch,
+                    Mode = header.Mode,
+                    Lifecycle = header.Lifecycle,
+                },
+                SourceServerRef = header.SourceServerRef,
+                TargetServerRef = header.TargetServerRef,
+                Schedule = header.Schedule,
+                FileWriteUtc = fileWriteUtc,
+            });
+        }
+
         switch (document)
         {
             case IngestionFlowDocument doc:
             {
                 var flow = doc.Document.Flow;
-                var name = flow.SysAlias ?? flow.Target.Table.Name;
+                var name = headers[0].Name;
                 RegisterServers(result, doc.Document.Connections);
-                var refs = ConnectionRefs(doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)));
-                var source = ServerIdentity.From(refs[flow.Source.Server]);
-                var target = ServerIdentity.From(refs[flow.Target.Server]);
+                var source = headers[0].SourceServerRef!;
+                var target = headers[0].TargetServerRef;
 
-                result.Flows.Add(new CollectedFlow
-                {
-                    Node = new LineageFlowNode { Name = name, Kind = "ing", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
-                    SourceServerRef = source,
-                    TargetServerRef = target,
-                    Schedule = document.Schedule,
-                    FileWriteUtc = fileWriteUtc,
-                });
                 result.Facts.Add(ObjectFact(name, LineageRelation.Reads, source, flow.Source.Table, LineageNodeKind.Unknown));
                 result.Facts.Add(ObjectFact(name, LineageRelation.Writes, target, flow.Target.Table, LineageNodeKind.Table));
 
@@ -121,6 +234,15 @@ public sealed class FlowSetCollector
 
                 ExtractHook(result, name, target, flow.Process.PreProcessOnTarget, $"{file}: preProcess", flow.Target.Table.Database);
                 ExtractHook(result, name, target, flow.Process.PostProcessOnTarget, $"{file}: postProcess", flow.Target.Table.Database);
+
+                // The embedded healthCheck: block became its own flow node above (the projection's derived hc
+                // sibling); it READS the load's target, which is exactly the dependency that orders it after the
+                // load in waves and node runs.
+                if (doc.Document.HealthCheck is { } check)
+                {
+                    result.Facts.Add(ObjectFact(check.SysAlias, LineageRelation.Reads, target, check.Target, LineageNodeKind.Table));
+                }
+
                 break;
             }
 
@@ -128,21 +250,10 @@ public sealed class FlowSetCollector
             {
                 var flow = doc.Document.Flow;
                 RegisterServers(result, doc.Document.Connections);
-                var refs = ConnectionRefs(doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)));
-                var source = ServerIdentity.From(refs[flow.SrcServer]);
-
-                result.Flows.Add(new CollectedFlow
-                {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "exp", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
-                    SourceServerRef = source,
-                    TargetServerRef = source,
-                    Schedule = document.Schedule,
-                    FileWriteUtc = fileWriteUtc,
-                });
-                result.Facts.Add(ObjectFact(flow.SysAlias, LineageRelation.Reads, source, flow.Source, LineageNodeKind.Unknown));
+                result.Facts.Add(ObjectFact(headers[0].Name, LineageRelation.Reads, headers[0].TargetServerRef, flow.Source, LineageNodeKind.Unknown));
                 if (!string.IsNullOrWhiteSpace(flow.TrgPath))
                 {
-                    result.Facts.Add(FileFact(flow.SysAlias, LineageRelation.Writes, flow.TrgPath, root));
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, flow.TrgPath, root));
                 }
 
                 break;
@@ -150,59 +261,32 @@ public sealed class FlowSetCollector
 
             case StoredProcedureFlowDocument doc:
             {
-                var flow = doc.Document.Flow;
                 RegisterServers(result, doc.Document.Connections);
-                var refs = ConnectionRefs(doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)));
-                var server = ServerIdentity.From(refs[flow.Server]);
-
-                result.Flows.Add(new CollectedFlow
-                {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "sp", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
-                    TargetServerRef = server,
-                    Schedule = document.Schedule,
-                    FileWriteUtc = fileWriteUtc,
-                });
 
                 // The flow requires the procedure; the procedure's own reads/writes are its module's
                 // lineage, expanded by the derived tier.
-                result.Facts.Add(ObjectFact(flow.SysAlias, LineageRelation.Requires, server, flow.Procedure, LineageNodeKind.Procedure));
+                result.Facts.Add(ObjectFact(
+                    headers[0].Name, LineageRelation.Requires, headers[0].TargetServerRef, doc.Document.Flow.Procedure, LineageNodeKind.Procedure));
                 break;
             }
 
             case HealthCheckFlowDocument doc:
             {
-                var flow = doc.Document.Flow;
                 RegisterServers(result, doc.Document.Connections);
-                var refs = ConnectionRefs(doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)));
-                var server = ServerIdentity.From(refs[flow.Server]);
-
-                result.Flows.Add(new CollectedFlow
-                {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "hc", File = file, Batch = flow.Batch, Mode = flow.Mode, Lifecycle = flow.Lifecycle },
-                    TargetServerRef = server,
-                    Schedule = document.Schedule,
-                    FileWriteUtc = fileWriteUtc,
-                });
-                result.Facts.Add(ObjectFact(flow.SysAlias, LineageRelation.Reads, server, flow.Target, LineageNodeKind.Unknown));
+                result.Facts.Add(ObjectFact(
+                    headers[0].Name, LineageRelation.Reads, headers[0].TargetServerRef, doc.Document.Flow.Target, LineageNodeKind.Unknown));
                 break;
             }
 
             case FileFlowDocument doc:
             {
                 var flow = doc.Flow;
-                var target = ServerIdentity.From(flow.Target.Connection);
+                var target = headers[0].TargetServerRef;
                 result.Servers.TryAdd(target, (flow.Target.Connection, Core.Connections.DataSourceKind.MSSQL));
 
-                result.Flows.Add(new CollectedFlow
-                {
-                    Node = new LineageFlowNode { Name = flow.Name, Kind = "file", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
-                    TargetServerRef = target,
-                    Schedule = document.Schedule,
-                    FileWriteUtc = fileWriteUtc,
-                });
                 // The file the flow reads is its Location, or the srcPath option when no Location is given (the
                 // loader accepts either). Its normalized identity is the file node; recording the same source spec
-                // as a consumer lets an invoke that lands into this folder link to THIS node.
+                // as a consumer lets an invoke or acquisition that lands into this folder link to THIS node.
                 var readLocation = !string.IsNullOrWhiteSpace(flow.Source.Location)
                     ? flow.Source.Location!
                     : Option(flow.Source.Options, "srcPath");
@@ -258,13 +342,6 @@ public sealed class FlowSetCollector
                 // invoke becomes a file producer: reconciliation connects it to the file ingestion that reads them,
                 // so the graph chains invoke -> file -> landing table -> view -> downstream.
                 var definition = doc.Document.Definition;
-                result.Flows.Add(new CollectedFlow
-                {
-                    Node = new LineageFlowNode { Name = definition.InvokeAlias, Kind = "inv", File = file, Batch = definition.Batch, Lifecycle = definition.Lifecycle },
-                    TargetServerRef = ServerIdentity.FileSystem,
-                    Schedule = document.Schedule,
-                    FileWriteUtc = fileWriteUtc,
-                });
                 if (definition.Outputs.Count > 0)
                 {
                     producers.Add(new FileProducer(definition.InvokeAlias, definition.Outputs));
@@ -273,15 +350,14 @@ public sealed class FlowSetCollector
                 break;
             }
 
-            case SourceControlFlowDocument:
-            case BatchFlowDocument:
-                // Orchestration/utility documents: they move no catalog data, so they are not lineage nodes and
-                // contribute no facts. A batch's ordering is computed FROM lineage, never part of it.
+            case AcquireFlowDocument doc:
+                // An acquisition fetches from a third party and lands raw files; its declared landing target chains
+                // to the downstream file flow that reads that location.
+                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Landing.Target, root));
                 break;
 
-            default:
-                result.Warnings.Add($"{file}: unhandled document kind '{document.GetType().Name}'.");
-                break;
+                // SourceControlFlowDocument/BatchFlowDocument project no headers and contribute no facts: a batch's
+                // ordering is computed FROM lineage, never part of it.
         }
     }
 
@@ -393,9 +469,6 @@ public sealed class FlowSetCollector
 
     private static string? Option(IReadOnlyDictionary<string, string?> options, string key)
         => options.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
-
-    private static Dictionary<string, string> ConnectionRefs(IEnumerable<(string Alias, string ConnectionRef)> connections)
-        => connections.ToDictionary(c => c.Alias, c => c.ConnectionRef, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>An invoke that declares it lands one or more file drops, awaiting reconciliation against the file
     /// ingestions.</summary>

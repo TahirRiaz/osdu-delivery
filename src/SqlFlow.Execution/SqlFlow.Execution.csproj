@@ -18,6 +18,7 @@
     <ProjectReference Include="..\SqlFlow.Orchestration\SqlFlow.Orchestration.csproj" />
     <ProjectReference Include="..\SqlFlow.HealthCheck\SqlFlow.HealthCheck.csproj" />
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
+    <ProjectReference Include="..\SqlFlow.Acquire\SqlFlow.Acquire.csproj" />
     <ProjectReference Include="..\SqlFlow.Providers\SqlFlow.Providers.csproj" />
     <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
   </ItemGroup>

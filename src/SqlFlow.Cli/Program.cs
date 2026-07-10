@@ -217,6 +217,23 @@ internal static class Program
                         return 1;
                     }
 
+                    // --health-check runs the document's embedded healthCheck: block (the derived hc sibling of
+                    // an ingestion flow) instead of the load itself. Selection is by the derived flow's name, the
+                    // same mechanism the node worker and a batch use, so all three entry points share one path.
+                    string? selectedFlow = null;
+                    if (args.Contains("--health-check"))
+                    {
+                        if (loaded is not IngestionFlowDocument { Document.HealthCheck: { } embeddedCheck })
+                        {
+                            Console.Error.WriteLine(
+                                "ERROR  --health-check runs a flow's embedded health check, but this document declares none " +
+                                "(a 'healthCheck:' block on a flowType: ing document).");
+                            return 1;
+                        }
+
+                        selectedFlow = embeddedCheck.SysAlias;
+                    }
+
                     var options = new DocumentExecutionOptions
                     {
                         LogLevel = ParseLogLevel(GetOption(args, "--log-level")),
@@ -225,6 +242,7 @@ internal static class Program
                         ScmPush = !args.Contains("--no-push"),
                         Echo = json ? null : Console.WriteLine,
                         Parameters = parameters,
+                        FlowName = selectedFlow,
                     };
 
                     DocumentExecutionResult exec;
@@ -2104,8 +2122,10 @@ internal static class Program
               sqlflow summary                    The dashboard rollup: estate size, run queue, fleet, schedules, sync.
               sqlflow nodes                      The worker fleet with heartbeat-derived online/offline state.
               sqlflow schedules list | show <id> | create --repo r --flow f (--cron <expr>|--interval <seconds>)
-                               [--timezone tz] [--disabled] [--catchup] | pause <id> | resume <id> | delete <id>
-                                                 The scheduling surface (cron or fixed interval per flow).
+                               [--timezone tz] [--disabled] [--catchup]
+                               | run <id> | pause <id> | resume <id> | delete <id>
+                                                 The scheduling surface (cron or fixed interval per flow); 'run' fires
+                                                 a schedule now (enqueues a run to test it) without moving its cadence.
               sqlflow repos    list | show <name|id> | sync <name|id>
                                | register --name r --remote-url u [--branch b] [--interval s]
                                  [--credential-ref ${env:GIT_TOKEN}] [--credential-user u] [--disabled]

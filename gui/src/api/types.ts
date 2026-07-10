@@ -100,6 +100,9 @@ export interface PipelineSummary {
   batch: string | null;
   wave: number;
   active: boolean;
+  /** "auto" (default: schedules and group runs execute it) or "manual" (the flow's YAML mode: it runs only
+   * when triggered directly; the scheduler and batch/node expansion skip it). */
+  executionMode: "auto" | "manual";
   sourceServer: string | null;
   targetServer: string | null;
   relativePath: string;
@@ -182,6 +185,9 @@ export interface RunDetail extends RunSummary {
   backfillFrom: string | null;
   backfillTo: string | null;
   filePattern: string | null;
+  /** True when this run evaluated the flow's data-quality assertions (manual-mode ones included) against the
+   * current target without loading anything (the on-demand assertion run). */
+  assertionsOnly: boolean;
   /** The incremental read scope the engine computed and applied this run: mode (full / incremental / backfill /
    * init-load), the filter that bounded the read, and the resolved watermark with the object it was probed from.
    * Null on flows with no incremental surface. Distinct from the operator's backfill parameters above. */
@@ -307,6 +313,9 @@ export interface RunTriggerRequest {
   backfillFrom?: string | null;
   backfillTo?: string | null;
   filePattern?: string | null;
+  /** Evaluate the flow's data-quality assertions (manual-mode ones included) against the current target and
+   * load nothing. Ingestion flows only; single-flow scope only. */
+  assertionsOnly?: boolean;
   /** The execution scope: one flow (default), a flow and its descendants (node), or a whole batch (batch). */
   scope?: RunScope;
   /** The batch label for a batch-scoped run; when omitted the anchor flow's own batch is used. */
@@ -395,6 +404,11 @@ export interface CreateScheduleRequest {
 export interface ScheduleCreated {
   id: string;
   nextFireUtc: string | null;
+}
+
+/** The manual run-now acknowledgement: the id of the run the schedule's flow was enqueued as. */
+export interface ScheduleRunAccepted {
+  runId: string;
 }
 
 // ---- Nodes ------------------------------------------------------------------------------------------------------------

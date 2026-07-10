@@ -203,7 +203,15 @@
       "required": false,
       "description": "Declares when the flow should run; captured on the FlowDocument envelope for every flowType (file, ing, exp, sp, inv, hc, scm, batch) by YamlDocumentLoader's probe pass and mapped to SqlFlow.Core.ScheduleSpec. The engine never schedules anything itself: the catalog sync mirrors this block into the schedule table (CatalogSync.cs:276-297) and the control plane's SchedulerService enqueues the actual runs. A block carrying neither cron nor intervalSeconds is silently treated as absent (MapSchedule, YamlDocumentLoader.cs:219-225), and the key is honored only when loading through YamlDocumentLoader; YamlFlowLoader alone (used by the CLI 'discover' verb via LoadFlow, src/SqlFlow.Cli/Program.cs:2096, called at Program.cs:256) ignores it as an unmatched property, while the CLI run/validate/plan verbs load through DocumentLoader.Load with YamlDocumentLoader (Program.cs:92, 101, 166, 180) and so do parse it, even though a direct CLI run never consumes it.",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:81",
-      "validation": "No parse-time validation of the block itself. When armed, ScheduleClock.TryValidate (src/SqlFlow.Catalog/ScheduleClock.cs:44) requires exactly one of cron / intervalSeconds; failure produces the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" and the schedule is skipped (src/SqlFlow.Catalog/CatalogSync.cs:284-288), or an HTTP 400 from the schedule API (src/SqlFlow.ControlPlane/Api/ScheduleEndpoints.cs:105)."
+      "validation": "No parse-time validation of the block itself. When armed, ScheduleClock.TryValidate (src/SqlFlow.Catalog/ScheduleClock.cs:44) requires exactly one of cron / intervalSeconds; failure produces the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" and the schedule is skipped (src/SqlFlow.Catalog/CatalogSync.cs:284-288), or an HTTP 400 from the schedule API (src/SqlFlow.ControlPlane/Api/ScheduleEndpoints.cs:105).",
+      "reuse": "The value may instead be a bare scalar (schedule: <name>) that references a shared schedule defined once elsewhere in the repo, either in a schedules.yaml / *.schedules.yaml library file (top-level 'schedules:' map, src/SqlFlow.Yaml/YamlScheduleLibraryLoader.cs) or as a name:'d inline block on another flow. References are resolved during the estate scan where the whole repo is visible (src/SqlFlow.Lineage/Collection/FlowSetCollector.cs); an unknown name leaves the flow unscheduled with a warning."
+    },
+    {
+      "path": "schedule.name",
+      "type": "string",
+      "required": false,
+      "description": "Publishes this inline schedule under a name so other flows in the same repo can reuse it by writing 'schedule: <name>' as a bare scalar. Metadata only: the cadence still applies to this flow. The estate scan collects named inline blocks and schedules.yaml library entries into one case-insensitive namespace and resolves references (src/SqlFlow.Lineage/Collection/FlowSetCollector.cs, ResolveSchedules); a duplicate name is warned and the first definition wins. Ignored on a scalar reference (that form has no name key).",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:88"
     },
     {
       "path": "schedule.catchup",

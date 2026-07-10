@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Model;
 using YamlDotNet.Core;
+using YamlDotNet.Core.Events;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -65,6 +66,13 @@ public sealed record BatchFlowDocument : FlowDocument
     public required BatchDocument Document { get; init; }
 }
 
+/// <summary>A generic acquisition flow document (<c>flowType: acq</c>): fetch from a third-party system over any
+/// transport (HTTP, SFTP, S3, Azure Table) and land the raw payloads in the lake.</summary>
+public sealed record AcquireFlowDocument : FlowDocument
+{
+    public required SqlFlow.Core.Acquire.AcquireFlow Flow { get; init; }
+}
+
 /// <summary>
 /// The single entry point for loading any flow document: it sniffs the root <c>flowType</c> key with a cheap
 /// probe pass, then delegates to the matching loader. No key (the long-standing default) means a file flow;
@@ -83,6 +91,11 @@ public sealed class YamlDocumentLoader
 
     private sealed class ScheduleYaml
     {
+        /// <summary>Set when the block was a bare scalar (<c>schedule: nightly</c>): the referenced schedule name.</summary>
+        public string? Ref { get; set; }
+
+        public string? Name { get; set; }
+
         public string? Cron { get; set; }
 
         public int? IntervalSeconds { get; set; }
@@ -94,8 +107,67 @@ public sealed class YamlDocumentLoader
         public bool? Catchup { get; set; }
     }
 
+    /// <summary>The mapping shape the converter delegates an inline <c>schedule:</c> block to: the same inline fields
+    /// as <see cref="ScheduleYaml"/> minus the scalar-only <c>Ref</c>. It is deliberately NOT accepted by
+    /// <see cref="ScheduleYamlConverter"/>, so the normal object deserializer binds it (camelCase, coercion,
+    /// unknown-key tolerance) without recursing back into the converter.</summary>
+    private sealed class InlineScheduleYaml
+    {
+        public string? Name { get; set; }
+
+        public string? Cron { get; set; }
+
+        public int? IntervalSeconds { get; set; }
+
+        public string? Timezone { get; set; }
+
+        public bool? Enabled { get; set; }
+
+        public bool? Catchup { get; set; }
+    }
+
+    /// <summary>
+    /// The <c>schedule:</c> block is written two ways: a bare scalar (a reference to a shared schedule by name, e.g.
+    /// <c>schedule: nightly</c>) or a mapping (an inline schedule, optionally carrying a <c>name:</c> to publish it
+    /// for reuse). YamlDotNet cannot bind both shapes to one type, so this converter reads the scalar form itself
+    /// and hands the mapping form to the normal deserializer.
+    /// </summary>
+    private sealed class ScheduleYamlConverter : IYamlTypeConverter
+    {
+        public bool Accepts(Type type) => type == typeof(ScheduleYaml);
+
+        public object? ReadYaml(IParser parser, Type type, ObjectDeserializer rootDeserializer)
+        {
+            if (parser.TryConsume<Scalar>(out var scalar))
+            {
+                return string.IsNullOrWhiteSpace(scalar.Value)
+                    ? null
+                    : new ScheduleYaml { Ref = scalar.Value.Trim() };
+            }
+
+            if (rootDeserializer(typeof(InlineScheduleYaml)) is not InlineScheduleYaml inline)
+            {
+                return null;
+            }
+
+            return new ScheduleYaml
+            {
+                Name = inline.Name,
+                Cron = inline.Cron,
+                IntervalSeconds = inline.IntervalSeconds,
+                Timezone = inline.Timezone,
+                Enabled = inline.Enabled,
+                Catchup = inline.Catchup,
+            };
+        }
+
+        public void WriteYaml(IEmitter emitter, object? value, Type type, ObjectSerializer serializer)
+            => throw new NotSupportedException("The schedule probe is read-only.");
+    }
+
     private readonly IDeserializer _probe = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
+        .WithTypeConverter(new ScheduleYamlConverter())
         .IgnoreUnmatchedProperties()
         .Build();
 
@@ -107,6 +179,7 @@ public sealed class YamlDocumentLoader
     private readonly YamlHealthCheckFlowLoader _healthCheckFlows;
     private readonly YamlSourceControlFlowLoader _sourceControlFlows;
     private readonly YamlBatchFlowLoader _batchFlows;
+    private readonly YamlAcquireFlowLoader _acquireFlows;
 
     public YamlDocumentLoader(
         YamlFlowLoader fileFlows,
@@ -116,7 +189,8 @@ public sealed class YamlDocumentLoader
         YamlInvokeFlowLoader invokeFlows,
         YamlHealthCheckFlowLoader healthCheckFlows,
         YamlSourceControlFlowLoader sourceControlFlows,
-        YamlBatchFlowLoader batchFlows)
+        YamlBatchFlowLoader batchFlows,
+        YamlAcquireFlowLoader acquireFlows)
     {
         ArgumentNullException.ThrowIfNull(fileFlows);
         ArgumentNullException.ThrowIfNull(ingestionFlows);
@@ -126,6 +200,7 @@ public sealed class YamlDocumentLoader
         ArgumentNullException.ThrowIfNull(healthCheckFlows);
         ArgumentNullException.ThrowIfNull(sourceControlFlows);
         ArgumentNullException.ThrowIfNull(batchFlows);
+        ArgumentNullException.ThrowIfNull(acquireFlows);
         _fileFlows = fileFlows;
         _ingestionFlows = ingestionFlows;
         _exportFlows = exportFlows;
@@ -134,6 +209,7 @@ public sealed class YamlDocumentLoader
         _healthCheckFlows = healthCheckFlows;
         _sourceControlFlows = sourceControlFlows;
         _batchFlows = batchFlows;
+        _acquireFlows = acquireFlows;
     }
 
     public FlowDocument LoadFile(string path)
@@ -202,11 +278,16 @@ public sealed class YamlDocumentLoader
             return new BatchFlowDocument { Document = _batchFlows.Parse(yaml, source), Schedule = schedule };
         }
 
+        if (string.Equals(flowType, "acq", StringComparison.OrdinalIgnoreCase))
+        {
+            return new AcquireFlowDocument { Flow = _acquireFlows.Parse(yaml, source), Schedule = schedule };
+        }
+
         throw new FlowValidationException(
             $"{source}: unknown flowType '{flowType}'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a " +
             "file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML " +
             "health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, " +
-            "or omit flowType for a file flow.");
+            "'acq' for a generic acquisition flow (HTTP API / SFTP / S3 / Azure Table), or omit flowType for a file flow.");
     }
 
     private static ScheduleSpec? MapSchedule(ScheduleYaml? schedule)
@@ -216,7 +297,15 @@ public sealed class YamlDocumentLoader
             return null;
         }
 
-        // A schedule block carrying neither a cron nor an interval declares nothing to fire; treat it as absent so
+        // A bare-scalar reference (schedule: nightly): carry the name for the repo-wide scan to resolve. The
+        // referenced cadence is not known here (a single-file parse has no view of the shared library), so no
+        // cron/interval is set until resolution.
+        if (!string.IsNullOrWhiteSpace(schedule.Ref))
+        {
+            return new ScheduleSpec { Ref = schedule.Ref.Trim() };
+        }
+
+        // An inline block carrying neither a cron nor an interval declares nothing to fire; treat it as absent so
         // an empty/placeholder block is not stored as a broken schedule. The cron syntax itself is validated where
         // the schedule is armed (the catalog/control plane owns the cron library).
         if (string.IsNullOrWhiteSpace(schedule.Cron) && schedule.IntervalSeconds is null)
@@ -226,6 +315,7 @@ public sealed class YamlDocumentLoader
 
         return new ScheduleSpec
         {
+            Name = string.IsNullOrWhiteSpace(schedule.Name) ? null : schedule.Name.Trim(),
             Cron = string.IsNullOrWhiteSpace(schedule.Cron) ? null : schedule.Cron.Trim(),
             IntervalSeconds = schedule.IntervalSeconds,
             Timezone = string.IsNullOrWhiteSpace(schedule.Timezone) ? "UTC" : schedule.Timezone.Trim(),

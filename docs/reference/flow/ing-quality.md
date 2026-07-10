@@ -76,7 +76,7 @@ surrogateKeys:
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | none | Unique assertion name (case-insensitive across the list). |
 | `expression` | string | yes | none | T-SQL query template run against the loaded target; may use the `@TableName` and `@FilterCriteria` macros. |
-| `mode` | string | no | `auto` | When the assertion evaluates: `auto` runs it as step 7c of every normal ingestion run; `manual` reserves it for an on-demand assertions-only run (`sqlflow run --assertions-only`). |
+| `mode` | string | no | `auto` | `auto` evaluates the assertion as part of every ingestion run; `manual` reserves it for an on-demand assertions-only run (see below). Case-insensitive; anything else fails with `'assertions[i].mode' has unknown value '<v>'. Allowed: auto, manual.` |
 
 ### surrogateKeys (list)
 
@@ -101,7 +101,7 @@ surrogateKeys:
 
 ## assertions
 
-Each entry is a `{name, expression}` pair. The loader (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs) validates:
+Each entry is a `{name, expression}` pair with an optional `mode`. The loader (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs) validates:
 
 - A missing or blank name fails with `'assertions[i].name' is required.`
 - A missing or blank expression fails with `'assertions[i].expression' is required.`
@@ -111,7 +111,7 @@ The declarations become `AssertionDefinition` records held in an `InMemoryAssert
 
 ### Runtime behavior
 
-`AssertionRunner` (src/SqlFlow.SqlServer/Ingestion/AssertionRunner.cs) runs after the load commits, after the surrogate keys, and materializes each expression by naive string REPLACE, exactly as legacy:
+`AssertionRunner` (src/SqlFlow.SqlServer/Ingestion/AssertionRunner.cs) runs after the load commits, after the surrogate keys, and materializes each expression by naive string REPLACE, exactly as legacy. A normal ingestion run evaluates only the `mode: auto` assertions; `mode: manual` ones are skipped entirely (no result row) and wait for an assertions-only run:
 
 - `@TableName` is replaced with the two-part, bracket-escaped target name, for example `[dbo].[Orders_DW]`.
 - `@FilterCriteria` is replaced with the flow's `source.incrementalClause` (empty string when unset).
@@ -136,6 +136,18 @@ A declared assertion does not necessarily run after every load; its `mode` decid
 The gate lives in `AssertionRunner` itself (src/SqlFlow.SqlServer/Ingestion/AssertionRunner.cs:51-55): when a definition's `Mode` is `Manual` and `includeManual` is false, that assertion is passed over. So a `manual` assertion never blocks or runs during a normal load; use it for heavier or on-demand checks you do not want on the ingestion hot path.
 
 Without an assertion runner wired, the engine default is `NullAssertionRunner`, which runs nothing; the YAML composition root (src/SqlFlow.SqlServer/Ingestion/WithoutDatabaseIngestion.cs) always wires the real runner over the document's declarations.
+
+### On-demand execution (assertions-only runs)
+
+An assertions-only run evaluates the flow's WHOLE assertion list, `auto` and `manual` alike, against the CURRENT target and does nothing else: no source read, no staging rebuild, no load (the branch lives at the top of src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs, before the source connection even resolves). It is triggered as a per-run substitution parameter, never a YAML edit:
+
+- **GUI**: the "Run assertions" button on an ingestion pipeline's detail page, and on the Assertions tab of any ingestion run's detail page.
+- **API**: `POST /api/v1/runs` with `"assertionsOnly": true`. Refused (400) for any flow kind but `ing`, and for a node/batch scope (it is a single-flow concept, like the built-in backfill).
+- **CLI**: `sqlflow run <pipeline.yaml> --assertions-only` (local) or `sqlflow trigger --repo <r> --flow <f> --assertions-only` (fleet).
+
+The flag is mutually exclusive with `--full`, a backfill window, and a file pattern (an assertions-only run reads no source data). The run records like any other: assertion results land on the run artifact, project into the shadow catalog, and show in the run detail's Assertions tab; the run header carries `assertionsOnly` for the audit trail. The log-only contract carries over per assertion: a failing assertion never fails the run; only an infrastructure failure (an unreachable target) does.
+
+The typical split: cheap invariants (row counts, NULL keys) stay `auto` and run with every load; expensive or occasional checks (a full reconciliation against the source, a heavy DISTINCT scan) are declared `mode: manual` and executed on demand from the GUI when someone actually wants the answer.
 
 ## surrogateKeys
 

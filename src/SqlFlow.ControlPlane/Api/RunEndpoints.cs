@@ -153,7 +153,8 @@ public static class RunEndpoints
 
     private static async Task<Ok<PagedResult<RunSummaryDto>>> ListRunsAsync(
         CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? flowKind, string? status, bool? success,
-        string? flowName, string? batch, Guid? groupId, bool? latest, int? page, int? pageSize, CancellationToken ct)
+        string? flowName, string? batch, Guid? groupId, bool? latest, DateTime? from, DateTime? to,
+        int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -166,6 +167,25 @@ public static class RunEndpoints
         if (pipelineId is { } pid)
         {
             query = query.Where(x => x.PipelineId == pid);
+        }
+
+        // A time window over the run history (the schedules timeline reads runs by day). The window is applied on
+        // WrittenUtc: the moment the run's outcome landed in the catalog and the same key the list already orders
+        // newest-first by, so the (WrittenUtc)-ordered scan the endpoint runs answers the range directly. Both
+        // bounds are optional and inclusive; a caller can pass just one to open-end the window in either direction.
+        // WrittenUtc is stored as a UTC wall-clock value, but query-string binding turns an ISO instant like
+        // "2026-03-10T12:00:00Z" into a server-local DateTime, so each bound is normalized back to UTC before it is
+        // compared: without this the window would be off by the host's UTC offset.
+        if (from is { } fromUtc)
+        {
+            var lower = ToUtc(fromUtc);
+            query = query.Where(x => x.WrittenUtc >= lower);
+        }
+
+        if (to is { } toUtc)
+        {
+            var upper = ToUtc(toUtc);
+            query = query.Where(x => x.WrittenUtc <= upper);
         }
 
         // A group's member runs, for the group view: every run stamped with this GroupId, in wave order below.
@@ -879,6 +899,18 @@ public static class RunEndpoints
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunHealthCheckMetricDto>(items, p, size, total));
     }
+
+    /// <summary>Normalizes a run-window bound to the UTC wall-clock value the WrittenUtc column stores: a local
+    /// value (how query-string binding materializes an ISO instant with a 'Z' suffix) is converted, an already-UTC
+    /// value is kept, and an unspecified-kind value is taken to be UTC (every timestamp in the API is UTC by
+    /// contract).</summary>
+    private static DateTime ToUtc(DateTime value)
+        => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+        };
 
     private static Task<bool> RunExistsAsync(CatalogDbContext db, Guid runId, CancellationToken ct)
         => db.Runs.AsNoTracking().AnyAsync(x => x.RunId == runId, ct);

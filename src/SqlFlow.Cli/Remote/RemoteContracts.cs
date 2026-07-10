@@ -162,6 +162,9 @@ internal sealed record CreateScheduleRequest(
 /// <summary>The created-schedule acknowledgement.</summary>
 internal sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
 
+/// <summary>The manual run-now acknowledgement: the id of the run the schedule's flow was enqueued as.</summary>
+internal sealed record ScheduleRunAccepted(Guid RunId);
+
 /// <summary>A managed git source the control plane keeps the catalog synced from.</summary>
 internal sealed record RepoSourceDto(
     Guid Id, string Name, string RemoteUrl, string Branch, bool Enabled, int SyncIntervalSeconds,

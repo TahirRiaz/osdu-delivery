@@ -90,8 +90,9 @@ sqlflow run orders-ingestion.flow.yaml
 | `invokes` | map | no | empty | Named invoke blocks referenced by `preInvoke`/`postInvoke`. |
 | `servicePrincipals` | map | no | empty | Named Azure service principals used by invoke blocks. |
 | `virtualColumns` | list | no | empty | Computed columns: each entry has `name`, `dataType`, `dataTypeExpression`, `expression` (required per entry). |
-| `assertions` | list | no | empty | Inline data-quality assertions: each entry has `name` and `expression` (both required; duplicate names rejected) and an optional `mode` (`auto` default, or `manual`; a manual assertion runs only in an assertions-only run). |
+| `assertions` | list | no | empty | Inline data-quality assertions: each entry has `name` and `expression` (both required; duplicate names rejected) and an optional `mode` (`auto` default / `manual` for on-demand assertions-only runs). |
 | `surrogateKeys` | list | no | empty | Surrogate key generation: each entry has `server`, `table` (required), `column` (required), `keyColumns` (required), `sKeyColumns`, `preProcess`, `postProcess`. |
+| `healthCheck` | map | no | unset | An embedded ML health check over this flow's target table: the standalone hc document's declaration body (`dateColumn` required, `baseValue`/`metrics`, `filter`, `ml`, `maturityDays`, `sentinelDateFloor`, `holidays`) minus target/connections, plus `name` (default `<name>_hc`) and `mode` (default `manual`: runs only on demand). Expands into a derived sibling hc pipeline sharing this file; see the hc reference. Requires the flow to declare `name:`. |
 
 ## name, SysAlias, and FlowId
 

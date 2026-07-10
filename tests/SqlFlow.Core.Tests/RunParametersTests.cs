@@ -111,6 +111,32 @@ public sealed class RunParametersTests
     }
 
     [Fact]
+    public void AssertionsOnly_IsNotDefault_AndDescribes()
+    {
+        var parameters = new RunParameters { AssertionsOnly = true };
+        parameters.Validate();
+        Assert.False(parameters.IsDefault);
+        Assert.Equal("assertions only", parameters.Describe());
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]  // with full load
+    [InlineData(false, true, false)]  // with a window bound
+    [InlineData(false, false, true)]  // with a file pattern
+    public void AssertionsOnly_CombinedWithAnySelectionOverride_IsRejected(bool full, bool from, bool pattern)
+    {
+        var parameters = new RunParameters
+        {
+            AssertionsOnly = true,
+            FullLoad = full,
+            BackfillFrom = from ? new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) : null,
+            FilePattern = pattern ? "orders*.csv" : null,
+        };
+        var error = Assert.Throws<SqlFlowException>(parameters.Validate);
+        Assert.Contains("assertionsOnly", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Describe_RendersEveryComponent()
     {
         var parameters = new RunParameters

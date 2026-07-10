@@ -283,7 +283,10 @@ public sealed class BatchOrchestrator
             DocumentRunOutcome outcome;
             try
             {
-                outcome = await _runner.RunAsync(file, options, ct).ConfigureAwait(false);
+                // The member's name selects which flow of its file executes: a document that expands into more
+                // than one pipeline (an ingestion flow with an embedded healthCheck: block) shares one file
+                // between the load member and the derived hc member.
+                outcome = await _runner.RunAsync(file, options with { FlowName = member.Name }, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

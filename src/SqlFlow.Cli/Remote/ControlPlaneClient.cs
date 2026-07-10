@@ -362,6 +362,24 @@ internal sealed class ControlPlaneClient : IDisposable
     public Task<ScheduleCreated> CreateScheduleAsync(CreateScheduleRequest request, CancellationToken ct)
         => PostAsync<ScheduleCreated>("/api/v1/schedules", request, ct);
 
+    /// <summary>Fires a schedule now, enqueuing a run of its flow (to test the schedule). Returns the enqueued run
+    /// id, or null when the server does not know the schedule id (404). A 409 (the flow is inactive/removed) surfaces
+    /// as a failure carrying the server's detail.</summary>
+    public async Task<Guid?> RunScheduleNowAsync(Guid id, CancellationToken ct)
+    {
+        using var request = NewRequest(HttpMethod.Post, $"/api/v1/schedules/{id}/run");
+        using var timeout = Budget(ct);
+        using var response = await _http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, timeout.Token).ConfigureAwait(false);
+        var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+        return Deserialize<ScheduleRunAccepted>(text, $"/api/v1/schedules/{id}/run").RunId;
+    }
+
     public Task<ScheduleDto?> PauseScheduleAsync(Guid id, CancellationToken ct)
         => PostOrNullAsync<ScheduleDto>($"/api/v1/schedules/{id}/pause", null, ct);
 

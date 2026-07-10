@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { startLspClient, stopLspClient } from './lsp/lspClient';
 import { Session, errText } from './api/session';
 import { AuthError, ControlPlaneClient } from './api/controlPlaneClient';
-import { CatalogTreeProvider, PipelineNode, RepoNode, RunNode, RunsTreeProvider, SchedulesTreeProvider } from './views/trees';
+import { CatalogTreeProvider, PipelineNode, RepoNode, RunNode, RunsTreeProvider, ScheduleNode, SchedulesTreeProvider } from './views/trees';
 import { Docs } from './docs/docs';
 import { setupMcp } from './mcp/mcpSetup';
 
@@ -156,6 +156,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await client.cancelRun(arg.run.runId);
             void vscode.window.showInformationMessage(`SQLFlow: cancellation requested for run ${arg.run.runId}.`);
             runs.refresh();
+        });
+    });
+
+    register('sqlflow.runSchedule', async (arg: unknown) => {
+        if (!(arg instanceof ScheduleNode)) {
+            return;
+        }
+        await withAuth(session, client, output, async () => {
+            const accepted = await client.runSchedule(arg.schedule.id);
+            void vscode.window.showInformationMessage(
+                `SQLFlow: schedule fired; queued run ${accepted.runId}.`
+            );
+            runs.refresh();
+            schedules.refresh();
         });
     });
 

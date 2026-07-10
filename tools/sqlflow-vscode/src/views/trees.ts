@@ -122,7 +122,7 @@ export class SchedulesTreeProvider implements vscode.TreeDataProvider<vscode.Tre
         try {
             const schedules = items(await this.client.listSchedules());
             return schedules.length
-                ? schedules.map((s) => scheduleNode(s))
+                ? schedules.map((s) => new ScheduleNode(s))
                 : [messageNode('No schedules configured.')];
         } catch (err) {
             return [errorNode(err)];
@@ -130,12 +130,13 @@ export class SchedulesTreeProvider implements vscode.TreeDataProvider<vscode.Tre
     }
 }
 
-function scheduleNode(s: Schedule): vscode.TreeItem {
-    const item = new vscode.TreeItem(s.name ?? s.id, vscode.TreeItemCollapsibleState.None);
-    item.description = [s.cron, s.paused ? 'paused' : undefined].filter(Boolean).join(' · ');
-    item.iconPath = new vscode.ThemeIcon(s.paused ? 'debug-pause' : 'watch');
-    item.contextValue = 'schedule';
-    return item;
+export class ScheduleNode extends vscode.TreeItem {
+    constructor(public readonly schedule: Schedule) {
+        super(schedule.name ?? schedule.id, vscode.TreeItemCollapsibleState.None);
+        this.description = [schedule.cron, schedule.paused ? 'paused' : undefined].filter(Boolean).join(' · ');
+        this.iconPath = new vscode.ThemeIcon(schedule.paused ? 'debug-pause' : 'watch');
+        this.contextValue = 'schedule';
+    }
 }
 
 function errorNode(err: unknown): vscode.TreeItem {

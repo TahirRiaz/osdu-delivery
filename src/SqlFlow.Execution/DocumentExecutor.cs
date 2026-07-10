@@ -130,6 +130,41 @@ public sealed class DocumentExecutor : IDocumentRunner
                 "evaluated against an ingestion flow's target.");
         }
 
+        // An ingestion document with an embedded healthCheck: block expands into two pipelines sharing one
+        // file: the load and its derived hc sibling. The caller selects by flow name (the node worker passes
+        // the claimed run's name, a batch each member's, the CLI's --health-check the derived name); the
+        // derived check then executes through the exact same hc path as a standalone document, monitoring the
+        // flow's target through the document's own connections. A name matching neither flow is refused loudly:
+        // silently running the load when the caller asked for something else would be the worst outcome.
+        if (document is IngestionFlowDocument ingestion && options.FlowName is { } requestedFlow)
+        {
+            var embedded = ingestion.Document.HealthCheck;
+            if (embedded is not null && string.Equals(requestedFlow, embedded.SysAlias, StringComparison.OrdinalIgnoreCase))
+            {
+                if (options.Parameters.AssertionsOnly)
+                {
+                    throw new SqlFlowException(
+                        $"assertionsOnly applies to the ingestion flow, not its embedded health check '{embedded.SysAlias}'.");
+                }
+
+                // The document's schedule: block belongs to the ingestion flow; the derived check carries none.
+                var derived = new HealthCheckFlowDocument
+                {
+                    Document = new HealthCheckDocument { Flow = embedded, Connections = ingestion.Document.Connections },
+                };
+                return await ExecuteHealthCheckAsync(derived, flowFile, options, ct).ConfigureAwait(false);
+            }
+
+            var primaryName = ingestion.Document.Flow.SysAlias ?? ingestion.Document.Flow.Target.Table.Name;
+            if (!string.Equals(requestedFlow, primaryName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SqlFlowException(
+                    $"This document declares flow '{primaryName}'" +
+                    (embedded is null ? string.Empty : $" and embedded health check '{embedded.SysAlias}'") +
+                    $", not '{requestedFlow}'. The file and the catalog have drifted; re-sync the repo.");
+            }
+        }
+
         return document switch
         {
             FileFlowDocument doc => await ExecuteFileAsync(doc, flowFile, options, ct).ConfigureAwait(false),
@@ -138,6 +173,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             StoredProcedureFlowDocument doc => await ExecuteStoredProcedureAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             HealthCheckFlowDocument doc => await ExecuteHealthCheckAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             InvokeFlowDocument doc => await ExecuteInvokeAsync(doc, flowFile, options, ct).ConfigureAwait(false),
+            AcquireFlowDocument doc => await ExecuteAcquireAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             SourceControlFlowDocument doc => await ExecuteSourceControlAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             _ => throw new SqlFlowException($"Cannot run document kind '{document.GetType().Name}'."),
         };
@@ -441,6 +477,49 @@ public sealed class DocumentExecutor : IDocumentRunner
         {
             FlowName = flowName,
             FlowKind = "inv",
+            Success = result.Success,
+            Error = result.Error,
+            RunId = result.RunId,
+            RunDirectory = runDirectory,
+            DurationSeconds = result.DurationSeconds,
+            Result = result,
+        };
+    }
+
+    private async Task<DocumentExecutionResult> ExecuteAcquireAsync(AcquireFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
+    {
+        var flowName = doc.Flow.Name;
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, flowName);
+
+        // A backfill window re-windows every date-window iteration and a full load ignores the stored watermark
+        // (both handled by the acquire runner, which receives the typed parameters below); a file pattern has no
+        // acquisition meaning, so it alone is surfaced as an explicit notice rather than silently dropped.
+        if (!string.IsNullOrWhiteSpace(options.Parameters.FilePattern))
+        {
+            eventSink.Log(RunLogLevel.Info, "parameters",
+                "run parameter 'filePattern' does not apply to an acquisition flow (flowType: acq); the flow runs as defined.");
+        }
+
+        // Incremental resume reads the run history anchored at the flow document's folder, the same anchor
+        // RunHistory.Write uses below, so a resumed run reads exactly the watermarks written here.
+        var anchor = Path.GetDirectoryName(Path.GetFullPath(flowFile)) ?? Directory.GetCurrentDirectory();
+        var runner = _provider.GetRequiredService<SqlFlow.Acquire.Engine.AcquireFlowRunner>();
+        var result = await runner.RunAsync(
+            doc.Flow, anchor,
+            new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, Parameters = options.Parameters },
+            ct).ConfigureAwait(false);
+
+        var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["run.json"] = JsonSerializer.Serialize(Artifact("acq", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
+            ["run.log"] = runLogger.Render(),
+            ["trace.sql"] = string.Empty,
+        }, _warningSink);
+
+        return new DocumentExecutionResult
+        {
+            FlowName = flowName,
+            FlowKind = "acq",
             Success = result.Success,
             Error = result.Error,
             RunId = result.RunId,

@@ -11,6 +11,10 @@ keywords:
   - enabled
   - scheduler service
   - paused
+  - schedules.yaml
+  - shared schedule
+  - schedule reference
+  - schedule macro
 yamlPath: schedule
 related:
   - concept-control-plane
@@ -19,6 +23,8 @@ related:
   - flow-overview
 sourceRefs:
   - src/SqlFlow.Yaml/YamlDocumentLoader.cs
+  - src/SqlFlow.Yaml/YamlScheduleLibraryLoader.cs
+  - src/SqlFlow.Lineage/Collection/FlowSetCollector.cs
   - src/SqlFlow.Core/ScheduleSpec.cs
   - src/SqlFlow.Catalog/ScheduleClock.cs
   - src/SqlFlow.Catalog/ScheduleStore.cs
@@ -58,7 +64,11 @@ target:
 | `enabled` | bool | no | `true` | Whether the schedule is active. A disabled schedule is recorded in the catalog but never fires. |
 | `catchup` | bool | no | `false` | Whether missed occurrences (the host was down past a fire) are backfilled. `false` skips the missed fire and resumes at the next occurrence after now; `true` fires one missed occurrence per scheduler tick until the schedule is current again. |
 
+| `name` | string | no | none | Publishes this inline schedule under a name so other flows can reuse it with `schedule: <name>`. Metadata only: the cadence still applies to this flow. See [Reusable schedules](#reusable-schedules-define-once-reference-by-name). |
+
 Exactly one of `cron` or `intervalSeconds` must be set for the schedule to be armed. A block that sets neither is treated as absent: the loader parses it to no schedule at all (src/SqlFlow.Yaml/YamlDocumentLoader.cs, `MapSchedule`), so an empty block is never stored as a broken schedule.
+
+The `schedule:` value may also be written as a bare scalar (`schedule: nightly`) to reuse a schedule defined elsewhere by name, instead of an inline block. See [Reusable schedules](#reusable-schedules-define-once-reference-by-name).
 
 ### cron
 
@@ -84,6 +94,56 @@ An IANA time zone id such as `Europe/Oslo`, resolved through `TimeZoneInfo.FindS
 ### enabled
 
 Defaults to `true`. `enabled: false` stores the schedule but the scheduler never fires it. This is the declarative flag from the YAML (or the API create body); it is distinct from the operational `paused` flag described below.
+
+## Reusable schedules: define once, reference by name
+
+Repeating the same `schedule:` block across every flow of a source is a maintenance trap: change the cadence and you must edit every file. Instead a schedule can be defined once and referenced by name from any number of flows in the same repo. A flow references a shared schedule by writing the `schedule:` value as a bare scalar, the schedule's name:
+
+```yaml
+name: orders
+schedule: nightly        # reuse the shared schedule named "nightly"
+source:
+  type: csv
+  location: ./orders.csv
+target:
+  connection: ${env:SQLFLOW_CONN_DWH}
+  schema: dbo
+  table: Orders
+```
+
+A named schedule is defined in one of two ways, and both share a single per-repo namespace:
+
+1. **A dedicated `schedules.yaml` library file.** Any file named `schedules.yaml` or ending in `.schedules.yaml`, anywhere in the repo, whose top-level `schedules:` key maps a name to a cadence. This is the natural home for a source's schedules (src/SqlFlow.Yaml/YamlScheduleLibraryLoader.cs):
+
+   ```yaml
+   # schedules.yaml
+   schedules:
+     nightly:   { cron: "0 6 * * *", timezone: "Europe/Oslo" }
+     every-15m: { intervalSeconds: 900 }
+     weekly:    { cron: "0 5 * * 1", timezone: "UTC", catchup: true }
+   ```
+
+   Each entry's fields are exactly a flow's inline `schedule:` block (`cron` or `intervalSeconds`, `timezone`, `enabled`, `catchup`); the map key is the reference name. A library file is not a flow document (the flow scan globs `*.flow.yaml`) and never becomes a pipeline. An entry that declares neither a cron nor an interval is dropped with a warning.
+
+2. **A named inline block on a flow.** An inline `schedule:` block may carry a `name:` key to publish itself for reuse. That flow still runs on its own inline schedule, and any other flow in the repo can reference it by that name:
+
+   ```yaml
+   # invoices.flow.yaml — defines "nightly" inline and uses it
+   name: invoices
+   schedule:
+     name: nightly
+     cron: "0 6 * * *"
+     timezone: "Europe/Oslo"
+   # ... orders.flow.yaml elsewhere just writes:  schedule: nightly
+   ```
+
+References are resolved during the estate scan, where the whole repo is visible (src/SqlFlow.Lineage/Collection/FlowSetCollector.cs), after which each referencing flow carries the resolved cadence exactly as if it had been written inline. Resolution rules:
+
+- The two definition sources share one case-insensitive namespace. If a name is defined more than once (across library files and named inline blocks), the first definition wins and the redefinition is warned.
+- A reference to a name that nothing defines leaves that flow **unscheduled**, with the warning `'<flow>' (<file>) references schedule '<name>', which no schedules.yaml or named inline block defines; the flow is left unscheduled.` A dangling reference never produces a wrong or broken schedule.
+- Cron/interval syntax of a resolved schedule is validated exactly as an inline one (see below); the resolved cadence flows through the same catalog sync.
+
+A `schedule: <name>` reference is only resolvable by the full estate scan (`sqlflow db sync`), which sees the whole repo. The targeted per-run write-back that keeps a run-only catalog current parses a single flow file and cannot see the library, so it leaves a referenced schedule for the next full sync to reconcile rather than mirror an unresolved reference (src/SqlFlow.Catalog/CatalogSync.cs, `MirrorSingleFlowScheduleAsync`).
 
 ## From YAML to the catalog: sync semantics
 
@@ -120,6 +180,7 @@ The control plane also manages schedules directly (src/SqlFlow.ControlPlane/Api/
 | `GET /schedules` | List, filterable by `repoId`, `pipelineId`, `source` (`yaml` or `api`), `enabled`; paged with `page` and `pageSize`. |
 | `GET /schedules/{id}` | One schedule; 404 when unknown. |
 | `POST /schedules` | Create an ad-hoc `api` schedule from `{repoId, flowName, cron OR intervalSeconds, timezone?, enabled?, catchup?}`. 400 on a blank `flowName` or invalid timing; 404 when no active pipeline matches. |
+| `POST /schedules/{id}/run` | Fire the schedule now, on demand (to test it): enqueues a run of its flow through the same durable path a scheduled fire uses and stamps `lastRunId`, without moving the next scheduled fire. 202 with `{runId}`; 404 when unknown; 409 when the flow is inactive or removed. |
 | `POST /schedules/{id}/pause` | Set the operational `paused` flag. |
 | `POST /schedules/{id}/resume` | Clear `paused` and recompute the next fire from now, so a long pause never releases a burst of missed fires. |
 | `DELETE /schedules/{id}` | Remove the schedule; 204 on success, 404 when unknown. |

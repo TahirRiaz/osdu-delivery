@@ -156,6 +156,79 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Sync_ExpandsEmbeddedHealthCheck_IntoASiblingPipeline()
+    {
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_hc_" + suffix;
+        var flowName = "cat_hcload_" + suffix;
+        var checkName = flowName + "_hc";
+        var repoId = FlowIdentity.FromName(repo);
+
+        var path = Path.Combine(_dir, "flows", "orders_hc.flow.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, $$"""
+            flowType: ing
+            name: {{flowName}}
+            batch: HC
+            connections:
+              src: ${env:SQLFlowSinkConStr}
+              dwh: ${env:SQLFlowSinkConStr}
+            source: { server: src, object: db.dbo.Orders }
+            target: { server: dwh, object: db.dbo.Orders_DW }
+            load: { keyColumns: [OrderID] }
+            healthCheck:
+              dateColumn: OrderDate
+              baseValue: COUNT(*)
+            """);
+        await CatalogDatabase.MigrateAsync(cs);
+
+        try
+        {
+            // One file, two pipelines: the load and its derived (mode: manual by default) health check.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var first = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+                Assert.Equal(2, first.PipelinesAdded);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var load = await db.Pipelines.SingleAsync(p => p.Name == flowName);
+                var check = await db.Pipelines.SingleAsync(p => p.Name == checkName);
+                Assert.Equal("ing", load.Kind);
+                Assert.Equal(PipelineExecutionModes.Auto, load.ExecutionMode);
+                Assert.Equal("hc", check.Kind);
+                Assert.Equal(PipelineExecutionModes.Manual, check.ExecutionMode);
+                Assert.Equal(load.RelativePath, check.RelativePath); // one file, shared by both pipelines
+                Assert.Equal("HC", check.Batch);                     // inherited from the flow
+                Assert.True(check.Active);
+
+                // The check reads what the load writes, so lineage orders it after the load.
+                Assert.True(await db.FlowDependencies.AnyAsync(
+                    d => d.RepoId == repoId && d.FromFlow == flowName && d.ToFlow == checkName));
+            }
+
+            // Idempotent: nothing re-added on an unchanged estate.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var again = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+                Assert.Equal(0, again.PipelinesAdded);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+            await using var db = CatalogDatabase.Create(cs);
+            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
     public async Task Sync_HonorsExcludedFlowSelection_UnderNoTracking_DeactivatesAndReactivates()
     {
         var cs = IntegrationDb.Require();
@@ -536,6 +609,92 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
             await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
             await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
         }
+    }
+
+    [SkippableFact]
+    public async Task RecordRun_MirrorsYamlSchedule_CreatesUpdatesAndRemoves()
+    {
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_sched_" + suffix;
+        var repoId = FlowIdentity.FromName(repo);
+        var flowName = "sched_orders_" + suffix;
+        var flowFile = Path.Combine(_dir, "flows", "orders.flow.yaml");
+        var scheduleId = CatalogIdentity.YamlSchedule(repoId, flowName);
+
+        WriteScheduledFlow(flowName, "flows/orders.flow.yaml", "0 6 * * *");
+        var runId = Guid.NewGuid();
+        var runDir = Path.Combine(_dir, ".sqlflow", "runs", RunHistoryWriter.SafeName(flowName), $"20260617-100000_{runId.ToString("N")[..8]}");
+        Directory.CreateDirectory(runDir);
+        var runJson = Path.Combine(runDir, "run.json");
+        File.WriteAllText(runJson, $$"""
+            {
+              "schemaVersion": 1, "flowKind": "file", "flowName": "{{flowName}}", "runId": "{{runId}}",
+              "success": true, "writtenUtc": "2026-06-17T10:00:00Z", "host": "node-test",
+              "result": { "rowsLoaded": 1, "totalMs": 10.0 }
+            }
+            """);
+        await CatalogDatabase.MigrateAsync(cs);
+
+        try
+        {
+            // The write-back alone (no full SyncAsync) mirrors the declared schedule: created, enabled, armed.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().RecordRunAsync(db, flowFile, runJson, repo, null, DateTime.UtcNow);
+                var schedule = await db.Schedules.SingleAsync(s => s.Id == scheduleId);
+                Assert.Equal("0 6 * * *", schedule.Cron);
+                Assert.Equal("yaml", schedule.Source);
+                Assert.Equal(flowName, schedule.FlowName);
+                Assert.True(schedule.Enabled);
+                Assert.NotNull(schedule.NextFireUtc);
+            }
+
+            // A changed cron in the YAML flows through on the next write-back.
+            WriteScheduledFlow(flowName, "flows/orders.flow.yaml", "30 7 * * *");
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().RecordRunAsync(db, flowFile, runJson, repo, null, DateTime.UtcNow);
+                var schedule = await db.Schedules.SingleAsync(s => s.Id == scheduleId);
+                Assert.Equal("30 7 * * *", schedule.Cron);
+            }
+
+            // Removing the schedule: block from the YAML removes the mirror, so it stops firing.
+            WriteFlow(flowName, "flows/orders.flow.yaml");
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().RecordRunAsync(db, flowFile, runJson, repo, null, DateTime.UtcNow);
+                Assert.False(await db.Schedules.AnyAsync(s => s.Id == scheduleId));
+            }
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.Schedules.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    private void WriteScheduledFlow(string flowName, string relativePath, string cron)
+    {
+        var path = Path.Combine(_dir, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, """
+            name: __NAME__
+            source:
+              type: csv
+              location: ./data.csv
+            target:
+              connection: ${env:SQLFlowSinkConStr}
+              schema: dbo
+              table: CatOrders
+            schedule:
+              cron: "__CRON__"
+            """
+            .Replace("__NAME__", flowName, StringComparison.Ordinal)
+            .Replace("__CRON__", cron, StringComparison.Ordinal));
     }
 
     private void WriteFlowWithConnection(string flowName, string relativePath, string connection)

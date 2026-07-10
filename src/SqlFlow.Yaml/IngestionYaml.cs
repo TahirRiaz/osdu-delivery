@@ -39,6 +39,42 @@ internal sealed class IngestionYaml
     public List<IngestionVirtualColumnYaml>? VirtualColumns { get; set; }
     public List<IngestionAssertionYaml>? Assertions { get; set; }
     public List<IngestionSurrogateKeyYaml>? SurrogateKeys { get; set; }
+
+    /// <summary>The embedded ML health check over this flow's target table: the same declaration body as a
+    /// standalone hc document, minus target/connections (both come from the flow). Expands into a derived hc
+    /// pipeline that runs on demand by default (mode: manual).</summary>
+    public IngestionHealthCheckYaml? HealthCheck { get; set; }
+}
+
+/// <summary>The embedded <c>healthCheck:</c> block of an ingestion flow. The monitored table is always the
+/// flow's target (that is the point of embedding); everything else mirrors the standalone hc document.</summary>
+internal sealed class IngestionHealthCheckYaml
+{
+    /// <summary>The derived flow's name; defaults to <c>&lt;flowName&gt;_hc</c>.</summary>
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    /// <summary>manual (default: the embedded check runs only when triggered from the GUI/API/CLI) or auto
+    /// (schedules and batch/node group runs execute it like any flow, ordered after the load by lineage).</summary>
+    public string? Mode { get; set; }
+
+    public string? DateColumn { get; set; }
+
+    /// <summary>The single-metric shorthand: an aggregate expression. Mutually exclusive with 'metrics'.</summary>
+    public string? BaseValue { get; set; }
+
+    public List<HealthCheckMetricYaml>? Metrics { get; set; }
+
+    public string? Filter { get; set; }
+
+    public int? MaturityDays { get; set; }
+
+    public string? SentinelDateFloor { get; set; }
+
+    public HealthCheckMlYaml? Ml { get; set; }
+
+    public List<string>? Holidays { get; set; }
 }
 
 internal sealed class IngestionEndpointYaml

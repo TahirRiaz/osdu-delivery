@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.HealthChecks;
+using SqlFlow.Core.Runs;
 using SqlFlow.Yaml;
 using Xunit;
 
@@ -49,6 +50,7 @@ public sealed class YamlHealthCheckFlowLoaderTests
         Assert.Equal(0.10, flow.MaxAnomalyFraction);
         Assert.Equal(1, flow.MaturityDays);
         Assert.Equal(new DateOnly(1990, 1, 1), flow.SentinelDateFloor);
+        Assert.Equal(ExecutionMode.Auto, flow.Mode);
         Assert.Equal(HealthCheckTraining.Auto, flow.Training);
         Assert.Null(flow.RetrainAfterDays);
         Assert.Empty(flow.Holidays);
@@ -60,6 +62,21 @@ public sealed class YamlHealthCheckFlowLoaderTests
         Assert.Equal("dwh", connection.Alias);
         Assert.Equal(DataSourceKind.MSSQL, connection.Kind);
         Assert.Equal(CredentialMode.InlineConnectionString, connection.Credential.Mode);
+    }
+
+    [Fact]
+    public void Mode_ParsesManual_CaseInsensitively()
+    {
+        var doc = Loader.Parse(Minimal + "\nmode: Manual");
+        Assert.Equal(ExecutionMode.Manual, doc.Flow.Mode);
+    }
+
+    [Fact]
+    public void UnknownMode_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Minimal + "\nmode: scheduled"));
+        Assert.Contains("'mode'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("auto, manual", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -267,7 +284,7 @@ public sealed class YamlHealthCheckFlowLoaderTests
     {
         var documents = new YamlDocumentLoader(
             new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
-            new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader());
+            new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
 
         var doc = Assert.IsType<HealthCheckFlowDocument>(documents.Parse(Minimal));
         Assert.Equal("orders-rowcount", doc.Document.Flow.SysAlias);

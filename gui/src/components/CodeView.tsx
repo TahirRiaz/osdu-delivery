@@ -15,14 +15,20 @@ import { markFlowModel, refreshDiagnostics, registerSqlflowYamlProviders } from 
 
 interface CodeViewProps {
   value: string;
-  language: "yaml" | "json" | "sql";
+  language: "yaml" | "json" | "sql" | "plaintext";
   height?: number | string;
   /**
-   * Enable SQLFlow flow-YAML language intelligence (hover docs per attribute,
-   * census-driven colouring, and validation squiggles), served by the wasm
-   * analysis engine. Only meaningful for `language: "yaml"` flow documents.
+   * SQLFlow flow-YAML language intelligence (hover docs per attribute, census-driven colouring, and validation
+   * squiggles), served by the wasm analysis engine. ON by default for `language: "yaml"` (every YAML shown in the
+   * product is a flow document); pass false for a YAML surface that is not a flow document.
    */
   lsp?: boolean;
+  /**
+   * Editable mode: the editor accepts typing and reports changes through `onChange` (the debugger's YAML input).
+   * Defaults to read-only, the mode every catalog/code viewer uses (git is the authoring surface).
+   */
+  readOnly?: boolean;
+  onChange?: (value: string) => void;
   "data-testid"?: string;
 }
 
@@ -99,12 +105,16 @@ function prettyPrintSql(sql: string): string {
 }
 
 /**
- * Read-only Monaco view for YAML documents, definition JSON, and generated SQL: syntax highlight, folding, and
- * in-editor search, themed with the app's brand palette in both light and dark. YAML stays read-only by design
- * (git is the authoring surface). For SQL, a toolbar offers pretty-printing (on by default, since captured
- * statements arrive as unformatted single-line blobs) and copy-to-clipboard of whatever is currently shown.
+ * The Monaco surface for YAML documents, definition JSON, generated SQL, and plain-text trace payloads: syntax
+ * highlight, folding, and in-editor search, themed with the app's brand palette in both light and dark. Flow-YAML
+ * language intelligence (hover docs, census colouring, diagnostics) is on by default for YAML. Read-only by
+ * default (git is the authoring surface); the debugger opts into editable mode via `readOnly={false}` +
+ * `onChange`. For SQL, a toolbar offers pretty-printing (on by default, since captured statements arrive as
+ * unformatted single-line blobs) and copy-to-clipboard of whatever is currently shown.
  */
-export function CodeView({ value, language, height = 480, lsp = false, "data-testid": testId }: CodeViewProps) {
+export function CodeView({
+  value, language, height = 480, lsp = true, readOnly = true, onChange, "data-testid": testId,
+}: CodeViewProps) {
   const theme = useTheme();
   const mode = theme.palette.mode;
   const monacoRef = useRef<Monaco | null>(null);
@@ -219,15 +229,16 @@ export function CodeView({ value, language, height = 480, lsp = false, "data-tes
         height={height}
         beforeMount={handleBeforeMount}
         onMount={handleMount}
+        onChange={readOnly || !onChange ? undefined : (text) => onChange(text ?? "")}
         theme="sqlflow"
         options={{
-          readOnly: true,
+          readOnly,
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
           wordWrap: "on",
           fontSize: 13,
           padding: { top: 12, bottom: 12 },
-          renderLineHighlight: "none",
+          renderLineHighlight: readOnly ? "none" : "line",
           smoothScrolling: true,
           "semanticHighlighting.enabled": true,
         }}

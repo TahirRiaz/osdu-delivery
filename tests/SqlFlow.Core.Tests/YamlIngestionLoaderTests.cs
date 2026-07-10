@@ -1,6 +1,8 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Connections;
+using SqlFlow.Core.HealthChecks;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 using SqlFlow.Yaml;
 using Xunit;
 
@@ -11,7 +13,7 @@ public sealed class YamlIngestionLoaderTests
     private static readonly YamlIngestionFlowLoader Loader = new();
 
     private static YamlDocumentLoader Documents()
-        => new(new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(), new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader());
+        => new(new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(), new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
 
     private const string Minimal = """
         flowType: ing
@@ -462,6 +464,117 @@ public sealed class YamlIngestionLoaderTests
         Assert.Contains("insertUnknownDimensionRow", ex.Message, StringComparison.Ordinal);
         Assert.Contains("not yet implemented", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void AssertionMode_DefaultsToAuto_AndParsesManual()
+    {
+        var doc = Loader.Parse("""
+            flowType: ing
+            source: { connection: x, object: a.b.c }
+            target: { connection: y, object: a.b.c }
+            assertions:
+              - { name: EveryRun, expression: SELECT 1 }
+              - { name: Explicit, expression: SELECT 2, mode: auto }
+              - { name: OnDemand, expression: SELECT 3, mode: Manual }
+            """);
+        Assert.Equal(["EveryRun", "Explicit", "OnDemand"], doc.Flow.Assertions);
+        Assert.Equal(ExecutionMode.Auto, doc.AssertionDefinitions[0].Mode);
+        Assert.Equal(ExecutionMode.Auto, doc.AssertionDefinitions[1].Mode);
+        Assert.Equal(ExecutionMode.Manual, doc.AssertionDefinitions[2].Mode);
+    }
+
+    [Fact]
+    public void UnknownAssertionMode_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: ing
+            source: { connection: x, object: a.b.c }
+            target: { connection: y, object: a.b.c }
+            assertions:
+              - { name: A, expression: SELECT 1, mode: sometimes }
+            """));
+        Assert.Contains("assertions[0].mode", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("auto, manual", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EmbeddedHealthCheck_MapsWithDefaults_ManualMode_TargetInherited()
+    {
+        var doc = Loader.Parse(Minimal + """
+
+            healthCheck:
+              dateColumn: OrderDate
+              baseValue: COUNT(*)
+            """);
+
+        var check = doc.HealthCheck;
+        Assert.NotNull(check);
+        Assert.Equal("orders_hc", check.SysAlias);
+        Assert.True(check.FlowId > 0);
+        Assert.Equal(ExecutionMode.Manual, check.Mode);        // embedded checks are on-demand by default
+        Assert.Equal("dwh", check.Server);                     // the flow's target connection
+        Assert.Equal(doc.Flow.Target.Table, check.Target);     // the flow's target table
+        Assert.Equal("OrderDate", check.DateColumn);
+        Assert.Equal(doc.Flow.Batch, check.Batch);
+        var metric = Assert.Single(check.Metrics);
+        Assert.Equal("rowCount", metric.Name);
+        Assert.Equal(120, check.MaxExperimentSeconds);
+        Assert.Equal(1, check.MaturityDays);
+        Assert.Equal(HealthCheckTraining.Auto, check.Training);
+    }
+
+    [Fact]
+    public void EmbeddedHealthCheck_ExplicitNameAndAutoMode()
+    {
+        var doc = Loader.Parse(Minimal + """
+
+            healthCheck:
+              name: orders-watch
+              mode: auto
+              dateColumn: OrderDate
+              metrics:
+                - name: orders
+                  baseValue: COUNT(*)
+                - name: revenue
+                  baseValue: SUM(Amount)
+            """);
+
+        var check = doc.HealthCheck;
+        Assert.NotNull(check);
+        Assert.Equal("orders-watch", check.SysAlias);
+        Assert.Equal(ExecutionMode.Auto, check.Mode);
+        Assert.Equal(2, check.Metrics.Count);
+    }
+
+    [Theory]
+    [InlineData("healthCheck:\n  baseValue: COUNT(*)", "healthCheck.dateColumn")]
+    [InlineData("healthCheck:\n  dateColumn: D", "healthCheck.baseValue")]
+    [InlineData("healthCheck:\n  dateColumn: D\n  baseValue: COUNT(*)\n  mode: sometimes", "healthCheck.mode")]
+    [InlineData("healthCheck:\n  dateColumn: D\n  baseValue: COUNT(*)\n  ml: { maxExperimentSeconds: 0 }", "healthCheck.ml.maxExperimentSeconds")]
+    [InlineData("healthCheck:\n  name: orders\n  dateColumn: D\n  baseValue: COUNT(*)", "must differ from the flow's own name")]
+    public void EmbeddedHealthCheck_InvalidBlocks_FailWithTheEmbeddedFieldPath(string block, string expectedFragment)
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Minimal + "\n" + block));
+        Assert.Contains(expectedFragment, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EmbeddedHealthCheck_RequiresAFlowName()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: ing
+            source: { connection: x, object: a.b.c }
+            target: { connection: y, object: a.b.c }
+            healthCheck:
+              dateColumn: D
+              baseValue: COUNT(*)
+            """));
+        Assert.Contains("requires the flow to declare 'name:'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoEmbeddedHealthCheck_LeavesTheDocumentNull()
+        => Assert.Null(Loader.Parse(Minimal).HealthCheck);
 
     [Fact]
     public void DuplicateAssertionName_Fails()

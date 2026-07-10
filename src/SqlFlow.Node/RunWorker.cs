@@ -660,6 +660,9 @@ public sealed partial class RunWorker
                 {
                     RunId = runId, Echo = null, Parameters = parameters, StatementSink = statementSink,
                     EventSink = eventSink, WatermarkSourceTable = watermarkSourceTable,
+                    // The claimed run's flow name selects WHICH flow of the document executes: for an ingestion
+                    // document with an embedded healthCheck: block, the derived hc pipeline runs from the same file.
+                    FlowName = run.FlowName,
                 };
                 // The executor runs under the per-run token: an operator cancel aborts the in-flight statement here
                 // (and only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel

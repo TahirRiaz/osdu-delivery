@@ -1,6 +1,8 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Connections;
+using SqlFlow.Core.HealthChecks;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -29,6 +31,13 @@ public sealed record IngestionDocument
 
     /// <summary>The document's named Azure service principals (the <c>servicePrincipals:</c> block).</summary>
     public IReadOnlyList<ServicePrincipalProfile> ServicePrincipals { get; init; } = [];
+
+    /// <summary>The derived health-check flow expanded from the document's embedded <c>healthCheck:</c> block,
+    /// or null when the document declares none. It monitors the flow's target table through the flow's own
+    /// target connection and is a full sibling pipeline: the estate scan registers it, lineage orders it after
+    /// the load, and it executes through the same hc runner as a standalone document. Embedded checks default
+    /// to <c>mode: manual</c> (on demand); declare <c>mode: auto</c> to opt into scheduled/group execution.</summary>
+    public HealthCheckFlow? HealthCheck { get; init; }
 }
 
 /// <summary>
@@ -229,6 +238,71 @@ public sealed class YamlIngestionFlowLoader
             AssertionDefinitions = assertionDefinitions,
             Invokes = invokes.Values.ToList(),
             ServicePrincipals = servicePrincipals.Values.ToList(),
+            HealthCheck = MapHealthCheck(y.HealthCheck, flow, source),
+        };
+    }
+
+    /// <summary>
+    /// Expands the embedded <c>healthCheck:</c> block into the derived hc flow. The monitored table and the
+    /// connection are the flow's own target (embedding means "watch what this flow loads"); the declaration
+    /// body validates through the same shared parts as a standalone hc document, so both surfaces accept and
+    /// refuse exactly the same shapes. The derived flow defaults to <c>mode: manual</c>: an embedded check is
+    /// an on-demand instrument unless the author explicitly opts it into automatic dispatch.
+    /// </summary>
+    private static HealthCheckFlow? MapHealthCheck(IngestionHealthCheckYaml? hc, IngestionFlow flow, string source)
+    {
+        if (hc is null)
+        {
+            return null;
+        }
+
+        // The derived flow needs its own stable identity (state folder, run history, catalog pipeline), which
+        // is name-derived; an anonymous parent flow has nothing to derive it from.
+        if (flow.SysAlias is null)
+        {
+            throw new FlowValidationException(
+                $"{source}: 'healthCheck' requires the flow to declare 'name:' (the derived check is named '<name>_hc').");
+        }
+
+        var name = NullIfBlank(hc.Name)?.Trim() ?? $"{flow.SysAlias}_hc";
+        if (string.Equals(name, flow.SysAlias, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException(
+                $"{source}: 'healthCheck.name' must differ from the flow's own name '{flow.SysAlias}' (the check is a sibling pipeline).");
+        }
+
+        var dateColumn = NullIfBlank(hc.DateColumn)?.Trim()
+            ?? throw new FlowValidationException(
+                $"{source}: 'healthCheck.dateColumn' is required (the date column the metrics are grouped by).");
+
+        var ml = YamlHealthCheckParts.MapMl(hc.Ml, source, "healthCheck.");
+        var maturityDays = YamlHealthCheckParts.MapMaturityDays(hc.MaturityDays, source, "healthCheck.");
+        var sentinelFloor = YamlDocumentParts.ParseDate(hc.SentinelDateFloor, "healthCheck.sentinelDateFloor", source)
+            ?? new DateOnly(1990, 1, 1);
+
+        return new HealthCheckFlow
+        {
+            FlowId = StableFlowId(name),
+            SysAlias = name,
+            Batch = flow.Batch,
+            Server = flow.Target.Server,
+            Target = flow.Target.Table,
+            DateColumn = dateColumn,
+            Metrics = YamlHealthCheckParts.MapMetrics(hc.BaseValue, hc.Metrics, source, "healthCheck."),
+            FilterCriteria = NullIfBlank(hc.Filter)?.Trim(),
+            MaxExperimentSeconds = ml.MaxExperimentSeconds,
+            AnomalyThreshold = ml.AnomalyThreshold,
+            EsdAlpha = ml.EsdAlpha,
+            MaxAnomalyFraction = ml.MaxAnomalyFraction,
+            MaturityDays = maturityDays,
+            SentinelDateFloor = sentinelFloor,
+            // The embedded default is MANUAL, deliberately inverted from the standalone document: embedding is
+            // "keep everything about this table in one file, run the check when asked".
+            Mode = hc.Mode is null ? ExecutionMode.Manual : YamlDocumentParts.ParseExecutionMode(hc.Mode, "healthCheck.mode", source),
+            Training = ml.Training,
+            RetrainAfterDays = ml.RetrainAfterDays,
+            Holidays = YamlHealthCheckParts.MapHolidays(hc.Holidays, source, "healthCheck."),
+            Description = NullIfBlank(hc.Description),
         };
     }
 

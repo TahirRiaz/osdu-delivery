@@ -131,6 +131,91 @@ public sealed class ScheduleApiTests
         }
     }
 
+    [Fact]
+    public async Task RunScheduleNow_WithReadOnlyToken_Returns403()
+    {
+        await using var factory = new ControlPlaneAppFactory();
+        using var client = factory.CreateClient();
+        var token = await IssueTokenAsync(client, ["read"]);
+
+        using var response = await PostAsync(client, token, $"/api/v1/schedules/{Guid.NewGuid()}/run", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task RunScheduleNow_ForUnknownSchedule_Returns404()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+        using var client = factory.CreateClient();
+        var token = await IssueTokenAsync(client, ["operate"]);
+
+        using var response = await PostAsync(client, token, $"/api/v1/schedules/{Guid.NewGuid()}/run", null);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task RunScheduleNow_EnqueuesARun_StampsLastRun_AndLeavesTheCadence()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await SeedActivePipeline(cs, repoId, flowName);
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["operate"]);
+
+            // A schedule whose next fire is far in the future, so the automatic scheduler will not fire it during the
+            // test; only the explicit run-now should enqueue a run.
+            Guid scheduleId;
+            using (var create = await PostAsync(client, token, "/api/v1/schedules",
+                new CreateScheduleRequest(repoId, flowName, "0 6 1 1 *", null, "UTC", true)))
+            {
+                Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+                var created = await create.Content.ReadFromJsonAsync<ScheduleCreated>();
+                Assert.NotNull(created);
+                scheduleId = created.Id;
+            }
+
+            var beforeNextFire = (await GetJsonAsync<ScheduleDto>(client, token, $"/api/v1/schedules/{scheduleId}")).NextFireUtc;
+
+            // Run now: 202 with the enqueued run id.
+            Guid runId;
+            using (var run = await PostAsync(client, token, $"/api/v1/schedules/{scheduleId}/run", null))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, run.StatusCode);
+                var accepted = await run.Content.ReadFromJsonAsync<ScheduleRunAccepted>();
+                Assert.NotNull(accepted);
+                Assert.NotEqual(Guid.Empty, accepted.RunId);
+                runId = accepted.RunId;
+            }
+
+            // The run exists for the schedule's pipeline, the schedule's last run points at it, and its cadence is
+            // untouched (the next scheduled fire did not move).
+            var after = await GetJsonAsync<ScheduleDto>(client, token, $"/api/v1/schedules/{scheduleId}");
+            Assert.Equal(runId, after.LastRunId);
+            Assert.Equal(beforeNextFire, after.NextFireUtc);
+
+            var runs = await GetJsonAsync<PagedResult<RunSummaryDto>>(client, token, $"/api/v1/runs?pipelineId={pipelineId}");
+            Assert.Contains(runs.Items, r => r.RunId == runId);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
     [SkippableFact]
     [Trait("Category", "Integration")]
     public async Task Scheduler_FiresADueSchedule_EnqueuingARunForThePipeline()

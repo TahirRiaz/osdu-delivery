@@ -1,0 +1,21 @@
+# Ports the mobilapp.ps1 AWS S3 pattern: lists a bucket prefix, keeps objects modified in the last 10 days,
+# and lands each object verbatim.
+flowType: acq
+name: Mobilapp_Orders
+batch: mobilapp
+
+source:
+  transport: s3
+  baseUrl: s3://elasticsearch-export-kolumbus
+  options:
+    region: eu-west-1
+    accessKey: ${keyvault:dw-keyvault-prod/awsaccesskey}
+    secretKey: ${keyvault:dw-keyvault-prod/awssecretKey}
+    prefix: export_orders/
+    pattern: "*.json"
+    modifiedWithinDays: "10"
+
+landing:
+  target: abfss://datalakev2@dwdatalakestorev2prod.dfs.core.windows.net/raw/mobilapp/aws/orders
+  pathTemplate: "history/{yyyy}/{filename}"
+  format: auto

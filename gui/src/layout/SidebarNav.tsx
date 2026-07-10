@@ -9,7 +9,9 @@ import DnsIcon from "@mui/icons-material/Dns";
 import FolderIcon from "@mui/icons-material/Folder";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ScheduleIcon from "@mui/icons-material/Schedule";
+import TimelineIcon from "@mui/icons-material/Timeline";
 import StorageIcon from "@mui/icons-material/Storage";
+import CableIcon from "@mui/icons-material/Cable";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import HubIcon from "@mui/icons-material/Hub";
 import SearchIcon from "@mui/icons-material/Search";
@@ -31,11 +33,13 @@ const operate: NavItem[] = [
   { label: "Nodes", to: "/nodes", icon: <DnsIcon />, testId: "nav-nodes" },
 ];
 
-const catalog: NavItem[] = [
+const workspace: NavItem[] = [
   { label: "Repos", to: "/repos", icon: <FolderIcon />, testId: "nav-repos" },
   { label: "Pipelines", to: "/pipelines", icon: <AccountTreeIcon />, testId: "nav-pipelines" },
   { label: "Schedules", to: "/schedules", icon: <ScheduleIcon />, testId: "nav-schedules" },
+  { label: "Timeline", to: "/schedules/timeline", icon: <TimelineIcon />, testId: "nav-schedule-timeline" },
   { label: "Datasources", to: "/datasources", icon: <StorageIcon />, testId: "nav-datasources" },
+  { label: "Integrations", to: "/integrations", icon: <CableIcon />, testId: "nav-integrations" },
   { label: "Key detection", to: "/key-detection", icon: <VpnKeyIcon />, testId: "nav-key-detection" },
 ];
 
@@ -53,6 +57,14 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { hasScope } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Exactly one item highlights: the one whose path is the longest prefix of the current location. This lets a
+  // nested route (e.g. /schedules/timeline) own the highlight instead of also lighting up its parent (/schedules).
+  const allItems = [...operate, ...workspace, ...explore, ...admin];
+  const selectedTo = allItems.reduce((best, item) => {
+    const matches = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
+    return matches && item.to.length > best.length ? item.to : best;
+  }, "");
 
   // The sidebar wears the brand navy (see branding.css chrome tokens); every piece inherits its light text so
   // MUI's paper-oriented defaults never bleed through.
@@ -79,7 +91,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       )}
     >
       {items.map((item) => {
-        const selected = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
+        const selected = item.to === selectedTo;
         return (
           <ListItemButton
             key={item.to}
@@ -118,7 +130,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <nav aria-label="Main navigation">
       {renderGroup("Operate", operate)}
-      {renderGroup("Catalog", catalog)}
+      {renderGroup("Workspace", workspace)}
       {renderGroup("Explore", explore)}
       {hasScope("admin") && renderGroup("Admin", admin)}
     </nav>

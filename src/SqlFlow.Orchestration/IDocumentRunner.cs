@@ -30,6 +30,14 @@ public sealed record DocumentExecutionOptions
     /// unchanged. Threaded into each kind's runner through the single execution path.</summary>
     public Guid? RunId { get; init; }
 
+    /// <summary>Which flow of the document to execute, for documents that expand into more than one pipeline
+    /// (an ingestion document with an embedded <c>healthCheck:</c> block derives a sibling hc flow). The node
+    /// worker passes the claimed run's flow name and a batch passes each member's name, so the derived check
+    /// executes from the same file as its parent load. Null (every plain CLI run) executes the document's
+    /// primary flow. On an ingestion document a set name must match the flow or its derived check; anything
+    /// else is refused rather than silently running the wrong flow.</summary>
+    public string? FlowName { get; init; }
+
     /// <summary>Per-run substitution parameters (full load, backfill window, file pattern): trigger-time
     /// operational overrides applied by the engine for this run only. Defaults to
     /// <see cref="RunParameters.None"/>, which changes nothing.</summary>

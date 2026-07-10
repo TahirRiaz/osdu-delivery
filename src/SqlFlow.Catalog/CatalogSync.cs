@@ -106,7 +106,7 @@ public sealed class CatalogSync
     private readonly YamlDocumentLoader _documents = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader());
+        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
 
     /// <summary>One estate flow prepared for the reconciliation transaction: its redacted text, content hash,
     /// serialized definition, and the parsed document (null when it failed to parse after the scan) that the
@@ -551,7 +551,7 @@ public sealed class CatalogSync
             .ExecuteDeleteAsync(ct).ConfigureAwait(false);
         foreach (var prepared in pipelines)
         {
-            foreach (var column in ProjectDeclaredColumns(prepared.Document, repoId, prepared.Id))
+            foreach (var column in ProjectDeclaredColumns(prepared.Document, prepared.Flow.Node.Kind, repoId, prepared.Id))
             {
                 context.PipelineColumns.Add(column);
             }
@@ -563,13 +563,16 @@ public sealed class CatalogSync
     /// <summary>Projects a flow document's authored transform policy into declared column rows. File and
     /// relational (ing) flows carry the shared transform block; any other kind, or a document that failed to
     /// parse (null), contributes none (the pipeline projection already warned about a parse failure; declared
-    /// columns are an enrichment, never a reason to fail the sync).</summary>
-    private static IReadOnlyList<CatalogPipelineColumn> ProjectDeclaredColumns(FlowDocument? document, Guid repoId, Guid pipelineId)
+    /// columns are an enrichment, never a reason to fail the sync). The pipeline's kind gates the projection:
+    /// the transform belongs to the load, so a derived hc pipeline sharing the ing document gets no columns.</summary>
+    private static IReadOnlyList<CatalogPipelineColumn> ProjectDeclaredColumns(
+        FlowDocument? document, string pipelineKind, Guid repoId, Guid pipelineId)
     {
         var policy = document switch
         {
             FileFlowDocument file => file.Flow.Inference,
-            IngestionFlowDocument ing => ing.Document.Flow.Transform,
+            IngestionFlowDocument ing when !string.Equals(pipelineKind, "hc", StringComparison.OrdinalIgnoreCase)
+                => ing.Document.Flow.Transform,
             _ => null,
         };
 
@@ -768,8 +771,9 @@ public sealed class CatalogSync
     /// <summary>
     /// The self-maintaining write-back: records ONE just-completed run (and ensures its pipeline row) into the
     /// catalog, so a configured database stays current without a manual full <see cref="SyncAsync"/>. It upserts
-    /// the repo and the single flow that produced the run, then inserts the run and its detail (idempotent: a run
-    /// already recorded is left untouched, since a run is immutable). It deliberately does NOT recompute lineage
+    /// the repo, the single flow that produced the run, and that flow's YAML schedule mirror, then inserts the run
+    /// and its detail (idempotent: a run already recorded is left untouched, since a run is immutable). It
+    /// deliberately does NOT recompute lineage
     /// or scan sibling flows: the execution plan and the cross-repo graph stay the full sync's responsibility, so
     /// the per-run cost is bounded. Runs in one serializable transaction; the caller treats any failure as
     /// non-fatal to the run itself.
@@ -884,17 +888,18 @@ public sealed class CatalogSync
         }
 
         FlowDocument document;
+        IReadOnlyList<DocumentFlowHeader> headers;
         try
         {
             document = _documents.Parse(rawYaml, fullFlowPath);
+            headers = FlowDocumentHeaders.Project(document);
         }
         catch (SqlFlow.Core.SqlFlowException ex)
         {
             warnings.Add($"'{fullFlowPath}' could not be parsed as a flow ({SecretHygiene.RedactedMessage(ex.Message)}); its run is recorded without a pipeline row.");
             return PipelineChange.None;
         }
-
-        if (ProjectHeader(document) is not { } header)
+        if (headers.Count == 0)
         {
             warnings.Add($"'{fullFlowPath}' is an orchestration document, not a runnable flow; its run is recorded without a pipeline row.");
             return PipelineChange.None;
@@ -902,11 +907,81 @@ public sealed class CatalogSync
 
         if (SecretHygiene.LooksLikeEmbeddedSecret(rawYaml))
         {
-            warnings.Add($"'{header.Name}' ({relativePath}) appears to embed a credential; it is redacted in the catalog, but secrets must be ${{env:...}}/${{keyvault:...}} references in the YAML, not literals.");
+            warnings.Add($"'{headers[0].Name}' ({relativePath}) appears to embed a credential; it is redacted in the catalog, but secrets must be ${{env:...}}/${{keyvault:...}} references in the YAML, not literals.");
         }
 
         var yaml = SecretHygiene.RedactedMessage(rawYaml);
         var hash = CatalogProjection.Hash(yaml);
+
+        // A document can expand into more than one pipeline (an ingestion flow with an embedded healthCheck:
+        // block derives a sibling hc flow); every header upserts so both rows stay current, and the primary
+        // flow's change is what the write-back reports.
+        var primaryChange = PipelineChange.None;
+        for (var i = 0; i < headers.Count; i++)
+        {
+            var change = await UpsertPipelineRowAsync(
+                context, document, headers[i], repoId, relativePath, fullFlowPath, yaml, hash, nowUtc, warnings, ct).ConfigureAwait(false);
+            if (i == 0)
+            {
+                primaryChange = change;
+            }
+        }
+
+        // Mirror each declared flow's YAML schedule exactly as the full sync does. The shared projection puts the
+        // document's schedule: block on the primary header and never on a derived sibling, so a declared, valid
+        // schedule is upserted through the same store call (an operator's API pause survives; the cadence only
+        // resets when the timing definition changed) and anything else has its mirror removed, the single-flow
+        // counterpart of the full sync's not-in-keep removal. This is what keeps a run-only catalog's Schedules
+        // current without waiting for a full estate sync.
+        foreach (var header in headers)
+        {
+            await MirrorSingleFlowScheduleAsync(context, repoId, header.Name, relativePath, header.Schedule, nowUtc, warnings, ct).ConfigureAwait(false);
+        }
+
+        return primaryChange;
+    }
+
+    /// <summary>Upserts or removes ONE flow's YAML schedule mirror from its parsed document, sharing the exact
+    /// validation, next-fire computation, and warning wording with the full sync's <see cref="PreparePipelines"/>
+    /// schedule pass. Staged on the context; the caller's transaction commits it.</summary>
+    private static async Task MirrorSingleFlowScheduleAsync(
+        CatalogDbContext context, Guid repoId, string flowName, string relativePath, Core.ScheduleSpec? spec,
+        DateTime nowUtc, List<string> warnings, CancellationToken ct)
+    {
+        // A `schedule: <name>` reference cannot be resolved from a single-file parse (the shared library lives across
+        // the repo, only visible to the full estate scan). Leave whatever the full sync established for this flow
+        // untouched rather than mirror an unresolved reference or wrongly clear a valid row; the full sync reconciles
+        // referenced schedules. A named or plain inline schedule carries its cadence and is mirrored normally below.
+        if (spec is { Ref: not null })
+        {
+            return;
+        }
+
+        if (spec is not null)
+        {
+            if (ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
+            {
+                var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
+                await ScheduleStore.StageYamlUpsertAsync(
+                    context, repoId, flowName, spec.Cron, spec.IntervalSeconds, spec.Timezone,
+                    spec.Enabled, spec.Catchup, nextFire, nowUtc, ct).ConfigureAwait(false);
+                return;
+            }
+
+            warnings.Add($"'{flowName}' ({relativePath}) has an invalid schedule: {scheduleError}");
+        }
+
+        await ScheduleStore.StageRemoveYamlScheduleAsync(context, repoId, flowName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Upserts one pipeline row from an already-read document, one header at a time (shared by the
+    /// primary flow and any derived sibling). Declared columns refresh alongside, gated by the header's kind so
+    /// the load's transform columns are never attributed to a derived hc pipeline.</summary>
+    private static async Task<PipelineChange> UpsertPipelineRowAsync(
+        CatalogDbContext context, FlowDocument document, DocumentFlowHeader header, Guid repoId,
+        string relativePath, string fullFlowPath, string yaml, string hash, DateTime nowUtc,
+        List<string> warnings, CancellationToken ct)
+    {
         var id = CatalogIdentity.Pipeline(repoId, header.Name);
         var row = await context.Pipelines.FindAsync([id], ct).ConfigureAwait(false);
 
@@ -916,7 +991,7 @@ public sealed class CatalogSync
         await context.PipelineColumns
             .Where(c => c.PipelineId == id && c.Kind == PipelineColumnKinds.Declared)
             .ExecuteDeleteAsync(ct).ConfigureAwait(false);
-        foreach (var column in ProjectDeclaredColumns(document, repoId, id))
+        foreach (var column in ProjectDeclaredColumns(document, header.Kind, repoId, id))
         {
             context.PipelineColumns.Add(column);
         }
@@ -932,7 +1007,7 @@ public sealed class CatalogSync
         var definitionJson = SerializeDefinition(document, fullFlowPath, warnings);
         var projected = CatalogProjection.Pipeline(
             repoId, header.Name, header.Kind, header.Batch, Normalize(relativePath),
-            header.SourceServer, header.TargetServer, hash, yaml, definitionJson, nowUtc,
+            header.SourceServerRef, header.TargetServerRef, hash, yaml, definitionJson, nowUtc,
             header.Mode, header.Lifecycle);
 
         if (row is not null)
@@ -956,77 +1031,6 @@ public sealed class CatalogSync
         context.Pipelines.Add(projected);
         return PipelineChange.Added;
     }
-
-    /// <summary>The pipeline-projection header of one flow document: the fields a catalog row derives from the
-    /// document itself, shaped exactly like the estate scan's flow nodes.</summary>
-    private sealed record FlowHeader(
-        string Name, string Kind, string? Batch, string? SourceServer, string? TargetServer,
-        Core.Runs.ExecutionMode Mode = Core.Runs.ExecutionMode.Auto,
-        Core.Runs.FlowLifecycle Lifecycle = Core.Runs.FlowLifecycle.Production);
-
-    /// <summary>Projects one already-loaded document into its pipeline header, mirroring how
-    /// <see cref="FlowSetCollector"/> shapes each kind's flow node (name, kind, batch, server identities), so the
-    /// per-run write-back can upsert a pipeline from a single targeted load. Null for an orchestration document
-    /// (scm/batch), which the full sync never projects as a pipeline either.</summary>
-    private static FlowHeader? ProjectHeader(FlowDocument document)
-    {
-        switch (document)
-        {
-            case IngestionFlowDocument doc:
-            {
-                var flow = doc.Document.Flow;
-                var refs = ConnectionRefs(doc.Document.Connections);
-                return new FlowHeader(
-                    flow.SysAlias ?? flow.Target.Table.Name, "ing", flow.Batch,
-                    ServerIdentity.From(refs[flow.Source.Server]), ServerIdentity.From(refs[flow.Target.Server]),
-                    Lifecycle: flow.Lifecycle);
-            }
-
-            case ExportFlowDocument doc:
-            {
-                var flow = doc.Document.Flow;
-                var refs = ConnectionRefs(doc.Document.Connections);
-                var server = ServerIdentity.From(refs[flow.SrcServer]);
-                return new FlowHeader(flow.SysAlias, "exp", flow.Batch, server, server, Lifecycle: flow.Lifecycle);
-            }
-
-            case StoredProcedureFlowDocument doc:
-            {
-                var flow = doc.Document.Flow;
-                var refs = ConnectionRefs(doc.Document.Connections);
-                return new FlowHeader(
-                    flow.SysAlias, "sp", flow.Batch, null, ServerIdentity.From(refs[flow.Server]),
-                    Lifecycle: flow.Lifecycle);
-            }
-
-            case HealthCheckFlowDocument doc:
-            {
-                var flow = doc.Document.Flow;
-                var refs = ConnectionRefs(doc.Document.Connections);
-                return new FlowHeader(
-                    flow.SysAlias, "hc", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), flow.Mode,
-                    flow.Lifecycle);
-            }
-
-            case FileFlowDocument doc:
-                return new FlowHeader(
-                    doc.Flow.Name, "file", doc.Flow.Batch, null, ServerIdentity.From(doc.Flow.Target.Connection),
-                    Lifecycle: doc.Flow.Lifecycle);
-
-            case InvokeFlowDocument doc:
-                return new FlowHeader(
-                    doc.Document.Definition.InvokeAlias, "inv", doc.Document.Definition.Batch, null,
-                    ServerIdentity.FileSystem, Lifecycle: doc.Document.Definition.Lifecycle);
-
-            default:
-                // scm/batch (and any future orchestration kind): they move no catalog data and never become
-                // pipeline rows.
-                return null;
-        }
-    }
-
-    private static Dictionary<string, string> ConnectionRefs(IEnumerable<Core.Connections.DataSource> connections)
-        => connections.ToDictionary(c => c.Alias, c => c.ConnectionRef, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Writes a precomputed lineage report into the catalog: the global object registry, the data
     /// dictionary, this repo's edges and flow dependencies, the execution waves, and the identity healing. Runs

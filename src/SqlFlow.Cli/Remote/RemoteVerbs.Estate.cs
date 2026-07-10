@@ -106,9 +106,9 @@ internal static partial class RemoteVerbs
     public static async Task<int> SchedulesAsync(string[] positional, string[] args)
     {
         var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : "list";
-        if (sub is not ("list" or "show" or "create" or "pause" or "resume" or "delete"))
+        if (sub is not ("list" or "show" or "create" or "run" or "pause" or "resume" or "delete"))
         {
-            Console.Error.WriteLine("ERROR  'schedules' supports: list, show <id>, create, pause <id>, resume <id>, delete <id>.");
+            Console.Error.WriteLine("ERROR  'schedules' supports: list, show <id>, create, run <id>, pause <id>, resume <id>, delete <id>.");
             return 1;
         }
 
@@ -209,6 +209,30 @@ internal static partial class RemoteVerbs
                     }
 
                     Console.WriteLine($"OK   schedule {created.Id} created for '{flow}' in [{repo.Name}]; next fire {FormatUtc(created.NextFireUtc)} UTC.");
+                    return 0;
+                }
+
+                case "run":
+                {
+                    if (!TryRequireId(positional, "schedules run", out var id))
+                    {
+                        return 1;
+                    }
+
+                    var runId = await client.RunScheduleNowAsync(id, ct).ConfigureAwait(false);
+                    if (runId is null)
+                    {
+                        Console.Error.WriteLine($"ERROR  no schedule '{id}'.");
+                        return 1;
+                    }
+
+                    if (json)
+                    {
+                        Console.WriteLine(JsonSerializer.Serialize(new ScheduleRunAccepted(runId.Value), ControlPlaneClient.JsonIndented));
+                        return 0;
+                    }
+
+                    Console.WriteLine($"OK   schedule {id} fired; enqueued run {runId}. Follow it with: sqlflow runs show {runId} --follow");
                     return 0;
                 }
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link as RouterLink, useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useSnackbar } from "notistack";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -15,6 +16,8 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import MonitorHeartIcon from "@mui/icons-material/MonitorHeart";
+import RuleIcon from "@mui/icons-material/Rule";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -33,6 +36,7 @@ import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge, RunStatusBadge, ScheduleStateBadge } from "../../components/StatusBadge";
+import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
@@ -247,6 +251,7 @@ const scheduleColumns: Column<Schedule>[] = [
 export default function PipelineDetailPage() {
   const { pipelineId = "" } = useParams();
   const navigate = useNavigate();
+  const { enqueueSnackbar } = useSnackbar();
   const [tab, setTab] = useState(0);
   const [triggerOpen, setTriggerOpen] = useState(false);
 
@@ -254,6 +259,36 @@ export default function PipelineDetailPage() {
     queryKey: ["pipelines", "detail", pipelineId],
     queryFn: () => pipelineApi.getById(pipelineId),
     enabled: pipelineId !== "",
+  });
+
+  // The one-click on-demand executions next to the general trigger dialog: "Run assertions" (ingestion flows;
+  // evaluates the flow's declared assertions, manual-mode ones included, against the current target and loads
+  // nothing) and "Run health check" (hc flows, or an ing flow's embedded healthCheck: block via its derived
+  // flow name; a plain single-flow run, which is also the only way a mode: manual check executes). The new
+  // execution is a new run; the button navigates there.
+  const triggerFlow = useMutation({
+    mutationFn: (parameters: { assertionsOnly?: boolean; flowName?: string }) => {
+      const d = detailQuery.data;
+      if (!d) {
+        throw new Error("The pipeline has not loaded yet.");
+      }
+
+      return runApi.trigger({
+        repoId: d.repoId,
+        flowName: parameters.flowName ?? d.name,
+        scope: "flow",
+        assertionsOnly: parameters.assertionsOnly,
+      });
+    },
+    onSuccess: (accepted, parameters) => {
+      enqueueSnackbar(parameters.assertionsOnly ? "Assertion run enqueued." : "Health check enqueued.", { variant: "success" });
+      if (accepted.runId) {
+        navigate(`/runs/${accepted.runId}`);
+      }
+    },
+    onError: (error) => {
+      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+    },
   });
 
   if (detailQuery.isError) {
@@ -280,6 +315,9 @@ export default function PipelineDetailPage() {
     );
   }
 
+  // An ing document's embedded healthCheck: block derives a sibling hc pipeline; the button triggers it by name.
+  const embeddedCheck = detail.kind === "ing" ? embeddedHealthCheckName(detail.definitionJson) : null;
+
   return (
     <Page data-testid="page-pipeline-detail">
       <DetailHeaderCard
@@ -288,6 +326,11 @@ export default function PipelineDetailPage() {
           <>
             <Chip size="small" label={detail.kind} variant="outlined" />
             <ActiveBadge active={detail.active} />
+            {detail.executionMode === "manual" && (
+              <Tooltip title="mode: manual - excluded from schedules and batch/node group runs; executes only when triggered directly.">
+                <Chip size="small" color="warning" label="manual" data-testid="pipeline-manual-mode" />
+              </Tooltip>
+            )}
           </>
         )}
         actions={(
@@ -301,6 +344,51 @@ export default function PipelineDetailPage() {
             >
               View in lineage
             </Button>
+            {detail.kind === "ing" && (
+              <Tooltip title="Evaluate the flow's declared assertions (mode: manual ones included) against the current target; nothing is loaded.">
+                <span>
+                  <Button
+                    variant="outlined"
+                    startIcon={<RuleIcon />}
+                    onClick={() => triggerFlow.mutate({ assertionsOnly: true })}
+                    disabled={triggerFlow.isPending || !detail.active}
+                    data-testid="pipeline-run-assertions"
+                  >
+                    Run assertions
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+            {detail.kind === "hc" && (
+              <Tooltip title="Run this health check now. A mode: manual health check executes only from here or a direct trigger.">
+                <span>
+                  <Button
+                    variant="outlined"
+                    startIcon={<MonitorHeartIcon />}
+                    onClick={() => triggerFlow.mutate({})}
+                    disabled={triggerFlow.isPending || !detail.active}
+                    data-testid="pipeline-run-health-check"
+                  >
+                    Run health check
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+            {embeddedCheck !== null && (
+              <Tooltip title={`Run this flow's embedded health check ('${embeddedCheck}') against the target now. Embedded checks default to mode: manual, so this button (or a direct trigger) is how they execute.`}>
+                <span>
+                  <Button
+                    variant="outlined"
+                    startIcon={<MonitorHeartIcon />}
+                    onClick={() => triggerFlow.mutate({ flowName: embeddedCheck })}
+                    disabled={triggerFlow.isPending || !detail.active}
+                    data-testid="pipeline-run-embedded-health-check"
+                  >
+                    Run health check
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
             <Button
               variant="contained"
               startIcon={<PlayArrowIcon />}

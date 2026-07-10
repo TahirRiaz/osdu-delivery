@@ -1,4 +1,5 @@
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 using SqlFlow.SqlServer.Ingestion;
 using Xunit;
 
@@ -126,6 +127,72 @@ public sealed class AssertionRunnerIntegrationTests
         }
     }
 
+    [SkippableFact]
+    public async Task ManualModeAssertion_IsSkippedByDefault_AndRunsWhenIncluded()
+    {
+        var cs = IntegrationDb.Require();
+        const string trg = "_SfAssertMode_Trg";
+        await SetupTarget(cs, trg);
+
+        try
+        {
+            var runner = new AssertionRunner(Store());
+            var flow = Flow(trg, ["CheckEmptyTable", "ManualCheck"]);
+
+            // An automatic ingestion run evaluates only the auto-mode assertions.
+            var automatic = await runner.RunAsync(flow, cs);
+            Assert.Equal("CheckEmptyTable", Assert.Single(automatic).Name);
+
+            // The on-demand assertions-only run evaluates the whole list, manual included, in declaration order.
+            var onDemand = await runner.RunAsync(flow, cs, includeManual: true);
+            Assert.Equal(2, onDemand.Count);
+            Assert.Equal("ManualCheck", onDemand[1].Name);
+            Assert.True(onDemand[1].Evaluated);
+            Assert.Equal("3", onDemand[1].Result);
+        }
+        finally
+        {
+            await IntegrationDb.DropTableAsync(cs, trg);
+        }
+    }
+
+    [SkippableFact]
+    public async Task AssertionsOnlyRun_EvaluatesWholeList_AndReadsNoSource()
+    {
+        const int flowId = 32;
+        var cs = IntegrationDb.Require();
+        const string trg = "_SfAssertOnly_Trg";
+        await SetupTarget(cs, trg);
+        await RelationalIngestionHarness.DropStagingAsync(cs, flowId);
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunnerWithAssertions(new AssertionRunner(Store()));
+            var flow = new IngestionFlow
+            {
+                FlowId = flowId,
+                // The source deliberately does not exist: an assertions-only run must never touch it.
+                Source = new IngestionSource { Server = "sink", Table = new RelationalObject { Database = "db", Schema = "dbo", Name = "_SfAssertOnly_NoSuchSource" } },
+                Target = new IngestionTarget { Server = "sink", Table = new RelationalObject { Database = "db", Schema = "dbo", Name = trg } },
+                Assertions = ["CheckEmptyTable", "ManualCheck"],
+            };
+
+            var result = await runner.RunAsync(
+                flow, new IngestionRunOptions { Parameters = new RunParameters { AssertionsOnly = true } });
+
+            Assert.True(result.Success, result.Error);
+            Assert.Equal(0, result.RowsStaged);
+            Assert.Equal(2, result.Assertions.Count); // the on-demand run includes the manual-mode assertion
+            Assert.All(result.Assertions, a => Assert.True(a.Evaluated));
+            Assert.Equal("3", result.Assertions[0].Result); // the target's pre-existing rows, untouched
+        }
+        finally
+        {
+            await IntegrationDb.DropTableAsync(cs, trg);
+            await RelationalIngestionHarness.DropStagingAsync(cs, flowId);
+        }
+    }
+
     private static async Task SetupTarget(string cs, string trg)
     {
         await IntegrationDb.DropTableAsync(cs, trg);
@@ -143,6 +210,7 @@ public sealed class AssertionRunnerIntegrationTests
                 ["CheckEmptyTable"] = new() { Name = "CheckEmptyTable", Expression = EmptyTableExp },
                 ["CheckFreshnessDaily"] = new() { Name = "CheckFreshnessDaily", Expression = FreshnessExp },
                 ["BadCheck"] = new() { Name = "BadCheck", Expression = BadExp },
+                ["ManualCheck"] = new() { Name = "ManualCheck", Expression = EmptyTableExp, Mode = ExecutionMode.Manual },
             };
 
         public Task<IReadOnlyDictionary<string, AssertionDefinition>> ResolveAsync(IEnumerable<string> names, CancellationToken ct = default)

@@ -46,6 +46,28 @@ public sealed class BatchOrchestratorTests : IDisposable
         File.WriteAllText(Path.Combine(_dir, name + ".flow.yaml"), yaml);
     }
 
+    private void WriteIngFlowWithHealthCheck(string name, string? mode)
+    {
+        var yaml = $"""
+            flowType: ing
+            name: {name}
+            connections:
+              SRC:
+              DW:
+            source:
+              server: SRC
+              object: Src.dbo.Orders
+            target:
+              server: DW
+              object: DW.raw.Orders
+            healthCheck:
+              dateColumn: OrderDate
+              baseValue: COUNT(*)
+            {(mode is null ? string.Empty : $"  mode: {mode}")}
+            """;
+        File.WriteAllText(Path.Combine(_dir, name + ".flow.yaml"), yaml);
+    }
+
     private static BatchFlow Batch(BatchErrorMode onError = BatchErrorMode.Stop, IReadOnlyList<string>? include = null,
         IReadOnlyList<string>? exclude = null, IReadOnlyList<string>? inactive = null, IReadOnlyList<string>? ignoreErrors = null,
         int maxParallel = 0)
@@ -68,6 +90,38 @@ public sealed class BatchOrchestratorTests : IDisposable
 
     private static BatchMemberResult Member(BatchRunResult result, string name)
         => result.Members.Single(m => string.Equals(m.FlowName, name, StringComparison.OrdinalIgnoreCase));
+
+    [Fact]
+    public async Task EmbeddedHealthCheck_ManualByDefault_IsReportedNotRun()
+    {
+        WriteIngFlowWithHealthCheck("raw_orders", mode: null);
+        var runner = new FakeRunner();
+
+        var result = await RunAsync(Batch(), runner);
+
+        // The derived check is a member (declared by the file) but never executes: embedded checks default to
+        // mode: manual, and a manual member must not fail or skip-block the batch.
+        Assert.True(result.Success);
+        Assert.Equal(BatchMemberStatus.Succeeded, Member(result, "raw_orders").Status);
+        Assert.Equal(BatchMemberStatus.Manual, Member(result, "raw_orders_hc").Status);
+        Assert.Equal(1, result.Manual);
+        Assert.False(runner.WasRun("raw_orders_hc"));
+    }
+
+    [Fact]
+    public async Task EmbeddedHealthCheck_AutoMode_RunsAfterItsLoad_UnderItsOwnName()
+    {
+        WriteIngFlowWithHealthCheck("raw_orders", mode: "auto");
+        var runner = new FakeRunner();
+
+        var result = await RunAsync(Batch(), runner);
+
+        // mode: auto opts the derived check into the batch; it reads what the load writes, so lineage orders it
+        // after the load, and the orchestrator dispatches it by ITS name from the shared file.
+        Assert.True(result.Success);
+        Assert.Equal(BatchMemberStatus.Succeeded, Member(result, "raw_orders_hc").Status);
+        Assert.True(runner.CompletionIndexOf("raw_orders") < runner.StartIndexOf("raw_orders_hc"));
+    }
 
     [Fact]
     public async Task OrdersMembersIntoWaves_DependencyBeforeDependent()
@@ -248,7 +302,9 @@ public sealed class BatchOrchestratorTests : IDisposable
 
         public async Task<DocumentRunOutcome> RunAsync(string flowFile, DocumentExecutionOptions options, CancellationToken ct = default)
         {
-            var name = Path.GetFileName(flowFile).Replace(".flow.yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
+            // The orchestrator selects the member by flow name (a document can expand into more than one
+            // pipeline, e.g. an embedded healthCheck:); fall back to the file stem for robustness.
+            var name = options.FlowName ?? Path.GetFileName(flowFile).Replace(".flow.yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
             lock (_lock)
             {
                 _startOrder.Add(name);
@@ -309,7 +365,9 @@ public sealed class BatchOrchestratorTests : IDisposable
 
         public async Task<DocumentRunOutcome> RunAsync(string flowFile, DocumentExecutionOptions options, CancellationToken ct = default)
         {
-            var name = Path.GetFileName(flowFile).Replace(".flow.yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
+            // The orchestrator selects the member by flow name (a document can expand into more than one
+            // pipeline, e.g. an embedded healthCheck:); fall back to the file stem for robustness.
+            var name = options.FlowName ?? Path.GetFileName(flowFile).Replace(".flow.yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
             lock (_lock)
             {
                 _events.Add("start:" + name);

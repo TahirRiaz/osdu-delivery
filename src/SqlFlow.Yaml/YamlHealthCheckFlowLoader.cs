@@ -30,8 +30,6 @@ public sealed class YamlHealthCheckFlowLoader
 {
     private const string TargetConnectionName = "target";
 
-    private const int MaxExperimentSecondsCeiling = 86_400;
-
     // The unquoted-scalar option types the connections block's map form the same way the other relational
     // loaders do; every typed DTO property is unaffected by it.
     private readonly IDeserializer _deserializer = new DeserializerBuilder()
@@ -94,61 +92,11 @@ public sealed class YamlHealthCheckFlowLoader
             ?? throw new FlowValidationException(
                 $"{source}: 'dateColumn' is required (the date column the metrics are grouped by).");
 
-        var ml = y.Ml ?? new HealthCheckMlYaml();
-        var training = ParseTraining(ml.Training, source);
-
-        var maxExperimentSeconds = ml.MaxExperimentSeconds ?? 120;
-        if (maxExperimentSeconds < 1 || maxExperimentSeconds > MaxExperimentSecondsCeiling)
-        {
-            throw new FlowValidationException(
-                $"{source}: 'ml.maxExperimentSeconds' must be between 1 and {MaxExperimentSecondsCeiling}, got {maxExperimentSeconds}.");
-        }
-
-        var anomalyThreshold = ml.AnomalyThreshold ?? 2.0;
-        if (!double.IsFinite(anomalyThreshold) || anomalyThreshold <= 0 || anomalyThreshold > 100)
-        {
-            throw new FlowValidationException(
-                $"{source}: 'ml.anomalyThreshold' must be a positive number of standard deviations (at most 100), got {ml.AnomalyThreshold}.");
-        }
-
-        var esdAlpha = ml.EsdAlpha ?? 0.025;
-        if (!double.IsFinite(esdAlpha) || esdAlpha <= 0 || esdAlpha >= 0.5)
-        {
-            throw new FlowValidationException(
-                $"{source}: 'ml.esdAlpha' must be a significance level strictly between 0 and 0.5, got {ml.EsdAlpha}.");
-        }
-
-        var maxAnomalyFraction = ml.MaxAnomalyFraction ?? 0.10;
-        if (!double.IsFinite(maxAnomalyFraction) || maxAnomalyFraction <= 0 || maxAnomalyFraction > 0.49)
-        {
-            throw new FlowValidationException(
-                $"{source}: 'ml.maxAnomalyFraction' must be in (0, 0.49], got {ml.MaxAnomalyFraction}.");
-        }
-
-        var maturityDays = y.MaturityDays ?? 1;
-        if (maturityDays < 0 || maturityDays > 30)
-        {
-            throw new FlowValidationException(
-                $"{source}: 'maturityDays' must be between 0 and 30, got {maturityDays}.");
-        }
-
+        // The declaration body (metrics, ml ranges, maturity, holidays) validates through the shared parts, the
+        // same vocabulary the embedded healthCheck: block of an ingestion flow uses.
+        var ml = YamlHealthCheckParts.MapMl(y.Ml, source);
+        var maturityDays = YamlHealthCheckParts.MapMaturityDays(y.MaturityDays, source);
         var sentinelFloor = YamlDocumentParts.ParseDate(y.SentinelDateFloor, "sentinelDateFloor", source) ?? new DateOnly(1990, 1, 1);
-
-        if (ml.RetrainAfterDays is { } retrainAfterDays)
-        {
-            if (retrainAfterDays < 1)
-            {
-                throw new FlowValidationException(
-                    $"{source}: 'ml.retrainAfterDays' must be at least 1, got {retrainAfterDays}.");
-            }
-
-            if (training != HealthCheckTraining.Auto)
-            {
-                throw new FlowValidationException(
-                    $"{source}: 'ml.retrainAfterDays' only applies with 'ml.training: auto' " +
-                    $"('{training.ToString().ToLowerInvariant()}' ignores model age).");
-            }
-        }
 
         var flow = new HealthCheckFlow
         {
@@ -159,18 +107,18 @@ public sealed class YamlHealthCheckFlowLoader
             Server = server,
             Target = YamlDocumentParts.ParseQualifiedObject(rawObject, "target.object", source),
             DateColumn = dateColumn,
-            Metrics = MapMetrics(y, source),
+            Metrics = YamlHealthCheckParts.MapMetrics(y.BaseValue, y.Metrics, source),
             FilterCriteria = YamlDocumentParts.NullIfBlank(y.Filter)?.Trim(),
-            MaxExperimentSeconds = maxExperimentSeconds,
-            AnomalyThreshold = anomalyThreshold,
-            EsdAlpha = esdAlpha,
-            MaxAnomalyFraction = maxAnomalyFraction,
+            MaxExperimentSeconds = ml.MaxExperimentSeconds,
+            AnomalyThreshold = ml.AnomalyThreshold,
+            EsdAlpha = ml.EsdAlpha,
+            MaxAnomalyFraction = ml.MaxAnomalyFraction,
             MaturityDays = maturityDays,
             SentinelDateFloor = sentinelFloor,
             Mode = YamlDocumentParts.ParseExecutionMode(y.Mode, "mode", source),
-            Training = training,
+            Training = ml.Training,
             RetrainAfterDays = ml.RetrainAfterDays,
-            Holidays = MapHolidays(y.Holidays, source),
+            Holidays = YamlHealthCheckParts.MapHolidays(y.Holidays, source),
             Description = YamlDocumentParts.NullIfBlank(y.Description),
         };
 
@@ -179,93 +127,5 @@ public sealed class YamlHealthCheckFlowLoader
             Flow = flow,
             Connections = connections.Values.ToList(),
         };
-    }
-
-    /// <summary>Maps the monitored metrics: the <c>metrics:</c> list, or the single-metric <c>baseValue:</c>
-    /// shorthand (named by convention). Names key state folders and report sections, so they are validated
-    /// and deduplicated here.</summary>
-    private static List<HealthCheckMetric> MapMetrics(HealthCheckYaml y, string source)
-    {
-        var shorthand = YamlDocumentParts.NullIfBlank(y.BaseValue)?.Trim();
-        var list = y.Metrics;
-
-        if (shorthand is not null && list is { Count: > 0 })
-        {
-            throw new FlowValidationException(
-                $"{source}: set either 'baseValue' (one metric) or 'metrics' (a list), not both.");
-        }
-
-        if (shorthand is not null)
-        {
-            return [new HealthCheckMetric { Name = HealthCheckMetric.DefaultName(shorthand), Expression = shorthand }];
-        }
-
-        if (list is null || list.Count == 0)
-        {
-            throw new FlowValidationException(
-                $"{source}: a health check needs a metric. Set 'baseValue' (an aggregate like COUNT(*) or SUM(Amount)) " +
-                "or a 'metrics' list of {name, baseValue} entries.");
-        }
-
-        var metrics = new List<HealthCheckMetric>(list.Count);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (var i = 0; i < list.Count; i++)
-        {
-            var expression = YamlDocumentParts.NullIfBlank(list[i].BaseValue)?.Trim()
-                ?? throw new FlowValidationException($"{source}: 'metrics[{i}].baseValue' is required (an aggregate expression).");
-
-            var metricName = YamlDocumentParts.NullIfBlank(list[i].Name)?.Trim() ?? HealthCheckMetric.DefaultName(expression);
-            if (!IsValidMetricName(metricName))
-            {
-                throw new FlowValidationException(
-                    $"{source}: 'metrics[{i}].name' '{metricName}' is invalid. Use letters, digits, '_', or '-'.");
-            }
-
-            if (!seen.Add(metricName))
-            {
-                throw new FlowValidationException($"{source}: metric name '{metricName}' is declared more than once.");
-            }
-
-            metrics.Add(new HealthCheckMetric { Name = metricName, Expression = expression });
-        }
-
-        return metrics;
-    }
-
-    private static bool IsValidMetricName(string name)
-        => name.Length > 0 && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-');
-
-    private static HealthCheckTraining ParseTraining(string? value, string source)
-        => value?.Trim().ToLowerInvariant() switch
-        {
-            null or "" or "auto" => HealthCheckTraining.Auto,
-            "always" => HealthCheckTraining.Always,
-            "never" => HealthCheckTraining.Never,
-            _ => throw new FlowValidationException(
-                $"{source}: 'ml.training' has unknown value '{value}'. Allowed: auto, always, never."),
-        };
-
-    private static List<DateOnly> MapHolidays(List<string>? holidays, string source)
-    {
-        var parsed = new List<DateOnly>();
-        if (holidays is null)
-        {
-            return parsed;
-        }
-
-        var seen = new HashSet<DateOnly>();
-        for (var i = 0; i < holidays.Count; i++)
-        {
-            var date = YamlDocumentParts.ParseDate(holidays[i], $"holidays[{i}]", source)
-                ?? throw new FlowValidationException($"{source}: 'holidays[{i}]' must not be blank.");
-
-            // A duplicate date is harmless to the features; keeping one copy keeps the model deterministic.
-            if (seen.Add(date))
-            {
-                parsed.Add(date);
-            }
-        }
-
-        return parsed;
     }
 }

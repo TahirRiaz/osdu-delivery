@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.ControlPlane.Background;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -19,6 +20,9 @@ public sealed record CreateScheduleRequest(
 
 /// <summary>The created-schedule acknowledgement.</summary>
 public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
+
+/// <summary>The manual run-now acknowledgement: the id of the run the schedule's flow was enqueued as.</summary>
+public sealed record ScheduleRunAccepted(Guid RunId);
 
 /// <summary>
 /// The schedule surface over the catalog. The reads (list, detail) are mapped under the "read" scope; the mutations
@@ -42,6 +46,7 @@ public static class ScheduleEndpoints
         ArgumentNullException.ThrowIfNull(group);
         var schedules = group.MapGroup("/schedules").WithTags("Schedules");
         schedules.MapPost("/", CreateScheduleAsync).WithName("CreateSchedule");
+        schedules.MapPost("/{id:guid}/run", RunScheduleAsync).WithName("RunScheduleNow");
         schedules.MapPost("/{id:guid}/pause", PauseScheduleAsync).WithName("PauseSchedule");
         schedules.MapPost("/{id:guid}/resume", ResumeScheduleAsync).WithName("ResumeSchedule");
         schedules.MapDelete("/{id:guid}", DeleteScheduleAsync).WithName("DeleteSchedule");
@@ -126,6 +131,36 @@ public static class ScheduleEndpoints
             request.Enabled ?? true, request.Catchup ?? false, next ?? now, now, ct).ConfigureAwait(false);
 
         return TypedResults.Created($"/api/v1/schedules/{id}", new ScheduleCreated(id, next));
+    }
+
+    /// <summary>
+    /// Fires a schedule right now, on demand: it enqueues a run of the schedule's flow through the same durable path
+    /// the automatic scheduler and a direct manual trigger take, and stamps the schedule's last run so the fire is
+    /// visible in the schedule's "last run". The cadence is untouched (the next scheduled fire does not move), so this
+    /// is a safe way to test a schedule. Unlike the automatic scheduler it also runs a flow declaring
+    /// <c>mode: manual</c>, because the invoke is deliberate. Answers 202 with the run id, 404 for an unknown
+    /// schedule, and 409 when the flow has been removed or deactivated.
+    /// </summary>
+    private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
+        Guid id, CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
+    {
+        var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
+        if (schedule is null)
+        {
+            return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        var now = clock.GetUtcNow().UtcDateTime;
+        var (outcome, runId) = await ScheduleFire
+            .EnqueueAsync(db, dispatcher, schedule, honorManualMode: false, now, ct).ConfigureAwait(false);
+        if (outcome != ScheduleFire.Outcome.Enqueued)
+        {
+            return TypedResults.Problem(
+                detail: $"Flow '{schedule.FlowName}' is inactive or removed, so the schedule has nothing to run.",
+                statusCode: StatusCodes.Status409Conflict, title: "Cannot run schedule");
+        }
+
+        return TypedResults.Accepted($"/api/v1/runs/{runId}", new ScheduleRunAccepted(runId));
     }
 
     private static Task<Results<Ok<ScheduleDto>, ProblemHttpResult>> PauseScheduleAsync(

@@ -99,9 +99,16 @@ public static class SqlFlowEngineServices
         services.AddSingleton<YamlHealthCheckFlowLoader>();
         services.AddSingleton<YamlSourceControlFlowLoader>();
         services.AddSingleton<YamlBatchFlowLoader>();
+        services.AddSingleton<YamlAcquireFlowLoader>();
         services.AddSingleton<YamlDocumentLoader>();
         services.AddSingleton<InferSpecLoader>();
         services.AddSingleton<FlowRunner>();
+
+        // Generic acquisition engine (flowType: acq): raw landing stores, the HTTP/SFTP/S3/Azure Table
+        // transports, the auth resolver, and the acquisition runner. Composed here so every host that runs flows
+        // gets it, exactly like the source readers above.
+        SqlFlow.Acquire.AcquireServices.AddSqlFlowAcquire(services);
+
         services.AddSingleton(sp => new DocumentExecutor(sp));
 
         return services;

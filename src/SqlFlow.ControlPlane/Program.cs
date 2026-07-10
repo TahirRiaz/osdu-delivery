@@ -294,6 +294,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapDatasourceReadEndpoints()
     .MapRepoSourceReadEndpoints()
     .MapSummaryEndpoints()
+    .MapIntegrationReadEndpoints()
     // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own)
     // and their own notification opt-ins.
     .MapMeEndpoints()
@@ -306,7 +307,8 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapRunTriggerEndpoints()
     .MapDatasourceComputeEndpoints()
     .MapScheduleWriteEndpoints()
-    .MapRepoSourceWriteEndpoints();
+    .MapRepoSourceWriteEndpoints()
+    .MapIntegrationDebugEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own
 // credential, so it lives under the "author" scope rather than "operate".

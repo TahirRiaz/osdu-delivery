@@ -16,7 +16,9 @@ const RepoDetailPage = lazy(() => import("./features/repos/RepoDetailPage"));
 const PipelinesPage = lazy(() => import("./features/pipelines/PipelinesPage"));
 const PipelineDetailPage = lazy(() => import("./features/pipelines/PipelineDetailPage"));
 const SchedulesPage = lazy(() => import("./features/schedules/SchedulesPage"));
+const ScheduleTimelinePage = lazy(() => import("./features/schedules/ScheduleTimelinePage"));
 const DatasourcesPage = lazy(() => import("./features/datasources/DatasourcesPage"));
+const IntegrationsPage = lazy(() => import("./features/integrations/IntegrationsPage"));
 const DatasourceBrowsePage = lazy(() => import("./features/datasources/DatasourceBrowsePage"));
 const UniqueKeyDetectionPage = lazy(() => import("./features/datasources/UniqueKeyDetectionPage"));
 const LineagePage = lazy(() => import("./features/lineage/LineagePage"));
@@ -53,8 +55,14 @@ export default function App() {
           <Route path="/repos/:repoId" element={<RepoDetailPage />} />
           <Route path="/pipelines" element={<PipelinesPage />} />
           <Route path="/pipelines/:pipelineId" element={<PipelineDetailPage />} />
+          {/* Timeline route sits above the table route so the sidebar's Timeline entry resolves; both live under
+              /schedules so the Schedules nav group stays highlighted. */}
+          <Route path="/schedules/timeline" element={<ScheduleTimelinePage />} />
           <Route path="/schedules" element={<SchedulesPage />} />
           <Route path="/datasources" element={<DatasourcesPage />} />
+          <Route path="/integrations" element={<IntegrationsPage />} />
+          {/* The Integrations page briefly shipped as "REST APIs"; keep the old path working for bookmarks. */}
+          <Route path="/rest-apis" element={<Navigate to="/integrations" replace />} />
           <Route path="/datasources/browse" element={<DatasourceBrowsePage />} />
           {/* Top-level path (not under /datasources) so the sidebar's startsWith selection stays unambiguous. */}
           <Route path="/key-detection" element={<UniqueKeyDetectionPage />} />

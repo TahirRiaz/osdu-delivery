@@ -192,6 +192,7 @@ impl Census {
             Some("hc") => HC,
             Some("scm") => SCM,
             Some("batch") => BATCH,
+            Some("acq") => ACQ,
             // Unknown flowType: fall back to the file flow so hover/completion
             // still work on the shared and root keys while diagnostics flag the
             // bad discriminator.
@@ -329,6 +330,7 @@ const INV: &str = include_str!("../../../docs/reference/flow/keys.inv.json");
 const HC: &str = include_str!("../../../docs/reference/flow/keys.hc.json");
 const SCM: &str = include_str!("../../../docs/reference/flow/keys.scm.json");
 const BATCH: &str = include_str!("../../../docs/reference/flow/keys.batch.json");
+const ACQ: &str = include_str!("../../../docs/reference/flow/keys.acq.json");
 const SHARED: &str = include_str!("../../../docs/reference/flow/keys.shared.json");
 
 #[cfg(test)]
@@ -371,12 +373,41 @@ mod tests {
     #[test]
     fn flow_type_key_is_known_in_every_census() {
         // The discriminator lives only in keys.json but must resolve for all kinds.
-        for ft in [Some("ing"), Some("exp"), Some("batch"), Some("hc"), None] {
+        for ft in [Some("ing"), Some("exp"), Some("batch"), Some("hc"), Some("acq"), None] {
             let c = Census::for_flow_type(ft);
             assert!(
                 matches!(c.resolve(&ak(&["flowType"])), Resolution::Exact(_)),
                 "flowType should be known for flowType={ft:?}"
             );
+        }
+    }
+
+    #[test]
+    fn acquisition_census_resolves_its_attributes() {
+        let c = Census::for_flow_type(Some("acq"));
+        // A scalar leaf, a nested leaf, a list attribute, and an open-dict member.
+        assert!(matches!(c.resolve(&ak(&["landing", "pathTemplate"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["source", "auth", "token", "tokenPath"])), Resolution::Exact(_)));
+        assert!(matches!(
+            c.resolve(&[
+                AuthoredSeg::Key("source".into()),
+                AuthoredSeg::Key("iterate".into()),
+                AuthoredSeg::List,
+                AuthoredSeg::Key("granularity".into())
+            ]),
+            Resolution::Exact(_)
+        ));
+        // params.<name> is an open-dict wildcard entry: any declared parameter name resolves to it (never Unknown).
+        assert!(!matches!(
+            c.resolve(&ak(&["params", "anyDeclaredName"])),
+            Resolution::Unknown
+        ));
+        // The pagination strategy carries its enum for value validation.
+        if let Resolution::Exact(entry) = c.resolve(&ak(&["source", "pagination", "strategy"])) {
+            let values = entry.enum_values.as_ref().expect("strategy declares enum values");
+            assert!(values.iter().any(|v| v == "link_header"));
+        } else {
+            panic!("source.pagination.strategy should be a documented attribute");
         }
     }
 

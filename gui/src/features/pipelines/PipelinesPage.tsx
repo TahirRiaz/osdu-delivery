@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import Chip from "@mui/material/Chip";
 import MenuItem from "@mui/material/MenuItem";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { pipelineApi, repoApi } from "../../api/endpoints";
@@ -22,7 +23,16 @@ const columns: Column<PipelineSummary>[] = [
     header: "Name",
     render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
   },
-  { id: "kind", header: "Kind", render: (row) => <Chip size="small" label={row.kind} variant="outlined" /> },
+  {
+    id: "kind",
+    header: "Kind",
+    render: (row) => (
+      <Stack direction="row" spacing={0.5} alignItems="center">
+        <Chip size="small" label={row.kind} variant="outlined" />
+        {row.executionMode === "manual" && <Chip size="small" color="warning" label="manual" />}
+      </Stack>
+    ),
+  },
   { id: "batch", header: "Batch", render: (row) => row.batch ?? "-" },
   { id: "wave", header: "Wave", render: (row) => (row.wave === -1 ? "-" : String(row.wave)) },
   { id: "active", header: "Active", render: (row) => <ActiveBadge active={row.active} /> },

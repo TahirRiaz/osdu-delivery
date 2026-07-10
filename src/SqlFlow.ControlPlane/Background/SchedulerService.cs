@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Configuration;
@@ -161,33 +160,24 @@ public sealed partial class SchedulerService : BackgroundService
             return;
         }
 
-        // The flow must still exist and be active; a schedule for a removed/deactivated flow is skipped (its next
-        // fire has already advanced, so it simply tries again on its next occurrence).
-        var pipeline = await catalog.Pipelines.AsNoTracking()
-            .Where(p => p.Id == schedule.PipelineId && p.RepoId == schedule.RepoId)
-            .Select(p => new { p.Active, p.Kind, p.ExecutionMode })
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (pipeline is not { Active: true })
+        // Enqueue through the shared fire path (the same one the manual run-now endpoint uses): it verifies the flow
+        // is active, enqueues, and stamps the last run. honorManualMode is true here because a schedule is automatic
+        // dispatch, so a flow declaring mode: manual is left un-fired (loudly, so the contradiction is visible); the
+        // occurrence's next fire has already advanced, so the cadence simply moves on.
+        var (outcome, runId) = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, honorManualMode: true, now, ct)
+            .ConfigureAwait(false);
+        switch (outcome)
         {
-            LogPipelineInactive(schedule.Id, schedule.FlowName);
-            return;
+            case ScheduleFire.Outcome.PipelineInactive:
+                LogPipelineInactive(schedule.Id, schedule.FlowName);
+                break;
+            case ScheduleFire.Outcome.PipelineManual:
+                LogPipelineManual(schedule.Id, schedule.FlowName);
+                break;
+            case ScheduleFire.Outcome.Enqueued:
+                LogFired(schedule.Id, schedule.FlowName, runId);
+                break;
         }
-
-        // A manual-mode flow (mode: manual in its document) opted out of every automatic dispatch, and a schedule
-        // is exactly that. The YAML is the source of truth, so the mode wins over a lingering schedule row: the
-        // occurrence is skipped (loudly, so the contradiction is visible) and the cadence simply advances.
-        if (string.Equals(pipeline.ExecutionMode, PipelineExecutionModes.Manual, StringComparison.OrdinalIgnoreCase))
-        {
-            LogPipelineManual(schedule.Id, schedule.FlowName);
-            return;
-        }
-
-        // Scheduled runs are untargeted (any node) and unpinned for now; pool-routed / SHA-pinned schedules are a
-        // later addition.
-        var runId = await _dispatcher.EnqueueAsync(
-            catalog, new RunEnqueueRequest(schedule.RepoId, schedule.FlowName, pipeline.Kind), ct).ConfigureAwait(false);
-        await ScheduleStore.SetLastRunAsync(catalog, schedule.Id, runId, now, ct).ConfigureAwait(false);
-        LogFired(schedule.Id, schedule.FlowName, runId);
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} fired: enqueued run {RunId} for flow '{FlowName}'.")]
