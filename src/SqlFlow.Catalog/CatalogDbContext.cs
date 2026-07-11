@@ -60,6 +60,14 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogComputeTask> ComputeTasks => Set<CatalogComputeTask>();
 
+    public DbSet<CatalogNotificationEvent> NotificationEvents => Set<CatalogNotificationEvent>();
+
+    public DbSet<CatalogNotificationSubscription> NotificationSubscriptions => Set<CatalogNotificationSubscription>();
+
+    public DbSet<CatalogNotificationDelivery> NotificationDeliveries => Set<CatalogNotificationDelivery>();
+
+    public DbSet<CatalogNotificationWatermark> NotificationWatermarks => Set<CatalogNotificationWatermark>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -379,6 +387,63 @@ public sealed class CatalogDbContext : DbContext
             // The GUI lists recent tasks newest first, optionally per source.
             entity.HasIndex(t => t.EnqueuedUtc);
             entity.HasIndex(t => t.SourceRef);
+        });
+
+        modelBuilder.Entity<CatalogNotificationEvent>(entity =>
+        {
+            entity.ToTable("NotificationEvent");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.FlowName).HasMaxLength(400).IsRequired();
+            entity.Property(e => e.FlowKind).HasMaxLength(16).IsRequired();
+            // Error is nvarchar(max): the run's error text or the failed-assertion summary, no useful bound.
+            // Detection inserts each (run, kind) at most once: the dedup that makes re-scanning the watermark's
+            // overlap window (and any freak concurrent detection) free instead of a source of duplicate alerts.
+            entity.HasIndex(e => new { e.RunId, e.Kind }).IsUnique();
+            // Retention prunes by detection time.
+            entity.HasIndex(e => e.DetectedUtc);
+        });
+
+        modelBuilder.Entity<CatalogNotificationSubscription>(entity =>
+        {
+            entity.ToTable("NotificationSubscription");
+            entity.HasKey(s => s.Id);
+            entity.Property(s => s.Channel).HasMaxLength(16).IsRequired();
+            entity.Property(s => s.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(s => s.Kinds).HasMaxLength(128).IsRequired();
+            entity.Property(s => s.FlowPattern).HasMaxLength(400);
+            entity.Property(s => s.EmailAddress).HasMaxLength(320);
+            entity.Property(s => s.SlackTarget).HasMaxLength(64);
+            // The owner's self-service list.
+            entity.HasIndex(s => s.UserId);
+            // The dispatch scan: enabled subscriptions whose next-due has arrived (or is null = immediate).
+            entity.HasIndex(s => new { s.Enabled, s.NextDueUtc });
+        });
+
+        modelBuilder.Entity<CatalogNotificationDelivery>(entity =>
+        {
+            entity.ToTable("NotificationDelivery");
+            entity.HasKey(d => d.Id);
+            entity.Property(d => d.Channel).HasMaxLength(16).IsRequired();
+            entity.Property(d => d.Target).HasMaxLength(512).IsRequired();
+            entity.Property(d => d.Subject).HasMaxLength(512).IsRequired();
+            entity.Property(d => d.Status).HasMaxLength(16).IsRequired();
+            // TextBody / HtmlBody / SlackBlocksJson / LastError are nvarchar(max): composed message content and
+            // channel error payloads have no useful column bound.
+            entity.Property(d => d.TextBody).IsRequired();
+            // The send loop seeks queued deliveries whose next attempt is due, oldest first.
+            entity.HasIndex(d => new { d.Status, d.NextAttemptUtc });
+            // The owner's self-service history, newest first; CreatedUtc alone serves retention pruning.
+            entity.HasIndex(d => new { d.UserId, d.CreatedUtc });
+            entity.HasIndex(d => d.CreatedUtc);
+        });
+
+        modelBuilder.Entity<CatalogNotificationWatermark>(entity =>
+        {
+            entity.ToTable("NotificationWatermark");
+            entity.HasKey(w => w.Id);
+            // The single row's id is assigned by code (WellKnownId), never by the database.
+            entity.Property(w => w.Id).ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CatalogAccessToken>(entity =>

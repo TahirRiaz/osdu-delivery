@@ -114,3 +114,51 @@ public sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret);
 /// the backing catalog user id (null for a bootstrap token, which has no account). A headless client's
 /// "whoami": one call that answers "am I signed in, as whom, and what am I allowed to do".</summary>
 public sealed record IdentityDto(string Subject, string? Role, IReadOnlyList<string> Scopes, Guid? UserId);
+
+/// <summary>One notification channel's availability on this deployment: whether it can send at all, and (for
+/// email) which transport backs it, so the settings page can say "email via smtp" instead of a bare toggle.</summary>
+public sealed record NotificationChannelAvailabilityDto(bool Available, string? Provider);
+
+/// <summary>What the notification settings page needs to render itself: whether the pipeline runs at all, which
+/// channels this deployment can send on, the valid kind / mode vocabularies with their defaults, and the caller's
+/// account email (the default destination when a subscription sets no override).</summary>
+public sealed record NotificationOptionsDto(
+    bool Enabled,
+    NotificationChannelAvailabilityDto Email,
+    NotificationChannelAvailabilityDto Slack,
+    IReadOnlyList<string> Kinds,
+    IReadOnlyList<string> DefaultKinds,
+    IReadOnlyList<string> Modes,
+    string? UserEmail,
+    int DefaultDigestIntervalMinutes,
+    int DefaultCooldownMinutes);
+
+/// <summary>One notification opt-in as its owner lists it.</summary>
+public sealed record NotificationSubscriptionDto(
+    Guid Id, string Channel, string Mode, IReadOnlyList<string> Kinds, string? FlowPattern, string? EmailAddress,
+    string? SlackTarget, int DigestIntervalMinutes, int CooldownMinutes, bool Enabled, DateTime? LastSentUtc,
+    DateTime? NextDueUtc, DateTime CreatedUtc, DateTime UpdatedUtc);
+
+/// <summary>Creates a notification opt-in. <see cref="Channel"/> is fixed for the subscription's lifetime (make a
+/// new one to switch); everything else has a served default: <see cref="Mode"/> immediate, <see cref="Kinds"/> the
+/// server defaults, a null <see cref="EmailAddress"/> / <see cref="SlackTarget"/> meaning "my account email" /
+/// "direct-message me", and the interval / cooldown defaults from the options endpoint.</summary>
+public sealed record CreateNotificationSubscriptionRequest(
+    string Channel, string? Mode, IReadOnlyList<string>? Kinds, string? FlowPattern, string? EmailAddress,
+    string? SlackTarget, int? DigestIntervalMinutes, int? CooldownMinutes);
+
+/// <summary>Edits a notification opt-in. Null means "keep the current value"; for the clearable strings
+/// (<see cref="FlowPattern"/>, <see cref="EmailAddress"/>, <see cref="SlackTarget"/>) an empty string clears the
+/// field back to its default behavior. The channel is not editable.</summary>
+public sealed record UpdateNotificationSubscriptionRequest(
+    string? Mode, IReadOnlyList<string>? Kinds, string? FlowPattern, string? EmailAddress, string? SlackTarget,
+    int? DigestIntervalMinutes, int? CooldownMinutes, bool? Enabled);
+
+/// <summary>One outbound notification as its owner sees it in the history: where it went, what it covered, and
+/// whether (and why not) it arrived. The composed bodies are omitted; <see cref="Subject"/> identifies the message.</summary>
+public sealed record NotificationDeliveryDto(
+    Guid Id, Guid SubscriptionId, string Channel, string Target, string Subject, string Status, int Attempts,
+    int EventCount, string? LastError, DateTime CreatedUtc, DateTime? SentUtc);
+
+/// <summary>The response to a test send: the outbox row to watch in the deliveries history.</summary>
+public sealed record NotificationTestSendDto(Guid DeliveryId);

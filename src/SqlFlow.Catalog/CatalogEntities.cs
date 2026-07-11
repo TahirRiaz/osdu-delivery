@@ -1030,3 +1030,258 @@ public class CatalogSchedule
 
     public DateTime UpdatedUtc { get; set; }
 }
+
+/// <summary>
+/// The kinds of catalog happenings the notification pipeline turns into <see cref="CatalogNotificationEvent"/>
+/// rows, stored as short lowercase strings (same convention as <see cref="RunStatuses"/>) so a subscription's kind
+/// filter is a plain string match.
+/// </summary>
+public static class NotificationEventKinds
+{
+    /// <summary>A run reached <c>failed</c>: it executed and errored, or could not execute at all.</summary>
+    public const string RunFailed = "run_failed";
+
+    /// <summary>A run was cancelled by an operator (while queued or while executing).</summary>
+    public const string RunCancelled = "run_cancelled";
+
+    /// <summary>A group member was skipped because an upstream dependency did not succeed. Distinct from
+    /// <see cref="RunFailed"/> so subscribers can mute the (often numerous) downstream echoes of one failure.</summary>
+    public const string RunSkipped = "run_skipped";
+
+    /// <summary>A run succeeded but at least one of its data-quality assertions failed to evaluate. Assertions are
+    /// log-only (a failure never fails the load), so this is the only signal that a "green" run needs attention.</summary>
+    public const string AssertionFailed = "assertion_failed";
+
+    /// <summary>Every kind, in display order.</summary>
+    public static readonly IReadOnlyList<string> All = [RunFailed, RunCancelled, RunSkipped, AssertionFailed];
+
+    /// <summary>The kinds a new subscription starts with: real failures, without the skipped-run echoes.</summary>
+    public const string DefaultKinds = RunFailed + "," + AssertionFailed;
+
+    public static bool IsKnown(string kind)
+        => kind is RunFailed or RunCancelled or RunSkipped or AssertionFailed;
+}
+
+/// <summary>The channels a notification subscription can deliver over, stored as short lowercase strings.</summary>
+public static class NotificationChannels
+{
+    public const string Email = "email";
+    public const string Slack = "slack";
+
+    public static bool IsKnown(string channel) => channel is Email or Slack;
+}
+
+/// <summary>How a subscription paces its messages, stored as short lowercase strings.</summary>
+public static class NotificationModes
+{
+    /// <summary>Send as soon as a matching event exists, then hold further sends for the subscription's cooldown;
+    /// everything that arrives during the cooldown is coalesced into the next message. The first failure after a
+    /// quiet period alerts within one poll tick, while a failure storm caps out at one message per cooldown.</summary>
+    public const string Immediate = "immediate";
+
+    /// <summary>Send one combined summary per fixed interval (six hours by default). Windows with no matching
+    /// events send nothing.</summary>
+    public const string Digest = "digest";
+
+    public static bool IsKnown(string mode) => mode is Immediate or Digest;
+}
+
+/// <summary>
+/// One notification-worthy happening, detected from the run history by the control plane's notification service:
+/// a run that reached a non-success terminal state, or a succeeded run whose assertions failed. Events are the
+/// durable, deduplicated middle of the pipeline: detection inserts each (run, kind) at most once (unique index),
+/// and every subscription consumes the stream through its own cursor
+/// (<see cref="CatalogNotificationSubscription.LastEventId"/>), so a burst of failures is batched per subscriber
+/// rather than sent per event, and re-scanning the detection window never duplicates anything.
+/// </summary>
+public class CatalogNotificationEvent
+{
+    /// <summary>Monotonic identity (SQL Server IDENTITY): the cursor subscriptions page the stream by.</summary>
+    public long Id { get; set; }
+
+    /// <summary>What happened (see <see cref="NotificationEventKinds"/>).</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    public Guid RunId { get; set; }
+
+    public Guid? RepoId { get; set; }
+
+    /// <summary>The run's pipeline (soft link, like <see cref="CatalogRun.PipelineId"/>).</summary>
+    public Guid PipelineId { get; set; }
+
+    /// <summary>The run group the run belonged to when it was part of a Node/Batch execution; null standalone.</summary>
+    public Guid? GroupId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    public string FlowKind { get; set; } = string.Empty;
+
+    /// <summary>When the happening occurred (the run's end instant, falling back to when its row was written).</summary>
+    public DateTime OccurredUtc { get; set; }
+
+    /// <summary>When detection wrote this event.</summary>
+    public DateTime DetectedUtc { get; set; }
+
+    /// <summary>The run's error text, or the failed-assertion summary for <see cref="NotificationEventKinds.AssertionFailed"/>;
+    /// secret-redacted upstream (the catalog only ever stores redacted errors). Null when none was recorded.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// One user's opt-in to be notified: the channel (email / Slack), the pacing (immediate with a cooldown, or a
+/// fixed-interval digest), and what to hear about (event kinds, an optional flow-name pattern). A user can hold
+/// several subscriptions (say, an immediate Slack DM for their own flows plus a six-hour email digest of
+/// everything). <see cref="LastEventId"/> is the subscription's private cursor over the event stream: it starts at
+/// the newest event at creation time, so opting in never replays history, and every message advances it, so no
+/// event is ever reported twice to the same subscription.
+/// </summary>
+public class CatalogNotificationSubscription
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The owning user (<see cref="CatalogUser.Id"/>); a soft link, matching the rest of the catalog.</summary>
+    public Guid UserId { get; set; }
+
+    /// <summary>Where messages go (see <see cref="NotificationChannels"/>).</summary>
+    public string Channel { get; set; } = NotificationChannels.Email;
+
+    /// <summary>How messages are paced (see <see cref="NotificationModes"/>).</summary>
+    public string Mode { get; set; } = NotificationModes.Immediate;
+
+    /// <summary>The subscribed event kinds, comma-separated (see <see cref="NotificationEventKinds"/>).</summary>
+    public string Kinds { get; set; } = NotificationEventKinds.DefaultKinds;
+
+    /// <summary>An optional flow-name filter: one or more comma-separated wildcard patterns (<c>*</c> matches any
+    /// run of characters, <c>?</c> one character), matched case-insensitively. Null subscribes to every flow.</summary>
+    public string? FlowPattern { get; set; }
+
+    /// <summary>The destination address for an email subscription; null uses the owning user's account email at
+    /// send time (so a directory-driven address change is picked up without touching subscriptions).</summary>
+    public string? EmailAddress { get; set; }
+
+    /// <summary>The destination for a Slack subscription: a channel id (for example <c>C0123ABCD</c>) to post into
+    /// a shared channel, or null to direct-message the user (their Slack account is resolved by email).</summary>
+    public string? SlackTarget { get; set; }
+
+    /// <summary>The digest window in minutes (360 = every six hours). Used only in digest mode.</summary>
+    public int DigestIntervalMinutes { get; set; } = 360;
+
+    /// <summary>The minimum minutes between immediate messages: the anti-spam floor. Events arriving inside the
+    /// cooldown are coalesced into the next message, never dropped. 0 sends every poll tick. Immediate mode only.</summary>
+    public int CooldownMinutes { get; set; } = 5;
+
+    /// <summary>A disabled subscription is kept (with its cursor) but never claimed for dispatch. Re-enabling
+    /// fast-forwards the cursor past everything that happened while disabled, so it never floods on resume.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>The cursor: the highest <see cref="CatalogNotificationEvent.Id"/> this subscription has considered
+    /// (matched or not). Events above it are pending.</summary>
+    public long LastEventId { get; set; }
+
+    /// <summary>When this subscription may next produce a message. Digest mode: the end of the current window,
+    /// advanced by the interval on every claim. Immediate mode: null (or past) means "as soon as an event exists";
+    /// each send sets it to now + cooldown. The dispatcher claims a due subscription by advancing this atomically
+    /// (compare-and-swap), so multiple control-plane nodes never double-send a window.</summary>
+    public DateTime? NextDueUtc { get; set; }
+
+    /// <summary>When this subscription last produced a message; null until the first send.</summary>
+    public DateTime? LastSentUtc { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+}
+
+/// <summary>The lifecycle states of a <see cref="CatalogNotificationDelivery"/>, stored as short lowercase strings.</summary>
+public static class NotificationDeliveryStatuses
+{
+    public const string Queued = "queued";
+    public const string Sending = "sending";
+    public const string Sent = "sent";
+    public const string Failed = "failed";
+}
+
+/// <summary>
+/// One composed message on its way out (or already out): the notification outbox. Dispatch composes the full
+/// content up front (subject, plain text, HTML for email, Block Kit JSON for Slack) and the send loop claims rows
+/// atomically, so a message survives restarts, retries transient channel failures with backoff, and is auditable
+/// afterwards: what was sent, where, covering which events, and what went wrong if it never made it.
+/// </summary>
+public class CatalogNotificationDelivery
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The subscription that produced this message (soft link; the row outlives a deleted subscription).</summary>
+    public Guid SubscriptionId { get; set; }
+
+    /// <summary>The owning user, denormalized so the self-service history list is a single-table seek.</summary>
+    public Guid UserId { get; set; }
+
+    /// <summary>The channel this message goes out on (see <see cref="NotificationChannels"/>).</summary>
+    public string Channel { get; set; } = string.Empty;
+
+    /// <summary>The resolved destination: an email address, a Slack channel id, or <c>dm:{email}</c> for a Slack
+    /// direct message the sender resolves to the user's Slack account at send time.</summary>
+    public string Target { get; set; } = string.Empty;
+
+    /// <summary>The email subject / Slack fallback headline.</summary>
+    public string Subject { get; set; } = string.Empty;
+
+    /// <summary>The plain-text rendering: the email text alternative and the Slack fallback text.</summary>
+    public string TextBody { get; set; } = string.Empty;
+
+    /// <summary>The HTML rendering for an email delivery; null for Slack.</summary>
+    public string? HtmlBody { get; set; }
+
+    /// <summary>The Block Kit JSON (an array of blocks) for a Slack delivery; null for email.</summary>
+    public string? SlackBlocksJson { get; set; }
+
+    /// <summary>How many events this message covers (after the subscription's filters).</summary>
+    public int EventCount { get; set; }
+
+    /// <summary>The event-id range this message advanced the subscription's cursor over (audit).</summary>
+    public long FirstEventId { get; set; }
+
+    public long LastEventId { get; set; }
+
+    /// <summary>The lifecycle state (see <see cref="NotificationDeliveryStatuses"/>).</summary>
+    public string Status { get; set; } = NotificationDeliveryStatuses.Queued;
+
+    /// <summary>How many send attempts have been made (claimed counts as attempted).</summary>
+    public int Attempts { get; set; }
+
+    /// <summary>When the next attempt may run; null means immediately. Set by the retry backoff.</summary>
+    public DateTime? NextAttemptUtc { get; set; }
+
+    /// <summary>When the current <c>sending</c> claim was taken; the recovery sweep requeues rows whose claim is
+    /// older than the stuck threshold (the claiming node died mid-send).</summary>
+    public DateTime? ClaimedUtc { get; set; }
+
+    /// <summary>The most recent send error, secret-redacted; null once sent (or never attempted).</summary>
+    public string? LastError { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    /// <summary>When the message was accepted by the channel; null until sent.</summary>
+    public DateTime? SentUtc { get; set; }
+}
+
+/// <summary>
+/// The notification detector's single-row high-water mark over <see cref="CatalogRun.WrittenUtc"/> (every terminal
+/// transition stamps that column with the writer's now). Each detection tick scans the window from a little before
+/// the watermark (an overlap that absorbs writer clock skew and in-flight writes) up to now, inserts the events
+/// that are not already recorded, and advances the mark: the row's lock is what serializes detection across
+/// control-plane replicas, and the event table's (run, kind) unique index is what makes the overlap re-scan free.
+/// </summary>
+public class CatalogNotificationWatermark
+{
+    /// <summary>Always <see cref="WellKnownId"/>: the table holds exactly one row.</summary>
+    public int Id { get; set; }
+
+    public const int WellKnownId = 1;
+
+    /// <summary>The high-water mark: runs written at or before this instant have been scanned.</summary>
+    public DateTime RunsWatermarkUtc { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+}

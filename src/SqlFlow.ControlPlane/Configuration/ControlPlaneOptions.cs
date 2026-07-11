@@ -32,6 +32,8 @@ public sealed class ControlPlaneOptions
 
     public ManagedSyncOptions ManagedSync { get; set; } = new();
 
+    public NotificationOptions Notifications { get; set; } = new();
+
     /// <summary>Validates the options, throwing a clear startup error for any missing or unsafe required value.
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
     public void Validate()
@@ -90,6 +92,7 @@ public sealed class ControlPlaneOptions
         AzureAd.Validate();
         Bootstrap.Validate();
         Proxy.Validate();
+        Notifications.Validate();
     }
 }
 
@@ -360,4 +363,269 @@ public sealed class ProxyOptions
 public sealed class ManagedSyncOptions
 {
     public int PollSeconds { get; set; } = 30;
+}
+
+/// <summary>
+/// The notification pipeline: detects failed runs (and failed assertions on green runs) in the catalog and sends
+/// opted-in users email and/or Slack messages, immediately (cooldown-coalesced) or as periodic digests. The
+/// service itself always runs (it keeps the event stream current); a channel is offered to users only when its
+/// section here is configured. Secrets (SMTP password, Graph client secret, Slack bot token) are references
+/// (<c>${env:...}</c> / <c>${keyvault:...}</c>) resolved through the SqlFlow secret resolver, never literals.
+/// </summary>
+public sealed class NotificationOptions
+{
+    /// <summary>Turns the notification background service off entirely (nothing is detected or sent, and the
+    /// subscription API reports every channel unavailable). On by default: with no channel configured the service
+    /// idles harmlessly, so the default costs nothing until someone configures a channel and opts in.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>The pipeline tick: how often detection, dispatch, and sending run. This bounds how quickly an
+    /// "immediate" subscriber hears about a failure.</summary>
+    public int PollSeconds { get; set; } = 30;
+
+    /// <summary>How far behind the watermark each detection scan re-reads (absorbing writer clock skew and detail
+    /// rows landing moments after their run row). Re-scanning is deduplicated, so a generous overlap is free.</summary>
+    public int DetectionOverlapMinutes { get; set; } = 30;
+
+    /// <summary>How many send attempts a message gets before it is recorded as permanently failed. Retries back
+    /// off (1, 5, 15, then 60 minutes), so transient SMTP / Graph / Slack outages self-heal without spam.</summary>
+    public int MaxDeliveryAttempts { get; set; } = 5;
+
+    /// <summary>How long detected events are kept for audit ("what would have been notified") before pruning.</summary>
+    public int EventRetentionDays { get; set; } = 30;
+
+    /// <summary>How long sent / failed deliveries are kept as per-user history before pruning.</summary>
+    public int DeliveryRetentionDays { get; set; } = 90;
+
+    /// <summary>The GUI's public base URL (for example <c>https://sqlflow.example.com</c>), used to render "open
+    /// this run" links in messages. When unset, messages carry no links.</summary>
+    public string? GuiBaseUrl { get; set; }
+
+    public EmailNotificationOptions Email { get; set; } = new();
+
+    public SlackNotificationOptions Slack { get; set; } = new();
+
+    /// <summary>Whether the email channel can actually send (a provider is configured).</summary>
+    public bool EmailConfigured => !string.Equals(Email.Provider, EmailNotificationOptions.ProviderNone, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether the Slack channel can actually send (a bot token reference is configured).</summary>
+    public bool SlackConfigured => !string.IsNullOrWhiteSpace(Slack.BotTokenReference);
+
+    public void Validate()
+    {
+        if (PollSeconds < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:PollSeconds must be positive.");
+        }
+
+        if (DetectionOverlapMinutes < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:DetectionOverlapMinutes must be positive.");
+        }
+
+        if (MaxDeliveryAttempts is < 1 or > 10)
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:MaxDeliveryAttempts must be between 1 and 10.");
+        }
+
+        if (EventRetentionDays < 1 || DeliveryRetentionDays < 1)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:EventRetentionDays and DeliveryRetentionDays must be positive.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(GuiBaseUrl)
+            && (!Uri.TryCreate(GuiBaseUrl, UriKind.Absolute, out var gui)
+                || (gui.Scheme != Uri.UriSchemeHttp && gui.Scheme != Uri.UriSchemeHttps)))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:GuiBaseUrl must be an absolute http(s) URL when set.");
+        }
+
+        Email.Validate();
+        Slack.Validate();
+    }
+}
+
+/// <summary>The email channel. <see cref="Provider"/> picks the transport: <c>none</c> (email off, the default),
+/// <c>smtp</c> (any SMTP relay, authenticated or not), or <c>graph</c> (Microsoft Graph <c>sendMail</c> as a
+/// configured mailbox, the Microsoft 365 path that needs no SMTP relay at all).</summary>
+public sealed class EmailNotificationOptions
+{
+    public const string ProviderNone = "none";
+    public const string ProviderSmtp = "smtp";
+    public const string ProviderGraph = "graph";
+
+    public string Provider { get; set; } = ProviderNone;
+
+    /// <summary>The From address for SMTP mail (Graph sends as its <see cref="GraphEmailOptions.SenderId"/>
+    /// mailbox, but this is still used for display defaults). Required whenever a provider is configured.</summary>
+    public string? FromAddress { get; set; }
+
+    /// <summary>The display name shown next to the From address.</summary>
+    public string FromDisplayName { get; set; } = "SQLFlow";
+
+    public SmtpEmailOptions Smtp { get; set; } = new();
+
+    public GraphEmailOptions Graph { get; set; } = new();
+
+    public void Validate()
+    {
+        var provider = Provider?.Trim().ToLowerInvariant();
+        if (provider is not (ProviderNone or ProviderSmtp or ProviderGraph))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:Provider must be one of: none, smtp, graph.");
+        }
+
+        if (provider == ProviderNone)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(FromAddress) || !System.Net.Mail.MailAddress.TryCreate(FromAddress, out _))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:FromAddress must be a valid email address when a provider is configured.");
+        }
+
+        if (provider == ProviderSmtp)
+        {
+            Smtp.Validate();
+        }
+        else
+        {
+            Graph.Validate();
+        }
+    }
+}
+
+/// <summary>An SMTP relay. Credentials are optional (an internal relay often authenticates by network) but must
+/// be given as a pair; both are secret references resolved at send time, so rotation needs no restart.</summary>
+public sealed class SmtpEmailOptions
+{
+    public string? Host { get; set; }
+
+    public int Port { get; set; } = 587;
+
+    /// <summary>The transport security: <c>starttls</c> (default, port 587), <c>ssl</c> (implicit TLS, port 465),
+    /// <c>auto</c> (opportunistic STARTTLS), or <c>none</c> (plain; only for an isolated internal relay).</summary>
+    public string SslMode { get; set; } = "starttls";
+
+    /// <summary>The SMTP username, or a secret reference to it; null for an unauthenticated relay.</summary>
+    public string? UsernameReference { get; set; }
+
+    /// <summary>The SMTP password as a secret reference; required exactly when a username is set.</summary>
+    public string? PasswordReference { get; set; }
+
+    public int TimeoutSeconds { get; set; } = 30;
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Host))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:Smtp:Host is required when the email provider is smtp.");
+        }
+
+        if (Port is < 1 or > 65535)
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:Email:Smtp:Port must be between 1 and 65535.");
+        }
+
+        var mode = SslMode?.Trim().ToLowerInvariant();
+        if (mode is not ("none" or "starttls" or "ssl" or "auto"))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:Smtp:SslMode must be one of: none, starttls, ssl, auto.");
+        }
+
+        if (string.IsNullOrWhiteSpace(UsernameReference) != string.IsNullOrWhiteSpace(PasswordReference))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:Smtp:UsernameReference and PasswordReference must be set together.");
+        }
+
+        if (TimeoutSeconds < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:Email:Smtp:TimeoutSeconds must be positive.");
+        }
+    }
+}
+
+/// <summary>
+/// Microsoft Graph <c>sendMail</c>. The message is sent as the <see cref="SenderId"/> mailbox (the app needs the
+/// application permission <c>Mail.Send</c>, ideally scoped to that mailbox with an application access policy).
+/// Authentication uses the explicit app registration below when all three values are set; otherwise the ambient
+/// SqlFlow Azure credential (managed identity in Azure, the shared <c>SQLFLOW_AZURE_AUTH</c> intent elsewhere).
+/// </summary>
+public sealed class GraphEmailOptions
+{
+    /// <summary>The sending mailbox: a user principal name (<c>alerts@contoso.com</c>) or object id.</summary>
+    public string? SenderId { get; set; }
+
+    public string? TenantId { get; set; }
+
+    public string? ClientId { get; set; }
+
+    /// <summary>The app's client secret as a secret reference; never a literal.</summary>
+    public string? ClientSecretReference { get; set; }
+
+    /// <summary>The Graph endpoint; override only for sovereign clouds.</summary>
+    public string BaseUrl { get; set; } = "https://graph.microsoft.com/v1.0";
+
+    /// <summary>The token scope requested for Graph; must match <see cref="BaseUrl"/>'s cloud.</summary>
+    public string Scope { get; set; } = "https://graph.microsoft.com/.default";
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(SenderId))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:Graph:SenderId (the sending mailbox) is required when the email provider is graph.");
+        }
+
+        var explicitApp = new[] { TenantId, ClientId, ClientSecretReference }.Count(v => !string.IsNullOrWhiteSpace(v));
+        if (explicitApp is not (0 or 3))
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:Email:Graph:TenantId, ClientId, and ClientSecretReference must be set together (or all omitted to use the ambient Azure credential).");
+        }
+
+        if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var baseUri) || baseUri.Scheme != Uri.UriSchemeHttps)
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:Email:Graph:BaseUrl must be an absolute https URL.");
+        }
+
+        if (string.IsNullOrWhiteSpace(Scope))
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:Email:Graph:Scope must not be blank.");
+        }
+    }
+}
+
+/// <summary>The Slack channel: proactive messages posted with a bot token (<c>chat:write</c>; direct messages by
+/// email additionally need <c>users:read.email</c> and <c>im:write</c>). Configured when
+/// <see cref="BotTokenReference"/> is set; the same Slack app the SqlFlow Slack assistant uses works here.</summary>
+public sealed class SlackNotificationOptions
+{
+    /// <summary>The bot token (<c>xoxb-...</c>) as a secret reference; never a literal.</summary>
+    public string? BotTokenReference { get; set; }
+
+    /// <summary>The Slack Web API base; override only for testing.</summary>
+    public string BaseUrl { get; set; } = "https://slack.com/api/";
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(BotTokenReference))
+        {
+            return;
+        }
+
+        if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var baseUri)
+            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new InvalidOperationException("ControlPlane:Notifications:Slack:BaseUrl must be an absolute http(s) URL.");
+        }
+    }
 }

@@ -13,6 +13,7 @@ using SqlFlow.ControlPlane.Api;
 using SqlFlow.ControlPlane.Background;
 using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.ControlPlane.Infrastructure;
+using SqlFlow.ControlPlane.Notifications;
 using SqlFlow.ControlPlane.Security;
 using SqlFlow.Execution;
 using SqlFlow.Node;
@@ -77,6 +78,38 @@ builder.Services.AddHostedService<SchedulerService>();
 // ---- Managed sync: keeps the shadow catalog current from git. A background service pulls each registered repo
 // source's branch tip on its interval and runs the same catalog sync the CLI's `db sync` runs.
 builder.Services.AddHostedService<RepoSyncService>();
+
+// ---- Notifications: detects failed runs (and failed assertions on green runs) and sends opted-in users email
+// and/or Slack messages, immediately (cooldown-coalesced) or as periodic digests. The pipeline is durable and
+// claim-based (events + a delivery outbox in the catalog), so replicas never double-send and a channel outage
+// backs up instead of dropping alerts. Which email transport backs IEmailSender is decided here, once, from
+// configuration; a channel is registered only when it can actually send, and the endpoints report availability so
+// the GUI offers users only what works.
+if (options.Notifications.Enabled)
+{
+    builder.Services.AddHttpClient();
+    if (string.Equals(options.Notifications.Email.Provider, EmailNotificationOptions.ProviderSmtp, StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+    }
+    else if (string.Equals(options.Notifications.Email.Provider, EmailNotificationOptions.ProviderGraph, StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Services.AddSingleton<IEmailSender, GraphEmailSender>();
+    }
+
+    if (options.Notifications.EmailConfigured)
+    {
+        builder.Services.AddSingleton<INotificationChannel, EmailNotificationChannel>();
+    }
+
+    if (options.Notifications.SlackConfigured)
+    {
+        builder.Services.AddSingleton<ISlackApiClient, SlackApiClient>();
+        builder.Services.AddSingleton<INotificationChannel, SlackNotificationChannel>();
+    }
+
+    builder.Services.AddHostedService<NotificationService>();
+}
 
 // ---- Catalog read model: pooled, read-only, transient-retry --------------------------------------------------
 builder.Services.AddDbContextPool<CatalogDbContext>((sp, db) =>
@@ -242,8 +275,10 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapDatasourceReadEndpoints()
     .MapRepoSourceReadEndpoints()
     .MapSummaryEndpoints()
-    // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own).
-    .MapMeEndpoints();
+    // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own)
+    // and their own notification opt-ins.
+    .MapMeEndpoints()
+    .MapNotificationEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.
