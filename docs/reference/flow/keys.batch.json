@@ -113,6 +113,19 @@
       "validation": "Null, empty, or whitespace-only throws FlowValidationException \"<source>: 'name' is required for a batch flow (flowType: batch).\" (YamlDocumentParts.RequireFlowName, YamlDocumentParts.cs:206-208, invoked at YamlBatchFlowLoader.cs:61)."
     },
     {
+      "path": "lifecycle",
+      "type": "string",
+      "required": false,
+      "default": "production",
+      "enumValues": [
+        "production",
+        "development"
+      ],
+      "description": "Deployment lifecycle of the flow: 'production' (the default when absent) or 'development'. A development flow executes, schedules, and records run history exactly like a production one, but it never generates notification events, so a pipeline under active development cannot alert email/Slack subscribers. Parsed case-insensitively by YamlDocumentParts.ParseLifecycle (src/SqlFlow.Yaml/YamlDocumentParts.cs) and projected to CatalogPipeline.Lifecycle on every catalog sync. Accepted on this orchestration document for vocabulary consistency: scm/batch documents never project as catalog pipelines, so the value has no gating effect here today.",
+      "definedIn": "src/SqlFlow.Yaml/YamlBatchFlowLoader.cs:121 (mapped by YamlBatchFlowLoader.Map, src/SqlFlow.Yaml/YamlBatchFlowLoader.cs)",
+      "validation": "Unknown value fails to load: \"<source>: 'lifecycle' has unknown value '<value>'. Allowed: production, development.\" (YamlDocumentParts.ParseLifecycle, src/SqlFlow.Yaml/YamlDocumentParts.cs)"
+    },
+    {
       "path": "onError",
       "type": "enum(stop|continue)",
       "required": false,

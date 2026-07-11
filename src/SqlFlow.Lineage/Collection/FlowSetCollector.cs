@@ -88,7 +88,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = name, Kind = "ing", File = file, Batch = flow.Batch },
+                    Node = new LineageFlowNode { Name = name, Kind = "ing", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
                     SourceServerRef = source,
                     TargetServerRef = target,
                     Schedule = document.Schedule,
@@ -121,7 +121,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "exp", File = file, Batch = flow.Batch },
+                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "exp", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
                     SourceServerRef = source,
                     TargetServerRef = source,
                     Schedule = document.Schedule,
@@ -145,7 +145,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "sp", File = file, Batch = flow.Batch },
+                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "sp", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
                     TargetServerRef = server,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,
@@ -166,7 +166,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "hc", File = file, Batch = flow.Batch, Mode = flow.Mode },
+                    Node = new LineageFlowNode { Name = flow.SysAlias, Kind = "hc", File = file, Batch = flow.Batch, Mode = flow.Mode, Lifecycle = flow.Lifecycle },
                     TargetServerRef = server,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,
@@ -183,7 +183,7 @@ public sealed class FlowSetCollector
 
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = flow.Name, Kind = "file", File = file, Batch = flow.Batch },
+                    Node = new LineageFlowNode { Name = flow.Name, Kind = "file", File = file, Batch = flow.Batch, Lifecycle = flow.Lifecycle },
                     TargetServerRef = target,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,
@@ -229,7 +229,7 @@ public sealed class FlowSetCollector
                 // An invoke triggers external compute; it moves no catalog data itself.
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = doc.Document.Definition.InvokeAlias, Kind = "inv", File = file, Batch = doc.Document.Definition.Batch },
+                    Node = new LineageFlowNode { Name = doc.Document.Definition.InvokeAlias, Kind = "inv", File = file, Batch = doc.Document.Definition.Batch, Lifecycle = doc.Document.Definition.Lifecycle },
                     TargetServerRef = ServerIdentity.FileSystem,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,

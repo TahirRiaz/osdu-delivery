@@ -15,6 +15,19 @@
       "definedIn": "src/SqlFlow.Yaml/StoredProcedureYaml.cs:12 (model: src/SqlFlow.Core/StoredProcedures/StoredProcedureFlow.cs:16)"
     },
     {
+      "path": "lifecycle",
+      "type": "string",
+      "required": false,
+      "default": "production",
+      "enumValues": [
+        "production",
+        "development"
+      ],
+      "description": "Deployment lifecycle of the flow: 'production' (the default when absent) or 'development'. A development flow executes, schedules, and records run history exactly like a production one, but it never generates notification events, so a pipeline under active development cannot alert email/Slack subscribers. Parsed case-insensitively by YamlDocumentParts.ParseLifecycle (src/SqlFlow.Yaml/YamlDocumentParts.cs) and projected to CatalogPipeline.Lifecycle on every catalog sync.",
+      "definedIn": "src/SqlFlow.Yaml/StoredProcedureYaml.cs:13 (mapped by YamlStoredProcedureFlowLoader, src/SqlFlow.Yaml/YamlStoredProcedureFlowLoader.cs)",
+      "validation": "Unknown value fails to load: \"<source>: 'lifecycle' has unknown value '<value>'. Allowed: production, development.\" (YamlDocumentParts.ParseLifecycle, src/SqlFlow.Yaml/YamlDocumentParts.cs)"
+    },
+    {
       "path": "description",
       "type": "string",
       "required": false,

@@ -137,6 +137,15 @@ export default function AppShell() {
             <MenuItem
               onClick={() => {
                 setAccountAnchor(null);
+                navigate("/settings/notifications");
+              }}
+              data-testid="account-notifications"
+            >
+              Notification settings
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setAccountAnchor(null);
                 logout();
               }}
               data-testid="account-logout"

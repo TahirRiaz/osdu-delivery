@@ -67,6 +67,7 @@ public sealed class YamlFlowLoader
         {
             Name = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
+            Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Source = new SourceSpec
             {
                 Type = Required(src.Type, "source.type", source),

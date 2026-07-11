@@ -88,6 +88,18 @@ schedule:
 
 A `schedule:` block carrying neither `cron` nor `intervalSeconds` is treated as absent rather than stored as a broken schedule.
 
+### The lifecycle declaration
+
+Every document kind may carry a top-level `lifecycle:` key with one of two values, parsed case-insensitively by `YamlDocumentParts.ParseLifecycle` (src/SqlFlow.Yaml/YamlDocumentParts.cs):
+
+```yaml
+lifecycle: development   # production (default) | development
+```
+
+`production` (the default when the key is absent) is a live pipeline: when one of its runs fails, is cancelled, is skipped by an upstream failure, or succeeds with failed assertions, the control plane records a notification event and alerts the users who subscribed. `development` marks a pipeline under construction: it executes, schedules, and records run history exactly like a production flow, but it never generates notification events, so iterating on a half-built flow cannot page anyone. Promotion is a one-line change with no behavioral side effects beyond alerting.
+
+The value is projected to `CatalogPipeline.Lifecycle` on every catalog sync and shown by `sqlflow pipeline <id>`. Any other value fails the load: `<file>: 'lifecycle' has unknown value '<x>'. Allowed: production, development.` On the two orchestration kinds (`scm`, `batch`) the key is accepted for vocabulary consistency but has no gating effect, because those documents never project as catalog pipelines.
+
 ### One load path, one executor
 
 `validate` and `run` accept every kind through one load path: `DocumentLoader.Load` (src/SqlFlow.Execution/DocumentLoader.cs) wraps `YamlDocumentLoader` and applies the file-relative fixups and the secret-hygiene check. On `run`, `DocumentExecutor` (src/SqlFlow.Execution/DocumentExecutor.cs) dispatches the seven non-batch kinds to their engines; a batch document goes to the batch orchestrator, whose members run through that same `DocumentExecutor`, so a batch member loads and runs under exactly the same rules as a directly invoked flow. `plan` supports file flows only and rejects everything else with:
@@ -153,6 +165,7 @@ load:
 | --- | --- | --- | --- |
 | `name` | string | yes | Flow name; seeds the deterministic flow identity |
 | `batch` | string | no | Grouping label; blank collapses to null and the flow reports under the catalog's default batch |
+| `lifecycle` | string | no | `production` (default) or `development`; a development flow runs normally but never generates notification events |
 | `source` | map | yes | `type`, `location`, `options`; see the source reference |
 | `target` | map | yes | `connection`, `schema`, `table` (each required) |
 | `schema` | map | no | Evolution policy, default column type, per-column overrides |

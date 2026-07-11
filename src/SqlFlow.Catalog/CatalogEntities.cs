@@ -78,6 +78,19 @@ public static class PipelineExecutionModes
         => mode == Core.Runs.ExecutionMode.Manual ? Manual : Auto;
 }
 
+/// <summary>The catalog spellings of a flow's lifecycle (the YAML <c>lifecycle:</c>), stored as a string so the
+/// column reads plainly in SQL. Mapped from <c>SqlFlow.Core.Runs.FlowLifecycle</c> at sync time.</summary>
+public static class PipelineLifecycles
+{
+    public const string Production = "production";
+
+    public const string Development = "development";
+
+    /// <summary>The stored spelling of a core lifecycle.</summary>
+    public static string From(Core.Runs.FlowLifecycle lifecycle)
+        => lifecycle == Core.Runs.FlowLifecycle.Development ? Development : Production;
+}
+
 public class CatalogPipeline
 {
     /// <summary>The batch label a flow reports under when its YAML declares no <c>batch</c>: every run belongs to
@@ -106,6 +119,11 @@ public class CatalogPipeline
     /// participates in schedules and batch/node group runs; <c>manual</c> (a health-check flow's
     /// <c>mode: manual</c>) is excluded from every automatic dispatch and runs only when triggered directly.</summary>
     public string ExecutionMode { get; set; } = PipelineExecutionModes.Auto;
+
+    /// <summary>The flow's declared lifecycle (see <see cref="PipelineLifecycles"/>): <c>production</c> (the
+    /// default) generates notification events on failure; <c>development</c> runs identically but never alerts,
+    /// so a pipeline being built cannot page its subscribers.</summary>
+    public string Lifecycle { get; set; } = PipelineLifecycles.Production;
 
     /// <summary>The source connection/server reference, for display and grouping; null when not applicable.</summary>
     public string? SourceServer { get; set; }

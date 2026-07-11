@@ -57,6 +57,10 @@ public sealed record HealthCheckFlow
 
     public string? Batch { get; init; }
 
+    /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>, production by default): a development
+    /// flow runs exactly like a production one but never generates notification events.</summary>
+    public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
+
     public required string SysAlias { get; init; }
 
     /// <summary>The connection name the monitored table is read through (legacy trgServer).</summary>

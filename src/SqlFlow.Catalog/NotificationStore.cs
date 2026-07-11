@@ -42,6 +42,11 @@ public static class NotificationStore
     //
     // Runs recorded long after the fact (an old artifact synced in by `db sync` carries its original WrittenUtc)
     // fall outside the window by design: notifications are about what just went wrong, not about history arriving.
+    //
+    // The lifecycle gate: a run whose pipeline declares `lifecycle: development` produces no event at all, so a
+    // flow under active development can fail freely without paging anyone. The gate is deliberately a NOT EXISTS
+    // on a non-production row: a run whose pipeline row is GONE (the flow left the estate after the run was
+    // queued) still alerts, because that failure is real and nobody declared it development.
     private const string DetectSql = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         SET XACT_ABORT ON;
@@ -70,6 +75,9 @@ public static class NotificationStore
             WHERE r.[Status] IN (@statusFailed, @statusCancelled, @statusSkipped)
               AND r.[WrittenUtc] > @low AND r.[WrittenUtc] <= @now
               AND NOT EXISTS (
+                  SELECT 1 FROM [catalog].[Pipeline] AS p
+                  WHERE p.[Id] = r.[PipelineId] AND p.[Lifecycle] <> @lifecycleProduction)
+              AND NOT EXISTS (
                   SELECT 1 FROM [catalog].[NotificationEvent] AS e
                   WHERE e.[RunId] = r.[RunId] AND e.[Kind] <> @kindAssertionFailed);
             SET @runEvents = @@ROWCOUNT;
@@ -88,6 +96,9 @@ public static class NotificationStore
             WHERE r.[Status] = @statusSucceeded
               AND r.[WrittenUtc] > @low AND r.[WrittenUtc] <= @now
               AND EXISTS (SELECT 1 FROM [catalog].[RunAssertion] AS a WHERE a.[RunId] = r.[RunId] AND a.[Evaluated] = 0)
+              AND NOT EXISTS (
+                  SELECT 1 FROM [catalog].[Pipeline] AS p
+                  WHERE p.[Id] = r.[PipelineId] AND p.[Lifecycle] <> @lifecycleProduction)
               AND NOT EXISTS (
                   SELECT 1 FROM [catalog].[NotificationEvent] AS e
                   WHERE e.[RunId] = r.[RunId] AND e.[Kind] = @kindAssertionFailed);
@@ -140,6 +151,7 @@ public static class NotificationStore
                 AddParameter(command, "@kindRunCancelled", NotificationEventKinds.RunCancelled);
                 AddParameter(command, "@kindRunSkipped", NotificationEventKinds.RunSkipped);
                 AddParameter(command, "@kindAssertionFailed", NotificationEventKinds.AssertionFailed);
+                AddParameter(command, "@lifecycleProduction", PipelineLifecycles.Production);
 
                 await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
                 if (!await reader.ReadAsync(ct).ConfigureAwait(false))

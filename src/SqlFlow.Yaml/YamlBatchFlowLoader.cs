@@ -78,6 +78,7 @@ public sealed class YamlBatchFlowLoader
             FlowId = YamlDocumentParts.StableFlowId(name),
             SysAlias = name,
             Description = YamlDocumentParts.NullIfBlank(y.Description),
+            Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Include = include,
             Exclude = Clean(y.Members?.Exclude),
             Inactive = Clean(y.Members?.Inactive),
@@ -117,6 +118,7 @@ public sealed class YamlBatchFlowLoader
         public string? FlowType { get; set; }
         public string? Name { get; set; }
         public string? Description { get; set; }
+        public string? Lifecycle { get; set; }
         public BatchMembersYaml? Members { get; set; }
         public string? OnError { get; set; }
         public List<string>? IgnoreErrors { get; set; }

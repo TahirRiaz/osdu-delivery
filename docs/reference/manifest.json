@@ -97,6 +97,37 @@
       ]
     },
     {
+      "id": "cli-control-plane",
+      "path": "cli/control-plane.md",
+      "title": "sqlflow control-plane verbs",
+      "type": "cli-command",
+      "summary": "The remote verb family over the control plane's /api/v1 surface, everything the GUI can do from a terminal, plus whoami, doctor, local run history, and shell...",
+      "keywords": [
+        "control plane",
+        "login",
+        "trigger",
+        "runs",
+        "groups",
+        "schedules",
+        "repos",
+        "pipelines",
+        "datasources",
+        "search",
+        "lineage",
+        "whoami",
+        "doctor",
+        "completions"
+      ],
+      "cliCommand": "control-plane",
+      "related": [
+        "cli-run",
+        "cli-validate",
+        "cli-db",
+        "cli-worker"
+      ],
+      "sourceRefs": []
+    },
+    {
       "id": "cli-db",
       "path": "cli/db.md",
       "title": "sqlflow db: migrate, sync, status",
@@ -134,10 +165,11 @@
       "path": "cli/detect-unique-key.md",
       "title": "sqlflow detect-unique-key",
       "type": "cli-command",
-      "summary": "Discover the minimal column set(s) that uniquely identify a table's rows via T-SQL profiling, with sampling and whole-table verification.",
+      "summary": "Discover the minimal column set(s) that uniquely identify a table's rows, answering from declared keys in metadata when possible, else via T-SQL profiling wi...",
       "keywords": [
         "unique key",
         "key detection",
+        "declared keys",
         "profiling",
         "sampling",
         "composite keys",
@@ -2042,6 +2074,10 @@
         "deploy/k8s/ingress.yaml",
         "deploy/k8s/secrets.example.yaml",
         "deploy/bicep/control-plane.bicep",
+        "deploy/bicep/worker.bicep",
+        "deploy/bicep/gui.bicep",
+        "deploy/bicep/ai-foundry.bicep",
+        "deploy/bicep/main.bicep",
         "deploy/adf/SqlFlowTriggerFlow.pipeline.json",
         "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs",
         "src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs",
@@ -2230,6 +2266,38 @@
         "samples/lineage-demo/sql/usp_BuildOrderFact.sql",
         "samples/lineage-demo/sql/usp_BuildRollups.sql",
         "src/SqlFlow.Cli/Program.cs"
+      ]
+    },
+    {
+      "id": "guide-notifications",
+      "path": "guides/notifications.md",
+      "title": "Failure notifications: email and Slack alerts with digest and anti-spam controls",
+      "type": "guide",
+      "summary": "Opt-in email (SMTP or Microsoft Graph) and Slack alerts for failed runs and assertions, immediate or digest, with anti-spam coalescing and lifecycle gating.",
+      "keywords": [
+        "notifications",
+        "alerts",
+        "email",
+        "smtp",
+        "microsoft graph",
+        "slack",
+        "digest",
+        "subscriptions",
+        "lifecycle",
+        "anti-spam"
+      ],
+      "related": [
+        "flow-overview",
+        "guide-deployment",
+        "concept-connections-and-secrets"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.ControlPlane/Background/NotificationService.cs",
+        "src/SqlFlow.ControlPlane/Notifications/NotificationComposer.cs",
+        "src/SqlFlow.ControlPlane/Api/NotificationEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs",
+        "src/SqlFlow.Catalog/NotificationStore.cs",
+        "src/SqlFlow.Catalog/CatalogEntities.cs"
       ]
     },
     {

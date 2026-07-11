@@ -874,3 +874,94 @@ export interface UniqueKeyReport {
   excludedColumns: { column: string; reason: string }[];
   note: string | null;
 }
+
+// ---- Notifications (self-service: the caller's own subscriptions) ------------------------------------------------
+
+/** Whether one delivery channel is usable on this deployment, and which configured provider backs it. */
+export interface NotificationChannelAvailability {
+  available: boolean;
+  /** The configured provider name (for example "smtp" or "slack"); null when the channel is not configured. */
+  provider: string | null;
+}
+
+/** The deployment's notification capabilities plus the defaults a new subscription starts from. */
+export interface MyNotificationOptions {
+  enabled: boolean;
+  email: NotificationChannelAvailability;
+  slack: NotificationChannelAvailability;
+  /** Every event kind a subscription can select (for example "run_failed"). */
+  kinds: string[];
+  /** The kinds preselected for a new subscription. */
+  defaultKinds: string[];
+  modes: string[];
+  /** The account email used when a subscription carries no explicit address; null when the account has none. */
+  userEmail: string | null;
+  defaultDigestIntervalMinutes: number;
+  defaultCooldownMinutes: number;
+}
+
+export interface NotificationSubscription {
+  id: string;
+  channel: "email" | "slack";
+  mode: "immediate" | "digest";
+  kinds: string[];
+  /** Wildcard filter over flow names; null means the subscription covers all flows. */
+  flowPattern: string | null;
+  /** Null means messages go to the account email. */
+  emailAddress: string | null;
+  /** Null means the user is direct-messaged. */
+  slackTarget: string | null;
+  digestIntervalMinutes: number;
+  cooldownMinutes: number;
+  enabled: boolean;
+  lastSentUtc: string | null;
+  /** When the next digest is due; null for immediate subscriptions or when nothing is pending. */
+  nextDueUtc: string | null;
+  createdUtc: string;
+  updatedUtc: string;
+}
+
+export interface CreateNotificationSubscriptionRequest {
+  channel: "email" | "slack";
+  mode?: "immediate" | "digest";
+  /** Omit to start from the server's default kinds. */
+  kinds?: string[];
+  flowPattern?: string | null;
+  emailAddress?: string | null;
+  slackTarget?: string | null;
+  digestIntervalMinutes?: number;
+  cooldownMinutes?: number;
+}
+
+/** Partial update: null/omitted keeps the current value; an empty string clears flowPattern/emailAddress/slackTarget. */
+export interface UpdateNotificationSubscriptionRequest {
+  mode?: "immediate" | "digest";
+  kinds?: string[];
+  flowPattern?: string | null;
+  emailAddress?: string | null;
+  slackTarget?: string | null;
+  digestIntervalMinutes?: number;
+  cooldownMinutes?: number;
+  enabled?: boolean;
+}
+
+/** One outbound message, tracked from queueing through delivery. */
+export interface NotificationDelivery {
+  id: string;
+  subscriptionId: string;
+  channel: "email" | "slack";
+  target: string;
+  subject: string;
+  status: "queued" | "sending" | "sent" | "failed";
+  attempts: number;
+  /** How many notification events the message carries (a digest bundles several). */
+  eventCount: number;
+  lastError: string | null;
+  createdUtc: string;
+  sentUtc: string | null;
+}
+
+/** The accepted test send: the delivery to watch for in the recent-deliveries list. */
+export interface NotificationTestSend {
+  deliveryId: string;
+}

@@ -15,6 +15,10 @@ public sealed record ExportFlow
 
     public string? Batch { get; init; }                       // Batch
 
+    /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>, production by default): a development
+    /// flow runs exactly like a production one but never generates notification events.</summary>
+    public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
+
     public required string SysAlias { get; init; }            // SysAlias (mandatory)
 
     /// <summary>The flw.SysDataSource alias of the source server (legacy srcServer).</summary>

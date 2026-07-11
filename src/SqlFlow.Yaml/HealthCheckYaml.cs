@@ -10,6 +10,7 @@ internal sealed class HealthCheckYaml
     public string? Name { get; set; }
     public string? Description { get; set; }
     public string? Batch { get; set; }
+    public string? Lifecycle { get; set; }
 
     /// <summary>auto (default) lets schedules and batch/node group runs execute the check; manual reserves it
     /// for a direct trigger (the GUI's run button, a single-flow API trigger, or a direct CLI run).</summary>

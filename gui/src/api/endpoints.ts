@@ -1,18 +1,20 @@
 // Thin, typed wrappers over the control plane's /api/v1 surface: one function per endpoint, nothing else.
 // Auth, error shaping, and rate-limit handling live in client.ts; pages compose these with TanStack Query.
 
-import { del, get, getAnonymous, getText, post, postAnonymous, streamSse, type QueryParams, type SseFrame } from "./client";
+import { del, get, getAnonymous, getText, post, postAnonymous, put, streamSse, type QueryParams, type SseFrame } from "./client";
 import type {
   AccessToken, AllSearchResult, AuthProviders, ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
-  ComputeTaskSummary, CreateAccessTokenRequest, CreateScheduleRequest, CreatedAccessToken,
+  ComputeTaskSummary, CreateAccessTokenRequest, CreateNotificationSubscriptionRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
-  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, Node, NodeScript, ObjectHit, ObjectRepo, PagedResult,
+  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, MyNotificationOptions, Node, NodeScript,
+  NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
-  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse, User, Wave,
+  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SessionResponse, TokenResponse,
+  UpdateNotificationSubscriptionRequest, User, Wave,
 } from "./types";
 
 export interface PageQuery {
@@ -278,4 +280,18 @@ export const tokenApi = {
   list: () => get<AccessToken[]>("/api/v1/me/tokens"),
   create: (request: CreateAccessTokenRequest) => post<CreatedAccessToken>("/api/v1/me/tokens", request),
   revoke: (id: string) => del<void>(`/api/v1/me/tokens/${id}`),
+};
+
+// ---- Notifications (self-service: the caller's own subscriptions and deliveries) ---------------------------------
+
+export const notificationApi = {
+  options: () => get<MyNotificationOptions>("/api/v1/me/notifications/options"),
+  listSubscriptions: () => get<NotificationSubscription[]>("/api/v1/me/notifications/subscriptions"),
+  createSubscription: (request: CreateNotificationSubscriptionRequest) =>
+    post<NotificationSubscription>("/api/v1/me/notifications/subscriptions", request),
+  updateSubscription: (id: string, request: UpdateNotificationSubscriptionRequest) =>
+    put<NotificationSubscription>(`/api/v1/me/notifications/subscriptions/${id}`, request),
+  deleteSubscription: (id: string) => del<void>(`/api/v1/me/notifications/subscriptions/${id}`),
+  testSubscription: (id: string) => post<NotificationTestSend>(`/api/v1/me/notifications/subscriptions/${id}/test`),
+  listDeliveries: (take = 50) => get<NotificationDelivery[]>("/api/v1/me/notifications/deliveries", { take }),
 };

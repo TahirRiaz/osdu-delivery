@@ -9,6 +9,7 @@ internal sealed class IngestionYaml
     public string? FlowType { get; set; }
     public string? Name { get; set; }
     public string? Batch { get; set; }
+    public string? Lifecycle { get; set; }
     public string? Description { get; set; }
 
     /// <summary>Each value is either a plain string (a SQL Server connection reference, the back-compatible

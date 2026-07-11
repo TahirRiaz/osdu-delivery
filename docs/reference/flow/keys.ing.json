@@ -437,6 +437,19 @@
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:10 (mapped: src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:100,149-150; model: src/SqlFlow.Core/Ingestion/IngestionFlow.cs:49,52; StableFlowId: src/SqlFlow.Yaml/YamlDocumentParts.cs:212-213)"
     },
     {
+      "path": "lifecycle",
+      "type": "string",
+      "required": false,
+      "default": "production",
+      "enumValues": [
+        "production",
+        "development"
+      ],
+      "description": "Deployment lifecycle of the flow: 'production' (the default when absent) or 'development'. A development flow executes, schedules, and records run history exactly like a production one, but it never generates notification events, so a pipeline under active development cannot alert email/Slack subscribers. Parsed case-insensitively by YamlDocumentParts.ParseLifecycle (src/SqlFlow.Yaml/YamlDocumentParts.cs) and projected to CatalogPipeline.Lifecycle on every catalog sync.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:12 (mapped by YamlIngestionFlowLoader, src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs)",
+      "validation": "Unknown value fails to load: \"<source>: 'lifecycle' has unknown value '<value>'. Allowed: production, development.\" (YamlDocumentParts.ParseLifecycle, src/SqlFlow.Yaml/YamlDocumentParts.cs)"
+    },
+    {
       "path": "schema",
       "type": "object",
       "required": false,

@@ -104,6 +104,7 @@ public sealed class YamlExportFlowLoader
             FlowId = YamlDocumentParts.StableFlowId(name),
             SysAlias = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
+            Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             SrcServer = sourceServer,
             Source = sourceObject,
             SrcFilter = NormalizeFilter(sourceYaml.Filter, source),

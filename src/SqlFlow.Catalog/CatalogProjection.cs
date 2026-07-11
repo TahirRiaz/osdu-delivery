@@ -21,7 +21,8 @@ public static class CatalogProjection
     public static CatalogPipeline Pipeline(
         Guid repoId, string name, string kind, string? batch, string relativePath,
         string? sourceServer, string? targetServer, string contentHash, string yaml, string definitionJson, DateTime nowUtc,
-        Core.Runs.ExecutionMode executionMode = Core.Runs.ExecutionMode.Auto)
+        Core.Runs.ExecutionMode executionMode = Core.Runs.ExecutionMode.Auto,
+        Core.Runs.FlowLifecycle lifecycle = Core.Runs.FlowLifecycle.Production)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         return new CatalogPipeline
@@ -33,6 +34,7 @@ public static class CatalogProjection
             Batch = NullIfBlank(batch),
             RelativePath = relativePath ?? string.Empty,
             ExecutionMode = PipelineExecutionModes.From(executionMode),
+            Lifecycle = PipelineLifecycles.From(lifecycle),
             SourceServer = NullIfBlank(sourceServer),
             TargetServer = NullIfBlank(targetServer),
             ContentHash = contentHash ?? string.Empty,

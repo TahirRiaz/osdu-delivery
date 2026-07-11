@@ -25,6 +25,19 @@ internal static class YamlDocumentParts
                 $"{source}: '{property}' has unknown value '{value}'. Allowed: auto, manual."),
         };
 
+    /// <summary>Parses a <c>lifecycle:</c> value (production | development; blank/absent is production). One
+    /// vocabulary for every document kind: a flow under active development declares <c>lifecycle: development</c>
+    /// and stops generating notification events, while execution itself is unaffected. Production is the default
+    /// so an existing estate (which declares nothing) keeps alerting exactly as before.</summary>
+    public static FlowLifecycle ParseLifecycle(string? value, string source)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "production" => FlowLifecycle.Production,
+            "development" => FlowLifecycle.Development,
+            _ => throw new FlowValidationException(
+                $"{source}: 'lifecycle' has unknown value '{value}'. Allowed: production, development."),
+        };
+
     /// <summary>Maps the document's <c>connections:</c> block. Each value is either a plain string (SQL Server,
     /// the back-compatible form), a map with 'provider' and 'connection' keys, or NOTHING: a bare alias
     /// resolves <c>${env:SQLFLOW_CONN_&lt;NAME&gt;}</c> by the canonical convention, so an enterprise document

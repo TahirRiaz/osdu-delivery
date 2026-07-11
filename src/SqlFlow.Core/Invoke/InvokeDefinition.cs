@@ -17,6 +17,10 @@ public sealed record InvokeDefinition
 
     public string? Batch { get; init; }                          // Batch
 
+    /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>, production by default): a development
+    /// flow runs exactly like a production one but never generates notification events.</summary>
+    public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
+
     public string? SysAlias { get; init; }                       // SysAlias
 
     /// <summary>The unique alias of this invoke flow (legacy InvokeAlias, NOT NULL + UNIQUE). Pre/PostInvokeAlias

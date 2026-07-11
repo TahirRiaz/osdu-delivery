@@ -16,6 +16,10 @@ public sealed record SourceControlFlow
     /// <summary>The flow name (legacy SysAlias); the snapshot's identity and run-history folder.</summary>
     public required string SysAlias { get; init; }
 
+    /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>, production by default): a development
+    /// flow runs exactly like a production one but never generates notification events.</summary>
+    public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
+
     public string? Description { get; init; }
 
     /// <summary>The name of the connection (declared under <c>connections:</c>) for the database to script.</summary>

@@ -7,6 +7,7 @@ internal sealed class FlowYaml
 {
     public string? Name { get; set; }
     public string? Batch { get; set; }
+    public string? Lifecycle { get; set; }
     public SourceYaml? Source { get; set; }
     public TargetYaml? Target { get; set; }
     public SchemaYaml? Schema { get; set; }

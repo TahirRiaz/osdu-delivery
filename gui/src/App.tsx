@@ -24,6 +24,7 @@ const LineageGraphPage = lazy(() => import("./features/lineage/LineageGraphPage"
 const SearchPage = lazy(() => import("./features/search/SearchPage"));
 const UsersPage = lazy(() => import("./features/users/UsersPage"));
 const AccessTokensPage = lazy(() => import("./features/tokens/AccessTokensPage"));
+const NotificationsPage = lazy(() => import("./features/notifications/NotificationsPage"));
 
 /** The graph moved from /lineage/graph to /lineage; forward old links, preserving the repo/view query string. */
 function LineageGraphRedirect() {
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="/search" element={<SearchPage />} />
           {/* Self-service and available to any authenticated user; no scope guard beyond RequireAuth. */}
           <Route path="/settings/tokens" element={<AccessTokensPage />} />
+          <Route path="/settings/notifications" element={<NotificationsPage />} />
           <Route
             path="/users"
             element={(

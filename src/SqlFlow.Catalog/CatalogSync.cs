@@ -463,7 +463,7 @@ public sealed class CatalogSync
             var projected = CatalogProjection.Pipeline(
                 repoId, flow.Node.Name, flow.Node.Kind, flow.Node.Batch, Normalize(flow.Node.File),
                 flow.SourceServerRef, flow.TargetServerRef, prepared.ContentHash, prepared.Yaml, prepared.DefinitionJson, nowUtc,
-                flow.Node.Mode);
+                flow.Node.Mode, flow.Node.Lifecycle);
 
             if (row is not null)
             {
@@ -472,6 +472,7 @@ public sealed class CatalogSync
                 row.Batch = projected.Batch;
                 row.RelativePath = projected.RelativePath;
                 row.ExecutionMode = projected.ExecutionMode;
+                row.Lifecycle = projected.Lifecycle;
                 row.SourceServer = projected.SourceServer;
                 row.TargetServer = projected.TargetServer;
                 row.ContentHash = projected.ContentHash;
@@ -904,7 +905,7 @@ public sealed class CatalogSync
         var projected = CatalogProjection.Pipeline(
             repoId, header.Name, header.Kind, header.Batch, Normalize(relativePath),
             header.SourceServer, header.TargetServer, hash, yaml, definitionJson, nowUtc,
-            header.Mode);
+            header.Mode, header.Lifecycle);
 
         if (row is not null)
         {
@@ -913,6 +914,7 @@ public sealed class CatalogSync
             row.Batch = projected.Batch;
             row.RelativePath = projected.RelativePath;
             row.ExecutionMode = projected.ExecutionMode;
+            row.Lifecycle = projected.Lifecycle;
             row.SourceServer = projected.SourceServer;
             row.TargetServer = projected.TargetServer;
             row.ContentHash = projected.ContentHash;
@@ -931,7 +933,8 @@ public sealed class CatalogSync
     /// document itself, shaped exactly like the estate scan's flow nodes.</summary>
     private sealed record FlowHeader(
         string Name, string Kind, string? Batch, string? SourceServer, string? TargetServer,
-        Core.Runs.ExecutionMode Mode = Core.Runs.ExecutionMode.Auto);
+        Core.Runs.ExecutionMode Mode = Core.Runs.ExecutionMode.Auto,
+        Core.Runs.FlowLifecycle Lifecycle = Core.Runs.FlowLifecycle.Production);
 
     /// <summary>Projects one already-loaded document into its pipeline header, mirroring how
     /// <see cref="FlowSetCollector"/> shapes each kind's flow node (name, kind, batch, server identities), so the
@@ -947,7 +950,8 @@ public sealed class CatalogSync
                 var refs = ConnectionRefs(doc.Document.Connections);
                 return new FlowHeader(
                     flow.SysAlias ?? flow.Target.Table.Name, "ing", flow.Batch,
-                    ServerIdentity.From(refs[flow.Source.Server]), ServerIdentity.From(refs[flow.Target.Server]));
+                    ServerIdentity.From(refs[flow.Source.Server]), ServerIdentity.From(refs[flow.Target.Server]),
+                    Lifecycle: flow.Lifecycle);
             }
 
             case ExportFlowDocument doc:
@@ -955,30 +959,36 @@ public sealed class CatalogSync
                 var flow = doc.Document.Flow;
                 var refs = ConnectionRefs(doc.Document.Connections);
                 var server = ServerIdentity.From(refs[flow.SrcServer]);
-                return new FlowHeader(flow.SysAlias, "exp", flow.Batch, server, server);
+                return new FlowHeader(flow.SysAlias, "exp", flow.Batch, server, server, Lifecycle: flow.Lifecycle);
             }
 
             case StoredProcedureFlowDocument doc:
             {
                 var flow = doc.Document.Flow;
                 var refs = ConnectionRefs(doc.Document.Connections);
-                return new FlowHeader(flow.SysAlias, "sp", flow.Batch, null, ServerIdentity.From(refs[flow.Server]));
+                return new FlowHeader(
+                    flow.SysAlias, "sp", flow.Batch, null, ServerIdentity.From(refs[flow.Server]),
+                    Lifecycle: flow.Lifecycle);
             }
 
             case HealthCheckFlowDocument doc:
             {
                 var flow = doc.Document.Flow;
                 var refs = ConnectionRefs(doc.Document.Connections);
-                return new FlowHeader(flow.SysAlias, "hc", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), flow.Mode);
+                return new FlowHeader(
+                    flow.SysAlias, "hc", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), flow.Mode,
+                    flow.Lifecycle);
             }
 
             case FileFlowDocument doc:
                 return new FlowHeader(
-                    doc.Flow.Name, "file", doc.Flow.Batch, null, ServerIdentity.From(doc.Flow.Target.Connection));
+                    doc.Flow.Name, "file", doc.Flow.Batch, null, ServerIdentity.From(doc.Flow.Target.Connection),
+                    Lifecycle: doc.Flow.Lifecycle);
 
             case InvokeFlowDocument doc:
                 return new FlowHeader(
-                    doc.Document.Definition.InvokeAlias, "inv", doc.Document.Definition.Batch, null, ServerIdentity.FileSystem);
+                    doc.Document.Definition.InvokeAlias, "inv", doc.Document.Definition.Batch, null,
+                    ServerIdentity.FileSystem, Lifecycle: doc.Document.Definition.Lifecycle);
 
             default:
                 // scm/batch (and any future orchestration kind): they move no catalog data and never become

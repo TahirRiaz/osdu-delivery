@@ -91,6 +91,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(p => p.Kind).HasMaxLength(16).IsRequired();
             entity.Property(p => p.Batch).HasMaxLength(250);
             entity.Property(p => p.ExecutionMode).HasMaxLength(16).IsRequired();
+            entity.Property(p => p.Lifecycle).HasMaxLength(16).IsRequired();
             entity.Property(p => p.RelativePath).HasMaxLength(1024).IsRequired();
             entity.Property(p => p.SourceServer).HasMaxLength(512);
             entity.Property(p => p.TargetServer).HasMaxLength(512);

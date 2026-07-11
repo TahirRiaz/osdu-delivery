@@ -80,6 +80,7 @@ public sealed class YamlInvokeFlowLoader
             {
                 SysAlias = name,
                 Batch = YamlDocumentParts.NullIfBlank(y.Batch),
+                Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
                 OnErrorResume = y.OnErrorResume ?? invokeYaml.OnErrorResume ?? true,
             },
             ServicePrincipals = servicePrincipals.Values.ToList(),

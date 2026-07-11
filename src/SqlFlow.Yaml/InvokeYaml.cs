@@ -9,6 +9,7 @@ internal sealed class InvokeDocumentYaml
     public string? FlowType { get; set; }
     public string? Name { get; set; }
     public string? Batch { get; set; }
+    public string? Lifecycle { get; set; }
     public Dictionary<string, ServicePrincipalYaml>? ServicePrincipals { get; set; }
     public InvokeBlockYaml? Invoke { get; set; }
     public bool? OnErrorResume { get; set; }

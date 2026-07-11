@@ -514,7 +514,7 @@ internal static partial class RemoteVerbs
 
                     Console.WriteLine($"pipeline {pipeline.Id}: {pipeline.Name} ({pipeline.Kind}){(pipeline.Active ? string.Empty : "  INACTIVE")}");
                     Console.WriteLine($"  repo:    {pipeline.RepoId}  path {pipeline.RelativePath}");
-                    Console.WriteLine($"  batch:   {pipeline.Batch ?? "-"}  wave {pipeline.Wave}  mode {pipeline.ExecutionMode}");
+                    Console.WriteLine($"  batch:   {pipeline.Batch ?? "-"}  wave {pipeline.Wave}  mode {pipeline.ExecutionMode}  lifecycle {pipeline.Lifecycle}");
                     Console.WriteLine($"  servers: {pipeline.SourceServer ?? "-"} -> {pipeline.TargetServer ?? "-"}");
                     Console.WriteLine($"  seen:    {pipeline.FirstSeenUtc:yyyy-MM-dd} .. {pipeline.LastSeenUtc:yyyy-MM-dd}  hash {pipeline.ContentHash[..12]}");
                     Console.WriteLine("  (print the document: --yaml or --definition)");

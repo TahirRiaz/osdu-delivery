@@ -155,6 +155,7 @@ public sealed class YamlHealthCheckFlowLoader
             FlowId = YamlDocumentParts.StableFlowId(name),
             SysAlias = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
+            Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Server = server,
             Target = YamlDocumentParts.ParseQualifiedObject(rawObject, "target.object", source),
             DateColumn = dateColumn,

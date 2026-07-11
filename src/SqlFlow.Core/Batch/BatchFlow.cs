@@ -43,6 +43,10 @@ public sealed record BatchFlow
 
     public required string SysAlias { get; init; }
 
+    /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>, production by default): a development
+    /// flow runs exactly like a production one but never generates notification events.</summary>
+    public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
+
     public string? Description { get; init; }
 
     /// <summary>Globs (relative to the batch document's directory) selecting member flow files. A member that is

@@ -102,6 +102,7 @@ public sealed class YamlStoredProcedureFlowLoader
             FlowId = YamlDocumentParts.StableFlowId(name),
             SysAlias = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
+            Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Server = server,
             Procedure = YamlDocumentParts.ParseQualifiedObject(raw, "procedure.object", source),
             OnErrorResume = y.OnErrorResume ?? true,

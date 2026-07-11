@@ -61,6 +61,10 @@ public sealed record LineageFlowNode
     /// Manual flows are excluded from automatic dispatch (local batch membership, control-plane group
     /// expansion, the scheduler); a direct single-flow trigger runs them regardless.</summary>
     public Runs.ExecutionMode Mode { get; init; } = Runs.ExecutionMode.Auto;
+
+    /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>): only production pipelines generate
+    /// notification events. Execution is unaffected either way.</summary>
+    public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
 }
 
 /// <summary>One catalog or file object participating in the graph. The key is the canonical node identity:

@@ -88,6 +88,7 @@ public sealed class YamlSourceControlFlowLoader
             FlowId = YamlDocumentParts.StableFlowId(name),
             SysAlias = name,
             Description = YamlDocumentParts.NullIfBlank(y.Description),
+            Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Server = server,
             Database = YamlDocumentParts.NullIfBlank(sourceYaml.Database),
             Repository = repository,
@@ -282,6 +283,7 @@ public sealed class YamlSourceControlFlowLoader
         public string? FlowType { get; set; }
         public string? Name { get; set; }
         public string? Description { get; set; }
+        public string? Lifecycle { get; set; }
         public Dictionary<string, object>? Connections { get; set; }
         public SourceControlSourceYaml? Source { get; set; }
         public SourceControlRepositoryYaml? Repository { get; set; }

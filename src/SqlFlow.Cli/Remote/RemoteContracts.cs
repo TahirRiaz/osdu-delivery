@@ -190,16 +190,19 @@ internal sealed record RepoSyncResultDto(
     int Objects, int Columns, int Edges, int Waves, int Dependencies,
     bool Connected, IReadOnlyList<string> Warnings);
 
-/// <summary>A pipeline as the registry lists it.</summary>
+/// <summary>A pipeline as the registry lists it. <c>Lifecycle</c> defaults to production when the server
+/// predates the field, so the CLI renders sensibly against an older control plane.</summary>
 internal sealed record PipelineSummaryDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
-    string? SourceServer, string? TargetServer, string RelativePath, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+    string? SourceServer, string? TargetServer, string RelativePath, DateTime FirstSeenUtc, DateTime LastSeenUtc,
+    string Lifecycle = "production");
 
 /// <summary>A single pipeline with its full (secret-redacted) definition.</summary>
 internal sealed record PipelineDetailDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
     string? SourceServer, string? TargetServer, string RelativePath, string ContentHash,
-    string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+    string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc,
+    string Lifecycle = "production");
 
 /// <summary>One declared or detected column of a pipeline.</summary>
 internal sealed record PipelineColumnDto(

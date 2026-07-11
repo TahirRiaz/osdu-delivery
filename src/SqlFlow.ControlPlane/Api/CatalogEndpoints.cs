@@ -169,7 +169,7 @@ public static class CatalogEndpoints
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
             .Select(x => new PipelineSummaryDto(
-                x.Id, x.RepoId, x.Name, x.Kind, x.Batch, x.Wave, x.Active, x.ExecutionMode,
+                x.Id, x.RepoId, x.Name, x.Kind, x.Batch, x.Wave, x.Active, x.ExecutionMode, x.Lifecycle,
                 x.SourceServer, x.TargetServer, x.RelativePath, x.FirstSeenUtc, x.LastSeenUtc))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<PipelineSummaryDto>(items, p, size, total));
@@ -180,7 +180,7 @@ public static class CatalogEndpoints
     {
         var dto = await db.Pipelines.AsNoTracking().Where(x => x.Id == id)
             .Select(x => new PipelineDetailDto(
-                x.Id, x.RepoId, x.Name, x.Kind, x.Batch, x.Wave, x.Active, x.ExecutionMode,
+                x.Id, x.RepoId, x.Name, x.Kind, x.Batch, x.Wave, x.Active, x.ExecutionMode, x.Lifecycle,
                 x.SourceServer, x.TargetServer, x.RelativePath, x.ContentHash,
                 x.Yaml, x.DefinitionJson, x.FirstSeenUtc, x.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
