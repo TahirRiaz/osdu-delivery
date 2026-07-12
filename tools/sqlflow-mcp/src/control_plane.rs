@@ -12,6 +12,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::RwLock;
 
+tokio::task_local! {
+    /// The bearer token of the inbound request when the MCP server runs over HTTP.
+    /// The HTTP dispatch (`SqlFlowMcp::call_tool`) scopes it around each tool call, so
+    /// every control-plane request runs as the connecting caller; it is never set over
+    /// stdio. While present it is the only credential used: the locally stored token
+    /// and its rotation logic are bypassed, because the caller's token is not ours to
+    /// cache or rotate.
+    pub static HTTP_BEARER: String;
+}
+
 /// The device-authorization response returned by `POST /api/v1/auth/device`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceAuth {
@@ -332,12 +342,21 @@ impl ControlPlane {
 
     // --- Generic verbs -----------------------------------------------------
 
+    /// The credential for one authenticated request: the inbound HTTP caller's bearer
+    /// when serving over HTTP (no local rotation applies to a token we do not own),
+    /// otherwise the stored stdio-mode token, rotated first if it is due.
+    async fn acquire_bearer(&self) -> Result<String> {
+        if let Ok(token) = HTTP_BEARER.try_with(|t| t.clone()) {
+            return Ok(token);
+        }
+        self.ensure_fresh().await;
+        self.bearer()
+            .ok_or_else(|| anyhow!("not authenticated: run the `login` tool or set an access token"))
+    }
+
     /// Authenticated `GET` returning parsed JSON.
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
-        self.ensure_fresh().await;
-        let bearer = self
-            .bearer()
-            .ok_or_else(|| anyhow!("not authenticated: run the `login` tool or set an access token"))?;
+        let bearer = self.acquire_bearer().await?;
         let mut req = self.http.get(self.url(path)).bearer_auth(bearer);
         let filtered: Vec<&(&str, String)> = query.iter().filter(|(_, v)| !v.is_empty()).collect();
         if !filtered.is_empty() {
@@ -349,10 +368,7 @@ impl ControlPlane {
 
     /// Authenticated `POST` returning parsed JSON (empty body → JSON null).
     pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
-        self.ensure_fresh().await;
-        let bearer = self
-            .bearer()
-            .ok_or_else(|| anyhow!("not authenticated: run the `login` tool or set an access token"))?;
+        let bearer = self.acquire_bearer().await?;
         let resp = self
             .http
             .post(self.url(path))
@@ -367,7 +383,7 @@ impl ControlPlane {
     async fn read_json(&self, resp: reqwest::Response, path: &str) -> Result<Value> {
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            bail!("control plane rejected the token (401); re-run `login`");
+            bail!("control plane rejected the token (401): the credential is invalid or expired");
         }
         if status == reqwest::StatusCode::FORBIDDEN {
             bail!("insufficient scope for {path} (403); this action needs a higher-privileged token");

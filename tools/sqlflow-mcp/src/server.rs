@@ -25,21 +25,44 @@ use sqlflow_lang::census::Census;
 pub struct SqlFlowMcp {
     docs: Arc<DocsIndex>,
     cp: Arc<ControlPlane>,
-    // Read by the #[tool_handler] macro-generated dispatch; not visible to the
-    // dead-code analyzer.
-    #[allow(dead_code)]
+    /// True when serving over HTTP: every request carries the caller's own bearer
+    /// (scoped around dispatch in `call_tool`), so the server-side sign-in tools are
+    /// inert, the control-plane URL is operator-fixed, and tools that read files on
+    /// the server host are disabled.
+    http_mode: bool,
     tool_router: ToolRouter<Self>,
 }
 
 impl SqlFlowMcp {
+    /// A stdio-mode server: credentials are managed locally (device flow / pasted
+    /// token) and host-local tools are available.
     pub fn new(docs: Arc<DocsIndex>, cp: Arc<ControlPlane>) -> Self {
+        Self::with_mode(docs, cp, false)
+    }
+
+    /// An HTTP-mode server instance, created per session by the HTTP transport.
+    pub fn new_http(docs: Arc<DocsIndex>, cp: Arc<ControlPlane>) -> Self {
+        Self::with_mode(docs, cp, true)
+    }
+
+    fn with_mode(docs: Arc<DocsIndex>, cp: Arc<ControlPlane>, http_mode: bool) -> Self {
         SqlFlowMcp {
             docs,
             cp,
+            http_mode,
             tool_router: Self::tool_router(),
         }
     }
 }
+
+/// Replies for tools that do not apply when serving over HTTP.
+const HTTP_MODE_AUTH_NOTE: &str = "Not applicable over HTTP: this server authenticates every \
+request with the Authorization bearer supplied by the connecting client, so there is no \
+server-side sign-in to start, poll, store, or clear.";
+const HTTP_MODE_URL_NOTE: &str = "Not applicable over HTTP: the control-plane URL is fixed by \
+the server operator (SQLFLOW_CONTROL_PLANE_URL) and cannot be changed by a client.";
+const HTTP_MODE_DISCOVER_NOTE: &str = "discover_source is disabled over HTTP because it reads \
+sample files on the server host, not on yours. Run sqlflow-mcp locally over stdio to use it.";
 
 // --- Parameter structs -----------------------------------------------------
 
@@ -472,6 +495,12 @@ impl SqlFlowMcp {
 
     #[tool(description = "Report the configured control-plane URL and whether the server is authenticated.")]
     async fn get_control_plane_url(&self, Parameters(_): Parameters<EmptyInput>) -> String {
+        if self.http_mode {
+            return json_str(&json!({
+                "url": self.cp.base_url(),
+                "authMode": "per-request: each call runs as the bearer on the inbound Authorization header",
+            }));
+        }
         json_str(&json!({
             "url": self.cp.base_url(),
             "authenticated": self.cp.is_authenticated(),
@@ -480,6 +509,9 @@ impl SqlFlowMcp {
 
     #[tool(description = "Set (and persist) the control-plane base URL.")]
     async fn set_control_plane_url(&self, Parameters(input): Parameters<UrlInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_URL_NOTE.to_string();
+        }
         self.cp.set_base_url(&input.url);
         format!("Control-plane URL set to {}", self.cp.base_url())
     }
@@ -493,6 +525,9 @@ impl SqlFlowMcp {
         description = "Begin device-flow sign-in. Returns a URL and user code to approve in a browser; then call check_auth_status to complete."
     )]
     async fn login(&self, Parameters(_): Parameters<EmptyInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_AUTH_NOTE.to_string();
+        }
         match self.cp.start_device_auth().await {
             Ok(auth) => {
                 let complete = auth
@@ -510,6 +545,9 @@ impl SqlFlowMcp {
 
     #[tool(description = "Poll the pending device-flow sign-in (or report current auth state).")]
     async fn check_auth_status(&self, Parameters(input): Parameters<CheckAuthInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_AUTH_NOTE.to_string();
+        }
         let code = input.device_code.or_else(|| self.cp.pending_device_code());
         let Some(code) = code else {
             return if self.cp.is_authenticated() {
@@ -544,6 +582,9 @@ impl SqlFlowMcp {
 
     #[tool(description = "Store a bearer access token directly (alternative to device-flow login).")]
     async fn set_access_token(&self, Parameters(input): Parameters<TokenInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_AUTH_NOTE.to_string();
+        }
         let token = input.token.trim().to_string();
         let is_pat = token.starts_with("sqlf_");
         let scope = input.scope.unwrap_or_else(|| "read operate".to_string());
@@ -568,6 +609,9 @@ impl SqlFlowMcp {
 
     #[tool(description = "Forget the stored access token.")]
     async fn logout(&self, Parameters(_): Parameters<EmptyInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_AUTH_NOTE.to_string();
+        }
         self.cp.clear_token();
         "Signed out.".to_string()
     }
@@ -816,6 +860,9 @@ path (local, UNC, or cloud) the CLI's file stores can reach. Validate the emitte
 before returning it."
     )]
     async fn discover_source(&self, Parameters(i): Parameters<DiscoverSourceInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_DISCOVER_NOTE.to_string();
+        }
         let mode = i.mode.as_deref().unwrap_or("flatten").to_ascii_lowercase();
         let subcommand = match mode.as_str() {
             "flatten" | "paths" | "discover" => mode.as_str(),
@@ -927,32 +974,88 @@ pub struct DiscoverSourceInput {
 
 // --- Server handler --------------------------------------------------------
 
+/// The bearer on an inbound HTTP request's `Authorization` header, when present and
+/// well-formed (`Bearer <non-empty token>`, scheme case-insensitive per RFC 6750).
+pub(crate) fn bearer_token(headers: &http::HeaderMap) -> Option<String> {
+    let value = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, rest) = value.trim().split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = rest.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
 #[tool_handler]
 impl ServerHandler for SqlFlowMcp {
+    /// Hand-written dispatch (the #[tool_handler] macro only generates `call_tool`
+    /// when the impl lacks one): over HTTP, rmcp injects the request's
+    /// `http::request::Parts` into the context extensions, and the caller's bearer is
+    /// scoped into `HTTP_BEARER` around the tool call so every control-plane request
+    /// runs as that caller. Over stdio there are no parts and dispatch is unchanged.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        let bearer = context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| bearer_token(&parts.headers));
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        match bearer {
+            Some(token) => {
+                crate::control_plane::HTTP_BEARER
+                    .scope(token, self.tool_router.call(tcc))
+                    .await
+            }
+            None => self.tool_router.call(tcc).await,
+        }
+    }
+
     fn get_info(&self) -> ServerInfo {
+        let online_setup = if self.http_mode { ONLINE_SETUP_HTTP } else { ONLINE_SETUP_STDIO };
+        let discovery = if self.http_mode { "" } else { DISCOVERY_STDIO };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(format!(
+                "{INSTRUCTIONS_OFFLINE}{discovery}\n{online_setup}{INSTRUCTIONS_ONLINE_TAIL}"
+            ))
     }
 }
 
-const INSTRUCTIONS: &str = "\
+const INSTRUCTIONS_OFFLINE: &str = "\
 SQLFlow MCP server. Two tiers of tools:
 
 OFFLINE (always available):
 - Docs: search_docs, get_doc, get_doc_by_yaml_path, get_doc_by_cli_command, related_docs, list_docs.
   For ANY question about a SQLFlow CLI command, a `.flow.yaml` key, a source type, or a concept,
-  search the docs FIRST and cite the page id — do not answer from memory.
+  search the docs FIRST and cite the page id; do not answer from memory.
 - Flow language: validate_flow (parse + census diagnostics), list_flow_keys, describe_flow_key.
   Before returning any `.flow.yaml` you authored or edited, run validate_flow and fix what it reports.
+";
+
+const DISCOVERY_STDIO: &str = "\
 - Source discovery: discover_source scans a JSON/NDJSON/XML sample (local, UNC, or cloud) and generates a
   runnable `.flow.yaml` stub (mode=flatten) or reports its path structure (mode=paths|discover). It auto-
   detects the record grain, so an envelope or nested-repeater document yields one row per record. Prefer it
   over hand-writing a file-source flow; then validate_flow the result. Needs the `sqlflow` CLI on PATH (or
   SQLFLOW_CLI set).
+";
 
+const ONLINE_SETUP_STDIO: &str = "\
 ONLINE (needs the control plane; sign in first):
 - Setup: get/set_control_plane_url, check_connectivity, login (device flow) then check_auth_status,
   or set_access_token to paste a bearer token.
+";
+
+const ONLINE_SETUP_HTTP: &str = "\
+ONLINE (needs the control plane):
+- Auth is per request: every call to this server already carries the caller's bearer token, and
+  control-plane requests run as that caller with scopes enforced server-side. There is no login
+  step; check_connectivity probes reachability.
+";
+
+const INSTRUCTIONS_ONLINE_TAIL: &str = "\
 - Read: list_repos, list_pipelines, get_pipeline, pipeline_definition, pipeline_columns, list_runs,
   get_run, run_statements/assertions/files/health_metrics, lineage_objects/_detail/_columns/_edges/
   _waves/_dependencies, search_objects/_columns/_definitions, list_schedules, list_nodes,
@@ -961,7 +1064,7 @@ ONLINE (needs the control plane; sign in first):
   lineage_objects filters by database/schema/kind/name to enumerate the tables and views in one. This is how
   you answer open schema questions without a pre-known object key.
 - Ask about an object (text-to-query): describe_object returns one object's identity, columns, generating
-  script, module body, and lineage edges in one call — start here to reason about, or author SQL against, a
+  script, module body, and lineage edges in one call: start here to reason about, or author SQL against, a
   specific table or view.
 - Operate (privileged): trigger_run, cancel_run.
 
