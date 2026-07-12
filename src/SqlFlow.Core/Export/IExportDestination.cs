@@ -4,9 +4,10 @@ namespace SqlFlow.Core.Export;
 
 /// <summary>
 /// Where an export writes its files. A dedicated write seam (the file readers' IFileStore is read-only): a
-/// destination advertises the locations it handles and opens a writable stream. The local filesystem
-/// destination ships now; an Azure Data Lake destination drops in later by implementing this interface, with no
-/// runner change. The caller owns the returned stream's lifetime.
+/// destination advertises the locations it handles and opens a writable stream. Two ship: the local/UNC
+/// filesystem (LocalExportDestination) and Azure Blob / ADLS Gen2 (AzureBlobExportDestination), selected by
+/// CanHandle, so a plain path stays local and an abfss/https storage URI writes to the lake. The caller owns
+/// the returned stream's lifetime.
 /// </summary>
 public interface IExportDestination
 {

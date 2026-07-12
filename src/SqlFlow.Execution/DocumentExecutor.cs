@@ -300,7 +300,11 @@ public sealed class DocumentExecutor : IDocumentRunner
             doc.Document.Connections,
             _provider.GetRequiredService<ISecretResolver>(),
             doc.Document.Invokes,
-            InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals));
+            InvokeExecutorFactory.Create(_provider, doc.Document.Invokes, doc.Document.ServicePrincipals),
+            // Local plus the Azure blob/ADLS destination. The runner selects by CanHandle, so a local path stays
+            // local and an abfss/https storage path writes to the lake, authenticated by the shared Azure
+            // credential (SQLFLOW_AZURE_AUTH) with no per-flow secret.
+            destinations: [new LocalExportDestination(), new AzureBlobExportDestination(_provider.GetRequiredService<IAzureCredentialFactory>())]);
 
         // Per-run substitution: a backfill window re-windows the export's chunk plan (its native FromDate/ToDate
         // bounds) for THIS run only. FullLoad has no export meaning (the planner's window IS the selection), and

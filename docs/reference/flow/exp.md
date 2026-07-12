@@ -112,7 +112,7 @@ source:
 
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `path` | string | yes | | Folder for the exported files; a local path or `file://` URI. |
+| `path` | string | yes | | Folder for the exported files. A local/UNC path or `file://` URI writes to the filesystem; an Azure Blob / ADLS Gen2 URI (`abfss://<container>@<account>.dfs.core.windows.net/<path>` or `https://<account>.blob.core.windows.net/<container>/<path>`) writes to object storage, authenticated by `SQLFLOW_AZURE_AUTH` (managed identity / service principal / `az login`) with no per-flow secret; the identity needs the `Storage Blob Data Contributor` role. |
 | `fileName` | string | no | source table name | File name prefix. |
 | `fileType` | string | no | `csv` | `csv` or `parquet` (alias `prq`). |
 | `encoding` | string | no | `utf8` | CSV encoding: `utf8`, `utf16`, `utf32`, `ascii`. |
@@ -213,7 +213,7 @@ The runner (src/SqlFlow.SqlServer/Export/ExportFlowRunner.cs):
 
 1. Resolves the source connection and probes the source columns with a schema-only `SELECT * FROM <object>`; a source exposing no columns fails with `Export source <object> exposes no columns.`
 2. For key exports, probes `SELECT MAX([keyColumn]) FROM <object>` (a NULL or missing max plans from 0).
-3. Plans the segments and streams each chunk's SELECT to a file through the destination seam (`IExportDestination`); the local filesystem destination is the default.
+3. Plans the segments and streams each chunk's SELECT to a file through the destination seam (`IExportDestination`); the local filesystem and Azure Blob / ADLS Gen2 destinations are both wired, selected by the target path.
 4. Deletes the file of any chunk that returned zero rows (an empty chunk leaves no file).
 5. Runs `postInvoke` if set, then records the run to the run log with FlowType `exp`; when synced to the catalog, export runs record RunFile rows from `result.Files` and the generated SELECTs in RunStatement.
 6. Never throws: a failure returns an `ExportRunResult` with `Success = false` and the error message; the SQL trace is carried on the result in both outcomes, and a successful result also carries `TotalRows` and each file's rows and bytes.
