@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "4668591687550707206"
+      "templateHash": "5984035750208520624"
     }
   },
   "parameters": {
@@ -327,6 +327,8 @@
     "slackBotSqlflowTokenSecretName": "sqlflow-slack-bot-access-token",
     "mcpEnabled": "[not(empty(parameters('mcpImage')))]",
     "slackBotEnabled": "[and(and(and(and(and(and(variables('mcpEnabled'), not(empty(parameters('slackBotImage')))), not(empty(parameters('slackAppToken')))), not(empty(parameters('slackBotToken')))), not(empty(parameters('slackBotSqlflowToken')))), not(empty(parameters('aiFoundryName')))), not(empty(parameters('aiFoundryModelName'))))]",
+    "scalerPasswordEncoded": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parameters('sqlAdminPassword'), '%', '%25'), '+', '%2B'), '/', '%2F'), '=', '%3D'), ' ', '%20'), '@', '%40'), ':', '%3A'), '?', '%3F'), '#', '%23'), '&', '%26'), ';', '%3B')]",
+    "scalerConnectionSecretName": "sqlflow-catalog-db-scaler",
     "aiFoundryProjectEndpoint": "[if(empty(parameters('aiFoundryName')), '', format('https://{0}.services.ai.azure.com/api/projects/{1}', parameters('aiFoundryName'), parameters('aiFoundryProjectName')))]"
   },
   "resources": [
@@ -422,6 +424,18 @@
       "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('catalogConnectionSecretName'))]",
       "properties": {
         "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password=''{3}'';Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('catalogDatabaseName'), parameters('sqlAdminLogin'), replace(parameters('sqlAdminPassword'), '''', ''''''))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('scalerConnectionSecretName'))]",
+      "properties": {
+        "value": "[format('sqlserver://{0}:{1}@{2}?database={3}&encrypt=true&TrustServerCertificate=false', parameters('sqlAdminLogin'), variables('scalerPasswordEncoded'), replace(if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), ',', ':'), parameters('catalogDatabaseName'))]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
@@ -942,6 +956,9 @@
           "flowEnv": {
             "value": "[variables('workerFlowEnv')]"
           },
+          "scalerConnectionSecretName": {
+            "value": "[variables('scalerConnectionSecretName')]"
+          },
           "acrName": {
             "value": "[parameters('acrName')]"
           },
@@ -959,7 +976,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "15861952338240909409"
+              "templateHash": "15080314050561981020"
             }
           },
           "parameters": {
@@ -1044,6 +1061,13 @@
                 "description": "Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set."
               }
             },
+            "scalerConnectionSecretName": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Key Vault secret name for a Go-driver-compatible catalog connection string used ONLY by the KEDA scale rule (a go-mssqldb URL, sqlserver://user:urlencoded-pw@host:port?database=...). The KEDA mssql scaler is not .NET SqlClient: it does not strip the single quotes an ADO.NET connection string puts around a password, so the .NET catalog connection cannot be reused for the scaler. Leave empty to reuse catalogConnectionSecretName for the scaler (correct only when that password needs no quoting)."
+              }
+            },
             "maxReplicas": {
               "type": "int",
               "defaultValue": 10,
@@ -1098,6 +1122,8 @@
               }
             ],
             "gitTokenSecrets": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'git-token', 'keyVaultUrl', format('{0}secrets/{1}', variables('vaultUri'), parameters('gitTokenSecretName')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+            "scalerSecrets": "[if(empty(parameters('scalerConnectionSecretName')), createArray(), createArray(createObject('name', 'catalog-scaler', 'keyVaultUrl', format('{0}secrets/{1}', variables('vaultUri'), parameters('scalerConnectionSecretName')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+            "scalerSecretRef": "[if(empty(parameters('scalerConnectionSecretName')), 'catalog-db', 'catalog-scaler')]",
             "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
             "queueDepthQuery": "[if(empty(parameters('pool')), 'SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] IS NULL', format('SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] = ''{0}''', parameters('pool')))]"
@@ -1154,7 +1180,7 @@
                 "configuration": {
                   "activeRevisionsMode": "Single",
                   "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
-                  "secrets": "[concat(variables('baseSecrets'), variables('gitTokenSecrets'), variables('flowEnvSecrets'))]"
+                  "secrets": "[concat(variables('baseSecrets'), variables('gitTokenSecrets'), variables('flowEnvSecrets'), variables('scalerSecrets'))]"
                 },
                 "template": {
                   "terminationGracePeriodSeconds": 600,
@@ -1183,7 +1209,7 @@
                           },
                           "auth": [
                             {
-                              "secretRef": "catalog-db",
+                              "secretRef": "[variables('scalerSecretRef')]",
                               "triggerParameter": "connectionString"
                             }
                           ]
@@ -1221,6 +1247,7 @@
       "dependsOn": [
         "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('catalogDatabaseName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('catalogConnectionSecretName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('scalerConnectionSecretName'))]",
         "flowEnvSecrets",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('gitTokenSecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",

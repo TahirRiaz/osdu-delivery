@@ -269,11 +269,32 @@ var catalogServerAddress = empty(existingSqlServer)
 // password is quoted (embedded single quotes doubled) so any complex value survives ADO.NET parsing.
 var catalogConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${catalogDatabaseName};User ID=${sqlAdminLogin};Password=\'${replace(sqlAdminPassword, '\'', '\'\'')}\';Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 
+// A SECOND connection string, for the KEDA scale rule only. The scaler is go-mssqldb, not .NET SqlClient: it
+// does not strip the single quotes ADO.NET puts around the password, so reusing catalogConnectionString makes
+// the scaler authenticate with a quoted password and fail (KEDAScalerFailed: Login failed). This is the
+// go-mssqldb URL form with the password percent-encoded, so the worker scales on queue depth. The host:port
+// is the catalog address with its comma turned into a colon.
+var catalogHostPort = replace(catalogServerAddress, ',', ':')
+// Percent-encode the password for the URL userinfo. '%' is escaped first so the later escapes are not
+// re-encoded; the set covers base64 output (+ / =) and the URL sub-delimiters a password can realistically
+// carry. A password using characters outside this set needs a pre-encoded scalerConnectionSecret instead.
+var scalerPasswordEncoded = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(sqlAdminPassword, '%', '%25'), '+', '%2B'), '/', '%2F'), '=', '%3D'), ' ', '%20'), '@', '%40'), ':', '%3A'), '?', '%3F'), '#', '%23'), '&', '%26'), ';', '%3B')
+var catalogScalerUrl = 'sqlserver://${sqlAdminLogin}:${scalerPasswordEncoded}@${catalogHostPort}?database=${catalogDatabaseName}&encrypt=true&TrustServerCertificate=false'
+var scalerConnectionSecretName = 'sqlflow-catalog-db-scaler'
+
 resource catalogDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: catalogConnectionSecretName
   properties: {
     value: catalogConnectionString
+  }
+}
+
+resource catalogScalerSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: scalerConnectionSecretName
+  properties: {
+    value: catalogScalerUrl
   }
 }
 
@@ -393,12 +414,14 @@ module worker 'worker.bicep' = {
     gitTokenSecretName: empty(gitToken) ? '' : gitTokenSecretName
     gitUsername: gitUsername
     flowEnv: workerFlowEnv
+    scalerConnectionSecretName: scalerConnectionSecretName
     acrName: acrName
     acrLoginServer: acrLoginServer
     maxReplicas: workerMaxReplicas
   }
   dependsOn: [
     catalogDbSecret
+    catalogScalerSecret
     gitTokenSecret
     flowEnvSecrets
     catalogDatabase

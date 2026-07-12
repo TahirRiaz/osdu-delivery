@@ -47,6 +47,9 @@ param acrName string = ''
 @description('Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set.')
 param acrLoginServer string = ''
 
+@description('Key Vault secret name for a Go-driver-compatible catalog connection string used ONLY by the KEDA scale rule (a go-mssqldb URL, sqlserver://user:urlencoded-pw@host:port?database=...). The KEDA mssql scaler is not .NET SqlClient: it does not strip the single quotes an ADO.NET connection string puts around a password, so the .NET catalog connection cannot be reused for the scaler. Leave empty to reuse catalogConnectionSecretName for the scaler (correct only when that password needs no quoting).')
+param scalerConnectionSecretName string = ''
+
 @description('Upper bound for queue-depth scale out (one queued run per replica).')
 @minValue(1)
 param maxReplicas int = 10
@@ -125,6 +128,17 @@ var flowEnvSecrets = [for (entry, i) in flowEnv: {
   identity: identity.id
 }]
 
+// A distinct secret for the KEDA scale rule when the scaler needs a different (Go-driver) connection string
+// than the .NET container. When unset, the scaler falls back to the container's catalog-db secret.
+var scalerSecrets = empty(scalerConnectionSecretName) ? [] : [
+  {
+    name: 'catalog-scaler'
+    keyVaultUrl: '${vaultUri}secrets/${scalerConnectionSecretName}'
+    identity: identity.id
+  }
+]
+var scalerSecretRef = empty(scalerConnectionSecretName) ? 'catalog-db' : 'catalog-scaler'
+
 var baseEnv = [
   {
     name: 'SQLFLOW_CATALOG_DB'
@@ -192,7 +206,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           identity: identity.id
         }
       ]
-      secrets: concat(baseSecrets, gitTokenSecrets, flowEnvSecrets)
+      secrets: concat(baseSecrets, gitTokenSecrets, flowEnvSecrets, scalerSecrets)
     }
     template: {
       // Let an in-flight run finish on scale-in or revision swap; an interrupted one is requeued anyway.
@@ -222,7 +236,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
               }
               auth: [
                 {
-                  secretRef: 'catalog-db'
+                  secretRef: scalerSecretRef
                   triggerParameter: 'connectionString'
                 }
               ]

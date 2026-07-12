@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "15861952338240909409"
+      "templateHash": "15080314050561981020"
     }
   },
   "parameters": {
@@ -90,6 +90,13 @@
         "description": "Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set."
       }
     },
+    "scalerConnectionSecretName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Key Vault secret name for a Go-driver-compatible catalog connection string used ONLY by the KEDA scale rule (a go-mssqldb URL, sqlserver://user:urlencoded-pw@host:port?database=...). The KEDA mssql scaler is not .NET SqlClient: it does not strip the single quotes an ADO.NET connection string puts around a password, so the .NET catalog connection cannot be reused for the scaler. Leave empty to reuse catalogConnectionSecretName for the scaler (correct only when that password needs no quoting)."
+      }
+    },
     "maxReplicas": {
       "type": "int",
       "defaultValue": 10,
@@ -144,6 +151,8 @@
       }
     ],
     "gitTokenSecrets": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'git-token', 'keyVaultUrl', format('{0}secrets/{1}', variables('vaultUri'), parameters('gitTokenSecretName')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+    "scalerSecrets": "[if(empty(parameters('scalerConnectionSecretName')), createArray(), createArray(createObject('name', 'catalog-scaler', 'keyVaultUrl', format('{0}secrets/{1}', variables('vaultUri'), parameters('scalerConnectionSecretName')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+    "scalerSecretRef": "[if(empty(parameters('scalerConnectionSecretName')), 'catalog-db', 'catalog-scaler')]",
     "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
     "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
     "queueDepthQuery": "[if(empty(parameters('pool')), 'SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] IS NULL', format('SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] = ''{0}''', parameters('pool')))]"
@@ -200,7 +209,7 @@
         "configuration": {
           "activeRevisionsMode": "Single",
           "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
-          "secrets": "[concat(variables('baseSecrets'), variables('gitTokenSecrets'), variables('flowEnvSecrets'))]"
+          "secrets": "[concat(variables('baseSecrets'), variables('gitTokenSecrets'), variables('flowEnvSecrets'), variables('scalerSecrets'))]"
         },
         "template": {
           "terminationGracePeriodSeconds": 600,
@@ -229,7 +238,7 @@
                   },
                   "auth": [
                     {
-                      "secretRef": "catalog-db",
+                      "secretRef": "[variables('scalerSecretRef')]",
                       "triggerParameter": "connectionString"
                     }
                   ]
