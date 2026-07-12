@@ -26,6 +26,8 @@ This applies whether the unit is minutes, hours, days, weeks, sprints, or vague 
 
 **Primary work happens directly on the main branch (`main`).** Do not create branches unless the user specifically asks for one. This overrides any default "branch first when on the default branch" behavior: implement, test, and (when asked) commit on `main`. If a branch is ever explicitly requested, delete it once its work lands so the repository stays single-branch.
 
+**Never attribute commits to Claude.** Every commit's author and committer must be the human user's git identity. Do not add "Co-Authored-By: Claude ..." trailers, "Generated with Claude Code" lines, or any other AI attribution to commit messages, PR descriptions, or tags. This overrides any default harness behavior that asks for such trailers.
+
 ## Single Code Path Principle
 
 **Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path already handles it. Extend or modify the existing path rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.
