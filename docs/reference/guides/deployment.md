@@ -29,6 +29,10 @@ sourceRefs:
   - deploy/k8s/ingress.yaml
   - deploy/k8s/secrets.example.yaml
   - deploy/bicep/control-plane.bicep
+  - deploy/bicep/worker.bicep
+  - deploy/bicep/gui.bicep
+  - deploy/bicep/ai-foundry.bicep
+  - deploy/bicep/main.bicep
   - deploy/adf/SqlFlowTriggerFlow.pipeline.json
   - src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs
   - src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs
@@ -207,9 +211,43 @@ The template sets `terminationGracePeriodSeconds: 600` so an in-flight run can f
 
 Workers must run where they can reach the data their pool's flows touch; that is the point of pools. A cloud cluster's workers serve cloud-reachable sources. An on-prem pool means workers running on-prem (compose, systemd, or a local cluster) pointed at the same catalog database and registered under that pool name.
 
+## Azure Container Apps: the full estate with Bicep
+
+`deploy/bicep/main.bicep` deploys everything into one resource group: Log Analytics plus the Container Apps environment, a Key Vault holding every secret, an Azure SQL catalog database, and the three apps composed from one template per tier. Each tier template (`control-plane.bicep`, `worker.bicep`, `gui.bicep`) also deploys standalone into an existing environment and Key Vault, which is how a second worker pool is added.
+
+```bash
+az group create -n sqlflow -l <region>
+az acr create -g sqlflow -n <registry> --sku Basic
+az acr build -r <registry> -t sqlflow-control-plane:latest .
+az acr build -r <registry> -t sqlflow-worker:latest -f Dockerfile.worker .
+az acr build -r <registry> -t sqlflow-gui:latest gui/
+
+az deployment group create -g sqlflow -f deploy/bicep/main.bicep \
+  -p acrName=<registry> \
+     controlPlaneImage=<registry>.azurecr.io/sqlflow-control-plane:latest \
+     workerImage=<registry>.azurecr.io/sqlflow-worker:latest \
+     guiImage=<registry>.azurecr.io/sqlflow-gui:latest \
+     sqlAdminPassword='<complex password>' \
+     jwtSigningKey="$(openssl rand -base64 48)" \
+     adminPassword='<initial admin password, 12+ chars>'
+```
+
+First start behaves exactly like compose: bootstrap provisioning applies the catalog migrations and creates the initial admin (`adminUsername`/`adminPassword`), so the `guiUrl` output is sign-in ready. The other outputs: `controlPlaneBaseUrl` (for the ADF pipeline below and CLI remotes), the control plane and worker identity client ids (grant them access to the data and secrets flows touch), `sqlServerFqdn`, and `keyVaultUri`.
+
+How the Kubernetes layout maps onto Container Apps:
+
+- **Two origins instead of a path split.** Every Container App has its own ingress FQDN, so `main.bicep` computes both hostnames up front, points the GUI's `SQLFLOW_API_BASE_URL` at the control plane URL, and CORS-lists the GUI origin on the control plane (`corsAllowedOrigins`). Restoring the one-host layout means putting Front Door or Application Gateway in front of both apps, then blanking both settings.
+- **The control plane runs API-only** (`workerEnabled: false` in the module call), scaled `controlPlaneMinReplicas..controlPlaneMaxReplicas`; compute belongs to the worker app, exactly as in the k8s split.
+- **KEDA is built in.** `worker.bicep` scales `0..maxReplicas` on the same mssql queue-depth query as `worker-pool.yaml` (pool predicate included when `pool` is set), authenticated with the same Key Vault backed catalog-connection secret the container reads, and keeps `terminationGracePeriodSeconds: 600` so an in-flight run can finish on scale-in.
+- **Secrets live in Key Vault, read by user-assigned managed identity.** The deployment writes them, and each app identity gets Key Vault Secrets User plus AcrPull when `acrName` names a same-group registry. The deploying principal therefore needs to create role assignments (Owner or User Access Administrator) and to write vault secrets (Key Vault Secrets Officer, since the vault uses RBAC authorization). The same identities resolve `${keyvault:...}` references at run time (`SQLFLOW_AZURE_AUTH=mi`, `AZURE_CLIENT_ID`). Flow `${env:...}` references land on the worker only, via `workerFlowEnvNames`/`workerFlowEnvValues` (each value becomes a vault secret wired to that environment variable).
+- **The catalog is an Azure SQL database** (`sqlDatabaseSku`, default S1: the catalog is metadata plus the run queue, but it is polled continuously, so serverless auto-pause is the wrong shape). The ADO.NET connection string exists only as the `sqlflow-catalog-db` vault secret. The server admits Azure-service traffic (the consumption plan has no fixed egress address for a narrower rule); the hardening path is a VNet-integrated environment with a private endpoint to SQL and least-privilege or Entra credentials in place of the SQL admin, all behind that one secret.
+- **Proxy trust stays off by default.** Container Apps ingress terminates TLS in front of the app, and the platform's forwarding hops have no contractual CIDR on the consumption plan; per-client rate limiting therefore keys on the ingress hop. For a VNet-integrated environment whose infrastructure subnet is known, pass it as `proxyKnownNetworks` on `control-plane.bicep` to key on real client addresses.
+- **Bring your own SQL and network.** `existingSqlServer=<host[,port]>` skips the Azure SQL server and points the catalog connection at a server you already run; an address without a port gets `,1433` (a Managed Instance public endpoint would be `host,3342`). Bootstrap creates the catalog database on first start, so the login must be allowed to `CREATE DATABASE`. `infrastructureSubnetId` VNet-integrates the environment (consumption architecture: an undelegated subnet of at least /23), the route to a VNet-only Managed Instance: its default FQDN resolves to the private ILB address, and the default `AllowVnetInBound` rule admits 1433 unless a custom NSG rule denies it.
+- **Optional AI Foundry.** `aiFoundryName` deploys an Azure AI Foundry account and project (`ai-foundry.bicep`) beside the estate and grants the control plane and worker identities Cognitive Services User, so anything they run can call deployed models keylessly via Entra. No model deployment is pinned in the template; nothing in the estate depends on the resource otherwise.
+
 ## Azure: ADF integration
 
-SQLFlow runs inside ADF pipelines as a thin trigger, not as a container ADF boots per run. The model is an always-on control plane that a small ADF pipeline of Web Activities calls: authenticate, trigger, poll, fail on failure. Nothing is provisioned per run; a trigger is a sub-second authenticated call.
+SQLFlow runs inside ADF pipelines as a thin trigger, not as a container ADF boots per run. The model is an always-on control plane that a small ADF pipeline of Web Activities calls: authenticate, trigger, poll, fail on failure. Nothing is provisioned per run; a trigger is a sub-second authenticated call. The steps below deploy the single-app mode into an existing environment. On the full estate above the image, app, and migrations are already in place: register your repos (the second post-deploy note in step 2) and continue at step 3 with the estate's `controlPlaneBaseUrl` output.
 
 ### 1. Build and push the image
 
