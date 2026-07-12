@@ -55,7 +55,7 @@ internal static class Program
         // takes a subcommand (migrate/sync/status), and the control-plane verbs (health/login/logout/trigger/
         // runs/groups) address the remote API through flags; none take a pipeline file.
         var command = positional.Length > 0 ? positional[0].ToLowerInvariant() : string.Empty;
-        var needsFile = command is not ("healthcheck" or "auth" or "db" or "runs" or "user" or "detect-unique-key"
+        var needsFile = command is not ("healthcheck" or "auth" or "db" or "worker" or "runs" or "user" or "detect-unique-key"
             or "health" or "login" or "logout" or "trigger" or "groups"
             or "whoami" or "doctor" or "summary" or "nodes" or "schedules" or "repos" or "pipelines"
             or "datasources" or "search" or "completions");
@@ -3014,7 +3014,7 @@ internal static class Program
         "--db", "--repo", "--repo-url",
         // The control-plane verbs (health/login/logout/trigger/runs/groups and the estate family).
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
-        "--scope", "--batch", "--pool", "--commit", "--flow", "--status", "--kind", "--group",
+        "--scope", "--batch", "--pool", "--poll-seconds", "--commit", "--flow", "--status", "--kind", "--group",
         "--page", "--page-size", "--from", "--to", "--file-pattern",
         "--cron", "--interval", "--timezone", "--remote-url", "--credential-ref", "--credential-user",
         "--ref", "--sample", "--max-columns", "--max-candidates", "--active", "--enabled",
