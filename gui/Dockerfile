@@ -13,9 +13,14 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
+# The entrypoint script must be executable or the base image's entrypoint silently skips it and /config.json
+# is never written. The bit is set here, in the root build stage, because COPY --from preserves modes while
+# COPY --chmod needs BuildKit, which classic builders (ACR Tasks) do not have. The CR strip keeps the shebang
+# valid when the build context comes from a Windows checkout (CRLF would make the kernel look for /bin/sh\r).
+RUN sed -i 's/\r$//' docker/40-runtime-config.sh && chmod 755 docker/40-runtime-config.sh
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
 COPY --from=build --chown=nginx:nginx /src/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --chmod=755 docker/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
+COPY --from=build /src/docker/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
 EXPOSE 8080

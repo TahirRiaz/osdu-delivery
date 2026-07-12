@@ -11,4 +11,4 @@ if [ -n "${SQLFLOW_WORKER_POLL_SECONDS:-}" ]; then
   set -- "$@" --poll-seconds "$SQLFLOW_WORKER_POLL_SECONDS"
 fi
 
-exec dotnet /app/SqlFlow.Cli.dll "$@"
+exec dotnet /app/sqlflow.dll "$@"

@@ -9,7 +9,13 @@
 artifacts/
 TestResults/
 **/.sqlflow/
+# The Rust workspace's build output (gigabytes once built locally); images rebuild from source.
+tools/target/
+**/node_modules/
 docs/
+# The MCP image embeds the reference corpus (manifest, pages, key census) at compile time; it is the one part
+# of docs/ that belongs in the context (see Dockerfile.mcp).
+!docs/reference/
 *.md
 # The GUI builds in its own image (gui/Dockerfile with the gui/ context); keep its trees out of the .NET context.
 gui/node_modules/

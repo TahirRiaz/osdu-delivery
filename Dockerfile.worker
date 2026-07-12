@@ -29,7 +29,9 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=build /app .
 COPY deploy/docker/worker-entrypoint.sh /worker-entrypoint.sh
-RUN chmod +x /worker-entrypoint.sh
+# The CR strip keeps the shebang valid when the build context comes from a Windows checkout (CRLF would make
+# the kernel look for /bin/sh\r and fail the container with "no such file or directory").
+RUN sed -i 's/\r$//' /worker-entrypoint.sh && chmod +x /worker-entrypoint.sh
 ENV DOTNET_RUNNING_IN_CONTAINER=true
 USER $APP_UID
 ENTRYPOINT ["/worker-entrypoint.sh"]
