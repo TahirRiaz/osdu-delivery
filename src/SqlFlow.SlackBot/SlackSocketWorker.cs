@@ -15,13 +15,13 @@ namespace SqlFlow.SlackBot;
 public sealed class SlackSocketWorker : BackgroundService
 {
     private readonly SlackBotOptions _options;
-    private readonly FoundryAgentGateway _gateway;
+    private readonly IAssistantGateway _gateway;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<SlackSocketWorker> _logger;
 
     public SlackSocketWorker(
         IOptions<SlackBotOptions> options,
-        FoundryAgentGateway gateway,
+        IAssistantGateway gateway,
         ILoggerFactory loggerFactory,
         ILogger<SlackSocketWorker> logger)
     {

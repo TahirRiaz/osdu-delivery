@@ -91,16 +91,26 @@ the user); point ADF at `controlPlaneBaseUrl` (see `deploy/adf`). How the k8s la
 Ask SQLFlow questions from Slack ("what failed last night?", "what feeds `dbo.Orders`?"). The chain is:
 
 ```
-Slack thread -> sqlflow-slack-bot (Socket Mode relay) -> Azure AI Foundry (Responses API: model + MCP tool)
-            -> sqlflow-mcp over streamable HTTP (tools)  -> control plane /api/v1 (bearer-scoped)
+Slack thread -> sqlflow-slack-bot (Socket Mode relay) -> the model provider (one of three modes)
+            -> sqlflow-mcp over streamable HTTP (tools) -> control plane /api/v1 (bearer-scoped)
 ```
 
-For each question the bot makes one Responses API call carrying the model, the instructions, and the MCP tool
-(server URL, allowlist, and the `Authorization` header); the definition lives in the request, not a hosted
-agent. A Slack thread's follow-ups chain server-side via `previous_response_id`. The MCP tool is used because
-only it (not the older persistent-agents API) is supported by current model deployments, so the model must be
-a Responses-API + MCP-capable deployment such as `gpt-5-mini`. The bot's whole SQLFlow authority is one
-read-scoped personal access token, sent to the MCP server as that `Authorization` header;
+The bot supports three provider modes (`slackBotProvider`); all three use the same SQLFlow MCP server, the
+same instructions, and the same read-only tool allowlist, so the Slack experience is identical:
+
+| Mode | Model host | Credential | Azure AI dependency |
+|---|---|---|---|
+| `AzureFoundry` (default) | Azure AI Foundry, Responses API | The bot's managed identity (no key) | Yes: the Foundry account + model deployment |
+| `OpenAI` | api.openai.com, the same Responses API + MCP tool wire format | An OpenAI API key (`sk-...`) | None |
+| `Anthropic` | The Claude API (Messages API with the MCP connector) | An Anthropic API key (`sk-ant-...`) | None |
+
+In the Responses-API modes (`AzureFoundry`, `OpenAI`) each question is one call carrying the model, the
+instructions, and the MCP tool (server URL, allowlist, and the `Authorization` header); a Slack thread's
+follow-ups chain server-side via `previous_response_id`, and the model must be Responses-API + MCP-capable
+(for example `gpt-5-mini`). In the `Anthropic` mode the Claude MCP connector calls the same MCP server
+server-side; Claude keeps no server-side conversation state, so the bot replays the Slack thread transcript
+each turn (the Slack thread is the durable record either way). The bot's whole SQLFlow authority is one
+read-scoped personal access token, sent to the MCP server as the `Authorization` header;
 `trigger_run`/`cancel_run` are excluded from the tool allowlist. See the reference guide for the full contract.
 IDE assistants (Copilot, Claude, Cursor) keep using `sqlflow-mcp` locally over stdio; this deploys the same
 binary in `http` mode as a shared, remote tool source.
@@ -116,7 +126,7 @@ Setup, in order:
    scope only. This is the credential the agent presents to the MCP server on every run.
 4. **Build and push the two images** (`az acr build -r <registry> -t sqlflow-mcp:latest -f Dockerfile.mcp .`
    and `-t sqlflow-slack-bot:latest -f Dockerfile.slackbot .`).
-5. **Redeploy `main.bicep`** with the assistant parameters added:
+5. **Redeploy `main.bicep`** with the assistant parameters added. In `AzureFoundry` mode (the default):
 
 ```bash
 az deployment group create -g sqlflow -f deploy/bicep/main.bicep \
@@ -129,16 +139,27 @@ az deployment group create -g sqlflow -f deploy/bicep/main.bicep \
      slackBotSqlflowToken='sqlf_...'
 ```
 
-This deploys the Foundry account + project + model deployment, the two apps, writes the three tokens into
-Key Vault, and grants the bot identity the Cognitive Services OpenAI User role on the Foundry account (its
-Responses API access). Then invite the bot to a channel and mention it. Notes:
+Or without any Azure AI dependency, on a plain API key (skip `aiFoundryName`/`aiFoundryModelName` entirely):
 
-- **First question after a fresh deployment can fail once** while the Cognitive Services OpenAI User role
-  assignment propagates to the bot's managed identity; ask again and it recovers.
-- **The MCP endpoint is public but bearer-gated**: Foundry's agent runtime calls in from Microsoft-managed
-  compute, so `sqlflow-mcp` has external ingress; every `/mcp` request must carry a valid SQLFlow token or
-  it is rejected at the edge, and all data access is enforced by the control plane per token scope. `/healthz`
-  is the only unauthenticated route.
+```bash
+# OpenAI platform key
+     slackBotProvider=OpenAI slackBotModelApiKey='sk-...' slackBotOpenAIModel=gpt-5-mini
+# or the Anthropic Claude API key
+     slackBotProvider=Anthropic slackBotModelApiKey='sk-ant-...' slackBotAnthropicModel=claude-opus-4-8
+```
+
+In `AzureFoundry` mode this deploys the Foundry account + project + model deployment and grants the bot
+identity the Cognitive Services OpenAI User role on the account (its Responses API access); in the key-based
+modes no Foundry resources are touched and the provider key lands in Key Vault alongside the tokens. Then
+invite the bot to a channel and mention it. Notes:
+
+- **First question after a fresh AzureFoundry deployment can fail once** while the Cognitive Services OpenAI
+  User role assignment propagates to the bot's managed identity; ask again and it recovers. The key-based
+  modes have no role assignment and work immediately.
+- **The MCP endpoint is public but bearer-gated**: the provider's runtime calls in from its own compute
+  (Microsoft's for Foundry, OpenAI's or Anthropic's in the key-based modes), so `sqlflow-mcp` has external
+  ingress; every `/mcp` request must carry a valid SQLFlow token or it is rejected at the edge, and all data
+  access is enforced by the control plane per token scope. `/healthz` is the only unauthenticated route.
 - **Everyone in the workspace shares the bot's read-only identity**. Widening the allowlist (for example
   adding `trigger_run`) means anyone in any channel the bot is in can fire it; do not, until per-user
   account linking exists.

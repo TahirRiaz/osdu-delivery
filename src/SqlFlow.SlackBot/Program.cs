@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SqlFlow.Azure;
@@ -17,7 +18,21 @@ builder.Services.AddOptions<SlackBotOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IAzureCredentialFactory, AzureCredentialFactory>();
-builder.Services.AddSingleton<FoundryAgentGateway>();
+
+// One gateway per provider mode: AzureFoundry and OpenAI share the Responses API wire format
+// (ResponsesApiGateway), Anthropic speaks the Messages API with the MCP connector. The provider
+// is read from configuration here (not via IOptions) because the choice decides which type to
+// construct; each gateway still receives its settings through the validated options.
+var provider = builder.Configuration.GetSection("SlackBot").GetValue<AssistantProvider?>("Provider")
+    ?? AssistantProvider.AzureFoundry;
+if (provider == AssistantProvider.Anthropic)
+{
+    builder.Services.AddSingleton<IAssistantGateway, AnthropicGateway>();
+}
+else
+{
+    builder.Services.AddSingleton<IAssistantGateway, ResponsesApiGateway>();
+}
 builder.Services.AddHostedService<SlackSocketWorker>();
 
 await builder.Build().RunAsync().ConfigureAwait(false);

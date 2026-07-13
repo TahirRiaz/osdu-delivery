@@ -10,14 +10,14 @@ namespace SqlFlow.SlackBot;
 /// <summary>
 /// Handles the two ways users reach the bot: an @-mention in a channel (<see cref="AppMention"/>)
 /// and a direct message (<see cref="MessageEvent"/> with channel type <c>im</c>). Each question is
-/// acknowledged with an eyes reaction, answered by the Foundry agent in the context of its Slack
-/// thread, and the answer posted as a threaded reply. Processing is offloaded so the Socket Mode
-/// event loop is never blocked by a long agent run.
+/// acknowledged with an eyes reaction, answered by the configured model provider in the context of
+/// its Slack thread, and the answer posted as a threaded reply. Processing is offloaded so the
+/// Socket Mode event loop is never blocked by a long agent run.
 /// </summary>
 public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, IEventHandler<MessageEvent>
 {
     private readonly ISlackApiClient _slack;
-    private readonly FoundryAgentGateway _gateway;
+    private readonly IAssistantGateway _gateway;
     private readonly SlackBotOptions _options;
     private readonly ILogger<SlackAssistantHandler> _logger;
 
@@ -45,7 +45,7 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
 
     public SlackAssistantHandler(
         ISlackApiClient slack,
-        FoundryAgentGateway gateway,
+        IAssistantGateway gateway,
         SlackBotOptions options,
         ILogger<SlackAssistantHandler> logger)
     {

@@ -115,6 +115,20 @@ param slackBotToken string = ''
 @description('A READ-scoped SQLFlow personal access token (sqlf_...) the assistant presents to the MCP server. Mint it in the GUI or CLI after the estate is up, then redeploy with this set; empty skips the Slack assistant.')
 param slackBotSqlflowToken string = ''
 
+@description('The Slack assistant model provider: AzureFoundry (the Foundry Responses API via managed identity, needs aiFoundryName + aiFoundryModelName), OpenAI (the OpenAI platform via API key), or Anthropic (the Claude API via API key). The two key-based modes have no Azure AI dependency.')
+@allowed(['AzureFoundry', 'OpenAI', 'Anthropic'])
+param slackBotProvider string = 'AzureFoundry'
+
+@secure()
+@description('The provider API key for the OpenAI (sk-...) or Anthropic (sk-ant-...) mode. Required for those modes and ignored for AzureFoundry; empty in a key-based mode skips the Slack assistant.')
+param slackBotModelApiKey string = ''
+
+@description('The OpenAI model, which must support the Responses API with the hosted MCP tool. Used when slackBotProvider is OpenAI.')
+param slackBotOpenAIModel string = 'gpt-5-mini'
+
+@description('The Claude model id. Used when slackBotProvider is Anthropic.')
+param slackBotAnthropicModel string = 'claude-opus-4-8'
+
 @description('Name of the Container App running the MCP server.')
 param mcpName string = 'sqlflow-mcp'
 
@@ -175,12 +189,18 @@ var gitTokenSecretName = 'sqlflow-git-token'
 var slackAppTokenSecretName = 'sqlflow-slack-app-token'
 var slackBotTokenSecretName = 'sqlflow-slack-bot-token'
 var slackBotSqlflowTokenSecretName = 'sqlflow-slack-bot-access-token'
+var slackBotModelApiKeySecretName = 'sqlflow-slack-bot-model-api-key'
 
 // The MCP server deploys on its own (any MCP client can use it); the Slack assistant additionally needs the
-// Slack app, a SQLFlow access token, and a Foundry account with a model for its agent. Anything missing
-// simply leaves the assistant out of this deployment; the rest of the estate is unaffected.
+// Slack app, a SQLFlow access token, and its model provider: a Foundry account with a model in AzureFoundry
+// mode, or the provider API key in the OpenAI/Anthropic modes. Anything missing simply leaves the assistant
+// out of this deployment; the rest of the estate is unaffected.
 var mcpEnabled = !empty(mcpImage)
-var slackBotEnabled = mcpEnabled && !empty(slackBotImage) && !empty(slackAppToken) && !empty(slackBotToken) && !empty(slackBotSqlflowToken) && !empty(aiFoundryName) && !empty(aiFoundryModelName)
+var slackBotUsesApiKey = slackBotProvider != 'AzureFoundry'
+var slackBotProviderReady = slackBotUsesApiKey
+  ? !empty(slackBotModelApiKey)
+  : (!empty(aiFoundryName) && !empty(aiFoundryModelName))
+var slackBotEnabled = mcpEnabled && !empty(slackBotImage) && !empty(slackAppToken) && !empty(slackBotToken) && !empty(slackBotSqlflowToken) && slackBotProviderReady
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: logAnalyticsName
@@ -346,6 +366,14 @@ resource slackBotSqlflowTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-0
   }
 }
 
+resource slackBotModelApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (slackBotEnabled && slackBotUsesApiKey) {
+  parent: keyVault
+  name: slackBotModelApiKeySecretName
+  properties: {
+    value: slackBotModelApiKey
+  }
+}
+
 // One vault secret per flow environment reference, indexed to match the worker module's flowEnv entries.
 resource flowEnvSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for (envName, i) in workerFlowEnvNames: {
   parent: keyVault
@@ -458,7 +486,9 @@ module aiFoundry 'ai-foundry.bicep' = if (!empty(aiFoundryName)) {
       controlPlane.outputs.identityPrincipalId
       worker.outputs.identityPrincipalId
     ]
-    agentPrincipalIds: slackBotEnabled ? [
+    // Foundry access matters only when the Slack assistant actually runs on Foundry; the key-based
+    // providers never touch the account.
+    agentPrincipalIds: (slackBotEnabled && !slackBotUsesApiKey) ? [
       slackBot!.outputs.identityPrincipalId
     ] : []
   }
@@ -492,11 +522,15 @@ module slackBot 'slack-bot.bicep' = if (slackBotEnabled) {
     managedEnvironmentId: managedEnvironment.id
     image: slackBotImage
     keyVaultName: keyVault.name
+    assistantProvider: slackBotProvider
     slackAppTokenSecretName: slackAppTokenSecretName
     slackBotTokenSecretName: slackBotTokenSecretName
     sqlflowAccessTokenSecretName: slackBotSqlflowTokenSecretName
+    modelApiKeySecretName: slackBotModelApiKeySecretName
     foundryProjectEndpoint: aiFoundryProjectEndpoint
     foundryModelDeploymentName: aiFoundryModelName
+    openaiModel: slackBotOpenAIModel
+    anthropicModel: slackBotAnthropicModel
     mcpServerUrl: mcp!.outputs.mcpUrl
     guiBaseUrl: 'https://${guiFqdn}'
     acrName: acrName
@@ -506,6 +540,7 @@ module slackBot 'slack-bot.bicep' = if (slackBotEnabled) {
     slackAppTokenSecret
     slackBotTokenSecret
     slackBotSqlflowTokenSecret
+    slackBotModelApiKeySecret
   ]
 }
 

@@ -1,14 +1,23 @@
 // Deploys the SQLFlow Slack assistant as a Container App: SqlFlow.SlackBot, the Socket Mode worker that
-// relays channel mentions and DMs to the Azure AI Foundry agent whose tools are the SQLFlow MCP server.
-// The bot dials OUT to Slack over a websocket and to Foundry over HTTPS, so it exposes nothing (no ingress).
+// relays channel mentions and DMs to a model provider whose tools are the SQLFlow MCP server. Three
+// provider modes share one experience; the bot dials OUT to Slack over a websocket and to the provider
+// over HTTPS, so it exposes nothing (no ingress):
 //
-// Secrets (the two Slack tokens and the read-scoped SQLFlow access token) come from an existing Key Vault,
-// read by the app's user-assigned managed identity. The SAME identity signs into the Foundry project, so
-// grant it the Azure AI User role there (main.bicep does this via ai-foundry.bicep's agentPrincipalIds).
+//   AzureFoundry  the Foundry Responses API, signed in with the app's managed identity (grant it the
+//                 Cognitive Services OpenAI User role on the account; main.bicep does this via
+//                 ai-foundry.bicep's agentPrincipalIds). No API key anywhere.
+//   OpenAI        the OpenAI platform directly, authenticated with an OpenAI API key from Key Vault.
+//                 No Azure AI dependency.
+//   Anthropic     the Anthropic Claude API (MCP connector), authenticated with an Anthropic API key
+//                 from Key Vault. No Azure AI dependency.
+//
+// Secrets (the two Slack tokens, the read-scoped SQLFlow access token, and for the OpenAI/Anthropic
+// modes the provider API key) come from an existing Key Vault, read by the app's user-assigned
+// managed identity.
 //
 //   az deployment group create -g <rg> -f slack-bot.bicep \
 //     -p managedEnvironmentId=<env-id> image=<registry>/sqlflow-slack-bot:latest keyVaultName=<kv> \
-//        foundryProjectEndpoint=https://... foundryModelDeploymentName=gpt-5.1 mcpServerUrl=https://.../mcp
+//        mcpServerUrl=https://.../mcp foundryProjectEndpoint=https://... foundryModelDeploymentName=gpt-5.1
 
 @description('Azure region. Defaults to the resource group location.')
 param location string = resourceGroup().location
@@ -25,22 +34,35 @@ param image string
 @description('Name of an existing Key Vault holding the Slack and SQLFlow token secrets.')
 param keyVaultName string
 
+@description('The model provider answering questions: AzureFoundry (managed identity, no key), OpenAI (platform API key), or Anthropic (Claude API key).')
+@allowed(['AzureFoundry', 'OpenAI', 'Anthropic'])
+param assistantProvider string = 'AzureFoundry'
+
 @description('Key Vault secret name for the Slack app-level token (xapp-..., Socket Mode).')
 param slackAppTokenSecretName string = 'sqlflow-slack-app-token'
 
 @description('Key Vault secret name for the Slack bot user OAuth token (xoxb-...).')
 param slackBotTokenSecretName string = 'sqlflow-slack-bot-token'
 
-@description('Key Vault secret name for the read-scoped SQLFlow personal access token the agent presents to the MCP server.')
+@description('Key Vault secret name for the read-scoped SQLFlow personal access token the assistant presents to the MCP server.')
 param sqlflowAccessTokenSecretName string = 'sqlflow-slack-bot-access-token'
 
-@description('The Foundry project endpoint the agent lives in, e.g. https://<account>.services.ai.azure.com/api/projects/<project>.')
-param foundryProjectEndpoint string
+@description('Key Vault secret name for the provider API key. Read only when assistantProvider is OpenAI or Anthropic.')
+param modelApiKeySecretName string = 'sqlflow-slack-bot-model-api-key'
 
-@description('The model deployment (in the same Foundry account) the agent runs on.')
-param foundryModelDeploymentName string
+@description('The Foundry project endpoint, e.g. https://<account>.services.ai.azure.com/api/projects/<project>. Required when assistantProvider is AzureFoundry.')
+param foundryProjectEndpoint string = ''
 
-@description('The deployed SQLFlow MCP server endpoint the agent uses as its tool source, e.g. https://sqlflow-mcp.<env-domain>/mcp.')
+@description('The model deployment (in the same Foundry account) the assistant runs on. Required when assistantProvider is AzureFoundry.')
+param foundryModelDeploymentName string = ''
+
+@description('The OpenAI model, which must support the Responses API with the hosted MCP tool. Used when assistantProvider is OpenAI.')
+param openaiModel string = 'gpt-5-mini'
+
+@description('The Claude model id. Used when assistantProvider is Anthropic.')
+param anthropicModel string = 'claude-opus-4-8'
+
+@description('The deployed SQLFlow MCP server endpoint the assistant uses as its tool source, e.g. https://sqlflow-mcp.<env-domain>/mcp.')
 param mcpServerUrl string
 
 @description('SQLFlow GUI base URL; when set, answers link runs and pipelines to their GUI pages. Empty disables links.')
@@ -62,6 +84,8 @@ param memory string = '0.5Gi'
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 // The AcrPull built-in role, for managed-identity image pull from a same-group registry.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+
+var usesApiKey = assistantProvider != 'AzureFoundry'
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${name}-id'
@@ -100,6 +124,97 @@ resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!emp
 var vaultUri = 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/'
 var registryServer = !empty(acrName) ? acr.properties.loginServer : acrLoginServer
 
+var baseSecrets = [
+  {
+    name: 'slack-app-token'
+    keyVaultUrl: '${vaultUri}secrets/${slackAppTokenSecretName}'
+    identity: identity.id
+  }
+  {
+    name: 'slack-bot-token'
+    keyVaultUrl: '${vaultUri}secrets/${slackBotTokenSecretName}'
+    identity: identity.id
+  }
+  {
+    name: 'sqlflow-access-token'
+    keyVaultUrl: '${vaultUri}secrets/${sqlflowAccessTokenSecretName}'
+    identity: identity.id
+  }
+]
+
+var apiKeySecrets = usesApiKey ? [
+  {
+    name: 'model-api-key'
+    keyVaultUrl: '${vaultUri}secrets/${modelApiKeySecretName}'
+    identity: identity.id
+  }
+] : []
+
+var baseEnv = [
+  {
+    name: 'SlackBot__Provider'
+    value: assistantProvider
+  }
+  {
+    name: 'SlackBot__Slack__AppToken'
+    secretRef: 'slack-app-token'
+  }
+  {
+    name: 'SlackBot__Slack__BotToken'
+    secretRef: 'slack-bot-token'
+  }
+  {
+    name: 'SlackBot__SqlFlow__AccessToken'
+    secretRef: 'sqlflow-access-token'
+  }
+  {
+    name: 'SlackBot__SqlFlow__GuiBaseUrl'
+    value: guiBaseUrl
+  }
+  {
+    name: 'SlackBot__Mcp__ServerUrl'
+    value: mcpServerUrl
+  }
+]
+
+var foundryEnv = assistantProvider == 'AzureFoundry' ? [
+  {
+    name: 'SlackBot__Foundry__ProjectEndpoint'
+    value: foundryProjectEndpoint
+  }
+  {
+    name: 'SlackBot__Foundry__ModelDeploymentName'
+    value: foundryModelDeploymentName
+  }
+  // DefaultAzureCredential resolves this user-assigned identity for the Foundry sign-in.
+  {
+    name: 'AZURE_CLIENT_ID'
+    value: identity.properties.clientId
+  }
+] : []
+
+var openaiEnv = assistantProvider == 'OpenAI' ? [
+  {
+    name: 'SlackBot__OpenAI__ApiKey'
+    secretRef: 'model-api-key'
+  }
+  {
+    name: 'SlackBot__OpenAI__Model'
+    value: openaiModel
+  }
+] : []
+
+var anthropicEnv = assistantProvider == 'Anthropic' ? [
+  {
+    name: 'SlackBot__Anthropic__ApiKey'
+    secretRef: 'model-api-key'
+  }
+  {
+    name: 'SlackBot__Anthropic__Model'
+    value: anthropicModel
+  }
+] : []
+
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
@@ -113,30 +228,14 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: managedEnvironmentId
     configuration: {
       activeRevisionsMode: 'Single'
-      // No ingress: Socket Mode dials out, Foundry and Key Vault are outbound HTTPS.
+      // No ingress: Socket Mode dials out, the model provider and Key Vault are outbound HTTPS.
       registries: empty(registryServer) ? [] : [
         {
           server: registryServer
           identity: identity.id
         }
       ]
-      secrets: [
-        {
-          name: 'slack-app-token'
-          keyVaultUrl: '${vaultUri}secrets/${slackAppTokenSecretName}'
-          identity: identity.id
-        }
-        {
-          name: 'slack-bot-token'
-          keyVaultUrl: '${vaultUri}secrets/${slackBotTokenSecretName}'
-          identity: identity.id
-        }
-        {
-          name: 'sqlflow-access-token'
-          keyVaultUrl: '${vaultUri}secrets/${sqlflowAccessTokenSecretName}'
-          identity: identity.id
-        }
-      ]
+      secrets: concat(baseSecrets, apiKeySecrets)
     }
     template: {
       containers: [
@@ -147,41 +246,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: [
-            {
-              name: 'SlackBot__Slack__AppToken'
-              secretRef: 'slack-app-token'
-            }
-            {
-              name: 'SlackBot__Slack__BotToken'
-              secretRef: 'slack-bot-token'
-            }
-            {
-              name: 'SlackBot__SqlFlow__AccessToken'
-              secretRef: 'sqlflow-access-token'
-            }
-            {
-              name: 'SlackBot__SqlFlow__GuiBaseUrl'
-              value: guiBaseUrl
-            }
-            {
-              name: 'SlackBot__Foundry__ProjectEndpoint'
-              value: foundryProjectEndpoint
-            }
-            {
-              name: 'SlackBot__Foundry__ModelDeploymentName'
-              value: foundryModelDeploymentName
-            }
-            {
-              name: 'SlackBot__Foundry__McpServerUrl'
-              value: mcpServerUrl
-            }
-            // DefaultAzureCredential resolves this user-assigned identity for the Foundry sign-in.
-            {
-              name: 'AZURE_CLIENT_ID'
-              value: identity.properties.clientId
-            }
-          ]
+          env: concat(baseEnv, foundryEnv, openaiEnv, anthropicEnv)
         }
       ]
       scale: {
@@ -199,7 +264,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   ]
 }
 
-@description('The principal (object) id of the bot identity: grant it the Azure AI User role on the Foundry account (ai-foundry.bicep agentPrincipalIds).')
+@description('The principal (object) id of the bot identity: in AzureFoundry mode, grant it Foundry access (ai-foundry.bicep agentPrincipalIds).')
 output identityPrincipalId string = identity.properties.principalId
 
 @description('The client id of the bot identity.')

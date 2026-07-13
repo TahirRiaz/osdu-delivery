@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5984035750208520624"
+      "templateHash": "5974304332703997929"
     }
   },
   "parameters": {
@@ -194,6 +194,39 @@
         "description": "A READ-scoped SQLFlow personal access token (sqlf_...) the assistant presents to the MCP server. Mint it in the GUI or CLI after the estate is up, then redeploy with this set; empty skips the Slack assistant."
       }
     },
+    "slackBotProvider": {
+      "type": "string",
+      "defaultValue": "AzureFoundry",
+      "allowedValues": [
+        "AzureFoundry",
+        "OpenAI",
+        "Anthropic"
+      ],
+      "metadata": {
+        "description": "The Slack assistant model provider: AzureFoundry (the Foundry Responses API via managed identity, needs aiFoundryName + aiFoundryModelName), OpenAI (the OpenAI platform via API key), or Anthropic (the Claude API via API key). The two key-based modes have no Azure AI dependency."
+      }
+    },
+    "slackBotModelApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The provider API key for the OpenAI (sk-...) or Anthropic (sk-ant-...) mode. Required for those modes and ignored for AzureFoundry; empty in a key-based mode skips the Slack assistant."
+      }
+    },
+    "slackBotOpenAIModel": {
+      "type": "string",
+      "defaultValue": "gpt-5-mini",
+      "metadata": {
+        "description": "The OpenAI model, which must support the Responses API with the hosted MCP tool. Used when slackBotProvider is OpenAI."
+      }
+    },
+    "slackBotAnthropicModel": {
+      "type": "string",
+      "defaultValue": "claude-opus-4-8",
+      "metadata": {
+        "description": "The Claude model id. Used when slackBotProvider is Anthropic."
+      }
+    },
     "mcpName": {
       "type": "string",
       "defaultValue": "sqlflow-mcp",
@@ -325,8 +358,11 @@
     "slackAppTokenSecretName": "sqlflow-slack-app-token",
     "slackBotTokenSecretName": "sqlflow-slack-bot-token",
     "slackBotSqlflowTokenSecretName": "sqlflow-slack-bot-access-token",
+    "slackBotModelApiKeySecretName": "sqlflow-slack-bot-model-api-key",
     "mcpEnabled": "[not(empty(parameters('mcpImage')))]",
-    "slackBotEnabled": "[and(and(and(and(and(and(variables('mcpEnabled'), not(empty(parameters('slackBotImage')))), not(empty(parameters('slackAppToken')))), not(empty(parameters('slackBotToken')))), not(empty(parameters('slackBotSqlflowToken')))), not(empty(parameters('aiFoundryName')))), not(empty(parameters('aiFoundryModelName'))))]",
+    "slackBotUsesApiKey": "[not(equals(parameters('slackBotProvider'), 'AzureFoundry'))]",
+    "slackBotProviderReady": "[if(variables('slackBotUsesApiKey'), not(empty(parameters('slackBotModelApiKey'))), and(not(empty(parameters('aiFoundryName'))), not(empty(parameters('aiFoundryModelName')))))]",
+    "slackBotEnabled": "[and(and(and(and(and(variables('mcpEnabled'), not(empty(parameters('slackBotImage')))), not(empty(parameters('slackAppToken')))), not(empty(parameters('slackBotToken')))), not(empty(parameters('slackBotSqlflowToken')))), variables('slackBotProviderReady'))]",
     "scalerPasswordEncoded": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parameters('sqlAdminPassword'), '%', '%25'), '+', '%2B'), '/', '%2F'), '=', '%3D'), ' ', '%20'), '@', '%40'), ':', '%3A'), '?', '%3F'), '#', '%23'), '&', '%26'), ';', '%3B')]",
     "scalerConnectionSecretName": "sqlflow-catalog-db-scaler",
     "aiFoundryProjectEndpoint": "[if(empty(parameters('aiFoundryName')), '', format('https://{0}.services.ai.azure.com/api/projects/{1}', parameters('aiFoundryName'), parameters('aiFoundryProjectName')))]"
@@ -507,6 +543,18 @@
       "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('slackBotSqlflowTokenSecretName'))]",
       "properties": {
         "value": "[parameters('slackBotSqlflowToken')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+      ]
+    },
+    {
+      "condition": "[and(variables('slackBotEnabled'), variables('slackBotUsesApiKey'))]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('slackBotModelApiKeySecretName'))]",
+      "properties": {
+        "value": "[parameters('slackBotModelApiKey')]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
@@ -1514,7 +1562,7 @@
               "[reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-worker-app'), '2025-04-01').outputs.identityPrincipalId.value]"
             ]
           },
-          "agentPrincipalIds": "[if(variables('slackBotEnabled'), createObject('value', createArray(reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-slack-bot-app'), '2025-04-01').outputs.identityPrincipalId.value)), createObject('value', createArray()))]"
+          "agentPrincipalIds": "[if(and(variables('slackBotEnabled'), not(variables('slackBotUsesApiKey'))), createObject('value', createArray(reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-slack-bot-app'), '2025-04-01').outputs.identityPrincipalId.value)), createObject('value', createArray()))]"
         },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
@@ -1523,7 +1571,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "1599694521154105697"
+              "templateHash": "9536245192722945617"
             }
           },
           "parameters": {
@@ -1621,7 +1669,7 @@
           },
           "variables": {
             "cognitiveServicesUserRoleId": "a97b65f3-24c7-4388-baec-2e87135dc908",
-            "azureAiUserRoleId": "53ca6127-db72-4b80-b1b0-d745d6d5456d",
+            "cognitiveServicesOpenAIUserRoleId": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
             "effectiveModelDeploymentName": "[if(empty(parameters('modelDeploymentName')), parameters('modelName'), parameters('modelDeploymentName'))]"
           },
           "resources": [
@@ -1702,9 +1750,9 @@
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
-              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), parameters('agentPrincipalIds')[copyIndex()], variables('azureAiUserRoleId'))]",
+              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), parameters('agentPrincipalIds')[copyIndex()], variables('cognitiveServicesOpenAIUserRoleId'))]",
               "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('azureAiUserRoleId'))]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesOpenAIUserRoleId'))]",
                 "principalId": "[parameters('agentPrincipalIds')[copyIndex()]]",
                 "principalType": "ServicePrincipal"
               },
@@ -2022,6 +2070,9 @@
           "keyVaultName": {
             "value": "[parameters('keyVaultName')]"
           },
+          "assistantProvider": {
+            "value": "[parameters('slackBotProvider')]"
+          },
           "slackAppTokenSecretName": {
             "value": "[variables('slackAppTokenSecretName')]"
           },
@@ -2031,11 +2082,20 @@
           "sqlflowAccessTokenSecretName": {
             "value": "[variables('slackBotSqlflowTokenSecretName')]"
           },
+          "modelApiKeySecretName": {
+            "value": "[variables('slackBotModelApiKeySecretName')]"
+          },
           "foundryProjectEndpoint": {
             "value": "[variables('aiFoundryProjectEndpoint')]"
           },
           "foundryModelDeploymentName": {
             "value": "[parameters('aiFoundryModelName')]"
+          },
+          "openaiModel": {
+            "value": "[parameters('slackBotOpenAIModel')]"
+          },
+          "anthropicModel": {
+            "value": "[parameters('slackBotAnthropicModel')]"
           },
           "mcpServerUrl": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-mcp-app'), '2025-04-01').outputs.mcpUrl.value]"
@@ -2057,7 +2117,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "13198334894346294001"
+              "templateHash": "10273724677933771996"
             }
           },
           "parameters": {
@@ -2093,6 +2153,18 @@
                 "description": "Name of an existing Key Vault holding the Slack and SQLFlow token secrets."
               }
             },
+            "assistantProvider": {
+              "type": "string",
+              "defaultValue": "AzureFoundry",
+              "allowedValues": [
+                "AzureFoundry",
+                "OpenAI",
+                "Anthropic"
+              ],
+              "metadata": {
+                "description": "The model provider answering questions: AzureFoundry (managed identity, no key), OpenAI (platform API key), or Anthropic (Claude API key)."
+              }
+            },
             "slackAppTokenSecretName": {
               "type": "string",
               "defaultValue": "sqlflow-slack-app-token",
@@ -2111,25 +2183,48 @@
               "type": "string",
               "defaultValue": "sqlflow-slack-bot-access-token",
               "metadata": {
-                "description": "Key Vault secret name for the read-scoped SQLFlow personal access token the agent presents to the MCP server."
+                "description": "Key Vault secret name for the read-scoped SQLFlow personal access token the assistant presents to the MCP server."
+              }
+            },
+            "modelApiKeySecretName": {
+              "type": "string",
+              "defaultValue": "sqlflow-slack-bot-model-api-key",
+              "metadata": {
+                "description": "Key Vault secret name for the provider API key. Read only when assistantProvider is OpenAI or Anthropic."
               }
             },
             "foundryProjectEndpoint": {
               "type": "string",
+              "defaultValue": "",
               "metadata": {
-                "description": "The Foundry project endpoint the agent lives in, e.g. https://<account>.services.ai.azure.com/api/projects/<project>."
+                "description": "The Foundry project endpoint, e.g. https://<account>.services.ai.azure.com/api/projects/<project>. Required when assistantProvider is AzureFoundry."
               }
             },
             "foundryModelDeploymentName": {
               "type": "string",
+              "defaultValue": "",
               "metadata": {
-                "description": "The model deployment (in the same Foundry account) the agent runs on."
+                "description": "The model deployment (in the same Foundry account) the assistant runs on. Required when assistantProvider is AzureFoundry."
+              }
+            },
+            "openaiModel": {
+              "type": "string",
+              "defaultValue": "gpt-5-mini",
+              "metadata": {
+                "description": "The OpenAI model, which must support the Responses API with the hosted MCP tool. Used when assistantProvider is OpenAI."
+              }
+            },
+            "anthropicModel": {
+              "type": "string",
+              "defaultValue": "claude-opus-4-8",
+              "metadata": {
+                "description": "The Claude model id. Used when assistantProvider is Anthropic."
               }
             },
             "mcpServerUrl": {
               "type": "string",
               "metadata": {
-                "description": "The deployed SQLFlow MCP server endpoint the agent uses as its tool source, e.g. https://sqlflow-mcp.<env-domain>/mcp."
+                "description": "The deployed SQLFlow MCP server endpoint the assistant uses as its tool source, e.g. https://sqlflow-mcp.<env-domain>/mcp."
               }
             },
             "guiBaseUrl": {
@@ -2171,7 +2266,54 @@
           "variables": {
             "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
             "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
-            "vaultUri": "[format('https://{0}{1}/', parameters('keyVaultName'), environment().suffixes.keyvaultDns)]"
+            "usesApiKey": "[not(equals(parameters('assistantProvider'), 'AzureFoundry'))]",
+            "vaultUri": "[format('https://{0}{1}/', parameters('keyVaultName'), environment().suffixes.keyvaultDns)]",
+            "baseSecrets": [
+              {
+                "name": "slack-app-token",
+                "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('slackAppTokenSecretName'))]",
+                "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+              },
+              {
+                "name": "slack-bot-token",
+                "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('slackBotTokenSecretName'))]",
+                "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+              },
+              {
+                "name": "sqlflow-access-token",
+                "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('sqlflowAccessTokenSecretName'))]",
+                "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+              }
+            ],
+            "apiKeySecrets": "[if(variables('usesApiKey'), createArray(createObject('name', 'model-api-key', 'keyVaultUrl', format('{0}secrets/{1}', variables('vaultUri'), parameters('modelApiKeySecretName')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))), createArray())]",
+            "baseEnv": [
+              {
+                "name": "SlackBot__Provider",
+                "value": "[parameters('assistantProvider')]"
+              },
+              {
+                "name": "SlackBot__Slack__AppToken",
+                "secretRef": "slack-app-token"
+              },
+              {
+                "name": "SlackBot__Slack__BotToken",
+                "secretRef": "slack-bot-token"
+              },
+              {
+                "name": "SlackBot__SqlFlow__AccessToken",
+                "secretRef": "sqlflow-access-token"
+              },
+              {
+                "name": "SlackBot__SqlFlow__GuiBaseUrl",
+                "value": "[parameters('guiBaseUrl')]"
+              },
+              {
+                "name": "SlackBot__Mcp__ServerUrl",
+                "value": "[parameters('mcpServerUrl')]"
+              }
+            ],
+            "openaiEnv": "[if(equals(parameters('assistantProvider'), 'OpenAI'), createArray(createObject('name', 'SlackBot__OpenAI__ApiKey', 'secretRef', 'model-api-key'), createObject('name', 'SlackBot__OpenAI__Model', 'value', parameters('openaiModel'))), createArray())]",
+            "anthropicEnv": "[if(equals(parameters('assistantProvider'), 'Anthropic'), createArray(createObject('name', 'SlackBot__Anthropic__ApiKey', 'secretRef', 'model-api-key'), createObject('name', 'SlackBot__Anthropic__Model', 'value', parameters('anthropicModel'))), createArray())]"
           },
           "resources": [
             {
@@ -2225,23 +2367,7 @@
                 "configuration": {
                   "activeRevisionsMode": "Single",
                   "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
-                  "secrets": [
-                    {
-                      "name": "slack-app-token",
-                      "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('slackAppTokenSecretName'))]",
-                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
-                    },
-                    {
-                      "name": "slack-bot-token",
-                      "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('slackBotTokenSecretName'))]",
-                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
-                    },
-                    {
-                      "name": "sqlflow-access-token",
-                      "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('sqlflowAccessTokenSecretName'))]",
-                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
-                    }
-                  ]
+                  "secrets": "[concat(variables('baseSecrets'), variables('apiKeySecrets'))]"
                 },
                 "template": {
                   "containers": [
@@ -2252,40 +2378,7 @@
                         "cpu": "[json(parameters('cpu'))]",
                         "memory": "[parameters('memory')]"
                       },
-                      "env": [
-                        {
-                          "name": "SlackBot__Slack__AppToken",
-                          "secretRef": "slack-app-token"
-                        },
-                        {
-                          "name": "SlackBot__Slack__BotToken",
-                          "secretRef": "slack-bot-token"
-                        },
-                        {
-                          "name": "SlackBot__SqlFlow__AccessToken",
-                          "secretRef": "sqlflow-access-token"
-                        },
-                        {
-                          "name": "SlackBot__SqlFlow__GuiBaseUrl",
-                          "value": "[parameters('guiBaseUrl')]"
-                        },
-                        {
-                          "name": "SlackBot__Foundry__ProjectEndpoint",
-                          "value": "[parameters('foundryProjectEndpoint')]"
-                        },
-                        {
-                          "name": "SlackBot__Foundry__ModelDeploymentName",
-                          "value": "[parameters('foundryModelDeploymentName')]"
-                        },
-                        {
-                          "name": "SlackBot__Foundry__McpServerUrl",
-                          "value": "[parameters('mcpServerUrl')]"
-                        },
-                        {
-                          "name": "AZURE_CLIENT_ID",
-                          "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId]"
-                        }
-                      ]
+                      "env": "[concat(variables('baseEnv'), if(equals(parameters('assistantProvider'), 'AzureFoundry'), createArray(createObject('name', 'SlackBot__Foundry__ProjectEndpoint', 'value', parameters('foundryProjectEndpoint')), createObject('name', 'SlackBot__Foundry__ModelDeploymentName', 'value', parameters('foundryModelDeploymentName')), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId)), createArray()), variables('openaiEnv'), variables('anthropicEnv'))]"
                     }
                   ],
                   "scale": {
@@ -2305,7 +2398,7 @@
             "identityPrincipalId": {
               "type": "string",
               "metadata": {
-                "description": "The principal (object) id of the bot identity: grant it the Azure AI User role on the Foundry account (ai-foundry.bicep agentPrincipalIds)."
+                "description": "The principal (object) id of the bot identity: in AzureFoundry mode, grant it Foundry access (ai-foundry.bicep agentPrincipalIds)."
               },
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').principalId]"
             },
@@ -2324,6 +2417,7 @@
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
         "[resourceId('Microsoft.Resources/deployments', 'sqlflow-mcp-app')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('slackAppTokenSecretName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('slackBotModelApiKeySecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('slackBotSqlflowTokenSecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('slackBotTokenSecretName'))]"
       ]
