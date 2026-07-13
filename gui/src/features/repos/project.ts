@@ -10,14 +10,13 @@ export function projectOf(relativePath: string): string {
 }
 
 /**
- * The folder holding a flow document inside its repo: the full directory part of the repo-relative path (nested
- * folders keep their whole path, e.g. "erp/orders"), or "(root)" for a document at the repo root. Where projectOf
- * answers "which source does this belong to", folderOf answers "where does this file live", so it is the grouping
- * key for the folder-tree views.
+ * The folder path of a flow document split into its individual segments, outermost first: "flows/api/x.yaml"
+ * yields ["flows", "api"], and a root-level document yields []. This is the per-level node chain a folder tree
+ * nests a pipeline under, so a shared prefix like "flows" collapses into one parent node instead of repeating.
  */
-export function folderOf(relativePath: string): string {
+export function folderSegmentsOf(relativePath: string): string[] {
   const slash = relativePath.lastIndexOf("/");
-  return slash > 0 ? relativePath.slice(0, slash) : "(root)";
+  return slash > 0 ? relativePath.slice(0, slash).split("/") : [];
 }
 
 /** The file-name part of a repo-relative flow document path (the whole path when it has no folder). */

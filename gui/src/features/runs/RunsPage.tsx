@@ -15,7 +15,7 @@ import { FilterBar } from "../../components/FilterBar";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
-import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
+import { PagedTable, type Column, type TableTree } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { formatDurationSeconds } from "../../lib/time";
@@ -108,49 +108,49 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
 
 // The batch-report layout carried over from classic SQLFlow: each pipeline's LAST run clusters under its batch,
 // then under the lineage step, so the grouped view answers "what failed, what needs fixing" at a glance. Full
-// run history lives in the flat view and on the pipeline detail page. The "Run batch" action launches the whole
-// data source (every flow in the batch, in dependency order) as one run group.
-function makeBatchGrouping(onRunBatch: (repoId: string | null, batch: string) => void): TableGrouping<RunSummary> {
+// run history lives in the flat view and on the pipeline detail page. Expressed as a two-level tree (batch ->
+// step), with the step level carrying a numeric sort so the waves read in execution order. The "Run batch"
+// action launches the whole data source (every flow in the batch, in dependency order) as one run group.
+function makeBatchTree(onRunBatch: (repoId: string | null, batch: string) => void): TableTree<RunSummary> {
   return {
-  groupKey: (row) => row.batch,
-  renderGroupHeader: (rows) => (
-    // flexGrow makes this stack fill the header row (it is a content-sized flex item inside the node row's
-    // cell), so the button's ml auto really pushes it to the right edge instead of leaving it mid-row where
-    // it would swallow clicks meant to collapse the group.
-    <Stack
-      direction="row"
-      spacing={1.5}
-      alignItems="baseline"
-      useFlexGap
-      flexWrap="wrap"
-      sx={{ flexGrow: 1 }}
-      data-testid="batch-group-header"
-    >
-      <Typography variant="body2" sx={{ fontWeight: 700 }}>Batch: {rows[0].batch}</Typography>
-      <GroupStatsInline rows={rows} />
-      <Button
-        size="small"
-        variant="outlined"
-        sx={{ ml: "auto" }}
-        onClick={(e) => {
-          e.stopPropagation();
-          onRunBatch(rows[0].repoId, rows[0].batch);
-        }}
-        data-testid="run-batch"
-      >
-        Run batch
-      </Button>
-    </Stack>
-  ),
-  subKey: (row) => row.wave,
-  renderSubHeader: (rows) => (
-    <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="step-group-header">
-      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-        Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}
-      </Typography>
-      <GroupStatsInline rows={rows} />
-    </Stack>
-  ),
+    path: (row) => [{ key: row.batch }, { key: `wave:${row.wave}`, sort: row.wave }],
+    renderNode: ({ depth, rows }) =>
+      depth === 0 ? (
+        // flexGrow makes this stack fill the header row (it is a content-sized flex item inside the node row's
+        // cell), so the button's ml auto really pushes it to the right edge instead of leaving it mid-row where
+        // it would swallow clicks meant to collapse the group.
+        <Stack
+          direction="row"
+          spacing={1.5}
+          alignItems="baseline"
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ flexGrow: 1 }}
+          data-testid="batch-group-header"
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700 }}>Batch: {rows[0].batch}</Typography>
+          <GroupStatsInline rows={rows} />
+          <Button
+            size="small"
+            variant="outlined"
+            sx={{ ml: "auto" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRunBatch(rows[0].repoId, rows[0].batch);
+            }}
+            data-testid="run-batch"
+          >
+            Run batch
+          </Button>
+        </Stack>
+      ) : (
+        <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="step-group-header">
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}
+          </Typography>
+          <GroupStatsInline rows={rows} />
+        </Stack>
+      ),
   };
 }
 
@@ -259,8 +259,8 @@ export default function RunsPage() {
         onRowClick={(row) => navigate(`/runs/${row.runId}`)}
         pollMs={5000}
         emptyMessage="No runs match the current filters."
-        grouping={groupByBatch
-          ? makeBatchGrouping((repoId, batch) => setBatchRun({ repoId, batch }))
+        tree={groupByBatch
+          ? makeBatchTree((repoId, batch) => setBatchRun({ repoId, batch }))
           : undefined}
         data-testid="runs-table"
       />
