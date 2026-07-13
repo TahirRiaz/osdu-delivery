@@ -19,7 +19,6 @@ keywords:
   - screenshot
   - diagnose missing data
   - lineage
-  - channel history
 related:
   - guide-deployment
   - concept-authentication-and-identity
@@ -46,7 +45,7 @@ It reads **metadata**: the catalog, lineage, runs, file receipts, object definit
 - **Diagnosing missing or late data.** For "why is `dbo.X` empty / short?", it does not guess: it locates the table, walks lineage upstream to the feeding source, then reads that source's recent runs and `run_files` to see whether it delivered, comparing the latest run's **file size and row count** against prior runs (a succeeded run can still under-deliver). It concludes with the specific cause and the numbers: the source run failed, ran with zero files, has not run since the data was due, or delivered well below its norm.
 - **Concrete queries to go further.** Because it cannot query the data itself, once it has identified the real objects it hands you ready-to-run T-SQL against them, fully qualified and using the real columns from the catalog's object definition, so you can inspect the data directly.
 - **Reading images.** Paste a screenshot (an error dialog, a run's log, a flow YAML) and ask about it; the vision-capable model reads the image, then answers using the tools (looking up the named run or table rather than trusting the picture alone). This needs the `files:read` scope on the Slack app.
-- **Reading the discussion.** In a thread it uses the thread's replies as context. A top-level @-mention in a channel reads the channel's recent history (bounded by `MaxChannelHistoryMessages`), so you can drop a mention under a conversation and ask about it.
+- **Thread context, only when invoked in a thread.** A mention inside a thread uses that thread's replies as context. A top-level mention is answered on its own; the bot never reads the broader channel history, so it only ever sees what a conversation it was invoked in contains.
 
 ## The chain
 

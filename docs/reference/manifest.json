@@ -2326,8 +2326,7 @@
         "image",
         "screenshot",
         "diagnose missing data",
-        "lineage",
-        "channel history"
+        "lineage"
       ],
       "related": [
         "guide-deployment",

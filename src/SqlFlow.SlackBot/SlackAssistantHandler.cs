@@ -187,30 +187,21 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
     }
 
     /// <summary>
-    /// The conversation context before the current message, oldest first. In a thread it is the thread's
-    /// replies (the durable transcript SQLFlow answers within). A top-level channel mention has no thread,
-    /// so it instead reads the channel's recent history, up to <see cref="SlackBotOptions.MaxChannelHistoryMessages"/>,
-    /// which lets someone drop an @-mention in a busy channel and ask about the discussion above it.
+    /// The Slack-thread transcript before the current message, oldest first, for rebuilding the Foundry
+    /// conversation after a restart. A top-level mention is answered on its own (no thread, so no prior
+    /// turns): the bot only takes surrounding context from a thread it is invoked inside, never from the
+    /// broader channel. A follow-up in a thread fetches that thread's replies, the durable transcript.
     /// </summary>
     private async Task<IReadOnlyList<ConversationTurn>> PriorTurnsAsync(string channel, string ts, string threadTs)
     {
+        if (threadTs == ts)
+        {
+            return [];
+        }
         var self = await _selfUserId.Value.ConfigureAwait(false);
-        var messages = threadTs == ts
-            ? await ChannelHistoryAsync(channel, self).ConfigureAwait(false)
-            : await ThreadRepliesAsync(channel, threadTs).ConfigureAwait(false);
 
-        return messages
-            .Where(m => m.Ts != ts && !string.IsNullOrWhiteSpace(m.Text))
-            .Select(m => new ConversationTurn(
-                m is BotMessage || m.User == self,
-                MentionRegex().Replace(m.Text, "").Trim()))
-            .Where(t => t.Text.Length > 0)
-            .ToList();
-    }
-
-    /// <summary>The thread's replies, oldest first, paged in full past what is ever replayed.</summary>
-    private async Task<List<SlackNet.Events.MessageEvent>> ThreadRepliesAsync(string channel, string threadTs)
-    {
+        // conversations.replies pages oldest-first; walk the cursor so a long thread is seen in full,
+        // capped well past what is ever replayed.
         const int maxFetched = 500;
         var messages = new List<SlackNet.Events.MessageEvent>();
         string? cursor = null;
@@ -221,31 +212,14 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
             cursor = page.HasMore ? page.ResponseMetadata?.NextCursor : null;
         }
         while (!string.IsNullOrEmpty(cursor) && messages.Count < maxFetched);
-        return messages;
-    }
 
-    /// <summary>The channel's recent history for a top-level mention, capped and returned oldest first.
-    /// conversations.history pages newest first, so the accumulated window is reversed before use.</summary>
-    private async Task<List<SlackNet.Events.MessageEvent>> ChannelHistoryAsync(string channel, string self)
-    {
-        var limit = Math.Max(0, _options.MaxChannelHistoryMessages);
-        if (limit == 0)
-        {
-            return [];
-        }
-        var messages = new List<SlackNet.Events.MessageEvent>();
-        string? cursor = null;
-        do
-        {
-            var page = await _slack.Conversations
-                .History(channel, cursor: cursor, limit: Math.Min(200, limit - messages.Count))
-                .ConfigureAwait(false);
-            messages.AddRange(page.Messages);
-            cursor = page.HasMore ? page.ResponseMetadata?.NextCursor : null;
-        }
-        while (!string.IsNullOrEmpty(cursor) && messages.Count < limit);
-        messages.Reverse();
-        return messages;
+        return messages
+            .Where(m => m.Ts != ts && !string.IsNullOrWhiteSpace(m.Text))
+            .Select(m => new ConversationTurn(
+                m is BotMessage || m.User == self,
+                MentionRegex().Replace(m.Text, "").Trim()))
+            .Where(t => t.Text.Length > 0)
+            .ToList();
     }
 
     /// <summary>
