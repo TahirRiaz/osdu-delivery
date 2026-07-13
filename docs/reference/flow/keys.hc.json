@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "product": "SQLFlow V3 (DeltaForge)",
+  "product": "SQLFlow V3",
   "flowType": "hc",
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 25,
+  "keyCount": 27,
   "keys": [
     {
       "path": "baseValue",
@@ -63,6 +63,15 @@
       "description": "Trailing days, counted back from the run's as-of date, whose data may still be arriving. HealthCheckEngine.MarkImmaturePoints flags every row with Date >= asOfDate - (maturityDays - 1) as IsImmature. Immature rows are still scored and reported but are excluded from TagAnomalies's anomaly counting, from the observed-mature rows fed to PeltDetector.Detect for level shifts, and from ComputeMetrics's fit statistics, so a partially-loaded 'today' cannot page anyone or poison the fit numbers. 'maturityDays: 0' disables the window outright (row.IsImmature is forced false for every row: the guard is 'maturityDays > 0 && ...'), it does not merely shrink the window to zero width. Also echoed into the run's HealthCheckReport.MaturityDays artifact field.",
       "definedIn": "src/SqlFlow.Yaml/HealthCheckYaml.cs:30 (model: src/SqlFlow.Core/HealthChecks/HealthCheckFlow.cs:94)",
       "validation": "Outside [0, 30] throws FlowValidationException \"<source>: 'maturityDays' must be between 0 and 30, got <n>.\" (src/SqlFlow.Yaml/YamlHealthCheckFlowLoader.cs:128-133)."
+    },
+    {
+      "path": "mode",
+      "type": "string",
+      "required": false,
+      "default": "auto",
+      "enumValues": ["auto", "manual"],
+      "description": "When the health check executes. 'auto' (the default) lets schedules and batch/node group runs pick the flow up like any other automatic execution; 'manual' excludes it from all automatic dispatch and reserves it for an explicit on-demand trigger (the GUI's run button, a single-flow API trigger, or a direct CLI run). Parsed by YamlDocumentParts.ParseExecutionMode into HealthCheckFlow.Mode (src/SqlFlow.Yaml/YamlHealthCheckFlowLoader.cs:170), backed by the ExecutionMode enum (Auto=0, Manual=1).",
+      "definedIn": "src/SqlFlow.Yaml/HealthCheckYaml.cs:17 (model: src/SqlFlow.Core/HealthChecks/HealthCheckFlow.cs:109, enum src/SqlFlow.Core/Runs/ExecutionMode.cs)"
     },
     {
       "path": "metrics",

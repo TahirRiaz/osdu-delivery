@@ -100,6 +100,7 @@ A batch generates no SQL of its own, so its `trace.sql` is empty; each member fl
 | `error` | The failure message, or `null` |
 | `host` | The machine that executed the run (defaults to `Environment.MachineName`), so history aggregated from many nodes stays attributable |
 | `result` | The full kind-specific result object, serialized as-is (for example an `IngestionRunResult` or `FlowResult`) |
+| `events` | The run's canonical event timeline: every progress, decision, and warning event the engine published while the run executed, uniform across flow kinds and serialized into `run.json` for `file`/`ing`/`exp`/`sp`/`hc`/`inv` runs (empty for `scm` and `batch`). Generated SQL is not duplicated here (it lives in the result's `sqlTrace`); a reader treats an absent array as no events |
 
 A real header, from samples/quickstart/.sqlflow/runs/orders/20260618-112108_019eda76/run.json:
 

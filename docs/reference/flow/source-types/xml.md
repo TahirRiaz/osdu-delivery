@@ -200,6 +200,8 @@ The XML reader rides the shared file-source base, so the common options bound by
 | `onErrorResume` | `true` | Continue the batch on error. |
 | `noOfThreads` | `4` | Parallelism. |
 
+`syncSchema`, `expectedColumnCount`, `fetchDataTypes`, `onErrorResume`, `noOfThreads`, and the `preFilter` / `preProcessOnTrg` / `postProcessOnTrg` / `preInvokeAlias` hooks are bound by `PreIngestionXml.FromSource` but never reach `FileSourceOptions`: `XmlSourceReader.ReadOptions` does not forward them, so setting any of them under `source.options` has no effect on an XML load (exactly like JSON). They are carried as metadata only.
+
 The `fileDate.*` option group (for example `fileDate.from: path` with `fileDate.hive: "true"`) redirects where the file's business date is read from (path tokens or file name instead of the modified timestamp); see [File discovery, date windows, and lifecycle](../../concepts/file-discovery-and-lifecycle.md) for the full contract.
 
 The flow-type discriminator is `xml` and `sysAlias` defaults to `default`.

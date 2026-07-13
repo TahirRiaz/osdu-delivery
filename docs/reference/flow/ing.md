@@ -69,6 +69,7 @@ sqlflow run orders-ingestion.flow.yaml
 |---|---|---|---|---|
 | `flowType` | string | yes | none | Must be `ing` for this document type. |
 | `name` | string | no | unset | Becomes `SysAlias`; also seeds the stable `FlowId`. |
+| `batch` | string | no | unset | Batch label carried into the run record (`IngestionFlow.Batch`). |
 | `description` | string | no | unset | Free-text description. |
 | `connections` | map | no | empty | Named connections referenced by `server:` on source, target, and surrogate keys. |
 | `source` | map | yes | none | The source endpoint. Error when missing: `'source' is required.` |
@@ -89,7 +90,7 @@ sqlflow run orders-ingestion.flow.yaml
 | `invokes` | map | no | empty | Named invoke blocks referenced by `preInvoke`/`postInvoke`. |
 | `servicePrincipals` | map | no | empty | Named Azure service principals used by invoke blocks. |
 | `virtualColumns` | list | no | empty | Computed columns: each entry has `name`, `dataType`, `dataTypeExpression`, `expression` (required per entry). |
-| `assertions` | list | no | empty | Inline data-quality assertions: each entry has `name` and `expression` (both required; duplicate names rejected). |
+| `assertions` | list | no | empty | Inline data-quality assertions: each entry has `name` and `expression` (both required; duplicate names rejected) and an optional `mode` (`auto` default, or `manual`; a manual assertion runs only in an assertions-only run). |
 | `surrogateKeys` | list | no | empty | Surrogate key generation: each entry has `server`, `table` (required), `column` (required), `keyColumns` (required), `sKeyColumns`, `preProcess`, `postProcess`. |
 
 ## name, SysAlias, and FlowId

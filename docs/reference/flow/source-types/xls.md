@@ -134,13 +134,15 @@ Matched files are processed in ascending modified-date order (name as tiebreaker
 
 | Key | Type | Default | Column added |
 | --- | --- | --- | --- |
-| `includeFileName` | bool | `true` | `FileName_DW` (nvarchar(4000), the file name; the full path when `showPathWithFileName: true`) |
-| `includeFileDate` | bool | `true` | `FileDate_DW` (datetime2, the file's modified timestamp, UTC) |
-| `includeFileRowDate` | bool | `true` | `FileRowDate_DW` (datetime2, ingestion timestamp, UTC) |
-| `includeFileSize` | bool | `true` | `FileSize_DW` (bigint) |
-| `includeDataSet` | bool | `true` | `DataSet_DW` (datetime2, a date detected in the file name, else the file's modified timestamp, UTC; see [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename)) |
+| `includeFileName` | bool | `true` | `FileName_DW` (varchar(255), the file name; the full path when `showPathWithFileName: true`) |
+| `includeFileDate` | bool | `true` | `FileDate_DW` (varchar(255), the file's modified timestamp, UTC) |
+| `includeFileRowDate` | bool | `true` | `FileRowDate_DW` (varchar(255), ingestion timestamp, UTC) |
+| `includeFileSize` | bool | `true` | `FileSize_DW` (varchar(255)) |
+| `includeDataSet` | bool | `true` | `DataSet_DW` (varchar(255), a date detected in the file name, else the file's modified timestamp, UTC; see [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename)) |
 | `includeRowNumber` | bool | `true` | `RowNumber_DW` (bigint, 1-based data-row number within the file) |
 | `includeFileLineNumber` | bool | `false` | `FileLineNumber` (bigint, 1-based sheet row number of the row) |
+
+The raw landing layer is string-first: the file/date/size provenance columns land as `varchar(255)` text, not as `datetime2` or `bigint`. Values are written in the encodings the generated transformation view's casts expect: `yyyyMMddHHmmss` for `FileDate_DW` and `DataSet_DW`, `yyyy-MM-dd HH:mm:ss` for `FileRowDate_DW`, and digit strings for `FileSize_DW`. The transformation view applies the real types downstream. Only `RowNumber_DW` and `FileLineNumber` land as `bigint`.
 | `showPathWithFileName` | bool | `false` | Put the full path (not just the name) into `FileName_DW`. |
 | `dataSetFromFileName` | bool | `true` | Derive `DataSet_DW` from a date in the file name (fallback: modified date). `false` makes `DataSet_DW` equal `FileDate_DW`. |
 | `dataSetFormats` | string | none | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
@@ -153,7 +155,7 @@ Matched files are processed in ascending modified-date order (name as tiebreaker
 | `includeHashKey` | bool | `false` | Add a `HashKey_DW` column (varbinary sized to the digest, e.g. `varbinary(64)` for SHA-512). |
 | `hashKeyColumns` | string | empty | Comma-separated source columns hashed into the key, in the order listed; empty hashes every non-generated column. A name with no matching column is dropped; a list where none of the names match fails with `Key columns '<list>' did not match any column in the source.` |
 | `hashKeyType` | string | `SHA2_512` | Hash algorithm; `SHA2_256`/`SHA256`, `SHA1`, and `MD5` are recognized, anything else falls back to SHA-512. |
-| `includeConcatKey` | bool | `false` | Add a `ConcatKey_DW` column (nvarchar(4000)). |
+| `includeConcatKey` | bool | `false` | Add a `ConcatKey_DW` column (String, max length 4000). |
 | `concatKeyColumns` | string | empty | Comma-separated source columns concatenated into the key; empty uses every non-generated column. |
 | `concatKeySeparator` | string | `\|` | Separator between concatenated values. |
 

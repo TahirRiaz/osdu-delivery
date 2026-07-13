@@ -189,7 +189,7 @@ A row whose `BaseValue` is nonzero, including a negative value, is left as obser
 
 ## Choosing the expectation function: stored model, AutoML, or the weekday baseline
 
-`HealthCheckFlowRunner.ResolveModel` (src/SqlFlow.HealthCheck/HealthCheckFlowRunner.cs:372) decides how each metric's `PredictedValue` gets computed, in this order:
+`HealthCheckFlowRunner.ResolveModel` (src/SqlFlow.HealthCheck/HealthCheckFlowRunner.cs:376) decides how each metric's `PredictedValue` gets computed, in this order:
 
 1. Load any stored model and metadata for `(flow.SysAlias, metric.Name)` through `IHealthCheckModelStore.Load`: the file-backed store keeps the serialized ML.NET transformer as `healthcheck.model` next to a `healthcheck.model.json` metadata sidecar (schema version `HealthCheckModelMetadata.CurrentSchemaVersion`, `2`; engine version `HealthCheckModelMetadata.CurrentEngineVersion`, `2`), written together through a temp-file-then-atomic-replace so a concurrent reader never observes a half-written pair. A model file with no matching, readable sidecar fails loudly (naming the folder to delete) rather than silently retraining over it.
 2. `HealthCheckTrainingDecision.Resolve` (src/SqlFlow.HealthCheck/HealthCheckModelStore.cs) turns the flow's `ml.training` policy, `ml.retrainAfterDays`, and the stored metadata's engine version and training timestamp into either `null` (reuse what is stored) or a human-readable training reason. The policy table itself (`auto`/`always`/`never`, retrain-after-days, engine-version staleness) is documented in [flowType: hc](../flow/hc.md); this page is only concerned with what happens on each branch.

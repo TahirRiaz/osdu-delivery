@@ -171,7 +171,7 @@ Generated statements are idempotent:
 
 `IngestionSchemaBuilder` (src/SqlFlow.SqlServer/Schema/IngestionSchemaBuilder.cs) builds the desired schema from the shaped source columns and injects the engine-maintained columns:
 
-- `InsertedDate_DW`, `UpdatedDate_DW`, `DeletedDate_DW` as `datetime2(3)` and `RowStatus_DW` as `char(1)`, per the `systemColumns` policy.
+- `InsertedDate_DW`, `UpdatedDate_DW`, `DeletedDate_DW` as plain `datetime` (not `datetime2(3)`, matching the original SQLFlow arc/ods tables) and `RowStatus_DW` as `char(1)`, per the `systemColumns` policy. When SCD2 is enabled, the period columns (`ValidFrom`/`ValidTo`) are added as `datetime2(3)` (with the current-flag column as `bit`).
 - `HashKey_DW` as `binary(N)` sized by algorithm (`HashKey.BinaryTypeFor`): SHA2_512 = 64, SHA2_256 = 32, SHA1/SHA = 20, MD5/MD4/MD2 = 16. An unknown algorithm fails fast.
 - The identity column (target only, from `target.identityColumn`) as `int IDENTITY(1, 1) NOT NULL` with a clustered primary key.
 

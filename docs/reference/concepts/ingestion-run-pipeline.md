@@ -59,8 +59,9 @@ One run of `IngestionFlowRunner.RunAsync` proceeds in this order. Every step tha
 17. **Assertions**: declared data-quality assertions run against the loaded target; they are log-only and never affect `Success`.
 18. **Post-invoke**: `postInvoke` runs after the load commits and before staging is dropped; a failure reports the run as failed but the committed load stands.
 19. **Drop or keep staging**: see the staging lifecycle below.
-20. **Transform view**: when the transform policy generates a view, `[schema].[v<Table>]` is refreshed over the target with `CREATE OR ALTER`; a failure here fails the run (a stale view must be loud) but the committed load stands.
-21. **Run record**: the run record (rows, durations, the generated SELECT/INSERT/UPDATE/CREATE statements, the rendered trace) is written to the run log. In without-database (pure YAML) mode the log is a no-op.
+20. **Transform view**: when the transform policy generates a view, `[schema].[v_<Table>]` is refreshed over the target with `CREATE OR ALTER`; a failure here fails the run (a stale view must be loud) but the committed load stands.
+21. **Consolidation-gated landing truncate** (`load.truncateSourceWhenConsolidated`): empties the upstream `[pre]` landing table that feeds the source, but only once the target has caught up. The prerequisites are validated up front at run start (an incremental watermark, `incremental.columns` or `incremental.dateColumn`, and a SQL Server source), so a misconfigured flow fails before any data work. On the success path it compares `MAX(watermark)` on both sides and issues `TRUNCATE TABLE` on the landing table only when the target's mark is at least the landing table's; a target that has not consolidated the landed rows keeps them (nothing is lost). It runs after the load commits and after the transform-view refresh.
+22. **Run record**: the run record (rows, durations, the generated SELECT/INSERT/UPDATE/CREATE statements, the rendered trace) is written to the run log. In without-database (pure YAML) mode the log is a no-op.
 
 A failure at any point keeps the staging table, writes a failure run record on a best-effort basis, and returns a failed result carrying the trace captured up to the failure point.
 
@@ -164,6 +165,7 @@ Every SQL statement the run generates is captured as a `SqlTraceEntry` (`Sequenc
 | `incremental.columns`, `incremental.dateColumn`, `incremental.overlapDays`, `incremental.fullLoad`, `incremental.fetchMinValuesFromSource` | The incremental window |
 | `initLoad.enabled`, `initLoad.fromDate`, `initLoad.toDate`, `initLoad.batchBy`, `initLoad.batchSize`, `initLoad.keyColumn`, `initLoad.keyMaxValue` | The chunked backfill plan |
 | `load.keyColumns`, `load.batchUpsert`, `load.batchUpsertRowCount`, `load.threads`, `load.keepStagingTable`, `load.truncateStagingOnCompletion` | The apply and the staging lifecycle |
+| `load.truncateSourceWhenConsolidated` | The consolidation-gated truncate of the upstream `[pre]` landing table once the target's `MAX(watermark)` has caught up |
 | `schema.sync`, `schema.cleanColumnNames`, `schema.cleanColumnNameRegex`, `schema.replaceInvalidCharsWith`, `schema.convertUnicodeToNonUnicode`, `schema.allowTableRewrite` | Desired-schema construction and evolution |
 | `target.identityColumn`, `target.truncateBeforeLoad`, `target.desiredIndexes`, `target.columnStoreIndex` | Target shaping and create-run indexes |
 | `sqlflow run <file> --full --from <date> --to <date>` | Per-run window and chunk-plan overrides |

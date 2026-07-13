@@ -164,7 +164,7 @@ The check runs on every document load through `DocumentLoader.Load` (src/SqlFlow
 WARN  <file>: connection '<name>' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare '<name>:' (which resolves ${env:SQLFLOW_CONN_<NAME>}); put local values in the git-ignored .sqlflow/env file. See docs/environment-variables.md.
 ```
 
-CLI flags that take a connection reference warn too: `sqlflow db --db`, `sqlflow healthcheck --source`, and `sqlflow detect-unique-key --source` each print a warning when the flag value embeds a credential, because a literal on the command line lands in shell history. The warnings recommend the canonical variable (`${env:SQLFLOW_CATALOG_DB}` or `${env:SQLFLOW_SOURCE}`), an explicit `${env:NAME}` or `${keyvault:vault/secret}` reference, and the git-ignored `.sqlflow/env` file for local values.
+CLI flags that take a connection reference warn too: `sqlflow db --db`, `sqlflow healthcheck --source`, `sqlflow detect-unique-key --source`, `sqlflow runs cancel --db` (the direct-catalog break-glass route), and `sqlflow user reset-password --db` each print a warning when the flag value embeds a credential, because a literal on the command line lands in shell history. The warnings recommend the canonical variable (`${env:SQLFLOW_CATALOG_DB}` or `${env:SQLFLOW_SOURCE}`), an explicit `${env:NAME}` or `${keyvault:vault/secret}` reference, and the git-ignored `.sqlflow/env` file for local values.
 
 `SecretHygiene.RedactedMessage` collapses each secret keyword's value (up to the next `;` or the end of the string) to `[redacted]` in any message that may quote external input, for example an exception wrapping a connection string. The CLI applies it to error paths in `sqlflow db`, the catalog run write-back, and other verbs, so third-party error text never leaks a credential into a report or log.
 
@@ -185,7 +185,7 @@ Source-control documents (`flowType: scm`) go further than a warning: `repositor
 ## Configuration touchpoints
 
 - **YAML**: the `connections:` block of relational documents (bare alias, string, or `provider`/`connection` map), the `target.connection` of file flows (a `${...}` reference or a literal only; a file flow has no alias form), and `repository.username`/`repository.secret` of scm documents.
-- **CLI**: `sqlflow db --db <ref>` (default `${env:SQLFLOW_CATALOG_DB}`), `sqlflow healthcheck --source <ref>` and `sqlflow detect-unique-key --source <ref>` (default `${env:SQLFLOW_SOURCE}`), and `--provider` for the inline kind of a non-SQL-Server source.
+- **CLI**: `sqlflow db --db <ref>`, `sqlflow runs cancel --db <ref>`, and `sqlflow user reset-password --db <ref>` (default `${env:SQLFLOW_CATALOG_DB}`), `sqlflow healthcheck --source <ref>` and `sqlflow detect-unique-key --source <ref>` (default `${env:SQLFLOW_SOURCE}`), and `--provider` for the inline kind of a non-SQL-Server source.
 - **Environment**: `SQLFLOW_CONN_<NAME>` per bare alias, `SQLFLOW_AZURE_AUTH` (with `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_CLIENT_SECRET` for service-principal mode) for Key Vault access, and the git-ignored `.sqlflow/env` file for local values.
 
 ## Example

@@ -12,7 +12,7 @@ keywords:
   - mcp
   - agent
   - socket mode
-  - gpt-5-mini
+  - gpt-5.1
   - read-only
 related:
   - guide-deployment
@@ -46,7 +46,7 @@ Each hop has one job. `sqlflow-slack-bot` (`SqlFlow.SlackBot`) is a Socket Mode 
 
 ## Why the Responses API (and which models work)
 
-The bot drives Foundry through the **OpenAI Responses API**, not the older persistent-agents (Assistants) API. This is a hard requirement of the MCP tool, not a preference: current model deployments support the MCP tool only through the Responses API. A persistent-agents run with a current model fails - `gpt-5-mini` returns `unsupported_model: This model only supports Responses API compatible tools`, and `gpt-5.1` is accepted at create time but fails at run time - and the models the persistent-agents MCP tool did support (`gpt-4.1`, `gpt-4o`) are closed to new deployments. So the model deployment behind the assistant must be one that supports both the Responses API and its MCP tool; `gpt-5-mini` is the tested default (`aiFoundryModelName`).
+The bot drives Foundry through the **OpenAI Responses API**, not the older persistent-agents (Assistants) API. This is a hard requirement of the MCP tool, not a preference: current model deployments support the MCP tool only through the Responses API. A persistent-agents run with a current model fails - `gpt-5-mini` returns `unsupported_model: This model only supports Responses API compatible tools`, and `gpt-5.1` is accepted at create time but fails at run time - and the models the persistent-agents MCP tool did support (`gpt-4.1`, `gpt-4o`) are closed to new deployments. So the model deployment behind the assistant must be one that supports both the Responses API and its MCP tool. There is no built-in default: `aiFoundryModelName` is empty unless you set it (empty deploys no model), so the model must be chosen explicitly at deploy time. Any Responses-API + MCP-capable deployment works; the Bicep recommends `gpt-5.1`.
 
 The gateway (`FoundryAgentGateway`) builds each request as: the model deployment name, the instructions (the assistant persona and tool guidance, the single source of truth for behavior), an `input` (the new turn, or the replayed Slack transcript on a cold thread), and one `mcp` tool object carrying the MCP server URL, `require_approval: never`, the `Authorization` header, and the tool allowlist. There is no hosted agent object to create or converge; the definition lives entirely in the request.
 
@@ -69,7 +69,7 @@ The bot answers two ways (`SlackAssistantHandler`): an @-mention in any channel 
 
 Three optional templates extend the core estate; `main.bicep` wires them when their inputs are set:
 
-- `ai-foundry.bicep`: the Foundry account, a project, and a pinned model deployment (`aiFoundryModelName`, use a Responses-API + MCP-capable model such as `gpt-5-mini`). It grants the bot identity the **Cognitive Services OpenAI User** role, which is what lets the bot call the Responses API with its managed identity, no key.
+- `ai-foundry.bicep`: the Foundry account, a project, and a pinned model deployment (`aiFoundryModelName`, use a Responses-API + MCP-capable model such as `gpt-5.1`; it has no default, and empty deploys no model). It grants the bot identity the **Cognitive Services OpenAI User** role, which is what lets the bot call the Responses API with its managed identity, no key.
 - `mcp.bicep`: the MCP server in HTTP mode, external ingress but bearer-gated (`/mcp` requires a token; only `/healthz` is open).
 - `slack-bot.bicep`: the Socket Mode bot, no ingress, secrets from Key Vault via managed identity.
 
@@ -79,7 +79,7 @@ Setup, in order:
 2. **Create the Slack app**: at https://api.slack.com/apps choose "From an app manifest" and paste `deploy/slack/manifest.yaml`. Install it to the workspace, then collect the app-level token (`xapp-...`, Basic Information, App-Level Tokens, `connections:write`) and the bot token (`xoxb-...`, OAuth & Permissions, after Install to Workspace).
 3. **Mint the bot's SQLFlow token**: create a personal access token with the `read` scope only. This is the credential forwarded to the MCP server on every call.
 4. **Build and push the two images** (`Dockerfile.mcp` and `Dockerfile.slackbot`).
-5. **Redeploy `main.bicep`** with `aiFoundryName`, `aiFoundryModelName=gpt-5-mini`, `mcpImage`, `slackBotImage`, and `slackAppToken`/`slackBotToken`/`slackBotSqlflowToken`. This writes the three tokens into Key Vault and grants the bot the Cognitive Services OpenAI User role. Then `/invite` the bot to a channel (or DM it) and ask.
+5. **Redeploy `main.bicep`** with `aiFoundryName`, `aiFoundryModelName=gpt-5.1` (or another Responses-API + MCP-capable deployment), `mcpImage`, `slackBotImage`, and `slackAppToken`/`slackBotToken`/`slackBotSqlflowToken`. This writes the three tokens into Key Vault and grants the bot the Cognitive Services OpenAI User role. Then `/invite` the bot to a channel (or DM it) and ask.
 
 Notes:
 

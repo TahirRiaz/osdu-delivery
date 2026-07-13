@@ -59,6 +59,7 @@ baseValue: COUNT(*)
 | `name` | string | yes | | The flow's identity: becomes `SysAlias` and seeds the stable flow id. Keys the state and run folders. |
 | `description` | string | no | none | Free-text description. |
 | `batch` | string | no | none | Batch label carried into the run record. |
+| `mode` | string | no | `auto` | When the flow runs: `auto` lets schedules and batch/node group runs pick it up like any other flow; `manual` excludes it from every automatic dispatch (scheduler, group expansion, local batch membership), so it runs only when triggered directly (the GUI's run button, a single-flow API trigger, or a direct CLI run). |
 | `connections` | map | no | empty | Named connections. Each value is a plain string (a SQL Server connection reference), a map with `provider` and `connection`, or bare (resolves `${env:SQLFLOW_CONN_<NAME>}` by convention). |
 | `target` | map | yes | | The monitored endpoint: `server` (or inline `connection` plus optional `provider`) and `object`. |
 | `target.server` | string | conditional | | Name of a declared connection in `connections`. |

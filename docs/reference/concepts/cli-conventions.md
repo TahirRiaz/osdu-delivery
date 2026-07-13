@@ -31,7 +31,7 @@ The `sqlflow` CLI uses a hand-rolled argument parser in src/SqlFlow.Cli/Program.
 The resulting positional list is interpreted as:
 
 - `positional[0]` is the command, lowercased.
-- `positional[1]` is the pipeline file or flow folder for every command except `healthcheck`, `auth`, `db`, and `detect-unique-key`, which take no file (healthcheck addresses its table through `--source`/`--object`, auth is a pure environment check, db and catalog take a subcommand as their second positional instead).
+- `positional[1]` is the pipeline file or flow folder for every command except the no-file verbs, which supply their target through flags or a subcommand instead. `Program.Main`'s positional-count gate exempts `healthcheck`, `auth`, `db`, `worker`, `runs`, `user`, `detect-unique-key`, and every control-plane verb (`health`, `login`, `logout`, `trigger`, `groups`, `whoami`, `doctor`, `summary`, `nodes`, `schedules`, `repos`, `pipelines`, `datasources`, `search`, `completions`) from needing a second positional (src/SqlFlow.Cli/Program.cs). healthcheck addresses its table through `--source`/`--object`, auth is a pure environment check, db and catalog take a subcommand as their second positional, and the control-plane verbs address the remote API through flags.
 
 If the required positionals are missing, the CLI prints usage and exits 1. `-h` or `--help` prints usage and exits 0, unless the arguments were also insufficient, in which case the exit code is still 1.
 
@@ -49,13 +49,19 @@ If the required positionals are missing, the CLI prints usage and exits 1. `-h` 
 --date-column --base-value --filter --threshold --alpha --budget --maturity --state-dir
 --of --explain
 --db --repo --repo-url
+--url --token --username --token-name --expires-days --scopes
+--scope --batch --pool --poll-seconds --commit --flow --status --kind --group
+--page --page-size --from --to --file-pattern
+--cron --interval --timezone --remote-url --credential-ref --credential-user
+--ref --sample --max-columns --max-candidates --active --enabled
+--search --relation --tier --server --operation --last
 ```
 
 Options in this set can be placed anywhere on the command line; the positional extraction skips their values regardless of position.
 
-**Placement caveat.** Some value-taking flags are read with `GetOption` but are absent from `ValueTakingOptions`: `--from`, `--to`, `--file-pattern` (run backfill parameters), `--scope` (auth), `--poll-seconds`, `--pool` (worker), `--sample`, `--max-columns`, `--max-candidates` (detect-unique-key). Their values are parsed as positionals, so these flags must appear AFTER the file/folder positional; placing them before it shifts the positional list and misparses the command. For `auth` and `detect-unique-key`, which take no file positional, only the command token matters, so this ordering constraint is harmless in practice.
+**Placement.** The set is comprehensive: the run backfill parameters (`--from`, `--to`, `--file-pattern`), the auth `--scope`, the worker `--poll-seconds` and `--pool`, and the detect-unique-key `--sample`, `--max-columns`, and `--max-candidates` are all in `ValueTakingOptions`, so their values are consumed as option values rather than leaking into the positional list. There is no positional-ordering constraint on them: `sqlflow run --from 2023-01-15 pipelines/orders.yaml` and `sqlflow run pipelines/orders.yaml --from 2023-01-15` parse identically, because the parser skips `--from`'s value wherever the flag sits.
 
-`worker` is a sharp edge, not an exemption: `Program.Main`'s positional-count gate does not exempt `worker` the way it exempts `healthcheck`, `auth`, `db`, and `detect-unique-key`, so `sqlflow worker` still needs a second bare (non-dash) token after the command, purely to satisfy that count check; the token's content is never read. Running `sqlflow worker --db '${env:SQLFLOW_CATALOG_DB}'` alone prints top-level usage and exits 1 before `worker`'s own option parsing ever runs, even though every documented `worker` option is optional. The safe habit remains: command first, then the file (or, for `worker`, any placeholder token), then options.
+`worker` is a genuine no-file exemption: `Program.Main`'s positional-count gate exempts `worker` alongside `healthcheck`, `auth`, `db`, and the rest (src/SqlFlow.Cli/Program.cs), so a bare `sqlflow worker` (with only the default `--db`) runs the queue drain loop directly. It needs no second positional token and never prints usage or exits 1 for a missing one. `sqlflow worker --db '${env:SQLFLOW_CATALOG_DB}'` starts normally.
 
 ## Option value resolution
 
@@ -116,14 +122,13 @@ Command-specific notes:
 
 ## Examples
 
-Correct flag placement (backfill flags after the file positional, since `--from`/`--to` are not in `ValueTakingOptions`):
+Flag placement is free: `--from`/`--to`/`--file-pattern` are in `ValueTakingOptions`, so their values are skipped wherever the flag sits and never mistaken for the pipeline file. All three of these parse identically:
 
 ```bash
-# Correct: file first, backfill window after it.
 sqlflow run pipelines/orders.yaml --full
 sqlflow run pipelines/orders.yaml --from 2023-01-15 --to "2023-02-01 06:00:00"
 
-# Wrong: '2023-01-15' parses as a positional, so it becomes the pipeline file.
+# Also correct: the flag before the file. '2023-01-15' is consumed as --from's value, not the positional.
 sqlflow run --from 2023-01-15 pipelines/orders.yaml
 ```
 

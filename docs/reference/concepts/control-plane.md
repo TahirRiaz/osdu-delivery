@@ -98,8 +98,9 @@ Operate surface (policy `operate`):
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /runs` | Trigger a run (202 Accepted) |
-| `POST /runs/{runId}/cancel` | Cancel a still-queued run |
+| `POST /runs` | Trigger a run or a run group (202 Accepted) |
+| `POST /runs/{runId}/cancel` | Cancel a run (200 `cancelled` from queued; 202 `cancelling` while running) |
+| `POST /runs/groups/{groupId}/cancel` | Cancel a whole run group (queued members cancelled, running members requested) |
 | `POST /schedules`, `POST /schedules/{id}/pause`, `POST /schedules/{id}/resume`, `DELETE /schedules/{id}` | Ad-hoc schedule management |
 | `POST /repos/sources` | Register or update a managed repo source (upsert) |
 | `POST /repos/sources/{id}/sync` | Force a sync now |
@@ -137,6 +138,7 @@ All settings bind from the `ControlPlane` configuration section (environment var
 | `AzureAd:Authority` | derived | Defaults to `https://login.microsoftonline.com/{TenantId}/v2.0` |
 | `AzureAd:DefaultRole` | `viewer` | Role a first-time Entra user is provisioned with |
 | `Bootstrap:ApplyMigrations` | `true` | `false` logs pending migrations as a warning instead of applying them |
+| `Bootstrap:AllowCreate` | `false` | When `false` (the default), startup only migrates an EXISTING catalog: a missing database or a populated non-catalog database is refused loudly and startup stops without retrying, so a wrong or mistyped connection never provisions against the wrong (possibly production) server. `true` lets startup CREATE the catalog database and initialise its schema into an empty one, for first-time provisioning or ephemeral/test databases |
 | `Bootstrap:AdminUsername` / `Bootstrap:AdminPasswordReference` | unset | Must be set together; the password is a secret reference, never a literal |
 | `Bootstrap:DemoRepo` | unset | `Name` and `RemoteUrl` required when configured; `Branch` default `main`; `SyncIntervalSeconds` default `300` |
 | `Cors:AllowedOrigins` | `[]` | Empty means same-origin only |
@@ -150,6 +152,8 @@ All settings bind from the `ControlPlane` configuration section (environment var
 ## First-run bootstrap
 
 `BootstrapProvisioningService` (src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs) runs in the background and retries with backoff (5s, 10s, 20s, 40s, then every 60s) until the catalog is reachable, so the start order of app and database never matters; the readiness probe reports the catalog being unavailable in the meantime.
+
+Before provisioning anything, the service applies the `Bootstrap:AllowCreate` guard (default `false`). Unless it is `true`, a missing database or a populated non-catalog database is a deterministic configuration mistake that retrying cannot fix, so the service logs a critical error and stops (readiness stays red) rather than conjuring a database or injecting catalog tables into the wrong server. Only `AllowCreate = true` creates the catalog database and initialises its schema into an empty one.
 
 Order of operations, all idempotent:
 
@@ -198,7 +202,10 @@ API:
   "fullLoad": false,
   "backfillFrom": "2026-01-01",
   "backfillTo": "2026-01-31",
-  "filePattern": null
+  "filePattern": null,
+  "scope": null,
+  "batch": null,
+  "assertionsOnly": false
 }
 ```
 
@@ -206,10 +213,13 @@ API:
 - `commitSha` must be a 4 to 64 character hexadecimal git object id, or the request is 400: "commitSha must be a 4- to 64-character hexadecimal git object id (or omitted to pin to the last synced commit)." When omitted, enqueueing pins the run to the repo's last synced commit (`LastSyncedSha`) when one is resolvable, so the executed version matches what the catalog shows and any node can materialize it; only a repo with no resolvable synced commit runs unpinned from the node's local copy (src/SqlFlow.Catalog/RunQueueStore.cs).
 - The per-run substitution parameters (`fullLoad`, `backfillFrom`/`backfillTo`, `filePattern`) are validated at the trust boundary via `RunParameters.Validate()`, so an inverted window or a control-character glob is refused as 400 "Invalid run parameters" before anything is queued.
 - An unknown or deactivated pipeline is 404: "No active pipeline '&lt;flow&gt;' in repo '&lt;repoId&gt;'." The pipeline's kind is carried onto the queued run.
-- Success is 202 Accepted with `{runId, status: "queued"}` and a `Location` header pointing at `GET /api/v1/runs/{runId}`.
+- `scope` selects how much to run: omitted or `flow` triggers the single flow (the default described above); `node` expands the named flow and all its lineage descendants; `batch` expands a whole data source, identified either by the `batch` label or by reading it from the anchor `flowName`. The built-in backfill and `assertionsOnly` are single-flow concepts, so a `node`/`batch` scope always runs its members with default parameters (a group carrying `assertionsOnly` is refused 400).
+- `assertionsOnly` (ingestion flows only) evaluates the flow's data-quality assertions, manual-mode ones included, against the current target without loading anything; on any other flow kind it is a 400.
+- Success for a single flow is 202 Accepted with `{runId, status: "queued"}` and a `Location` header pointing at `GET /api/v1/runs/{runId}`.
+- Success for a `node`/`batch` scope is 202 Accepted with a `RunGroupAccepted` payload `{groupId, memberCount, status: "queued"}` and a `Location` header pointing at `GET /api/v1/runs/groups/{groupId}`. A scope that expands to no active members is 404.
 - No secret is ever accepted in the request or echoed back; the executing node resolves all credentials from its own environment.
 
-`POST /api/v1/runs/{runId}/cancel` (operate scope) returns 200 `{status: "cancelled"}` only while the run is still queued; 404 "No run '{runId}'." for an unknown id; 409 "Run '{runId}' is no longer queued and cannot be cancelled." once claimed or finished.
+`POST /api/v1/runs/{runId}/cancel` (operate scope): a still-queued run is cancelled outright, 200 `{status: "cancelled"}`; a run already RUNNING is cancellable too, but asynchronously, so its owning node is stamped with a durable cancel request and the endpoint returns 202 Accepted with `{status: "cancelling"}` (poll `GET /api/v1/runs/{runId}` for the terminal outcome). An unknown id is 404 "No run '{runId}'."; an already-terminal run is 409 "Run '{runId}' has already finished and cannot be cancelled." The companion `POST /api/v1/runs/groups/{groupId}/cancel` cancels a whole run group the same way (queued members cancelled outright, running members sent a request): 202 `{status: "cancelling"}` when any member was still running, 200 `{status: "cancelled"}` otherwise, and 404 for an unknown group.
 
 ## Lineage read API
 

@@ -1,25 +1,25 @@
 {
   "version": 1,
-  "product": "SQLFlow V3 (DeltaForge)",
+  "product": "SQLFlow V3",
   "flowType": "ing",
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 108,
+  "keyCount": 112,
   "keys": [
     {
       "path": "assertions",
       "type": "list<object>",
       "required": false,
       "default": "[] (empty list)",
-      "description": "Inline data-quality assertion declarations for this ing document, bound to List<IngestionAssertionYaml> (src/SqlFlow.Yaml/IngestionYaml.cs:38) and mapped by YamlIngestionFlowLoader.MapAssertions (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:97,450-478) into two artifacts from the SAME list: the ordered list of names on IngestionFlow.Assertions (src/SqlFlow.Core/Ingestion/IngestionFlow.cs:78), and the full {name, expression} records on IngestionDocument.AssertionDefinitions (src/SqlFlow.Core/Ingestion/AssertionDefinition.cs:5-10; assigned at YamlIngestionFlowLoader.cs:196). The document's AssertionDefinitions become an InMemoryAssertionDefinitionStore (src/SqlFlow.Core/Ingestion/InMemoryAssertionDefinitionStore.cs), which WithoutDatabaseIngestion.BuildRunner (src/SqlFlow.SqlServer/Ingestion/WithoutDatabaseIngestion.cs:61) wraps in the SAME AssertionRunner used by full (control-database) mode, so a YAML document's declared assertions always run for real; the engine's own IngestionFlowRunner default (NullAssertionRunner, runs nothing) applies only when a caller constructs the runner without wiring any assertion runner (IngestionFlowRunner.cs:138).",
+      "description": "Inline data-quality assertion declarations for this ing document, bound to List<IngestionAssertionYaml> (src/SqlFlow.Yaml/IngestionYaml.cs:38) and mapped by YamlIngestionFlowLoader.MapAssertions (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:97,450-478) into two artifacts from the SAME list: the ordered list of names on IngestionFlow.Assertions (src/SqlFlow.Core/Ingestion/IngestionFlow.cs:78), and the full {name, expression, mode} records on IngestionDocument.AssertionDefinitions (src/SqlFlow.Core/Ingestion/AssertionDefinition.cs:7-18; assigned at YamlIngestionFlowLoader.cs:196). The document's AssertionDefinitions become an InMemoryAssertionDefinitionStore (src/SqlFlow.Core/Ingestion/InMemoryAssertionDefinitionStore.cs), which WithoutDatabaseIngestion.BuildRunner (src/SqlFlow.SqlServer/Ingestion/WithoutDatabaseIngestion.cs:61) wraps in the SAME AssertionRunner used by full (control-database) mode. Which declared assertions actually run depends on assertions[].mode: a normal ingestion run evaluates only the auto-mode assertions (step 7c calls AssertionRunner.RunAsync with includeManual:false, IngestionFlowRunner.cs:596; the manual ones are skipped by the gate at AssertionRunner.cs:51-55), while an assertions-only run (sqlflow run --assertions-only, RunParameters.AssertionsOnly) passes includeManual:true and evaluates the whole list, auto and manual alike (IngestionFlowRunner.cs:794). The engine's own IngestionFlowRunner default (NullAssertionRunner, runs nothing) applies only when a caller constructs the runner without wiring any assertion runner (IngestionFlowRunner.cs:138).",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:38"
     },
     {
       "path": "assertions[]",
       "type": "object",
       "required": false,
-      "description": "One assertion declaration; binds to IngestionAssertionYaml {name, expression} (src/SqlFlow.Yaml/IngestionYaml.cs:178-182).",
-      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:178-182 (mapped by YamlIngestionFlowLoader.MapAssertions, src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:450-478)",
+      "description": "One assertion declaration; binds to IngestionAssertionYaml {name, expression, mode} (src/SqlFlow.Yaml/IngestionYaml.cs:182-190). 'mode' is optional (default auto) and is documented under assertions[].mode below.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:182-190 (mapped by YamlIngestionFlowLoader.MapAssertions, src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:485-520)",
       "validation": "An entry missing name fails with FlowValidationException \"<source>: 'assertions[<i>].name' is required.\"; an entry missing expression fails with \"<source>: 'assertions[<i>].expression' is required.\" (YamlIngestionFlowLoader.cs:464-467). A case-insensitive duplicate name across the list fails with \"<source>: assertion '<name>' is declared more than once.\" (YamlIngestionFlowLoader.cs:468-471)."
     },
     {
@@ -37,6 +37,23 @@
       "description": "The assertion's unique name (matched case-insensitively across the whole assertions list); becomes the string stored in IngestionFlow.Assertions and the lookup key AssertionRunner uses against the document's InMemoryAssertionDefinitionStore (itself case-insensitive, InMemoryAssertionDefinitionStore.cs:16) to fetch the matching expression at run time. A name with no matching definition is silently dropped from the run rather than erroring (AssertionRunner.cs:43-47), preserving list order (the legacy control-database INNER JOIN semantics); in the YAML path every declared name always has a matching definition, so this only surfaces if a caller constructs the store independently of this loader.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:180",
       "validation": "Missing, null, empty, or whitespace-only throws FlowValidationException \"<source>: 'assertions[<i>].name' is required.\" (YamlIngestionFlowLoader.cs:464-465). A case-insensitive duplicate across the assertions list throws \"<source>: assertion '<name>' is declared more than once.\" (YamlIngestionFlowLoader.cs:468-471). InMemoryAssertionDefinitionStore itself separately guards against a duplicate with SqlFlowException \"Duplicate assertion name '<name>'.\" (InMemoryAssertionDefinitionStore.cs:19-22), but the loader's own check above always fires first for a document loaded through this loader."
+    },
+    {
+      "path": "assertions[].mode",
+      "type": "string",
+      "required": false,
+      "default": "auto",
+      "enumValues": ["auto", "manual"],
+      "description": "When this assertion evaluates. 'auto' (the default) runs it as step 7c of every normal ingestion run; 'manual' reserves it for an on-demand assertions-only run (sqlflow run --assertions-only), which evaluates the flow's whole assertion list, auto and manual alike. Parsed by YamlDocumentParts.ParseExecutionMode into AssertionDefinition.Mode (mapped at src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:513), backed by the ExecutionMode enum (Auto=0, Manual=1). The normal load path passes includeManual:false so manual assertions are skipped there (AssertionRunner.cs:51-55, IngestionFlowRunner.cs:596); the assertions-only path passes includeManual:true (IngestionFlowRunner.cs:794).",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:189 (mapped at src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:513; model src/SqlFlow.Core/Ingestion/AssertionDefinition.cs:17, enum src/SqlFlow.Core/Runs/ExecutionMode.cs)"
+    },
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "default": "null (unset)",
+      "description": "Optional grouping label for this ingestion document, mapped to IngestionFlow.Batch via NullIfBlank(y.Batch) (blank/whitespace normalizes to null; otherwise kept verbatim, src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:182). It is stamped onto the written run record for the run-log entry and used by the legacy control-database path as a grouping key; it is unrelated to a flowType: batch document, whose members are selected by file-glob patterns over the repository, not by this label.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:11 (mapped at src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:182; model src/SqlFlow.Core/Ingestion/IngestionFlow.cs:51)"
     },
     {
       "path": "change",
@@ -578,17 +595,18 @@
     },
     {
       "path": "source.provider",
-      "type": "enum(mssql|azdb|mysql|postgres)",
+      "type": "enum(mssql|azdb|mysql|postgres|oracle)",
       "required": false,
       "default": "mssql",
       "enumValues": [
         "mssql",
         "azdb",
         "mysql",
-        "postgres"
+        "postgres",
+        "oracle"
       ],
       "appliesWhen": "source.connection is set (ignored when source.server is used instead, since that connection's kind was already fixed when declared under connections:)",
-      "description": "The provider of a direct source.connection, parsed case-insensitively. Unlike target.provider, any of mssql, azdb, mysql, or postgres is accepted and actually usable here, since the source side has no SQL-Server-only restriction.",
+      "description": "The provider of a direct source.connection, parsed case-insensitively by YamlDocumentParts.ParseProvider (src/SqlFlow.Yaml/YamlDocumentParts.cs:122-132), which also accepts the aliases 'sqlserver' (mssql) and 'postgresql' (postgres). Unlike target.provider, mssql, azdb, mysql, and postgres are accepted and actually usable here, since the source side has no SQL-Server-only restriction. 'oracle' is accepted by the parser (DataSourceKind.Oracle) but has no source read path wired, so it parses yet is not usable as a source end to end.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:49",
       "validation": "Unrecognized token: \"<source>: 'source.provider' has unknown provider '<value>'. Allowed: mssql, azdb, mysql, postgres, oracle.\" (src/SqlFlow.Yaml/YamlDocumentParts.cs:105-106)."
     },
@@ -788,17 +806,18 @@
     },
     {
       "path": "target.provider",
-      "type": "enum(mssql|azdb|mysql|postgres)",
+      "type": "enum(mssql|azdb|mysql|postgres|oracle)",
       "required": false,
       "default": "mssql",
       "enumValues": [
         "mssql",
         "azdb",
         "mysql",
-        "postgres"
+        "postgres",
+        "oracle"
       ],
       "appliesWhen": "target.connection is set (ignored when target.server is used instead)",
-      "description": "The provider of a direct target.connection. Whatever it resolves to, the target connection is then hard-required to be SQL Server (mssql or azdb); any other recognized provider parses successfully here but fails one step later with the 'must be SQL Server' error.",
+      "description": "The provider of a direct target.connection, parsed case-insensitively by YamlDocumentParts.ParseProvider (src/SqlFlow.Yaml/YamlDocumentParts.cs:122-132), which also accepts the aliases 'sqlserver' (mssql) and 'postgresql' (postgres). Whatever it resolves to, the target connection is then hard-required to be SQL Server (mssql or azdb); any other recognized provider (mysql, postgres, oracle) parses successfully here but fails one step later with the 'must be SQL Server' error.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:49 (shared IngestionEndpointYaml DTO)",
       "validation": "Unrecognized token: \"<source>: 'target.provider' has unknown provider '<value>'. Allowed: mssql, azdb, mysql, postgres, oracle.\" A recognized non-SQL-Server kind fails via target.server's SQL-Server-only check."
     },
@@ -828,6 +847,14 @@
       "validation": "`versioning.scd2.enabled: true` combined with `target.truncateBeforeLoad: true` is rejected at parse time: FlowValidationException \"<source>: 'versioning.scd2' cannot be combined with 'target.truncateBeforeLoad'; truncating would erase the dimension history.\" (YamlIngestionFlowLoader.cs:133-137, only reached when versioning.scd2.enabled is true). No other validation on the key itself (a plain YAML bool).",
       "appliesWhen": "Applies on every run where the flag is true, not gated to the run that creates the target, unlike target.columnStoreIndex / target.identityColumn / source.dataSetColumn. On the very same run that creates the target the TRUNCATE is a harmless no-op against the just-created empty table.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:62 (mapped: src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:166, cross-validated: 133-137; model: src/SqlFlow.Core/Ingestion/IngestionFlow.cs:31; consumed: src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs:396-402)"
+    },
+    {
+      "path": "transform",
+      "type": "object",
+      "required": false,
+      "default": "{} (no pre-ingestion transform; type inference off, no authored columns, view generated only when columns are present)",
+      "description": "Optional pre-ingestion transform block, the same TransformYaml shape the file flow uses (inference toggle, authored per-column transforms, and the generate-view toggle). Bound from IngestionYaml.Transform and mapped by YamlFlowLoader.MapInference into IngestionFlow.Transform (a TypeInferencePolicy), src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:222. Its sub-keys (inferTypes, threshold, sampleSize, onConvertError, generateView, columns[].*) are identical to, and documented once under, the file-flow census transform.* entries in docs/reference/flow/keys.json; they are not repeated here to avoid two copies drifting apart. See docs/reference/concepts/pre-ingestion-transform.md for the runtime semantics.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:31 (DTO SqlFlow.Yaml.TransformYaml; mapped at src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:222; model src/SqlFlow.Core/Ingestion/IngestionFlow.cs:92)"
     },
     {
       "path": "versioning",

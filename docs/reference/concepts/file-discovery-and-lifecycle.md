@@ -116,7 +116,7 @@ Only a path-derived date (`fileDate.from: path`) can prune directories: during t
 
 ## Stage 3: post-load lifecycle (copy, zip, delete)
 
-After a successful load, `CompleteAsync` re-resolves the file set with the same selection filters the load used and applies the lifecycle, in order, per file:
+After a successful load, `CompleteAsync` reuses the same file snapshot the load resolved and applies the lifecycle, in order, per file. It acts on the run's cached snapshot (`run?.Snapshot?.Files`), never a fresh re-listing, so a file that appeared after the load is not copied or deleted as if it had been ingested; only a standalone `CompleteAsync` with no prior pass on this spec resolves the list itself, and the resulting set is identical to what the load selected. The lifecycle runs, in order, per file:
 
 1. **Copy** to `options.copyToPath`, when set. Overwrites an existing destination file.
 2. **Zip** to `options.zipToPath`, when set. Produces a single-entry archive named `<sourceFileNameWithoutExtension>.zip`; an existing archive at the destination is deleted first.

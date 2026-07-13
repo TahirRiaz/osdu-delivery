@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "product": "SQLFlow V3 (DeltaForge)",
+  "product": "SQLFlow V3",
   "docs": [
     {
       "id": "cli-auth",
@@ -101,7 +101,7 @@
       "path": "cli/control-plane.md",
       "title": "sqlflow control-plane verbs",
       "type": "cli-command",
-      "summary": "The remote verb family over the control plane's /api/v1 surface, everything the GUI can do from a terminal, plus whoami, doctor, local run history, and shell...",
+      "summary": "Remote CLI verbs over the control plane's /api/v1 surface, covering what the GUI does from a terminal plus whoami, doctor, run history, and completions.",
       "keywords": [
         "control plane",
         "login",
@@ -125,7 +125,12 @@
         "cli-db",
         "cli-worker"
       ],
-      "sourceRefs": []
+      "sourceRefs": [
+        "src/SqlFlow.Cli/Program.cs",
+        "src/SqlFlow.Cli/Remote/RemoteVerbs.cs",
+        "src/SqlFlow.Cli/Remote/RemoteVerbs.Estate.cs",
+        "src/SqlFlow.Cli/Remote/ControlPlaneClient.cs"
+      ]
     },
     {
       "id": "cli-db",
@@ -143,7 +148,7 @@
         "write-back",
         "ef migrations"
       ],
-      "cliCommand": "sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--repo name] [--repo-url url] [--connect]",
+      "cliCommand": "sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--create] [--repo name] [--repo-url url] [--connect]",
       "related": [
         "concept-shadow-catalog",
         "concept-control-plane",
@@ -1739,7 +1744,7 @@
       "id": "flow-overview",
       "path": "flow/overview.md",
       "title": "Anatomy of a flow file: the eight document kinds",
-      "type": "guide",
+      "type": "flow-reference",
       "summary": "How the top-level flowType key selects one of eight flow document kinds, what each kind contains, and how loading and validation behave.",
       "keywords": [
         "flowtype",
@@ -2301,6 +2306,40 @@
       ]
     },
     {
+      "id": "guide-slack-assistant",
+      "path": "guides/slack-assistant.md",
+      "title": "The Slack assistant: a read-only SQLFlow agent over Foundry's Responses API and the MCP server",
+      "type": "guide",
+      "summary": "How the SQLFlow Slack bot answers questions - a Socket Mode relay to an Azure AI Foundry Responses API call whose MCP tool is the SQLFlow MCP server, read-on...",
+      "keywords": [
+        "slack",
+        "assistant",
+        "bot",
+        "foundry",
+        "responses api",
+        "mcp",
+        "agent",
+        "socket mode",
+        "gpt-5.1",
+        "read-only"
+      ],
+      "related": [
+        "guide-deployment",
+        "concept-authentication-and-identity",
+        "concept-control-plane"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.SlackBot/FoundryAgentGateway.cs",
+        "src/SqlFlow.SlackBot/SlackAssistantHandler.cs",
+        "src/SqlFlow.SlackBot/SlackBotOptions.cs",
+        "tools/sqlflow-mcp/src/http_server.rs",
+        "deploy/bicep/slack-bot.bicep",
+        "deploy/bicep/mcp.bicep",
+        "deploy/bicep/ai-foundry.bicep",
+        "deploy/slack/manifest.yaml"
+      ]
+    },
+    {
       "id": "guide-table-to-table-ingestion",
       "path": "guides/table-to-table-ingestion.md",
       "title": "Table-to-table ingestion end to end",
@@ -2542,40 +2581,6 @@
         "src/SqlFlow.Sources/Xml/XmlPathFlattener.cs",
         "src/SqlFlow.Sources/Xml/XmlPathInventory.cs",
         "samples/xml/README.md"
-      ]
-    },
-    {
-      "id": "guide-slack-assistant",
-      "path": "guides/slack-assistant.md",
-      "title": "The Slack assistant: a read-only SQLFlow agent over Foundry's Responses API and the MCP server",
-      "type": "guide",
-      "summary": "How the SQLFlow Slack bot answers questions - a Socket Mode relay to an Azure AI Foundry Responses API call whose MCP tool is the SQLFlow MCP server, read-only by construction, with its architecture, model requirement, and deployment.",
-      "keywords": [
-        "slack",
-        "assistant",
-        "bot",
-        "foundry",
-        "responses api",
-        "mcp",
-        "agent",
-        "socket mode",
-        "gpt-5-mini",
-        "read-only"
-      ],
-      "related": [
-        "guide-deployment",
-        "concept-authentication-and-identity",
-        "concept-control-plane"
-      ],
-      "sourceRefs": [
-        "src/SqlFlow.SlackBot/FoundryAgentGateway.cs",
-        "src/SqlFlow.SlackBot/SlackAssistantHandler.cs",
-        "src/SqlFlow.SlackBot/SlackBotOptions.cs",
-        "tools/sqlflow-mcp/src/http_server.rs",
-        "deploy/bicep/slack-bot.bicep",
-        "deploy/bicep/mcp.bicep",
-        "deploy/bicep/ai-foundry.bicep",
-        "deploy/slack/manifest.yaml"
       ]
     }
   ]

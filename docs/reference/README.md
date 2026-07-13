@@ -1,6 +1,6 @@
 # SQLFlow V3 reference corpus
 
-Machine-readable reference documentation for SQLFlow V3 (GUI-branded DeltaForge), generated
+Machine-readable reference documentation for SQLFlow V3, generated
 from and verified against the source code in this repository. Built to be consumed by three
 downstream tools: an MCP server, a `.flow.yaml` language server (LSP), and a VSCode extension.
 
@@ -15,15 +15,15 @@ relevant page rather than silently corrected elsewhere.
 docs/reference/
   manifest.json                  machine index over every page (MCP search surface)
   flow/keys.json                 per-attribute census of the file-flow YAML model (LSP surface)
-  cli/<command>.md               one page per top-level CLI command (15 pages)
-  flow/<section>.md              one page per top-level section of the file-flow YAML (9 pages)
+  cli/<command>.md               one page per top-level CLI command (16 pages)
+  flow/<section>.md              one page per top-level section of the file-flow YAML (plus overview)
   flow/<flowtype>.md             one page per non-file flow kind: ing, exp, sp, inv, hc, scm, batch
   flow/source-types/<type>.md    one page per source format: csv, json, xml, parquet, xls, duckdb
   concepts/<slug>.md             cross-cutting concepts (21 pages)
-  guides/<slug>.md                task-oriented walkthroughs (8 pages)
+  guides/<slug>.md                task-oriented walkthroughs (9 pages)
 ```
 
-71 pages total: 15 `cli-command`, 21 `flow-reference`, 6 `source-type`, 21 `concept`, 8 `guide`.
+74 pages total: 16 `cli-command`, 22 `flow-reference`, 6 `source-type`, 21 `concept`, 9 `guide`.
 
 Every page carries YAML frontmatter: `id`, `title`, `type`, `summary`, `keywords`, `related`,
 `sourceRefs`, plus `yamlPath` (flow-reference / source-type pages) or `cliCommand`
@@ -35,7 +35,7 @@ Shape:
 ```json
 {
   "version": 1,
-  "product": "SQLFlow V3 (DeltaForge)",
+  "product": "SQLFlow V3",
   "docs": [
     { "id": "...", "path": "...", "title": "...", "type": "...",
       "summary": "...", "keywords": ["..."], "yamlPath": "...", "cliCommand": "...",
@@ -60,18 +60,18 @@ content; there is no need to fetch anything at runtime.
 
 ## flow/keys*.json (LSP surface)
 
-Nine census files, 406 attributes total, one per document kind plus one shared file:
+Nine census files, 421 attributes total, one per document kind plus one shared file:
 
 | File | flowType | Attributes | Covers |
 | --- | --- | --- | --- |
-| `keys.json` | (none, the default) | 160 | The file flow: `name`, `flowType`, `batch`, `schedule`, `source`, `target`, `schema`, `load`, `transform`, `preProcess`, `postProcess`, `desiredIndexes`, `incremental`. |
-| `keys.ing.json` | `ing` | 106 | Table-to-table ingestion: source/target endpoints, load/matchKeys/change/systemColumns, assertions/surrogateKeys/virtualColumns, schema/incremental/initLoad, versioning. |
-| `keys.exp.json` | `exp` | 28 | File export: source endpoint plus filter, target file shape, chunk policy. |
-| `keys.sp.json` | `sp` | 10 | Stored-procedure execution: the procedure endpoint. |
-| `keys.inv.json` | `inv` | 11 | ADF/Automation invoke: the `invokes` block. |
-| `keys.hc.json` | `hc` | 25 | Health-check: target endpoint, metrics, the `ml` block. |
-| `keys.scm.json` | `scm` | 27 | Source-control snapshot: source endpoint, repository, object filters. |
-| `keys.batch.json` | `batch` | 14 | Ordered multi-flow batch: member selection, wave and error policy. |
+| `keys.json` | (none, the default) | 162 | The file flow: `name`, `flowType`, `batch`, `schedule`, `source`, `target`, `schema`, `load`, `transform`, `preProcess`, `postProcess`, `desiredIndexes`, `incremental`. |
+| `keys.ing.json` | `ing` | 112 | Table-to-table ingestion: source/target endpoints, load/matchKeys/change/systemColumns, assertions/surrogateKeys/virtualColumns, schema/incremental/initLoad, versioning. |
+| `keys.exp.json` | `exp` | 29 | File export: source endpoint plus filter, target file shape, chunk policy. |
+| `keys.sp.json` | `sp` | 11 | Stored-procedure execution: the procedure endpoint. |
+| `keys.inv.json` | `inv` | 12 | ADF/Automation invoke: the `invokes` block. |
+| `keys.hc.json` | `hc` | 27 | Health-check: target endpoint, metrics, the `ml` block. |
+| `keys.scm.json` | `scm` | 28 | Source-control snapshot: source endpoint, repository, object filters. |
+| `keys.batch.json` | `batch` | 15 | Ordered multi-flow batch: member selection, wave and error policy. |
 | `keys.shared.json` | (cross-cutting) | 25 | Blocks reused by several kinds: `connections`, `servicePrincipals`, the `preInvoke`/`postInvoke` hook shape. |
 
 Each file shares one shape: `{ version, product, flowType, generatedFrom, naming, keyCount,

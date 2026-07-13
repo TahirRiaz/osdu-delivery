@@ -32,7 +32,7 @@ sourceRefs:
 
 # Authentication and identity
 
-The control plane offers three ways to sign in and issues exactly one kind of credential out of all of them: an HS256 SQLFlow bearer token. Because every sign-in path converges on the same token format and the same claims, authorization downstream is identical regardless of how the caller authenticated. The three paths, all mapped under `/api/v1` (src/SqlFlow.ControlPlane/Api/AuthEndpoints.cs):
+The control plane offers several ways to sign in and issues one predominant kind of credential out of them: an HS256 SQLFlow bearer token. Because every token-minting path converges on the same token format and the same claims, authorization downstream is identical regardless of how the caller authenticated. Three of the paths are the interactive sign-in surfaces mapped under `/api/v1` (src/SqlFlow.ControlPlane/Api/AuthEndpoints.cs):
 
 | Endpoint | Who | Availability |
 | --- | --- | --- |
@@ -41,6 +41,11 @@ The control plane offers three ways to sign in and issues exactly one kind of cr
 | `POST /api/v1/auth/token` | The break-glass bootstrap secret | Mapped only when `ControlPlane:Jwt:BootstrapSecret` is set |
 
 `GET /api/v1/auth/providers` is anonymous and tells the login page which of these are available. It returns `{ local, bootstrap, entra }`; when Entra is enabled, the `entra` object carries the `tenantId`, `clientId`, and resolved `authority` so the login page can configure MSAL without any client-side configuration file. All sign-in responses are sent with `Cache-Control: no-store` and `Pragma: no-cache` so an intermediary can never cache a bearer token.
+
+Two further sign-in surfaces exist for clients that cannot drive an interactive login page:
+
+- **The OAuth 2.0 device-authorization grant (RFC 8628)**, always mapped, is the path for the MCP server and any headless client (src/SqlFlow.ControlPlane/Api/AuthEndpoints.cs:51-72,255,290-333). `POST /api/v1/auth/device` mints a device/user code pair and advertises the approval URL; both start and `POST /api/v1/auth/device/token` polling are anonymous, since the opaque `device_code` is the only secret the polling client holds. Approval and denial (`POST /api/v1/auth/device/approve`, `POST /api/v1/auth/device/deny`) run under an authenticated browser session (the `read` scope), so a human binds their own identity to the device. Once approved, the poll mints a normal HS256 token for the approving user, scoped to the granted subset of the device's allowed scopes `read` and `operate`: `admin` is deliberately excluded, so a headless client can never obtain account-administration rights this way.
+- **Personal access tokens (PATs)** are a distinct, long-lived bearer credential for headless clients (the CLI, the VSCode extension, automation), rather than a short-lived session token. A PAT and an HS256 token share one `Authorization: Bearer` header; a policy scheme (`PersonalAccessTokenDefaults.PolicyScheme`) inspects the presented token and forwards it to the right validator by shape, so authorization downstream sees one authenticated principal type regardless of which credential arrived (src/SqlFlow.ControlPlane/Program.cs:123-140,280). PATs are self-managed: any authenticated user creates, lists, and revokes their own through the `/me` endpoints, with each token's scopes capped server-side to the caller's own and the secret shown exactly once at creation and never retrievable again (src/SqlFlow.ControlPlane/Api/Contracts.cs:103-114).
 
 ## Tokens, scopes, and roles
 
@@ -178,18 +183,18 @@ All settings live in the `ControlPlane` configuration section (appsettings or en
 
 ```bash
 # 1. Get a break-glass admin token with the configured bootstrap secret.
-curl -s -X POST https://deltaforge.example.com/api/v1/auth/token \
+curl -s -X POST https://sqlflow.example.com/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"secret": "'"$SQLFLOW_BOOTSTRAP_SECRET"'", "subject": "setup", "scopes": ["read", "operate", "admin"]}'
 # -> { "accessToken": "...", "tokenType": "Bearer", "expiresIn": 3600 }
 
 # 2. Create a local operator (password must be at least 12 characters).
-curl -s -X POST https://deltaforge.example.com/api/v1/users \
+curl -s -X POST https://sqlflow.example.com/api/v1/users \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"username": "ops.lead", "password": "a-long-strong-passphrase", "role": "operator", "email": null, "displayName": "Ops Lead"}'
 
 # 3. Sign in as that user; the session token carries role and uid claims.
-curl -s -X POST https://deltaforge.example.com/api/v1/auth/login \
+curl -s -X POST https://sqlflow.example.com/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "ops.lead", "password": "a-long-strong-passphrase"}'
 ```

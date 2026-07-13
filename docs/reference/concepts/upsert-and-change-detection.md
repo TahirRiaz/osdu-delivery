@@ -35,9 +35,14 @@ A keyed flow (non-empty `load.keyColumns`, or `matchKeys.keyColumns` when the ke
 
 ```sql
 INSERT INTO [dbo].[Orders] (...)
-SELECT DISTINCT src.[OrderID], src.[Status], ...
-FROM [raw].[dbo_Orders_279975153] AS src
-WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Orders] AS trg WHERE src.[OrderID] = trg.[OrderID]);
+SELECT src.[OrderID], src.[Status], ...
+FROM (
+  SELECT [OrderID], [Status], ...,
+         ROW_NUMBER() OVER (PARTITION BY [OrderID] ORDER BY (SELECT NULL)) AS _rn
+  FROM [raw].[dbo_Orders_279975153]
+) AS src
+WHERE src._rn = 1
+  AND NOT EXISTS (SELECT 1 FROM [dbo].[Orders] AS trg WHERE src.[OrderID] = trg.[OrderID]);
 ```
 
 Because new rows are detected against the live target rather than a watermark, a full reload over a NULL watermark is idempotent for keyed targets. This deliberately fixes the legacy full-load branch, which did a blind insert and duplicated rows.

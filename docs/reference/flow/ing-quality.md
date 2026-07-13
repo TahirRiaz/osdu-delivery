@@ -76,6 +76,7 @@ surrogateKeys:
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | none | Unique assertion name (case-insensitive across the list). |
 | `expression` | string | yes | none | T-SQL query template run against the loaded target; may use the `@TableName` and `@FilterCriteria` macros. |
+| `mode` | string | no | `auto` | When the assertion evaluates: `auto` runs it as step 7c of every normal ingestion run; `manual` reserves it for an on-demand assertions-only run (`sqlflow run --assertions-only`). |
 
 ### surrogateKeys (list)
 
@@ -124,6 +125,15 @@ Assertions are log-only and non-blocking:
 - An expression that is blank after macro expansion is skipped.
 
 Each result (name, materialized SQL, result, asserted value, duration, error) lands on the run result and in the run log; the materialized SQL is captured in the SQL trace under `assertion.<name>`. When the run artifact is synced, assertion results are projected into the shadow catalog as `RunAssertion` rows (src/SqlFlow.Catalog/CatalogProjection.cs).
+
+### Auto-mode versus manual-mode assertions
+
+A declared assertion does not necessarily run after every load; its `mode` decides when it fires:
+
+- `mode: auto` (the default) assertions run as step 7c of a normal ingestion run. The runner calls `AssertionRunner.RunAsync` with `includeManual: false` (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs:596), so a manual-mode assertion is skipped there and records no result for that run.
+- `mode: manual` assertions run only in an assertions-only run, triggered by `sqlflow run --assertions-only`. That path calls `AssertionRunner.RunAsync` with `includeManual: true` (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs:794) and evaluates the flow's whole assertion list, auto and manual alike, against the target with no load.
+
+The gate lives in `AssertionRunner` itself (src/SqlFlow.SqlServer/Ingestion/AssertionRunner.cs:51-55): when a definition's `Mode` is `Manual` and `includeManual` is false, that assertion is passed over. So a `manual` assertion never blocks or runs during a normal load; use it for heavier or on-demand checks you do not want on the ingestion hot path.
 
 Without an assertion runner wired, the engine default is `NullAssertionRunner`, which runs nothing; the YAML composition root (src/SqlFlow.SqlServer/Ingestion/WithoutDatabaseIngestion.cs) always wires the real runner over the document's declarations.
 

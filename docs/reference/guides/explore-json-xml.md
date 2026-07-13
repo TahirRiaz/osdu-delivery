@@ -165,7 +165,7 @@ The generated formula's target connection defaults to `${env:SQLFlowSinkConStr}`
 
 Every value from a text format lands as a raw string. Two ways to get typed columns:
 
-- Write a standalone `.infer.yaml` spec (its own shape, separate from a pipeline flow: `connection`, `table` (schema-qualified like `dbo.product`, or one-part with a separate `schema` key), and optionally `onConvertError`, `threshold`, `sample`, `preserveLeadingZeros`) pointing at the table the flow just loaded, then run `sqlflow infer <spec.infer.yaml>`. A pipeline flow document cannot be passed to `infer` directly: it has no root-level `connection`/`table` keys and fails spec validation. The command profiles the table and outputs an inference report as JSON (typed columns plus a transform SELECT); `-o` writes it to a file, `--no-validate` skips the validation pass that checks per-column fit against the loaded data. Adapted from samples/infer/orders.infer.yaml:
+- Write a standalone `.infer.yaml` spec (its own shape, separate from a pipeline flow: `connection`, `table` (schema-qualified like `dbo.product`, or one-part with a separate `schema` key), and optionally `onConvertError`, `threshold`, `sample`, `preserveLeadingZeros`, `culture`) pointing at the table the flow just loaded, then run `sqlflow infer <spec.infer.yaml>`. A pipeline flow document cannot be passed to `infer` directly: it has no root-level `connection`/`table` keys and fails spec validation. The command profiles the table and outputs an inference report as JSON (typed columns plus a transform SELECT); `-o` writes it to a file, `--no-validate` skips the validation pass that checks per-column fit against the loaded data. Adapted from samples/infer/orders.infer.yaml:
 
   ```yaml
   connection: ${env:SQLFlowSinkConStr}
@@ -175,7 +175,10 @@ Every value from a text format lands as a raw string. Two ways to get typed colu
   threshold: 1.0                 # fraction of non-null values that must convert
   sample: 0                      # 0 = full scan
   preserveLeadingZeros: true
+  culture: nb-NO                 # optional BCP-47 locale override; omit to use the server's locale
   ```
+
+  `culture` is optional: it overrides the locale used for type inference with the named BCP-47 culture (for example `nb-NO`), so locale-formatted numbers and dates (decimal comma, `dd.MM.yyyy`) are interpreted correctly. When omitted, the run binds to the locale configured on the target SQL Server; an unrecognised culture name fails the run (see `InferSpecLoader`/`InferYaml` in src/SqlFlow.Yaml/InferSpecLoader.cs and the resolution in `InferenceService.ResolveLocaleAsync`).
 
 - Or set `transform.inferTypes: true` in the flow so typing happens as part of the pipeline (see src/SqlFlow.Yaml/FlowYaml.cs for the full `transform` block: `inferTypes`, `onConvertError`, `threshold`, `sample`, `preserveLeadingZeros`, `generateView`, `columns`).
 

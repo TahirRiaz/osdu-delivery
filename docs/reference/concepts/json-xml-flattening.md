@@ -81,6 +81,8 @@ Values pass through as raw strings, never re-typed by this layer:
 
 Anything nested deeper than `maxDepth` (default 10) is captured whole as a JSON-string (or XML-fragment) column instead of being flattened further.
 
+Distinct from `maxDepth`, which only decides where flattening stops, each reader also enforces a hard parse-time nesting guard against pathological documents. The XML reader rejects any document whose elements nest deeper than 1000 levels with an explicit error (`XmlRecordReader.MaxNestingDepth`), telling the operator to pre-split or reduce nesting rather than risk unbounded recursion. JSON record parsing caps at a depth of 256 (`JsonRecordReader`'s `JsonDocumentOptions.MaxDepth`); a document past that limit fails to parse. Neither limit is configurable, and both sit well above any realistic `maxDepth`.
+
 ## Array handling (JSON) and repeat handling (XML)
 
 `source.options.arrayHandling` decides what happens to a JSON array that is not an explicit explode target. Parsing is case-insensitive and ignores `_` and `-`:

@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "product": "SQLFlow V3 (DeltaForge)",
+  "product": "SQLFlow V3",
   "generatedFrom": "source code: src/SqlFlow.Core/Model and src/SqlFlow.Yaml",
   "naming": "Every loader builds its YamlDotNet IDeserializer with `new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build()` (src/SqlFlow.Yaml/YamlFlowLoader.cs:17-20 and identically in all other loaders). Rule: a C# PascalCase DTO property binds to the camelCase YAML key, i.e. the property name with its leading capital(s) lowercased at each word boundary start; example: C# `PreProcess` binds YAML key `preProcess`, `OnConvertError` binds `onConvertError`, `As` binds `as`. Two carve-outs: (1) dictionary KEYS are never renamed by the convention; `source.options` and `schema.overrides` map keys bind verbatim and are re-wrapped case-insensitively by the mapping layer (YamlFlowLoader.cs:59-61, 252). (2) Enum-like VALUES are plain strings parsed case-insensitively; for load.mode and transform.onConvertError, '-' and '_' are stripped first (NormalizeToken, YamlFlowLoader.cs:285-287), so `truncate-load` == `TruncateLoad`; schema.evolve is parsed case-insensitively but without separator stripping. There are no [YamlMember] aliases anywhere; the only key-level 'alias' is that the YAML key `transform` populates the model property FlowDefinition.Inference (hand-mapped, not a converter).",
-  "keyCount": 160,
+  "keyCount": 162,
   "keys": [
     {
       "path": "batch",
@@ -104,12 +104,12 @@
     },
     {
       "path": "incremental.watermarkOverlap",
-      "type": "decimal",
+      "type": "double",
       "required": false,
       "default": "0",
       "description": "Overlap window subtracted from the row-level watermark before filtering, so a safety margin of already-loaded rows is re-read: interpreted as days for date/datetime/datetimeoffset columns (AddDays(-overlap)), as raw units for integer/decimal/float columns (plain subtraction; for integer columns the overlap is cast to a whole number first, so a fractional overlap truncates toward zero, SqlServerIncrementalProbe.cs:99), and ignored for text columns (SqlServerIncrementalProbe.ApplyOverlap, SqlServerIncrementalProbe.cs:97-106). 0 means the exact bound (rows strictly greater than MAX).",
       "appliesWhen": "incremental.watermarkColumn is set (row-level mode); authoring it without watermarkColumn is a load-time error",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:27 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:84)",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:28 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:88)",
       "validation": "Load time (YamlFlowLoader.cs:118-129), both as plain SqlFlowException without the file prefix: \"incremental: 'watermarkOverlap' requires a 'watermarkColumn'.\" when set without watermarkColumn; \"incremental: 'watermarkOverlap' must be zero or positive, was {value}.\" when negative."
     },
     {
@@ -204,6 +204,14 @@
       "description": "Declares when the flow should run; captured on the FlowDocument envelope for every flowType (file, ing, exp, sp, inv, hc, scm, batch) by YamlDocumentLoader's probe pass and mapped to SqlFlow.Core.ScheduleSpec. The engine never schedules anything itself: the catalog sync mirrors this block into the schedule table (CatalogSync.cs:276-297) and the control plane's SchedulerService enqueues the actual runs. A block carrying neither cron nor intervalSeconds is silently treated as absent (MapSchedule, YamlDocumentLoader.cs:217-223), and the key is honored only when loading through YamlDocumentLoader; YamlFlowLoader alone (used by the CLI 'discover' verb via LoadFlow, src/SqlFlow.Cli/Program.cs:2096, called at Program.cs:256) ignores it as an unmatched property, while the CLI run/validate/plan verbs load through DocumentLoader.Load with YamlDocumentLoader (Program.cs:92, 101, 166, 180) and so do parse it, even though a direct CLI run never consumes it.",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:81",
       "validation": "No parse-time validation of the block itself. When armed, ScheduleClock.TryValidate (src/SqlFlow.Catalog/ScheduleClock.cs:44) requires exactly one of cron / intervalSeconds; failure produces the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" and the schedule is skipped (src/SqlFlow.Catalog/CatalogSync.cs:284-288), or an HTTP 400 from the schedule API (src/SqlFlow.ControlPlane/Api/ScheduleEndpoints.cs:105)."
+    },
+    {
+      "path": "schedule.catchup",
+      "type": "bool",
+      "required": false,
+      "default": "false",
+      "description": "Whether the scheduler backfills fires the host missed while it was down. With catchup false (the default) the next fire is computed strictly after now, so a missed occurrence is skipped and the schedule resumes its normal cadence; with catchup true the next fire is advanced from the last observed fire, so each occurrence the host missed is enqueued in turn until the schedule catches up (SchedulerService.ComputeNextFire, src/SqlFlow.ControlPlane/Background/SchedulerService.cs:141-145). The loader maps an absent value to false via 'schedule.Catchup ?? false' (MapSchedule, src/SqlFlow.Yaml/YamlDocumentLoader.cs:233).",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:94 (model: src/SqlFlow.Core/ScheduleSpec.cs:28)"
     },
     {
       "path": "schedule.cron",

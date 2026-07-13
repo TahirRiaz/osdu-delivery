@@ -36,7 +36,7 @@ sourceRefs:
 ```bash
 sqlflow run <pipeline.flow.yaml>
             [--json] [--show-sql] [--log-level <info|debug|trace>]
-            [--full] [--from <date>] [--to <date>] [--file-pattern <glob>]
+            [--full] [--from <date>] [--to <date>] [--file-pattern <glob>] [--assertions-only]
             [--retrain] [--fail-on-anomaly]
             [--dry-run] [--no-push]
             [--db <conn-ref>] [--repo <name>] [--repo-url <url>] [--no-db-sync]
@@ -70,6 +70,7 @@ Every run writes durable artifacts to a `.sqlflow/runs/` folder next to the flow
 | `--from <date>` | date | none | Backfill: low bound of an externally bounded window (inclusive, UTC). Invariant-culture parse, for example `2023-01-15` or `'2023-01-15 06:00:00'`. |
 | `--to <date>` | date | none | Backfill: high bound of the window. Requires `--from` and must be after it. |
 | `--file-pattern <glob>` | glob | none | Backfill: narrow a file flow's discovery to one glob for this run, for example `orders_2023-01*.csv`. 1 to 200 characters, no control characters. |
+| `--assertions-only` | switch | off | ing only: evaluate the flow's declared data-quality assertions (auto and manual alike) against the current target and do nothing else, no source read, no staging, no load. Any other kind refuses the run. Mutually exclusive with `--full`, `--from`/`--to`, and `--file-pattern`. |
 | `--retrain` | switch | off | hc only: train fresh anomaly models this run (sets the flow's training mode to `Always`). |
 | `--fail-on-anomaly` | switch | off | hc only: exit 2 when the check succeeds but finds anomalies (CI gating). |
 | `--dry-run` | switch | off | scm only: script the database and write the working tree without committing. |
@@ -82,8 +83,9 @@ Every run writes durable artifacts to a `.sqlflow/runs/` folder next to the flow
 
 ## Backfill parameters
 
-`--full`, `--from`, `--to`, and `--file-pattern` form the typed per-run `RunParameters` contract (src/SqlFlow.Core/Runs/RunParameters.cs). They override the run, never the YAML definition. Validation happens before execution; an invalid combination prints `ERROR  <message>` to stderr and exits 1 with these exact messages:
+`--full`, `--from`, `--to`, `--file-pattern`, and `--assertions-only` form the typed per-run `RunParameters` contract (src/SqlFlow.Core/Runs/RunParameters.cs). They override the run, never the YAML definition. Validation happens before execution; an invalid combination prints `ERROR  <message>` to stderr and exits 1 with these exact messages:
 
+- `assertionsOnly cannot be combined with fullLoad, a backfill window, or a file pattern: an assertions-only run reads no source data, so a selection override has nothing to apply to.`
 - `fullLoad and a backfill window are mutually exclusive: full load ignores every bound; a window IS the bound.`
 - `backfillTo must be after backfillFrom.`
 - `backfillTo requires backfillFrom (an upper bound alone is not a window).`
@@ -94,7 +96,8 @@ Every run writes durable artifacts to a `.sqlflow/runs/` folder next to the flow
 Per-kind semantics, as applied in src/SqlFlow.Execution/DocumentExecutor.cs:
 
 - File flows: the window becomes the source's `initFromFileDate`/`initToFileDate` options (inclusive file-date bounds), `--file-pattern` becomes the `srcFile` glob, and `--full` (or an explicit window) suppresses the watermark probe for this run.
-- Ingestion flows: the parameters are passed to the ingestion runner; the window bounds the incremental date column and `--full` ignores the watermark.
+- Ingestion flows: the parameters are passed to the ingestion runner; the window bounds the incremental date column and `--full` ignores the watermark. `--assertions-only` diverts to the assertions-only path, which evaluates the flow's whole assertion list (auto and manual) against the current target and returns without reading the source, staging, or loading.
+- `--assertions-only` on any non-ingestion kind hard-fails before execution with `assertionsOnly applies only to ingestion flows (flowType: ing): assertions are declared on and evaluated against an ingestion flow's target.`
 - Export flows: `--from`/`--to` re-window the chunk plan's `FromDate`/`ToDate` for this run only; `--full` and `--file-pattern` have no export meaning and are acknowledged in run.log rather than silently dropped.
 - sp, hc, and inv flows: no window or selection surface exists; supplied parameters are noted in run.log as inapplicable and the flow runs as defined.
 - Batch documents: the parameters are passed to every member, so a batch backfill is one command, not N YAML edits.

@@ -37,11 +37,11 @@ Everything is deterministic by construction: objects, edges, warnings, and waves
 
 ## The lineage.json report model
 
-`LineageReport` (src/SqlFlow.Core/Lineage/LineageReport.cs) is the canonical artifact, with `CurrentSchemaVersion = 1`. Its envelope:
+`LineageReport` (src/SqlFlow.Core/Lineage/LineageReport.cs) is the canonical artifact, with `CurrentSchemaVersion = 2`. Its envelope:
 
 | Field | Contents |
 | --- | --- |
-| `SchemaVersion` | Contract version, currently 1. |
+| `SchemaVersion` | Contract version, currently 2 (v2 adds the object `Script`/`ScriptTier`; a v1 reader sees the same shape plus new fields it can ignore). |
 | `GeneratedAtUtc` | When the computation ran. |
 | `FlowDirectory` | The scanned flow folder (full path). |
 | `TiersUsed` | Which tiers fed the graph: `Declared`, `Observed`, `Derived`. |
@@ -60,7 +60,7 @@ Everything is deterministic by construction: objects, edges, warnings, and waves
 
 ### Object nodes
 
-`LineageObjectNode`: `Key` (the canonical node identity, below), `ServerRef`, `Database`, `Schema`, `Name` (raw spellings preserved), `Kind` (`Unknown`, `Table`, `View`, `Procedure`, `Function`, `Trigger`, `Synonym`, `File`), `Definition` (the `sys.sql_modules` body for a view/procedure/function/trigger, captured by the derived tier only; null for a plain table, an offline computation, or an encrypted module), `Columns` (derived tier only: `Ordinal` 1-based, `Name`, `DataType` rendered with length and precision such as `nvarchar(100)`, `Nullable`), and node-scoped `Warnings` (an encrypted module whose definition is unreadable, for example).
+`LineageObjectNode`: `Key` (the canonical node identity, below), `ServerRef`, `Database`, `Schema`, `Name` (raw spellings preserved), `Kind` (`Unknown`, `Table`, `View`, `Procedure`, `Function`, `Trigger`, `Synonym`, `File`), `Definition` (the `sys.sql_modules` body for a view/procedure/function/trigger, captured by the derived tier only; null for a plain table, an offline computation, or an encrypted module), `Script`/`ScriptTier` (the v2 addition: the reconstructed `CREATE TABLE` script for a base table, attached by the derived tier's table-scripts pass, with the tier that produced it), `Columns` (derived tier only: `Ordinal` 1-based, `Name`, `DataType` rendered with length and precision such as `nvarchar(100)`, `Nullable`), and node-scoped `Warnings` (an encrypted module whose definition is unreadable, for example).
 
 ### Edges and relations
 
@@ -138,7 +138,7 @@ Engines without a database concept are exempt and keep the empty segment by desi
 
 ## The execution plan
 
-The plan ports the DeltaForge `compute_schedule_run_order` semantics exactly (`ComputeRunOrder` in src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs). It works over each flow's effective relations: the flow's own facts plus module inheritance (a flow reading a view or executing a procedure inherits the module's derived relations transitively, depth-guarded at 32 levels).
+The plan computes the schedule run order deterministically (`ComputeRunOrder` in src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs). It works over each flow's effective relations: the flow's own facts plus module inheritance (a flow reading a view or executing a procedure inherits the module's derived relations transitively, depth-guarded at 32 levels).
 
 ### Producer maps and dependency rules
 

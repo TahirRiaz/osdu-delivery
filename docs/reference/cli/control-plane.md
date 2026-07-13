@@ -2,7 +2,7 @@
 id: cli-control-plane
 title: sqlflow control-plane verbs
 type: cli-command
-summary: The remote verb family over the control plane's /api/v1 surface, everything the GUI can do from a terminal, plus whoami, doctor, local run history, and shell completions.
+summary: Remote CLI verbs over the control plane's /api/v1 surface, covering what the GUI does from a terminal plus whoami, doctor, run history, and completions.
 keywords:
   - control plane
   - login
@@ -24,6 +24,11 @@ related:
   - cli-validate
   - cli-db
   - cli-worker
+sourceRefs:
+  - src/SqlFlow.Cli/Program.cs
+  - src/SqlFlow.Cli/Remote/RemoteVerbs.cs
+  - src/SqlFlow.Cli/Remote/RemoteVerbs.Estate.cs
+  - src/SqlFlow.Cli/Remote/ControlPlaneClient.cs
 ---
 
 # Control-plane verbs
@@ -50,6 +55,15 @@ Password and device sign-ins mint a personal access token (`--token-name`, `--ex
 `--no-expiry`, `--scopes "read operate"` to narrow) and store that, never the password and never the
 expiring session JWT, so the stored credential is always revocable server-side.
 
+```
+sqlflow user reset-password <username> [--db <conn-ref>]   # local-user password reset, direct against the catalog
+```
+
+`user reset-password` is a direct-catalog break-glass verb (it does not call the API): it resets a local user's
+password in the catalog database addressed by `--db` (default `${env:SQLFLOW_CATALOG_DB}`), for recovering an
+account when no one can sign in. It only affects local users; an SSO (Entra) user's credential lives in the
+external identity provider, not the catalog. A `--db` value that embeds a literal credential warns on stderr.
+
 ## Execution
 
 ```
@@ -70,9 +84,11 @@ sqlflow groups show <groupId> [--follow] | cancel <groupId> | rerun <groupId>
 sqlflow summary                                    # the dashboard rollup
 sqlflow nodes                                      # the worker fleet, heartbeat-derived liveness
 sqlflow schedules list | show <id> | create --repo r --flow f (--cron "0 6 * * *"|--interval 3600)
+                 [--timezone Europe/Oslo] [--disabled] [--catchup]
                  | pause <id> | resume <id> | delete <id>
 sqlflow repos list | show <name> | sync <name>     # git source sync-now, or local-path re-sync
 sqlflow repos register --name bb --remote-url https://... --credential-ref '${env:GIT_TOKEN}'
+                 [--branch main] [--interval 3600] [--credential-user git] [--disabled]
 sqlflow repos discover --remote-url https://...    # preview a remote's flows without importing
 sqlflow pipelines list [--repo r --kind ing --active true] | show <id> [--yaml|--definition]
                  | columns <id> | files <id>
@@ -111,8 +127,11 @@ The offline `sqlflow lineage <folder>` computation over a local flow estate is u
 ## Environment and testing helpers
 
 ```
+sqlflow health                                     # anonymous /health/live + /health/ready probe; exit 0 when both 200
 sqlflow doctor                                     # env file, SQLFLOW_* presence, control plane, credential, catalog
 sqlflow validate <folder> [--json]                 # every document in the estate; exit 0 only when all parse (CI gate)
 sqlflow runs local [folder] [--flow x] [--last N]  # the on-disk .sqlflow/runs history, no catalog needed
 sqlflow completions bash|zsh|powershell            # shell completion script on stdout
 ```
+
+`sqlflow health` needs no credential (both probes are anonymous): it reports the `/health/live` and `/health/ready` status codes and bodies, and exits 0 only when both answer 200. A failing `ready` under a passing `live` usually means the catalog database is unreachable from the control plane.

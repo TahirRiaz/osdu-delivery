@@ -130,7 +130,7 @@ def main():
 
     manifest = {
         "version": 1,
-        "product": "SQLFlow V3 (DeltaForge)",
+        "product": "SQLFlow V3",
         "docs": docs,
     }
 

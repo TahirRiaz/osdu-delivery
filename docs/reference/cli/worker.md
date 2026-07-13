@@ -50,12 +50,7 @@ The command runs until Ctrl+C.
 
 ## Arguments
 
-The worker verb has no meaningful positional argument, but the top-level argument parser requires a second positional token for it (`worker` is not in the parser's no-file verb list, and `--poll-seconds` and `--pool` are not registered as value-taking options, so their values count as that token). In practice:
-
-- `sqlflow worker --poll-seconds 5`, `sqlflow worker --pool a,b`, or any invocation containing at least one of these starts the drain loop.
-- A bare `sqlflow worker`, or one whose only option is `--db` (whose value the parser does consume), prints the general usage text and exits 1 without starting.
-
-Always pass `--poll-seconds` (or `--pool`) explicitly.
+The worker verb takes no positional argument. `worker` is in the parser's no-file verb list (src/SqlFlow.Cli/Program.cs), so a bare `sqlflow worker` (with only the default `--db`) starts the drain loop directly. It does not require a second positional token and never prints usage or exits 1 for a missing one. `--pool` and `--poll-seconds` are both registered value-taking options (src/SqlFlow.Cli/Program.cs, `ValueTakingOptions`), so their values are consumed as option values, not positionals, and can be placed anywhere on the command line.
 
 ## Options
 
@@ -155,7 +150,7 @@ In addition, every `${env:...}` reference used by the flows themselves (source a
 
 ## Container image
 
-Dockerfile.worker packages the worker as a container whose entrypoint (deploy/docker/worker-entrypoint.sh) composes the `sqlflow worker` invocation from `SQLFLOW_WORKER_POOL` and `SQLFLOW_WORKER_POLL_SECONDS`; the catalog connection stays on the CLI default `${env:SQLFLOW_CATALOG_DB}`, so it never appears in `ps` output. Set at least one of the two variables so the composed command line carries the second token the parser requires (see Arguments). The container exposes no ports and needs only outbound SQL and git. deploy/compose/docker-compose.yml runs it as the `worker` service, and deploy/k8s/worker-pool.yaml scales it on queue depth with KEDA (an mssql scaler counting `queued` rows, scale-to-zero when the queue is dry).
+Dockerfile.worker packages the worker as a container whose entrypoint (deploy/docker/worker-entrypoint.sh) composes the `sqlflow worker` invocation from `SQLFLOW_WORKER_POOL` and `SQLFLOW_WORKER_POLL_SECONDS`; the catalog connection stays on the CLI default `${env:SQLFLOW_CATALOG_DB}`, so it never appears in `ps` output. Both variables are optional, so a bare `sqlflow worker` still drains untargeted runs on the default poll cadence. The container exposes no ports and needs only outbound SQL and git. deploy/compose/docker-compose.yml runs it as the `worker` service, and deploy/k8s/worker-pool.yaml scales it on queue depth with KEDA (an mssql scaler counting `queued` rows, scale-to-zero when the queue is dry).
 
 ## Examples
 
@@ -205,7 +200,6 @@ docker compose -f deploy/compose/docker-compose.yml up -d --scale worker=3
 | --- | --- | --- |
 | Clean stop via Ctrl+C | 0 | `SQLFlow worker stopped.` on stdout |
 | The `--db` reference fails to resolve | 1 | `ERROR  <redacted message>` on stderr (two spaces after `ERROR`) |
-| No second positional token (bare `sqlflow worker`, or only `--db`/`-v` given) | 1 | The general usage text |
 
 Per-run failures do not affect the exit code; they are recorded on the run rows and logged, and the loop continues.
 

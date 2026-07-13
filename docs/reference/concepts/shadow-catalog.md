@@ -33,7 +33,7 @@ sourceRefs:
 
 The shadow catalog is a SQL Server read-model of the SQLFlow estate. Git/YAML flow documents plus the on-disk `run.json` history are the source of truth; the catalog database mirrors them in ONE direction (files to database, never back), so it can always be rebuilt from scratch by re-syncing. Several git repos sync into a single catalog for cross-repo queries; every pipeline and run row is attributed to its repo. The whole schema lives under the `catalog` schema and is owned by EF Core migrations (`CatalogDbContext`, `src/SqlFlow.Catalog/CatalogDbContext.cs`); it is the only place in the product that uses Entity Framework.
 
-Tables in the `catalog` schema: `Repo`, `Pipeline`, `Run`, `Object`, `LineageEdge`, `FlowDependency`, `RunFile`, `RunAssertion`, `RunStatement`, `RunSurrogateKey`, `RunHealthCheckMetric`, `ObjectColumn`, `PipelineColumn`, `Schedule`, `Node`, `RepoSource`, `User`, `Role`.
+Tables in the `catalog` schema: `Repo`, `Pipeline`, `Run`, `Object`, `LineageEdge`, `FlowDependency`, `RunFile`, `RunAssertion`, `RunStatement`, `RunEvent`, `RunSurrogateKey`, `RunHealthCheckMetric`, `ObjectColumn`, `PipelineColumn`, `Schedule`, `Node`, `RepoSource`, `User`, `Role`.
 
 A full sync pass (`CatalogSync.SyncAsync`, `src/SqlFlow.Catalog/CatalogSync.cs`) runs in one serializable transaction wrapped in the context's execution strategy, so two concurrent syncs of the same repo serialize instead of racing, and a connection-resiliency retry re-collects the estate from disk safely.
 
@@ -67,7 +67,7 @@ Edge handling during a pass:
 - Flow YAML over 16 MiB (`MaxYamlBytes = 16 * 1024 * 1024`) is skipped with a warning; `run.json` over 64 MiB (`MaxRunJsonBytes = 64 * 1024 * 1024`) likewise.
 - A flow that left git is soft-deactivated (`Active = false`, counted as `PipelinesDeactivated`) so its run history stays attributable.
 
-The pass returns a `CatalogSyncResult` tally: `PipelinesAdded` / `Updated` / `Unchanged` / `Deactivated`, `RunsAdded` / `Skipped` / `Failed`, `ObjectsUpserted`, `ObjectsSuperseded`, `ObjectColumns`, `LineageEdges`, `FlowDependencies`, `Waves`, `RunFilesAdded`, `RunAssertionsAdded`, `RunStatementsAdded`, `RunSurrogateKeysAdded`, `RunHealthCheckMetricsAdded`, `LineageConnected`, `Warnings`.
+The pass returns a `CatalogSyncResult` tally: `PipelinesAdded` / `Updated` / `Unchanged` / `Deactivated`, `RunsAdded` / `Skipped` / `Failed`, `ObjectsUpserted`, `ObjectsSuperseded`, `ObjectColumns`, `LineageEdges`, `FlowDependencies`, `Waves`, `RunFilesAdded`, `RunAssertionsAdded`, `RunStatementsAdded`, `RunEventsAdded`, `RunSurrogateKeysAdded`, `RunHealthCheckMetricsAdded`, `LineageConnected`, `Warnings`.
 
 ## Run history projection
 
@@ -90,6 +90,7 @@ A run is immutable, so its detail rows are inserted exactly once, with the run i
 | `RunFile` | `result.processedFiles` (name, path, rows, columns, sizeBytes) and export `result.files` (path, rows, bytes) | Export file name is the path's last segment; export rows carry no column count |
 | `RunAssertion` | `result.assertions` | Name, result, asserted value, evaluated flag, error |
 | `RunStatement` | `result.sqlTrace` plus a file flow's `result.ddlExecuted` (step `schema.ddl`) | 1-based ordinals in execution order; surrogate-key SQL is already inside `sqlTrace` and deliberately not read twice |
+| `RunEvent` | the top-level `events` array (`timestampUtc`, `level`, `step`, `message`, `rows`, `elapsedMs`) | 1-based ordinals in execution order; an entry missing a message or timestamp is skipped |
 | `RunSurrogateKey` | `result.surrogateKeys` | Keys generated, rows stamped, remote flag, error |
 | `RunHealthCheckMetric` | `result.metricResults` | Series/imputed/immature points, anomalies, level shifts, model provenance |
 

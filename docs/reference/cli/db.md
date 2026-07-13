@@ -12,7 +12,7 @@ keywords:
   - repo
   - write-back
   - ef migrations
-cliCommand: "sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--repo name] [--repo-url url] [--connect]"
+cliCommand: "sqlflow db <migrate|sync|status> [path] [--db <conn-ref>] [--create] [--repo name] [--repo-url url] [--connect]"
 related:
   - concept-shadow-catalog
   - concept-control-plane
@@ -33,7 +33,7 @@ sourceRefs:
 ## Synopsis
 
 ```bash
-sqlflow db migrate [--db <conn-ref>]
+sqlflow db migrate [--db <conn-ref>] [--create]
 sqlflow db status  [--db <conn-ref>]
 sqlflow db sync    [path] [--db <conn-ref>] [--repo <name>] [--repo-url <url>] [--connect]
 ```
@@ -44,7 +44,7 @@ sqlflow db sync    [path] [--db <conn-ref>] [--repo <name>] [--repo-url <url>] [
 
 The command takes a subcommand instead of a pipeline file:
 
-- `migrate` creates the database if it is missing and applies all pending EF Core migrations, bringing an existing database to the current schema version.
+- `migrate` upgrades an existing catalog to the current schema version by applying all pending EF Core migrations. It does NOT auto-create a missing database: without `--create` it calls `MigrateExistingAsync` and refuses a missing or non-catalog database, so a mistyped `--db` can never silently provision the wrong (possibly production) server. Pass `--create` to provision a new catalog (create the database, or initialise the catalog in an empty one).
 - `status` reports applied versus pending migrations without changing anything.
 - `sync` migrates first, then projects the estate under `[path]` into the catalog: each YAML flow becomes a pipeline row (kind, source/target servers, the secret-redacted YAML text, and the full definition as queryable JSON), each `run.json` becomes a run row with drill-down detail, and lineage objects, columns, edges, waves, and flow dependencies are computed and stored.
 
@@ -64,6 +64,7 @@ All flags take their value as the next argument (`--db "$REF"`, not `--db=REF`).
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--db` | connection reference | `${env:SQLFLOW_CATALOG_DB}` | Reference to the catalog database connection string. This is a reference, never an embedded secret: it is resolved through the secret resolver (`${env:NAME}` and `${keyvault:vault/secret}` schemes), with local values supplied by the git-ignored `.sqlflow/env` file, searched from the current directory upward. |
+| `--create` | switch | off | `migrate` only: provision a new catalog (create the database, or initialise the `catalog` schema in an empty database) before applying migrations. Without it, `migrate` upgrades an existing catalog only and refuses a missing or non-catalog database. |
 | `--repo` | string | folder name of `[path]`, fallback `default` | `sync` only: the repo name the synced estate is attributed to. Pipelines, runs, and lineage edges are scoped to this repo inside the catalog. |
 | `--repo-url` | string | (none) | `sync` only: records the git remote URL on the repo row. A later sync without it preserves the previously recorded URL. |
 | `--connect` | switch | off | `sync` only: adds the derived lineage tier. Object metadata and module bodies are fetched from the live SQL Servers (`sys.objects`, `sys.sql_modules`), which links flows across repos through shared objects. The summary line ends with `(connected)`. |
@@ -78,7 +79,7 @@ WARN  --db embeds a credential on the command line (it lands in shell history). 
 
 ### migrate
 
-`db migrate` calls `CatalogDatabase.MigrateAsync`: on an empty server it creates the database and the `catalog` schema; on an existing database it applies exactly the pending migrations. Each migration runs in its own transaction, so no migration is ever half-applied. The initial CREATE DATABASE itself is not transactional, but re-running `MigrateAsync` is always safe, so the command is idempotent (a no-op when already current). On success it prints one line:
+`db migrate` without `--create` calls `CatalogDatabase.MigrateExistingAsync`: it applies exactly the pending migrations to an existing catalog and refuses a missing or non-catalog database rather than creating one. Add `--create` to call `CatalogDatabase.MigrateAsync` instead, which on an empty server creates the database and the `catalog` schema before applying migrations. Each migration runs in its own transaction, so no migration is ever half-applied. The initial CREATE DATABASE itself is not transactional, but re-running `migrate` is always safe, so the command is idempotent (a no-op when already current). On success it prints one line:
 
 ```text
 OK   catalog database current at '<last-migration>' (N migration(s) applied, 0 pending).

@@ -1,7 +1,7 @@
 ---
 id: flow-overview
 title: "Anatomy of a flow file: the eight document kinds"
-type: guide
+type: flow-reference
 summary: How the top-level flowType key selects one of eight flow document kinds, what each kind contains, and how loading and validation behave.
 keywords:
   - flowtype

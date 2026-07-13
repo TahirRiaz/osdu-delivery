@@ -57,8 +57,8 @@ Each flow kind contributes fixed facts:
 
 | Kind | Facts |
 | --- | --- |
-| `ing` (ingestion) | Flow name is `sysAlias` when set, otherwise the target table name. `Reads` the source table, `Writes` the target table (kind hint Table). When the transform generates a view, an extra `Writes` fact for `v<TargetTable>` (kind View). |
-| `file` | `Reads` the file endpoint from `source.location`, `Writes` `target.schema`.`target.table`. When inference generates a view, an extra `Writes` fact for `v<Table>` in the target schema. |
+| `ing` (ingestion) | Flow name is `sysAlias` when set, otherwise the target table name. `Reads` the source table, `Writes` the target table (kind hint Table). When the transform generates a view, an extra `Writes` fact for `v_<TargetTable>` (kind View). |
+| `file` | `Reads` the file endpoint from `source.location`, `Writes` `target.schema`.`target.table`. When inference generates a view, an extra `Writes` fact for `v_<Table>` in the target schema. |
 | `exp` (export) | `Reads` the source object, `Writes` the file endpoint at `trgPath`. |
 | `sp` (stored procedure) | `Requires` the procedure only; the body's reads and writes are the procedure module's lineage, expanded by the derived tier. |
 | `hc` (health check) | `Reads` the target object. |
@@ -100,11 +100,12 @@ Degradation is loud, never fatal:
 
 Before connecting, an identity-proof pass resolves every reference to its canonical connection string; references that resolve to equal strings register as `ServerAliases`, so one physical server referenced under several spellings becomes one node space in the graph.
 
-Per reachable server, three read-only passes (all with `CommandTimeout = 0`):
+Per reachable server, four read-only passes (all with `CommandTimeout = 0`):
 
 1. **Inventory**: `sys.objects` joined to `sys.schemas`, types `U`/`V`/`P`/`FN`/`IF`/`TF`/`TR` with `is_ms_shipped = 0`, mapped to Table, View, Procedure, Function, and Trigger nodes. Columns for `U`/`V`/`IF`/`TF` objects come from `sys.columns` joined to `sys.types` and render as DDL-style type strings: `nvarchar`/`nchar` halve `max_length` (or `max`), `varchar`/`char`/`varbinary`/`binary` take the length, `decimal`/`numeric` take `(precision,scale)`, `datetime2`/`datetimeoffset`/`time` take `(scale)`.
 2. **Synonyms**: `sys.synonyms` with `PARSENAME` splitting the base object name server-side. A four-part (linked server) base is surfaced as the node warning `synonym base lives on linked server '<X>'; not resolvable from here.` instead of being guessed. Resolvable synonym links are applied by the graph builder so every fact lands on the base object.
 3. **Module harvest**: `sys.sql_modules` bodies are read verbatim and parsed with the shared T-SQL extractor. The resulting facts are module-attributed Derived facts (`ViaModule` = the module's node key); the module's own `CREATE` statement points at itself and such self-facts are dropped. The definition is retained on the object node, so the connected catalog is searchable code. An encrypted module (`NULL` definition, `WITH ENCRYPTION`) becomes the node warning `module is encrypted (WITH ENCRYPTION); its definition cannot be read, so its lineage is unknown.`
+4. **Table scripts**: for every base table (`sys.columns`/`sys.types`/`sys.identity_columns`/`sys.computed_columns` for the columns plus `sys.indexes`/`sys.key_constraints` for the primary key), a `CREATE TABLE` script is reconstructed from the live schema and attached to the object node as a derived-tier `Script` artifact. SQL Server keeps no CREATE TABLE text the way it keeps a module's `sys.sql_modules` body, so without this pass the catalog would hold a generating script for views/procedures but never for tables; the reconstructed script is what lets the estate be recreated elsewhere and reasoned about offline.
 
 Each connection also records `SELECT DB_NAME()` as that server's default catalog: node-identity ground truth used to complete database-less (two-part) identities against the exact catalog the engine executes them in. After all tiers have collected, a default-database resolution pass fills the remaining servers offline from each reference's `Initial Catalog`.
 
@@ -172,7 +173,7 @@ transform:
       type: varchar(50)
 ```
 
-Declared facts for this flow: `Reads` the file `data/orders.csv`, `Writes` `demo.Orders_Pre` (Table), and `Writes` `demo.vOrders_Pre` (View). After a run, the observed tier re-derives the same graph from the executed SQL, stamped with the run id; with `--connect`, the derived tier expands `demo.usp_BuildOrderFact` and the rollup procedures so the downstream `sp` flows trace through their procedure bodies to `demo.Fact_OrderSummary` and beyond.
+Declared facts for this flow: `Reads` the file `data/orders.csv`, `Writes` `demo.Orders_Pre` (Table), and `Writes` `demo.v_Orders_Pre` (View). After a run, the observed tier re-derives the same graph from the executed SQL, stamped with the run id; with `--connect`, the derived tier expands `demo.usp_BuildOrderFact` and the rollup procedures so the downstream `sp` flows trace through their procedure bodies to `demo.Fact_OrderSummary` and beyond.
 
 ## See also
 

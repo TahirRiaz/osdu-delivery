@@ -115,13 +115,15 @@ All toggles below default to `true` except `includeFileLineNumber` and `showPath
 
 | Option | Column | Type | Value |
 |---|---|---|---|
-| `includeFileName` | `FileName_DW` | string (4000) | File name; the full path when `showPathWithFileName: "true"`. |
-| `includeFileDate` | `FileDate_DW` | datetime2 | Source file modified date (UTC). |
-| `includeFileRowDate` | `FileRowDate_DW` | datetime2 | Ingest timestamp (UTC). |
-| `includeFileSize` | `FileSize_DW` | bigint | File size in bytes. |
-| `includeDataSet` | `DataSet_DW` | datetime2 | Dataset date: a date detected in the file name, else the file modified date (UTC). See [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename). |
+| `includeFileName` | `FileName_DW` | varchar(255) | File name; the full path when `showPathWithFileName: "true"`. |
+| `includeFileDate` | `FileDate_DW` | varchar(255) | Source file modified date (UTC). |
+| `includeFileRowDate` | `FileRowDate_DW` | varchar(255) | Ingest timestamp (UTC). |
+| `includeFileSize` | `FileSize_DW` | varchar(255) | File size in bytes. |
+| `includeDataSet` | `DataSet_DW` | varchar(255) | Dataset date: a date detected in the file name, else the file modified date (UTC). See [dataSetFromFileName](../../concepts/provenance-and-row-keys.md#dataset_dw-and-datasetfromfilename). |
 | `includeRowNumber` | `RowNumber_DW` | bigint | Data row number within each file. |
 | `includeFileLineNumber` | `FileLineNumber` | bigint | Physical line number in the source file. Default `false`. |
+
+The raw landing layer is string-first: the file/date/size provenance columns land as `varchar(255)` text, not as `datetime2` or `bigint`. Values are written in the encodings the generated transformation view's casts expect: `yyyyMMddHHmmss` for `FileDate_DW` and `DataSet_DW`, `yyyy-MM-dd HH:mm:ss` for `FileRowDate_DW`, and digit strings for `FileSize_DW`. The transformation view applies the real types downstream. Only `RowNumber_DW` and `FileLineNumber` land as `bigint` in the raw layer.
 | `showPathWithFileName` | | | Store the full path instead of just the name in `FileName_DW`. Default `false`. |
 | `dataSetFromFileName` | | | Derive `DataSet_DW` from a date in the file name (fallback: modified date). Default `true`; `false` makes `DataSet_DW` equal `FileDate_DW`. |
 | `dataSetFormats` | | | Extra .NET date formats for `DataSet_DW` detection, comma- or pipe-separated, tried before the built-ins. |
