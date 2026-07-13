@@ -2,7 +2,7 @@
   "version": 1,
   "product": "SQLFlow V3",
   "generatedFrom": "source code: src/SqlFlow.Core/Model and src/SqlFlow.Yaml",
-  "naming": "Every loader builds its YamlDotNet IDeserializer with `new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build()` (src/SqlFlow.Yaml/YamlFlowLoader.cs:17-20 and identically in all other loaders). Rule: a C# PascalCase DTO property binds to the camelCase YAML key, i.e. the property name with its leading capital(s) lowercased at each word boundary start; example: C# `PreProcess` binds YAML key `preProcess`, `OnConvertError` binds `onConvertError`, `As` binds `as`. Two carve-outs: (1) dictionary KEYS are never renamed by the convention; `source.options` and `schema.overrides` map keys bind verbatim and are re-wrapped case-insensitively by the mapping layer (YamlFlowLoader.cs:59-61, 252). (2) Enum-like VALUES are plain strings parsed case-insensitively; for load.mode and transform.onConvertError, '-' and '_' are stripped first (NormalizeToken, YamlFlowLoader.cs:285-287), so `truncate-load` == `TruncateLoad`; schema.evolve is parsed case-insensitively but without separator stripping. There are no [YamlMember] aliases anywhere; the only key-level 'alias' is that the YAML key `transform` populates the model property FlowDefinition.Inference (hand-mapped, not a converter).",
+  "naming": "Every loader builds its YamlDotNet IDeserializer with `new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build()` (src/SqlFlow.Yaml/YamlFlowLoader.cs:17-20 and identically in all other loaders). Rule: a C# PascalCase DTO property binds to the camelCase YAML key, i.e. the property name with its leading capital(s) lowercased at each word boundary start; example: C# `PreProcess` binds YAML key `preProcess`, `OnConvertError` binds `onConvertError`, `As` binds `as`. Two carve-outs: (1) dictionary KEYS are never renamed by the convention; `source.options` and `schema.overrides` map keys bind verbatim and are re-wrapped case-insensitively by the mapping layer (YamlFlowLoader.cs:59-61, 253). (2) Enum-like VALUES are plain strings parsed case-insensitively; for load.mode and transform.onConvertError, '-' and '_' are stripped first (NormalizeToken, YamlFlowLoader.cs:286-288), so `truncate-load` == `TruncateLoad`; schema.evolve is parsed case-insensitively but without separator stripping. There are no [YamlMember] aliases anywhere; the only key-level 'alias' is that the YAML key `transform` populates the model property FlowDefinition.Inference (hand-mapped, not a converter).",
   "keyCount": 162,
   "keys": [
     {
@@ -30,8 +30,8 @@
       "path": "desiredIndexes",
       "type": "string",
       "required": false,
-      "description": "A single T-SQL script (typically authored as a YAML block scalar '|') containing one or more CREATE INDEX statements for the flow's target table; the model property is FlowDefinition.DesiredIndexes (src/SqlFlow.Core/Model/FlowDefinition.cs:39). At run time it is applied only when the run itself created the target table: FlowRunner.cs:159-175 parses the script with ScriptDom (TSql160Parser via DesiredIndexParser.Parse, which collects only CREATE INDEX statements and ignores comments/batch separators), executes each statement verbatim on the target connection, logs created indexes, and records a per-index failure as a warning event without failing the run (SqlServerDesiredIndexManager.ApplyAsync); when the table already exists this attribute is ignored and load.manageIndexes governs the existing indexes instead.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:17",
+      "description": "A single T-SQL script (typically authored as a YAML block scalar '|') containing one or more CREATE INDEX statements for the flow's target table; the model property is FlowDefinition.DesiredIndexes (src/SqlFlow.Core/Model/FlowDefinition.cs:43). At run time it is applied only when the run itself created the target table: FlowRunner.cs:159-175 parses the script with ScriptDom (TSql160Parser via DesiredIndexParser.Parse, which collects only CREATE INDEX statements and ignores comments/batch separators), executes each statement verbatim on the target connection, logs created indexes, and records a per-index failure as a warning event without failing the run (SqlServerDesiredIndexManager.ApplyAsync); when the table already exists this attribute is ignored and load.manageIndexes governs the existing indexes instead.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:18",
       "validation": "No YAML-time validation: YamlFlowLoader.cs:87 normalizes a blank or whitespace-only value to null. Run-time (only on a run that creates the target table): DesiredIndexParser.Parse throws SqlFlowException \"Invalid desired-index script: line <N>: <message>[; ...]\" on T-SQL parse errors, and SqlFlowException \"Desired-index script contains a CREATE INDEX without a resolvable index or table name.\" when a CREATE INDEX lacks an index name or ON table name; a SqlException while executing an individual index is captured as an IndexActionKind.Failed action and surfaced as a warning \"index [<name>] not created: <detail>\" rather than an error."
     },
     {
@@ -49,24 +49,24 @@
       ],
       "description": "Document-kind discriminator read by YamlDocumentLoader.Parse in a cheap probe deserialization pass before the full document is re-parsed by the selected loader. Dispatch after Trim(): absent/empty selects the file flow (FlowDefinition root via YamlFlowLoader, wrapped as FileFlowDocument); 'ing' selects YamlIngestionFlowLoader (IngestionFlowDocument), 'exp' YamlExportFlowLoader (ExportFlowDocument), 'sp' YamlStoredProcedureFlowLoader (StoredProcedureFlowDocument), 'inv' YamlInvokeFlowLoader (InvokeFlowDocument), 'hc' YamlHealthCheckFlowLoader (HealthCheckFlowDocument), 'scm' YamlSourceControlFlowLoader (SourceControlFlowDocument), 'batch' YamlBatchFlowLoader (BatchFlowDocument).",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:79",
-      "validation": "Value is trimmed, then matched with string.Equals(..., StringComparison.OrdinalIgnoreCase) against exactly ing, exp, sp, inv, hc, scm, batch (case-insensitive, but NO dash/underscore stripping: NormalizeToken is not applied here). Null, empty, or whitespace-only values select the file flow instead of erroring. Any other value throws FlowValidationException: \"<source>: unknown flowType '<flowType>'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, or omit flowType for a file flow.\" (src/SqlFlow.Yaml/YamlDocumentLoader.cs:160, 163-207)"
+      "validation": "Value is trimmed, then matched with string.Equals(..., StringComparison.OrdinalIgnoreCase) against exactly ing, exp, sp, inv, hc, scm, batch (case-insensitive, but NO dash/underscore stripping: NormalizeToken is not applied here). Null, empty, or whitespace-only values select the file flow instead of erroring. Any other value throws FlowValidationException: \"<source>: unknown flowType '<flowType>'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, or omit flowType for a file flow.\" (src/SqlFlow.Yaml/YamlDocumentLoader.cs:162, 165-209)"
     },
     {
       "path": "incremental",
       "type": "object",
       "required": false,
-      "description": "Optional incremental-load block. When the key is absent the mapper returns null (YamlFlowLoader.cs:94-97) and FlowRunner.ApplyIncrementalAsync returns the flow unchanged, so the flow loads everything it reads. An empty block ('incremental: {}' or 'incremental:' with only defaults) enables file-date mode with all defaults. Presence also changes no-data handling: with the block present and fullLoad false, a run that finds no source files (NoSourceFilesException) is caught and returned as a clean Success no-op instead of a failure (FlowRunner.cs:226-243); without the block the same condition fails the run.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:18 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:42)"
+      "description": "Optional incremental-load block. When the key is absent the mapper returns null (YamlFlowLoader.cs:95-98) and FlowRunner.ApplyIncrementalAsync returns the flow unchanged, so the flow loads everything it reads. An empty block ('incremental: {}' or 'incremental:' with only defaults) enables file-date mode with all defaults. Presence also changes no-data handling: with the block present and fullLoad false, a run that finds no source files (NoSourceFilesException) is caught and returned as a clean Success no-op instead of a failure (FlowRunner.cs:226-243); without the block the same condition fails the run.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:19 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:46)"
     },
     {
       "path": "incremental.dateColumn",
       "type": "string",
       "required": false,
       "default": "FileDate_DW",
-      "description": "Date/datetime column on the probe table whose MAX (shifted back by overlapDays via DATEADD(DAY, -overlap, MAX(col))) is the file-date watermark; FlowRunner injects the result as source option 'incrementalAfterDate' so the file readers (CSV/JSON/XML/Excel/Parquet) only read files dated strictly after it (FlowRunner.cs:300-317; strict '>' comparison in FileDateFilter.cs:82). Blank values fall back to the default (YamlFlowLoader.cs:134).",
+      "description": "Date/datetime column on the probe table whose MAX (shifted back by overlapDays via DATEADD(DAY, -overlap, MAX(col))) is the file-date watermark; FlowRunner injects the result as source option 'incrementalAfterDate' so the file readers (CSV/JSON/XML/Excel/Parquet) only read files dated strictly after it (FlowRunner.cs:300-317; strict '>' comparison in FileDateFilter.cs:82). Blank values fall back to the default (YamlFlowLoader.cs:135).",
       "appliesWhen": "incremental.watermarkColumn is not set (file-date mode); authoring it together with watermarkColumn is a load-time error",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:24 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:67)",
-      "validation": "Load time (YamlFlowLoader.cs:111-115): combining with watermarkColumn throws plain SqlFlowException (no file prefix): \"incremental: 'dateColumn' is the file-date watermark; it cannot be combined with a row-level 'watermarkColumn'.\" Run time (SqlServerIncrementalProbe.cs:36-46): SqlFlowException if the column is not found on the probe table, or if its type is not one of date/datetime/datetime2/smalldatetime/datetimeoffset."
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:25 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:71)",
+      "validation": "Load time (YamlFlowLoader.cs:112-116): combining with watermarkColumn throws plain SqlFlowException (no file prefix): \"incremental: 'dateColumn' is the file-date watermark; it cannot be combined with a row-level 'watermarkColumn'.\" Run time (SqlServerIncrementalProbe.cs:36-46): SqlFlowException if the column is not found on the probe table, or if its type is not one of date/datetime/datetime2/smalldatetime/datetimeoffset."
     },
     {
       "path": "incremental.fullLoad",
@@ -74,7 +74,7 @@
       "required": false,
       "default": "false",
       "description": "When true, the watermark probe is skipped entirely (FlowRunner.ApplyIncrementalAsync bails out via the pattern 'flow.Incremental is not { FullLoad: false }', FlowRunner.cs:288-291) and the flow reads everything: a forced full reload that works in either file-date or row-level mode. It also disables the incremental no-new-files no-op, so with fullLoad true a run that finds no source files fails instead of returning Success (FlowRunner.cs:226).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:28 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:87)"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:29 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:91)"
     },
     {
       "path": "incremental.overlapDays",
@@ -83,24 +83,24 @@
       "default": "0",
       "description": "Number of days subtracted from the file-date watermark (DATEADD(DAY, -overlapDays, MAX(dateColumn)), SqlServerIncrementalProbe.cs:49) so a safety window of already-loaded files is re-read on each run; 0 means the cut-off is exactly the stored maximum.",
       "appliesWhen": "incremental.watermarkColumn is not set (file-date mode); authoring it together with watermarkColumn is a load-time error",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:25 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:70)",
-      "validation": "Load time (YamlFlowLoader.cs:105-109): combining with watermarkColumn throws plain SqlFlowException (no file prefix): \"incremental: 'overlapDays' applies to the file-date watermark; with a row-level 'watermarkColumn' use 'watermarkOverlap'.\" A negative value is NOT rejected at load time; it fails only when the probe runs (SqlServerIncrementalProbe.cs:22-25): SqlFlowException \"Incremental overlapDays must be zero or positive, was {n}.\""
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:26 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:74)",
+      "validation": "Load time (YamlFlowLoader.cs:106-110): combining with watermarkColumn throws plain SqlFlowException (no file prefix): \"incremental: 'overlapDays' applies to the file-date watermark; with a row-level 'watermarkColumn' use 'watermarkOverlap'.\" A negative value is NOT rejected at load time; it fails only when the probe runs (SqlServerIncrementalProbe.cs:22-25): SqlFlowException \"Incremental overlapDays must be zero or positive, was {n}.\""
     },
     {
       "path": "incremental.table",
       "type": "string",
       "required": false,
       "default": "the flow's own target, [target.schema].[target.table] (applied at run time, FlowRunner.cs:293; the model stores null)",
-      "description": "Fully qualified table the engine probes for the watermark, e.g. [db].[dbo].[Silver]; the probe runs SELECT MAX(...) against it (SqlServerIncrementalProbe.cs). Blank or whitespace-only values are normalized to null by the mapper (YamlFlowLoader.cs:133), which means 'use the flow's own target'.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:23 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:64)"
+      "description": "Fully qualified table the engine probes for the watermark, e.g. [db].[dbo].[Silver]; the probe runs SELECT MAX(...) against it (SqlServerIncrementalProbe.cs). Blank or whitespace-only values are normalized to null by the mapper (YamlFlowLoader.cs:134), which means 'use the flow's own target'.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:24 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:68)"
     },
     {
       "path": "incremental.watermarkColumn",
       "type": "string",
       "required": false,
-      "description": "When set (non-blank), switches the flow to row-level incremental mode: the engine probes MAX(watermarkColumn) on the probe table, applies watermarkOverlap, and injects the typed bound into source options (watermark column/value/kind, FlowRunner.cs:325-350); DuckDB pushes the bound into its scan and every reader is additionally filtered row by row via WatermarkFilteringDataReader (FlowRunner.cs:356-367). The column must exist on both source and target with a name that survives column-name cleanup unchanged. Blank/whitespace values are treated as unset (YamlFlowLoader.cs:99).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:26 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:78)",
-      "validation": "Load time (YamlFlowLoader.cs:103-116): setting it together with overlapDays or dateColumn throws plain SqlFlowException (see those attributes for the exact messages). Run time (SqlServerIncrementalProbe.cs:76-84): SqlFlowException if the column is missing on the probe table, or if its SQL type is not orderable as a watermark (allowed: tinyint/smallint/int/bigint, decimal/numeric/money/smallmoney, real/float, date/datetime/datetime2/smalldatetime/datetimeoffset, char/varchar/nchar/nvarchar)."
+      "description": "When set (non-blank), switches the flow to row-level incremental mode: the engine probes MAX(watermarkColumn) on the probe table, applies watermarkOverlap, and injects the typed bound into source options (watermark column/value/kind, FlowRunner.cs:325-350); DuckDB pushes the bound into its scan and every reader is additionally filtered row by row via WatermarkFilteringDataReader (FlowRunner.cs:356-367). The column must exist on both source and target with a name that survives column-name cleanup unchanged. Blank/whitespace values are treated as unset (YamlFlowLoader.cs:100).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:27 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:82)",
+      "validation": "Load time (YamlFlowLoader.cs:104-117): setting it together with overlapDays or dateColumn throws plain SqlFlowException (see those attributes for the exact messages). Run time (SqlServerIncrementalProbe.cs:76-84): SqlFlowException if the column is missing on the probe table, or if its SQL type is not orderable as a watermark (allowed: tinyint/smallint/int/bigint, decimal/numeric/money/smallmoney, real/float, date/datetime/datetime2/smalldatetime/datetimeoffset, char/varchar/nchar/nvarchar)."
     },
     {
       "path": "incremental.watermarkOverlap",
@@ -110,23 +110,23 @@
       "description": "Overlap window subtracted from the row-level watermark before filtering, so a safety margin of already-loaded rows is re-read: interpreted as days for date/datetime/datetimeoffset columns (AddDays(-overlap)), as raw units for integer/decimal/float columns (plain subtraction; for integer columns the overlap is cast to a whole number first, so a fractional overlap truncates toward zero, SqlServerIncrementalProbe.cs:99), and ignored for text columns (SqlServerIncrementalProbe.ApplyOverlap, SqlServerIncrementalProbe.cs:97-106). 0 means the exact bound (rows strictly greater than MAX).",
       "appliesWhen": "incremental.watermarkColumn is set (row-level mode); authoring it without watermarkColumn is a load-time error",
       "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:28 (model: src/SqlFlow.Core/Model/FlowDefinition.cs:88)",
-      "validation": "Load time (YamlFlowLoader.cs:118-129), both as plain SqlFlowException without the file prefix: \"incremental: 'watermarkOverlap' requires a 'watermarkColumn'.\" when set without watermarkColumn; \"incremental: 'watermarkOverlap' must be zero or positive, was {value}.\" when negative."
+      "validation": "Load time (YamlFlowLoader.cs:119-130), both as plain SqlFlowException without the file prefix: \"incremental: 'watermarkOverlap' requires a 'watermarkColumn'.\" when set without watermarkColumn; \"incremental: 'watermarkOverlap' must be zero or positive, was {value}.\" when negative."
     },
     {
       "path": "load",
       "type": "object",
       "required": false,
       "default": "{ mode: append, batchSize: 50000, tableLock: true, manageIndexes: false }",
-      "description": "Optional block controlling the bulk-load stage. Binds to the LoadYaml DTO and is mapped by YamlFlowLoader.MapLoad to SqlFlow.Core.Model.LoadPolicy (YamlFlowLoader.cs:83); when the whole block is absent MapLoad still runs and produces the LoadPolicy defaults (FlowDefinition.cs:160-168).",
-      "definedIn": "src/SqlFlow.Core/Model/FlowDefinition.cs:25"
+      "description": "Optional block controlling the bulk-load stage. Binds to the LoadYaml DTO and is mapped by YamlFlowLoader.MapLoad to SqlFlow.Core.Model.LoadPolicy (YamlFlowLoader.cs:84); when the whole block is absent MapLoad still runs and produces the LoadPolicy defaults (FlowDefinition.cs:164-172).",
+      "definedIn": "src/SqlFlow.Core/Model/FlowDefinition.cs:29"
     },
     {
       "path": "load.batchSize",
       "type": "int",
       "required": false,
       "default": "50000",
-      "description": "Rows per internal bulk-copy batch: assigned directly to SqlBulkCopy.BatchSize for the streaming bulk insert into the target table (src/SqlFlow.SqlServer/SqlBulkLoader.cs:24). Defaulted to 50000 both in MapLoad (src/SqlFlow.Yaml/YamlFlowLoader.cs:279) and in the LoadPolicy initializer (src/SqlFlow.Core/Model/FlowDefinition.cs:163).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:83"
+      "description": "Rows per internal bulk-copy batch: assigned directly to SqlBulkCopy.BatchSize for the streaming bulk insert into the target table (src/SqlFlow.SqlServer/SqlBulkLoader.cs:24). Defaulted to 50000 both in MapLoad (src/SqlFlow.Yaml/YamlFlowLoader.cs:280) and in the LoadPolicy initializer (src/SqlFlow.Core/Model/FlowDefinition.cs:167).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:84"
     },
     {
       "path": "load.manageIndexes",
@@ -134,7 +134,7 @@
       "required": false,
       "default": "false",
       "description": "When true and the target table already existed before the run, FlowRunner disables its non-clustered indexes before the load (stage 'indexes.disable', IIndexManager.DisableNonClusteredAsync) and rebuilds exactly those after the load succeeds (stage 'indexes.rebuild') (src/SqlFlow.Core/Engine/FlowRunner.cs:124-128 and 151-157). It is a no-op on a table created during the run: a new table instead gets the flow's desiredIndexes built after load, and the two paths are mutually exclusive by design.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:85"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:86"
     },
     {
       "path": "load.mode",
@@ -146,16 +146,16 @@
         "truncateLoad"
       ],
       "description": "Selects the load strategy consumed by FlowRunner: truncateLoad runs a 'target.truncate' stage (ILoader.TruncateAsync on the target table) immediately before the bulk load (src/SqlFlow.Core/Engine/FlowRunner.cs:130-133); append (the default) loads without truncating. Authored as a plain string; parsed via NormalizeToken (strips '-' and '_') then case-insensitive Enum.TryParse, so 'truncate-load' (the spelling used in samples, e.g. samples/quickstart/orders.indexed.flow.yaml), 'truncate_load', 'TruncateLoad', and 'truncateload' are all equivalent.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:82",
-      "validation": "YamlFlowLoader.MapLoad (src/SqlFlow.Yaml/YamlFlowLoader.cs:278) via ParseEnum (YamlFlowLoader.cs:294-309): blank/absent falls back to Append; any value that does not match a LoadMode member after '-'/'_' stripping and case folding throws FlowValidationException \"<source>: 'load.mode' has invalid value '<value>'. Allowed: Append, TruncateLoad.\""
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:83",
+      "validation": "YamlFlowLoader.MapLoad (src/SqlFlow.Yaml/YamlFlowLoader.cs:279) via ParseEnum (YamlFlowLoader.cs:295-310): blank/absent falls back to Append; any value that does not match a LoadMode member after '-'/'_' stripping and case folding throws FlowValidationException \"<source>: 'load.mode' has invalid value '<value>'. Allowed: Append, TruncateLoad.\""
     },
     {
       "path": "load.tableLock",
       "type": "bool",
       "required": false,
       "default": "true",
-      "description": "When true the bulk insert runs with SqlBulkCopyOptions.TableLock (a bulk-update table lock held for the duration of the load); when false it uses SqlBulkCopyOptions.Default, i.e. row locks (src/SqlFlow.SqlServer/SqlBulkLoader.cs:20-21). Defaulted to true in MapLoad (src/SqlFlow.Yaml/YamlFlowLoader.cs:280).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:84"
+      "description": "When true the bulk insert runs with SqlBulkCopyOptions.TableLock (a bulk-update table lock held for the duration of the load); when false it uses SqlBulkCopyOptions.Default, i.e. row locks (src/SqlFlow.SqlServer/SqlBulkLoader.cs:20-21). Defaulted to true in MapLoad (src/SqlFlow.Yaml/YamlFlowLoader.cs:281).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:85"
     },
     {
       "path": "name",
@@ -163,7 +163,7 @@
       "required": true,
       "description": "Unique, human-readable identifier of the flow. It is the sole seed of the system-generated FlowId, a deterministic RFC 4122 version 5 GUID (SHA-1 over the fixed namespace 4f1f6b1e-8a2d-4c3b-9e7a-2c5d8f0b1a63 plus the UTF-8 name; FlowIdentity.FromName, src/SqlFlow.Core/Identity/FlowIdentity.cs:19, 29-33), so logs, lineage, and run history join on it across runs; renaming the flow yields a new identity by design (src/SqlFlow.Core/Model/FlowDefinition.cs:10-15). Consumers use it verbatim (no trimming, case-sensitive): FlowRunner puts it in the RunContext, log scopes, and OpenTelemetry activity tags (src/SqlFlow.Core/Engine/FlowRunner.cs:68-96), persists it as the FlowName key of the run-history FlowState row and stamps it on the returned FlowResult (FlowRunner.cs:208-216; src/SqlFlow.Core/Model/FlowState.cs:7-13, src/SqlFlow.Core/Model/Results.cs:35-43); the catalog keys the pipeline row on CatalogIdentity.Pipeline(repoId, name), itself a name-derived v5 GUID over \"{repoId:N}/{flowName}\" (src/SqlFlow.Catalog/CatalogSync.cs:198, src/SqlFlow.Catalog/CatalogIdentity.cs:14-18); and the loader injects the derived GUID into source.options under the reserved key 'flowId' (src/SqlFlow.Yaml/YamlFlowLoader.cs:64), which the pre-ingestion metadata records parse back into their FlowId field (e.g. src/SqlFlow.Core/Model/PreIngestionCsv.cs:268 and the Parquet/Jsn/Xls/Xml siblings). FlowIdentity's doc-comment contract also lists file-log dedup as a joiner on this identity (FlowIdentity.cs:8-10), but in the current stateless path processed files are only returned in FlowResult.ProcessedFiles; persisting them for cross-run dedup is described as full-mode behavior (src/SqlFlow.Core/Model/SourceReadResult.cs:5-9).",
       "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:8",
-      "validation": "YamlFlowLoader.Map calls Required(y.Name, \"name\", source) (src/SqlFlow.Yaml/YamlFlowLoader.cs:57, helper at 289-292); a missing, null, empty, or all-whitespace value throws FlowValidationException \"<source>: 'name' is required.\". No other constraint: any non-blank string is accepted and used verbatim; leading/trailing whitespace and letter case are preserved and change the derived FlowId, behavior pinned by tests (tests/SqlFlow.Core.Tests/MiscCoreEdgeCaseTests.cs:94-100). This differs from the other YAML document kinds, whose shared YamlDocumentParts.RequireFlowName trims the name (src/SqlFlow.Yaml/YamlDocumentParts.cs:205-208); the .flow.yaml loader does not trim."
+      "validation": "YamlFlowLoader.Map calls Required(y.Name, \"name\", source) (src/SqlFlow.Yaml/YamlFlowLoader.cs:57, helper at 290-293); a missing, null, empty, or all-whitespace value throws FlowValidationException \"<source>: 'name' is required.\". No other constraint: any non-blank string is accepted and used verbatim; leading/trailing whitespace and letter case are preserved and change the derived FlowId, behavior pinned by tests (tests/SqlFlow.Core.Tests/MiscCoreEdgeCaseTests.cs:94-100). This differs from the other YAML document kinds, whose shared YamlDocumentParts.RequireFlowName trims the name (src/SqlFlow.Yaml/YamlDocumentParts.cs:205-208); the .flow.yaml loader does not trim."
     },
     {
       "path": "postProcess",
@@ -171,7 +171,7 @@
       "required": false,
       "default": "[] (empty list)",
       "description": "Ordered list of raw T-SQL statements run on the resolved target connection after the load (stage 'target.postprocess' in src/SqlFlow.Core/Engine/FlowRunner.cs:177-179), executing after target.load, index rebuild, and desired-index application, but before source.complete (file finalization) and the transform-view refresh. All statements are executed inside a single SqlTransaction by SqlServerSchemaProvider.ExecuteDdlAsync (src/SqlFlow.SqlServer/SqlServerSchemaProvider.cs:46-73); any failure rolls the whole batch back and fails the run. The stage is skipped entirely when the list is empty.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:16",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:17",
       "validation": "No YAML-layer validation of the statements; only a YAML grammar error (e.g. a scalar where a sequence is expected) fails as FlowValidationException '<source>: invalid YAML - <message>' (YamlFlowLoader.cs:40-43). Runtime SQL errors roll back the transaction and fail the run."
     },
     {
@@ -179,7 +179,7 @@
       "type": "string",
       "required": false,
       "description": "One raw T-SQL statement (inline SQL or an EXEC of a stored procedure), executed verbatim as its own SqlCommand.ExecuteNonQuery in authored order within the shared transaction on the target connection (src/SqlFlow.SqlServer/SqlServerSchemaProvider.cs:60-64). The text is passed through unmodified: no GO-batch splitting and no placeholder substitution inside the statement; the engine expands ${...} secret references only in connection references (e.g. target.connection at FlowRunner.cs:100, and source connection references via ConnectionResolver), never inside these SQL statements.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:16",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:17",
       "validation": "None at load time; a null or empty element is accepted by the loader and only fails at run time when ADO.NET rejects the empty command text."
     },
     {
@@ -187,21 +187,21 @@
       "type": "list<string>",
       "required": false,
       "default": "[] (empty list)",
-      "description": "Sequence of raw T-SQL statements executed on the target connection before the load, in FlowRunner's 'target.preprocess' stage: after the schema DDL plan is applied (schema.apply-ddl) and before index disabling and the bulk load (src/SqlFlow.Core/Engine/FlowRunner.cs:119-121). The whole list is passed to ISchemaProvider.ExecuteDdlAsync, which the SQL Server provider runs statement-by-statement inside a single transaction, committing at the end and rolling back the entire batch (and failing the run) on any error (src/SqlFlow.SqlServer/SqlServerSchemaProvider.cs:46-73). Bound from FlowYaml.PreProcess and mapped with 'y.PreProcess ?? []' (src/SqlFlow.Yaml/YamlFlowLoader.cs:85) into FlowDefinition.PreProcess (src/SqlFlow.Core/Model/FlowDefinition.cs:29); the stage is skipped entirely when the list is empty.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:15"
+      "description": "Sequence of raw T-SQL statements executed on the target connection before the load, in FlowRunner's 'target.preprocess' stage: after the schema DDL plan is applied (schema.apply-ddl) and before index disabling and the bulk load (src/SqlFlow.Core/Engine/FlowRunner.cs:119-121). The whole list is passed to ISchemaProvider.ExecuteDdlAsync, which the SQL Server provider runs statement-by-statement inside a single transaction, committing at the end and rolling back the entire batch (and failing the run) on any error (src/SqlFlow.SqlServer/SqlServerSchemaProvider.cs:46-73). Bound from FlowYaml.PreProcess and mapped with 'y.PreProcess ?? []' (src/SqlFlow.Yaml/YamlFlowLoader.cs:85) into FlowDefinition.PreProcess (src/SqlFlow.Core/Model/FlowDefinition.cs:33); the stage is skipped entirely when the list is empty.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:16"
     },
     {
       "path": "preProcess[]",
       "type": "string",
       "required": false,
       "description": "One raw T-SQL statement (inline SQL or an EXEC of a stored procedure) executed verbatim as its own SqlCommand with CommandType.Text against the target connection, in authored order, inside the shared single pre-load transaction (src/SqlFlow.SqlServer/SqlServerSchemaProvider.cs:60-64). No parse-time SQL validation exists: the loader passes each item through untouched, so a malformed statement fails at run time with the database engine's error, rolling back the whole preProcess batch.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:15"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:16"
     },
     {
       "path": "schedule",
       "type": "object",
       "required": false,
-      "description": "Declares when the flow should run; captured on the FlowDocument envelope for every flowType (file, ing, exp, sp, inv, hc, scm, batch) by YamlDocumentLoader's probe pass and mapped to SqlFlow.Core.ScheduleSpec. The engine never schedules anything itself: the catalog sync mirrors this block into the schedule table (CatalogSync.cs:276-297) and the control plane's SchedulerService enqueues the actual runs. A block carrying neither cron nor intervalSeconds is silently treated as absent (MapSchedule, YamlDocumentLoader.cs:217-223), and the key is honored only when loading through YamlDocumentLoader; YamlFlowLoader alone (used by the CLI 'discover' verb via LoadFlow, src/SqlFlow.Cli/Program.cs:2096, called at Program.cs:256) ignores it as an unmatched property, while the CLI run/validate/plan verbs load through DocumentLoader.Load with YamlDocumentLoader (Program.cs:92, 101, 166, 180) and so do parse it, even though a direct CLI run never consumes it.",
+      "description": "Declares when the flow should run; captured on the FlowDocument envelope for every flowType (file, ing, exp, sp, inv, hc, scm, batch) by YamlDocumentLoader's probe pass and mapped to SqlFlow.Core.ScheduleSpec. The engine never schedules anything itself: the catalog sync mirrors this block into the schedule table (CatalogSync.cs:276-297) and the control plane's SchedulerService enqueues the actual runs. A block carrying neither cron nor intervalSeconds is silently treated as absent (MapSchedule, YamlDocumentLoader.cs:219-225), and the key is honored only when loading through YamlDocumentLoader; YamlFlowLoader alone (used by the CLI 'discover' verb via LoadFlow, src/SqlFlow.Cli/Program.cs:2096, called at Program.cs:256) ignores it as an unmatched property, while the CLI run/validate/plan verbs load through DocumentLoader.Load with YamlDocumentLoader (Program.cs:92, 101, 166, 180) and so do parse it, even though a direct CLI run never consumes it.",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:81",
       "validation": "No parse-time validation of the block itself. When armed, ScheduleClock.TryValidate (src/SqlFlow.Catalog/ScheduleClock.cs:44) requires exactly one of cron / intervalSeconds; failure produces the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" and the schedule is skipped (src/SqlFlow.Catalog/CatalogSync.cs:284-288), or an HTTP 400 from the schedule API (src/SqlFlow.ControlPlane/Api/ScheduleEndpoints.cs:105)."
     },
@@ -217,23 +217,23 @@
       "path": "schedule.cron",
       "type": "string",
       "required": false,
-      "description": "A cron expression saying when the flow fires, evaluated in schedule.timezone with daylight-saving handling via the Cronos library: 5 whitespace-separated fields is standard minute granularity, 6 or more is parsed with a leading seconds field (ScheduleClock.ParseCron, src/SqlFlow.Catalog/ScheduleClock.cs:78-83). The loader trims the value and treats a whitespace-only string as null (MapSchedule, YamlDocumentLoader.cs:227); the scheduler computes the next fire with CronExpression.GetNextOccurrence (ScheduleClock.NextFire).",
+      "description": "A cron expression saying when the flow fires, evaluated in schedule.timezone with daylight-saving handling via the Cronos library: 5 whitespace-separated fields is standard minute granularity, 6 or more is parsed with a leading seconds field (ScheduleClock.ParseCron, src/SqlFlow.Catalog/ScheduleClock.cs:78-83). The loader trims the value and treats a whitespace-only string as null (MapSchedule, YamlDocumentLoader.cs:229); the scheduler computes the next fire with CronExpression.GetNextOccurrence (ScheduleClock.NextFire).",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:86",
-      "validation": "Not validated at YAML parse time (the comment at YamlDocumentLoader.cs:217-219 states the catalog/control plane owns the cron library). At arm time ScheduleClock.TryValidate enforces exactly one of cron / intervalSeconds (\"a schedule must set exactly one of 'cron' or 'intervalSeconds'.\") and parses the expression with Cronos; a CronFormatException message is surfaced as the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" (CatalogSync.cs:284-288) or an API 400 (ScheduleEndpoints.cs:105). A malformed cron that somehow reaches NextFire yields null and the schedule is parked (ScheduleClock.cs:34-39)."
+      "validation": "Not validated at YAML parse time (the comment at YamlDocumentLoader.cs:219-221 states the catalog/control plane owns the cron library). At arm time ScheduleClock.TryValidate enforces exactly one of cron / intervalSeconds (\"a schedule must set exactly one of 'cron' or 'intervalSeconds'.\") and parses the expression with Cronos; a CronFormatException message is surfaced as the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" (CatalogSync.cs:284-288) or an API 400 (ScheduleEndpoints.cs:105). A malformed cron that somehow reaches NextFire yields null and the schedule is parked (ScheduleClock.cs:34-39)."
     },
     {
       "path": "schedule.enabled",
       "type": "bool",
       "required": false,
       "default": "true",
-      "description": "Whether the schedule is active: a disabled schedule is still mirrored into the catalog schedule table on every sync (ScheduleStore.StageYamlUpsertAsync, src/SqlFlow.Catalog/ScheduleStore.cs:105,124) but never fires, because the scheduler's due query selects only rows with Enabled true (and not operator-Paused) whose NextFireUtc has passed (ScheduleStore.cs:27). Absent maps to true via 'schedule.Enabled ?? true' (MapSchedule, YamlDocumentLoader.cs:230). Distinct from the API-only Paused flag, which an operator sets and a git re-sync preserves.",
+      "description": "Whether the schedule is active: a disabled schedule is still mirrored into the catalog schedule table on every sync (ScheduleStore.StageYamlUpsertAsync, src/SqlFlow.Catalog/ScheduleStore.cs:105,124) but never fires, because the scheduler's due query selects only rows with Enabled true (and not operator-Paused) whose NextFireUtc has passed (ScheduleStore.cs:27). Absent maps to true via 'schedule.Enabled ?? true' (MapSchedule, YamlDocumentLoader.cs:232). Distinct from the API-only Paused flag, which an operator sets and a git re-sync preserves.",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:92"
     },
     {
       "path": "schedule.intervalSeconds",
       "type": "int",
       "required": false,
-      "description": "A fixed interval in seconds between runs, as the alternative to cron: the scheduler computes the next fire as now plus this many seconds (ScheduleClock.NextFire, src/SqlFlow.Catalog/ScheduleClock.cs:20-22). Presence of this key (or cron) is what makes the schedule block real; with both absent the block is discarded at parse (MapSchedule, YamlDocumentLoader.cs:220-223).",
+      "description": "A fixed interval in seconds between runs, as the alternative to cron: the scheduler computes the next fire as now plus this many seconds (ScheduleClock.NextFire, src/SqlFlow.Catalog/ScheduleClock.cs:20-22). Presence of this key (or cron) is what makes the schedule block real; with both absent the block is discarded at parse (MapSchedule, YamlDocumentLoader.cs:222-225).",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:88",
       "validation": "Not validated at YAML parse time. At arm time ScheduleClock.TryValidate requires it to be positive (\"'intervalSeconds' must be a positive number of seconds.\") and mutually exclusive with cron (\"a schedule must set exactly one of 'cron' or 'intervalSeconds'.\"); a value <= 0 counts as unset for the exactly-one check (hasInterval is 'intervalSeconds is > 0', ScheduleClock.cs:47-59). Failures surface as the catalog sync warning or an API 400."
     },
@@ -242,7 +242,7 @@
       "type": "string",
       "required": false,
       "default": "UTC",
-      "description": "The IANA time zone identifier the cron expression is evaluated in (for example Europe/Oslo). The loader trims it and substitutes \"UTC\" for null/whitespace (MapSchedule, YamlDocumentLoader.cs:229); the scheduler resolves it with TimeZoneInfo.FindSystemTimeZoneById, short-circuiting whitespace or case-insensitive \"UTC\" to TimeZoneInfo.Utc (ScheduleClock.ResolveTimeZone, src/SqlFlow.Catalog/ScheduleClock.cs:85-88). Interval schedules never consult it: both NextFire and TryValidate only touch the time zone on the cron path.",
+      "description": "The IANA time zone identifier the cron expression is evaluated in (for example Europe/Oslo). The loader trims it and substitutes \"UTC\" for null/whitespace (MapSchedule, YamlDocumentLoader.cs:231); the scheduler resolves it with TimeZoneInfo.FindSystemTimeZoneById, short-circuiting whitespace or case-insensitive \"UTC\" to TimeZoneInfo.Utc (ScheduleClock.ResolveTimeZone, src/SqlFlow.Catalog/ScheduleClock.cs:85-88). Interval schedules never consult it: both NextFire and TryValidate only touch the time zone on the cron path.",
       "appliesWhen": "schedule.cron is set (bound and stored regardless, but only consumed to evaluate cron; interval schedules ignore it)",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:90",
       "validation": "Not validated at YAML parse time. At arm time, and only when cron is set, ScheduleClock.TryValidate resolves it via TimeZoneInfo.FindSystemTimeZoneById; a TimeZoneNotFoundException or InvalidTimeZoneException message is surfaced as the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" or an API 400 (ScheduleClock.cs:61-75). An unknown zone reaching NextFire yields null and parks the schedule."
@@ -252,17 +252,17 @@
       "type": "object",
       "required": false,
       "default": "{ evolve: widen, defaultColumnType: varchar(255) (after fallback chain), overrides: {} }",
-      "description": "Optional block controlling target-table DDL policy: how the target schema evolves against the source, the fallback SQL type for untyped string columns, and per-column type/nullability overrides. Binds to the SchemaYaml DTO and is mapped (with validation) to SqlFlow.Core.Model.SchemaPolicy; when the whole block is absent, MapSchema still runs and produces the defaults (YamlFlowLoader.cs:82, 250-267).",
+      "description": "Optional block controlling target-table DDL policy: how the target schema evolves against the source, the fallback SQL type for untyped string columns, and per-column type/nullability overrides. Binds to the SchemaYaml DTO and is mapped (with validation) to SqlFlow.Core.Model.SchemaPolicy; when the whole block is absent, MapSchema still runs and produces the defaults (YamlFlowLoader.cs:83, 251-268).",
       "appliesWhen": "File flow document only: the root flowType key is absent or blank, which routes the document to YamlFlowLoader (YamlDocumentLoader.cs:163-166). A document with flowType: ing binds its schema key to a completely different DTO (IngestionSchemaYaml at src/SqlFlow.Yaml/IngestionYaml.cs:98: sync, cleanColumnNames, cleanColumnNameRegex, replaceInvalidCharsWith, convertUnicodeToNonUnicode, allowTableRewrite) which this section does not describe.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:12"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:13"
     },
     {
       "path": "schema.defaultColumnType",
       "type": "string",
       "required": false,
       "default": "varchar(255)",
-      "description": "SQL type used when creating target columns for string source columns that carry no usable inferred length (raw/untyped layer): the type mapper falls back to it when MaxLength is absent or non-positive (SqlServerTypeMapper.MapClrType, src/SqlFlow.SqlServer/SqlServerTypeMapper.cs:32-38, via DesiredSchemaBuilder.Build, src/SqlFlow.Core/Engine/DesiredSchemaBuilder.cs:24). When blank or omitted the resolution order is: source.options.defaultColDataType, then the global default 'varchar(255)' (ResolveDefaultColumnType, src/SqlFlow.Yaml/YamlFlowLoader.cs:232-248). Note that the defaultColDataType fallback lookup runs against the raw YamlDotNet options dictionary BEFORE the case-insensitive rewrap (ResolveDefaultColumnType receives the SourceYaml DTO, YamlFlowLoader.cs:82, 240-241), so that option key only takes effect when authored with the exact casing 'defaultColDataType'.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:70"
+      "description": "SQL type used when creating target columns for string source columns that carry no usable inferred length (raw/untyped layer): the type mapper falls back to it when MaxLength is absent or non-positive (SqlServerTypeMapper.MapClrType, src/SqlFlow.SqlServer/SqlServerTypeMapper.cs:32-38, via DesiredSchemaBuilder.Build, src/SqlFlow.Core/Engine/DesiredSchemaBuilder.cs:24). When blank or omitted the resolution order is: source.options.defaultColDataType, then the global default 'varchar(255)' (ResolveDefaultColumnType, src/SqlFlow.Yaml/YamlFlowLoader.cs:233-249). Note that the defaultColDataType fallback lookup runs against the raw YamlDotNet options dictionary BEFORE the case-insensitive rewrap (ResolveDefaultColumnType receives the SourceYaml DTO, YamlFlowLoader.cs:83, 241-242), so that option key only takes effect when authored with the exact casing 'defaultColDataType'.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:71"
     },
     {
       "path": "schema.evolve",
@@ -275,52 +275,52 @@
         "strict"
       ],
       "description": "Selects how SchemaDiffer reconciles the desired schema with the live target table (src/SqlFlow.Core/Engine/SchemaDiffer.cs:20-28): 'create' creates the table only if missing and never alters an existing one; 'widen' additionally ALTERs new source columns onto an existing table; 'strict' fails the run with SchemaDriftException when the source has columns the existing target lacks. In all three modes a missing table is created with the full desired column set (SchemaDiffer.cs:12-15).",
-      "validation": "Parsed case-insensitively via Enum.TryParse with NO dash/underscore stripping (unlike load.mode); blank/whitespace falls back to widen. An unrecognized value throws FlowValidationException \"<source>: 'schema.evolve' has invalid value '<value>'. Allowed: Create, Widen, Strict.\" (ParseEnum, src/SqlFlow.Yaml/YamlFlowLoader.cs:263 and 294-309). Strict-mode drift itself surfaces at load time as SchemaDriftException (src/SqlFlow.Core/SqlFlowException.cs:46), not at parse time.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:69"
+      "validation": "Parsed case-insensitively via Enum.TryParse with NO dash/underscore stripping (unlike load.mode); blank/whitespace falls back to widen. An unrecognized value throws FlowValidationException \"<source>: 'schema.evolve' has invalid value '<value>'. Allowed: Create, Widen, Strict.\" (ParseEnum, src/SqlFlow.Yaml/YamlFlowLoader.cs:264 and 295-310). Strict-mode drift itself surfaces at load time as SchemaDriftException (src/SqlFlow.Core/SqlFlowException.cs:46), not at parse time.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:70"
     },
     {
       "path": "schema.overrides",
       "type": "map<string,object>",
       "required": false,
       "default": "{} (empty map)",
-      "description": "Map from source column name to a per-column override consulted when building the desired target schema; a column with no entry gets the mapper's inferred type and nullability (DesiredSchemaBuilder.Build, src/SqlFlow.Core/Engine/DesiredSchemaBuilder.cs:23-24). Map KEYS are authored verbatim (the camelCase naming convention never renames dictionary keys) and are matched against source column names case-insensitively because the mapping layer rewraps the dictionary with StringComparer.OrdinalIgnoreCase (src/SqlFlow.Yaml/YamlFlowLoader.cs:252-259). Entries naming columns that do not exist in the source are silently unused; a null-valued entry (bare 'colName:') is accepted and yields a no-op override with both fields null (YamlFlowLoader.cs:257).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:71"
+      "description": "Map from source column name to a per-column override consulted when building the desired target schema; a column with no entry gets the mapper's inferred type and nullability (DesiredSchemaBuilder.Build, src/SqlFlow.Core/Engine/DesiredSchemaBuilder.cs:23-24). Map KEYS are authored verbatim (the camelCase naming convention never renames dictionary keys) and are matched against source column names case-insensitively because the mapping layer rewraps the dictionary with StringComparer.OrdinalIgnoreCase (src/SqlFlow.Yaml/YamlFlowLoader.cs:253-260). Entries naming columns that do not exist in the source are silently unused; a null-valued entry (bare 'colName:') is accepted and yields a no-op override with both fields null (YamlFlowLoader.cs:258).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:72"
     },
     {
       "path": "schema.overrides.<column>",
       "type": "object",
       "required": false,
-      "description": "One override for the named source column, binding to the OverrideYaml DTO {type, nullable} and mapped to SqlFlow.Core.Model.ColumnOverride (src/SqlFlow.Core/Model/FlowDefinition.cs:134-138). The whole node may be null, which produces an override whose two fields are both null and therefore changes nothing.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:74"
+      "description": "One override for the named source column, binding to the OverrideYaml DTO {type, nullable} and mapped to SqlFlow.Core.Model.ColumnOverride (src/SqlFlow.Core/Model/FlowDefinition.cs:138-142). The whole node may be null, which produces an override whose two fields are both null and therefore changes nothing.",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:75"
     },
     {
       "path": "schema.overrides.<column>.nullable",
       "type": "bool",
       "required": false,
       "description": "Forces the target column's NULL/NOT NULL constraint; when omitted (null) the source column's inferred nullability is used instead (columnOverride?.Nullable ?? column.IsNullable, src/SqlFlow.SqlServer/SqlServerTypeMapper.cs:21). There is no fixed default: absence means 'inherit from source'.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:77"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:78"
     },
     {
       "path": "schema.overrides.<column>.type",
       "type": "string",
       "required": false,
       "description": "SQL type forced onto the target column, taking precedence over both a source-declared SQL type and CLR-to-SQL inference (precedence chain in SqlServerTypeMapper.Map, src/SqlFlow.SqlServer/SqlServerTypeMapper.cs:13-19). The value is trimmed at consumption; a blank/whitespace value is treated as absent and the normal inference chain applies.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:76"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:77"
     },
     {
       "path": "source",
       "type": "object",
       "required": true,
-      "description": "Required source descriptor: what the flow reads, expressed as the open type discriminator (source.type), the location, and the free-form options map. Binds to the SourceYaml DTO and maps to the required SourceSpec on FlowDefinition (FlowDefinition.cs:22).",
+      "description": "Required source descriptor: what the flow reads, expressed as the open type discriminator (source.type), the location, and the free-form options map. Binds to the SourceYaml DTO and maps to the required SourceSpec on FlowDefinition (FlowDefinition.cs:26).",
       "validation": "Missing block fails with FlowValidationException \"<file>: 'source' is required.\" (src/SqlFlow.Yaml/YamlFlowLoader.cs:55).",
-      "definedIn": "src/SqlFlow.Core/Model/FlowDefinition.cs:22"
+      "definedIn": "src/SqlFlow.Core/Model/FlowDefinition.cs:26"
     },
     {
       "path": "source.location",
       "type": "string",
       "required": false,
       "description": "Path, URI, or glob interpreted by the selected reader: for the file readers it is the search root (SrcPath, falling back to options.srcPath); for duckdb/delta it is the file/glob/table path fed to read_parquet/read_csv_auto/read_json_auto/delta_scan and is required unless options.query is set. A non-rooted location is resolved against the flow file's directory by DocumentLoader.ResolveRelativeLocation (src/SqlFlow.Execution/DocumentLoader.cs:81-91).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:56",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:57",
       "validation": "Reader-time: file readers throw SqlFlowException \"Source requires a 'location' (file path, folder, or URI).\" when both location and srcPath are blank (src/SqlFlow.Sources/FileSourceReaderBase.cs:391-393); duckdb throws SqlFlowException \"A duckdb source needs a 'location' (a file/glob/table path) or a 'query' option.\" (src/SqlFlow.DuckDb/DuckDbQuery.cs:26-27)."
     },
     {
@@ -329,7 +329,7 @@
       "required": false,
       "default": "{} (empty, case-insensitive)",
       "description": "Flat reader-specific option bag. Dictionary KEYS bind verbatim (the camelCase naming convention does not rename map keys) and the loader re-wraps them with StringComparer.OrdinalIgnoreCase (src/SqlFlow.Yaml/YamlFlowLoader.cs:59-61). VALUES are strings parsed leniently by SourceOptions.GetBool/GetInt (unparseable values silently fall back to the default; src/SqlFlow.Core/Model/SourceOptions.cs:11-17). Unknown keys are silently carried and ignored by readers that do not consume them.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:57"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:58"
     },
     {
       "path": "source.options.arrayHandling",
@@ -451,7 +451,7 @@
       "type": "string",
       "required": false,
       "description": "Loader-level fallback for schema.defaultColumnType: when schema.defaultColumnType is blank, this option's value becomes the SQL type used for raw string columns when creating the target; when both are blank the default is varchar(255). Applies to every source type because it is read by the YAML loader, not a reader.",
-      "definedIn": "src/SqlFlow.Yaml/YamlFlowLoader.cs:239-247"
+      "definedIn": "src/SqlFlow.Yaml/YamlFlowLoader.cs:240-248"
     },
     {
       "path": "source.options.delimiter",
@@ -1325,15 +1325,15 @@
         "duckdb",
         "delta"
       ],
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:55",
-      "validation": "Blank/missing throws FlowValidationException \"<source>: 'source.type' is required.\" (src/SqlFlow.Yaml/YamlFlowLoader.cs:72,289-292). An unregistered token parses fine and fails at run time with SqlFlowException \"No source reader is registered for source type '<t>'.\" (src/SqlFlow.Core/Engine/FlowRunner.cs:508-509); the set is open, extensible by implementing ISourceReader."
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:56",
+      "validation": "Blank/missing throws FlowValidationException \"<source>: 'source.type' is required.\" (src/SqlFlow.Yaml/YamlFlowLoader.cs:73,290-293). An unregistered token parses fine and fails at run time with SqlFlowException \"No source reader is registered for source type '<t>'.\" (src/SqlFlow.Core/Engine/FlowRunner.cs:508-509); the set is open, extensible by implementing ISourceReader."
     },
     {
       "path": "target",
       "type": "object",
       "required": true,
-      "description": "Destination descriptor for the flow: the SQL Server database (connection) and the two-part table name (schema, table) the load writes into. Mapped from the TargetYaml DTO to the immutable TargetSpec record; the model exposes QualifiedName as [schema].[table] with ] escaped to ]] (FlowDefinition.cs:117-119), which the engine uses for logging (FlowRunner.cs:96/205/257), as the default watermark probe table (FlowRunner.cs:293), as the table reference in generated CREATE TABLE / ALTER TABLE ADD DDL (SqlServerDdlGenerator.cs:23/37), and in the missing-table error raised during view generation (FlowRunner.cs:379).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:11",
+      "description": "Destination descriptor for the flow: the SQL Server database (connection) and the two-part table name (schema, table) the load writes into. Mapped from the TargetYaml DTO to the immutable TargetSpec record; the model exposes QualifiedName as [schema].[table] with ] escaped to ]] (FlowDefinition.cs:121-123), which the engine uses for logging (FlowRunner.cs:96/205/257), as the default watermark probe table (FlowRunner.cs:293), as the table reference in generated CREATE TABLE / ALTER TABLE ADD DDL (SqlServerDdlGenerator.cs:23/37), and in the missing-table error raised during view generation (FlowRunner.cs:379).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:12",
       "validation": "YamlFlowLoader.Map (src/SqlFlow.Yaml/YamlFlowLoader.cs:56): a missing/null target block throws FlowValidationException \"<source>: 'target' is required.\""
     },
     {
@@ -1341,31 +1341,31 @@
       "type": "string",
       "required": true,
       "description": "Connection string of the target SQL Server database, or a ${env:NAME} / ${keyvault:vault/secret} placeholder. The value passes through YAML parsing verbatim and is resolved only at run time via SecretResolver (FlowRunner.cs:100 for the load, FlowRunner.cs:420 for plan/introspection; type-inference requests copy it at FlowRunner.cs:388 and InferenceService.cs:110 resolves it). Lineage uses the unresolved reference as the server identity (src/SqlFlow.Lineage/Collection/FlowSetCollector.cs:181-182), and the execution layer reports it as the flow's target connection (src/SqlFlow.Execution/DocumentLoader.cs:50).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:62",
-      "validation": "YamlFlowLoader.cs:78 via Required (YamlFlowLoader.cs:289-292): null, empty, or whitespace-only throws FlowValidationException \"<source>: 'target.connection' is required.\""
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:63",
+      "validation": "YamlFlowLoader.cs:79 via Required (YamlFlowLoader.cs:290-293): null, empty, or whitespace-only throws FlowValidationException \"<source>: 'target.connection' is required.\""
     },
     {
       "path": "target.schema",
       "type": "string",
       "required": true,
-      "description": "Schema part of the target table. The flow never creates the schema: generated DDL is limited to CREATE TABLE / ALTER TABLE ADD (SqlServerDdlGenerator.cs:23/37), so the schema must already exist in the target database. Combined with target.table into TargetSpec.QualifiedName (\"[schema].[table]\", ] escaped as ]], FlowDefinition.cs:117-119) and passed separately to index disable/rebuild (FlowRunner.cs:127/156), table introspection (FlowRunner.cs:377/425), and as the schema of the generated transformation view (FlowRunner.cs:407); table-creation DDL consumes the whole TargetSpec via QualifiedName (FlowRunner.cs:427).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:63",
-      "validation": "YamlFlowLoader.cs:79 via Required (YamlFlowLoader.cs:289-292): null, empty, or whitespace-only throws FlowValidationException \"<source>: 'target.schema' is required.\""
+      "description": "Schema part of the target table. The flow never creates the schema: generated DDL is limited to CREATE TABLE / ALTER TABLE ADD (SqlServerDdlGenerator.cs:23/37), so the schema must already exist in the target database. Combined with target.table into TargetSpec.QualifiedName (\"[schema].[table]\", ] escaped as ]], FlowDefinition.cs:121-123) and passed separately to index disable/rebuild (FlowRunner.cs:127/156), table introspection (FlowRunner.cs:377/425), and as the schema of the generated transformation view (FlowRunner.cs:407); table-creation DDL consumes the whole TargetSpec via QualifiedName (FlowRunner.cs:427).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:64",
+      "validation": "YamlFlowLoader.cs:80 via Required (YamlFlowLoader.cs:290-293): null, empty, or whitespace-only throws FlowValidationException \"<source>: 'target.schema' is required.\""
     },
     {
       "path": "target.table",
       "type": "string",
       "required": true,
       "description": "Name of the table in the target database that the flow loads into; created or evolved per the schema policy and probed for incremental watermarks when incremental.table is omitted (FlowRunner.cs:293). Also names the generated transformation view as v{table} in the same schema when transform.generateView applies (FlowRunner.cs:406-407).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:64",
-      "validation": "YamlFlowLoader.cs:80 via Required (YamlFlowLoader.cs:289-292): null, empty, or whitespace-only throws FlowValidationException \"<source>: 'target.table' is required.\""
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:65",
+      "validation": "YamlFlowLoader.cs:81 via Required (YamlFlowLoader.cs:290-293): null, empty, or whitespace-only throws FlowValidationException \"<source>: 'target.table' is required.\""
     },
     {
       "path": "transform",
       "type": "object",
       "required": false,
       "description": "Optional pre-ingestion transform / type-inference block. The YAML key 'transform' is hand-mapped by YamlFlowLoader.MapInference onto FlowDefinition.Inference (a SqlFlow.Core.Model.TypeInferencePolicy record); the same MapInference is reused by YamlIngestionFlowLoader.cs:189 to populate IngestionFlow.Transform (src/SqlFlow.Core/Ingestion/IngestionFlow.cs:88), so both flow kinds share the identical block shape and validation. When the block is absent the loader returns new TypeInferencePolicy(), meaning inference off, OnConvertError=Fail, threshold 1.0, sample 0, preserveLeadingZeros true, generateView true, no columns.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:14"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:15"
     },
     {
       "path": "transform.columns",
@@ -1373,22 +1373,22 @@
       "required": false,
       "default": "[] (empty list)",
       "description": "Explicit per-column transforms authored in YAML, one entry per column that is cast, renamed, computed, or dropped (a port of legacy flw.PreIngestionTransform rows). An authored entry overrides what inference would pick for the same column; inference (when inferTypes is on) fills in columns no entry names. Maps to TypeInferencePolicy.Columns via YamlFlowLoader.MapTransformColumns.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:39"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:40"
     },
     {
       "path": "transform.columns[]",
       "type": "object",
       "required": false,
-      "description": "One explicit column-transform entry (keys: name, expr, as, type, order, virtual, excludeFromView). Binds to the TransformColumnYaml DTO and maps to a ColumnTransform via YamlFlowLoader.MapTransformColumns (YamlFlowLoader.cs:170).",
-      "validation": "An entry without name fails with FlowValidationException \"<file>: transform.columns[i] is missing 'name'.\" (src/SqlFlow.Yaml/YamlFlowLoader.cs:185).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:42"
+      "description": "One explicit column-transform entry (keys: name, expr, as, type, order, virtual, excludeFromView). Binds to the TransformColumnYaml DTO and maps to a ColumnTransform via YamlFlowLoader.MapTransformColumns (YamlFlowLoader.cs:171).",
+      "validation": "An entry without name fails with FlowValidationException \"<file>: transform.columns[i] is missing 'name'.\" (src/SqlFlow.Yaml/YamlFlowLoader.cs:186).",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:43"
     },
     {
       "path": "transform.columns[].as",
       "type": "string",
       "required": false,
       "description": "The output column name in the generated view (legacy ColumnAlias), trimmed on load; maps to ColumnTransform.Alias. Omitted or blank keeps name: the raw table keeps the source column name while the typed view/target exposes the alias.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:46"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:47"
     },
     {
       "path": "transform.columns[].excludeFromView",
@@ -1396,38 +1396,38 @@
       "required": false,
       "default": "false",
       "description": "Compute the column so other expressions can reference it, but drop it from the view's final projection (legacy ExcludeFromView); maps to ColumnTransform.ExcludeFromView. Useful for an intermediate value that feeds a virtual column.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:50"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:51"
     },
     {
       "path": "transform.columns[].expr",
       "type": "string",
       "required": false,
       "description": "The SQL expression producing the value (legacy SelectExp), trimmed on load; maps to ColumnTransform.Expression. The whole-token, case-insensitive placeholder @ColName is substituted with the quoted reference to the entry's name (ColumnTransformExpression.Substitute, src/SqlFlow.Core/Engine/ColumnTransformExpression.cs:28-33), so a rename only touches name. When omitted on a non-virtual entry with a type, the transform becomes CAST(@ColName AS type); when both expr and type are set the expression is used verbatim and the type is recorded as its declared result type.",
-      "validation": "A virtual entry without expr throws FlowValidationException \"<source>: transform.columns['<name>'] is virtual and must declare an 'expr'.\"; a virtual expr that uses the @ColName token (ColumnTransformExpression.ReferencesColumnToken) throws \"... is virtual, so its 'expr' cannot use @ColName (there is no source column); reference other columns by name.\"; a non-virtual entry with neither expr nor type throws \"... does nothing - declare an 'expr', a 'type' (to cast), or mark it 'virtual'.\" (YamlFlowLoader.cs:198-215)",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:45"
+      "validation": "A virtual entry without expr throws FlowValidationException \"<source>: transform.columns['<name>'] is virtual and must declare an 'expr'.\"; a virtual expr that uses the @ColName token (ColumnTransformExpression.ReferencesColumnToken) throws \"... is virtual, so its 'expr' cannot use @ColName (there is no source column); reference other columns by name.\"; a non-virtual entry with neither expr nor type throws \"... does nothing - declare an 'expr', a 'type' (to cast), or mark it 'virtual'.\" (YamlFlowLoader.cs:199-216)",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:46"
     },
     {
       "path": "transform.columns[].name",
       "type": "string",
       "required": true,
       "description": "The raw source column the transform applies to (legacy ColumnName); for a virtual entry it is the name of the computed column itself, since there is no source column. Trimmed on load; maps to ColumnTransform.Name, and the @ColName token in expr resolves to the quoted reference to this name.",
-      "validation": "Missing or whitespace throws FlowValidationException \"<source>: transform.columns[<index>] is missing 'name'.\" (YamlFlowLoader.cs:183-186); a case-insensitive duplicate across entries throws \"<source>: transform.columns has a duplicate column '<name>'.\" (YamlFlowLoader.cs:188-191)",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:44"
+      "validation": "Missing or whitespace throws FlowValidationException \"<source>: transform.columns[<index>] is missing 'name'.\" (YamlFlowLoader.cs:184-187); a case-insensitive duplicate across entries throws \"<source>: transform.columns has a duplicate column '<name>'.\" (YamlFlowLoader.cs:189-192)",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:45"
     },
     {
       "path": "transform.columns[].order",
       "type": "int",
       "required": false,
       "description": "The column's position in the generated view (legacy ColumnSortOrder); maps to nullable ColumnTransform.SortOrder. Lower values come first; entries without an order keep their declaration order after the ordered ones.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:48"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:49"
     },
     {
       "path": "transform.columns[].type",
       "type": "string",
       "required": false,
       "description": "The declared target SQL type (legacy DataType, e.g. varchar(50) or decimal(18,2)), trimmed on load; maps to ColumnTransform.Type. When set without an expr the transform is CAST(@ColName AS type); when both are set the expression is used verbatim and this is recorded as its declared result type.",
-      "validation": "A non-virtual entry must declare expr or type (or both); neither throws FlowValidationException \"<source>: transform.columns['<name>'] does nothing - declare an 'expr', a 'type' (to cast), or mark it 'virtual'.\" (YamlFlowLoader.cs:211-215)",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:47"
+      "validation": "A non-virtual entry must declare expr or type (or both); neither throws FlowValidationException \"<source>: transform.columns['<name>'] does nothing - declare an 'expr', a 'type' (to cast), or mark it 'virtual'.\" (YamlFlowLoader.cs:212-216)",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:48"
     },
     {
       "path": "transform.columns[].virtual",
@@ -1435,8 +1435,8 @@
       "required": false,
       "default": "false",
       "description": "Marks a computed column with no raw source counterpart (legacy Virtual indicator); maps to ColumnTransform.Virtual. A virtual column must declare an expr, and that expr cannot use the @ColName token because there is no source column to substitute.",
-      "validation": "virtual: true without expr throws FlowValidationException \"<source>: transform.columns['<name>'] is virtual and must declare an 'expr'.\"; virtual expr containing the whole-token @ColName throws \"<source>: transform.columns['<name>'] is virtual, so its 'expr' cannot use @ColName (there is no source column); reference other columns by name.\" (YamlFlowLoader.cs:198-210)",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:49"
+      "validation": "virtual: true without expr throws FlowValidationException \"<source>: transform.columns['<name>'] is virtual and must declare an 'expr'.\"; virtual expr containing the whole-token @ColName throws \"<source>: transform.columns['<name>'] is virtual, so its 'expr' cannot use @ColName (there is no source column); reference other columns by name.\" (YamlFlowLoader.cs:199-211)",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:50"
     },
     {
       "path": "transform.generateView",
@@ -1444,7 +1444,7 @@
       "required": false,
       "default": "true",
       "description": "Generate the typed transformation view [schema].[v<Table>] over the just-loaded table as a post-process of the load (the V3 form of the SQLFlow pre-ingestion transform view); a chained downstream ingestion flow reads this view as its source. Maps to TypeInferencePolicy.GenerateView; the derived TypeInferencePolicy.GeneratesView is true only when this is true AND (inferTypes is true OR at least one transform.columns entry exists), and that derived flag drives the view lineage fact.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:38"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:39"
     },
     {
       "path": "transform.inferTypes",
@@ -1452,7 +1452,7 @@
       "required": false,
       "default": "false",
       "description": "Enables datatype inference (the legacy SQLFlow FetchDataTypes behavior): raw string columns are profiled and a SQL type is chosen per column. Maps to TypeInferencePolicy.Enabled and also feeds the derived GeneratesView (view is emitted only when generateView is true AND inference is on or authored columns exist).",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:33"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:34"
     },
     {
       "path": "transform.onConvertError",
@@ -1465,8 +1465,8 @@
         "keepString"
       ],
       "description": "What to do with values that do not convert to the inferred type: silentNull uses TRY_CONVERT so bad values become NULL, fail uses CONVERT so a bad value halts the load, keepString only converts columns that are 100 percent convertible and otherwise keeps the raw string. Maps to TypeInferencePolicy.OnConvertError (ConvertErrorMode).",
-      "validation": "Value is normalized by stripping '-' and '_' (NormalizeToken, src/SqlFlow.Yaml/YamlFlowLoader.cs:285-287) then Enum.TryParse case-insensitively, so 'silent_null', 'keep-string', 'SilentNull' all bind; an unrecognized value throws FlowValidationException \"<source>: 'transform.onConvertError' has invalid value '<value>'. Allowed: SilentNull, Fail, KeepString.\" (YamlFlowLoader.cs:294-309, called at line 154 with fallback SilentNull)",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:34"
+      "validation": "Value is normalized by stripping '-' and '_' (NormalizeToken, src/SqlFlow.Yaml/YamlFlowLoader.cs:286-288) then Enum.TryParse case-insensitively, so 'silent_null', 'keep-string', 'SilentNull' all bind; an unrecognized value throws FlowValidationException \"<source>: 'transform.onConvertError' has invalid value '<value>'. Allowed: SilentNull, Fail, KeepString.\" (YamlFlowLoader.cs:295-310, called at line 155 with fallback SilentNull)",
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:35"
     },
     {
       "path": "transform.preserveLeadingZeros",
@@ -1474,7 +1474,7 @@
       "required": false,
       "default": "true",
       "description": "When true, integer-looking values with significant leading zeros (zip codes, identifiers) are kept as string instead of being inferred as a numeric type. Maps to TypeInferencePolicy.PreserveLeadingZeros.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:37"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:38"
     },
     {
       "path": "transform.sample",
@@ -1482,7 +1482,7 @@
       "required": false,
       "default": "0",
       "description": "Number of rows to sample when profiling columns for inference; 0 means full scan of the loaded data. Maps to TypeInferencePolicy.SampleSize.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:36"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:37"
     },
     {
       "path": "transform.threshold",
@@ -1490,7 +1490,7 @@
       "required": false,
       "default": "1.0",
       "description": "Fraction of non-null sampled values that must successfully convert before a type is chosen for a column (1.0 means every value must convert; TypeInferencer.cs:32 tests count/nonNull >= Threshold per candidate). Maps to TypeInferencePolicy.Threshold; no range validation is performed by the loader.",
-      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:35"
+      "definedIn": "src/SqlFlow.Yaml/FlowYaml.cs:36"
     }
   ]
 }
