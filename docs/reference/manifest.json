@@ -2543,6 +2543,40 @@
         "src/SqlFlow.Sources/Xml/XmlPathInventory.cs",
         "samples/xml/README.md"
       ]
+    },
+    {
+      "id": "guide-slack-assistant",
+      "path": "guides/slack-assistant.md",
+      "title": "The Slack assistant: a read-only SQLFlow agent over Foundry's Responses API and the MCP server",
+      "type": "guide",
+      "summary": "How the SQLFlow Slack bot answers questions - a Socket Mode relay to an Azure AI Foundry Responses API call whose MCP tool is the SQLFlow MCP server, read-only by construction, with its architecture, model requirement, and deployment.",
+      "keywords": [
+        "slack",
+        "assistant",
+        "bot",
+        "foundry",
+        "responses api",
+        "mcp",
+        "agent",
+        "socket mode",
+        "gpt-5-mini",
+        "read-only"
+      ],
+      "related": [
+        "guide-deployment",
+        "concept-authentication-and-identity",
+        "concept-control-plane"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.SlackBot/FoundryAgentGateway.cs",
+        "src/SqlFlow.SlackBot/SlackAssistantHandler.cs",
+        "src/SqlFlow.SlackBot/SlackBotOptions.cs",
+        "tools/sqlflow-mcp/src/http_server.rs",
+        "deploy/bicep/slack-bot.bicep",
+        "deploy/bicep/mcp.bicep",
+        "deploy/bicep/ai-foundry.bicep",
+        "deploy/slack/manifest.yaml"
+      ]
     }
   ]
 }

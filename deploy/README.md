@@ -40,7 +40,7 @@ The same three-tier layout on managed infrastructure, one template per tier plus
 | `control-plane.bicep` | The API as an always-on Container App. Standalone it is the single-app mode ADF triggers; `main.bicep` runs it API-only. |
 | `worker.bicep` | One worker pool: no ingress, scaled 0..N on queue depth by the built-in KEDA mssql scaler. One deployment per pool. |
 | `gui.bicep` | The SPA behind its own ingress. |
-| `ai-foundry.bicep` | Optional: an Azure AI Foundry account + project beside the estate (`aiFoundryName` on `main.bicep`), the app identities granted keyless caller access, plus an optional pinned model deployment (`aiFoundryModelName`) and Agent Service access for the Slack bot identity. |
+| `ai-foundry.bicep` | Optional: an Azure AI Foundry account + project beside the estate (`aiFoundryName` on `main.bicep`), the app identities granted keyless caller access, plus an optional pinned model deployment (`aiFoundryModelName`) and Responses API access (Cognitive Services OpenAI User) for the Slack bot identity. |
 | `mcp.bicep` | Optional: the SQLFlow MCP server in HTTP mode (`mcpImage` on `main.bicep`), the tool source for the Foundry agent and any remote MCP client. Holds no credentials; every `/mcp` request must present a SQLFlow bearer token, which it forwards to the control plane. |
 | `slack-bot.bicep` | Optional: the Slack assistant (`slackBotImage` on `main.bicep`), a Socket Mode relay to a Foundry agent whose tools are the MCP server. No ingress; secrets from Key Vault via managed identity. |
 
@@ -91,14 +91,17 @@ the user); point ADF at `controlPlaneBaseUrl` (see `deploy/adf`). How the k8s la
 Ask SQLFlow questions from Slack ("what failed last night?", "what feeds `dbo.Orders`?"). The chain is:
 
 ```
-Slack thread -> sqlflow-slack-bot (Socket Mode relay) -> Azure AI Foundry agent (model + agent loop)
+Slack thread -> sqlflow-slack-bot (Socket Mode relay) -> Azure AI Foundry (Responses API: model + MCP tool)
             -> sqlflow-mcp over streamable HTTP (tools)  -> control plane /api/v1 (bearer-scoped)
 ```
 
-The agent loop and conversation threads live in Foundry Agent Service; the bot ensures the agent definition
-(instructions, model, read-only MCP tool allowlist) at startup, so this repository stays the source of truth.
-The bot's whole SQLFlow authority is one read-scoped personal access token, sent to the MCP server as the
-per-run `Authorization` header; `trigger_run`/`cancel_run` are excluded from the agent's tool allowlist.
+For each question the bot makes one Responses API call carrying the model, the instructions, and the MCP tool
+(server URL, allowlist, and the `Authorization` header); the definition lives in the request, not a hosted
+agent. A Slack thread's follow-ups chain server-side via `previous_response_id`. The MCP tool is used because
+only it (not the older persistent-agents API) is supported by current model deployments, so the model must be
+a Responses-API + MCP-capable deployment such as `gpt-5-mini`. The bot's whole SQLFlow authority is one
+read-scoped personal access token, sent to the MCP server as that `Authorization` header;
+`trigger_run`/`cancel_run` are excluded from the tool allowlist. See the reference guide for the full contract.
 IDE assistants (Copilot, Claude, Cursor) keep using `sqlflow-mcp` locally over stdio; this deploys the same
 binary in `http` mode as a shared, remote tool source.
 
@@ -119,7 +122,7 @@ Setup, in order:
 az deployment group create -g sqlflow -f deploy/bicep/main.bicep \
   -p <the parameters from the estate deployment above> \
      aiFoundryName=<globally-unique-name> \
-     aiFoundryModelName=gpt-5.1 \
+     aiFoundryModelName=gpt-5-mini \
      mcpImage=<registry>.azurecr.io/sqlflow-mcp:latest \
      slackBotImage=<registry>.azurecr.io/sqlflow-slack-bot:latest \
      slackAppToken='xapp-...' slackBotToken='xoxb-...' \
@@ -127,11 +130,11 @@ az deployment group create -g sqlflow -f deploy/bicep/main.bicep \
 ```
 
 This deploys the Foundry account + project + model deployment, the two apps, writes the three tokens into
-Key Vault, and grants the bot identity the Azure AI User role on the Foundry account. Then invite the bot to
-a channel and mention it. Notes:
+Key Vault, and grants the bot identity the Cognitive Services OpenAI User role on the Foundry account (its
+Responses API access). Then invite the bot to a channel and mention it. Notes:
 
-- **First question after a fresh deployment can fail once** while the Azure AI User role assignment
-  propagates; ask again and it recovers (the bot creates the Foundry agent on first use).
+- **First question after a fresh deployment can fail once** while the Cognitive Services OpenAI User role
+  assignment propagates to the bot's managed identity; ask again and it recovers.
 - **The MCP endpoint is public but bearer-gated**: Foundry's agent runtime calls in from Microsoft-managed
   compute, so `sqlflow-mcp` has external ingress; every `/mcp` request must carry a valid SQLFlow token or
   it is rejected at the edge, and all data access is enforced by the control plane per token scope. `/healthz`
