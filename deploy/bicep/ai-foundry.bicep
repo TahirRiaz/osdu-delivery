@@ -47,8 +47,9 @@ param disableLocalAuth bool = false
 
 // The Cognitive Services User built-in role: call the endpoint, read no keys.
 var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
-// The Azure AI User built-in role: Foundry data-plane access, including the Agent Service.
-var azureAiUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+// The Cognitive Services OpenAI User built-in role: call model inference, including the OpenAI Responses
+// API the Slack assistant drives its MCP-tool agent through. Read-only over the data plane, no key access.
+var cognitiveServicesOpenAIUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 var effectiveModelDeploymentName = empty(modelDeploymentName) ? modelName : modelDeploymentName
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
@@ -116,9 +117,9 @@ resource userAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for 
 
 resource agentAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalId in agentPrincipalIds: {
   scope: account
-  name: guid(account.id, principalId, azureAiUserRoleId)
+  name: guid(account.id, principalId, cognitiveServicesOpenAIUserRoleId)
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', azureAiUserRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesOpenAIUserRoleId)
     principalId: principalId
     principalType: 'ServicePrincipal'
   }

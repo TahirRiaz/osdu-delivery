@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "1599694521154105697"
+      "templateHash": "9536245192722945617"
     }
   },
   "parameters": {
@@ -103,7 +103,7 @@
   },
   "variables": {
     "cognitiveServicesUserRoleId": "a97b65f3-24c7-4388-baec-2e87135dc908",
-    "azureAiUserRoleId": "53ca6127-db72-4b80-b1b0-d745d6d5456d",
+    "cognitiveServicesOpenAIUserRoleId": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
     "effectiveModelDeploymentName": "[if(empty(parameters('modelDeploymentName')), parameters('modelName'), parameters('modelDeploymentName'))]"
   },
   "resources": [
@@ -184,9 +184,9 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
-      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), parameters('agentPrincipalIds')[copyIndex()], variables('azureAiUserRoleId'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), parameters('agentPrincipalIds')[copyIndex()], variables('cognitiveServicesOpenAIUserRoleId'))]",
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('azureAiUserRoleId'))]",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesOpenAIUserRoleId'))]",
         "principalId": "[parameters('agentPrincipalIds')[copyIndex()]]",
         "principalType": "ServicePrincipal"
       },

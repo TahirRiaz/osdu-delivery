@@ -57,12 +57,10 @@
     <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.17" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.17" />
     <!-- The Slack bot (SqlFlow.SlackBot): SlackNet is the Socket Mode + Web API client (no public inbound
-         endpoint needed); Azure.AI.Agents.Persistent drives the Azure AI Foundry agent that answers with the
-         SQLFlow MCP server as its tool source; Hosting provides the worker-service host. -->
+         endpoint needed); the Azure AI Foundry agent is driven directly over the OpenAI Responses API
+         (System.Net.Http + Azure.Identity for the managed-identity token), the surface current model
+         deployments support the MCP tool through; Hosting provides the worker-service host. -->
     <PackageVersion Include="SlackNet" Version="0.17.10" />
-    <!-- 1.2.0-beta: the MCP tool surface (MCPToolDefinition/MCPToolResource) ships only in the beta line;
-         the stable 1.1.0 predates Foundry's MCP tool. Pinned exactly; revisit when MCP support goes stable. -->
-    <PackageVersion Include="Azure.AI.Agents.Persistent" Version="1.2.0-beta.10" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.9" />

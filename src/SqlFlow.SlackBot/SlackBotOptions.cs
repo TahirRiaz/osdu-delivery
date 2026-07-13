@@ -82,12 +82,8 @@ public sealed class FoundryOptions
     /// <summary>The Foundry project endpoint the agent lives in.</summary>
     public string ProjectEndpoint { get; set; } = "";
 
-    /// <summary>The model deployment (in the same Foundry account) the agent runs on.</summary>
+    /// <summary>The model deployment (in the same Foundry account) the assistant runs on.</summary>
     public string ModelDeploymentName { get; set; } = "";
-
-    /// <summary>The agent is ensured (created or updated) under this name at startup, so the
-    /// definition in code is the source of truth and redeploys converge the hosted agent.</summary>
-    public string AgentName { get; set; } = "sqlflow-assistant";
 
     /// <summary>The deployed SQLFlow MCP server's endpoint, e.g. https://sqlflow-mcp.internal.example/mcp.</summary>
     public string McpServerUrl { get; set; } = "";
