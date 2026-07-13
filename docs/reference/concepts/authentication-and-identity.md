@@ -58,15 +58,17 @@ Two further sign-in surfaces exist for clients that cannot drive an interactive 
 
 User-backed tokens (local login and Entra exchange) additionally carry `role` (the role name) and `uid` (the catalog user id) so the GUI can shape itself without a second call. Bootstrap tokens carry neither. Expiry is `ControlPlane:Jwt:AccessTokenMinutes` (default 60, valid range 1 to 1440).
 
-Scopes gate the API surface in src/SqlFlow.ControlPlane/Program.cs: the read surface (catalog, runs, lineage, search, schedules, nodes, repo sources, summary) requires `read`; triggering and cancelling runs, schedule writes, and repo-source writes require `operate`; user and role administration requires `admin`.
+Scopes gate the API surface in src/SqlFlow.ControlPlane/Program.cs: the read surface (catalog, runs, lineage, search, schedules, nodes, repo sources, summary) requires `read`; triggering and cancelling runs, schedule writes, and repo-source writes require `operate`; proposing pipelines to a repo source as a pull request requires `author`; user and role administration requires `admin`. The `author` scope is separate from `operate` because it pushes a branch to a source repo (a higher trust boundary than running a flow).
 
 Roles are catalog rows mapping a name to a scope string. `BootstrapProvisioningService` (src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs) seeds the built-in roles at startup, idempotently and without overwriting operator edits:
 
 | Role | Scopes |
 | --- | --- |
-| `admin` | `read operate admin` |
-| `operator` | `read operate` |
+| `admin` | `read operate admin author` |
+| `operator` | `read operate author` |
 | `viewer` | `read` |
+
+Because `BootstrapProvisioningService` seeds roles without overwriting existing rows, a catalog first provisioned before `author` existed keeps its old scope string; grant `author` to the `operator` / `admin` roles there (a role scope edit) to enable pull-request authoring.
 
 When a session is issued, the user's role row is loaded and its scopes become the token's `scope` claim. If the role row no longer exists, sign-in fails closed with 403 `Role is not provisioned`; a user whose role was deleted never receives a fallback grant.
 
@@ -104,7 +106,7 @@ Two defenses protect the endpoint:
 }
 ```
 
-Requested scopes are filtered against the allowed set `read`, `operate`, `admin`; omitting `scopes` defaults to `["read"]`. If no requested scope is valid, the response is 400 `No valid scope requested` listing the allowed scopes. A wrong secret returns 401 `Invalid bootstrap secret`. The response is `{ accessToken, tokenType, expiresIn }` with no role or uid claim.
+Requested scopes are filtered against the allowed set `read`, `operate`, `author`, `admin`; omitting `scopes` defaults to `["read"]`. If no requested scope is valid, the response is 400 `No valid scope requested` listing the allowed scopes. A wrong secret returns 401 `Invalid bootstrap secret`. The response is `{ accessToken, tokenType, expiresIn }` with no role or uid claim.
 
 ## Microsoft Entra ID single sign-on
 

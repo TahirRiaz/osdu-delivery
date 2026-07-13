@@ -14,9 +14,11 @@ using SqlFlow.ControlPlane.Background;
 using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.ControlPlane.Infrastructure;
 using SqlFlow.ControlPlane.Notifications;
+using SqlFlow.ControlPlane.Proposals;
 using SqlFlow.ControlPlane.Security;
 using SqlFlow.Execution;
 using SqlFlow.Node;
+using SqlFlow.SourceControl.Proposals;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -78,6 +80,18 @@ builder.Services.AddHostedService<SchedulerService>();
 // ---- Managed sync: keeps the shadow catalog current from git. A background service pulls each registered repo
 // source's branch tip on its interval and runs the same catalog sync the CLI's `db sync` runs.
 builder.Services.AddHostedService<RepoSyncService>();
+
+// ---- Flow authoring: propose pipelines to a tracked repo source as a pull request. The control plane pushes a
+// proposal branch and opens the PR with the source's own stored git credential (github.com or bitbucket.org over
+// HTTPS); it never writes the catalog directly, so a human reviews and merges before the managed sync imports the
+// flows. A commit-pinned run can test the proposal (via the returned commit SHA) before it merges.
+builder.Services.AddHttpClient(GitHubPullRequestPublisher.HttpClientName);
+builder.Services.AddSingleton<IGitProposalPublisher>(_ => new GitProposalPublisher());
+builder.Services.AddSingleton<IPullRequestPublisher, GitHubPullRequestPublisher>();
+builder.Services.AddSingleton<IPullRequestPublisher, BitbucketPullRequestPublisher>();
+// The proposal staging area is bound to this process's lifetime: swept clean on start and stop, so a staged git
+// clone never outlives the session and a crash leak is reclaimed on the next start.
+builder.Services.AddHostedService<ProposalWorkspaceJanitor>();
 
 // ---- Notifications: detects failed runs (and failed assertions on green runs) and sends opted-in users email
 // and/or Slack messages, immediately (cooldown-coalesced) or as periodic digests. The pipeline is durable and
@@ -171,6 +185,11 @@ builder.Services.AddAuthorization(authz =>
     authz.AddPolicy("admin", policy => policy
         .RequireAuthenticatedUser()
         .RequireAssertion(context => HasScope(context.User, "admin")));
+    // Authoring pushes a proposal branch to a source repo and opens a pull request: a higher trust boundary than
+    // running a flow, so it is a scope of its own rather than folded into "operate".
+    authz.AddPolicy("author", policy => policy
+        .RequireAuthenticatedUser()
+        .RequireAssertion(context => HasScope(context.User, "author")));
 });
 
 // ---- Cross-cutting: problem details, OpenAPI, compression, health, rate limiting, CORS -----------------------
@@ -288,6 +307,11 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapDatasourceComputeEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints();
+
+// The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own
+// credential, so it lives under the "author" scope rather than "operate".
+v1.MapGroup(string.Empty).RequireAuthorization("author")
+    .MapFlowProposalEndpoints();
 
 // The admin surface: user and role administration requires the "admin" scope (the admin role, or a bootstrap
 // token that requested it).

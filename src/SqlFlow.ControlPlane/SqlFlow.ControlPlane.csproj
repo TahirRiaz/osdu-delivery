@@ -25,6 +25,7 @@
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
     <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />
     <ProjectReference Include="..\SqlFlow.Node\SqlFlow.Node.csproj" />
+    <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
   </ItemGroup>
 
   <ItemGroup>

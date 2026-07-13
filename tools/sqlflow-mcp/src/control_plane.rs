@@ -112,7 +112,7 @@ impl ControlPlane {
             .ok()
             .map(|t| TokenCache {
                 access_token: t,
-                scope: "read operate".to_string(),
+                scope: "read operate author".to_string(),
                 expires_at: None,
                 token_id: None,
                 renewable: false,
@@ -194,7 +194,7 @@ impl ControlPlane {
         let resp = self
             .http
             .post(self.url("/api/v1/auth/device"))
-            .json(&json!({ "clientId": "sqlflow-mcp", "scope": "read operate" }))
+            .json(&json!({ "clientId": "sqlflow-mcp", "scope": "read operate author" }))
             .send()
             .await
             .context("could not start device authorization")?;

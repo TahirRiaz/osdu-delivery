@@ -133,10 +133,10 @@ public sealed class BootstrapProvisioningService : BackgroundService
         await using var catalog = CatalogDatabase.Create(connectionString);
         var nowUtc = _clock.GetUtcNow().UtcDateTime;
 
-        await UserStore.EnsureRoleAsync(catalog, RoleNames.Admin, "read operate admin",
-            "Full control: read, operate, and user administration.", nowUtc, ct).ConfigureAwait(false);
-        await UserStore.EnsureRoleAsync(catalog, RoleNames.Operator, "read operate",
-            "Day-to-day operations: read everything, trigger and cancel runs, manage schedules and repo sources.",
+        await UserStore.EnsureRoleAsync(catalog, RoleNames.Admin, "read operate admin author",
+            "Full control: read, operate, author pull requests, and user administration.", nowUtc, ct).ConfigureAwait(false);
+        await UserStore.EnsureRoleAsync(catalog, RoleNames.Operator, "read operate author",
+            "Day-to-day operations: read everything, trigger and cancel runs, manage schedules and repo sources, and propose pipelines as pull requests.",
             nowUtc, ct).ConfigureAwait(false);
         await UserStore.EnsureRoleAsync(catalog, RoleNames.Viewer, "read",
             "Read-only access to the whole API surface.", nowUtc, ct).ConfigureAwait(false);

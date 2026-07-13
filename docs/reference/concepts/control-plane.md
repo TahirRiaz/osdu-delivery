@@ -105,6 +105,7 @@ Operate surface (policy `operate`):
 | `POST /repos/sources` | Register or update a managed repo source (upsert) |
 | `POST /repos/sources/{id}/sync` | Force a sync now |
 | `POST /repos/discover` | Preview a repo's flows without importing (the selective-scan wizard) |
+| `POST /repos/sources/{id}/proposals` | Propose pipelines to a source as a pull request (`author` scope) |
 
 Admin surface (policy `admin`): `GET/POST /users`, `POST /users/{id}/role` `/activate` `/deactivate` `/password`, and `GET /roles` (src/SqlFlow.ControlPlane/Api/UserEndpoints.cs).
 
@@ -158,7 +159,7 @@ Before provisioning anything, the service applies the `Bootstrap:AllowCreate` gu
 Order of operations, all idempotent:
 
 1. Apply pending EF catalog migrations when `Bootstrap:ApplyMigrations` is true (the default). With it false, pending migrations are logged as a warning: "Apply them out of band; parts of the API may fail until then."
-2. Seed the built-in roles: `admin` (scopes `read operate admin`), `operator` (`read operate`), `viewer` (`read`). Edited role scopes are kept (`EnsureRoleAsync` converges, it does not overwrite).
+2. Seed the built-in roles: `admin` (scopes `read operate admin author`), `operator` (`read operate author`), `viewer` (`read`). Existing role rows are kept as-is (`EnsureRoleAsync` inserts only when the role is absent, so a catalog seeded before `author` existed needs the scope granted by hand).
 3. Create the initial admin from `Bootstrap:AdminUsername` and `Bootstrap:AdminPasswordReference` (resolved through the secret resolver) when the user is absent. An existing admin's password is never reset. An empty or too-short resolved password logs an error and skips creation rather than provisioning a weak credential.
 4. Register the optional demo repo source (`Bootstrap:DemoRepo`) as an upsert, so configuration stays the desired state across restarts.
 
@@ -188,6 +189,7 @@ API:
 - `POST /repos/sources` (operate): upsert with body `{name, remoteUrl, branch?, syncIntervalSeconds?, enabled?, credentialReference?, credentialUsername?, excludedFlowPaths?}`; `branch` defaults to `main`, `syncIntervalSeconds` to 300, `enabled` to true, and an omitted `excludedFlowPaths` imports every flow. A blank `name` or `remoteUrl`, or a `credentialReference` that is not a `${...}` reference, is 400. Returns 201 Created with the source id.
 - `POST /repos/sources/{id}/sync` (operate): makes the source due now; 404 for an unknown or disabled source ("No enabled repo source '{id}'.").
 - `POST /repos/discover` (operate): body `{remoteUrl, branch?, credentialReference?, credentialUsername?}`; clones and returns the flow list for the selection wizard. Read-only; nothing is written to the catalog. A clone or credential failure is a 400 with a redacted message.
+- `POST /repos/sources/{id}/proposals` (author): propose pipelines to the source's repo as a pull request. Body `{title, body?, baseBranch?, headBranch?, files:[{path, content}]}`; `baseBranch` defaults to the source's tracked branch and `headBranch` to a content-derived `sqlflow/proposal-*` name. The control plane pushes the files onto a fresh branch off the base and opens a pull request using the source's own stored credential (github.com or bitbucket.org over HTTPS); it never writes the catalog directly, so a human reviews and merges before the managed sync imports the flows. `files[].path` must be repo-relative and end in `.yaml`/`.yml`/`.sql`/`.json`/`.md`; a bad path, an unsupported remote host, or a source with no configured credential is a 400. Returns 201 with `{pullRequestUrl, pullRequestNumber, headBranch, commitSha, filesChanged}`. Feed `commitSha` to `POST /runs` (`commitSha`) to test the proposal pinned to the pull-request commit before it merges. If the branch pushes but the pull request cannot be opened, the branch is rolled back and the response is 502. The git clone is staged in a throwaway temp directory deleted when the request finishes; the whole staging root (`{temp}/sqlflow/proposals`) is also swept on control-plane startup and shutdown, so a staged clone never outlives the session and a crash leak is reclaimed on the next start.
 
 ## Triggering, backfilling, and cancelling runs
 

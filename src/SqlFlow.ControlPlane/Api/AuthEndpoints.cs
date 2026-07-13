@@ -26,7 +26,7 @@ namespace SqlFlow.ControlPlane.Api;
 /// </summary>
 public static class AuthEndpoints
 {
-    private static readonly string[] BootstrapAllowedScopes = ["read", "operate", "admin"];
+    private static readonly string[] BootstrapAllowedScopes = ["read", "operate", "author", "admin"];
 
     /// <summary>A hash verified for sign-in attempts against unknown/ineligible accounts, so the response time
     /// does not reveal whether a username exists. Computed once from ephemeral random material.</summary>
@@ -251,8 +251,9 @@ public static class AuthEndpoints
     // --- Device authorization grant (RFC 8628) -------------------------------------------------------------------
 
     /// <summary>Scopes a device token may ever carry. Admin is intentionally excluded: a headless client signs in
-    /// for read and operate, never account administration.</summary>
-    private static readonly string[] DeviceAllowedScopes = ["read", "operate"];
+    /// for read, operate, and authoring (proposing pipelines as pull requests), never account administration. The
+    /// approval step still intersects these with what the approving user actually holds.</summary>
+    private static readonly string[] DeviceAllowedScopes = ["read", "operate", "author"];
 
     private const int DeviceCodeTtlSeconds = 600;
     private const int DevicePollIntervalSeconds = 5;

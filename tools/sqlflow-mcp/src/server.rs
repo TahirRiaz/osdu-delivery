@@ -852,6 +852,40 @@ impl SqlFlowMcp {
     }
 
     #[tool(
+        description = "Propose pipelines to a tracked repo source as a pull request (requires the 'author' scope). \
+Writes the given flow files onto a fresh branch off the source's tracked branch, commits them under the calling \
+user, and opens a pull request for review; it never writes the catalog directly, so a human reviews and merges \
+before the managed sync imports the flows. Returns the pull-request URL and number, the pushed head branch, and \
+the head commit SHA. Feed that commitSha to trigger_run to test the proposal pinned to the PR commit before it \
+merges (a changed flow already in the catalog runs this way; a brand-new flow is not in the catalog until the PR \
+merges and syncs). Generate the files with discover_source and validate each with validate_flow before proposing. \
+Works over both stdio and HTTP (it only proxies the control plane)."
+    )]
+    async fn propose_pipelines(&self, Parameters(i): Parameters<ProposePipelinesInput>) -> String {
+        let files: Vec<Value> = i
+            .files
+            .into_iter()
+            .map(|f| json!({ "path": f.path, "content": f.content }))
+            .collect();
+        let mut body = json!({ "title": i.title, "files": files });
+        if let Some(b) = i.body {
+            body["body"] = json!(b);
+        }
+        if let Some(bb) = i.base_branch {
+            body["baseBranch"] = json!(bb);
+        }
+        if let Some(hb) = i.head_branch {
+            body["headBranch"] = json!(hb);
+        }
+        done(
+            self.cp
+                .post(&format!("/api/v1/repos/sources/{}/proposals", i.source_id), body)
+                .await
+                .map(|v| json_str(&v)),
+        )
+    }
+
+    #[tool(
         description = "Scan a JSON/NDJSON/XML sample file or folder and generate a ready-to-run `.flow.yaml` \
 stub (mode=flatten), or report its path structure (mode=paths|discover). The record grain (JSON rootPath / \
 XML rowXPath) is auto-detected from sample statistics, so an envelope like {items:[...]} or an RSS feed \
@@ -970,6 +1004,34 @@ pub struct DiscoverSourceInput {
     pub array: Option<String>,
     /// Column-name separator (default "_"). Flatten mode only.
     pub separator: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProposePipelinesInput {
+    /// The tracked repo source to propose into (its id from list_repo_sources).
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    /// The pull-request title; also the commit summary.
+    pub title: String,
+    /// Optional pull-request description / commit body.
+    pub body: Option<String>,
+    /// Branch to open the pull request against; defaults to the source's tracked branch.
+    #[serde(rename = "baseBranch")]
+    pub base_branch: Option<String>,
+    /// Feature branch to push; defaults to a content-derived `sqlflow/proposal-*` name.
+    #[serde(rename = "headBranch")]
+    pub head_branch: Option<String>,
+    /// The flow files to write: each a repo-relative path plus its full content.
+    pub files: Vec<ProposeFileInput>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProposeFileInput {
+    /// Repo-relative path ending in a flow extension (.flow.yaml / .yaml / .yml / .sql / .json / .md),
+    /// e.g. "flows/orders.01_pre.flow.yaml".
+    pub path: String,
+    /// The file's full content.
+    pub content: String,
 }
 
 // --- Server handler --------------------------------------------------------
