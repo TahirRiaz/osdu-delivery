@@ -138,8 +138,9 @@ public static class CatalogEndpoints
         return dto is null ? NotFound("repository", id) : TypedResults.Ok(dto);
     }
 
-    private static async Task<Ok<PagedResult<PipelineSummaryDto>>> ListPipelinesAsync(
-        CatalogDbContext db, Guid? repoId, string? kind, bool? active, string? name, int? page, int? pageSize, CancellationToken ct)
+    private static async Task<Results<Ok<PagedResult<PipelineSummaryDto>>, ProblemHttpResult>> ListPipelinesAsync(
+        CatalogDbContext db, Guid? repoId, string? kind, bool? active, string? name, string? sort,
+        int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -164,8 +165,28 @@ public static class CatalogEndpoints
             query = query.Where(x => x.Name.Contains(name));
         }
 
-        var ordered = query.OrderBy(x => x.Name).ThenBy(x => x.Id);
-        var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
+        IQueryable<CatalogPipeline> ordered;
+        if (string.IsNullOrWhiteSpace(sort) || string.Equals(sort, "name", StringComparison.OrdinalIgnoreCase))
+        {
+            ordered = query.OrderBy(x => x.Name).ThenBy(x => x.Id);
+        }
+        else if (string.Equals(sort, "path", StringComparison.OrdinalIgnoreCase))
+        {
+            // Path order serves the GUI's folder-tree view: repos by display name, then each flow document by its
+            // repo-relative path, so the repo and folder groups the client clusters over arrive contiguous even
+            // across page boundaries.
+            ordered =
+                from x in query
+                join repo in db.Repos.AsNoTracking() on x.RepoId equals repo.Id
+                orderby repo.Name, repo.Id, x.RelativePath, x.Id
+                select x;
+        }
+        else
+        {
+            return BadRequest("Unsupported sort", $"The sort '{sort}' is not supported; use 'name' or 'path'.");
+        }
+
+        var total = await query.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
             .Select(x => new PipelineSummaryDto(
