@@ -29,6 +29,19 @@ public sealed class SlackBotOptions
     /// </summary>
     public int MaxReplayMessages { get; set; } = 20;
 
+    /// <summary>How many recent channel messages a top-level (non-thread) mention reads as context, so a
+    /// mention dropped in a busy channel can answer about the discussion above it. 0 disables it (a
+    /// top-level mention then sees only its own message). Every message adds tokens, so keep it modest.</summary>
+    public int MaxChannelHistoryMessages { get; set; } = 150;
+
+    /// <summary>How many image attachments on one message are sent to the vision model. 0 disables image
+    /// reading. Extra images past the cap are ignored.</summary>
+    public int MaxImages { get; set; } = 4;
+
+    /// <summary>Largest image (bytes) sent to the model; a larger attachment is skipped rather than
+    /// inflating the request. The Responses API also enforces its own per-image ceiling.</summary>
+    public long MaxImageBytes { get; set; } = 8_000_000;
+
     public void Validate()
     {
         var missing = new List<string>();

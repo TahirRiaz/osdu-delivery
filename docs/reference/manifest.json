@@ -2321,7 +2321,13 @@
         "agent",
         "socket mode",
         "gpt-5.1",
-        "read-only"
+        "read-only",
+        "vision",
+        "image",
+        "screenshot",
+        "diagnose missing data",
+        "lineage",
+        "channel history"
       ],
       "related": [
         "guide-deployment",

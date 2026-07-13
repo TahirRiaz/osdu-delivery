@@ -32,6 +32,10 @@ public sealed class FoundryAgentGateway : IDisposable
     private const string ApiVersion = "2025-04-01-preview";
     private static readonly string[] Scopes = ["https://cognitiveservices.azure.com/.default"];
 
+    /// <summary>How many times a throttled (429) or briefly-unavailable (503) request is retried before it
+    /// surfaces as an error. Each retry honors the server's Retry-After, or an exponential backoff.</summary>
+    private const int MaxThrottleRetries = 4;
+
     private readonly HttpClient _http;
     private readonly TokenCredential _credential;
     private readonly SlackBotOptions _options;
@@ -72,9 +76,11 @@ public sealed class FoundryAgentGateway : IDisposable
         string threadTs,
         IReadOnlyList<ConversationTurn> priorTurns,
         string question,
+        IReadOnlyList<string> imageDataUris,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(priorTurns);
+        ArgumentNullException.ThrowIfNull(imageDataUris);
         var key = $"{channel}:{threadTs}";
 
         // A cached previous-response id chains the conversation server-side: send only the new turn.
@@ -82,7 +88,7 @@ public sealed class FoundryAgentGateway : IDisposable
         {
             try
             {
-                return await RunAsync(key, previousId, [new ConversationTurn(false, question)], ct).ConfigureAwait(false);
+                return await RunAsync(key, previousId, [new ConversationTurn(false, question)], imageDataUris, ct).ConfigureAwait(false);
             }
             catch (ResponseLinkLostException)
             {
@@ -97,57 +103,101 @@ public sealed class FoundryAgentGateway : IDisposable
         var seeded = new List<ConversationTurn>(priorTurns.Count + 1);
         seeded.AddRange(priorTurns.TakeLast(_options.MaxReplayMessages));
         seeded.Add(new ConversationTurn(false, question));
-        return await RunAsync(key, previousResponseId: null, seeded, ct).ConfigureAwait(false);
+        return await RunAsync(key, previousResponseId: null, seeded, imageDataUris, ct).ConfigureAwait(false);
     }
 
     private async Task<string> RunAsync(
         string key,
         string? previousResponseId,
         IReadOnlyList<ConversationTurn> turns,
+        IReadOnlyList<string> imageDataUris,
         CancellationToken ct)
     {
-        var body = BuildRequestBody(previousResponseId, turns);
+        var body = BuildRequestBody(previousResponseId, turns, imageDataUris);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
+        for (var attempt = 0; ; attempt++)
         {
-            Content = new StringContent(body, Encoding.UTF8, "application/json"),
-        };
-        var token = await _credential.GetTokenAsync(new TokenRequestContext(Scopes), ct).ConfigureAwait(false);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+            using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+            var token = await _credential.GetTokenAsync(new TokenRequestContext(Scopes), ct).ConfigureAwait(false);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-        var payload = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+            var payload = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 
-        // A chained request whose previous_response_id no longer exists comes back 404 (or 400 naming
-        // that id); either way the fix is to rebuild from the transcript, which the caller does.
-        if (previousResponseId is not null && (response.StatusCode == HttpStatusCode.NotFound
-            || (response.StatusCode == HttpStatusCode.BadRequest && payload.Contains(previousResponseId, StringComparison.Ordinal))))
-        {
-            throw new ResponseLinkLostException();
+            // The model deployment throttled (429) or is briefly unavailable (503). An agent question is many
+            // token-heavy tool-call round-trips, so a burst can trip the deployment's per-minute rate limit;
+            // wait the server's Retry-After (or an exponential backoff) and retry a bounded number of times,
+            // so it recovers on its own instead of surfacing an error to the channel.
+            if ((response.StatusCode == HttpStatusCode.TooManyRequests || response.StatusCode == HttpStatusCode.ServiceUnavailable)
+                && attempt < MaxThrottleRetries)
+            {
+                var delay = RetryDelay(response, attempt);
+                _logger.LogWarning("Foundry throttled ({Status}) on attempt {Attempt}/{Max}; retrying in {Delay:0.#}s",
+                    (int)response.StatusCode, attempt + 1, MaxThrottleRetries, delay.TotalSeconds);
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+                continue;
+            }
+
+            // A chained request whose previous_response_id no longer exists comes back 404 (or 400 naming
+            // that id); either way the fix is to rebuild from the transcript, which the caller does.
+            if (previousResponseId is not null && (response.StatusCode == HttpStatusCode.NotFound
+                || (response.StatusCode == HttpStatusCode.BadRequest && payload.Contains(previousResponseId, StringComparison.Ordinal))))
+            {
+                throw new ResponseLinkLostException();
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"Foundry Responses API returned {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(payload)}");
+            }
+
+            return ParseAnswer(key, payload);
         }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException(
-                $"Foundry Responses API returned {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(payload)}");
-        }
-
-        return ParseAnswer(key, payload);
     }
 
-    private string BuildRequestBody(string? previousResponseId, IReadOnlyList<ConversationTurn> turns)
+    private string BuildRequestBody(string? previousResponseId, IReadOnlyList<ConversationTurn> turns, IReadOnlyList<string> imageDataUris)
     {
         var input = new JsonArray();
-        foreach (var turn in turns)
+        for (var i = 0; i < turns.Count; i++)
         {
-            if (string.IsNullOrWhiteSpace(turn.Text))
+            var turn = turns[i];
+            // Images ride on the current question, which is always the last, user-authored turn.
+            var attachImages = i == turns.Count - 1 && !turn.FromBot && imageDataUris.Count > 0;
+            if (string.IsNullOrWhiteSpace(turn.Text) && !attachImages)
             {
                 continue;
             }
+
+            JsonNode content;
+            if (attachImages)
+            {
+                // A message with images sends structured content: the text (when present) plus one
+                // input_image per attachment, so the vision-capable model reads the screenshot alongside
+                // the question ("here is the error I got, what does it mean").
+                var parts = new JsonArray();
+                if (!string.IsNullOrWhiteSpace(turn.Text))
+                {
+                    parts.Add(new JsonObject { ["type"] = "input_text", ["text"] = turn.Text });
+                }
+                foreach (var uri in imageDataUris)
+                {
+                    parts.Add(new JsonObject { ["type"] = "input_image", ["image_url"] = uri });
+                }
+                content = parts;
+            }
+            else
+            {
+                content = JsonValue.Create(turn.Text);
+            }
+
             input.Add(new JsonObject
             {
                 ["role"] = turn.FromBot ? "assistant" : "user",
-                ["content"] = turn.Text,
+                ["content"] = content,
             });
         }
 
@@ -287,6 +337,23 @@ public sealed class FoundryAgentGateway : IDisposable
         return new Uri($"https://{account}.openai.azure.com/openai/responses?api-version={ApiVersion}");
     }
 
+    /// <summary>The wait before a throttle retry: the server's Retry-After header when present (a delta or an
+    /// HTTP date), otherwise an exponential backoff (2s, 4s, 8s...) capped at 30s so a retry never stalls the
+    /// channel for long.</summary>
+    private static TimeSpan RetryDelay(HttpResponseMessage response, int attempt)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+        {
+            return delta;
+        }
+        if (retryAfter?.Date is { } date && date - DateTimeOffset.UtcNow is { } until && until > TimeSpan.Zero)
+        {
+            return until;
+        }
+        return TimeSpan.FromSeconds(Math.Min(30, 2 * Math.Pow(2, attempt)));
+    }
+
     private static string Truncate(string value)
         => value.Length <= 600 ? value : value[..600] + "...";
 
@@ -319,8 +386,34 @@ public sealed class FoundryAgentGateway : IDisposable
             describe_object for a specific table or view, list_schemas and lineage_objects to
             browse, the search tools when only a name fragment is known.
 
-            You have read-only access. If asked to trigger, cancel, or change anything, explain
-            that this Slack assistant is read-only and point to the SQLFlow GUI or CLI.
+            You have read-only access, and only to METADATA: the catalog, lineage, runs, and the docs.
+            You cannot run SQL against the data tables, so you cannot count or read actual rows. When a
+            question is about missing, late, or low data in a table, do NOT try to query the data; instead
+            reason from metadata: locate the table (describe_object, or the search tools with a name
+            fragment), walk its lineage upstream to the source that feeds it (lineage_dependencies,
+            lineage_object_detail, lineage_edges), then check whether that source actually delivered by
+            reading its recent runs and file receipts (list_runs and run_files for the feeding flow, and
+            run_statements/run_assertions to see what a run did). Then judge the delivery, do not stop at
+            "a run happened": compare the latest run's file size and row count against its earlier runs
+            (run_files reports each file's byte size; the run reports rows loaded and file count). A run
+            can succeed yet still under-deliver, a file far smaller than usual, or a sharp drop in rows,
+            means the source sent partial or empty data. Conclude with the specific cause and the numbers:
+            the source run failed, ran with zero files, has not run since the data was due, or delivered a
+            file/row count well below its norm. Only say the data is fine if the latest run's size and row
+            count are in line with prior runs. Because you cannot query the data yourself, once you have
+            identified the real objects, hand the user concrete, ready-to-run T-SQL against them, fully
+            qualified with the actual schema and table from the metadata and the real column names from
+            describe_object (the catalog holds each object's definition, so the columns are known, do not
+            guess them). Give them queries to inspect the data directly: a row count and latest load date
+            (for example `SELECT COUNT(*) AS rows, MAX([FileDate_DW]) AS latest FROM [schema].[table]`),
+            the most recent batches, or a check for the values they suspect are missing. Put each query in
+            a code block. If asked to trigger,
+            cancel, or change anything, explain that this Slack assistant is read-only and point to the
+            SQLFlow GUI or CLI.
+
+            A message may include images (for example a screenshot of an error or a flow YAML). Read them:
+            transcribe the relevant text, then answer the question using your tools as usual (look up the
+            named run, table, or flow key rather than guessing from the picture alone).
 
             You are talking in Slack: format for Slack mrkdwn. *bold* for emphasis (never
             double-asterisk), bullet lists with the - character, `inline code` for object and flow

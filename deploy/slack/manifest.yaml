@@ -21,10 +21,14 @@ oauth_config:
     bot:
       # Receive @-mentions in channels.
       - app_mentions:read
-      # Read thread replies for conversation context (public channels, private channels, DMs).
+      # Read thread replies and channel history for conversation context (public channels, private
+      # channels, DMs). channels:history / groups:history also back a top-level mention reading the
+      # recent channel discussion.
       - channels:history
       - groups:history
       - im:history
+      # Download image attachments (error screenshots, flow YAML) for the vision model to read.
+      - files:read
       # Post answers and the eyes acknowledgement reaction.
       - chat:write
       - reactions:write

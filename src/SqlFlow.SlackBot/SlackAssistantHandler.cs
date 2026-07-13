@@ -36,6 +36,10 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
     /// stampeding the model deployment. Questions are acknowledged before they queue.</summary>
     private readonly SemaphoreSlim _concurrency;
 
+    /// <summary>Downloads image attachments from Slack's private file URLs. The bot token is the default
+    /// Authorization header because every such URL requires it (the files:read scope).</summary>
+    private readonly HttpClient _http;
+
     [GeneratedRegex("<@[A-Z0-9]+>")]
     private static partial Regex MentionRegex();
 
@@ -51,11 +55,14 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
         _logger = logger;
         _concurrency = new SemaphoreSlim(options.MaxConcurrentAnswers, options.MaxConcurrentAnswers);
         _selfUserId = new Lazy<Task<string>>(async () => (await _slack.Auth.Test().ConfigureAwait(false)).UserId);
+        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", options.Slack.BotToken);
     }
 
     public Task Handle(AppMention slackEvent)
     {
-        Dispatch(slackEvent.Channel, slackEvent.User, slackEvent.Text, slackEvent.Ts, slackEvent.ThreadTs);
+        Dispatch(slackEvent.Channel, slackEvent.User, slackEvent.Text, slackEvent.Ts, slackEvent.ThreadTs, slackEvent.Files?.ToList());
         return Task.CompletedTask;
     }
 
@@ -72,13 +79,13 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
         {
             return;
         }
-        Dispatch(slackEvent.Channel, slackEvent.User, slackEvent.Text, slackEvent.Ts, slackEvent.ThreadTs);
+        Dispatch(slackEvent.Channel, slackEvent.User, slackEvent.Text, slackEvent.Ts, slackEvent.ThreadTs, slackEvent.Files?.ToList());
     }
 
     /// <summary>Dedupes, then runs the full question pipeline on the thread pool. Fire-and-forget
     /// by design: the Socket Mode loop must ack promptly, and every failure path inside ends in a
     /// Slack error reply plus a log line, never an unobserved exception.</summary>
-    private void Dispatch(string channel, string user, string text, string ts, string? threadTs)
+    private void Dispatch(string channel, string user, string text, string ts, string? threadTs, IReadOnlyList<SlackNet.File>? files)
     {
         var key = $"{channel}:{ts}";
         var now = DateTimeOffset.UtcNow;
@@ -88,7 +95,7 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
         }
         PruneHandled(now);
 
-        _ = Task.Run(() => AnswerAsync(channel, user, text, ts, threadTs ?? ts));
+        _ = Task.Run(() => AnswerAsync(channel, user, text, ts, threadTs ?? ts, files ?? []));
     }
 
     private void PruneHandled(DateTimeOffset now)
@@ -106,7 +113,7 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
         }
     }
 
-    private async Task AnswerAsync(string channel, string user, string text, string ts, string threadTs)
+    private async Task AnswerAsync(string channel, string user, string text, string ts, string threadTs, IReadOnlyList<SlackNet.File> files)
     {
         var gated = false;
         try
@@ -114,13 +121,20 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
             await AcknowledgeAsync(channel, ts).ConfigureAwait(false);
 
             var question = MentionRegex().Replace(text ?? "", "").Trim();
-            if (question.Length == 0)
+            var images = await DownloadImagesAsync(files).ConfigureAwait(false);
+            if (question.Length == 0 && images.Count == 0)
             {
                 await PostAsync(channel, threadTs,
                     "Ask me anything about SQLFlow: pipeline and run status, why a run failed, " +
-                    "what a table contains, lineage, schedules, or how a `.flow.yaml` key works.")
+                    "what a table contains, lineage, schedules, or how a `.flow.yaml` key works. " +
+                    "You can also paste a screenshot of an error and ask about it.")
                     .ConfigureAwait(false);
                 return;
+            }
+            // An image with no words is still a question ("what is this error?"): give the model a prompt.
+            if (question.Length == 0)
+            {
+                question = "Look at the attached image and help me understand or resolve what it shows.";
             }
 
             var priorTurns = await PriorTurnsAsync(channel, ts, threadTs).ConfigureAwait(false);
@@ -128,7 +142,7 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
             await _concurrency.WaitAsync().ConfigureAwait(false);
             gated = true;
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(_options.RunTimeoutSeconds + 30));
-            var answer = await _gateway.AskAsync(channel, threadTs, priorTurns, question, timeout.Token)
+            var answer = await _gateway.AskAsync(channel, threadTs, priorTurns, question, images, timeout.Token)
                 .ConfigureAwait(false);
 
             await PostAsync(channel, threadTs, SlackMrkdwn.FromMarkdown(answer)).ConfigureAwait(false);
@@ -173,32 +187,17 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
     }
 
     /// <summary>
-    /// The Slack-thread transcript before the current message, oldest first, for rebuilding a
-    /// Foundry thread after a restart. A fresh (non-thread) question has no prior turns; for a
-    /// follow-up the thread replies are fetched from Slack, which stays the durable transcript.
+    /// The conversation context before the current message, oldest first. In a thread it is the thread's
+    /// replies (the durable transcript SQLFlow answers within). A top-level channel mention has no thread,
+    /// so it instead reads the channel's recent history, up to <see cref="SlackBotOptions.MaxChannelHistoryMessages"/>,
+    /// which lets someone drop an @-mention in a busy channel and ask about the discussion above it.
     /// </summary>
     private async Task<IReadOnlyList<ConversationTurn>> PriorTurnsAsync(string channel, string ts, string threadTs)
     {
-        if (threadTs == ts)
-        {
-            return [];
-        }
         var self = await _selfUserId.Value.ConfigureAwait(false);
-
-        // conversations.replies pages oldest-first (default page size is only 10); walk the
-        // cursor so long threads are seen in full, capped well past what is ever replayed.
-        const int maxFetched = 500;
-        var messages = new List<SlackNet.Events.MessageEvent>();
-        string? cursor = null;
-        do
-        {
-            var page = await _slack.Conversations
-                .Replies(channel, threadTs, limit: 200, cursor: cursor)
-                .ConfigureAwait(false);
-            messages.AddRange(page.Messages);
-            cursor = page.HasMore ? page.ResponseMetadata?.NextCursor : null;
-        }
-        while (!string.IsNullOrEmpty(cursor) && messages.Count < maxFetched);
+        var messages = threadTs == ts
+            ? await ChannelHistoryAsync(channel, self).ConfigureAwait(false)
+            : await ThreadRepliesAsync(channel, threadTs).ConfigureAwait(false);
 
         return messages
             .Where(m => m.Ts != ts && !string.IsNullOrWhiteSpace(m.Text))
@@ -207,6 +206,100 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
                 MentionRegex().Replace(m.Text, "").Trim()))
             .Where(t => t.Text.Length > 0)
             .ToList();
+    }
+
+    /// <summary>The thread's replies, oldest first, paged in full past what is ever replayed.</summary>
+    private async Task<List<SlackNet.Events.MessageEvent>> ThreadRepliesAsync(string channel, string threadTs)
+    {
+        const int maxFetched = 500;
+        var messages = new List<SlackNet.Events.MessageEvent>();
+        string? cursor = null;
+        do
+        {
+            var page = await _slack.Conversations.Replies(channel, threadTs, limit: 200, cursor: cursor).ConfigureAwait(false);
+            messages.AddRange(page.Messages);
+            cursor = page.HasMore ? page.ResponseMetadata?.NextCursor : null;
+        }
+        while (!string.IsNullOrEmpty(cursor) && messages.Count < maxFetched);
+        return messages;
+    }
+
+    /// <summary>The channel's recent history for a top-level mention, capped and returned oldest first.
+    /// conversations.history pages newest first, so the accumulated window is reversed before use.</summary>
+    private async Task<List<SlackNet.Events.MessageEvent>> ChannelHistoryAsync(string channel, string self)
+    {
+        var limit = Math.Max(0, _options.MaxChannelHistoryMessages);
+        if (limit == 0)
+        {
+            return [];
+        }
+        var messages = new List<SlackNet.Events.MessageEvent>();
+        string? cursor = null;
+        do
+        {
+            var page = await _slack.Conversations
+                .History(channel, cursor: cursor, limit: Math.Min(200, limit - messages.Count))
+                .ConfigureAwait(false);
+            messages.AddRange(page.Messages);
+            cursor = page.HasMore ? page.ResponseMetadata?.NextCursor : null;
+        }
+        while (!string.IsNullOrEmpty(cursor) && messages.Count < limit);
+        messages.Reverse();
+        return messages;
+    }
+
+    /// <summary>
+    /// Downloads the message's image attachments and returns them as data URIs for the model's vision
+    /// input. Non-image files are ignored; an image past <see cref="SlackBotOptions.MaxImageBytes"/> or
+    /// beyond <see cref="SlackBotOptions.MaxImages"/> is skipped (a download failure never fails the
+    /// answer, the question is still answered from its text). The bot token authorizes each private URL.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> DownloadImagesAsync(IReadOnlyList<SlackNet.File> files)
+    {
+        if (files.Count == 0 || _options.MaxImages <= 0)
+        {
+            return [];
+        }
+
+        var images = new List<string>();
+        foreach (var file in files)
+        {
+            if (images.Count >= _options.MaxImages)
+            {
+                break;
+            }
+            var mime = file.Mimetype ?? "";
+            if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (file.Size > _options.MaxImageBytes)
+            {
+                _logger.LogInformation("Skipping image {Name} ({Size} bytes > {Max} cap)", file.Name, file.Size, _options.MaxImageBytes);
+                continue;
+            }
+            var url = file.UrlPrivateDownload ?? file.UrlPrivate;
+            if (string.IsNullOrEmpty(url))
+            {
+                continue;
+            }
+            try
+            {
+                var bytes = await _http.GetByteArrayAsync(url).ConfigureAwait(false);
+                if (bytes.Length == 0 || bytes.Length > _options.MaxImageBytes)
+                {
+                    continue;
+                }
+                images.Add($"data:{mime};base64,{Convert.ToBase64String(bytes)}");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                // A missing files:read scope, a revoked URL, or a slow download must not sink the answer;
+                // note it and answer from the text alone.
+                _logger.LogWarning("Could not download Slack image {Name}: {Error}", file.Name, ex.Message);
+            }
+        }
+        return images;
     }
 
     /// <summary>Posts with a short retry on Slack rate limiting (chat.postMessage is limited to
