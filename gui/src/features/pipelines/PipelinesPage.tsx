@@ -14,10 +14,10 @@ import type { PipelineSummary } from "../../api/types";
 import { FilterBar } from "../../components/FilterBar";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
-import { PagedTable, type Column, type TableTree } from "../../components/PagedTable";
+import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
 import { ActiveBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
-import { fileNameOf, folderSegmentsOf } from "../repos/project";
+import { fileNameOf, folderOf } from "../repos/project";
 
 const kinds = ["file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
@@ -46,33 +46,35 @@ const groupedColumns: Column<PipelineSummary>[] = [
   { id: "fileName", header: "File", render: (row) => <TruncatedText text={fileNameOf(row.relativePath)} mono maxWidth={260} /> },
 ];
 
-// The folder tree over the flat catalog: pipelines nest under their repo, then under each folder segment of the
-// flow document's path, so a nested layout like flows/api/... builds a real tree (one "flows" node holding "api",
-// "broken", ...) instead of a flat list of full paths. Rows arrive from the API ordered repo-then-path (sort=path),
-// so every node's rows are contiguous and its children come out in path order.
-function makeFolderTree(repoName: (repoId: string) => string): TableTree<PipelineSummary> {
+// The folder tree over the flat catalog: pipelines cluster under their repo, then under the folder their flow
+// document lives in (nested folders keep their full path), mirroring the git estate's layout. Rows arrive from
+// the API ordered repo-then-path (sort=path), which keeps both cluster levels contiguous.
+function makeFolderGrouping(repoName: (repoId: string) => string): TableGrouping<PipelineSummary> {
   return {
-    // Repo id first, then one segment per folder level; a root-level flow has no folder segments and leaves
-    // directly under its repo node.
-    path: (row) => [
-      { key: row.repoId },
-      ...folderSegmentsOf(row.relativePath).map((segment) => ({ key: segment })),
-    ],
-    renderNode: ({ keys, depth, rows }) =>
-      depth === 0 ? (
-        <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="repo-group-header">
-          <Typography variant="body2" sx={{ fontWeight: 700 }}>Repo: {repoName(keys[0])}</Typography>
-          <Typography variant="body2" color="text.secondary" component="span">({rows.length})</Typography>
-        </Stack>
-      ) : (
-        <Stack direction="row" spacing={1} alignItems="center" data-testid="folder-group-header">
-          <FolderOutlinedIcon fontSize="small" sx={{ color: "text.secondary" }} />
-          <Typography variant="body2" sx={{ fontWeight: 600, fontFamily: "monospace", fontSize: "0.8125rem" }}>
-            {keys[keys.length - 1]}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" component="span">({rows.length})</Typography>
-        </Stack>
-      ),
+    groupKey: (row) => row.repoId,
+    renderGroupHeader: (rows) => (
+      <Stack
+        direction="row"
+        spacing={1.5}
+        alignItems="baseline"
+        useFlexGap
+        flexWrap="wrap"
+        data-testid="repo-group-header"
+      >
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>Repo: {repoName(rows[0].repoId)}</Typography>
+        <Typography variant="body2" color="text.secondary" component="span">({rows.length})</Typography>
+      </Stack>
+    ),
+    subKey: (row) => folderOf(row.relativePath),
+    renderSubHeader: (rows) => (
+      <Stack direction="row" spacing={1} alignItems="center" data-testid="folder-group-header">
+        <FolderOutlinedIcon fontSize="small" sx={{ color: "text.secondary" }} />
+        <Typography variant="body2" sx={{ fontWeight: 600, fontFamily: "monospace", fontSize: "0.8125rem" }}>
+          {folderOf(rows[0].relativePath)}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" component="span">({rows.length})</Typography>
+      </Stack>
+    ),
   };
 }
 
@@ -184,8 +186,8 @@ export default function PipelinesPage() {
         rowKey={(row) => row.id}
         onRowClick={(row) => navigate(`/pipelines/${row.id}`)}
         emptyMessage="No pipelines match the current filters."
-        tree={groupByFolder
-          ? makeFolderTree((repoId) => repoNameById.get(repoId) ?? repoId)
+        grouping={groupByFolder
+          ? makeFolderGrouping((repoId) => repoNameById.get(repoId) ?? repoId)
           : undefined}
       />
     </Page>

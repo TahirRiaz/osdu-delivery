@@ -6,11 +6,10 @@ import type { PagedResult } from "../api/types";
 import { isApiError } from "../api/client";
 import { pollingInterval } from "../hooks/usePolling";
 import { CorrelationError } from "./CorrelationError";
-import { DataTable, type Column, type TableTree } from "./DataTable";
+import { DataTable, type Column, type TableGrouping } from "./DataTable";
 
 // Re-exported so the pages keep importing the table types from here (their single table entry point).
-export type { Column } from "./DataTable";
-export type { TableTree, TreeSegment, TreeNodeContext } from "./DataTable";
+export type { Column, TableGrouping } from "./DataTable";
 
 interface PagedTableProps<T> {
   /** Cache identity for the query; include every filter value so a filter change is a new query. */
@@ -24,7 +23,7 @@ interface PagedTableProps<T> {
   /** Optional per-row style (a failed statement tints red, say); return undefined for the default styling. */
   rowSx?: (row: T) => CSSProperties | undefined;
   emptyMessage: string;
-  tree?: TableTree<T>;
+  grouping?: TableGrouping<T>;
   "data-testid"?: string;
 }
 
@@ -34,7 +33,7 @@ interface PagedTableProps<T> {
  * with optional polling for live views. Pages that already hold their rows render DataTable directly instead.
  */
 export function PagedTable<T>({
-  queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, tree, "data-testid": testId,
+  queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, grouping, "data-testid": testId,
 }: PagedTableProps<T>) {
   const [page, setPage] = useState(0); // MUI pagination is 0-based; the API is 1-based
   const [pageSize, setPageSize] = useState(50);
@@ -61,7 +60,7 @@ export function PagedTable<T>({
       onRowClick={onRowClick}
       rowSx={rowSx}
       emptyMessage={emptyMessage}
-      tree={tree}
+      grouping={grouping}
       data-testid={testId ?? "paged-table"}
       footer={(
         <TablePagination

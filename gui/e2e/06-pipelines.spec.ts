@@ -17,35 +17,24 @@ test.describe.serial("pipelines", () => {
     await adminPage.getByTestId("filter-name").fill("");
   });
 
-  test("the folder tree nests pipelines under their repo, and toggles flat", async ({ adminPage }) => {
+  test("the folder tree groups by repo and folder, and toggles flat", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
 
-    // Grouped (the default): the repo is a top-level tree node and its flow nests beneath it. The fixture's flow
-    // sits at the repo root, so it is a direct leaf of the repo node (no folder node); the path column narrows to
-    // the file name because any folder would live in the node above. (Deeper repo/folder/subfolder nesting is
-    // exercised by the tree module's own unit checks; the fixture repo is single-flow.)
-    const repoNode = adminPage.getByTestId("group-header-row").filter({ hasText: "e2e-repo" });
-    await expect(repoNode.first()).toBeVisible({ timeout: 30_000 });
+    // Grouped (the default): repo and folder tree nodes sit above the rows, and the path column narrows to the
+    // file name because the folder lives in the node.
+    await expect(adminPage.getByTestId("repo-group-header").first()).toBeVisible({ timeout: 15_000 });
+    await expect(adminPage.getByTestId("folder-group-header").first()).toBeVisible();
     await expect(adminPage.getByRole("columnheader", { name: "File" })).toBeVisible();
-    const flowRow = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" });
-    await expect(flowRow.first()).toBeVisible();
-
-    // Collapsing the repo node hides its whole subtree; expanding brings it back. That the flow disappears with
-    // its repo is what proves it nests under the node rather than sitting in a flat list beside it.
-    await repoNode.first().click();
-    await expect(flowRow).toHaveCount(0);
-    await repoNode.first().click();
-    await expect(flowRow.first()).toBeVisible();
 
     // Flat: the tree nodes disappear and the full repo-relative path returns as a column.
     await adminPage.getByTestId("group-by-folder").click();
     await expect(adminPage.getByTestId("group-header-row")).toHaveCount(0);
     await expect(adminPage.getByRole("columnheader", { name: "Path" })).toBeVisible();
-    await expect(flowRow.first()).toBeVisible({ timeout: 15_000 });
+    await expect(adminPage.getByTestId("table-row").first()).toBeVisible({ timeout: 15_000 });
 
     await adminPage.getByTestId("group-by-folder").click(); // back to the grouped default
-    await expect(repoNode.first()).toBeVisible({ timeout: 15_000 });
+    await expect(adminPage.getByTestId("repo-group-header").first()).toBeVisible({ timeout: 15_000 });
   });
 
   test("pipeline detail shows YAML, definition, runs, and schedules tabs", async ({ adminPage }) => {

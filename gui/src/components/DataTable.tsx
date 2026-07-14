@@ -1,6 +1,5 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
-import { buildContents, type TreeContents, type TreeNodeContext, type TreeSegment } from "./tree";
 import Paper from "@mui/material/Paper";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
@@ -21,20 +20,20 @@ export interface Column<T> {
 }
 
 /**
- * Arbitrary-depth tree grouping over the rows given. Each row yields a path of ancestor nodes (outermost first);
- * the row is a leaf inside the last one. Rows sharing a path prefix nest under the SAME node, so a repo/folder
- * path like ["dwh-test", "flows", "api"] builds a real folder tree (one "flows" node holding "api", "broken", ...)
- * rather than a flat list of full paths. A two-level hierarchy (batch -> step) is just a path of length two. Every
- * node renders as an independently expandable tree row indented one step past its parent, with leaf rows deepest.
- * A node with an empty path is a leaf at the top level. The tree building itself lives in ./tree.
+ * Tree grouping over the rows given: CONTIGUOUS rows sharing the same group key nest under one expandable
+ * tree node (so a time-ordered list reconstructs each joint execution without re-sorting), and an optional
+ * sub key nests a second, independently expandable level beneath it; rows within a group are stably sorted by
+ * the sub key (ascending). Each level renders as a tree row: indented one step past its parent, with its own
+ * expander, leaf rows deepest, mirroring the batch report's batch -> step -> run hierarchy.
  */
-export interface TableTree<T> {
-  path: (row: T) => TreeSegment[];
-  /** Node content for one interior node; receives the node's whole subtree (for counts/aggregates). */
-  renderNode: (node: TreeNodeContext<T>) => ReactNode;
+export interface TableGrouping<T> {
+  groupKey: (row: T) => string;
+  /** Node content for one group; receives every row of the group (for aggregates). */
+  renderGroupHeader: (rows: T[]) => ReactNode;
+  subKey?: (row: T) => number | string;
+  /** Node content for one sub-group; required when subKey is set. */
+  renderSubHeader?: (rows: T[]) => ReactNode;
 }
-
-export type { TreeSegment, TreeNodeContext } from "./tree";
 
 interface DataTableProps<T> {
   columns: Column<T>[];
@@ -47,11 +46,41 @@ interface DataTableProps<T> {
   /** Optional per-row style (a failed statement tints red, say); return undefined for the default styling. */
   rowSx?: (row: T) => CSSProperties | undefined;
   emptyMessage: string;
-  tree?: TableTree<T>;
+  grouping?: TableGrouping<T>;
   /** Rendered inside the bordered surface, below the table (the PagedTable pagination lives here). */
   footer?: ReactNode;
   skeletonRows?: number;
   "data-testid"?: string;
+}
+
+interface Cluster<T> {
+  key: string;
+  rows: T[];
+}
+
+/** Splits rows into clusters of CONTIGUOUS equal keys, preserving row order. */
+function clusterContiguous<T>(rows: T[], key: (row: T) => string): Cluster<T>[] {
+  const clusters: Cluster<T>[] = [];
+  for (const row of rows) {
+    const k = key(row);
+    const last = clusters.at(-1);
+    if (last !== undefined && last.key === k) {
+      last.rows.push(row);
+    } else {
+      clusters.push({ key: k, rows: [row] });
+    }
+  }
+
+  return clusters;
+}
+
+/** Stable-sorts a cluster's rows by the sub key (ascending) and splits them into one cluster per distinct key. */
+function subClusters<T>(rows: T[], subKey: (row: T) => number | string): Cluster<T>[] {
+  const sorted = rows
+    .map((row, index) => ({ row, index, key: subKey(row) }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index))
+    .map((entry) => entry.row);
+  return clusterContiguous(sorted, (row) => String(subKey(row)));
 }
 
 /** One indentation step per tree depth, in theme spacing units; a leaf sits one step past the deepest node. */
@@ -59,18 +88,17 @@ const TREE_INDENT = 3.5;
 
 /**
  * The presentational table shell every list renders through: the bordered surface, the header row, loading
- * skeletons, the shared empty state, optional row-click affordance, and optional arbitrary-depth tree grouping
- * (each node level independently expandable above the leaf rows). PagedTable wraps this with server-side paging
- * and a query; pages holding their own already-fetched rows (the repos list) render it directly, so there is one
+ * skeletons, the shared empty state, optional row-click affordance, and optional tree grouping (up to two
+ * independently expandable node levels above the leaf rows). PagedTable wraps this with server-side paging and
+ * a query; pages holding their own already-fetched rows (the repos list) render it directly, so there is one
  * table code path instead of several hand-rolled shells.
  */
 export function DataTable<T>({
-  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, tree, footer,
+  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer,
   skeletonRows = 5, "data-testid": testId,
 }: DataTableProps<T>) {
-  // Collapsed node ids, keyed by each node's full path (e.g. "/repoId/flows/api"), so a node keeps its
-  // collapsed state by identity across refetches and a genuinely new node starts expanded. Every tree level
-  // shares this one set.
+  // Collapsed node ids: node key + first row key, so the state survives refreshes of the same data (a
+  // genuinely new node gets a new id and starts expanded). Both tree levels share this one set.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   const toggleNode = (nodeId: string) => {
@@ -115,14 +143,12 @@ export function DataTable<T>({
     );
   };
 
-  // An interior tree node (a repo, a folder, a batch, a step): an expandable row whose first cell carries the
-  // depth indent, the expander chevron, and the node's summary; the summary spans the remaining columns so
-  // aggregates read across.
+  // An interior tree node (batch or step): an expandable row whose first cell carries the depth indent, the
+  // expander chevron, and the node's summary; the summary spans the remaining columns so aggregates read across.
   const nodeRow = (
     nodeId: string, depth: number, isCollapsed: boolean, nodeTestId: string, content: ReactNode,
   ) => (
     <TableRow
-      key={nodeId}
       hover
       onClick={() => toggleNode(nodeId)}
       sx={{ cursor: "pointer" }}
@@ -145,35 +171,32 @@ export function DataTable<T>({
     </TableRow>
   );
 
-  // Walks one node's contents into table rows: each child renders its own tree row (depth 0 is a "group-header-row",
-  // deeper levels are "subgroup-header-row", so a two-level batch/step tree keeps its familiar test hooks) and, when
-  // expanded, recurses into its subtree; a node's direct-leaf rows render after its child nodes, folder-explorer
-  // style. The node id is its full path, so a node keeps its collapsed state by identity across refetches.
-  const renderContents = (contents: TreeContents<T>, depth: number, idPrefix: string, keys: string[]): ReactNode[] => {
-    const out: ReactNode[] = [];
-    for (const node of contents.children) {
-      const nodeId = `${idPrefix}/${node.key}`;
-      const nodeKeys = [...keys, node.key];
-      const isCollapsed = collapsed.has(nodeId);
-      out.push(nodeRow(
-        nodeId, depth, isCollapsed,
-        depth === 0 ? "group-header-row" : "subgroup-header-row",
-        tree!.renderNode({ keys: nodeKeys, depth, rows: node.rows }),
-      ));
-      if (!isCollapsed) {
-        out.push(...renderContents({ children: node.children, leaves: node.leaves }, depth + 1, nodeId, nodeKeys));
-      }
-    }
-
-    for (const row of contents.leaves) {
-      out.push(dataRow(row, depth));
-    }
-
-    return out;
-  };
-
-  const treeBody = (items: T[], spec: TableTree<T>) =>
-    renderContents(buildContents(items.map((row) => ({ row, segs: spec.path(row) })), 0), 0, "", []);
+  const groupedBody = (items: T[], group: TableGrouping<T>) =>
+    clusterContiguous(items, group.groupKey).map((cluster) => {
+      const clusterId = `${cluster.key}::${String(rowKey(cluster.rows[0]))}`;
+      const isCollapsed = collapsed.has(clusterId);
+      const hasSub = group.subKey !== undefined;
+      return (
+        <Fragment key={clusterId}>
+          {nodeRow(clusterId, 0, isCollapsed, "group-header-row", group.renderGroupHeader(cluster.rows))}
+          {!isCollapsed && (hasSub
+            ? subClusters(cluster.rows, group.subKey!).map((sub) => {
+              const subId = `${clusterId}::${sub.key}`;
+              const subCollapsed = collapsed.has(subId);
+              return (
+                <Fragment key={subId}>
+                  {nodeRow(
+                    subId, 1, subCollapsed, "subgroup-header-row",
+                    group.renderSubHeader?.(sub.rows) ?? sub.key,
+                  )}
+                  {!subCollapsed && sub.rows.map((row) => dataRow(row, 2))}
+                </Fragment>
+              );
+            })
+            : cluster.rows.map((row) => dataRow(row, 1)))}
+        </Fragment>
+      );
+    });
 
   return (
     <Paper variant="outlined" data-testid={testId}>
@@ -203,8 +226,8 @@ export function DataTable<T>({
                 </TableCell>
               </TableRow>
             )}
-            {rows !== undefined && (tree
-              ? treeBody(rows, tree)
+            {rows !== undefined && (grouping
+              ? groupedBody(rows, grouping)
               : rows.map((row) => dataRow(row, 0)))}
           </TableBody>
         </Table>
