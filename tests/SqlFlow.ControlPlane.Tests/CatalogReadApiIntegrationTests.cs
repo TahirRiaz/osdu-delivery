@@ -49,10 +49,8 @@ public sealed class CatalogReadApiIntegrationTests
                     FirstSeenUtc = now,
                     LastSyncUtc = now,
                 });
-                // Distinct folders whose alphabetical order OPPOSES the flow-name order, so the sort assertions
-                // below can tell the two orderings apart: by name flowB (customers) leads, by path flowA does.
-                db.Pipelines.Add(SeedPipeline(pipelineAId, repoId, flowA, "ing", "a_flows/orders.flow.yaml", now));
-                db.Pipelines.Add(SeedPipeline(pipelineBId, repoId, flowB, "file", "b_flows/customers.flow.yaml", now));
+                db.Pipelines.Add(SeedPipeline(pipelineAId, repoId, flowA, "ing", "flows/orders.flow.yaml", now));
+                db.Pipelines.Add(SeedPipeline(pipelineBId, repoId, flowB, "file", "flows/customers.flow.yaml", now));
                 await db.SaveChangesAsync();
             }
 
@@ -83,23 +81,6 @@ public sealed class CatalogReadApiIntegrationTests
                 client, token, $"/api/v1/pipelines?repoId={repoId}&kind=ing");
             Assert.Equal(1, ingOnly.Total);
             Assert.Equal(flowA, Assert.Single(ingOnly.Items).Name);
-
-            // sort=path orders by the flow document's repo-relative path (the folder-tree feed): flowA lives in
-            // "a_flows/", so it leads even though its name sorts after flowB's.
-            var byPath = await GetJsonAsync<PagedResult<PipelineSummaryDto>>(
-                client, token, $"/api/v1/pipelines?repoId={repoId}&sort=path&pageSize=200");
-            Assert.Equal(new[] { flowA, flowB }, byPath.Items.Select(x => x.Name).ToArray());
-
-            // sort=name spells out the default: flow-name order.
-            var byName = await GetJsonAsync<PagedResult<PipelineSummaryDto>>(
-                client, token, $"/api/v1/pipelines?repoId={repoId}&sort=name&pageSize=200");
-            Assert.Equal(new[] { flowB, flowA }, byName.Items.Select(x => x.Name).ToArray());
-
-            // An unknown sort is a 400, not a silent fallback to some other order.
-            using (var badSort = await SendAsync(client, HttpMethod.Get, $"/api/v1/pipelines?repoId={repoId}&sort=wave", token))
-            {
-                Assert.Equal(HttpStatusCode.BadRequest, badSort.StatusCode);
-            }
 
             // The detail view carries the heavy body: the redacted Yaml and the queryable DefinitionJson.
             var detail = await GetJsonAsync<PipelineDetailDto>(client, token, $"/api/v1/pipelines/{pipelineAId}");

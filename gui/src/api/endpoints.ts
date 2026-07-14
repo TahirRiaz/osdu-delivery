@@ -54,8 +54,6 @@ export interface PipelineListQuery extends PageQuery {
   kind?: string;
   active?: boolean;
   name?: string;
-  /** Result order: "name" (the default) or "path" (repo name, then repo-relative path; feeds the folder tree). */
-  sort?: "name" | "path";
 }
 
 export const pipelineApi = {
