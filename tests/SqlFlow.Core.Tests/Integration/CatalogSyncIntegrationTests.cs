@@ -70,7 +70,7 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Sync_ProjectsPipelineAndRun_IsIdempotent_AndDeactivatesRemoved()
+    public async Task Sync_ProjectsPipelineAndRun_IsIdempotent_AndDeletesRemoved()
     {
         var cs = IntegrationDb.Require();
         var suffix = Guid.NewGuid().ToString("N")[..8];
@@ -132,14 +132,14 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
                 Assert.Equal(1, again.RunsSkipped);
             }
 
-            // The flow leaves the estate -> its pipeline is deactivated, its run history is kept.
+            // The flow leaves the estate -> its pipeline is deleted (no tombstone), its run history is kept.
             File.Delete(Path.Combine(_dir, "flows", "orders.flow.yaml"));
             await using (var db = CatalogDatabase.Create(cs))
             {
                 var removed = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
-                Assert.Equal(1, removed.PipelinesDeactivated);
-                Assert.False((await db.Pipelines.SingleAsync(p => p.Name == flowName)).Active);
-                Assert.True(await db.Runs.AnyAsync(r => r.RunId == runId));
+                Assert.Equal(1, removed.PipelinesDeleted);
+                Assert.False(await db.Pipelines.AnyAsync(p => p.Name == flowName));  // deleted, not tombstoned
+                Assert.True(await db.Runs.AnyAsync(r => r.RunId == runId));          // run traces kept (they carry the flow name)
             }
         }
         finally

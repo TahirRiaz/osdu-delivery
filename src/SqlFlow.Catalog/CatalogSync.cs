@@ -17,6 +17,8 @@ public sealed record CatalogSyncResult
     public int PipelinesUpdated { get; init; }
     public int PipelinesUnchanged { get; init; }
     public int PipelinesDeactivated { get; init; }
+
+    public int PipelinesDeleted { get; init; }
     public int RunsAdded { get; init; }
     public int RunsSkipped { get; init; }
     public int RunsFailed { get; init; }
@@ -218,7 +220,7 @@ public sealed class CatalogSync
             return await CatalogTransaction.InSerializableAsync(context, async () =>
             {
                 await UpsertRepoAsync(context, repoId, repoName, repoRemoteUrl, root, nowUtc, ct).ConfigureAwait(false);
-                var pipelineTally = await ApplyPipelinesAsync(context, repoId, nowUtc, pipelines, presentIds, schedules, ct).ConfigureAwait(false);
+                var pipelineTally = await ApplyPipelinesAsync(context, repoId, nowUtc, pipelines, presentIds, schedules, excludedFlowPaths, ct).ConfigureAwait(false);
                 var runTally = await ApplyRunsAsync(context, repoId, runs, runsSkipped, runsFailed, ct).ConfigureAwait(false);
 
                 (int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected) lineage;
@@ -256,6 +258,7 @@ public sealed class CatalogSync
                     PipelinesUpdated = pipelineTally.Updated,
                     PipelinesUnchanged = pipelineTally.Unchanged,
                     PipelinesDeactivated = pipelineTally.Deactivated,
+                    PipelinesDeleted = pipelineTally.Deleted,
                     RunsAdded = runTally.Added,
                     RunsSkipped = runTally.Skipped,
                     RunsFailed = runTally.Failed,
@@ -433,10 +436,10 @@ public sealed class CatalogSync
 
     /// <summary>Reconciles this repo's pipeline rows, git-declared schedules, and declared pipeline-column rows
     /// from the phase-one preparation. Runs inside the sync's transaction and performs only database work.</summary>
-    private static async Task<(int Added, int Updated, int Unchanged, int Deactivated)> ApplyPipelinesAsync(
+    private static async Task<(int Added, int Updated, int Unchanged, int Deactivated, int Deleted)> ApplyPipelinesAsync(
         CatalogDbContext context, Guid repoId, DateTime nowUtc,
         IReadOnlyList<PreparedPipeline> pipelines, IReadOnlySet<Guid> presentIds,
-        IReadOnlyList<PreparedSchedule> schedules, CancellationToken ct)
+        IReadOnlyList<PreparedSchedule> schedules, IReadOnlySet<string>? excludedFlowPaths, CancellationToken ct)
     {
         // Only this repo's pipelines: another repo's flows in the same catalog must not be touched by this sync.
         // AsTracking so the update/deactivate mutations below persist even when the host's context defaults to
@@ -489,14 +492,39 @@ public sealed class CatalogSync
             }
         }
 
+        // A flow excluded from a selection-scoped sync is still in the repo, so it is deactivated and reactivates
+        // when it is re-included. A flow that has genuinely left the repo is deleted, so it stops appearing in the
+        // catalog instead of piling up as an inactive tombstone across renames. Its run history is KEPT (each run
+        // carries the flow name, so the traces stand on their own), but its schedule is removed so nothing fires for
+        // a flow that is gone. Lineage edges/objects/dependencies are repo-scoped and rebuilt later in this pass.
         var deactivated = 0;
+        var removedIds = new List<Guid>();
         foreach (var (id, row) in existing)
         {
-            if (!presentIds.Contains(id) && row.Active)
+            if (presentIds.Contains(id))
             {
-                row.Active = false;
-                deactivated++;
+                continue;
             }
+
+            if (excludedFlowPaths is { Count: > 0 } && excludedFlowPaths.Contains(row.RelativePath))
+            {
+                if (row.Active)
+                {
+                    row.Active = false;
+                    deactivated++;
+                }
+            }
+            else
+            {
+                removedIds.Add(id);
+            }
+        }
+
+        var deleted = removedIds.Count;
+        if (deleted > 0)
+        {
+            await context.Schedules.Where(s => removedIds.Contains(s.PipelineId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            context.Pipelines.RemoveRange(removedIds.Select(id => existing[id]));
         }
 
         // Stage the validated yaml schedule mirror: an operator's API pause is preserved and API-created
@@ -529,7 +557,7 @@ public sealed class CatalogSync
             }
         }
 
-        return (added, updated, unchanged, deactivated);
+        return (added, updated, unchanged, deactivated, deleted);
     }
 
     /// <summary>Projects a flow document's authored transform policy into declared column rows. File and

@@ -420,7 +420,7 @@ internal static partial class RemoteVerbs
 
                     Console.WriteLine(
                         $"OK   synced '{repo.Name}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
-                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated; lineage {result.Objects} objects, " +
+                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; lineage {result.Objects} objects, " +
                         $"{result.Edges} edges, {result.Waves} waves{(result.Connected ? " (connected)" : string.Empty)}.");
                     foreach (var warning in result.Warnings.Take(20))
                     {

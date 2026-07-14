@@ -905,7 +905,7 @@ internal static class Program
                         includeDerived: connect, secrets: provider.GetRequiredService<ISecretResolver>()).ConfigureAwait(false);
                     Console.WriteLine(
                         $"OK   synced '{directory}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
-                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated; runs +{result.RunsAdded} added " +
+                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; runs +{result.RunsAdded} added " +
                         $"({result.RunFilesAdded} files, {result.RunAssertionsAdded} assertions, {result.RunStatementsAdded} statements, " +
                         $"{result.RunEventsAdded} events, {result.RunSurrogateKeysAdded} surrogate-keys, {result.RunHealthCheckMetricsAdded} hc-metrics), " +
                         $"{result.RunsSkipped} known, {result.RunsFailed} unreadable; " +

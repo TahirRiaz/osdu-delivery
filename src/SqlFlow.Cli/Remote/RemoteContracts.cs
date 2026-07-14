@@ -186,7 +186,7 @@ internal sealed record DiscoveredFlowDto(
 
 /// <summary>The outcome of a manual local-path repo sync.</summary>
 internal sealed record RepoSyncResultDto(
-    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated,
+    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated, int PipelinesDeleted,
     int Objects, int Columns, int Edges, int Waves, int Dependencies,
     bool Connected, IReadOnlyList<string> Warnings);
 

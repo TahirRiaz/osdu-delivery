@@ -82,6 +82,7 @@ export interface RepoSyncResult {
   pipelinesUpdated: number;
   pipelinesUnchanged: number;
   pipelinesDeactivated: number;
+  pipelinesDeleted: number;
   objects: number;
   columns: number;
   edges: number;

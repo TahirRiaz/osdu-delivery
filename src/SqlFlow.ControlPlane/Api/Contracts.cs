@@ -23,7 +23,7 @@ public sealed record RepoDto(
 /// (objects, columns, edges, waves, dependencies), whether the derived tier connected to the live database, and any
 /// warnings the pass surfaced (bounded). This is the compact summary the GUI shows after a "Sync now".</summary>
 public sealed record RepoSyncResultDto(
-    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated,
+    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated, int PipelinesDeleted,
     int Objects, int Columns, int Edges, int Waves, int Dependencies,
     bool Connected, IReadOnlyList<string> Warnings);
 

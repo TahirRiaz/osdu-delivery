@@ -104,7 +104,7 @@ public static class CatalogEndpoints
                 includeDerived: true, secrets: secrets, ct: ct).ConfigureAwait(false);
 
             return TypedResults.Ok(new RepoSyncResultDto(
-                result.PipelinesAdded, result.PipelinesUpdated, result.PipelinesUnchanged, result.PipelinesDeactivated,
+                result.PipelinesAdded, result.PipelinesUpdated, result.PipelinesUnchanged, result.PipelinesDeactivated, result.PipelinesDeleted,
                 result.ObjectsUpserted, result.ObjectColumns, result.LineageEdges, result.Waves, result.FlowDependencies,
                 result.LineageConnected, result.Warnings.Take(20).ToArray()));
         }
