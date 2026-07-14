@@ -1353,6 +1353,58 @@
       ]
     },
     {
+      "id": "flow-cpy",
+      "path": "flow/cpy.md",
+      "title": "Copy flow (flowType: cpy): file copy between storage endpoints, with zip/unzip",
+      "type": "flow-reference",
+      "summary": "flowType: cpy copies files byte-for-byte between local disk and Azure Blob/ADLS in any direction, optionally zipping or unzipping.",
+      "keywords": [
+        "copy",
+        "cpy",
+        "lake to lake",
+        "zip",
+        "unzip",
+        "azure blob",
+        "adls"
+      ],
+      "yamlPath": "(root, flowType: cpy)",
+      "related": [
+        "flow-overview",
+        "flow-sftp"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Copy/CopyFlow.cs",
+        "src/SqlFlow.Copy/CopyEngine.cs",
+        "src/SqlFlow.Copy/LocalCopyEndpoint.cs",
+        "src/SqlFlow.Copy/AzureBlobCopyEndpoint.cs",
+        "src/SqlFlow.Yaml/YamlCopyFlowLoader.cs"
+      ]
+    },
+    {
+      "id": "flow-sftp",
+      "path": "flow/sftp.md",
+      "title": "SFTP flow (flowType: sftp): download from / upload to an SFTP server",
+      "type": "flow-reference",
+      "summary": "flowType: sftp downloads files from an SFTP server into the data lake / local, or uploads the other way, byte-for-byte.",
+      "keywords": [
+        "sftp",
+        "download",
+        "upload",
+        "vendor drop",
+        "private key"
+      ],
+      "yamlPath": "(root, flowType: sftp)",
+      "related": [
+        "flow-overview",
+        "flow-cpy"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Sftp/SftpFlow.cs",
+        "src/SqlFlow.Sftp/SftpEngine.cs",
+        "src/SqlFlow.Yaml/YamlSftpFlowLoader.cs"
+      ]
+    },
+    {
       "id": "flow-exp",
       "path": "flow/exp.md",
       "title": "Export flow (flowType: exp): tables to CSV/Parquet files",

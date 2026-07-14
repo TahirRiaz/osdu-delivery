@@ -114,6 +114,7 @@ internal static class LocalInspectVerbs
         BatchFlowDocument doc => ("batch", doc.Document.Flow.SysAlias),
         AcquireFlowDocument doc => ("acq", doc.Flow.Name),
         CopyFlowDocument doc => ("cpy", doc.Flow.Name),
+        SftpFlowDocument doc => ("sftp", doc.Flow.Name),
         _ => throw new SqlFlowException($"Unhandled document kind '{document.GetType().Name}'."),
     };
 

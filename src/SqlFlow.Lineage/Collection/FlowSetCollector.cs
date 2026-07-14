@@ -20,7 +20,7 @@ public sealed class FlowSetCollector
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
         new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-        new YamlCopyFlowLoader());
+        new YamlCopyFlowLoader(), new YamlSftpFlowLoader());
 
     private readonly YamlScheduleLibraryLoader _scheduleLibraries = new();
 
@@ -364,6 +364,25 @@ public sealed class FlowSetCollector
                 result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, doc.Flow.Source.Location, root));
                 result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Target.Location, root));
                 break;
+
+            case SftpFlowDocument doc:
+            {
+                // Download reads the server and writes the lake; upload reverses it. The lake write chains to the
+                // downstream file flow that reads that location.
+                var server = $"sftp://{doc.Flow.Server.Host}:{doc.Flow.Server.Port}{doc.Flow.RemotePath}";
+                if (doc.Flow.Direction == Core.Sftp.SftpDirection.Download)
+                {
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, server, root));
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Local, root));
+                }
+                else
+                {
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, doc.Flow.Local, root));
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, server, root));
+                }
+
+                break;
+            }
 
                 // SourceControlFlowDocument/BatchFlowDocument project no headers and contribute no facts: a batch's
                 // ordering is computed FROM lineage, never part of it.

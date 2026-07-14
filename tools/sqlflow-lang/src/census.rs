@@ -193,6 +193,8 @@ impl Census {
             Some("scm") => SCM,
             Some("batch") => BATCH,
             Some("acq") => ACQ,
+            Some("cpy") => CPY,
+            Some("sftp") => SFTP,
             // Unknown flowType: fall back to the file flow so hover/completion
             // still work on the shared and root keys while diagnostics flag the
             // bad discriminator.
@@ -331,6 +333,8 @@ const HC: &str = include_str!("../../../docs/reference/flow/keys.hc.json");
 const SCM: &str = include_str!("../../../docs/reference/flow/keys.scm.json");
 const BATCH: &str = include_str!("../../../docs/reference/flow/keys.batch.json");
 const ACQ: &str = include_str!("../../../docs/reference/flow/keys.acq.json");
+const CPY: &str = include_str!("../../../docs/reference/flow/keys.cpy.json");
+const SFTP: &str = include_str!("../../../docs/reference/flow/keys.sftp.json");
 const SHARED: &str = include_str!("../../../docs/reference/flow/keys.shared.json");
 
 #[cfg(test)]
@@ -418,6 +422,37 @@ mod tests {
             c.resolve(&[AuthoredSeg::Key("assertions".into()), AuthoredSeg::List, AuthoredSeg::Key("name".into())]),
             Resolution::Exact(_)
         ));
+    }
+
+    #[test]
+    fn copy_census_resolves_its_attributes() {
+        let c = Census::for_flow_type(Some("cpy"));
+        assert!(matches!(c.resolve(&ak(&["source", "location"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["target", "location"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["options", "zipName"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["source", "accountKeyRef"])), Resolution::Exact(_)));
+        if let Resolution::Exact(entry) = c.resolve(&ak(&["operation"])) {
+            let values = entry.enum_values.as_ref().expect("operation declares enum values");
+            assert!(values.iter().any(|v| v == "zip"));
+        } else {
+            panic!("operation should be a documented attribute");
+        }
+        assert!(matches!(c.resolve(&ak(&["bogusRootKey"])), Resolution::Unknown));
+    }
+
+    #[test]
+    fn sftp_census_resolves_its_attributes() {
+        let c = Census::for_flow_type(Some("sftp"));
+        assert!(matches!(c.resolve(&ak(&["server", "host"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["server", "passwordRef"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["local"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["remotePath"])), Resolution::Exact(_)));
+        if let Resolution::Exact(entry) = c.resolve(&ak(&["direction"])) {
+            let values = entry.enum_values.as_ref().expect("direction declares enum values");
+            assert!(values.iter().any(|v| v == "upload"));
+        } else {
+            panic!("direction should be a documented attribute");
+        }
     }
 
     #[test]

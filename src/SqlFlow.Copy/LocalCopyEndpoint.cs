@@ -23,7 +23,7 @@ public sealed class LocalCopyEndpoint : ICopyEndpoint
 
     public bool CanHandle(string location)
         => !AzureBlobCopyEndpoint.IsAzure(location)
-           && !SftpCopyEndpoint.IsSftp(location);
+           && !location.StartsWith("sftp://", StringComparison.OrdinalIgnoreCase);
 
     public async IAsyncEnumerable<CopyItem> ListAsync(CopyEndpoint endpoint, [EnumeratorCancellation] CancellationToken ct)
     {

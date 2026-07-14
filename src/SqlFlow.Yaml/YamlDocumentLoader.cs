@@ -73,11 +73,18 @@ public sealed record AcquireFlowDocument : FlowDocument
     public required SqlFlow.Core.Acquire.AcquireFlow Flow { get; init; }
 }
 
-/// <summary>A file-copy flow document (<c>flowType: cpy</c>): copy files byte-for-byte between endpoints (local disk,
-/// Azure Blob/ADLS, SFTP) in any direction, with optional zip/unzip.</summary>
+/// <summary>A file-copy flow document (<c>flowType: cpy</c>): copy files byte-for-byte between storage endpoints
+/// (local disk, Azure Blob/ADLS) in any direction, with optional zip/unzip.</summary>
 public sealed record CopyFlowDocument : FlowDocument
 {
     public required SqlFlow.Core.Copy.CopyFlow Flow { get; init; }
+}
+
+/// <summary>An SFTP transfer flow document (<c>flowType: sftp</c>): download files from an SFTP server into the
+/// lake/local, or upload the other way.</summary>
+public sealed record SftpFlowDocument : FlowDocument
+{
+    public required SqlFlow.Core.Sftp.SftpFlow Flow { get; init; }
 }
 
 /// <summary>
@@ -188,6 +195,7 @@ public sealed class YamlDocumentLoader
     private readonly YamlBatchFlowLoader _batchFlows;
     private readonly YamlAcquireFlowLoader _acquireFlows;
     private readonly YamlCopyFlowLoader _copyFlows;
+    private readonly YamlSftpFlowLoader _sftpFlows;
 
     public YamlDocumentLoader(
         YamlFlowLoader fileFlows,
@@ -199,7 +207,8 @@ public sealed class YamlDocumentLoader
         YamlSourceControlFlowLoader sourceControlFlows,
         YamlBatchFlowLoader batchFlows,
         YamlAcquireFlowLoader acquireFlows,
-        YamlCopyFlowLoader copyFlows)
+        YamlCopyFlowLoader copyFlows,
+        YamlSftpFlowLoader sftpFlows)
     {
         ArgumentNullException.ThrowIfNull(fileFlows);
         ArgumentNullException.ThrowIfNull(ingestionFlows);
@@ -211,6 +220,7 @@ public sealed class YamlDocumentLoader
         ArgumentNullException.ThrowIfNull(batchFlows);
         ArgumentNullException.ThrowIfNull(acquireFlows);
         ArgumentNullException.ThrowIfNull(copyFlows);
+        ArgumentNullException.ThrowIfNull(sftpFlows);
         _fileFlows = fileFlows;
         _ingestionFlows = ingestionFlows;
         _exportFlows = exportFlows;
@@ -221,6 +231,7 @@ public sealed class YamlDocumentLoader
         _batchFlows = batchFlows;
         _acquireFlows = acquireFlows;
         _copyFlows = copyFlows;
+        _sftpFlows = sftpFlows;
     }
 
     public FlowDocument LoadFile(string path)
@@ -297,6 +308,11 @@ public sealed class YamlDocumentLoader
         if (string.Equals(flowType, "cpy", StringComparison.OrdinalIgnoreCase))
         {
             return new CopyFlowDocument { Flow = _copyFlows.Parse(yaml, source), Schedule = schedule };
+        }
+
+        if (string.Equals(flowType, "sftp", StringComparison.OrdinalIgnoreCase))
+        {
+            return new SftpFlowDocument { Flow = _sftpFlows.Parse(yaml, source), Schedule = schedule };
         }
 
         throw new FlowValidationException(

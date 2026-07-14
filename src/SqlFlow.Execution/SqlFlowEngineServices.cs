@@ -101,6 +101,7 @@ public static class SqlFlowEngineServices
         services.AddSingleton<YamlBatchFlowLoader>();
         services.AddSingleton<YamlAcquireFlowLoader>();
         services.AddSingleton<YamlCopyFlowLoader>();
+        services.AddSingleton<YamlSftpFlowLoader>();
         services.AddSingleton<YamlDocumentLoader>();
         services.AddSingleton<InferSpecLoader>();
         services.AddSingleton<FlowRunner>();
@@ -110,8 +111,11 @@ public static class SqlFlowEngineServices
         // gets it, exactly like the source readers above.
         SqlFlow.Acquire.AcquireServices.AddSqlFlowAcquire(services);
 
-        // File-copy engine (flowType: cpy): the local / Azure / SFTP endpoints, the engine, and the copy runner.
+        // File-copy engine (flowType: cpy): the local / Azure storage endpoints, the engine, and the copy runner.
         SqlFlow.Copy.CopyServices.AddSqlFlowCopy(services);
+
+        // SFTP transfer engine (flowType: sftp): the engine and the sftp runner.
+        SqlFlow.Sftp.SftpServices.AddSqlFlowSftp(services);
 
         services.AddSingleton(sp => new DocumentExecutor(sp));
 

@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>SQLFlow copy engine (flowType: cpy): byte-for-byte file copy between local disk and Azure Blob/ADLS Gen2, with optional zip/unzip.</Description>
+    <Description>SQLFlow SFTP engine (flowType: sftp): download files from an SFTP server into the data lake / local, or upload the other way.</Description>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="SSH.NET" />
     <PackageReference Include="Azure.Storage.Blobs" />
     <PackageReference Include="Azure.Identity" />
   </ItemGroup>

@@ -175,6 +175,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             InvokeFlowDocument doc => await ExecuteInvokeAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             AcquireFlowDocument doc => await ExecuteAcquireAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             CopyFlowDocument doc => await ExecuteCopyAsync(doc, flowFile, options, ct).ConfigureAwait(false),
+            SftpFlowDocument doc => await ExecuteSftpAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             SourceControlFlowDocument doc => await ExecuteSourceControlAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             _ => throw new SqlFlowException($"Cannot run document kind '{document.GetType().Name}'."),
         };
@@ -552,6 +553,37 @@ public sealed class DocumentExecutor : IDocumentRunner
         {
             FlowName = flowName,
             FlowKind = "cpy",
+            Success = result.Success,
+            Error = result.Error,
+            RunId = result.RunId,
+            RunDirectory = runDirectory,
+            DurationSeconds = result.DurationSeconds,
+            Result = result,
+        };
+    }
+
+    private async Task<DocumentExecutionResult> ExecuteSftpAsync(SftpFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
+    {
+        var flowName = doc.Flow.Name;
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, flowName);
+
+        var runner = _provider.GetRequiredService<SqlFlow.Sftp.SftpFlowRunner>();
+        var result = await runner.RunAsync(
+            doc.Flow,
+            new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, Parameters = options.Parameters },
+            ct).ConfigureAwait(false);
+
+        var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["run.json"] = JsonSerializer.Serialize(Artifact("sftp", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
+            ["run.log"] = runLogger.Render(),
+            ["trace.sql"] = string.Empty,
+        }, _warningSink);
+
+        return new DocumentExecutionResult
+        {
+            FlowName = flowName,
+            FlowKind = "sftp",
             Success = result.Success,
             Error = result.Error,
             RunId = result.RunId,

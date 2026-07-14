@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "product": "SQLFlow V3",
+  "flowType": "sftp",
+  "generatedFrom": "source code: src/SqlFlow.Core/Sftp, src/SqlFlow.Sftp, src/SqlFlow.Yaml/YamlSftpFlowLoader.cs",
+  "naming": "The loader builds its YamlDotNet IDeserializer with CamelCaseNamingConvention + IgnoreUnmatchedProperties. A C# PascalCase property binds to the camelCase YAML key. The 'direction' enum is parsed case-insensitively.",
+  "keyCount": 16,
+  "keys": [
+    { "path": "name", "type": "string", "required": true, "default": "none", "description": "The flow's unique identifier; seeds the stable FlowId. A blank value fails: \"'name' is required for an sftp flow.\"", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "batch", "type": "string", "required": false, "default": "null", "description": "Optional grouping label recorded with the run.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "direction", "type": "enum(download|upload)", "required": false, "default": "download", "enumValues": ["download", "upload"], "description": "Which way files move: down from the server into local (default), or up to the server from local.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "server", "type": "object", "required": true, "description": "The SFTP server and its credentials.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "server.host", "type": "string", "required": true, "default": "none", "description": "The SFTP host name or IP.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "server.port", "type": "int", "required": false, "default": "22", "description": "The SFTP port.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "server.username", "type": "string", "required": true, "default": "none", "description": "The SFTP username (a coordinate, not a secret).", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "server.passwordRef", "type": "string (secret ref)", "required": false, "default": "null", "description": "A ${...} reference to the password; an alternative to server.privateKeyRef. One of the two is required.", "definedIn": "src/SqlFlow.Sftp/SftpEngine.cs" },
+    { "path": "server.privateKeyRef", "type": "string (secret ref)", "required": false, "default": "null", "description": "A ${...} reference to the private-key PEM.", "definedIn": "src/SqlFlow.Sftp/SftpEngine.cs" },
+    { "path": "server.passphraseRef", "type": "string (secret ref)", "required": false, "default": "null", "description": "A ${...} reference to the passphrase protecting server.privateKeyRef.", "definedIn": "src/SqlFlow.Sftp/SftpEngine.cs" },
+    { "path": "local", "type": "string", "required": true, "default": "none", "description": "The non-SFTP side: a data-lake URI (abfss://…/https) or a local/UNC path. On download it is the target; on upload it is the source. Managed-identity authenticated for Azure.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "remotePath", "type": "string", "required": false, "default": ".", "description": "The directory on the SFTP server (the remote root). On download it is listed; on upload it is written to.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "pattern", "type": "string", "required": false, "default": "*", "description": "File-name glob selecting which files transfer.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "recursive", "type": "bool", "required": false, "default": "true", "description": "Recurse into subdirectories under the root.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "modifiedWithinDays", "type": "int", "required": false, "default": "0", "description": "Only transfer files modified within this many days; 0 = all.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" },
+    { "path": "overwrite", "type": "bool", "required": false, "default": "true", "description": "Overwrite an existing destination file; when false a collision fails rather than clobbers.", "definedIn": "src/SqlFlow.Core/Sftp/SftpFlow.cs" }
+  ]
+}

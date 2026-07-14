@@ -5,7 +5,7 @@ namespace SqlFlow.Copy;
 /// <summary>
 /// One end of a copy: it lists and reads files (as a source) and writes them (as a target). The engine selects an
 /// endpoint by the <see cref="CopyEndpoint.Location"/> scheme through <see cref="CanHandle"/>, so a copy flow's two
-/// sides can be any pair of implementations (local disk, Azure Blob / ADLS Gen2, SFTP) - every direction with one
+/// sides can be any pair of storage implementations (local disk, Azure Blob / ADLS Gen2) - every direction with one
 /// engine. Reads and writes are whole-file byte transfers; the engine owns the zip/unzip transformation between them.
 /// </summary>
 public interface ICopyEndpoint

@@ -20,6 +20,7 @@
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
     <ProjectReference Include="..\SqlFlow.Acquire\SqlFlow.Acquire.csproj" />
     <ProjectReference Include="..\SqlFlow.Copy\SqlFlow.Copy.csproj" />
+    <ProjectReference Include="..\SqlFlow.Sftp\SqlFlow.Sftp.csproj" />
     <ProjectReference Include="..\SqlFlow.Providers\SqlFlow.Providers.csproj" />
     <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
   </ItemGroup>

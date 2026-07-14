@@ -178,6 +178,6 @@ public sealed class CopyEngine
     private ICopyEndpoint Select(string location, string side)
         => _endpoints.FirstOrDefault(e => e.CanHandle(location))
            ?? throw new SqlFlowException(
-               $"No copy endpoint handles the {side} location '{location}'. Use a local/UNC path, an Azure storage URI "
-               + "(abfss://…/https://…), or an sftp://… URL.");
+               $"No copy endpoint handles the {side} location '{location}'. Use a local/UNC path or an Azure storage URI "
+               + "(abfss://…/https://…). For SFTP, use the dedicated sftp flow type.");
 }

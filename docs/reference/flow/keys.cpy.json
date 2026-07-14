@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "product": "SQLFlow V3",
+  "flowType": "cpy",
+  "generatedFrom": "source code: src/SqlFlow.Core/Copy, src/SqlFlow.Copy, src/SqlFlow.Yaml/YamlCopyFlowLoader.cs",
+  "naming": "The loader builds its YamlDotNet IDeserializer with CamelCaseNamingConvention + IgnoreUnmatchedProperties. A C# PascalCase property binds to the camelCase YAML key. The 'operation' enum is parsed case-insensitively with '-'/'_' stripped.",
+  "keyCount": 15,
+  "keys": [
+    { "path": "name", "type": "string", "required": true, "default": "none", "description": "The flow's unique identifier; seeds the stable FlowId. A blank value fails: \"'name' is required for a cpy flow.\"", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "batch", "type": "string", "required": false, "default": "null", "description": "Optional grouping label recorded with the run.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "operation", "type": "enum(copy|zip|unzip)", "required": false, "default": "copy", "enumValues": ["copy", "zip", "unzip"], "description": "What the flow does with the matched files: copy each verbatim, bundle them all into one .zip written to the target (zip-only), or extract each matched .zip's entries to the target.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "source", "type": "object", "required": true, "description": "Where the files are read from and how they are selected.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "source.location", "type": "string", "required": true, "default": "none", "description": "The source root: a local/UNC path or an Azure Blob/ADLS Gen2 URI (abfss://fs@account.dfs.core.windows.net/path or the https form). SFTP is a separate flow type (sftp), not a cpy endpoint.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "source.pattern", "type": "string", "required": false, "default": "*", "description": "File-name glob selecting which files under the root are copied (BCL FileSystemName glob).", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "source.recursive", "type": "bool", "required": false, "default": "true", "description": "Recurse into subfolders under the source root.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "source.modifiedWithinDays", "type": "int", "required": false, "default": "0", "description": "Only copy files modified within this many days; 0 copies everything (the 14-day filter the lake-to-lake runbooks used).", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "source.connectionStringRef", "type": "string (secret ref)", "required": false, "default": "null", "description": "Optional ${...} reference to a connection string authenticating an Azure source. Absent = ambient managed identity (SQLFLOW_AZURE_AUTH).", "definedIn": "src/SqlFlow.Copy/AzureBlobCopyEndpoint.cs" },
+    { "path": "source.sasTokenRef", "type": "string (secret ref)", "required": false, "default": "null", "description": "Optional ${...} reference to a SAS token authenticating an Azure source.", "definedIn": "src/SqlFlow.Copy/AzureBlobCopyEndpoint.cs" },
+    { "path": "source.accountKeyRef", "type": "string (secret ref)", "required": false, "default": "null", "description": "Optional ${...} reference to a storage account key authenticating an Azure source (the shape the legacy runbooks used). Prefer managed identity where the drop zone allows it.", "definedIn": "src/SqlFlow.Copy/AzureBlobCopyEndpoint.cs" },
+    { "path": "target", "type": "object", "required": true, "description": "Where the files are written. Same shape as source; its selection fields (pattern/recursive/modifiedWithinDays) are ignored. The auth refs (connectionStringRef/sasTokenRef/accountKeyRef) apply to an Azure target.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "target.location", "type": "string", "required": true, "default": "none", "description": "The target root: a local/UNC path or an Azure storage URI.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "options.overwrite", "type": "bool", "required": false, "default": "true", "description": "Overwrite an existing target file; when false a collision fails rather than clobbers.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "options.preserveStructure", "type": "bool", "required": false, "default": "true", "description": "Preserve each file's folder structure (relative to the source root) under the target; flat by name otherwise.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    { "path": "options.zipName", "type": "string", "required": false, "default": "<flow>_<timestamp>.zip", "description": "The archive name for operation: zip; ignored otherwise.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" }
+  ]
+}

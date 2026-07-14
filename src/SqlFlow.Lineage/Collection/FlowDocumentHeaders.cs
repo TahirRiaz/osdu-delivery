@@ -116,6 +116,13 @@ public static class FlowDocumentHeaders
                     new DocumentFlowHeader(doc.Flow.Name, "cpy", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
                 ];
 
+            case SftpFlowDocument doc:
+                // An SFTP flow transfers files between a server and the lake/local; both sides are file locations.
+                return
+                [
+                    new DocumentFlowHeader(doc.Flow.Name, "sftp", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
+                ];
+
             case SourceControlFlowDocument:
             case BatchFlowDocument:
                 // Orchestration/utility documents: they move no catalog data and never become pipeline rows.

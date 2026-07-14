@@ -178,6 +178,12 @@ internal static class Program
                                 $"{doc.Flow.Source.Location} -> {doc.Flow.Target.Location}).");
                             return 0;
 
+                        case SftpFlowDocument doc:
+                            Console.WriteLine(
+                                $"OK  '{doc.Flow.Name}' is valid (sftp: {doc.Flow.Direction.ToString().ToLowerInvariant()} " +
+                                $"{doc.Flow.Server.Host}:{doc.Flow.Server.Port}{doc.Flow.RemotePath} <-> {doc.Flow.Local}).");
+                            return 0;
+
                         default:
                             throw new SqlFlowException("Unhandled document kind.");
                     }
