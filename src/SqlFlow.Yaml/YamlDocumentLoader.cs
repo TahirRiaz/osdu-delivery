@@ -73,6 +73,13 @@ public sealed record AcquireFlowDocument : FlowDocument
     public required SqlFlow.Core.Acquire.AcquireFlow Flow { get; init; }
 }
 
+/// <summary>A file-copy flow document (<c>flowType: cpy</c>): copy files byte-for-byte between endpoints (local disk,
+/// Azure Blob/ADLS, SFTP) in any direction, with optional zip/unzip.</summary>
+public sealed record CopyFlowDocument : FlowDocument
+{
+    public required SqlFlow.Core.Copy.CopyFlow Flow { get; init; }
+}
+
 /// <summary>
 /// The single entry point for loading any flow document: it sniffs the root <c>flowType</c> key with a cheap
 /// probe pass, then delegates to the matching loader. No key (the long-standing default) means a file flow;
@@ -180,6 +187,7 @@ public sealed class YamlDocumentLoader
     private readonly YamlSourceControlFlowLoader _sourceControlFlows;
     private readonly YamlBatchFlowLoader _batchFlows;
     private readonly YamlAcquireFlowLoader _acquireFlows;
+    private readonly YamlCopyFlowLoader _copyFlows;
 
     public YamlDocumentLoader(
         YamlFlowLoader fileFlows,
@@ -190,7 +198,8 @@ public sealed class YamlDocumentLoader
         YamlHealthCheckFlowLoader healthCheckFlows,
         YamlSourceControlFlowLoader sourceControlFlows,
         YamlBatchFlowLoader batchFlows,
-        YamlAcquireFlowLoader acquireFlows)
+        YamlAcquireFlowLoader acquireFlows,
+        YamlCopyFlowLoader copyFlows)
     {
         ArgumentNullException.ThrowIfNull(fileFlows);
         ArgumentNullException.ThrowIfNull(ingestionFlows);
@@ -201,6 +210,7 @@ public sealed class YamlDocumentLoader
         ArgumentNullException.ThrowIfNull(sourceControlFlows);
         ArgumentNullException.ThrowIfNull(batchFlows);
         ArgumentNullException.ThrowIfNull(acquireFlows);
+        ArgumentNullException.ThrowIfNull(copyFlows);
         _fileFlows = fileFlows;
         _ingestionFlows = ingestionFlows;
         _exportFlows = exportFlows;
@@ -210,6 +220,7 @@ public sealed class YamlDocumentLoader
         _sourceControlFlows = sourceControlFlows;
         _batchFlows = batchFlows;
         _acquireFlows = acquireFlows;
+        _copyFlows = copyFlows;
     }
 
     public FlowDocument LoadFile(string path)
@@ -283,11 +294,17 @@ public sealed class YamlDocumentLoader
             return new AcquireFlowDocument { Flow = _acquireFlows.Parse(yaml, source), Schedule = schedule };
         }
 
+        if (string.Equals(flowType, "cpy", StringComparison.OrdinalIgnoreCase))
+        {
+            return new CopyFlowDocument { Flow = _copyFlows.Parse(yaml, source), Schedule = schedule };
+        }
+
         throw new FlowValidationException(
             $"{source}: unknown flowType '{flowType}'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a " +
             "file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML " +
             "health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, " +
-            "'acq' for a generic acquisition flow (HTTP API / SFTP / S3 / Azure Table), or omit flowType for a file flow.");
+            "'acq' for a generic acquisition flow (HTTP API / SFTP / S3 / Azure Table), 'cpy' for a file-copy flow "
+            + "(storage/local/SFTP, with optional zip/unzip), or omit flowType for a file flow.");
     }
 
     private static ScheduleSpec? MapSchedule(ScheduleYaml? schedule)

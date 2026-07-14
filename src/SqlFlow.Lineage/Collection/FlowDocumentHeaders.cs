@@ -108,6 +108,14 @@ public static class FlowDocumentHeaders
                     new DocumentFlowHeader(doc.Flow.Name, "acq", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
                 ];
 
+            case CopyFlowDocument doc:
+                // A copy flow moves files between endpoints (both sides are file locations); it reads its source
+                // and writes its target, so it is a filesystem flow.
+                return
+                [
+                    new DocumentFlowHeader(doc.Flow.Name, "cpy", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
+                ];
+
             case SourceControlFlowDocument:
             case BatchFlowDocument:
                 // Orchestration/utility documents: they move no catalog data and never become pipeline rows.

@@ -100,6 +100,7 @@ public static class SqlFlowEngineServices
         services.AddSingleton<YamlSourceControlFlowLoader>();
         services.AddSingleton<YamlBatchFlowLoader>();
         services.AddSingleton<YamlAcquireFlowLoader>();
+        services.AddSingleton<YamlCopyFlowLoader>();
         services.AddSingleton<YamlDocumentLoader>();
         services.AddSingleton<InferSpecLoader>();
         services.AddSingleton<FlowRunner>();
@@ -108,6 +109,9 @@ public static class SqlFlowEngineServices
         // transports, the auth resolver, and the acquisition runner. Composed here so every host that runs flows
         // gets it, exactly like the source readers above.
         SqlFlow.Acquire.AcquireServices.AddSqlFlowAcquire(services);
+
+        // File-copy engine (flowType: cpy): the local / Azure / SFTP endpoints, the engine, and the copy runner.
+        SqlFlow.Copy.CopyServices.AddSqlFlowCopy(services);
 
         services.AddSingleton(sp => new DocumentExecutor(sp));
 

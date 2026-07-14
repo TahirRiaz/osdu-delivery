@@ -106,7 +106,8 @@ public sealed class CatalogSync
     private readonly YamlDocumentLoader _documents = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
+        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
+        new YamlCopyFlowLoader());
 
     /// <summary>One estate flow prepared for the reconciliation transaction: its redacted text, content hash,
     /// serialized definition, and the parsed document (null when it failed to parse after the scan) that the

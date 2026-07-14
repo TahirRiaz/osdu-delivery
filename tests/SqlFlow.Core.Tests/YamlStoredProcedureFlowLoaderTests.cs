@@ -127,7 +127,7 @@ public sealed class YamlStoredProcedureFlowLoaderTests
     public void DocumentLoader_DispatchesSp()
     {
         var documents = new YamlDocumentLoader(
-            new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(), new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
+            new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(), new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader());
 
         var doc = Assert.IsType<StoredProcedureFlowDocument>(documents.Parse(Minimal));
         Assert.Equal("refresh-marts", doc.Document.Flow.SysAlias);

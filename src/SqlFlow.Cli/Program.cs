@@ -168,6 +168,16 @@ internal static class Program
                             return 0;
                         }
 
+                        case AcquireFlowDocument doc:
+                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (acquire: {doc.Flow.Source.Transport} -> {doc.Flow.Landing.Target}).");
+                            return 0;
+
+                        case CopyFlowDocument doc:
+                            Console.WriteLine(
+                                $"OK  '{doc.Flow.Name}' is valid (copy: {doc.Flow.Operation.ToString().ToLowerInvariant()} " +
+                                $"{doc.Flow.Source.Location} -> {doc.Flow.Target.Location}).");
+                            return 0;
+
                         default:
                             throw new SqlFlowException("Unhandled document kind.");
                     }

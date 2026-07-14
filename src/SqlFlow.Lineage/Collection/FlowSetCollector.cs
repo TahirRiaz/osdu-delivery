@@ -19,7 +19,8 @@ public sealed class FlowSetCollector
     private readonly YamlDocumentLoader _documents = new(
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
+        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
+        new YamlCopyFlowLoader());
 
     private readonly YamlScheduleLibraryLoader _scheduleLibraries = new();
 
@@ -354,6 +355,14 @@ public sealed class FlowSetCollector
                 // An acquisition fetches from a third party and lands raw files; its declared landing target chains
                 // to the downstream file flow that reads that location.
                 result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Landing.Target, root));
+                break;
+
+            case CopyFlowDocument doc:
+                // A copy reads files from its source location and writes them to its target location; both are file
+                // nodes, so it chains an upstream producer (the source drop zone) to the downstream file flow that
+                // reads the target.
+                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, doc.Flow.Source.Location, root));
+                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Target.Location, root));
                 break;
 
                 // SourceControlFlowDocument/BatchFlowDocument project no headers and contribute no facts: a batch's

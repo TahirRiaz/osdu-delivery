@@ -258,7 +258,7 @@ public sealed class YamlExportFlowLoaderTests
     public void DocumentLoader_DispatchesExp_AndNamesTheNewKinds()
     {
         var documents = new YamlDocumentLoader(
-            new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(), new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader());
+            new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(), new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader());
 
         var doc = Assert.IsType<ExportFlowDocument>(documents.Parse(Minimal));
         Assert.Equal("orders-export", doc.Document.Flow.SysAlias);
