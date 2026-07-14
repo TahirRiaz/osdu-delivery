@@ -25,6 +25,7 @@ public static class CatalogEndpoints
 
         var pipelines = group.MapGroup("/pipelines").WithTags("Pipelines");
         pipelines.MapGet("/", ListPipelinesAsync).WithName("ListPipelines");
+        pipelines.MapGet("/projects", ListPipelineProjectsAsync).WithName("ListPipelineProjects");
         pipelines.MapGet("/{id:guid}", GetPipelineAsync).WithName("GetPipeline");
         pipelines.MapGet("/{id:guid}/definition", GetPipelineDefinitionAsync).WithName("GetPipelineDefinition");
         pipelines.MapGet("/{id:guid}/columns", GetPipelineColumnsAsync).WithName("GetPipelineColumns");
@@ -139,7 +140,8 @@ public static class CatalogEndpoints
     }
 
     private static async Task<Ok<PagedResult<PipelineSummaryDto>>> ListPipelinesAsync(
-        CatalogDbContext db, Guid? repoId, string? kind, bool? active, string? name, int? page, int? pageSize, CancellationToken ct)
+        CatalogDbContext db, Guid? repoId, string? kind, bool? active, string? name, string? project,
+        int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -164,6 +166,16 @@ public static class CatalogEndpoints
             query = query.Where(x => x.Name.Contains(name));
         }
 
+        // The project is a flow's root folder within its repo (the first path segment, or "(root)" for a flow at
+        // the repo root): narrow the list to one source's folder. Root flows have no slash; a named project matches
+        // its folder prefix so nested folders under it stay included.
+        if (!string.IsNullOrWhiteSpace(project))
+        {
+            query = project == RootProject
+                ? query.Where(x => !x.RelativePath.Contains("/"))
+                : query.Where(x => x.RelativePath.StartsWith(project + "/"));
+        }
+
         var ordered = query.OrderBy(x => x.Name).ThenBy(x => x.Id);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
@@ -173,6 +185,42 @@ public static class CatalogEndpoints
                 x.SourceServer, x.TargetServer, x.RelativePath, x.FirstSeenUtc, x.LastSeenUtc))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<PipelineSummaryDto>(items, p, size, total));
+    }
+
+    /// <summary>The root folder a flow lives under is the label a source's pipelines share; it stands in for the
+    /// value coalesced to when a flow sits at the repo root.</summary>
+    private const string RootProject = "(root)";
+
+    /// <summary>
+    /// The distinct projects (repo-root folders) the pipelines list can be filtered by, optionally scoped to one
+    /// repo, sorted for a stable dropdown. Derived from each flow's repo-relative path: the segment before the
+    /// first slash, or <see cref="RootProject"/> for a flow at the repo root. Distinct paths are pulled once and
+    /// reduced in memory (the segment split is not worth pushing into SQL for the catalog's cardinality).
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<string>>> ListPipelineProjectsAsync(
+        CatalogDbContext db, Guid? repoId, CancellationToken ct)
+    {
+        var query = db.Pipelines.AsNoTracking().AsQueryable();
+        if (repoId is { } r)
+        {
+            query = query.Where(x => x.RepoId == r);
+        }
+
+        var paths = await query.Select(x => x.RelativePath).Distinct().ToListAsync(ct).ConfigureAwait(false);
+        var projects = paths
+            .Select(ProjectOf)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<string>>(projects);
+    }
+
+    /// <summary>A flow's project: its repo-relative path's first segment, or <see cref="RootProject"/> when the
+    /// flow is at the repo root. Mirrors the GUI's projectOf so the filter values and the derived labels agree.</summary>
+    private static string ProjectOf(string relativePath)
+    {
+        var slash = relativePath.IndexOf('/');
+        return slash > 0 ? relativePath[..slash] : RootProject;
     }
 
     private static async Task<Results<Ok<PipelineDetailDto>, ProblemHttpResult>> GetPipelineAsync(

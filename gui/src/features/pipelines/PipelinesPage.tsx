@@ -31,10 +31,12 @@ const columns: Column<PipelineSummary>[] = [
   { id: "relativePath", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={360} /> },
 ];
 
-/** All pipelines across repos, with server-side filtering on repo, kind, active flag, and name. */
+/** All pipelines across repos, with server-side filtering on repo, project (root folder), kind, active flag,
+ * and name. */
 export default function PipelinesPage() {
   const navigate = useNavigate();
   const [repoFilter, setRepoFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [activeFilter, setActiveFilter] = useState("");
   const [nameInput, setNameInput] = useState("");
@@ -52,6 +54,14 @@ export default function PipelinesPage() {
   });
   const repoOptions = repos.data?.items ?? [];
 
+  // Project options are the repo-root folders, scoped to the selected repo so the dropdown offers only projects
+  // that exist in it; changing the repo refetches them (and the repo's onChange clears any stale selection).
+  const projects = useQuery({
+    queryKey: ["pipelines", "projects", repoFilter],
+    queryFn: () => pipelineApi.projects(repoFilter === "" ? undefined : repoFilter),
+  });
+  const projectOptions = projects.data ?? [];
+
   return (
     <Page data-testid="page-pipelines">
       <PageHeader title="Pipelines" />
@@ -62,13 +72,30 @@ export default function PipelinesPage() {
           size="small"
           label="Repo"
           value={repoFilter}
-          onChange={(e) => setRepoFilter(e.target.value)}
+          onChange={(e) => {
+            setRepoFilter(e.target.value);
+            setProjectFilter(""); // the project options are repo-scoped; a selection from another repo is stale
+          }}
           inputProps={{ "data-testid": "filter-repo" }}
           sx={{ minWidth: 200 }}
         >
           <MenuItem value="">all</MenuItem>
           {repoOptions.map((repo) => (
             <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
+          ))}
+        </TextField>
+        <TextField
+          select
+          size="small"
+          label="Project"
+          value={projectFilter}
+          onChange={(e) => setProjectFilter(e.target.value)}
+          inputProps={{ "data-testid": "filter-project" }}
+          sx={{ minWidth: 160 }}
+        >
+          <MenuItem value="">all</MenuItem>
+          {projectOptions.map((project) => (
+            <MenuItem key={project} value={project}>{project}</MenuItem>
           ))}
         </TextField>
         <TextField
@@ -110,11 +137,12 @@ export default function PipelinesPage() {
       </FilterBar>
 
       <PagedTable
-        queryKey={["pipelines", "list", repoFilter, kindFilter, activeFilter, nameFilter]}
+        queryKey={["pipelines", "list", repoFilter, projectFilter, kindFilter, activeFilter, nameFilter]}
         fetchPage={(page, pageSize) => pipelineApi.list({
           page,
           pageSize,
           repoId: repoFilter === "" ? undefined : repoFilter,
+          project: projectFilter === "" ? undefined : projectFilter,
           kind: kindFilter === "" ? undefined : kindFilter,
           active: activeFilter === "" ? undefined : activeFilter === "active",
           name: nameFilter === "" ? undefined : nameFilter,

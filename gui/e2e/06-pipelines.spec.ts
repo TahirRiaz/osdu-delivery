@@ -17,6 +17,23 @@ test.describe.serial("pipelines", () => {
     await adminPage.getByTestId("filter-name").fill("");
   });
 
+  test("the project filter offers a repo's root folders and scopes the list", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-pipelines").click();
+    await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
+
+    // Scope to the fixture repo so the project options are deterministic: its one flow sits at the repo root.
+    await adminPage.getByRole("combobox", { name: "Repo" }).click();
+    await adminPage.getByRole("option", { name: "e2e-repo" }).click();
+
+    // The project dropdown now offers that repo's root folders; the fixture flow is at the root, so "(root)".
+    await adminPage.getByRole("combobox", { name: "Project" }).click();
+    await adminPage.getByRole("option", { name: "(root)" }).click();
+
+    // Filtering by that project keeps the root-level flow in the list.
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+      .toBeVisible({ timeout: 15_000 });
+  });
+
   test("pipeline detail shows YAML, definition, runs, and schedules tabs", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();

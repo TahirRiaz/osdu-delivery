@@ -49,8 +49,10 @@ public sealed class CatalogReadApiIntegrationTests
                     FirstSeenUtc = now,
                     LastSyncUtc = now,
                 });
-                db.Pipelines.Add(SeedPipeline(pipelineAId, repoId, flowA, "ing", "flows/orders.flow.yaml", now));
-                db.Pipelines.Add(SeedPipeline(pipelineBId, repoId, flowB, "file", "flows/customers.flow.yaml", now));
+                // Distinct projects: flowA under a named root folder, flowB at the repo root, so the project
+                // filter and the projects endpoint below have both a named project and "(root)" to exercise.
+                db.Pipelines.Add(SeedPipeline(pipelineAId, repoId, flowA, "ing", "sales/orders.flow.yaml", now));
+                db.Pipelines.Add(SeedPipeline(pipelineBId, repoId, flowB, "file", "customers.flow.yaml", now));
                 await db.SaveChangesAsync();
             }
 
@@ -81,6 +83,18 @@ public sealed class CatalogReadApiIntegrationTests
                 client, token, $"/api/v1/pipelines?repoId={repoId}&kind=ing");
             Assert.Equal(1, ingOnly.Total);
             Assert.Equal(flowA, Assert.Single(ingOnly.Items).Name);
+
+            // The projects endpoint lists the repo's distinct root folders: the named project and "(root)".
+            var projects = await GetJsonAsync<List<string>>(client, token, $"/api/v1/pipelines/projects?repoId={repoId}");
+            Assert.Equal(new[] { "(root)", "sales" }, projects);
+
+            // The project filter narrows by root folder: "sales" is flowA, "(root)" is the repo-root flowB.
+            var salesOnly = await GetJsonAsync<PagedResult<PipelineSummaryDto>>(
+                client, token, $"/api/v1/pipelines?repoId={repoId}&project=sales");
+            Assert.Equal(flowA, Assert.Single(salesOnly.Items).Name);
+            var rootOnly = await GetJsonAsync<PagedResult<PipelineSummaryDto>>(
+                client, token, $"/api/v1/pipelines?repoId={repoId}&project=(root)");
+            Assert.Equal(flowB, Assert.Single(rootOnly.Items).Name);
 
             // The detail view carries the heavy body: the redacted Yaml and the queryable DefinitionJson.
             var detail = await GetJsonAsync<PipelineDetailDto>(client, token, $"/api/v1/pipelines/{pipelineAId}");

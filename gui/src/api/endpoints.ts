@@ -54,10 +54,15 @@ export interface PipelineListQuery extends PageQuery {
   kind?: string;
   active?: boolean;
   name?: string;
+  /** Root folder within the repo (the first path segment, or "(root)"); narrows the list to one source. */
+  project?: string;
 }
 
 export const pipelineApi = {
   list: (query: PipelineListQuery = {}) => get<PagedResult<PipelineSummary>>("/api/v1/pipelines", query as QueryParams),
+  // The distinct projects (repo-root folders) for the list's project filter, optionally scoped to one repo.
+  projects: (repoId?: string) =>
+    get<string[]>("/api/v1/pipelines/projects", repoId ? { repoId } : {}),
   getById: (id: string) => get<PipelineDetail>(`/api/v1/pipelines/${id}`),
   columns: (id: string) => get<PipelineColumn[]>(`/api/v1/pipelines/${id}/columns`),
   files: (id: string, query: PipelineFilesQuery = {}) =>
