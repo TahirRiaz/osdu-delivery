@@ -78,7 +78,17 @@ Keys of the `invoke:` block, and of each named entry under `invokes:` in ing/exp
 | `runbook` | string | aut only | none | The Automation runbook name. Required when `type: aut`, forbidden when `type: adf`. |
 | `servicePrincipal` | string | yes | none | A name declared under `servicePrincipals:`. |
 | `parameters` | map | no | none | Pipeline or runbook parameters; YAML scalar types are preserved into JSON. |
+| `output` | map | no | none | A single file drop the triggered compute lands, so lineage links this invoke to the file ingestion that reads it. See [invoke.output](#invokeoutput-and-invokeoutputs). |
+| `outputs` | list | no | none | Several file drops (an SFTP download of many file sets, or a pipeline landing several folders): one entry per (folder, pattern), each the same shape as `output`. Combines with `output`. |
 | `onErrorResume` | bool | no | `true` | Per-invoke failure behavior. In a standalone document the top-level `onErrorResume` wins when set. |
+
+Keys of each `invoke.output:` (and each `invoke.outputs[]` entry):
+
+| Key | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `location` | string | yes (with output) | none | The folder, full file path, or cloud URL the run lands data at. Local paths are normalized against the estate root for lineage identity; cloud URLs are kept verbatim. |
+| `srcFile` | string | no | inferred | The file-name glob within `location` (e.g. `orders_*.csv`). When absent it is taken from the location's file name, or matches any file in the folder. |
+| `srcPathMask` | string | no | none | An optional regex over the full landing path, matched the way a file source's `srcPathMask` is, for what a folder prefix cannot express. An invalid regex fails at parse. |
 
 Keys of each entry under `servicePrincipals:`:
 
@@ -137,6 +147,67 @@ Validation failures:
 - A value that is not a scalar, map, or sequence: `'<section>.parameters.<name>' has an unsupported value of type '<T>'. Use scalars, maps, or sequences.`
 
 An empty or omitted `parameters:` map produces no parameter JSON at all.
+
+## invoke.output and invoke.outputs
+
+An invoke triggers external compute (an ADF pipeline or Automation runbook) and moves no catalog data of its own, so on its own it is a lineage node with no data edges. When that external compute lands a file that a downstream `flowType: file` ingestion then reads, `output:` declares where it lands so lineage connects the two automatically: the invoke is attributed a write of the same file node the ingestion reads, and the graph chains `invoke -> file -> landing table -> view -> downstream`, from which the execution waves order the fetch before the load.
+
+Use `output:` for the common one-folder case and `outputs:` (a list of the same shape) when the compute lands several distinct file sets, for example an SFTP download that fetches many files across several folders. Each drop binds independently through the same matcher, so a fan-out invoke feeding several ingestions connects to each of them, and the two forms combine (the singular `output` is prepended to the `outputs` list). Many files landing in one folder need only a single drop with a glob (`srcFile: "export_*.csv"`) since the file node is the folder: the glob is what ties it to the ingestion that reads the same folder.
+
+The block mirrors a file source's selection spec, so one matcher (src/SqlFlow.Core/Files/FileSelection.cs) decides the link with the same semantics the engine uses to select files, and never claims a link the engine's own selection would not make. Matching is path-first, then file, because a wildcard always searches within a folder:
+
+1. Path step: when the ingestion declares a `srcPathMask`, the invoke's landing path must match that regex; otherwise the invoke's `location` must be the ingestion's watched folder or a folder beneath it (segment aware, so `raw/orders` does not match `raw/orders2`).
+2. File step, inside the confirmed folder: the invoke's file name must be one the ingestion's `srcFile` glob accepts. A concrete invoke file name is tested with the engine's glob matcher; when both sides carry wildcards (for example the invoke drops `orders_*.csv` and the ingestion reads `*.csv`) they are tested for a shared match, so neither side has to name a literal file.
+
+The match is conservative: anything it cannot confirm (a location it cannot compare, a folder it cannot align) yields no link rather than a false one. An invoke whose output no ingestion consumes still records its declared output as a file node it writes, so it is not a dangling node and links automatically once a matching ingestion is added. `output:` only contributes lineage for a standalone `flowType: inv` document (a real lineage flow node); on an `invokes:` entry used as a pre/post hook inside an ing/exp/sp document the hook already orders the run, and the inline invoke is not itself a lineage node.
+
+```yaml
+# The invoke: an ADF pipeline that fetches an API and drops a dated CSV into the lake.
+flowType: inv
+name: fetch-orders
+servicePrincipals:
+  deploy: { subscriptionId: s, resourceGroup: rg, dataFactoryName: adf-prod }
+invoke:
+  type: adf
+  pipeline: pl_fetch_orders
+  servicePrincipal: deploy
+  output:
+    location: abfss://raw@datalake.dfs.core.windows.net/orders
+    srcFile: orders_*.csv
+```
+
+```yaml
+# The ingestion that reads them: lineage links it to fetch-orders on the shared file node.
+flowType: file
+name: load-orders
+source:
+  type: csv
+  location: abfss://raw@datalake.dfs.core.windows.net/orders
+  options: { srcFile: "orders_*.csv" }
+target: { connection: ${env:SQLFLOW_CONN_DWH}, schema: raw, table: Orders }
+```
+
+An SFTP-style invoke that downloads several file sets, each read by its own ingestion:
+
+```yaml
+flowType: inv
+name: sftp-nightly
+servicePrincipals:
+  ops: { subscriptionId: s, resourceGroup: rg, automationAccountName: aa-ops }
+invoke:
+  type: aut
+  runbook: rb_sftp_pull
+  servicePrincipal: ops
+  outputs:
+    - { location: ./data/incoming/orders,   srcFile: "orders_*.csv" }
+    - { location: ./data/incoming/invoices, srcFile: "inv_*.csv" }
+```
+
+Validation failures (`<field>` is `output` or `outputs[<i>]`):
+
+- A drop with no location: `'<section>.<field>.location' is required when an invoke declares an output.`
+- An invalid `srcPathMask` regex: `'<section>.<field>.srcPathMask' is not a valid regular expression.`
+- An `outputs` entry that is not a map: `'<section>.outputs[<i>]' must be a map of output fields.`
 
 ## invoke.onErrorResume and the document-level onErrorResume
 

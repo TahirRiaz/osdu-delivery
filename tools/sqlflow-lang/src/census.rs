@@ -388,4 +388,35 @@ mod tests {
             Resolution::Exact(_)
         ));
     }
+
+    #[test]
+    fn invoke_census_resolves_output_and_outputs_keys() {
+        let c = Census::for_flow_type(Some("inv"));
+        // The singular output block and its documented leaves resolve exactly.
+        assert!(matches!(c.resolve(&ak(&["invoke", "output"])), Resolution::Exact(_) | Resolution::Container));
+        assert!(matches!(c.resolve(&ak(&["invoke", "output", "location"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["invoke", "output", "srcFile"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["invoke", "output", "srcPathMask"])), Resolution::Exact(_)));
+        // The plural outputs list element resolves through the `[]` marker.
+        assert!(matches!(
+            c.resolve(&[AuthoredSeg::Key("invoke".into()), AuthoredSeg::Key("outputs".into()), AuthoredSeg::List, AuthoredSeg::Key("location".into())]),
+            Resolution::Exact(_)
+        ));
+        // An undocumented child of the fixed-shape output block is still flagged.
+        assert!(matches!(c.resolve(&ak(&["invoke", "output", "bogusKey"])), Resolution::Unknown));
+    }
+
+    #[test]
+    fn shared_invoke_hook_resolves_output_keys() {
+        // Inline invokes: hooks (ing/exp/sp) accept output/outputs via the shared census.
+        let c = Census::for_flow_type(Some("ing"));
+        assert!(matches!(
+            c.resolve(&[AuthoredSeg::Key("invokes".into()), AuthoredSeg::Key("pull".into()), AuthoredSeg::Key("output".into()), AuthoredSeg::Key("location".into())]),
+            Resolution::Exact(_)
+        ));
+        assert!(matches!(
+            c.resolve(&[AuthoredSeg::Key("invokes".into()), AuthoredSeg::Key("pull".into()), AuthoredSeg::Key("outputs".into()), AuthoredSeg::List, AuthoredSeg::Key("srcFile".into())]),
+            Resolution::Exact(_)
+        ));
+    }
 }

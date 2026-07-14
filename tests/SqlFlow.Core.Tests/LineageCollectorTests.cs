@@ -224,6 +224,80 @@ public sealed class LineageCollectorTests : IDisposable
         Assert.Contains(observed.Facts, f => f.Relation == LineageRelation.Creates && f.Name == "Orders" && f.Schema == "raw");
     }
 
+    private const string InvokeYaml = """
+        flowType: inv
+        name: fetch-orders
+        servicePrincipals:
+          deploy: { subscriptionId: s, resourceGroup: rg, dataFactoryName: adf }
+        invoke:
+          type: adf
+          pipeline: pl_fetch_orders
+          servicePrincipal: deploy
+          output:
+            location: ./data/incoming
+            srcFile: orders_*.csv
+        """;
+
+    private const string CsvIngestionYaml = """
+        name: load-incoming-orders
+        source:
+          type: csv
+          location: ./data/incoming
+          options: { srcFile: "orders_*.csv" }
+        target:
+          connection: ${env:SQLFLOW_CONN_DWH}
+          schema: raw
+          table: Orders
+        """;
+
+    [Fact]
+    public void Invoke_Output_LinksToFileIngestion_ViaSharedFileNode()
+    {
+        Write("fetch-orders.flow.yaml", InvokeYaml);
+        Write("load-orders.flow.yaml", CsvIngestionYaml);
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        // The ingestion reads the folder's file node...
+        var read = Assert.Single(collected.Facts.Where(f =>
+            f.Flow == "load-incoming-orders" && f.Relation == LineageRelation.Reads
+            && f.KindHint == LineageNodeKind.File));
+        // ...and the invoke is attributed a Writes of the SAME node, so the graph chains invoke -> file -> table.
+        Assert.Contains(collected.Facts, f =>
+            f.Flow == "fetch-orders" && f.Relation == LineageRelation.Writes
+            && f.KindHint == LineageNodeKind.File && f.ServerRef == ServerIdentity.FileSystem
+            && f.Name == read.Name);
+        Assert.Equal("data/incoming", read.Name);
+    }
+
+    [Fact]
+    public void Invoke_Output_NoConsumer_RecordsItsOwnDeclaredNode()
+    {
+        Write("fetch-orders.flow.yaml", InvokeYaml);
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        // Nothing consumes it yet, but the declared output is still a visible file node the invoke writes.
+        Assert.Contains(collected.Facts, f =>
+            f.Flow == "fetch-orders" && f.Relation == LineageRelation.Writes
+            && f.KindHint == LineageNodeKind.File && f.Name == "data/incoming");
+    }
+
+    [Fact]
+    public void Invoke_Output_FolderMismatch_DoesNotLink()
+    {
+        Write("fetch-orders.flow.yaml", InvokeYaml.Replace("location: ./data/incoming", "location: ./data/invoices", StringComparison.Ordinal));
+        Write("load-orders.flow.yaml", CsvIngestionYaml);
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        // The invoke lands in a different folder, so it writes its own node, never the ingestion's.
+        Assert.Contains(collected.Facts, f =>
+            f.Flow == "fetch-orders" && f.Relation == LineageRelation.Writes && f.Name == "data/invoices");
+        Assert.DoesNotContain(collected.Facts, f =>
+            f.Flow == "fetch-orders" && f.Name == "data/incoming");
+    }
+
     [Fact]
     public void ServerIdentity_ReferencesPassThrough_InlineLiteralsHash()
     {

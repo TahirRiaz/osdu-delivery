@@ -177,6 +177,88 @@ public sealed class YamlInvokeFlowLoaderTests
     }
 
     [Fact]
+    public void Output_MapsFolderGlobAndMask()
+    {
+        var doc = Loader.Parse(Minimal.Replace("  servicePrincipal: deploy", """
+              servicePrincipal: deploy
+              output:
+                location: ./raw/orders
+                srcFile: orders_*.csv
+                srcPathMask: .*/orders/.*
+            """, StringComparison.Ordinal));
+
+        var output = Assert.Single(doc.Definition.Outputs);
+        Assert.Equal("./raw/orders", output.Location);
+        Assert.Equal("orders_*.csv", output.SrcFile);
+        Assert.Equal(".*/orders/.*", output.SrcPathMask);
+    }
+
+    [Fact]
+    public void Outputs_ListBinds_EveryDropInOrder()
+    {
+        var doc = Loader.Parse(Minimal.Replace("  servicePrincipal: deploy", """
+              servicePrincipal: deploy
+              outputs:
+                - { location: ./raw/orders, srcFile: orders_*.csv }
+                - { location: ./raw/invoices, srcFile: inv_*.csv }
+            """, StringComparison.Ordinal));
+
+        Assert.Collection(doc.Definition.Outputs,
+            o => Assert.Equal("./raw/orders", o.Location),
+            o => Assert.Equal("./raw/invoices", o.Location));
+    }
+
+    [Fact]
+    public void Output_And_Outputs_Combine_SingularFirst()
+    {
+        var doc = Loader.Parse(Minimal.Replace("  servicePrincipal: deploy", """
+              servicePrincipal: deploy
+              output: { location: ./raw/orders }
+              outputs:
+                - { location: ./raw/invoices }
+            """, StringComparison.Ordinal));
+
+        Assert.Equal(["./raw/orders", "./raw/invoices"], doc.Definition.Outputs.Select(o => o.Location));
+    }
+
+    [Fact]
+    public void Output_NoBlock_IsEmpty() => Assert.Empty(Loader.Parse(Minimal).Definition.Outputs);
+
+    [Fact]
+    public void Outputs_EntryWithoutLocation_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Minimal.Replace("  servicePrincipal: deploy", """
+              servicePrincipal: deploy
+              outputs:
+                - { srcFile: orders_*.csv }
+            """, StringComparison.Ordinal)));
+        Assert.Contains("'invoke.outputs[0].location' is required when an invoke declares an output.", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Output_WithoutLocation_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Minimal.Replace("  servicePrincipal: deploy", """
+              servicePrincipal: deploy
+              output:
+                srcFile: orders_*.csv
+            """, StringComparison.Ordinal)));
+        Assert.Contains("'invoke.output.location' is required when an invoke declares an output.", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Output_InvalidPathMask_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Minimal.Replace("  servicePrincipal: deploy", """
+              servicePrincipal: deploy
+              output:
+                location: ./raw/orders
+                srcPathMask: "[unterminated"
+            """, StringComparison.Ordinal)));
+        Assert.Contains("'invoke.output.srcPathMask' is not a valid regular expression.", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DocumentLoader_DispatchesInv_AndNamesItInTheUnknownKindError()
     {
         var documents = new YamlDocumentLoader(

@@ -28,7 +28,26 @@ internal sealed class InvokeBlockYaml
     /// (true stays a boolean, 42 a number); quote a scalar to force a string.</summary>
     public Dictionary<string, object?>? Parameters { get; set; }
 
+    /// <summary>A single file drop the triggered pipeline/runbook lands, so lineage links this invoke to the
+    /// downstream file ingestion that reads it. Convenience for the common one-folder case; combine with, or use
+    /// instead of, <see cref="Outputs"/>.</summary>
+    public InvokeOutputYaml? Output { get; set; }
+
+    /// <summary>Several file drops the triggered compute lands (an SFTP download of many files, or a pipeline that
+    /// writes several file sets into several folders): one entry per distinct folder/pattern. Each binds
+    /// independently to the ingestion that reads it.</summary>
+    public List<InvokeOutputYaml>? Outputs { get; set; }
+
     public bool? OnErrorResume { get; set; }
+}
+
+/// <summary>The <c>output:</c> block of an invoke: where its external compute lands data, in the same shape a file
+/// source declares its selection so one matcher connects the two.</summary>
+internal sealed class InvokeOutputYaml
+{
+    public string? Location { get; set; }
+    public string? SrcFile { get; set; }
+    public string? SrcPathMask { get; set; }
 }
 
 internal sealed class ServicePrincipalYaml

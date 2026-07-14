@@ -38,6 +38,13 @@ public sealed record InvokeDefinition
 
     public bool OnErrorResume { get; init; } = true;             // OnErrorResume (default true)
 
+    /// <summary>The file drop(s) this invoke's external compute lands, declared so lineage can connect the invoke to
+    /// the downstream file ingestion(s) that read them (the invoke otherwise moves no catalog data of its own). One
+    /// entry per distinct folder/pattern: an SFTP download or a fan-out pipeline that lands several file sets into
+    /// several folders declares one output each, and each binds independently to whatever ingestion reads it. Empty
+    /// when the flow declares no <c>output:</c>/<c>outputs:</c>.</summary>
+    public IReadOnlyList<InvokeOutput> Outputs { get; init; } = [];
+
     /// <summary>Legacy DeactivateFromBatch. NOT consumed in V3 (carried only for control-DB / legacy import
     /// fidelity): batch membership is controlled by the batch document's <c>members.inactive</c> globs, not a
     /// per-flow flag. Not settable from YAML.</summary>

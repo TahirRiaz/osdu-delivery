@@ -1,11 +1,10 @@
-using System.IO.Enumeration;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.Core.Files;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -376,9 +375,10 @@ public static class LineageEndpoints
                 continue;
             }
 
-            var glob = string.IsNullOrWhiteSpace(source.Glob) ? DefaultFilePattern(source.Type) : source.Glob!;
-            // The engine applies the glob to the file name; reuse the exact BCL matcher its cloud store uses.
-            if (!FileSystemName.MatchesSimpleExpression(glob, fileName, ignoreCase: true))
+            var glob = string.IsNullOrWhiteSpace(source.Glob) ? FileSelection.DefaultPattern(source.Type) : source.Glob!;
+            // The engine applies the glob to the file name; reuse the one shared matcher (the exact BCL matcher its
+            // cloud store uses) so the read API and the lineage collector select files identically.
+            if (!FileSelection.NameMatchesGlob(glob, fileName))
             {
                 continue;
             }
@@ -391,7 +391,7 @@ public static class LineageEndpoints
             {
                 if (!string.IsNullOrWhiteSpace(source.Mask))
                 {
-                    pathConfirmed = SafeRegexMatch(source.Mask!, input);
+                    pathConfirmed = FileSelection.SafeRegexMatch(source.Mask!, input);
                 }
                 else if (!string.IsNullOrWhiteSpace(source.Location) && !source.Location!.Contains("${", StringComparison.Ordinal))
                 {
@@ -478,40 +478,6 @@ public static class LineageEndpoints
         => obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
-
-    /// <summary>The default file-name glob a file reader applies when the source declares no <c>srcFile</c>,
-    /// matching each reader's <c>DefaultFilePattern</c>.</summary>
-    private static string DefaultFilePattern(string type) => type.ToLowerInvariant() switch
-    {
-        "csv" => "*.csv",
-        "json" or "jsonl" or "ndjson" => "*.json",
-        "xml" => "*.xml",
-        "parquet" or "prq" => "*.parquet",
-        "xls" or "xlsx" => "*.xlsx",
-        _ => "*",
-    };
-
-    /// <summary>Matches a path against a source path-mask regex the way the engine does (case-insensitive, culture
-    /// invariant), bounded by a short timeout and treating an invalid or runaway pattern as no match rather than
-    /// letting a bad catalog value fault the request.</summary>
-    private static bool SafeRegexMatch(string pattern, string path)
-    {
-        try
-        {
-            return Regex.IsMatch(
-                path, pattern,
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-                TimeSpan.FromMilliseconds(100));
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return false;
-        }
-    }
 
     /// <summary>The maximum rows each list of the dossier returns: an object's columns and its edges are
     /// bounded by the object, but a hot object can be referenced by many flows across many repos, so each

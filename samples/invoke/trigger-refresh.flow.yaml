@@ -41,4 +41,17 @@ invoke:
     fullLoad: true
     batchSize: 5000
 
+  # ---- OUTPUT (lineage link) ------------------------------------------------------
+  # The file(s) the triggered pipeline/runbook lands. Declaring them lets lineage connect
+  # this invoke to the downstream file ingestion that reads them, so the graph chains
+  # invoke -> file -> landing table -> view -> downstream, and the execution waves order
+  # the fetch before the load. Matching is engine-parity: the ingestion's folder is
+  # confirmed first, then the file name against its glob (a wildcard always searches within
+  # a folder). location is a folder (or a full file path); srcFile is the file-name glob
+  # within it; srcPathMask is an optional regex over the full path.
+  output:
+    location: abfss://raw@datalake.dfs.core.windows.net/orders
+    srcFile: orders_*.csv
+    # srcPathMask: .*/orders/.*             # optional regex, for what a folder cannot express
+
 # onErrorResume: true                      # batch behavior when this flow fails

@@ -1,4 +1,6 @@
 using SqlFlow.Core;
+using SqlFlow.Core.Files;
+using SqlFlow.Core.Invoke;
 using SqlFlow.Core.Lineage;
 using SqlFlow.Lineage.Extraction;
 using SqlFlow.Yaml;
@@ -32,18 +34,26 @@ public sealed class FlowSetCollector
         var files = Directory.EnumerateFiles(root, "*.flow.yaml", SearchOption.AllDirectories)
             .OrderBy(f => f, StringComparer.Ordinal);
 
+        // File producers (invokes that land files) and consumers (file ingestions) are gathered across the whole
+        // estate, then reconciled once every document is in hand: a per-document pass cannot see the flow on the
+        // other side of the file.
+        var producers = new List<FileProducer>();
+        var consumers = new List<FileConsumer>();
+
         foreach (var file in files)
         {
             var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
             try
             {
-                Collect(result, _documents.LoadFile(file), relative, File.GetLastWriteTimeUtc(file), root);
+                Collect(result, _documents.LoadFile(file), relative, File.GetLastWriteTimeUtc(file), root, producers, consumers);
             }
             catch (Exception ex) when (ex is SqlFlowException or IOException or UnauthorizedAccessException)
             {
                 result.Warnings.Add($"{relative}: skipped: {ex.Message}");
             }
         }
+
+        ReconcileFileLinks(result, producers, consumers, root);
 
         var duplicates = result.Flows
             .GroupBy(f => f.Node.Name, StringComparer.OrdinalIgnoreCase)
@@ -73,7 +83,9 @@ public sealed class FlowSetCollector
         }
     }
 
-    private static void Collect(CollectionResult result, FlowDocument document, string file, DateTime fileWriteUtc, string root)
+    private static void Collect(
+        CollectionResult result, FlowDocument document, string file, DateTime fileWriteUtc, string root,
+        List<FileProducer> producers, List<FileConsumer> consumers)
     {
         switch (document)
         {
@@ -188,9 +200,23 @@ public sealed class FlowSetCollector
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,
                 });
-                if (!string.IsNullOrWhiteSpace(flow.Source.Location))
+                // The file the flow reads is its Location, or the srcPath option when no Location is given (the
+                // loader accepts either). Its normalized identity is the file node; recording the same source spec
+                // as a consumer lets an invoke that lands into this folder link to THIS node.
+                var readLocation = !string.IsNullOrWhiteSpace(flow.Source.Location)
+                    ? flow.Source.Location!
+                    : Option(flow.Source.Options, "srcPath");
+                if (!string.IsNullOrWhiteSpace(readLocation))
                 {
-                    result.Facts.Add(FileFact(flow.Name, LineageRelation.Reads, flow.Source.Location, root));
+                    var fileNode = NormalizeFileIdentity(readLocation!, root);
+                    result.Facts.Add(FileFact(flow.Name, LineageRelation.Reads, readLocation!, root));
+                    consumers.Add(new FileConsumer(flow.Name, fileNode, new FileSelectionSpec
+                    {
+                        Type = flow.Source.Type,
+                        Location = readLocation,
+                        Glob = Option(flow.Source.Options, "srcFile"),
+                        Mask = Option(flow.Source.Options, "srcPathMask"),
+                    }));
                 }
 
                 result.Facts.Add(new LineageFact
@@ -226,15 +252,26 @@ public sealed class FlowSetCollector
             }
 
             case InvokeFlowDocument doc:
-                // An invoke triggers external compute; it moves no catalog data itself.
+            {
+                // An invoke triggers external compute (an ADF pipeline or Automation runbook). It moves no catalog
+                // data of its own, but when the author declares the file(s) that compute lands via 'output:', the
+                // invoke becomes a file producer: reconciliation connects it to the file ingestion that reads them,
+                // so the graph chains invoke -> file -> landing table -> view -> downstream.
+                var definition = doc.Document.Definition;
                 result.Flows.Add(new CollectedFlow
                 {
-                    Node = new LineageFlowNode { Name = doc.Document.Definition.InvokeAlias, Kind = "inv", File = file, Batch = doc.Document.Definition.Batch, Lifecycle = doc.Document.Definition.Lifecycle },
+                    Node = new LineageFlowNode { Name = definition.InvokeAlias, Kind = "inv", File = file, Batch = definition.Batch, Lifecycle = definition.Lifecycle },
                     TargetServerRef = ServerIdentity.FileSystem,
                     Schedule = document.Schedule,
                     FileWriteUtc = fileWriteUtc,
                 });
+                if (definition.Outputs.Count > 0)
+                {
+                    producers.Add(new FileProducer(definition.InvokeAlias, definition.Outputs));
+                }
+
                 break;
+            }
 
             case SourceControlFlowDocument:
             case BatchFlowDocument:
@@ -279,34 +316,92 @@ public sealed class FlowSetCollector
             KindHint = kind,
         };
 
-    /// <summary>File-endpoint identity: cloud URLs verbatim; local paths normalized against the estate root
-    /// (relative when inside it), so './data/x.csv' and 'data/x.csv' are one node and the identity survives
-    /// a checkout moving between machines.</summary>
     private static LineageFact FileFact(string flow, LineageRelation relation, string location, string root)
-    {
-        string identity;
-        if (location.Contains("://", StringComparison.Ordinal))
-        {
-            identity = location;
-        }
-        else
-        {
-            var full = Path.GetFullPath(Path.IsPathRooted(location) ? location : Path.Combine(root, location));
-            var relative = Path.GetRelativePath(root, full);
-            identity = (relative.StartsWith("..", StringComparison.Ordinal) ? full : relative).Replace('\\', '/');
-        }
-
-        return new LineageFact
+        => new()
         {
             Flow = flow,
             Relation = relation,
             ServerRef = ServerIdentity.FileSystem,
-            Name = identity,
+            Name = NormalizeFileIdentity(location, root),
             Tier = LineageTier.Declared,
             KindHint = LineageNodeKind.File,
         };
+
+    /// <summary>File-endpoint identity: cloud URLs verbatim; local paths normalized against the estate root
+    /// (relative when inside it), so './data/x.csv' and 'data/x.csv' are one node and the identity survives
+    /// a checkout moving between machines.</summary>
+    private static string NormalizeFileIdentity(string location, string root)
+    {
+        if (location.Contains("://", StringComparison.Ordinal))
+        {
+            return location;
+        }
+
+        var full = Path.GetFullPath(Path.IsPathRooted(location) ? location : Path.Combine(root, location));
+        var relative = Path.GetRelativePath(root, full);
+        return (relative.StartsWith("..", StringComparison.Ordinal) ? full : relative).Replace('\\', '/');
     }
+
+    /// <summary>Connects each file producer (an invoke that lands files) to the file consumers (file ingestions) it
+    /// feeds, with engine-parity file selection: the invoke is attributed a Writes of the SAME file node the
+    /// matched ingestion reads, so the merged graph runs invoke -> file -> landing table -> view -> downstream and
+    /// the execution waves order the chain. A producer nothing consumes still records its own declared output node,
+    /// so the invoke is not a dangling node and links automatically once a matching ingestion is added.</summary>
+    private static void ReconcileFileLinks(
+        CollectionResult result, List<FileProducer> producers, List<FileConsumer> consumers, string root)
+    {
+        foreach (var producer in producers)
+        {
+            // One producer can declare several drops (an SFTP download of many file sets); each binds on its own,
+            // and the invoke writes each distinct file node at most once (dedup across drops and consumers).
+            var linked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var output in producer.Outputs)
+            {
+                var spec = output.ToSelectionSpec();
+                var matched = false;
+                foreach (var consumer in consumers)
+                {
+                    if (!FileSelection.Feeds(spec, consumer.Spec))
+                    {
+                        continue;
+                    }
+
+                    matched = true;
+                    if (linked.Add(consumer.Node))
+                    {
+                        result.Facts.Add(new LineageFact
+                        {
+                            Flow = producer.Flow,
+                            Relation = LineageRelation.Writes,
+                            ServerRef = ServerIdentity.FileSystem,
+                            Name = consumer.Node,
+                            Tier = LineageTier.Declared,
+                            KindHint = LineageNodeKind.File,
+                        });
+                    }
+                }
+
+                // A drop nothing consumes still records its own declared node, so it is visible and links
+                // automatically once a matching ingestion is added.
+                if (!matched && linked.Add(NormalizeFileIdentity(output.Location, root)))
+                {
+                    result.Facts.Add(FileFact(producer.Flow, LineageRelation.Writes, output.Location, root));
+                }
+            }
+        }
+    }
+
+    private static string? Option(IReadOnlyDictionary<string, string?> options, string key)
+        => options.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
 
     private static Dictionary<string, string> ConnectionRefs(IEnumerable<(string Alias, string ConnectionRef)> connections)
         => connections.ToDictionary(c => c.Alias, c => c.ConnectionRef, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An invoke that declares it lands one or more file drops, awaiting reconciliation against the file
+    /// ingestions.</summary>
+    private sealed record FileProducer(string Flow, IReadOnlyList<InvokeOutput> Outputs);
+
+    /// <summary>A file ingestion's source: the file node it reads and the selection spec a producer is matched
+    /// against.</summary>
+    private sealed record FileConsumer(string Flow, string Node, FileSelectionSpec Spec);
 }

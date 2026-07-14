@@ -4,7 +4,7 @@
   "flowType": null,
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 25,
+  "keyCount": 33,
   "keys": [
     {
       "path": "connections",
@@ -86,6 +86,78 @@
       "description": "One parameter's value. The parameter NAME is a dictionary key, so - per the shared naming convention - it is never case-folded or renamed by the CamelCase deserializer convention: it is used byte-for-byte (case-sensitive, no OrdinalIgnoreCase re-wrap) as the resulting JSON object's key (ParametersToJson, YamlInvokeParts.cs:240-251), unlike connection/service-principal/invoke NAMES, which are all re-wrapped case-insensitively after mapping. The VALUE keeps its YAML-inferred scalar type into JSON via ToNode (a plain `true`/`42` stays a boolean/number, a quoted \"true\"/\"42\" stays a string) - PROVIDED the loader's deserializer enables `.WithAttemptingUnquotedStringTypeDeserialization()`, which ing/exp/sp/inv's loaders all do (see the naming-convention correction below); it is then coerced again at dispatch time depending on invokes.<name>.type (see that entry).",
       "definedIn": "src/SqlFlow.Yaml/YamlInvokeParts.cs:254-300 (ToNode/MapToObject/ListToArray)",
       "validation": "'<source>: '<path>' has an unsupported value of type '<TypeName>'. Use scalars, maps, or sequences.' for a CLR type outside string/bool/integer-family/float-family/decimal/dictionary/enumerable (:267-269). '<source>: '<path>' has a nested key that is empty.' for a blank key inside a nested map value (:280)."
+    },
+    {
+      "path": "invokes.<name>.output",
+      "type": "object",
+      "required": false,
+      "default": "null (absent)",
+      "description": "A single file drop the triggered compute lands, in the same shape a file source declares its selection (location + srcFile + srcPathMask). Bound from InvokeBlockYaml.Output (src/SqlFlow.Yaml/InvokeYaml.cs) and mapped by YamlInvokeParts.MapOutputs into InvokeDefinition.Outputs (src/SqlFlow.Core/Invoke/InvokeOutput.cs). It is ACCEPTED on a named invokes.<name> hook, but contributes lineage only for a standalone flowType: inv document: FlowSetCollector records the standalone invoke as a file producer and connects it, via the shared engine-parity matcher (src/SqlFlow.Core/Files/FileSelection.cs), to the file ingestion that reads the same file(s) (invoke -> file -> landing table -> view -> downstream). On an inline hook the hook already orders the run and the inline invoke is not itself a lineage node, so the drop is not matched.",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs; mapped at src/SqlFlow.Yaml/YamlInvokeParts.cs (MapOutputs)",
+      "validation": "A present block with no location: '<source>: '<section>.output.location' is required when an invoke declares an output.' An invalid srcPathMask: '<source>: '<section>.output.srcPathMask' is not a valid regular expression.'"
+    },
+    {
+      "path": "invokes.<name>.output.location",
+      "type": "string",
+      "required": true,
+      "appliesWhen": "an invokes.<name>.output block is present",
+      "default": "none",
+      "description": "The folder, full file path, or cloud URL the run lands data at. A local path is normalized against the estate root for the file node's lineage identity; a cloud URL (contains '://') is kept verbatim. With srcFile omitted, a location whose last segment looks like a file name (a wildcard or extension dot) splits into folder + pattern; a bare folder takes the type's default pattern; a trailing slash forces a folder.",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs",
+      "validation": "Blank/absent (with the block present): '<source>: '<section>.output.location' is required when an invoke declares an output.'"
+    },
+    {
+      "path": "invokes.<name>.output.srcFile",
+      "type": "string",
+      "required": false,
+      "default": "inferred from location, else match any file in the folder",
+      "description": "The file-name glob within location (e.g. orders_*.csv), mirroring a file source's srcFile and matched with the same System.IO.Enumeration.FileSystemName matcher; two wildcard patterns are tested for overlap (FileSelection.GlobsOverlap). Quote a glob beginning with '*' ('*.csv' is a YAML alias otherwise).",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs"
+    },
+    {
+      "path": "invokes.<name>.output.srcPathMask",
+      "type": "string",
+      "required": false,
+      "default": "null (absent)",
+      "description": "An optional regex over the full landing path, mirroring a file source's srcPathMask; when set it is the authoritative path constraint in the match (over the folder-prefix check).",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs",
+      "validation": "An invalid regex: '<source>: '<section>.output.srcPathMask' is not a valid regular expression.'"
+    },
+    {
+      "path": "invokes.<name>.outputs",
+      "type": "list<object>",
+      "required": false,
+      "default": "[] (absent)",
+      "description": "Several file drops the triggered compute lands (an SFTP download of many file sets, or a pipeline writing several folders): one entry per (folder, pattern), each the same shape as invokes.<name>.output. Combines with the singular output (singular prepended). Each drop binds independently; only meaningful for a standalone flowType: inv document (see invokes.<name>.output).",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs; mapped at src/SqlFlow.Yaml/YamlInvokeParts.cs (MapOutputs)",
+      "validation": "An entry that is not a map: '<source>: '<section>.outputs[<i>]' must be a map of output fields.' Each entry is validated like output (location required, srcPathMask a valid regex), with the path '<section>.outputs[<i>].*'."
+    },
+    {
+      "path": "invokes.<name>.outputs[].location",
+      "type": "string",
+      "required": true,
+      "appliesWhen": "an invokes.<name>.outputs entry is present",
+      "default": "none",
+      "description": "The folder, full file path, or cloud URL this drop lands at; same normalization and folder/pattern splitting as invokes.<name>.output.location.",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs",
+      "validation": "Blank/absent: '<source>: '<section>.outputs[<i>].location' is required when an invoke declares an output.'"
+    },
+    {
+      "path": "invokes.<name>.outputs[].srcFile",
+      "type": "string",
+      "required": false,
+      "default": "inferred from location, else match any file in the folder",
+      "description": "The file-name glob within this drop's location; same semantics as invokes.<name>.output.srcFile.",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs"
+    },
+    {
+      "path": "invokes.<name>.outputs[].srcPathMask",
+      "type": "string",
+      "required": false,
+      "default": "null (absent)",
+      "description": "An optional regex over this drop's full landing path; same semantics as invokes.<name>.output.srcPathMask.",
+      "definedIn": "src/SqlFlow.Yaml/InvokeYaml.cs",
+      "validation": "An invalid regex: '<source>: '<section>.outputs[<i>].srcPathMask' is not a valid regular expression.'"
     },
     {
       "path": "invokes.<name>.pipeline",
