@@ -8,6 +8,7 @@ import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { OnlineBadge } from "../../components/StatusBadge";
 import { NodeRestartButton } from "./NodeRestartButton";
+import { NodeDeleteButton } from "./NodeDeleteButton";
 import { WorkerPoolsPanel } from "./WorkerPoolsPanel";
 
 const columns: Column<Node>[] = [
@@ -20,7 +21,16 @@ const columns: Column<Node>[] = [
   { id: "version", header: "Version", render: (row) => row.version ?? "-" },
   { id: "firstSeen", header: "First seen", render: (row) => <RelativeTime value={row.firstSeenUtc} /> },
   { id: "lastSeen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
-  { id: "actions", header: "", render: (row) => <NodeRestartButton node={row} /> },
+  {
+    id: "actions",
+    header: "",
+    render: (row) => (
+      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+        <NodeRestartButton node={row} />
+        <NodeDeleteButton node={row} />
+      </Stack>
+    ),
+  },
 ];
 
 /** The worker fleet: which nodes exist, which are heartbeating, and what they run, plus per-pool compute controls

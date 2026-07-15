@@ -52,4 +52,26 @@ public static class NodeStore
 
         return null;
     }
+
+    /// <summary>Removes a node from the fleet registry by name. The registry only ever records liveness, so a node's
+    /// row carries no dependent state and deleting it is safe: it simply drops a dead entry from the fleet view. If
+    /// the named node is in fact still alive, it re-registers on its very next heartbeat, so this is also harmless to
+    /// call on a live node. Returns the number of rows removed (0 when no such node exists).</summary>
+    public static Task<int> DeleteAsync(CatalogDbContext catalog, string name, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return catalog.Nodes.Where(n => n.Name == name).ExecuteDeleteAsync(ct);
+    }
+
+    /// <summary>Prunes nodes whose last heartbeat predates <paramref name="olderThanUtc"/>: dead entries the fleet
+    /// accumulates because every worker pod (each orchestrator revision, each autoscale-up) registers under a fresh
+    /// name and the registry never removes the ones that stopped heartbeating. A node genuinely restarting comes back
+    /// within seconds under a new name, so a long-stale row is always gone for good. Returns the number pruned. Safe
+    /// to run on a schedule: a live node is never stale, so it is never touched.</summary>
+    public static Task<int> PruneStaleAsync(CatalogDbContext catalog, DateTime olderThanUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return catalog.Nodes.Where(n => n.LastSeenUtc < olderThanUtc).ExecuteDeleteAsync(ct);
+    }
 }

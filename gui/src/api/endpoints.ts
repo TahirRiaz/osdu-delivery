@@ -169,6 +169,8 @@ export const nodeApi = {
   scalePool: (request: WorkerPoolScaleRequest) => put<WorkerPool>("/api/v1/nodes/pools/scale", request),
   /** Ask a node to drain and restart; the orchestrator recreates it. */
   restart: (name: string) => post<void>(`/api/v1/nodes/${encodeURIComponent(name)}/restart`),
+  /** Remove a node from the fleet registry (a dead entry); a live node re-registers on its next heartbeat. */
+  delete: (name: string) => del<void>(`/api/v1/nodes/${encodeURIComponent(name)}`),
 };
 
 // ---- Datasources and ad-hoc compute ---------------------------------------------------------------------------------

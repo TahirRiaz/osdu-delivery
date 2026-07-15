@@ -102,6 +102,12 @@ public sealed class ControlPlaneOptions
                 "ControlPlane:Reaper:StaleAfterSeconds must be at least 60, comfortably larger than a node's heartbeat cadence, so a brief heartbeat gap never fails a live node's runs.");
         }
 
+        if (Reaper.NodeRetentionHours < 0)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Reaper:NodeRetentionHours must be zero or positive (0 disables pruning stale nodes from the fleet registry).");
+        }
+
         AzureAd.Validate();
         Bootstrap.Validate();
         Proxy.Validate();
@@ -309,6 +315,13 @@ public sealed class ReaperOptions
     public int PollSeconds { get; set; } = 30;
 
     public int StaleAfterSeconds { get; set; } = 180;
+
+    /// <summary>How long a node may be offline before the sweep prunes it from the fleet registry. Every worker pod
+    /// registers under a fresh name (each orchestrator revision, each autoscale-up), and the registry never removes
+    /// the ones that stopped heartbeating, so without a prune the fleet view grows a dead row per pod forever. The
+    /// default keeps a day of history for debugging a recent failure while clearing the long-dead clutter; 0 disables
+    /// the prune (rows then linger until deleted by hand).</summary>
+    public int NodeRetentionHours { get; set; } = 24;
 }
 
 /// <summary>

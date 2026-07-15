@@ -64,6 +64,7 @@ public static class NodeEndpoints
         ArgumentNullException.ThrowIfNull(group);
         group.MapPut("/nodes/pools/scale", ScalePoolAsync).WithTags("Nodes").WithName("ScaleWorkerPool");
         group.MapPost("/nodes/{name}/restart", RestartNodeAsync).WithTags("Nodes").WithName("RestartNode");
+        group.MapDelete("/nodes/{name}", DeleteNodeAsync).WithTags("Nodes").WithName("DeleteNode");
         return group;
     }
 
@@ -191,6 +192,20 @@ public static class NodeEndpoints
         {
             return TypedResults.Problem(
                 detail: $"No node named '{name}' has heartbeated into the fleet.",
+                statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        return TypedResults.Ok();
+    }
+
+    private static async Task<Results<Ok, ProblemHttpResult>> DeleteNodeAsync(
+        string name, CatalogDbContext db, CancellationToken ct)
+    {
+        var removed = await NodeStore.DeleteAsync(db, name, ct).ConfigureAwait(false);
+        if (removed == 0)
+        {
+            return TypedResults.Problem(
+                detail: $"No node named '{name}' is in the fleet registry.",
                 statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 

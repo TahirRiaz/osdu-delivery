@@ -105,6 +105,58 @@ public sealed class WorkerPoolStoreTests
         }
     }
 
+    [SkippableFact]
+    public async Task DeleteAndPrune_RemoveNodesFromTheFleetRegistry()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var live = "np-live-" + Guid.NewGuid().ToString("N")[..8];
+        var dead = "np-dead-" + Guid.NewGuid().ToString("N")[..8];
+
+        try
+        {
+            var now = DateTime.UtcNow;
+
+            // Each heartbeat uses its own context, exactly as the worker does (a fresh scope per beat). One node
+            // heartbeated just now, one 48 hours ago.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, live, "1.0.0", now);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, dead, "1.0.0", now.AddHours(-48));
+            }
+
+            // A manual delete removes exactly the named node; an unknown name (already removed) removes nothing.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.Equal(1, await NodeStore.DeleteAsync(db, dead));
+                Assert.Equal(0, await NodeStore.DeleteAsync(db, dead));
+                Assert.False(await db.Nodes.AsNoTracking().AnyAsync(n => n.Name == dead));
+            }
+
+            // The retention prune removes only nodes last seen before the cutoff, never a live one.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, dead, "1.0.0", now.AddHours(-48));
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var pruned = await NodeStore.PruneStaleAsync(db, now.AddHours(-24));
+                Assert.True(pruned >= 1);
+                Assert.False(await db.Nodes.AsNoTracking().AnyAsync(n => n.Name == dead));
+                Assert.True(await db.Nodes.AsNoTracking().AnyAsync(n => n.Name == live));
+            }
+        }
+        finally
+        {
+            await DeleteNodes(cs, live, dead);
+        }
+    }
+
     private static async Task DeletePools(string cs, params string[] pools)
     {
         await using var db = CatalogDatabase.Create(cs);

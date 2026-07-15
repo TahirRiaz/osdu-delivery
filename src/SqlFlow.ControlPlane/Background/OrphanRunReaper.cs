@@ -29,6 +29,7 @@ public sealed partial class OrphanRunReaper : BackgroundService
     private readonly TimeProvider _clock;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _staleAfter;
+    private readonly TimeSpan _nodeRetention;
     private readonly ILogger<OrphanRunReaper> _logger;
 
     public OrphanRunReaper(
@@ -45,6 +46,7 @@ public sealed partial class OrphanRunReaper : BackgroundService
         _clock = clock;
         _pollInterval = TimeSpan.FromSeconds(Math.Max(1, options.Value.Reaper.PollSeconds));
         _staleAfter = TimeSpan.FromSeconds(Math.Max(60, options.Value.Reaper.StaleAfterSeconds));
+        _nodeRetention = TimeSpan.FromHours(Math.Max(0, options.Value.Reaper.NodeRetentionHours));
         _logger = logger;
     }
 
@@ -87,10 +89,25 @@ public sealed partial class OrphanRunReaper : BackgroundService
         {
             LogReaped(reaped, (int)_staleAfter.TotalSeconds);
         }
+
+        // Prune the fleet registry of nodes long gone: every worker pod registers under a fresh name and the registry
+        // never removes the ones that stopped heartbeating, so without this the fleet view accumulates a dead row per
+        // pod forever. Disabled when retention is zero (rows then linger until an operator deletes them by hand).
+        if (_nodeRetention > TimeSpan.Zero)
+        {
+            var pruned = await NodeStore.PruneStaleAsync(catalog, now - _nodeRetention, ct).ConfigureAwait(false);
+            if (pruned > 0)
+            {
+                LogPrunedNodes(pruned, (int)_nodeRetention.TotalHours);
+            }
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Orphan reaper failed {Count} run(s) whose claiming node had not heartbeated in {StaleAfterSeconds}s; their pipelines are unblocked.")]
     private partial void LogReaped(int count, int staleAfterSeconds);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Pruned {Count} node(s) offline for more than {RetentionHours}h from the fleet registry.")]
+    private partial void LogPrunedNodes(int count, int retentionHours);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Orphan reaper tick error: {Error}")]
     private partial void LogTickError(string error);
