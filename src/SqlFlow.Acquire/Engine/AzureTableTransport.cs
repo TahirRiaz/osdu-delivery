@@ -4,6 +4,7 @@ using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
 using SqlFlow.Acquire.Runtime;
+using SqlFlow.Azure;
 using SqlFlow.Core;
 using SqlFlow.Core.Acquire;
 using SqlFlow.Core.Model;
@@ -14,12 +15,24 @@ namespace SqlFlow.Acquire.Engine;
 /// <summary>
 /// The Azure Storage Table transport: runs a (templated) OData filter against a table and lands the matched entities
 /// as a single raw JSON array, preserving every property. Options (in <c>source.options</c>): <c>tableName</c>
-/// (required); either <c>connectionString</c> (secret) or <c>accountUrl</c> + <c>sasToken</c> (secret); an optional
-/// <c>filter</c> (OData, templated with the iteration variables) and <c>select</c> (comma-separated columns).
+/// (required) and an optional <c>filter</c> (OData, templated with the iteration variables) and <c>select</c>
+/// (comma-separated columns). Authentication supports both modes: an explicit <c>connectionString</c> (secret) or
+/// <c>accountUrl</c> + <c>sasToken</c> (secret), or - when neither secret is given - the ambient identity through the
+/// shared <see cref="IAzureCredentialFactory"/> (managed identity on Azure, <c>az login</c> on a dev box, service
+/// principal in CI). The ambient path is the default: an <c>accountUrl</c> (or the <c>sftp</c>-style base url) with no
+/// secret authenticates with managed identity / az login, so a table source needs no stored secret.
 /// </summary>
 public sealed class AzureTableTransport : IAcquireTransport
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
+
+    private readonly IAzureCredentialFactory _credentials;
+
+    public AzureTableTransport(IAzureCredentialFactory credentials)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+        _credentials = credentials;
+    }
 
     public bool CanHandle(AcquireTransport transport) => transport == AcquireTransport.AzureTable;
 
@@ -108,7 +121,7 @@ public sealed class AzureTableTransport : IAcquireTransport
         });
     }
 
-    private static async Task<TableClient> BuildClientAsync(AcquireFetch fetch, string tableName, CancellationToken ct)
+    private async Task<TableClient> BuildClientAsync(AcquireFetch fetch, string tableName, CancellationToken ct)
     {
         var options = fetch.Source.Options;
         if (options.TryGetValue("connectionString", out var connRef) && !string.IsNullOrWhiteSpace(connRef))
@@ -120,7 +133,9 @@ public sealed class AzureTableTransport : IAcquireTransport
         var accountUrl = options.GetString("accountUrl", fetch.Source.BaseUrl);
         if (string.IsNullOrWhiteSpace(accountUrl))
         {
-            throw new SqlFlowException("An Azure Table source requires 'connectionString' or 'accountUrl'+'sasToken' in source.options.");
+            throw new SqlFlowException(
+                "An Azure Table source requires 'accountUrl' (or a base url) so the ambient identity can authenticate, "
+                + "or a 'connectionString' / 'accountUrl'+'sasToken' secret in source.options.");
         }
 
         if (options.TryGetValue("sasToken", out var sasRef) && !string.IsNullOrWhiteSpace(sasRef))
@@ -131,7 +146,9 @@ public sealed class AzureTableTransport : IAcquireTransport
             return new TableClient(endpoint, new AzureSasCredential(sas));
         }
 
-        throw new SqlFlowException("An Azure Table source needs 'sasToken' (with 'accountUrl') or a 'connectionString' in source.options.");
+        // No explicit secret: authenticate with the ambient identity (managed identity on Azure, az login on a dev
+        // box, service principal in CI) through the shared credential chain, the same as the raw landing store.
+        return new TableClient(new Uri(accountUrl), tableName, _credentials.Create());
     }
 
     private static object? Normalize(object? value) => value switch
