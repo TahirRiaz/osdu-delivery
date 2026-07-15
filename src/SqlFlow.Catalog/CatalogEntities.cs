@@ -792,6 +792,11 @@ public class CatalogNode
     /// <summary>The SQLFlow build the node is running, for spotting version skew across the fleet; null if unknown.</summary>
     public string? Version { get; set; }
 
+    /// <summary>The pool this node serves, so the fleet view can count how many workers are online per pool (and show
+    /// a pool that is still spinning one up). The empty string is the default (untargeted) pool; null is a node that
+    /// registered before pools were recorded and is treated as the default pool.</summary>
+    public string? Pool { get; set; }
+
     /// <summary>When set, an operator has asked this node to restart. The worker observes it on its heartbeat cadence,
     /// stops claiming, drains its in-flight work, and exits, after which the orchestrator (Container Apps / K8s)
     /// recreates the replica. A worker honors a request only if it is newer than its own process start, so a stale

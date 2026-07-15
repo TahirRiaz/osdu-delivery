@@ -15,7 +15,8 @@ public static class NodeStore
     /// freshly inserted node has no pending request, so its first heartbeat always returns null. Idempotent and safe
     /// to call on every poll.</summary>
     public static async Task<DateTime?> HeartbeatAsync(
-        CatalogDbContext catalog, string name, string? version, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, string name, string? version, DateTime nowUtc, CancellationToken ct = default,
+        string? pool = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -25,7 +26,8 @@ public static class NodeStore
             .Where(n => n.Name == name)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(n => n.LastSeenUtc, nowUtc)
-                .SetProperty(n => n.Version, version), ct)
+                .SetProperty(n => n.Version, version)
+                .SetProperty(n => n.Pool, pool), ct)
             .ConfigureAwait(false);
         if (updated > 0)
         {
@@ -37,7 +39,7 @@ public static class NodeStore
                 .ConfigureAwait(false);
         }
 
-        catalog.Nodes.Add(new CatalogNode { Name = name, FirstSeenUtc = nowUtc, LastSeenUtc = nowUtc, Version = version });
+        catalog.Nodes.Add(new CatalogNode { Name = name, FirstSeenUtc = nowUtc, LastSeenUtc = nowUtc, Version = version, Pool = pool });
         try
         {
             await catalog.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -51,6 +53,22 @@ public static class NodeStore
         }
 
         return null;
+    }
+
+    /// <summary>Counts the nodes of a pool that are currently online (heartbeated at or after
+    /// <paramref name="onlineSince"/>), so the fleet view can show how many workers a pool has up against its replica
+    /// target. The default pool (empty key) matches nodes whose pool is the empty string or null (the latter a node
+    /// that registered before pools were recorded); a named pool matches that name exactly.</summary>
+    public static Task<int> CountOnlineInPoolAsync(
+        CatalogDbContext catalog, string poolKey, DateTime onlineSince, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var isDefault = poolKey.Length == 0;
+        return catalog.Nodes.AsNoTracking()
+            .CountAsync(
+                n => n.LastSeenUtc >= onlineSince
+                    && (isDefault ? (n.Pool == null || n.Pool == "") : n.Pool == poolKey),
+                ct);
     }
 
     /// <summary>Removes a node from the fleet registry by name. The registry only ever records liveness, so a node's

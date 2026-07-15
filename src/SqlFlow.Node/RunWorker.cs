@@ -55,6 +55,10 @@ public sealed partial class RunWorker
     private readonly string? _version = typeof(RunWorker).Assembly.GetName().Version?.ToString();
     private readonly GitMaterializer _materializer = new();
 
+    // The pool this node serves, stamped on its heartbeat so the fleet view can count workers online per pool. Empty
+    // string for an untargeted node (the default pool); the pool name for a pooled node. Set once in RunAsync.
+    private string _pool = string.Empty;
+
     // The moment this incarnation started draining, stamped once in RunAsync. An operator restart request is honored
     // only when it is newer than this, so a stale request left on the node row by a previous incarnation never
     // bounces this one and a same-name restart can never loop.
@@ -120,6 +124,9 @@ public sealed partial class RunWorker
 
         _startedUtc = _clock.GetUtcNow().UtcDateTime;
         _onRestartRequested = onRestartRequested;
+        // A node serves at most one pool in the one-app-per-pool topology; an empty pools list is the default
+        // (untargeted) pool. Stamped on every heartbeat so the fleet view attributes the node to its pool.
+        _pool = pools.Count > 0 ? pools[0] : string.Empty;
 
         await RecoverOrphansAsync(stoppingToken).ConfigureAwait(false);
 
@@ -212,7 +219,7 @@ public sealed partial class RunWorker
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            return await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            return await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, ct, _pool).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

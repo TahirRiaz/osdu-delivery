@@ -321,8 +321,10 @@ public sealed class CatalogDbContext : DbContext
             entity.HasKey(n => n.Name);
             entity.Property(n => n.Name).HasMaxLength(256);
             entity.Property(n => n.Version).HasMaxLength(64);
-            // The fleet view lists nodes most-recently-seen first.
+            entity.Property(n => n.Pool).HasMaxLength(128);
+            // The fleet view lists nodes most-recently-seen first, and counts online nodes per pool.
             entity.HasIndex(n => n.LastSeenUtc);
+            entity.HasIndex(n => n.Pool);
         });
 
         modelBuilder.Entity<CatalogWorkerPoolDesired>(entity =>

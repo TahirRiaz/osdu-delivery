@@ -434,6 +434,8 @@ export interface WorkerPool {
   manualActive: boolean;
   queuedRuns: number;
   replicaTarget: number;
+  /** How many of this pool's workers are online right now; when below replicaTarget, the pool is spinning one up. */
+  onlineNodes: number;
   updatedUtc: string | null;
   updatedBy: string | null;
 }

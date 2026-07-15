@@ -143,6 +143,25 @@ public sealed class BootstrapProvisioningService : BackgroundService
 
         await ProvisionAdminAsync(catalog, nowUtc, ct).ConfigureAwait(false);
         await ProvisionDemoRepoAsync(catalog, nowUtc, ct).ConfigureAwait(false);
+        await EnsureDefaultPoolFloorAsync(catalog, nowUtc, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Seeds the default pool with an always-on floor of one worker, so a fresh SQLFlow always has a node
+    /// running rather than an empty, scale-to-zero fleet an operator has to notice and turn on. Applied only when the
+    /// default pool has no desired state yet, so it never overrides an operator who later set the floor (including to
+    /// zero for pure scale-to-zero); it is the bootstrap default, not an enforced minimum.</summary>
+    private async Task EnsureDefaultPoolFloorAsync(CatalogDbContext catalog, DateTime nowUtc, CancellationToken ct)
+    {
+        var existing = await WorkerPoolStore.GetDesiredAsync(catalog, string.Empty, ct).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return;
+        }
+
+        await WorkerPoolStore.SaveScaleAsync(
+            catalog, string.Empty, minReplicas: 1, manualReplicas: 0, manualUntilUtc: null,
+            updatedBy: "bootstrap", nowUtc: nowUtc, ct).ConfigureAwait(false);
+        _logger.LogInformation("Seeded the default worker pool with an always-on floor of 1 (bootstrap default).");
     }
 
     private async Task ProvisionAdminAsync(CatalogDbContext catalog, DateTime nowUtc, CancellationToken ct)

@@ -20,7 +20,7 @@ public sealed record NodeDto(
 /// whether the manual override applies at read time (its window is open).</summary>
 public sealed record WorkerPoolDto(
     string Pool, int MinReplicas, int ManualReplicas, DateTime? ManualUntilUtc, bool ManualActive,
-    int QueuedRuns, int ReplicaTarget, DateTime? UpdatedUtc, string? UpdatedBy);
+    int QueuedRuns, int ReplicaTarget, int OnlineNodes, DateTime? UpdatedUtc, string? UpdatedBy);
 
 /// <summary>A request to set a pool's desired compute state. Every field is optional so a caller can adjust one facet
 /// without disturbing the other: send <see cref="MinReplicas"/> to set/clear the always-on floor; send
@@ -88,6 +88,7 @@ public static class NodeEndpoints
         CatalogDbContext db, TimeProvider clock, CancellationToken ct)
     {
         var now = clock.GetUtcNow().UtcDateTime;
+        var onlineSince = now - OnlineWindow;
 
         // The pools worth showing: the default pool (always), every pool with a desired row, and every pool that has
         // in-flight (queued or running) work right now, so a pool the operator routes to appears even before it is
@@ -116,6 +117,7 @@ public static class NodeEndpoints
         {
             var row = byPool.GetValueOrDefault(key);
             var queued = await WorkerPoolStore.CountQueuedAsync(db, key, ct).ConfigureAwait(false);
+            var online = await NodeStore.CountOnlineInPoolAsync(db, key, onlineSince, ct).ConfigureAwait(false);
             var manualActive = row?.ManualUntilUtc is { } until && until > now;
             result.Add(new WorkerPoolDto(
                 key,
@@ -125,6 +127,7 @@ public static class NodeEndpoints
                 manualActive,
                 queued,
                 WorkerPoolStore.ResolveTarget(queued, row, now),
+                online,
                 row is null ? null : row.UpdatedUtc,
                 row?.UpdatedBy));
         }
@@ -175,11 +178,12 @@ public static class NodeEndpoints
             .ConfigureAwait(false);
 
         var queued = await WorkerPoolStore.CountQueuedAsync(db, key, ct).ConfigureAwait(false);
+        var online = await NodeStore.CountOnlineInPoolAsync(db, key, now - OnlineWindow, ct).ConfigureAwait(false);
         var saved = await WorkerPoolStore.GetDesiredAsync(db, key, ct).ConfigureAwait(false);
         var manualActive = saved?.ManualUntilUtc is { } u && u > now;
         return TypedResults.Ok(new WorkerPoolDto(
             key, saved?.MinReplicas ?? min, saved?.ManualReplicas ?? manualReplicas, saved?.ManualUntilUtc,
-            manualActive, queued, WorkerPoolStore.ResolveTarget(queued, saved, now),
+            manualActive, queued, WorkerPoolStore.ResolveTarget(queued, saved, now), online,
             saved is null ? now : saved.UpdatedUtc, saved?.UpdatedBy));
     }
 

@@ -6,6 +6,7 @@ import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
@@ -15,7 +16,6 @@ import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
-import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import BoltIcon from "@mui/icons-material/Bolt";
@@ -24,9 +24,7 @@ import { nodeApi } from "../../api/endpoints";
 import type { WorkerPool, WorkerPoolScaleRequest } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { RelativeTime } from "../../components/RelativeTime";
-
-const DEFAULT_WINDOW_MINUTES = 60;
-const SPAWN_WINDOW_MINUTES = 30;
+import { SpawnWorkersDialog } from "./SpawnWorkersDialog";
 
 const poolLabel = (pool: string) => (pool.length === 0 ? "default (untargeted)" : pool);
 
@@ -64,6 +62,7 @@ export function WorkerPoolsPanel() {
                   <TableCell>Pool</TableCell>
                   <TableCell align="right">Queued</TableCell>
                   <TableCell align="right">Target</TableCell>
+                  <TableCell align="right">Workers</TableCell>
                   <TableCell>State</TableCell>
                   {canOperate && <TableCell>Controls</TableCell>}
                 </TableRow>
@@ -84,8 +83,7 @@ export function WorkerPoolsPanel() {
 function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boolean }) {
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
-  const [scaleTo, setScaleTo] = useState("");
-  const [minutes, setMinutes] = useState(String(DEFAULT_WINDOW_MINUTES));
+  const [spawnOpen, setSpawnOpen] = useState(false);
 
   const scale = useMutation({
     mutationFn: (request: WorkerPoolScaleRequest) => nodeApi.scalePool(request),
@@ -98,21 +96,6 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
       enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
     },
   });
-
-  const windowMinutes = () => {
-    const parsed = Number.parseInt(minutes, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WINDOW_MINUTES;
-  };
-
-  const applyScale = () => {
-    const target = Number.parseInt(scaleTo, 10);
-    if (!Number.isFinite(target) || target < 0) {
-      enqueueSnackbar("Enter a replica count of 0 or more.", { variant: "warning" });
-      return;
-    }
-    scale.mutate({ pool: pool.pool, manualReplicas: target, manualForMinutes: windowMinutes() });
-    setScaleTo("");
-  };
 
   return (
     <TableRow data-testid={`worker-pool-row-${pool.pool || "default"}`}>
@@ -127,6 +110,21 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
       <TableCell align="right">{pool.queuedRuns}</TableCell>
       <TableCell align="right">
         <Typography variant="body2" sx={{ fontWeight: 600 }}>{pool.replicaTarget}</Typography>
+      </TableCell>
+      <TableCell align="right">
+        <Typography
+          variant="body2"
+          sx={{ fontWeight: 600 }}
+          color={pool.onlineNodes < pool.replicaTarget ? "warning.main" : "text.primary"}
+        >
+          {pool.onlineNodes} / {pool.replicaTarget}
+        </Typography>
+        {pool.onlineNodes < pool.replicaTarget && (
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", justifyContent: "flex-end" }}>
+            <CircularProgress size={9} color="warning" />
+            <Typography variant="caption" color="warning.main">starting…</Typography>
+          </Stack>
+        )}
       </TableCell>
       <TableCell>
         <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
@@ -145,8 +143,8 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
       </TableCell>
       {canOperate && (
         <TableCell>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap", gap: 1 }}>
-            <Tooltip title="Keep at least one worker warm in this pool at all times.">
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", flexWrap: "wrap", gap: 1 }}>
+            <Tooltip title="Keep at least one worker running in this pool at all times, so a job never waits for one to start.">
               <FormControlLabel
                 sx={{ mr: 0 }}
                 control={
@@ -163,43 +161,18 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
                 label={<Typography variant="caption">Always&nbsp;on</Typography>}
               />
             </Tooltip>
-            <TextField
-              size="small"
-              label="Scale to"
-              value={scaleTo}
-              onChange={(event) => setScaleTo(event.target.value.replace(/[^0-9]/g, ""))}
-              sx={{ width: 88 }}
-              inputProps={{ inputMode: "numeric", "data-testid": `worker-pool-scale-input-${pool.pool || "default"}` }}
-            />
-            <TextField
-              size="small"
-              label="for min"
-              value={minutes}
-              onChange={(event) => setMinutes(event.target.value.replace(/[^0-9]/g, ""))}
-              sx={{ width: 80 }}
-              inputProps={{ inputMode: "numeric" }}
-            />
-            <Button
-              size="small"
-              variant="outlined"
-              disabled={scale.isPending || scaleTo.length === 0}
-              onClick={applyScale}
-              data-testid={`worker-pool-scale-apply-${pool.pool || "default"}`}
-            >
-              Apply
-            </Button>
-            <Button
-              size="small"
-              variant="contained"
-              startIcon={<BoltIcon />}
-              disabled={scale.isPending}
-              onClick={() =>
-                scale.mutate({ pool: pool.pool, manualReplicas: Math.max(1, pool.replicaTarget + 1), manualForMinutes: SPAWN_WINDOW_MINUTES })
-              }
-              data-testid={`worker-pool-spawn-${pool.pool || "default"}`}
-            >
-              Spawn
-            </Button>
+            <Tooltip title="Start workers now for a set time, even with nothing queued.">
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<BoltIcon />}
+                disabled={scale.isPending}
+                onClick={() => setSpawnOpen(true)}
+                data-testid={`worker-pool-spawn-${pool.pool || "default"}`}
+              >
+                Spawn
+              </Button>
+            </Tooltip>
             {pool.manualActive && (
               <Button
                 size="small"
@@ -208,10 +181,11 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
                 onClick={() => scale.mutate({ pool: pool.pool, manualReplicas: 0 })}
                 data-testid={`worker-pool-stop-${pool.pool || "default"}`}
               >
-                Stop override
+                Stop ({pool.manualReplicas})
               </Button>
             )}
           </Stack>
+          <SpawnWorkersDialog pool={pool} open={spawnOpen} onClose={() => setSpawnOpen(false)} />
         </TableCell>
       )}
     </TableRow>

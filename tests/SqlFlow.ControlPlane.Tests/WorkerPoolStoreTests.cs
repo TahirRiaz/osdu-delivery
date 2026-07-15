@@ -157,6 +157,53 @@ public sealed class WorkerPoolStoreTests
         }
     }
 
+    [SkippableFact]
+    public async Task CountOnlineInPool_CountsOnlyFreshNodesOfThatPool()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var pool = "cnpool-" + suffix;
+        var otherPool = "cnother-" + suffix;
+        var live = "cn-live-" + suffix;
+        var stale = "cn-stale-" + suffix;
+        var elsewhere = "cn-else-" + suffix;
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var onlineSince = now.AddSeconds(-60);
+
+            // A fresh node and a stale node in the pool under test, plus a fresh node in a different pool. Isolated by
+            // a unique pool name so the count is exact regardless of what else is in the shared catalog.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, live, "1.0.0", now, pool: pool);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, stale, "1.0.0", now.AddMinutes(-5), pool: pool);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, elsewhere, "1.0.0", now, pool: otherPool);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                // Only the fresh node of this pool counts: not the stale one, not the fresh node of another pool.
+                Assert.Equal(1, await NodeStore.CountOnlineInPoolAsync(db, pool, onlineSince));
+                Assert.Equal(1, await NodeStore.CountOnlineInPoolAsync(db, otherPool, onlineSince));
+            }
+        }
+        finally
+        {
+            await DeleteNodes(cs, live, stale, elsewhere);
+        }
+    }
+
     private static async Task DeletePools(string cs, params string[] pools)
     {
         await using var db = CatalogDatabase.Create(cs);
