@@ -139,7 +139,10 @@ async function request<T>(options: RequestOptions): Promise<T> {
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  // Action endpoints (restart/delete a node, and others) return 200 with an empty body. Read the payload as text and
+  // only parse it when non-empty; calling response.json() on an empty body throws "Unexpected end of JSON input".
+  const text = await response.text();
+  return (text.length > 0 ? (JSON.parse(text) as T) : (undefined as T));
 }
 
 async function toApiError(response: Response): Promise<ApiError> {
