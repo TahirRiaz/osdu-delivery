@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
@@ -40,6 +42,7 @@ public sealed class AzureTableTransport : IAcquireTransport
             : null;
 
         var records = new List<Dictionary<string, object?>>();
+        var startTimestamp = Stopwatch.GetTimestamp();
         await foreach (var entity in client.QueryAsync<TableEntity>(filter: filter, select: select, cancellationToken: ct).ConfigureAwait(false))
         {
             var record = new Dictionary<string, object?>(entity.Count, StringComparer.Ordinal);
@@ -51,13 +54,58 @@ public sealed class AzureTableTransport : IAcquireTransport
             records.Add(record);
         }
 
+        var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
         fetch.Pages++;
         var bytes = JsonSerializer.SerializeToUtf8Bytes(records, Json);
-        await fetch.Landing.LandAsync(
+        var landed = await fetch.Landing.LandAsync(
             new LandedItem(bytes, "application/json", "entities", records.Count, Headers: null),
             fetch.Vars, ct).ConfigureAwait(false);
+        CaptureProbe(fetch, tableName, filter, select, bytes, records.Count, elapsed, landed?.Location);
 
         fetch.Log.Log(RunLogLevel.Info, "azuretable", $"queried {records.Count} entit(y/ies) from '{tableName}'.");
+    }
+
+    /// <summary>Records the entity query as a single debugger page: the OData filter/select as the "request", the
+    /// entity count as the "response", and a bounded preview of the landed JSON array. Only the Test invoke probes.</summary>
+    private static void CaptureProbe(
+        AcquireFetch fetch, string tableName, string? filter, string[]? select, byte[] bytes, int recordCount,
+        TimeSpan elapsed, string? landedTo)
+    {
+        if (fetch.Probe is null)
+        {
+            return;
+        }
+
+        var requestHeaders = new Dictionary<string, string>(StringComparer.Ordinal) { ["table"] = tableName };
+        if (filter is not null)
+        {
+            requestHeaders["filter"] = filter;
+        }
+
+        if (select is not null)
+        {
+            requestHeaders["select"] = string.Join(", ", select);
+        }
+
+        fetch.Probe.Page(new AcquirePageProbe
+        {
+            Iteration = fetch.Iteration,
+            Page = 0,
+            Method = "TABLE QUERY",
+            Url = tableName,
+            RequestHeaders = requestHeaders,
+            Status = 200,
+            ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["entities"] = recordCount.ToString(CultureInfo.InvariantCulture),
+            },
+            ContentType = "application/json",
+            Bytes = bytes.Length,
+            RecordCount = recordCount,
+            DurationMs = Math.Round(elapsed.TotalMilliseconds, 1),
+            BodyPreview = TransportProbe.Preview(bytes),
+            LandedTo = landedTo,
+        });
     }
 
     private static async Task<TableClient> BuildClientAsync(AcquireFetch fetch, string tableName, CancellationToken ct)

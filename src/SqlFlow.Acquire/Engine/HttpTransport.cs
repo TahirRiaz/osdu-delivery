@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using SqlFlow.Acquire.Runtime;
 using SqlFlow.Core;
@@ -222,17 +221,10 @@ public sealed class HttpTransport : IAcquireTransport
             Bytes = result.Body.Length,
             RecordCount = recordCount,
             DurationMs = Math.Round(elapsed.TotalMilliseconds, 1),
-            BodyPreview = Preview(result.Body),
+            BodyPreview = TransportProbe.Preview(result.Body),
             LandedTo = landedTo,
         });
         probeRequest.Dispose();
-    }
-
-    private static string Preview(byte[] body)
-    {
-        const int max = 8192;
-        var text = Encoding.UTF8.GetString(body, 0, Math.Min(body.Length, max));
-        return body.Length > max ? text + "\n… (truncated)" : text;
     }
 
     private static Dictionary<string, string> HeaderMap(HttpFetchResult result)

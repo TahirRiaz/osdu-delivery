@@ -38,3 +38,18 @@ public sealed class CollectingProbe : IAcquireProbe
 
     public void Page(AcquirePageProbe probe) => _pages.Add(probe);
 }
+
+/// <summary>Shared probe helpers, so every transport renders the debugger body preview the same way.</summary>
+internal static class TransportProbe
+{
+    private const int MaxPreviewBytes = 8192;
+
+    /// <summary>A bounded UTF-8 view of a payload for the debugger's response-body panel. Binary payloads render as
+    /// their best-effort UTF-8 decoding; the size and content-type in the probe tell the reader when that is not text.</summary>
+    internal static string Preview(ReadOnlySpan<byte> body)
+    {
+        var take = Math.Min(body.Length, MaxPreviewBytes);
+        var text = System.Text.Encoding.UTF8.GetString(body[..take]);
+        return body.Length > MaxPreviewBytes ? text + "\n… (truncated)" : text;
+    }
+}

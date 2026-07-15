@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.IO.Enumeration;
 using System.Text;
 using Renci.SshNet;
@@ -69,15 +71,21 @@ public sealed class SftpTransport : IAcquireTransport
                 ordered = files.OrderByDescending(f => f.LastWriteTimeUtc).Take(take);
             }
 
+            var page = 0;
             foreach (var file in ordered)
             {
                 ct.ThrowIfCancellationRequested();
                 using var buffer = new MemoryStream();
+                var startTimestamp = Stopwatch.GetTimestamp();
                 client.DownloadFile(file.FullName, buffer);
+                var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
                 fetch.Pages++;
-                await fetch.Landing.LandAsync(
-                    new LandedItem(buffer.ToArray(), ContentTypeFor(file.Name), file.Name, RecordCount: -1, Headers: null),
+                var bytes = buffer.ToArray();
+                var contentType = ContentTypeFor(file.Name);
+                var landed = await fetch.Landing.LandAsync(
+                    new LandedItem(bytes, contentType, file.Name, RecordCount: -1, Headers: null),
                     fetch.Vars.Clone().WithString("filename", file.Name), ct).ConfigureAwait(false);
+                CaptureProbe(fetch, page++, $"sftp://{uri.Host}:{port}{file.FullName}", remotePath, pattern, file, contentType, bytes, elapsed, landed?.Location);
             }
 
             fetch.Log.Log(RunLogLevel.Info, "sftp", $"listed {files.Count} matching file(s) under '{remotePath}'.");
@@ -86,6 +94,44 @@ public sealed class SftpTransport : IAcquireTransport
         {
             client.Disconnect();
         }
+    }
+
+    /// <summary>Records one downloaded file as a debugger page: the listing selection as the "request", the file's
+    /// server metadata as the "response", and a bounded preview of the bytes. Only the Test invoke passes a probe.</summary>
+    private static void CaptureProbe(
+        AcquireFetch fetch, int page, string url, string remotePath, string pattern, ISftpFile file,
+        string? contentType, byte[] bytes, TimeSpan elapsed, string? landedTo)
+    {
+        if (fetch.Probe is null)
+        {
+            return;
+        }
+
+        fetch.Probe.Page(new AcquirePageProbe
+        {
+            Iteration = fetch.Iteration,
+            Page = page,
+            Method = "SFTP GET",
+            Url = url,
+            RequestHeaders = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["remotePath"] = remotePath,
+                ["pattern"] = pattern,
+            },
+            Status = 200,
+            ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["file"] = file.Name,
+                ["size"] = file.Length.ToString(CultureInfo.InvariantCulture),
+                ["last-modified"] = new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero).ToString("o"),
+            },
+            ContentType = contentType,
+            Bytes = bytes.Length,
+            RecordCount = -1,
+            DurationMs = Math.Round(elapsed.TotalMilliseconds, 1),
+            BodyPreview = TransportProbe.Preview(bytes),
+            LandedTo = landedTo,
+        });
     }
 
     private static async Task<SftpClient> BuildClientAsync(AcquireFetch fetch, string host, int port, string username, CancellationToken ct)

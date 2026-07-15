@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.IO.Enumeration;
 using Amazon;
 using Amazon.S3;
@@ -80,20 +82,64 @@ public sealed class S3Transport : IAcquireTransport
             ? matched.OrderByDescending(o => o.LastModified).Take(take)
             : matched.OrderBy(o => o.Key, StringComparer.Ordinal);
 
+        var page = 0;
         foreach (var obj in ordered)
         {
             ct.ThrowIfCancellationRequested();
+            var startTimestamp = Stopwatch.GetTimestamp();
             using var response = await client.GetObjectAsync(bucket, obj.Key, ct).ConfigureAwait(false);
             using var buffer = new MemoryStream();
             await response.ResponseStream.CopyToAsync(buffer, ct).ConfigureAwait(false);
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
             fetch.Pages++;
             var name = LastSegment(obj.Key);
-            await fetch.Landing.LandAsync(
-                new LandedItem(buffer.ToArray(), response.Headers.ContentType, name, RecordCount: -1, Headers: null),
+            var bytes = buffer.ToArray();
+            var landed = await fetch.Landing.LandAsync(
+                new LandedItem(bytes, response.Headers.ContentType, name, RecordCount: -1, Headers: null),
                 fetch.Vars.Clone().WithString("filename", name).WithString("key", obj.Key), ct).ConfigureAwait(false);
+            CaptureProbe(fetch, page++, bucket, prefix, pattern, obj, response.Headers.ContentType, bytes, elapsed, landed?.Location);
         }
 
         fetch.Log.Log(RunLogLevel.Info, "s3", $"listed {matched.Count} matching object(s) under 's3://{bucket}/{prefix}'.");
+    }
+
+    /// <summary>Records one downloaded object as a debugger page: the listing selection as the "request", the object's
+    /// S3 metadata as the "response", and a bounded preview of the bytes. Only the Test invoke passes a probe.</summary>
+    private static void CaptureProbe(
+        AcquireFetch fetch, int page, string bucket, string prefix, string pattern, S3Object obj,
+        string? contentType, byte[] bytes, TimeSpan elapsed, string? landedTo)
+    {
+        if (fetch.Probe is null)
+        {
+            return;
+        }
+
+        fetch.Probe.Page(new AcquirePageProbe
+        {
+            Iteration = fetch.Iteration,
+            Page = page,
+            Method = "S3 GET",
+            Url = $"s3://{bucket}/{obj.Key}",
+            RequestHeaders = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["prefix"] = prefix,
+                ["pattern"] = pattern,
+            },
+            Status = 200,
+            ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["key"] = obj.Key,
+                ["size"] = obj.Size.ToString(CultureInfo.InvariantCulture),
+                ["last-modified"] = obj.LastModified.ToUniversalTime().ToString("o"),
+                ["etag"] = obj.ETag ?? string.Empty,
+            },
+            ContentType = contentType,
+            Bytes = bytes.Length,
+            RecordCount = -1,
+            DurationMs = Math.Round(elapsed.TotalMilliseconds, 1),
+            BodyPreview = TransportProbe.Preview(bytes),
+            LandedTo = landedTo,
+        });
     }
 
     private static string BucketFrom(AcquireSource source, IReadOnlyDictionary<string, string?> options)
