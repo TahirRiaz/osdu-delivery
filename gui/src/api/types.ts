@@ -545,6 +545,40 @@ export interface Wave {
   pipelines: WavePipeline[];
 }
 
+/** One selectable project for the lineage graph's scope picker: a repo-root folder, the repo it lives in (so the
+ * picker can show "repo / project" and disambiguate a folder name shared across repos), and its active-flow count. */
+export interface LineageProject {
+  repoId: string;
+  repoName: string;
+  project: string;
+  flowCount: number;
+}
+
+/** One pipeline node in a project's cross-repo lineage closure. `isSeed` marks a flow in the selected project
+ * itself (its base objects seed the graph); a non-seed flow was reached downstream, possibly in another repo, which
+ * is why `repoId`/`repoName` travel with every node. `depth` is how many downstream hops from the seed it sits at. */
+export interface ProjectGraphPipeline {
+  id: string;
+  name: string;
+  kind: string;
+  wave: number;
+  repoId: string;
+  repoName: string;
+  relativePath: string;
+  isSeed: boolean;
+  depth: number;
+}
+
+/** A project's lineage as one cross-repo subgraph: the pipeline nodes in the downstream closure, the edges among
+ * them and the objects they move, the object keys at the depth-capped frontier that still have un-included consumers
+ * (so the client can offer to expand them), and whether a node cap truncated the walk. */
+export interface ProjectGraph {
+  pipelines: ProjectGraphPipeline[];
+  edges: LineageEdge[];
+  frontier: string[];
+  truncated: boolean;
+}
+
 /** One repo whose lineage references an object: how many of its edges touch the object and whether a flow there
  * writes/creates it. Ranked writing-repo-first so a search jump to the lineage graph opens on the repo that shows
  * how the object is populated. */

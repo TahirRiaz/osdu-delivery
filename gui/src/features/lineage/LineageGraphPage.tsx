@@ -41,8 +41,8 @@ import DownloadIcon from "@mui/icons-material/Download";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import { isApiError } from "../../api/client";
-import { lineageApi, repoApi } from "../../api/endpoints";
-import type { LineageEdge, RunScope } from "../../api/types";
+import { lineageApi } from "../../api/endpoints";
+import type { LineageEdge, LineageProject, RunScope, WavePipeline } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
@@ -233,6 +233,10 @@ interface BuiltGraph {
   flowColors: Map<string, string>;
   incoming: Map<string, string[]>;
   outgoing: Map<string, string[]>;
+  /** Object keys at the depth-capped frontier with un-included downstream consumers; a client can expand these. */
+  frontier: Set<string>;
+  /** Pipeline id -> its repo id, so repo-aware actions (only a seed-repo flow can be run from here) can be gated. */
+  repoOf: Map<string, string>;
   /** How to open the selected node elsewhere in the app. */
   openTarget: (id: string) => { label: string; to: string };
 }
@@ -488,10 +492,14 @@ export default function LineageGraphPage() {
   const theme = useTheme();
   const [searchParams, setSearchParams] = useSearchParams();
   const repoId = searchParams.get("repoId") ?? "";
+  const project = searchParams.get("project") ?? "";
   const graphView: GraphView = searchParams.get("view") === "objects" ? "objects" : "flows";
-  // A deep-link (from search) can target a node to focus: an object key or a pipeline id. When it arrives without
-  // a repo (an object hit carries no repo, since an object is global), the repo is resolved below and filled in.
+  // A deep-link (from search) can target a node to focus: an object key or a pipeline id. It also seeds the graph:
+  // rather than a separate whole-repo drawing path, the focused node is passed as an expand seed so the same
+  // project-graph closure draws that node's local upstream/downstream context.
   const focusParam = searchParams.get("focus") ?? "";
+  // Frontier nodes the user expanded, held in the URL so the deeper graph is deep-linkable and survives a reload.
+  const expand = useMemo(() => searchParams.getAll("expand"), [searchParams]);
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number; zoom?: number } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
@@ -507,46 +515,37 @@ export default function LineageGraphPage() {
     enabled: scriptKey !== null,
   });
 
-  const repos = useQuery({
-    queryKey: ["repos", "for-lineage-graph"],
-    queryFn: () => repoApi.list({ page: 1, pageSize: 200 }),
+  // Every (repo, project) pair, for the searchable scope picker. The graph is seeded from a project, not a repo.
+  const projectsQuery = useQuery({
+    queryKey: ["lineage-projects"],
+    queryFn: () => lineageApi.projects(),
   });
 
-  // Resolve which repo's graph to draw for a focus target that arrived without one: an object hit from search
-  // carries only the global object key, so ask which repos reference it (writing repo ranked first) and adopt the
-  // best. Only runs while a focus is pending and no repo is chosen yet; a pipeline focus already carries its repo.
-  const focusRepos = useQuery({
-    queryKey: ["lineage-object-repos", focusParam],
-    queryFn: () => lineageApi.objectRepos(focusParam),
-    enabled: focusParam !== "" && repoId === "",
+  // A deep-link onto a node (an object key or pipeline id) seeds the graph on that node when no project is chosen,
+  // so a search jump into lineage draws the node's own closure via the same endpoint. A pipeline deep-link may carry
+  // its repoId too; that is fine (it only scopes an unused project lookup), the focus node still drives the graph.
+  const focusSeed = project === "" && focusParam !== "" ? focusParam : "";
+  const activeExpand = useMemo(
+    () => (focusSeed === "" ? expand : [focusSeed, ...expand]),
+    [focusSeed, expand],
+  );
+  const graphEnabled = (repoId !== "" && project !== "") || focusSeed !== "";
+
+  // The one graph query: a project's cross-repo downstream closure (or a focused node's local context). Both the
+  // Flows and Objects views build from this single payload; the walk crosses repos freely via global object keys.
+  const projectGraph = useQuery({
+    queryKey: ["lineage-project-graph", repoId, project, activeExpand.join("")],
+    enabled: graphEnabled,
+    queryFn: () => lineageApi.projectGraph({
+      repoId: repoId || undefined,
+      project: project || undefined,
+      expand: activeExpand,
+    }),
   });
 
-  const waves = useQuery({
-    queryKey: ["lineage-waves", repoId],
-    queryFn: () => lineageApi.waves(repoId),
-    enabled: repoId !== "",
-  });
-
-  const objectEdges = useQuery({
-    // Both views build from the object edges: the objects view as object->object data movement, the flows view
-    // as pipelines and the objects they read/write (so a physical table is a node between its producer and
-    // consumers). The flow->flow execution order is still shown via the waves panel.
-    queryKey: ["lineage-object-edges", repoId],
-    enabled: repoId !== "",
-    queryFn: async () => {
-      const all: LineageEdge[] = [];
-      let page = 1;
-      for (;;) {
-        const result = await lineageApi.edges(repoId, { page, pageSize: 200 });
-        all.push(...result.items);
-        if (all.length >= result.total || result.items.length === 0) {
-          break;
-        }
-        page += 1;
-      }
-      return all;
-    },
-  });
+  const pipelines = projectGraph.data?.pipelines;
+  const objectEdgesData = projectGraph.data?.edges;
+  const frontierSet = useMemo(() => new Set(projectGraph.data?.frontier ?? []), [projectGraph.data]);
 
   const setParam = useCallback((key: string, value: string) => {
     setSearchParams((previous) => {
@@ -560,28 +559,58 @@ export default function LineageGraphPage() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  // Once the focus target's repos resolve, adopt the best one (writing repo first) into ?repoId= so the graph
-  // draws it; the focus param rides along and is applied once that repo's graph contains the node.
-  useEffect(() => {
-    if (focusParam === "" || repoId !== "") {
-      return;
-    }
-    const best = focusRepos.data?.[0];
-    if (best) {
-      setParam("repoId", best.repoId);
-    }
-  }, [focusParam, repoId, focusRepos.data, setParam]);
+  // Pick a (repo, project) scope: set both params together and drop any prior focus/expand so the new project draws
+  // from its own seed rather than inheriting the previous graph's node expansions.
+  const selectProject = useCallback((option: LineageProject | null) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.delete("focus");
+      next.delete("expand");
+      if (option === null) {
+        next.delete("repoId");
+        next.delete("project");
+      } else {
+        next.set("repoId", option.repoId);
+        next.set("project", option.project);
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
-  const repoItems = repos.data?.items ?? [];
-  const selectValue = repoItems.some((repo) => repo.id === repoId) ? repoId : "";
+  // Expand a frontier object: append it to ?expand= so the walk continues past it, deep-linkably.
+  const expandNode = useCallback((id: string) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (!next.getAll("expand").includes(id)) {
+        next.append("expand", id);
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
+  const projectItems = projectsQuery.data ?? [];
+  const selectedProject = useMemo(
+    () => projectItems.find((item) => item.repoId === repoId && item.project === project) ?? null,
+    [projectItems, repoId, project],
+  );
+
+  // The waves for the flows view's batch filter and details panel: the closure's pipelines grouped by their own
+  // execution wave. Waves are a per-repo plan, so across repos a shared "Wave N" only groups flows that each sit at
+  // that wave in their own repo; it stays a useful batch label without pretending the number is estate-global.
   const sortedWaves = useMemo(() => {
-    if (!waves.data) {
-      return [];
+    if (!pipelines) {
+      return [] as { wave: number; pipelines: WavePipeline[] }[];
+    }
+    const byWave = new Map<number, WavePipeline[]>();
+    for (const pipeline of pipelines) {
+      const list = byWave.get(pipeline.wave) ?? byWave.set(pipeline.wave, []).get(pipeline.wave)!;
+      list.push({ id: pipeline.id, name: pipeline.name, kind: pipeline.kind });
     }
     const rank = (wave: number) => (wave === -1 ? Number.MAX_SAFE_INTEGER : wave);
-    return [...waves.data].sort((a, b) => rank(a.wave) - rank(b.wave));
-  }, [waves.data]);
+    return [...byWave.entries()]
+      .map(([wave, group]) => ({ wave, pipelines: group }))
+      .sort((a, b) => rank(a.wave) - rank(b.wave));
+  }, [pipelines]);
 
   // The wave (batch) top filter, read from ?wave= and validated against the repo's actual waves so a stale value
   // (e.g. after switching repos) simply falls back to "all waves" instead of drawing an empty graph.
@@ -600,92 +629,104 @@ export default function LineageGraphPage() {
   // procedure that writes several tables therefore gets one node and one edge per table. A view is wired to its
   // base table (not the file the flow read), exactly as in the objects view.
   const flowsGraph = useMemo<BuiltGraph | null>(() => {
-    if (!waves.data || !objectEdges.data) {
+    if (!pipelines || !objectEdgesData) {
       return null;
     }
 
     const names = new Map<string, string>();
     const flowColors = new Map<string, string>();
+    const repoOf = new Map<string, string>();
     const incoming = new Map<string, string[]>();
     const outgoing = new Map<string, string[]>();
     const objectNodeIds = new Set<string>();
-    const pipelineIdByName = new Map<string, string>();
     const nodes: FlowNode[] = [];
     const edges: FlowEdge[] = [];
     const seenEdges = new Set<string>();
 
-    // Stable per-pipeline accent color and a name->id map across EVERY wave first, so a pipeline keeps its color
-    // whether or not the wave filter is applied (the filter only changes which nodes are drawn, not their colors).
+    // Stable per-pipeline accent color and repo across the whole closure first, keyed by the pipeline id (unique
+    // across repos, unlike a flow name), so a pipeline keeps its color and repo whether or not the wave filter is
+    // applied (the filter only changes which nodes are drawn).
     let colorIndex = 0;
-    for (const wave of waves.data) {
-      for (const pipeline of wave.pipelines) {
-        if (!flowColors.has(pipeline.id)) {
-          flowColors.set(pipeline.id, seriesColor(colorIndex));
-          colorIndex += 1;
-        }
-        pipelineIdByName.set(pipeline.name, pipeline.id);
+    for (const pipeline of pipelines) {
+      if (!flowColors.has(pipeline.id)) {
+        flowColors.set(pipeline.id, seriesColor(colorIndex));
+        colorIndex += 1;
       }
+      repoOf.set(pipeline.id, pipeline.repoId);
     }
 
-    // Pipeline nodes, restricted to the selected wave when the batch filter is set. Only these pipelines pull in
-    // the objects they read/write below, so filtering to a wave scopes the whole graph to that batch.
-    for (const wave of waves.data) {
-      if (selectedWave !== null && wave.wave !== selectedWave) {
+    // Pipeline nodes, restricted to the selected wave when the batch filter is set. A flow from a repo other than
+    // the seed project's repo (a cross-repo downstream hop) gets a dashed outline and its repo in the caption, so
+    // where data crosses a repo boundary is legible without turning the graph into a patchwork.
+    const drawn = selectedWave === null
+      ? pipelines
+      : pipelines.filter((pipeline) => pipeline.wave === selectedWave);
+    for (const pipeline of drawn) {
+      if (names.has(pipeline.id)) {
         continue;
       }
-      for (const pipeline of wave.pipelines) {
-        if (names.has(pipeline.id)) {
-          continue;
-        }
-        const color = flowColors.get(pipeline.id)!;
-        names.set(pipeline.id, pipeline.name);
-        nodes.push({
-          id: pipeline.id,
-          position: { x: 0, y: 0 },
-          data: {
-            label: (
-              <Box sx={{ overflow: "hidden", textAlign: "left" }}>
-                <Typography variant="body2" fontWeight={600} noWrap component="div">{pipeline.name}</Typography>
-                <Typography variant="caption" color="text.secondary" noWrap component="div">
-                  {wave.wave >= 0 ? `${pipeline.kind}, wave ${wave.wave}` : pipeline.kind}
-                </Typography>
-              </Box>
-            ),
-          },
-          style: {
-            width: NODE_WIDTH,
-            height: NODE_HEIGHT,
-            padding: 8,
-            borderRadius: 8,
-            borderLeft: `5px solid ${color}`,
-          },
-        });
-      }
+      const color = flowColors.get(pipeline.id)!;
+      const crossRepo = repoId !== "" && pipeline.repoId !== repoId;
+      const base = pipeline.wave >= 0 ? `${pipeline.kind}, wave ${pipeline.wave}` : pipeline.kind;
+      names.set(pipeline.id, pipeline.name);
+      nodes.push({
+        id: pipeline.id,
+        position: { x: 0, y: 0 },
+        data: {
+          label: (
+            <Box sx={{ overflow: "hidden", textAlign: "left" }}>
+              <Typography variant="body2" fontWeight={600} noWrap component="div">{pipeline.name}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap component="div">
+                {crossRepo ? `${base} · ${pipeline.repoName}` : base}
+              </Typography>
+            </Box>
+          ),
+        },
+        style: crossRepo
+          ? {
+              width: NODE_WIDTH,
+              height: NODE_HEIGHT,
+              padding: 8,
+              borderRadius: 8,
+              border: "1px dashed",
+              borderColor: brandToken("--sf-series-9"),
+              borderLeft: `5px solid ${color}`,
+            }
+          : {
+              width: NODE_WIDTH,
+              height: NODE_HEIGHT,
+              padding: 8,
+              borderRadius: 8,
+              borderLeft: `5px solid ${color}`,
+            },
+      });
     }
 
     // Classify the object edges (as in the objects view): a flow's reads/writes are data movement; a
     // module-derived read connects a VIEW to its base table; a `Requires` (a procedure a flow executes) is a
-    // code dependency, not data, so it is excluded here (only the procedure's data reads/writes show).
+    // code dependency, not data, so it is excluded here (only the procedure's data reads/writes show). Edges are
+    // grouped by their pipeline id (present on every flow fact), so a name shared across repos never collides.
     const nameByKey = new Map<string, string>();
     const locationByKey = new Map<string, string>();
     const writtenKeys = new Set<string>();
     const writeOwner = new Map<string, string>();
     const moduleReads = new Map<string, Set<string>>();
-    const byFlow = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
-    for (const edge of objectEdges.data) {
+    const byPipeline = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
+    for (const edge of objectEdgesData) {
       nameByKey.set(edge.objectKey, edge.objectName);
       if (edge.objectDatabase !== null || edge.objectSchema !== null) {
         locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
       }
-      if (edge.flow) {
-        const group = byFlow.get(edge.flow) ?? byFlow.set(edge.flow, { reads: [], writes: [] }).get(edge.flow)!;
+      if (edge.pipelineId) {
+        const group = byPipeline.get(edge.pipelineId)
+          ?? byPipeline.set(edge.pipelineId, { reads: [], writes: [] }).get(edge.pipelineId)!;
         if (edge.relation === "Reads") {
           group.reads.push(edge);
         } else if (edge.relation === "Writes" || edge.relation === "Creates") {
           group.writes.push(edge);
           writtenKeys.add(edge.objectKey);
           if (!writeOwner.has(edge.objectKey)) {
-            writeOwner.set(edge.objectKey, edge.flow);
+            writeOwner.set(edge.objectKey, edge.pipelineId);
           }
         }
       } else if (edge.viaModule && edge.relation === "Reads") {
@@ -708,9 +749,11 @@ export default function LineageGraphPage() {
       }
       objectNodeIds.add(key);
       names.set(key, nameByKey.get(key) ?? key);
-      // The caption places the object: its kind plus where it lives (database.schema); a file has no location.
+      // The caption places the object: its kind plus where it lives (database.schema); a file has no location. A
+      // frontier object (downstream was cut by the depth cap) says so, and a heavier border invites expanding it.
       const location = locationByKey.get(key);
-      const caption = location ? `${objectKind(key)} · ${location}` : objectKind(key);
+      const isFrontier = frontierSet.has(key);
+      const base = location ? `${objectKind(key)} · ${location}` : objectKind(key);
       nodes.push({
         id: key,
         position: { x: 0, y: 0 },
@@ -718,7 +761,9 @@ export default function LineageGraphPage() {
           label: (
             <Box sx={{ overflow: "hidden", textAlign: "left" }}>
               <Typography variant="body2" fontWeight={600} noWrap component="div">{nameByKey.get(key) ?? key}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">{caption}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap component="div">
+                {isFrontier ? `${base} · more downstream` : base}
+              </Typography>
             </Box>
           ),
         },
@@ -727,8 +772,8 @@ export default function LineageGraphPage() {
           height: NODE_HEIGHT,
           padding: 8,
           borderRadius: 20,
-          border: "1px dashed",
-          borderColor: brandToken("--sf-series-7"),
+          border: isFrontier ? "2px solid" : "1px dashed",
+          borderColor: isFrontier ? brandToken("--sf-series-2") : brandToken("--sf-series-7"),
         },
       });
     };
@@ -754,37 +799,36 @@ export default function LineageGraphPage() {
       addAdjacency(incoming, target, source);
     };
 
-    // flow -> each table it writes (a view is skipped; it is wired to its base table below), and object -> flow
-    // it reads. Every physical table a flow produces is therefore its own node between producer and consumers.
-    for (const [flow, group] of byFlow) {
-      const producerId = pipelineIdByName.get(flow);
-      // Skip flows whose pipeline is not a drawn node (unknown flow, or filtered out by the wave selection).
-      if (producerId === undefined || !names.has(producerId)) {
+    // pipeline -> each table it writes (a view is skipped; it is wired to its base table below), and object ->
+    // pipeline it reads. Every physical table a flow produces is therefore its own node between producer and
+    // consumers, and the consumers can be flows from other repos.
+    for (const [pipelineId, group] of byPipeline) {
+      // Skip a pipeline not drawn (filtered out by the wave selection); its edges wait for that batch.
+      if (!names.has(pipelineId)) {
         continue;
       }
-      const color = flowColors.get(producerId)!;
+      const color = flowColors.get(pipelineId) ?? seriesColor(colorIndex++);
       for (const write of group.writes) {
         if (viewKeys.has(write.objectKey)) {
           continue;
         }
         ensureObject(write.objectKey);
-        addEdge(producerId, write.objectKey, color, write.relation === "Creates" ? "creates" : "writes");
+        addEdge(pipelineId, write.objectKey, color, write.relation === "Creates" ? "creates" : "writes");
       }
       for (const read of group.reads) {
         ensureObject(read.objectKey);
-        addEdge(read.objectKey, producerId, color, "reads");
+        addEdge(read.objectKey, pipelineId, color, "reads");
       }
     }
 
     // A view node is wired to its PARENT TABLE (the module read), coloured like the flow that maintains it.
     for (const viewKey of viewKeys) {
-      const owner = writeOwner.get(viewKey);
-      const producerId = owner ? pipelineIdByName.get(owner) : undefined;
+      const producerId = writeOwner.get(viewKey);
       // Under a wave filter, only keep views maintained by a pipeline that is actually drawn in this batch.
       if (selectedWave !== null && (producerId === undefined || !names.has(producerId))) {
         continue;
       }
-      const color = producerId ? flowColors.get(producerId)! : seriesColor(colorIndex++);
+      const color = producerId ? (flowColors.get(producerId) ?? seriesColor(colorIndex++)) : seriesColor(colorIndex++);
       ensureObject(viewKey);
       for (const baseKey of moduleReads.get(viewKey) ?? []) {
         ensureObject(baseKey);
@@ -799,16 +843,18 @@ export default function LineageGraphPage() {
       flowColors,
       incoming,
       outgoing,
+      frontier: frontierSet,
+      repoOf,
       openTarget: (id) => (objectNodeIds.has(id)
         ? { label: "Open in explorer", to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}` }
         : { label: "Open pipeline", to: `/pipelines/${id}` }),
     };
     // The series colors are theme-scoped custom properties; rebuilding on mode change keeps them in sync.
-  }, [waves.data, objectEdges.data, selectedWave, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pipelines, objectEdgesData, frontierSet, selectedWave, repoId, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Objects view: tables/files as nodes, "flow moves data from A to B" as edges, colored per flow -------------
   const objectsGraph = useMemo<BuiltGraph | null>(() => {
-    if (graphView !== "objects" || !objectEdges.data) {
+    if (graphView !== "objects" || !objectEdgesData) {
       return null;
     }
 
@@ -827,8 +873,10 @@ export default function LineageGraphPage() {
       names.set(key, name);
       const serverRef = key.includes("|") ? key.slice(0, key.indexOf("|")) : "";
       // The caption places the object: database.schema when the registry knows it, else the server reference
-      // (a file just says "file").
-      const caption = serverRef === "file"
+      // (a file just says "file"). A frontier object (downstream cut by the depth cap) says so and gets a heavier
+      // border, inviting the user to expand it.
+      const isFrontier = frontierSet.has(key);
+      const base = serverRef === "file"
         ? "file"
         : locationByKey.get(key) ?? truncate(serverRef, 30);
       nodes.push({
@@ -838,11 +886,15 @@ export default function LineageGraphPage() {
           label: (
             <Box sx={{ overflow: "hidden", textAlign: "left" }}>
               <Typography variant="body2" fontWeight={600} noWrap component="div">{name}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">{caption}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap component="div">
+                {isFrontier ? `${base} · more downstream` : base}
+              </Typography>
             </Box>
           ),
         },
-        style: { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8 },
+        style: isFrontier
+          ? { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8, border: "2px solid", borderColor: brandToken("--sf-series-2") }
+          : { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8 },
       });
     };
 
@@ -858,7 +910,7 @@ export default function LineageGraphPage() {
     const writeOwner = new Map<string, string>();   // object -> the flow that produces it
     const moduleReads = new Map<string, Set<string>>(); // module (view/proc) -> base objects its body reads
 
-    for (const edge of objectEdges.data) {
+    for (const edge of objectEdgesData) {
       nameByKey.set(edge.objectKey, edge.objectName);
       if (edge.objectDatabase !== null || edge.objectSchema !== null) {
         locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
@@ -954,20 +1006,23 @@ export default function LineageGraphPage() {
       flowColors,
       incoming,
       outgoing,
+      frontier: frontierSet,
+      repoOf: new Map<string, string>(),
       openTarget: (id) => ({
         label: "Open in explorer",
         to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}`,
       }),
     };
-  }, [graphView, objectEdges.data, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [graphView, objectEdgesData, frontierSet, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const graph = graphView === "flows" ? flowsGraph : objectsGraph;
 
-  // Focus and centering are per graph; switching repo or view resets them.
+  // Focus and centering are per graph; switching project or view resets them. Expanding a frontier node does not
+  // (it grows the same graph), so ?expand= is deliberately not a dependency here.
   useEffect(() => {
     setFocus(null);
     setCenterRequest(null);
-  }, [repoId, graphView]);
+  }, [repoId, project, graphView]);
 
   const focusNode = useCallback((id: string | null) => {
     if (id === null || graph === null) {
@@ -1011,15 +1066,15 @@ export default function LineageGraphPage() {
     [graph],
   );
 
-  const queryError = [repos, waves, objectEdges, focusRepos].find((query) => query.isError)?.error;
-  const loadingGraph = repoId !== "" && (waves.isPending || objectEdges.isPending);
+  const queryError = [projectsQuery, projectGraph].find((query) => query.isError)?.error;
+  const loadingGraph = graphEnabled && projectGraph.isLoading;
   const hasContent = graph !== null && graph.nodes.length > 0;
-  // A focus target that arrived without a repo: resolving which repo to draw, or resolved to none (the object has
-  // no lineage edges, so it is in no graph).
-  const resolvingFocus = focusParam !== "" && repoId === "" && focusRepos.isPending;
-  const focusHasNoRepo = focusParam !== "" && repoId === ""
-    && focusRepos.isSuccess && focusRepos.data.length === 0;
-  const repoName = repoItems.find((repo) => repo.id === repoId)?.name ?? repoId;
+  // A deep-link onto a node whose closure is still loading, or that came back empty (the node has no lineage, so it
+  // is in no graph). Both are gated on a focus seed being what drives the graph (no project chosen).
+  const resolvingFocus = focusSeed !== "" && projectGraph.isLoading;
+  const focusHasNoRepo = focusSeed !== "" && projectGraph.isSuccess
+    && (projectGraph.data?.pipelines.length ?? 0) === 0;
+  const repoName = selectedProject?.repoName ?? repoId;
 
   // Export the drawn graph as an SVG vector of the current layout (nodes, edges, labels) in the active theme,
   // built from the same in-memory graph so it stays a single source of truth.
@@ -1296,20 +1351,32 @@ export default function LineageGraphPage() {
             )}
           />
         )}
-        <FormControl size="small" sx={{ minWidth: 220 }}>
-          <Select
-            value={selectValue}
-            onChange={(event) => setParam("repoId", event.target.value)}
-            displayEmpty
-            inputProps={{ "aria-label": "Repo" }}
-            data-testid="graph-repo-select"
-          >
-            <MenuItem value=""><em>Select a repo</em></MenuItem>
-            {repoItems.map((repo) => (
-              <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <Autocomplete
+          size="small"
+          sx={{ minWidth: 260 }}
+          options={projectItems}
+          value={selectedProject}
+          getOptionLabel={(option) => `${option.repoName} / ${option.project}`}
+          isOptionEqualToValue={(a, b) => a.repoId === b.repoId && a.project === b.project}
+          onChange={(_, option) => selectProject(option)}
+          renderOption={(props, option) => (
+            <li {...props} key={`${option.repoId}:${option.project}`}>
+              <Box sx={{ overflow: "hidden" }}>
+                <Typography variant="body2" noWrap>{option.project}</Typography>
+                <Typography variant="caption" color="text.secondary" noWrap component="div">
+                  {option.repoName} · {option.flowCount} {option.flowCount === 1 ? "flow" : "flows"}
+                </Typography>
+              </Box>
+            </li>
+          )}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              placeholder="Select a project"
+              inputProps={{ ...params.inputProps, "data-testid": "graph-project-select" }}
+            />
+          )}
+        />
       </Paper>
 
       {queryError !== undefined && (
@@ -1320,18 +1387,35 @@ export default function LineageGraphPage() {
         </Box>
       )}
 
-      {repoId === "" && !repos.isError && (
+      {!graphEnabled && !projectsQuery.isError && (
           <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-empty">
-            {resolvingFocus ? (
-              <Stack alignItems="center" spacing={2} data-testid="graph-resolving-focus">
-                <CircularProgress size={28} />
-                <Typography variant="body2" color="text.secondary">Locating the object in the lineage graph…</Typography>
-              </Stack>
-            ) : focusHasNoRepo ? (
+            <EmptyState
+              title="Pick a project to draw its map"
+              description="The lineage graph is seeded from a project (a repo's root folder): pick one above to see its flows, the objects they read and write, and everything downstream, even across repos. Click a node to trace what feeds it and what depends on it."
+            />
+          </Box>
+        )}
+
+        {resolvingFocus && !queryError && (
+          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-resolving-focus-box">
+            <Stack alignItems="center" spacing={2} data-testid="graph-resolving-focus">
+              <CircularProgress size={28} />
+              <Typography variant="body2" color="text.secondary">Locating the node in the lineage graph…</Typography>
+            </Stack>
+          </Box>
+        )}
+
+        {loadingGraph && !resolvingFocus && !queryError && (
+          <Skeleton variant="rectangular" sx={{ position: "absolute", inset: 0, height: "100%" }} data-testid="graph-loading" />
+        )}
+
+        {graphEnabled && !loadingGraph && !queryError && graph !== null && !hasContent && (
+          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-no-lineage">
+            {focusSeed !== "" || focusHasNoRepo ? (
               <EmptyState
                 data-testid="graph-focus-no-repo"
-                title="No lineage graph references this object yet"
-                description="This object has no recorded lineage edges, so it does not appear in any repo's graph. Open it in the object explorer to see its definition and columns."
+                title="No lineage references this node yet"
+                description="This node has no recorded lineage edges, so nothing feeds it and nothing depends on it. Open it in the object explorer to see its definition and columns."
                 action={(
                   <Button
                     variant="outlined"
@@ -1345,29 +1429,16 @@ export default function LineageGraphPage() {
               />
             ) : (
               <EmptyState
-                title="Pick a repo to draw its graph"
-                description="The lineage graph is computed per repo: select one above to see its pipelines and the objects that connect them. Click a node to trace what feeds it and what depends on it."
+                title="No lineage for this project yet"
+                description={graphView === "flows"
+                  ? "This project has no active flows, or its repo has not been synced. Sync the repo, then come back."
+                  : "No object edges were recorded for this project. Sync the repo (a connected sync adds the derived tier), then come back."}
               />
             )}
           </Box>
         )}
 
-        {loadingGraph && !queryError && (
-          <Skeleton variant="rectangular" sx={{ position: "absolute", inset: 0, height: "100%" }} data-testid="graph-loading" />
-        )}
-
-        {repoId !== "" && !loadingGraph && !queryError && graph !== null && !hasContent && (
-          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-no-lineage">
-            <EmptyState
-              title={graphView === "flows" ? "No lineage for this repo yet" : "No object lineage for this repo yet"}
-              description={graphView === "flows"
-                ? "No waves or pipelines were found. Sync the repo, then come back."
-                : "No object edges were recorded. Sync the repo (a connected sync adds the derived tier), then come back."}
-            />
-          </Box>
-        )}
-
-        {repoId !== "" && !loadingGraph && !queryError && graph !== null && hasContent && (
+        {graphEnabled && !loadingGraph && !queryError && graph !== null && hasContent && (
           <ReactFlowProvider>
             <GraphCanvas
               graph={graph}
@@ -1425,6 +1496,19 @@ export default function LineageGraphPage() {
           >
             Trace upstream / downstream
           </MenuItem>
+          {nodeMenu !== null && graph !== null && graph.frontier.has(nodeMenu.id) && (
+            <MenuItem
+              data-testid="node-menu-expand"
+              onClick={() => {
+                if (nodeMenu !== null) {
+                  expandNode(nodeMenu.id);
+                }
+                setNodeMenu(null);
+              }}
+            >
+              Expand downstream
+            </MenuItem>
+          )}
           <MenuItem
             onClick={() => {
               if (nodeMenu !== null) {
@@ -1437,6 +1521,7 @@ export default function LineageGraphPage() {
           </MenuItem>
           {nodeMenu !== null && repoId !== "" && graph !== null
             && graph.openTarget(nodeMenu.id).label === "Open pipeline"
+            && graph.repoOf.get(nodeMenu.id) === repoId
             && [
               <Divider key="run-divider" />,
               <MenuItem

@@ -8,7 +8,8 @@ import type {
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
-  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, MyNotificationOptions, Node, NodeScript,
+  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, MyNotificationOptions, Node, NodeScript,
+  ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
@@ -247,6 +248,21 @@ export const lineageApi = {
   waves: (repoId: string) => get<Wave[]>(`/api/v1/repos/${repoId}/waves`),
   dependencies: (repoId: string, query: PageQuery = {}) =>
     get<PagedResult<FlowDependency>>(`/api/v1/repos/${repoId}/dependencies`, query as QueryParams),
+  // Every selectable (repo, project) pair the lineage graph can be scoped to, for the searchable scope picker.
+  projects: () => get<LineageProject[]>("/api/v1/lineage/projects"),
+  // A project's cross-repo downstream lineage closure. `expand` re-seeds the walk from frontier nodes (an object
+  // key or a pipeline id) and is sent as repeated query params, which the single-value query builder cannot do, so
+  // it is folded into the path here; the rest ride the normal query object.
+  projectGraph: (params: { repoId?: string; project?: string; depth?: number; expand?: string[] }) => {
+    const expand = params.expand ?? [];
+    const suffix = expand.length > 0
+      ? `?${expand.map((token) => `expand=${encodeURIComponent(token)}`).join("&")}`
+      : "";
+    return get<ProjectGraph>(
+      `/api/v1/lineage/project-graph${suffix}`,
+      { repoId: params.repoId, project: params.project, depth: params.depth } as QueryParams,
+    );
+  },
 };
 
 // ---- Search --------------------------------------------------------------------------------------------------------------------

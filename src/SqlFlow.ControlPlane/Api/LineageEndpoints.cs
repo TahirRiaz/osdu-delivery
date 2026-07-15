@@ -78,6 +78,30 @@ public sealed record WaveDto(int Wave, IReadOnlyList<WavePipelineDto> Pipelines)
 /// <summary>One pipeline within a wave: its stable id and name.</summary>
 public sealed record WavePipelineDto(Guid Id, string Name, string Kind);
 
+/// <summary>One selectable project for the lineage graph's scope picker: a repo-root folder within a repo, the repo
+/// it lives in (so the picker can show "repo / project" and disambiguate a folder name shared across repos), and
+/// how many active flows it holds. The project is the seed the cross-repo lineage closure starts from.</summary>
+public sealed record LineageProjectDto(Guid RepoId, string RepoName, string Project, int FlowCount);
+
+/// <summary>One pipeline node in a project's cross-repo lineage closure. <c>IsSeed</c> marks a flow that belongs to
+/// the selected project itself (its base objects seed the graph); a non-seed flow was reached downstream, possibly
+/// in another repo, which is why <c>RepoId</c>/<c>RepoName</c> travel with every node. <c>Depth</c> is how many
+/// downstream hops from the seed the flow sits at, so a client can tint or lay out by distance.</summary>
+public sealed record ProjectGraphPipelineDto(
+    Guid Id, string Name, string Kind, int Wave, Guid RepoId, string RepoName, string RelativePath,
+    bool IsSeed, int Depth);
+
+/// <summary>A project's lineage as one cross-repo subgraph: the pipeline nodes in the downstream closure, the edges
+/// among them and the objects they move (reusing <see cref="EdgeDto"/>, whose <c>RepoId</c> records which repo
+/// attributed each fact), the object keys at the depth-capped frontier that still have un-included consumers (so a
+/// client can offer to expand them), and whether a node cap truncated the walk. The walk crosses repo boundaries
+/// freely via the global object keys: an object's origin repo is irrelevant to how data flows through it.</summary>
+public sealed record ProjectGraphDto(
+    IReadOnlyList<ProjectGraphPipelineDto> Pipelines,
+    IReadOnlyList<EdgeDto> Edges,
+    IReadOnlyList<string> Frontier,
+    bool Truncated);
+
 /// <summary>One (server, database, schema) grouping in the catalog with how many objects it holds: the schema
 /// hierarchy a caller browses to answer "what schemas exist" and "how big is each" before drilling into
 /// objects. A null database/schema is an object whose identity was only partially resolved (an offline sync).</summary>
@@ -106,6 +130,8 @@ public static class LineageEndpoints
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
         lineage.MapGet("/file-pipelines", MatchFilePipelinesAsync).WithName("MatchFilePipelines");
         lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
+        lineage.MapGet("/projects", ListProjectsAsync).WithName("ListLineageProjects");
+        lineage.MapGet("/project-graph", GetProjectGraphAsync).WithName("GetLineageProjectGraph");
 
         var repos = group.MapGroup("/repos").WithTags("Lineage");
         repos.MapGet("/{repoId:guid}/lineage/edges", ListEdgesAsync).WithName("ListLineageEdges");
@@ -613,6 +639,339 @@ public static class LineageEndpoints
                 d.Id, d.RepoId, d.FromFlow, d.ToFlow, d.FromPipelineId, d.ToPipelineId, d.ViaObjects))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<FlowDependencyDto>(deps, p, size, total));
+    }
+
+    /// <summary>Every selectable project across all repos for the lineage graph's scope picker, each with its repo
+    /// (name + id) and active-flow count, sorted by repo then project. The project is derived per flow from its
+    /// repo-relative path (see <see cref="ProjectPath"/>) and reduced in memory: the distinct (repo, project) pairs
+    /// are bounded by the estate's folder count, not its flow count, so the whole list is returned unpaged.</summary>
+    private static async Task<Ok<IReadOnlyList<LineageProjectDto>>> ListProjectsAsync(
+        CatalogDbContext db, CancellationToken ct)
+    {
+        var rows = await db.Pipelines.AsNoTracking()
+            .Where(p => p.Active)
+            .Join(db.Repos.AsNoTracking(), p => p.RepoId, r => r.Id,
+                (p, r) => new { p.RepoId, RepoName = r.Name, p.RelativePath })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var projects = rows
+            .GroupBy(x => new { x.RepoId, x.RepoName, Project = ProjectPath.Of(x.RelativePath) })
+            .Select(g => new LineageProjectDto(g.Key.RepoId, g.Key.RepoName, g.Key.Project, g.Count()))
+            .OrderBy(x => x.RepoName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Project, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<LineageProjectDto>>(projects);
+    }
+
+    // The closure's guard rails: how far downstream a walk runs by default and at most, and the most pipeline nodes
+    // one response carries. The frontier lets a client push past these deliberately (by expanding a node) rather
+    // than dumping the whole estate at once, which is the readability problem the project scope exists to solve.
+    private const int DefaultGraphDepth = 3;
+    private const int MaxGraphDepth = 12;
+    private const int MaxGraphPipelines = 500;
+
+    /// <summary>One lineage fact reduced to what the closure walk needs plus what it must echo back as an
+    /// <see cref="EdgeDto"/>; the object's database/schema are attached afterward from the global registry.</summary>
+    private sealed record EdgeRow(
+        long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule, string Relation,
+        string ObjectKey, string ObjectName, string Tier);
+
+    /// <summary>
+    /// A project's lineage as a single cross-repo subgraph. The seed is the selected project's active flows (the base
+    /// objects they read and the tables they write); from there the walk follows data strictly downstream, crossing
+    /// repo boundaries freely because objects are global and an object's origin repo does not gate how data flows
+    /// through it. The walk is bounded two ways so a widely-consumed project cannot return the whole estate: a hop
+    /// depth (<paramref name="depth"/>, clamped) and a node cap. Objects at the depth boundary that still have
+    /// un-included consumers are returned as the <c>Frontier</c>, and <paramref name="expand"/> re-seeds the walk from
+    /// specific nodes (an object key or a pipeline id) so a client can push past the boundary node by node.
+    /// </summary>
+    private static async Task<Results<Ok<ProjectGraphDto>, ProblemHttpResult>> GetProjectGraphAsync(
+        CatalogDbContext db, Guid? repoId, string? project, int? depth, string[]? expand, CancellationToken ct)
+    {
+        // The seed is either a project (a repo-root folder) or, for a deep-link onto a specific node, one or more
+        // expand tokens. A GUID token is a pipeline re-seeded at depth 0; any other token is an object key whose
+        // producers (its immediate upstream) and consumers (downstream) both re-enter the walk, so a jumped-to object
+        // shows where it comes from and where it goes without a separate whole-repo drawing path.
+        var expandPipelineIds = new HashSet<Guid>();
+        var expandObjectKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var token in expand ?? Array.Empty<string>())
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                continue;
+            }
+
+            if (Guid.TryParse(token, out var pid))
+            {
+                expandPipelineIds.Add(pid);
+            }
+            else
+            {
+                expandObjectKeys.Add(token);
+            }
+        }
+
+        var hasProject = !string.IsNullOrWhiteSpace(project);
+        var hasExpand = expandPipelineIds.Count > 0 || expandObjectKeys.Count > 0;
+
+        if (repoId is { } checkRepo && !await RepoExistsAsync(db, checkRepo, ct).ConfigureAwait(false))
+        {
+            return NotFound("repo", checkRepo);
+        }
+
+        if (!hasProject && !hasExpand)
+        {
+            return TypedResults.Problem(
+                detail: "Provide a 'project' (a repo-root folder) or an 'expand' node to seed the lineage graph.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "No seed");
+        }
+
+        if (hasProject && repoId is null)
+        {
+            return TypedResults.Problem(
+                detail: "A 'repoId' is required with a 'project': a project is a folder within one repo.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Missing repoId");
+        }
+
+        var maxDepth = Math.Clamp(depth ?? DefaultGraphDepth, 1, MaxGraphDepth);
+
+        // Seed pipelines: the selected project's active flows in its repo. The project is derived in memory (a path
+        // split SQL should not carry), so only this repo's (id, path) pairs are pulled, not the whole table.
+        var seedPipelineIds = new HashSet<Guid>();
+        if (hasProject)
+        {
+            var repoPipelines = await db.Pipelines.AsNoTracking()
+                .Where(p => p.RepoId == repoId!.Value && p.Active)
+                .Select(p => new { p.Id, p.RelativePath })
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var p in repoPipelines)
+            {
+                if (ProjectPath.Of(p.RelativePath) == project)
+                {
+                    seedPipelineIds.Add(p.Id);
+                }
+            }
+        }
+
+        if (seedPipelineIds.Count == 0 && expandPipelineIds.Count == 0 && expandObjectKeys.Count == 0)
+        {
+            return TypedResults.Ok(new ProjectGraphDto(
+                Array.Empty<ProjectGraphPipelineDto>(), Array.Empty<EdgeDto>(), Array.Empty<string>(), false));
+        }
+
+        // The whole estate's edges, once, minimally projected. This is the universal graph the walk runs over; it is
+        // bounded by the edge count (the same set the per-repo edges endpoint pages through, summed across repos) and
+        // reduced to in-memory adjacency below so the traversal itself hits no database.
+        var edgeRows = await db.LineageEdges.AsNoTracking()
+            .Select(e => new EdgeRow(
+                e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName, e.Tier))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var writesByPipeline = new Dictionary<Guid, List<string>>();
+        var readsByPipeline = new Dictionary<Guid, List<string>>();
+        var consumersByObject = new Dictionary<string, List<Guid>>(StringComparer.Ordinal);
+        var producersByObject = new Dictionary<string, List<Guid>>(StringComparer.Ordinal);
+        foreach (var e in edgeRows)
+        {
+            if (e.PipelineId is not { } pid)
+            {
+                continue;
+            }
+
+            if (e.Relation is "Writes" or "Creates")
+            {
+                (writesByPipeline.TryGetValue(pid, out var w) ? w : writesByPipeline[pid] = new List<string>())
+                    .Add(e.ObjectKey);
+                (producersByObject.TryGetValue(e.ObjectKey, out var pr)
+                    ? pr : producersByObject[e.ObjectKey] = new List<Guid>()).Add(pid);
+            }
+            else if (e.Relation == "Reads")
+            {
+                // A read makes the flow a consumer of that object (the downstream link) and records the object as
+                // one of the flow's source inputs (shown as a base node, but never walked further upstream).
+                (readsByPipeline.TryGetValue(pid, out var r) ? r : readsByPipeline[pid] = new List<string>())
+                    .Add(e.ObjectKey);
+                (consumersByObject.TryGetValue(e.ObjectKey, out var c)
+                    ? c : consumersByObject[e.ObjectKey] = new List<Guid>()).Add(pid);
+            }
+        }
+
+        var pipelineDepth = new Dictionary<Guid, int>();
+        var includedObjects = new HashSet<string>(StringComparer.Ordinal);
+        var frontier = new HashSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<(Guid Pipeline, int Depth)>();
+        var truncated = false;
+
+        bool TryEnqueue(Guid pid, int d)
+        {
+            if (pipelineDepth.TryGetValue(pid, out var existing))
+            {
+                if (existing <= d)
+                {
+                    return true;
+                }
+
+                pipelineDepth[pid] = d;
+                queue.Enqueue((pid, d));
+                return true;
+            }
+
+            if (pipelineDepth.Count >= MaxGraphPipelines)
+            {
+                truncated = true;
+                return false;
+            }
+
+            pipelineDepth[pid] = d;
+            queue.Enqueue((pid, d));
+            return true;
+        }
+
+        foreach (var pid in seedPipelineIds)
+        {
+            TryEnqueue(pid, 0);
+        }
+
+        foreach (var pid in expandPipelineIds)
+        {
+            TryEnqueue(pid, 0);
+        }
+
+        foreach (var key in expandObjectKeys)
+        {
+            includedObjects.Add(key);
+            // Its producer(s) sit one hop upstream (seeded at depth 0 so their own sources come in too); its
+            // consumer(s) one hop downstream. Seeding both makes a jumped-to object show its full local context and,
+            // for a frontier expand, simply continues the walk past it (the producer is already included, a no-op).
+            if (producersByObject.TryGetValue(key, out var producers))
+            {
+                foreach (var p in producers)
+                {
+                    TryEnqueue(p, 0);
+                }
+            }
+
+            if (consumersByObject.TryGetValue(key, out var consumers))
+            {
+                foreach (var c in consumers)
+                {
+                    TryEnqueue(c, 1);
+                }
+            }
+        }
+
+        while (queue.Count > 0)
+        {
+            var (pid, d) = queue.Dequeue();
+            if (pipelineDepth[pid] < d)
+            {
+                // A shorter path to this pipeline was found after it was queued; the shallower visit does the work.
+                continue;
+            }
+
+            if (readsByPipeline.TryGetValue(pid, out var reads))
+            {
+                foreach (var key in reads)
+                {
+                    includedObjects.Add(key);
+                }
+            }
+
+            if (!writesByPipeline.TryGetValue(pid, out var writes))
+            {
+                continue;
+            }
+
+            foreach (var key in writes)
+            {
+                includedObjects.Add(key);
+                if (!consumersByObject.TryGetValue(key, out var consumers) || consumers.Count == 0)
+                {
+                    continue;
+                }
+
+                if (d + 1 > maxDepth)
+                {
+                    frontier.Add(key);
+                    continue;
+                }
+
+                foreach (var consumer in consumers)
+                {
+                    if (!TryEnqueue(consumer, d + 1))
+                    {
+                        frontier.Add(key);
+                    }
+                }
+            }
+        }
+
+        var includedPipes = new HashSet<Guid>(pipelineDepth.Keys);
+        var ids = includedPipes.ToList();
+        var pipeRows = await db.Pipelines.AsNoTracking()
+            .Where(p => ids.Contains(p.Id))
+            .Join(db.Repos.AsNoTracking(), p => p.RepoId, r => r.Id,
+                (p, r) => new { p.Id, p.Name, p.Kind, p.Wave, p.RepoId, RepoName = r.Name, p.RelativePath })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var pipelines = pipeRows
+            .Select(p => new ProjectGraphPipelineDto(
+                p.Id, p.Name, p.Kind, p.Wave, p.RepoId, p.RepoName, p.RelativePath,
+                seedPipelineIds.Contains(p.Id), pipelineDepth[p.Id]))
+            .OrderBy(p => p.Depth)
+            .ThenBy(p => p.RepoName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(p => p.Name, StringComparer.Ordinal)
+            .ToList();
+
+        var locations = await LoadObjectLocationsAsync(db, includedObjects, ct).ConfigureAwait(false);
+        var edges = edgeRows
+            .Where(e => includedObjects.Contains(e.ObjectKey)
+                && (e.PipelineId is null || includedPipes.Contains(e.PipelineId.Value)))
+            .Select(e =>
+            {
+                locations.TryGetValue(e.ObjectKey, out var loc);
+                return new EdgeDto(
+                    e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName,
+                    loc.Database, loc.Schema, e.Tier);
+            })
+            .ToList();
+
+        // Only report a frontier object that genuinely has a consumer we left out; an object can be marked while a
+        // shorter path still pulled all its consumers in, and that is not something to offer expanding.
+        var openFrontier = frontier
+            .Where(key => consumersByObject.TryGetValue(key, out var consumers)
+                && consumers.Any(c => !includedPipes.Contains(c)))
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToList();
+
+        return TypedResults.Ok(new ProjectGraphDto(pipelines, edges, openFrontier, truncated));
+    }
+
+    /// <summary>The database/schema for a set of object keys from the global registry, chunked so the IN-list never
+    /// exceeds the provider's parameter limit. Keys the registry does not know (a race with identity healing) are
+    /// simply absent, and the caller falls back to nulls, exactly as the edges endpoint does.</summary>
+    private static async Task<Dictionary<string, (string? Database, string? Schema)>> LoadObjectLocationsAsync(
+        CatalogDbContext db, IReadOnlyCollection<string> keys, CancellationToken ct)
+    {
+        var result = new Dictionary<string, (string?, string?)>(StringComparer.Ordinal);
+        const int chunk = 1000;
+        var all = keys.ToArray();
+        for (var i = 0; i < all.Length; i += chunk)
+        {
+            var slice = all.Skip(i).Take(chunk).ToList();
+            var rows = await db.Objects.AsNoTracking()
+                .Where(o => slice.Contains(o.Key))
+                .Select(o => new { o.Key, o.Database, o.Schema })
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var row in rows)
+            {
+                result[row.Key] = (row.Database, row.Schema);
+            }
+        }
+
+        return result;
     }
 
     private static Task<bool> RepoExistsAsync(CatalogDbContext db, Guid repoId, CancellationToken ct)
