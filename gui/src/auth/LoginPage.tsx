@@ -7,7 +7,9 @@ import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
 import Divider from "@mui/material/Divider";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
@@ -17,6 +19,9 @@ import { authApi } from "../api/endpoints";
 import { isApiError } from "../api/client";
 import { CorrelationError } from "../components/CorrelationError";
 import { useAuth } from "./AuthContext";
+
+/** Held in a variable so the data-testid clears Checkbox's strict inputProps typing (see the usage below). */
+const rememberInputProps = { "data-testid": "login-remember" };
 
 /** The Microsoft four-square mark, per their sign-in branding guidelines. */
 function MicrosoftMark() {
@@ -46,6 +51,7 @@ export default function LoginPage() {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(false);
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -69,7 +75,7 @@ export default function LoginPage() {
 
   const submitLocal = (event: FormEvent) => {
     event.preventDefault();
-    void run(() => loginLocal(username, password));
+    void run(() => loginLocal(username, password, remember));
   };
 
   const submitBootstrap = (event: FormEvent) => {
@@ -178,6 +184,20 @@ export default function LoginPage() {
                   fullWidth
                   inputProps={{ "data-testid": "login-password" }}
                 />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={remember}
+                      onChange={(e) => setRemember(e.target.checked)}
+                      size="small"
+                      // Checkbox's inputProps is the strict InputHTMLAttributes (no data-* key), so the test id is
+                      // passed via a variable: assignability allows the extra property, a fresh literal would not.
+                      inputProps={rememberInputProps}
+                    />
+                  }
+                  label={<Typography variant="body2">Keep me signed in on this device</Typography>}
+                  sx={{ mt: -0.5 }}
+                />
                 <Button
                   type="submit"
                   variant="contained"
@@ -199,7 +219,7 @@ export default function LoginPage() {
                   size="large"
                   startIcon={<MicrosoftMark />}
                   disabled={busy}
-                  onClick={() => void run(() => loginEntra(providers.data.entra))}
+                  onClick={() => void run(() => loginEntra(providers.data.entra, remember))}
                   data-testid="login-entra"
                   sx={{ py: 1.25, color: "text.primary", borderColor: "divider" }}
                 >

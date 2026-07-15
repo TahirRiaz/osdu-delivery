@@ -50,13 +50,18 @@ spec:
               value: "10.0.0.0/8"
             # Same-host ingress path-split means the GUI is same-origin: no CORS entries needed. Add
             # ControlPlane__Cors__AllowedOrigins__0 only if the GUI is served from another host.
-            # Optional Entra SSO:
-            # - name: ControlPlane__AzureAd__Enabled
-            #   value: "true"
-            # - name: ControlPlane__AzureAd__TenantId
-            #   value: "<tenant-guid>"
-            # - name: ControlPlane__AzureAd__ClientId
-            #   value: "<spa-app-registration-client-id>"
+            # Entra SSO: put entra-tenant-id and entra-client-id in the sqlflow-secrets secret and the login page
+            # offers "Sign in with Microsoft" alongside local username/password. Both keys are optional here, so an
+            # estate that leaves them out of the secret simply runs local sign-in only (no restart-time failure).
+            # The SPA app registration's redirect URI must be the GUI origin.
+            - name: ControlPlane__AzureAd__TenantId
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: entra-tenant-id, optional: true }
+            - name: ControlPlane__AzureAd__ClientId
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: entra-client-id, optional: true }
+            - name: ControlPlane__AzureAd__DefaultRole
+              value: viewer
           resources:
             requests: { cpu: 250m, memory: 384Mi }
             limits: { cpu: "1", memory: 1Gi }

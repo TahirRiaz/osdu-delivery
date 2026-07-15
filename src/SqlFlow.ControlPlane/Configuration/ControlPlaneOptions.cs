@@ -156,7 +156,12 @@ public sealed class CorsOptions
 /// </summary>
 public sealed class AzureAdOptions
 {
-    public bool Enabled { get; set; }
+    /// <summary>Explicit on/off override for Entra single sign-on. Left unset (the default), SSO is offered
+    /// automatically whenever a tenant id and client id are configured, so a deployment turns it on simply by
+    /// supplying those credentials, with no separate flag to remember. Set it to <c>true</c> to require SSO (a
+    /// missing credential is then a startup error), or to <c>false</c> to force it off even when credentials are
+    /// present (a kill switch). The effective state is <see cref="IsEnabled"/>.</summary>
+    public bool? Enabled { get; set; }
 
     /// <summary>The directory (tenant) id of the Entra tenant whose users may sign in.</summary>
     public string? TenantId { get; set; }
@@ -172,6 +177,16 @@ public sealed class AzureAdOptions
     /// it afterwards).</summary>
     public string DefaultRole { get; set; } = "viewer";
 
+    /// <summary>Whether both credentials Entra needs (tenant id and client id) are configured, i.e. SSO CAN be
+    /// offered. The auto-enable default keys on this.</summary>
+    public bool HasCredentials
+        => !string.IsNullOrWhiteSpace(TenantId) && !string.IsNullOrWhiteSpace(ClientId);
+
+    /// <summary>Whether Entra single sign-on is actually offered: the explicit <see cref="Enabled"/> flag when set,
+    /// otherwise on automatically when <see cref="HasCredentials"/> is true. Local username/password sign-in is
+    /// always available regardless; this only gates the additive Microsoft option.</summary>
+    public bool IsEnabled => Enabled ?? HasCredentials;
+
     /// <summary>The effective authority, with the public-cloud default applied.</summary>
     public string ResolveAuthority()
         => string.IsNullOrWhiteSpace(Authority)
@@ -180,15 +195,18 @@ public sealed class AzureAdOptions
 
     public void Validate()
     {
-        if (!Enabled)
-        {
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(TenantId) || string.IsNullOrWhiteSpace(ClientId))
+        // An explicit request for SSO with nothing to sign in against is a misconfiguration, not a silent no-op:
+        // fail fast and name the missing credentials. (Leaving Enabled unset instead auto-enables only when both
+        // are present, so this never fires for the credential-driven default.)
+        if (Enabled == true && !HasCredentials)
         {
             throw new InvalidOperationException(
-                "ControlPlane:AzureAd:TenantId and ControlPlane:AzureAd:ClientId are required when AzureAd is enabled.");
+                "ControlPlane:AzureAd:Enabled is true but TenantId and/or ClientId are missing. Provide both, or leave Enabled unset to enable SSO automatically only when the credentials are present.");
+        }
+
+        if (!IsEnabled)
+        {
+            return;
         }
 
         if (string.IsNullOrWhiteSpace(DefaultRole))

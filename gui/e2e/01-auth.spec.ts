@@ -31,6 +31,41 @@ test.describe("authentication", () => {
     await expect(page.getByTestId("page-nodes")).toBeVisible();
   });
 
+  test("\"keep me signed in\" persists the session to localStorage instead of sessionStorage", async ({ page, request }) => {
+    await adminSession(request);
+    await page.goto("/login");
+    await expect(page.getByTestId("login-card")).toBeVisible();
+    await page.getByTestId("login-username").fill(E2E.adminUsername);
+    await page.getByTestId("login-password").fill(E2E.adminPassword);
+    await page.getByTestId("login-remember").check();
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("page-dashboard")).toBeVisible();
+
+    const stored = await page.evaluate(() => ({
+      local: window.localStorage.getItem("sqlflow.session"),
+      session: window.sessionStorage.getItem("sqlflow.session"),
+    }));
+    expect(stored.local).not.toBeNull();
+    expect(stored.session).toBeNull();
+  });
+
+  test("local sign-in without \"keep me signed in\" stays in sessionStorage only", async ({ page, request }) => {
+    await adminSession(request);
+    await page.goto("/login");
+    await expect(page.getByTestId("login-card")).toBeVisible();
+    await page.getByTestId("login-username").fill(E2E.adminUsername);
+    await page.getByTestId("login-password").fill(E2E.adminPassword);
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("page-dashboard")).toBeVisible();
+
+    const stored = await page.evaluate(() => ({
+      local: window.localStorage.getItem("sqlflow.session"),
+      session: window.sessionStorage.getItem("sqlflow.session"),
+    }));
+    expect(stored.local).toBeNull();
+    expect(stored.session).not.toBeNull();
+  });
+
   test("account menu shows the subject and role; sign out returns to login", async ({ page, request }) => {
     await seedSession(page, await adminSession(request));
     await page.goto("/");

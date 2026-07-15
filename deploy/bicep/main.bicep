@@ -75,6 +75,15 @@ param gitToken string = ''
 @description('Username paired with gitToken when the host requires one: a Bitbucket app password takes the account username, a Bitbucket repository access token takes x-token-auth; GitHub ignores it. Empty sends the token alone.')
 param gitUsername string = ''
 
+@description('Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer "Sign in with Microsoft" on the login page (alongside local username/password); leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on the SPA app registration.')
+param azureAdTenantId string = ''
+
+@description('Client id of the SPA app registration users sign in with. Set together with azureAdTenantId to enable SSO.')
+param azureAdClientId string = ''
+
+@description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards in the GUI).')
+param azureAdDefaultRole string = 'viewer'
+
 @description('Environment variable names for the \${env:...} references the worker pool\'s flows use, e.g. [\'SQLFlowSinkConStr\']. Values go in workerFlowEnvValues.')
 param workerFlowEnvNames array = []
 
@@ -413,6 +422,9 @@ module controlPlane 'control-plane.bicep' = {
     bootstrapAdminPasswordSecretName: adminPasswordSecretName
     gitTokenSecretName: empty(gitToken) ? '' : gitTokenSecretName
     gitUsername: gitUsername
+    azureAdTenantId: azureAdTenantId
+    azureAdClientId: azureAdClientId
+    azureAdDefaultRole: azureAdDefaultRole
     acrName: acrName
     acrLoginServer: acrLoginServer
     minReplicas: controlPlaneMinReplicas
@@ -546,6 +558,9 @@ module slackBot 'slack-bot.bicep' = if (slackBotEnabled) {
 
 @description('Sign in here with the bootstrap admin (adminUsername/adminPassword).')
 output guiUrl string = gui.outputs.guiUrl
+
+@description('When Entra SSO is configured, add this exact origin as a redirect URI on the SPA app registration (Single-page application platform); empty when azureAdClientId was not set.')
+output entraRedirectUri string = empty(azureAdClientId) ? '' : gui.outputs.guiUrl
 
 @description('The API base URL: point the ADF pipeline (deploy/adf) and CLI remotes at this.')
 output controlPlaneBaseUrl string = controlPlane.outputs.controlPlaneBaseUrl

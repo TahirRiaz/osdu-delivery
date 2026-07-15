@@ -19,8 +19,8 @@ interface AuthContextValue {
   /** Set when the previous session ended involuntarily (expiry or a 401), so the login page can say why. */
   sessionEndedReason: string | null;
   hasScope: (scope: string) => boolean;
-  loginLocal: (username: string, password: string) => Promise<void>;
-  loginEntra: (entra: EntraProviderInfo) => Promise<void>;
+  loginLocal: (username: string, password: string, remember: boolean) => Promise<void>;
+  loginEntra: (entra: EntraProviderInfo, remember: boolean) => Promise<void>;
   loginBootstrap: (secret: string) => Promise<void>;
   logout: () => void;
 }
@@ -29,27 +29,38 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const STORAGE_KEY = "sqlflow.session";
 
-// The token is kept in memory + sessionStorage: an F5 keeps the session (an ops tool that logs you out on every
-// reload is unusable), the tab closing ends it, and localStorage's cross-restart persistence is deliberately not
-// used. The bootstrap secret / password never persists anywhere.
+// The token lives in memory plus one web-storage backer, chosen at login time:
+//   - sessionStorage (default): an F5 keeps the session, but closing the tab ends it.
+//   - localStorage ("Remember me"): the session survives a browser restart, still bounded by the token's own
+//     expiry. This is the more exposed posture (readable across restarts by any script on the origin), so it is
+//     opt-in per sign-in rather than the default.
+// The bootstrap secret / password never persists anywhere. Whichever backer is not in use is always cleared, so a
+// session never lingers in both.
+function backers(): Storage[] {
+  return [window.localStorage, window.sessionStorage];
+}
+
 function restoreSession(): Session | null {
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
+  for (const store of backers()) {
+    try {
+      const raw = store.getItem(STORAGE_KEY);
+      if (!raw) {
+        continue;
+      }
 
-    const parsed = JSON.parse(raw) as Session;
-    if (!parsed.token || typeof parsed.expiresAtMs !== "number" || parsed.expiresAtMs <= Date.now()) {
-      window.sessionStorage.removeItem(STORAGE_KEY);
-      return null;
-    }
+      const parsed = JSON.parse(raw) as Session;
+      if (!parsed.token || typeof parsed.expiresAtMs !== "number" || parsed.expiresAtMs <= Date.now()) {
+        store.removeItem(STORAGE_KEY);
+        continue;
+      }
 
-    return parsed;
-  } catch {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-    return null;
+      return parsed;
+    } catch {
+      store.removeItem(STORAGE_KEY);
+    }
   }
+
+  return null;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -62,14 +73,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const expiryTimer = useRef<number | null>(null);
 
   const endSession = useCallback((reason: string | null) => {
-    window.sessionStorage.removeItem(STORAGE_KEY);
+    for (const store of backers()) {
+      store.removeItem(STORAGE_KEY);
+    }
     setAuthToken(null);
     setSession(null);
     setSessionEndedReason(reason);
   }, []);
 
-  const beginSession = useCallback((next: Session) => {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  const beginSession = useCallback((next: Session, remember: boolean) => {
+    const [persistent, ephemeral] = remember
+      ? [window.localStorage, window.sessionStorage]
+      : [window.sessionStorage, window.localStorage];
+    ephemeral.removeItem(STORAGE_KEY);
+    persistent.setItem(STORAGE_KEY, JSON.stringify(next));
     setAuthToken(next.token);
     setSession(next);
     setSessionEndedReason(null);
@@ -103,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [session, endSession]);
 
-  const loginLocal = useCallback(async (username: string, password: string) => {
+  const loginLocal = useCallback(async (username: string, password: string, remember: boolean) => {
     const response = await authApi.login(username, password);
     beginSession({
       token: response.accessToken,
@@ -111,10 +128,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: response.role,
       scopes: response.scopes,
       expiresAtMs: Date.now() + response.expiresIn * 1000,
-    });
+    }, remember);
   }, [beginSession]);
 
-  const loginEntra = useCallback(async (entra: EntraProviderInfo) => {
+  const loginEntra = useCallback(async (entra: EntraProviderInfo, remember: boolean) => {
     const idToken = await signInWithEntra(entra);
     const response = await authApi.exchange(idToken);
     beginSession({
@@ -123,11 +140,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: response.role,
       scopes: response.scopes,
       expiresAtMs: Date.now() + response.expiresIn * 1000,
-    });
+    }, remember);
   }, [beginSession]);
 
   const loginBootstrap = useCallback(async (secret: string) => {
-    // The bootstrap secret is the root credential: request everything it grants.
+    // The bootstrap secret is the root credential: request everything it grants. A break-glass session is never
+    // persisted across a browser restart, so it always uses the ephemeral (sessionStorage) backer.
     const scopes = ["read", "operate", "admin"];
     const response = await authApi.bootstrapToken(secret, scopes);
     beginSession({
@@ -136,7 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: null,
       scopes,
       expiresAtMs: Date.now() + response.expiresIn * 1000,
-    });
+    }, false);
   }, [beginSession]);
 
   const logout = useCallback(() => endSession(null), [endSession]);

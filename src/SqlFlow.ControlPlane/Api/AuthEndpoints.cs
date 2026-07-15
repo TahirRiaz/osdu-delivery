@@ -71,7 +71,7 @@ public static class AuthEndpoints
             .WithTags("Authentication")
             .WithName("DenyDeviceAuthorization");
 
-        if (options.AzureAd.Enabled)
+        if (options.AzureAd.IsEnabled)
         {
             group.MapPost("/auth/exchange", ExchangeAsync)
                 .AllowAnonymous()
@@ -93,7 +93,7 @@ public static class AuthEndpoints
     private static Ok<AuthProvidersDto> GetProviders(IOptions<ControlPlaneOptions> options)
     {
         var value = options.Value;
-        var entra = value.AzureAd.Enabled
+        var entra = value.AzureAd.IsEnabled
             ? new EntraProviderDto(true, value.AzureAd.TenantId, value.AzureAd.ClientId, value.AzureAd.ResolveAuthority())
             : new EntraProviderDto(false, null, null, null);
         return TypedResults.Ok(new AuthProvidersDto(

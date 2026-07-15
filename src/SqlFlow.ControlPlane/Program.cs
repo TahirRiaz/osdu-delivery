@@ -46,7 +46,7 @@ builder.Services.AddSingleton<DeviceCodeStore>();
 // surface authorizes one token type no matter how the user signed in.
 builder.Services.AddSingleton<IPasswordHasher<CatalogUser>, PasswordHasher<CatalogUser>>();
 builder.Services.AddSingleton<LoginThrottle>();
-if (options.AzureAd.Enabled)
+if (options.AzureAd.IsEnabled)
 {
     builder.Services.AddSingleton<IExternalTokenValidator, EntraTokenValidator>();
 }

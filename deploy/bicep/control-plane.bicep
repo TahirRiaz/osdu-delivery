@@ -59,6 +59,15 @@ param gitUsername string = ''
 @description('CIDRs of the ingress hops to trust for X-Forwarded-* headers. Leave empty to keep proxy trust off; per-client rate limiting then keys on the ingress hop address instead of the real client.')
 param proxyKnownNetworks array = []
 
+@description('Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer "Sign in with Microsoft" on the login page; leave empty for local username/password only.')
+param azureAdTenantId string = ''
+
+@description('Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdTenantId to enable SSO.')
+param azureAdClientId string = ''
+
+@description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards).')
+param azureAdDefaultRole string = 'viewer'
+
 @description('Name of a container registry in THIS resource group: the template grants the app identity AcrPull on it and configures the pull. Leave empty for a public registry, or one you authorize yourself via acrLoginServer.')
 param acrName string = ''
 
@@ -222,6 +231,23 @@ var proxyEnv = empty(proxyKnownNetworks) ? [] : concat([
   }
 ], proxyNetworkEnv)
 
+// Entra SSO auto-enables in the control plane once a tenant id and client id are present, so supplying both is the
+// whole switch; either one missing leaves the login page offering local username/password only.
+var entraEnv = (empty(azureAdTenantId) || empty(azureAdClientId)) ? [] : [
+  {
+    name: 'ControlPlane__AzureAd__TenantId'
+    value: azureAdTenantId
+  }
+  {
+    name: 'ControlPlane__AzureAd__ClientId'
+    value: azureAdClientId
+  }
+  {
+    name: 'ControlPlane__AzureAd__DefaultRole'
+    value: azureAdDefaultRole
+  }
+]
+
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
@@ -257,7 +283,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('0.5')
             memory: '1.0Gi'
           }
-          env: concat(baseEnv, bootstrapEnv, gitTokenEnv, gitUsernameEnv, corsEnv, proxyEnv)
+          env: concat(baseEnv, bootstrapEnv, gitTokenEnv, gitUsernameEnv, corsEnv, proxyEnv, entraEnv)
           probes: [
             {
               type: 'Liveness'

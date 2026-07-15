@@ -37,7 +37,7 @@ The control plane offers several ways to sign in and issues one predominant kind
 | Endpoint | Who | Availability |
 | --- | --- | --- |
 | `POST /api/v1/auth/login` | A local SQLFlow user (username and password held in the catalog) | Always mapped |
-| `POST /api/v1/auth/exchange` | Microsoft Entra ID single sign-on (the SPA exchanges an Entra ID token) | Mapped only when `ControlPlane:AzureAd:Enabled` is true |
+| `POST /api/v1/auth/exchange` | Microsoft Entra ID single sign-on (the SPA exchanges an Entra ID token) | Mapped when Entra is enabled (automatic once `TenantId` and `ClientId` are set) |
 | `POST /api/v1/auth/token` | The break-glass bootstrap secret | Mapped only when `ControlPlane:Jwt:BootstrapSecret` is set |
 
 `GET /api/v1/auth/providers` is anonymous and tells the login page which of these are available. It returns `{ local, bootstrap, entra }`; when Entra is enabled, the `entra` object carries the `tenantId`, `clientId`, and resolved `authority` so the login page can configure MSAL without any client-side configuration file. All sign-in responses are sent with `Cache-Control: no-store` and `Pragma: no-cache` so an intermediary can never cache a bearer token.
@@ -110,7 +110,7 @@ Requested scopes are filtered against the allowed set `read`, `operate`, `author
 
 ## Microsoft Entra ID single sign-on
 
-When `ControlPlane:AzureAd:Enabled` is true, the SPA signs the user in against Entra with MSAL (authorization code + PKCE) and posts the resulting ID token to `POST /api/v1/auth/exchange` as `{ "token": "..." }`. The control plane validates the Entra token and issues its own SQLFlow session token, so downstream API calls use one token type regardless of sign-in method.
+Entra single sign-on turns on automatically once `ControlPlane:AzureAd:TenantId` and `ControlPlane:AzureAd:ClientId` are configured: supplying both credentials is the whole switch, with no separate enable flag to remember. (Set `ControlPlane:AzureAd:Enabled` explicitly only to override the default: `true` requires SSO and fails startup if a credential is missing, `false` forces it off even when credentials are present.) Local username/password sign-in is always available alongside it; enabling Entra only adds the "Sign in with Microsoft" option. When enabled, the SPA signs the user in against Entra with MSAL (authorization code + PKCE) and posts the resulting ID token to `POST /api/v1/auth/exchange` as `{ "token": "..." }`. The control plane validates the Entra token and issues its own SQLFlow session token, so downstream API calls use one token type regardless of sign-in method.
 
 `EntraTokenValidator` (src/SqlFlow.ControlPlane/Security/EntraTokenValidator.cs) pins validation to:
 
@@ -171,9 +171,9 @@ All settings live in the `ControlPlane` configuration section (appsettings or en
 | `ControlPlane:Jwt:SigningKey` | none, required | HS256 key, at least 32 bytes, sourced from a secret |
 | `ControlPlane:Jwt:AccessTokenMinutes` | `60` | Token lifetime, 1 to 1440 |
 | `ControlPlane:Jwt:BootstrapSecret` | unset | Enables `POST /auth/token`; at least 32 bytes when set |
-| `ControlPlane:AzureAd:Enabled` | `false` | Enables `POST /auth/exchange` and the Entra provider advertisement |
-| `ControlPlane:AzureAd:TenantId` | none, required when enabled | The Entra tenant whose users may sign in |
-| `ControlPlane:AzureAd:ClientId` | none, required when enabled | The SPA app registration; the required token audience |
+| `ControlPlane:AzureAd:Enabled` | unset (auto) | Explicit override. Unset: SSO auto-enables when `TenantId` and `ClientId` are both set. `true`: require SSO (startup error if a credential is missing). `false`: force off even with credentials |
+| `ControlPlane:AzureAd:TenantId` | none | The Entra tenant whose users may sign in; setting this and `ClientId` auto-enables SSO |
+| `ControlPlane:AzureAd:ClientId` | none | The SPA app registration; the required token audience; setting this and `TenantId` auto-enables SSO |
 | `ControlPlane:AzureAd:Authority` | `https://login.microsoftonline.com/{TenantId}/v2.0` | Override only for sovereign clouds |
 | `ControlPlane:AzureAd:DefaultRole` | `viewer` | Role JIT-provisioned Entra users receive |
 | `ControlPlane:Bootstrap:ApplyMigrations` | `true` | Whether startup applies pending catalog migrations |
