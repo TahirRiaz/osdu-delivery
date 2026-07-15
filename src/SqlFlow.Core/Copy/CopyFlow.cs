@@ -1,14 +1,15 @@
+using SqlFlow.Core.Files;
 using SqlFlow.Core.Identity;
 
 namespace SqlFlow.Core.Copy;
 
 /// <summary>
 /// A validated file-copy flow (<c>flowType: cpy</c>): moves files between endpoints, byte-for-byte, in any
-/// direction - storage account to storage account, local disk to storage, storage to local disk, local to local,
-/// and SFTP to/from any of those. It performs no parsing or reshaping; it optionally zips the matched files into one
-/// archive or unzips archives on the way through. It consolidates the estate's lake-to-lake / drop-zone copy
-/// runbooks (e.g. baatbooking) into one declarative, testable, schedulable engine, the copy counterpart to the
-/// acquisition (<c>acq</c>) engine that fetches from third parties.
+/// direction - storage account to storage account, local disk to storage, storage to local disk, local to local.
+/// It performs no parsing or reshaping; it optionally zips the matched files into one archive or unzips archives on
+/// the way through. It consolidates the estate's lake-to-lake / drop-zone copy runbooks (e.g. baatbooking) into one
+/// declarative, testable, schedulable engine, the copy counterpart to the acquisition (<c>acq</c>) engine that
+/// fetches from third parties. SFTP is a separate flow type (<c>sftp</c>), not a copy endpoint.
 /// </summary>
 public sealed record CopyFlow
 {
@@ -29,6 +30,13 @@ public sealed record CopyFlow
     public CopyOperation Operation { get; init; } = CopyOperation.Copy;
 
     public CopyOptions Options { get; init; } = new();
+
+    /// <summary>Optional explicit declaration of the file set(s) this copy produces, for lineage. A copy's target is
+    /// its output, so when this is empty lineage binds the single target folder to the downstream ingestion. Declare
+    /// outputs when one copy fans files into several folders that feed different ingestions (e.g.
+    /// <c>preserveStructure</c> lands per-object subfolders): each entry binds independently, by folder, file-name
+    /// glob, or path regex, to every ingestion that reads it.</summary>
+    public IReadOnlyList<FileOutput> Outputs { get; init; } = [];
 }
 
 /// <summary>The transformation a copy flow applies as it moves files.</summary>
@@ -46,14 +54,14 @@ public enum CopyOperation
 
 /// <summary>
 /// One side of a copy: where the files are, how to select them (source side), and how to authenticate. The
-/// <see cref="Location"/> scheme selects the endpoint implementation: a local/UNC path, an Azure Blob / ADLS Gen2
-/// URI (<c>abfss://fs@account.dfs.core.windows.net/path</c> or the https form), or an <c>sftp://host[:port]/path</c>
-/// URL. Selection fields (<see cref="Pattern"/>, <see cref="Recursive"/>, <see cref="ModifiedWithinDays"/>) apply
-/// only to the source; the target ignores them.
+/// <see cref="Location"/> scheme selects the endpoint implementation: a local/UNC path or an Azure Blob / ADLS Gen2
+/// URI (<c>abfss://fs@account.dfs.core.windows.net/path</c> or the https form). Selection fields
+/// (<see cref="Pattern"/>, <see cref="Recursive"/>, <see cref="ModifiedWithinDays"/>) apply only to the source; the
+/// target ignores them.
 /// </summary>
 public sealed record CopyEndpoint
 {
-    /// <summary>The root location: a local/UNC path, an Azure storage URI, or an <c>sftp://…</c> URL.</summary>
+    /// <summary>The root location: a local/UNC path or an Azure storage URI.</summary>
     public required string Location { get; init; }
 
     /// <summary>File-name glob selecting which files under the root are copied (source side). Default <c>*</c>.</summary>
@@ -75,18 +83,6 @@ public sealed record CopyEndpoint
     /// <summary>Optional secret reference to a storage account key authenticating an Azure endpoint (the shape the
     /// legacy runbooks used). Prefer managed identity where the drop zone allows it.</summary>
     public string? AccountKeyRef { get; init; }
-
-    /// <summary>Secret reference to the SFTP password (SFTP endpoints).</summary>
-    public string? PasswordRef { get; init; }
-
-    /// <summary>Secret reference to the SFTP private key PEM (SFTP endpoints); an alternative to <see cref="PasswordRef"/>.</summary>
-    public string? PrivateKeyRef { get; init; }
-
-    /// <summary>Secret reference to the passphrase protecting <see cref="PrivateKeyRef"/> (SFTP endpoints).</summary>
-    public string? PassphraseRef { get; init; }
-
-    /// <summary>The SFTP username (SFTP endpoints); not a secret, so authored inline.</summary>
-    public string? Username { get; init; }
 }
 
 /// <summary>Copy behavior shared across operations.</summary>

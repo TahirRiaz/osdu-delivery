@@ -9,7 +9,7 @@ namespace SqlFlow.Yaml;
 /// <summary>
 /// Loads a file-copy flow (flowType: cpy) from YAML into a validated <see cref="CopyFlow"/>. YamlDotNet handles the
 /// grammar; this class maps the parsed document, normalizes the operation enum, and enforces the source/target
-/// requirements. Secret material (storage keys, SAS, SFTP passwords/keys) is always a <c>${...}</c> reference, never
+/// requirements. Secret material (storage keys, SAS, connection strings) is always a <c>${...}</c> reference, never
 /// inline, matching every other flow kind.
 /// </summary>
 public sealed class YamlCopyFlowLoader
@@ -64,6 +64,7 @@ public sealed class YamlCopyFlowLoader
             Source = MapEndpoint(sourceYaml, "source", source),
             Target = MapEndpoint(targetYaml, "target", source),
             Options = MapOptions(y.Options),
+            Outputs = FileOutputMapping.Map(y.Output, y.Outputs, "cpy", source),
         };
     }
 
@@ -77,10 +78,6 @@ public sealed class YamlCopyFlowLoader
             ConnectionStringRef = YamlDocumentParts.NullIfBlank(y.ConnectionStringRef),
             SasTokenRef = YamlDocumentParts.NullIfBlank(y.SasTokenRef),
             AccountKeyRef = YamlDocumentParts.NullIfBlank(y.AccountKeyRef),
-            Username = YamlDocumentParts.NullIfBlank(y.Username),
-            PasswordRef = YamlDocumentParts.NullIfBlank(y.PasswordRef),
-            PrivateKeyRef = YamlDocumentParts.NullIfBlank(y.PrivateKeyRef),
-            PassphraseRef = YamlDocumentParts.NullIfBlank(y.PassphraseRef),
         };
 
     private static CopyOptions MapOptions(CopyOptionsYaml? y)
@@ -134,6 +131,12 @@ internal sealed class CopyDocumentYaml
     public CopyEndpointYaml? Source { get; set; }
     public CopyEndpointYaml? Target { get; set; }
     public CopyOptionsYaml? Options { get; set; }
+
+    /// <summary>A single declared output (convenience for the one-folder case).</summary>
+    public FileOutputYaml? Output { get; set; }
+
+    /// <summary>Several declared outputs: one entry per distinct folder/pattern the copy produces.</summary>
+    public List<FileOutputYaml>? Outputs { get; set; }
 }
 
 internal sealed class CopyEndpointYaml
@@ -145,10 +148,6 @@ internal sealed class CopyEndpointYaml
     public string? ConnectionStringRef { get; set; }
     public string? SasTokenRef { get; set; }
     public string? AccountKeyRef { get; set; }
-    public string? Username { get; set; }
-    public string? PasswordRef { get; set; }
-    public string? PrivateKeyRef { get; set; }
-    public string? PassphraseRef { get; set; }
 }
 
 internal sealed class CopyOptionsYaml

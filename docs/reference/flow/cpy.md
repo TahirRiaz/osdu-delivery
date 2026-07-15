@@ -56,6 +56,8 @@ sqlflow run      lake-relay.flow.yaml
 | `source` | map | yes | | Where files are read and how they are selected. |
 | `target` | map | yes | | Where files are written. |
 | `options` | map | no | | Copy behavior. |
+| `output` | map | no | | A single explicitly declared output, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
+| `outputs` | list | no | | Several explicitly declared outputs, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
 
 ### source / target
 
@@ -88,6 +90,32 @@ Azure endpoints authenticate with the ambient managed identity / az login (`SQLF
 - **copy**: each matched source file is written to the target, at its relative path (or flat when `preserveStructure: false`).
 - **zip**: every matched file is read and bundled into a single `.zip` written to the target under `zipName`. Running a flow purely to produce an archive is a zip-only run.
 - **unzip**: each matched source archive (a `.zip`) is extracted; with `preserveStructure` its entries nest under a folder named for the archive so two archives never collide, flat by entry name otherwise.
+
+## Declared outputs (for lineage)
+
+A copy's target is its output, so by default lineage binds the single target folder to the downstream file ingestion that reads it (Azure storage URIs are matched by canonical identity, so the copy writing `abfss://…/detail` and a load reading `https://….dfs…/detail/` are one node). When one copy fans files into several folders that feed different ingestions (for example `preserveStructure` lands per-object subfolders), declare each output explicitly so each binds independently and every downstream consumer gets an edge from this copy:
+
+```yaml
+flowType: cpy
+name: Vendor_Relay
+source:
+  location: abfss://drop@vendoracct.dfs.core.windows.net
+target:
+  location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/history
+outputs:
+  - { location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/history/detail, srcFile: "*.json" }
+  - { location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/history/sess,   srcFile: "*.json" }
+```
+
+Each entry declares one file set. Matching to a downstream ingestion is engine-parity and supports three forms, the same matcher the file readers use:
+
+| Field | Match |
+|---|---|
+| `location` | Path match: the ingestion's watched folder is this folder or a folder beneath it. |
+| `srcFile` | File-name glob (e.g. `detail_*.json`); two wildcard patterns bind when they can produce a common name. |
+| `srcPathMask` | A regex over the full landing path, applied symmetrically with the ingestion's own `srcPathMask`, for cases the folder prefix cannot express. |
+
+`output` is the singular convenience for the one-folder case; `outputs` is the list. A file set nothing consumes still records its own file node, so it is visible and binds automatically once a matching ingestion is added. Many files landing in one folder need only a single entry with a glob, since the lineage node is the folder.
 
 ## See also
 

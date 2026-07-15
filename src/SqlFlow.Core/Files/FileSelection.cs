@@ -74,8 +74,9 @@ public static class FileSelection
     /// used to connect an invoke's declared output to a downstream file ingestion. A wildcard always searches
     /// within a folder, so the folder is confirmed first, then the file names are compared inside it:
     /// <list type="number">
-    /// <item>Path step: when the consumer declares a path mask it must match the producer's landing path; otherwise
-    /// the producer's folder must be the consumer's watched folder or a folder beneath it.</item>
+    /// <item>Path step: a path mask on either side is applied symmetrically - a consumer mask must match the
+    /// producer's landing path, and a producer mask (declared on an output) must match the consumer's watched path;
+    /// with no mask the producer's folder must be the consumer's watched folder or a folder beneath it.</item>
     /// <item>File step: the producer's file-name pattern must be able to yield a name the consumer's glob accepts. A
     /// concrete producer name is tested with the engine's own glob matcher; two patterns that both carry wildcards
     /// are tested for a non-empty overlap, so neither side has to name a literal file.</item>
@@ -91,13 +92,20 @@ public static class FileSelection
         var (producerDir, producerPattern) = Resolve(producer);
         var (consumerDir, consumerPattern) = Resolve(consumer);
 
-        // Path step: the mask, when present, is the authoritative path constraint (it is a regex over the full
-        // path); otherwise the producer must land in the folder the consumer watches, or a folder beneath it.
+        // Path step: a mask, when present on either side, is an authoritative path constraint (a regex over the full
+        // path) and is applied symmetrically - the consumer's mask must accept the producer's landing path, and the
+        // producer's mask (declared on an output) must accept the consumer's watched path. With no mask on either
+        // side the producer must land in the folder the consumer watches, or a folder beneath it.
         bool pathConfirmed;
-        if (!string.IsNullOrWhiteSpace(consumer.Mask))
+        var producerMask = string.IsNullOrWhiteSpace(producer.Mask) ? null : producer.Mask!;
+        var consumerMask = string.IsNullOrWhiteSpace(consumer.Mask) ? null : consumer.Mask!;
+        if (producerMask is not null || consumerMask is not null)
         {
-            var sample = Combine(producerDir, producerPattern);
-            pathConfirmed = SafeRegexMatch(consumer.Mask!, sample) || SafeRegexMatch(consumer.Mask!, producerDir);
+            var producerSample = Combine(producerDir, producerPattern);
+            var consumerSample = Combine(consumerDir, consumerPattern);
+            pathConfirmed =
+                (consumerMask is null || SafeRegexMatch(consumerMask, producerSample) || SafeRegexMatch(consumerMask, producerDir))
+                && (producerMask is null || SafeRegexMatch(producerMask, consumerSample) || SafeRegexMatch(producerMask, consumerDir));
         }
         else
         {

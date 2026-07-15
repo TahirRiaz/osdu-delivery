@@ -232,7 +232,7 @@ public sealed class YamlInvokeFlowLoaderTests
               outputs:
                 - { srcFile: orders_*.csv }
             """, StringComparison.Ordinal)));
-        Assert.Contains("'invoke.outputs[0].location' is required when an invoke declares an output.", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("'invoke.outputs[0].location' is required when a flow declares an output.", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -243,7 +243,7 @@ public sealed class YamlInvokeFlowLoaderTests
               output:
                 srcFile: orders_*.csv
             """, StringComparison.Ordinal)));
-        Assert.Contains("'invoke.output.location' is required when an invoke declares an output.", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("'invoke.output.location' is required when a flow declares an output.", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

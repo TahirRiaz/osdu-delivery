@@ -358,22 +358,43 @@ public sealed class FlowSetCollector
                 break;
 
             case CopyFlowDocument doc:
-                // A copy reads files from its source location and writes them to its target location; both are file
-                // nodes, so it chains an upstream producer (the source drop zone) to the downstream file flow that
-                // reads the target.
+            {
+                // A copy reads files from its source location and writes them to its target. The source is a file node
+                // that chains an upstream producer (the drop zone). For the write side: when the author declares
+                // outputs, the copy is a file producer whose declared drops each fan out to every ingestion that reads
+                // them (a copy that lands several folders feeding several loads); otherwise the single target folder is
+                // the write node the downstream file flow reads.
                 result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, doc.Flow.Source.Location, root));
-                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Target.Location, root));
+                if (doc.Flow.Outputs.Count > 0)
+                {
+                    producers.Add(new FileProducer(headers[0].Name, doc.Flow.Outputs));
+                }
+                else
+                {
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Target.Location, root));
+                }
+
                 break;
+            }
 
             case SftpFlowDocument doc:
             {
-                // Download reads the server and writes the lake; upload reverses it. The lake write chains to the
-                // downstream file flow that reads that location.
+                // Download reads the server and writes the lake; upload reverses it. On the lake-write side, declared
+                // outputs make the download a file producer whose drops fan out to every ingestion that reads them (a
+                // download of several file sets feeding several loads); otherwise the single lake folder is the write
+                // node the downstream file flow reads.
                 var server = $"sftp://{doc.Flow.Server.Host}:{doc.Flow.Server.Port}{doc.Flow.RemotePath}";
                 if (doc.Flow.Direction == Core.Sftp.SftpDirection.Download)
                 {
                     result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, server, root));
-                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Local, root));
+                    if (doc.Flow.Outputs.Count > 0)
+                    {
+                        producers.Add(new FileProducer(headers[0].Name, doc.Flow.Outputs));
+                    }
+                    else
+                    {
+                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Local, root));
+                    }
                 }
                 else
                 {
@@ -436,6 +457,13 @@ public sealed class FlowSetCollector
     /// a checkout moving between machines.</summary>
     private static string NormalizeFileIdentity(string location, string root)
     {
+        // An Azure Storage path is one node regardless of the URI shape it was written or read in: a cpy/sftp
+        // target in abfss:// form and a file ingestion reading the same folder in https://...dfs form must bind.
+        if (AzureBlobLocation.CanonicalIdentity(location) is { } azure)
+        {
+            return azure;
+        }
+
         if (location.Contains("://", StringComparison.Ordinal))
         {
             return location;
@@ -500,7 +528,7 @@ public sealed class FlowSetCollector
 
     /// <summary>An invoke that declares it lands one or more file drops, awaiting reconciliation against the file
     /// ingestions.</summary>
-    private sealed record FileProducer(string Flow, IReadOnlyList<InvokeOutput> Outputs);
+    private sealed record FileProducer(string Flow, IReadOnlyList<FileOutput> Outputs);
 
     /// <summary>A file ingestion's source: the file node it reads and the selection spec a producer is matched
     /// against.</summary>

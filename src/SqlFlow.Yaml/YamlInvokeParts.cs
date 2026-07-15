@@ -191,75 +191,10 @@ internal static partial class YamlInvokeParts
             PipelineName = pipeline,
             RunbookName = runbook,
             ParameterJson = ParametersToJson(node.Parameters, $"{section}.parameters", source),
-            Outputs = MapOutputs(node.Output, node.Outputs, section, source),
+            Outputs = FileOutputMapping.Map(node.Output, node.Outputs, section, source),
             OnErrorResume = node.OnErrorResume ?? true,
             TargetServicePrincipalReference = "@" + spName,
         };
-    }
-
-    /// <summary>Maps and validates the invoke's file drops: the singular <c>output:</c> convenience and the plural
-    /// <c>outputs:</c> list, combined into one list (singular first). Each entry's <c>location</c> is required (a
-    /// drop with nowhere to land is meaningless) and its <c>srcPathMask</c> must be a valid regex, so a broken
-    /// declaration fails at parse rather than silently never matching downstream. Returns an empty list when the
-    /// flow declares neither.</summary>
-    public static IReadOnlyList<InvokeOutput> MapOutputs(
-        InvokeOutputYaml? single, List<InvokeOutputYaml>? many, string section, string source)
-    {
-        var outputs = new List<InvokeOutput>();
-        if (single is not null)
-        {
-            outputs.Add(MapOutput(single, $"{section}.output", source));
-        }
-
-        if (many is not null)
-        {
-            for (var i = 0; i < many.Count; i++)
-            {
-                var node = many[i] ?? throw new FlowValidationException(
-                    $"{source}: '{section}.outputs[{i}]' must be a map of output fields.");
-                outputs.Add(MapOutput(node, $"{section}.outputs[{i}]", source));
-            }
-        }
-
-        return outputs;
-    }
-
-    private static InvokeOutput MapOutput(InvokeOutputYaml node, string section, string source)
-    {
-        var location = YamlDocumentParts.NullIfBlank(node.Location)?.Trim()
-            ?? throw new FlowValidationException(
-                $"{source}: '{section}.location' is required when an invoke declares an output.");
-
-        var mask = YamlDocumentParts.NullIfBlank(node.SrcPathMask)?.Trim();
-        if (mask is not null && !IsValidRegex(mask))
-        {
-            throw new FlowValidationException(
-                $"{source}: '{section}.srcPathMask' is not a valid regular expression.");
-        }
-
-        return new InvokeOutput
-        {
-            Location = location,
-            SrcFile = YamlDocumentParts.NullIfBlank(node.SrcFile)?.Trim(),
-            SrcPathMask = mask,
-        };
-    }
-
-    private static bool IsValidRegex(string pattern)
-    {
-        try
-        {
-            _ = Regex.Match(string.Empty, pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return true;
-        }
     }
 
     /// <summary>Validates a pre/post invoke hook reference against the document's declared invokes.</summary>

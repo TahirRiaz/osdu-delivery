@@ -1,3 +1,4 @@
+using SqlFlow.Core.Files;
 using SqlFlow.Core.Identity;
 
 namespace SqlFlow.Core.Sftp;
@@ -44,6 +45,14 @@ public sealed record SftpFlow
 
     /// <summary>Preserve the source's folder structure under the destination root; flat by file name otherwise.</summary>
     public bool PreserveStructure { get; init; } = true;
+
+    /// <summary>Optional explicit declaration of the file set(s) this transfer produces, for lineage. A download's
+    /// output is <see cref="Local"/>, so when this is empty lineage binds that single folder to the downstream
+    /// ingestion. Declare outputs when one download drops several distinct file sets (e.g. several vendor objects
+    /// into several subfolders) that feed different ingestions: each entry binds independently, by folder, file-name
+    /// glob, or path regex, to every ingestion that reads it, so every consumer of a downloaded file gets an edge
+    /// from this flow.</summary>
+    public IReadOnlyList<FileOutput> Outputs { get; init; } = [];
 }
 
 /// <summary>The direction an SFTP flow moves files.</summary>

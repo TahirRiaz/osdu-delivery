@@ -75,6 +75,7 @@ public sealed class YamlSftpFlowLoader
             ModifiedWithinDays = y.ModifiedWithinDays ?? 0,
             Overwrite = y.Overwrite ?? true,
             PreserveStructure = y.PreserveStructure ?? true,
+            Outputs = FileOutputMapping.Map(y.Output, y.Outputs, "sftp", source),
         };
     }
 
@@ -119,6 +120,12 @@ internal sealed class SftpDocumentYaml
     public int? ModifiedWithinDays { get; set; }
     public bool? Overwrite { get; set; }
     public bool? PreserveStructure { get; set; }
+
+    /// <summary>A single declared output (convenience for the one-folder case).</summary>
+    public FileOutputYaml? Output { get; set; }
+
+    /// <summary>Several declared outputs: one entry per distinct file set the download drops.</summary>
+    public List<FileOutputYaml>? Outputs { get; set; }
 }
 
 internal sealed class SftpServerYaml

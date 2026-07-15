@@ -1,4 +1,3 @@
-using SqlFlow.Azure;
 using SqlFlow.Core;
 using Xunit;
 
@@ -95,5 +94,40 @@ public sealed class AzureBlobLocationTests
     public void Parse_RejectsUnsupportedLocations(string uri)
     {
         Assert.Throws<SqlFlowException>(() => AzureBlobLocation.Parse(uri));
+    }
+
+    [Theory]
+    // The abfss authority form and the https REST form for the same container path collapse to one identity,
+    // so a cpy/sftp target and a file ingestion reading it back bind on a single lineage node.
+    [InlineData("abfss://datalakev2@acct.dfs.core.windows.net/raw/baatbooking/history/detail")]
+    [InlineData("https://acct.dfs.core.windows.net/datalakev2/raw/baatbooking/history/detail/")]
+    [InlineData("https://acct.blob.core.windows.net/datalakev2/raw/baatbooking/history/detail")]
+    [InlineData("abfss://DataLakeV2@ACCT.dfs.core.windows.net/raw/baatbooking/history/detail")]
+    public void CanonicalIdentity_UnifiesUriShapesForOneContainerPath(string uri)
+    {
+        Assert.Equal(
+            "az://acct/datalakev2/raw/baatbooking/history/detail",
+            AzureBlobLocation.CanonicalIdentity(uri));
+    }
+
+    [Fact]
+    public void CanonicalIdentity_KeepsBlobPathCase_ButFoldsAccountAndContainer()
+    {
+        // Account and container are case-insensitive in Azure; the blob path is not, so it is preserved.
+        Assert.Equal(
+            "az://acct/fs/Raw/Orders/File.json",
+            AzureBlobLocation.CanonicalIdentity("abfss://FS@Acct.dfs.core.windows.net/Raw/Orders/File.json"));
+    }
+
+    [Theory]
+    [InlineData("https://example.com/data/x.json")]
+    [InlineData("s3://bucket/key.json")]
+    [InlineData("/local/path/x.json")]
+    [InlineData("sftp://host:22/outbound")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void CanonicalIdentity_ReturnsNullForNonAzureLocations(string? location)
+    {
+        Assert.Null(AzureBlobLocation.CanonicalIdentity(location));
     }
 }

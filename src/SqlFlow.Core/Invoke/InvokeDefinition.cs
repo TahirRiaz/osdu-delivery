@@ -1,3 +1,5 @@
+using SqlFlow.Core.Files;
+
 namespace SqlFlow.Core.Invoke;
 
 /// <summary>
@@ -43,7 +45,7 @@ public sealed record InvokeDefinition
     /// entry per distinct folder/pattern: an SFTP download or a fan-out pipeline that lands several file sets into
     /// several folders declares one output each, and each binds independently to whatever ingestion reads it. Empty
     /// when the flow declares no <c>output:</c>/<c>outputs:</c>.</summary>
-    public IReadOnlyList<InvokeOutput> Outputs { get; init; } = [];
+    public IReadOnlyList<FileOutput> Outputs { get; init; } = [];
 
     /// <summary>Legacy DeactivateFromBatch. NOT consumed in V3 (carried only for control-DB / legacy import
     /// fidelity): batch membership is controlled by the batch document's <c>members.inactive</c> globs, not a

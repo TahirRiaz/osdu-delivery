@@ -456,6 +456,25 @@ mod tests {
     }
 
     #[test]
+    fn copy_and_sftp_census_resolve_declared_output_keys() {
+        // cpy and sftp share the root-level output/outputs declaration used to build lineage.
+        for kind in ["cpy", "sftp"] {
+            let c = Census::for_flow_type(Some(kind));
+            assert!(matches!(c.resolve(&ak(&["output", "location"])), Resolution::Exact(_)));
+            assert!(matches!(c.resolve(&ak(&["output", "srcFile"])), Resolution::Exact(_)));
+            assert!(matches!(c.resolve(&ak(&["output", "srcPathMask"])), Resolution::Exact(_)));
+            assert!(matches!(
+                c.resolve(&[AuthoredSeg::Key("outputs".into()), AuthoredSeg::List, AuthoredSeg::Key("location".into())]),
+                Resolution::Exact(_)
+            ));
+            assert!(matches!(
+                c.resolve(&[AuthoredSeg::Key("outputs".into()), AuthoredSeg::List, AuthoredSeg::Key("srcPathMask".into())]),
+                Resolution::Exact(_)
+            ));
+        }
+    }
+
+    #[test]
     fn invoke_census_resolves_output_and_outputs_keys() {
         let c = Census::for_flow_type(Some("inv"));
         // The singular output block and its documented leaves resolve exactly.

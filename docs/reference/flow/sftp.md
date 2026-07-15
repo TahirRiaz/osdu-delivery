@@ -61,6 +61,8 @@ sqlflow run      vendor-settlement.flow.yaml
 | `modifiedWithinDays` | int | no | `0` | Only transfer files modified within this many days; 0 = all. |
 | `overwrite` | bool | no | `true` | Overwrite an existing destination file; when false a collision fails rather than clobbers. |
 | `preserveStructure` | bool | no | `true` | Preserve the source's folder structure under the destination; flat by name otherwise. |
+| `output` | map | no | | A single explicitly declared output, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
+| `outputs` | list | no | | Several explicitly declared outputs, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
 
 ### server
 
@@ -74,6 +76,35 @@ sqlflow run      vendor-settlement.flow.yaml
 | `passphraseRef` | secret ref | no | | A `${...}` reference to the passphrase protecting `privateKeyRef`. |
 
 Exactly one of `passwordRef` / `privateKeyRef` is required; a flow with neither fails at run time. Secret material is always a whole `${keyvault:...}` / `${env:...}` reference, never inline.
+
+## Declared outputs (for lineage)
+
+A download's output is `local`, so by default lineage binds that single folder to the downstream file ingestion that reads it. When one download drops several distinct file sets that feed different ingestions, declare each output explicitly so every consumer of a downloaded file gets an edge from this download:
+
+```yaml
+flowType: sftp
+name: Vendor_Drop
+direction: download
+server:
+  host: sftp.vendor.com
+  username: svc
+  passwordRef: ${keyvault:dw-keyvault-prod/vendor-sftp-password}
+remotePath: /outbound
+local: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/inbound
+outputs:
+  - { location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/inbound, srcFile: "orders_*.json" }
+  - { location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/inbound, srcFile: "invoices_*.json" }
+```
+
+Each entry declares one file set. Matching to a downstream ingestion is engine-parity and supports three forms, the same matcher the file readers use:
+
+| Field | Match |
+|---|---|
+| `location` | Path match: the ingestion's watched folder is this folder or a folder beneath it. |
+| `srcFile` | File-name glob (e.g. `orders_*.json`); two wildcard patterns bind when they can produce a common name. |
+| `srcPathMask` | A regex over the full landing path, applied symmetrically with the ingestion's own `srcPathMask`, for cases the folder prefix cannot express. |
+
+`output` is the singular convenience for the one-folder case; `outputs` is the list. A file set nothing consumes still records its own file node, so it is visible and binds automatically once a matching ingestion is added. Many files landing in one folder need only a single entry with a glob, since the lineage node is the folder. Declared outputs describe the lake side of a download; on an upload the remote server is the output.
 
 ## See also
 

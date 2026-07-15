@@ -1,6 +1,4 @@
-using SqlFlow.Core;
-
-namespace SqlFlow.Azure;
+namespace SqlFlow.Core;
 
 /// <summary>
 /// A parsed Azure Storage location: the account, the container (filesystem), and the in-container blob path,
@@ -15,6 +13,8 @@ namespace SqlFlow.Azure;
 /// The SDK always talks to the blob endpoint (<see cref="BlobServiceEndpoint"/>), which serves both flat and
 /// hierarchical-namespace accounts, while <see cref="UriFor"/> reconstructs a listed blob's URI in the exact
 /// scheme and host the caller used, so provenance columns and path masks see the location they were given.
+/// <para>The type lives in SqlFlow.Core (no Azure SDK dependency) so every layer that only needs the parsed
+/// coordinates - the storage engines, lineage identity, the catalog - shares one parser.</para>
 /// </summary>
 public sealed record AzureBlobLocation
 {
@@ -50,6 +50,25 @@ public sealed record AzureBlobLocation
         return ContainerInAuthority
             ? $"{Scheme}://{Container}@{host}/{path}"
             : $"{Scheme}://{host}/{Container}/{path}";
+    }
+
+    /// <summary>
+    /// A scheme- and host-independent identity for an Azure Storage location, so the same container path
+    /// written as <c>abfss://c@acct.dfs.core.windows.net/p</c> and read back as
+    /// <c>https://acct.dfs.core.windows.net/c/p/</c> (or with a trailing slash) resolves to one lineage node.
+    /// The account and container are case-folded (both are case-insensitive in Azure); the blob path keeps its
+    /// case (blob names are case-sensitive) and its trailing slash is already trimmed by the parser. Returns
+    /// <c>null</c> for a location that is not an Azure Storage URI, so callers fall back to their own identity.
+    /// </summary>
+    public static string? CanonicalIdentity(string? location)
+    {
+        if (!IsAzureStorageUri(location))
+        {
+            return null;
+        }
+
+        var parsed = Parse(location!);
+        return $"az://{parsed.Account.ToLowerInvariant()}/{parsed.Container.ToLowerInvariant()}/{parsed.BlobPath}";
     }
 
     /// <summary>True if <paramref name="location"/> is an Azure Storage URI this store handles.</summary>
