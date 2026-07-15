@@ -52,17 +52,20 @@ sqlflow run      vendor-settlement.flow.yaml
 | `flowType` | string | yes | | Must be `sftp`. |
 | `name` | string | yes | | Flow identity; seeds the stable flow id. |
 | `batch` | string | no | | Batch label recorded with the run. |
-| `direction` | enum | no | `download` | `download` (server -> local) or `upload` (local -> server). |
+| `direction` | enum | no | `download` | `download` (server -> local) or `upload` (local -> server). Applies to the whole flow. |
 | `server` | map | yes | | The SFTP server and credentials. |
-| `local` | string | yes | | The non-SFTP side: an Azure storage URI or a local/UNC path. Target on download, source on upload. |
-| `remotePath` | string | no | `.` | The directory on the server (the remote root). Listed on download, written to on upload. |
-| `pattern` | string | no | `*` | File-name glob selecting which files transfer. |
-| `recursive` | bool | no | `true` | Recurse into subdirectories under the root. |
-| `modifiedWithinDays` | int | no | `0` | Only transfer files modified within this many days; 0 = all. |
-| `overwrite` | bool | no | `true` | Overwrite an existing destination file; when false a collision fails rather than clobbers. |
-| `preserveStructure` | bool | no | `true` | Preserve the source's folder structure under the destination; flat by name otherwise. |
+| `local` | string | one of | | Single-transfer: the non-SFTP side (Azure storage URI or local/UNC path). Target on download, source on upload. Use `local`/`remotePath` for one transfer, or `items` for several - not both. |
+| `remotePath` | string | no | `.` | Single-transfer: the directory on the server. Listed on download, written to on upload. |
+| `pattern` | string | no | `*` | Single-transfer: file-name glob selecting which files transfer. |
+| `recursive` | bool | no | `true` | Single-transfer: recurse into subdirectories under the root. |
+| `modifiedWithinDays` | int | no | `0` | Single-transfer: only transfer files modified within this many days; 0 = all. |
+| `items` | list | one of | | Several transfers in one pipeline: one entry per file set (see [Transferring many file sets](#transferring-many-file-sets)). |
+| `overwrite` | bool | no | `true` | Overwrite an existing destination file; when false a collision fails rather than clobbers. Applies to every step. |
+| `preserveStructure` | bool | no | `true` | Preserve the source's folder structure under the destination; flat by name otherwise. Applies to every step. |
 | `output` | map | no | | A single explicitly declared output, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
 | `outputs` | list | no | | Several explicitly declared outputs, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
+
+A flow declares **either** a single top-level `local`/`remotePath` transfer **or** an `items` list, never both. Each `items` entry carries its own `local`, `remotePath`, `pattern`, `recursive`, and `modifiedWithinDays`; `server`, `direction`, `overwrite`, and `preserveStructure` are shared by the whole flow.
 
 ### server
 
@@ -76,6 +79,30 @@ sqlflow run      vendor-settlement.flow.yaml
 | `passphraseRef` | secret ref | no | | A `${...}` reference to the passphrase protecting `privateKeyRef`. |
 
 Exactly one of `passwordRef` / `privateKeyRef` is required; a flow with neither fails at run time. Secret material is always a whole `${keyvault:...}` / `${env:...}` reference, never inline.
+
+## Transferring many file sets
+
+One `sftp` pipeline moves as many file sets as it lists, over a single connection, so a vendor that drops several file sets is one pipeline rather than one flow per set. Each `items` entry is an independent transfer with its own `remotePath`, `local`, and selection; `server`, `direction`, `overwrite`, and `preserveStructure` are shared:
+
+```yaml
+flowType: sftp
+name: Vendor_Download
+direction: download
+server:
+  host: sftp.vendor.com
+  username: svc
+  passwordRef: ${keyvault:dw-keyvault-prod/vendor-sftp-password}
+items:
+  - remotePath: /outbound/orders
+    local: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/orders
+    pattern: "orders_*.json"
+    modifiedWithinDays: 3
+  - remotePath: /outbound/invoices
+    local: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/vendor/invoices
+    pattern: "invoices_*.json"
+```
+
+The run reports one aggregated result across all transfers. Lineage is computed from the items: on a download each step's `local` target is a written node the downstream ingestion reads, so every consumer of a downloaded file gets an edge from this one flow.
 
 ## Declared outputs (for lineage)
 

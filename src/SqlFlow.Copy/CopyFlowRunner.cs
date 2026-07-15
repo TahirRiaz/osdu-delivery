@@ -25,8 +25,10 @@ public sealed class CopyFlowRunner
         ArgumentNullException.ThrowIfNull(options);
         var events = options.Events ?? NullRunEventSink.Instance;
 
-        events.Log(RunLogLevel.Info, "run.start",
-            $"copy '{flow.Name}' ({flow.Operation}) {flow.Source.Location} -> {flow.Target.Location}");
+        var summary = flow.Steps.Count == 1
+            ? $"{flow.Steps[0].Source.Location} -> {flow.Steps[0].Target.Location}"
+            : $"{flow.Steps.Count} steps";
+        events.Log(RunLogLevel.Info, "run.start", $"copy '{flow.Name}' ({flow.Operation}) {summary}");
 
         var runId = options.RunId ?? Guid.NewGuid();
         var result = await _engine.RunAsync(flow, runId, events, ct).ConfigureAwait(false);

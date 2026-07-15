@@ -48,46 +48,51 @@ public sealed class SftpEngine
 
         try
         {
+            // One connection serves every step: a flow that moves several file sets does so over a single session.
             using var client = await ConnectAsync(flow.Server, ct).ConfigureAwait(false);
-            var cutoff = flow.ModifiedWithinDays > 0 ? _time.GetUtcNow().AddDays(-flow.ModifiedWithinDays) : (DateTimeOffset?)null;
+            foreach (var step in flow.Steps)
+            {
+                ct.ThrowIfCancellationRequested();
+                var cutoff = step.ModifiedWithinDays > 0 ? _time.GetUtcNow().AddDays(-step.ModifiedWithinDays) : (DateTimeOffset?)null;
 
-            if (flow.Direction == SftpDirection.Download)
-            {
-                var remote = ListRemote(client, flow, cutoff);
-                matched = remote.Count;
-                log.Log(RunLogLevel.Info, "sftp.list", $"matched {matched} remote file(s) under '{flow.RemotePath}'.");
-                foreach (var (full, relative, _) in remote)
+                if (flow.Direction == SftpDirection.Download)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    using var buffer = new MemoryStream();
-                    client.DownloadFile(full, buffer);
-                    var rel = flow.PreserveStructure ? relative : relative[(relative.LastIndexOf('/') + 1)..];
-                    var location = await WriteLakeAsync(flow.Local, rel, buffer.ToArray(), flow.Overwrite, ct).ConfigureAwait(false);
-                    files.Add(new SftpFileResult(location, buffer.Length));
-                    log.Log(RunLogLevel.Info, "sftp.download", $"downloaded {buffer.Length} byte(s) -> '{location}'.");
-                }
-            }
-            else
-            {
-                var local = await ListLakeAsync(flow.Local, flow.Pattern, flow.Recursive, cutoff, ct).ConfigureAwait(false);
-                matched = local.Count;
-                log.Log(RunLogLevel.Info, "sftp.list", $"matched {matched} local file(s) at '{flow.Local}'.");
-                foreach (var (absolute, relative, _) in local)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var bytes = await ReadLakeAsync(flow.Local, absolute, ct).ConfigureAwait(false);
-                    var rel = flow.PreserveStructure ? relative : relative[(relative.LastIndexOf('/') + 1)..];
-                    var remote = $"{flow.RemotePath.TrimEnd('/')}/{rel.TrimStart('/')}";
-                    if (!flow.Overwrite && client.Exists(remote))
+                    var remote = ListRemote(client, step, cutoff);
+                    matched += remote.Count;
+                    log.Log(RunLogLevel.Info, "sftp.list", $"matched {remote.Count} remote file(s) under '{step.RemotePath}'.");
+                    foreach (var (full, relative, _) in remote)
                     {
-                        throw new SqlFlowException($"SFTP target '{remote}' already exists and overwrite is disabled.");
+                        ct.ThrowIfCancellationRequested();
+                        using var buffer = new MemoryStream();
+                        client.DownloadFile(full, buffer);
+                        var rel = flow.PreserveStructure ? relative : relative[(relative.LastIndexOf('/') + 1)..];
+                        var location = await WriteLakeAsync(step.Local, rel, buffer.ToArray(), flow.Overwrite, ct).ConfigureAwait(false);
+                        files.Add(new SftpFileResult(location, buffer.Length));
+                        log.Log(RunLogLevel.Info, "sftp.download", $"downloaded {buffer.Length} byte(s) -> '{location}'.");
                     }
+                }
+                else
+                {
+                    var local = await ListLakeAsync(step.Local, step.Pattern, step.Recursive, cutoff, ct).ConfigureAwait(false);
+                    matched += local.Count;
+                    log.Log(RunLogLevel.Info, "sftp.list", $"matched {local.Count} local file(s) at '{step.Local}'.");
+                    foreach (var (absolute, relative, _) in local)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var bytes = await ReadLakeAsync(step.Local, absolute, ct).ConfigureAwait(false);
+                        var rel = flow.PreserveStructure ? relative : relative[(relative.LastIndexOf('/') + 1)..];
+                        var remote = $"{step.RemotePath.TrimEnd('/')}/{rel.TrimStart('/')}";
+                        if (!flow.Overwrite && client.Exists(remote))
+                        {
+                            throw new SqlFlowException($"SFTP target '{remote}' already exists and overwrite is disabled.");
+                        }
 
-                    EnsureRemoteDirectory(client, remote[..remote.LastIndexOf('/')]);
-                    using var stream = new MemoryStream(bytes, writable: false);
-                    client.UploadFile(stream, remote, canOverride: flow.Overwrite);
-                    files.Add(new SftpFileResult($"sftp://{flow.Server.Host}:{flow.Server.Port}{remote}", bytes.Length));
-                    log.Log(RunLogLevel.Info, "sftp.upload", $"uploaded {bytes.Length} byte(s) -> '{remote}'.");
+                        EnsureRemoteDirectory(client, remote[..remote.LastIndexOf('/')]);
+                        using var stream = new MemoryStream(bytes, writable: false);
+                        client.UploadFile(stream, remote, canOverride: flow.Overwrite);
+                        files.Add(new SftpFileResult($"sftp://{flow.Server.Host}:{flow.Server.Port}{remote}", bytes.Length));
+                        log.Log(RunLogLevel.Info, "sftp.upload", $"uploaded {bytes.Length} byte(s) -> '{remote}'.");
+                    }
                 }
             }
 
@@ -113,9 +118,9 @@ public sealed class SftpEngine
 
     // ---- SFTP side ----------------------------------------------------------------------------------------------
 
-    private List<(string Full, string Relative, long Size)> ListRemote(SftpClient client, SftpFlow flow, DateTimeOffset? cutoff)
+    private List<(string Full, string Relative, long Size)> ListRemote(SftpClient client, SftpStep step, DateTimeOffset? cutoff)
     {
-        var root = flow.RemotePath;
+        var root = step.RemotePath;
         var found = new List<(string, string, long)>();
         var stack = new Stack<string>();
         stack.Push(root);
@@ -130,7 +135,7 @@ public sealed class SftpEngine
 
                 if (entry.IsDirectory)
                 {
-                    if (flow.Recursive)
+                    if (step.Recursive)
                     {
                         stack.Push(entry.FullName);
                     }
@@ -138,7 +143,7 @@ public sealed class SftpEngine
                     continue;
                 }
 
-                if (!entry.IsRegularFile || !FileSystemName.MatchesSimpleExpression(flow.Pattern, entry.Name))
+                if (!entry.IsRegularFile || !FileSystemName.MatchesSimpleExpression(step.Pattern, entry.Name))
                 {
                     continue;
                 }

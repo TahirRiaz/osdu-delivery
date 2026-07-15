@@ -359,19 +359,27 @@ public sealed class FlowSetCollector
 
             case CopyFlowDocument doc:
             {
-                // A copy reads files from its source location and writes them to its target. The source is a file node
-                // that chains an upstream producer (the drop zone). For the write side: when the author declares
-                // outputs, the copy is a file producer whose declared drops each fan out to every ingestion that reads
-                // them (a copy that lands several folders feeding several loads); otherwise the single target folder is
-                // the write node the downstream file flow reads.
-                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, doc.Flow.Source.Location, root));
+                // A copy performs one or more steps; lineage is computed from those steps. Each step reads its source
+                // (a file node chaining the upstream drop zone) and writes its target (the file node the downstream
+                // ingestion reads), so one pipeline copying a whole source system connects every landed folder to its
+                // load. An explicit outputs: block overrides the per-step targets: the copy becomes a file producer
+                // whose declared drops fan out to every matching ingestion (for a step whose consumable folder differs
+                // from its physical target).
+                foreach (var step in doc.Flow.Steps)
+                {
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, step.Source.Location, root));
+                }
+
                 if (doc.Flow.Outputs.Count > 0)
                 {
                     producers.Add(new FileProducer(headers[0].Name, doc.Flow.Outputs));
                 }
                 else
                 {
-                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Target.Location, root));
+                    foreach (var step in doc.Flow.Steps)
+                    {
+                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, step.Target.Location, root));
+                    }
                 }
 
                 break;
@@ -379,27 +387,37 @@ public sealed class FlowSetCollector
 
             case SftpFlowDocument doc:
             {
-                // Download reads the server and writes the lake; upload reverses it. On the lake-write side, declared
-                // outputs make the download a file producer whose drops fan out to every ingestion that reads them (a
-                // download of several file sets feeding several loads); otherwise the single lake folder is the write
-                // node the downstream file flow reads.
-                var server = $"sftp://{doc.Flow.Server.Host}:{doc.Flow.Server.Port}{doc.Flow.RemotePath}";
+                // Lineage is computed from the flow's steps. Download reads each step's server path and writes each
+                // step's lake target; upload reverses it. An explicit outputs: block overrides the per-step download
+                // targets - the download becomes a file producer whose declared drops fan out to every matching
+                // ingestion (for a step whose consumable folder differs from its physical target).
+                var host = $"sftp://{doc.Flow.Server.Host}:{doc.Flow.Server.Port}";
                 if (doc.Flow.Direction == Core.Sftp.SftpDirection.Download)
                 {
-                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, server, root));
+                    foreach (var step in doc.Flow.Steps)
+                    {
+                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, host + step.RemotePath, root));
+                    }
+
                     if (doc.Flow.Outputs.Count > 0)
                     {
                         producers.Add(new FileProducer(headers[0].Name, doc.Flow.Outputs));
                     }
                     else
                     {
-                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Local, root));
+                        foreach (var step in doc.Flow.Steps)
+                        {
+                            result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, step.Local, root));
+                        }
                     }
                 }
                 else
                 {
-                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, doc.Flow.Local, root));
-                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, server, root));
+                    foreach (var step in doc.Flow.Steps)
+                    {
+                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, step.Local, root));
+                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, host + step.RemotePath, root));
+                    }
                 }
 
                 break;

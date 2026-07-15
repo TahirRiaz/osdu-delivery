@@ -173,16 +173,24 @@ internal static class Program
                             return 0;
 
                         case CopyFlowDocument doc:
-                            Console.WriteLine(
-                                $"OK  '{doc.Flow.Name}' is valid (copy: {doc.Flow.Operation.ToString().ToLowerInvariant()} " +
-                                $"{doc.Flow.Source.Location} -> {doc.Flow.Target.Location}).");
+                        {
+                            var op = doc.Flow.Operation.ToString().ToLowerInvariant();
+                            var where = doc.Flow.Steps.Count == 1
+                                ? $"{doc.Flow.Steps[0].Source.Location} -> {doc.Flow.Steps[0].Target.Location}"
+                                : $"{doc.Flow.Steps.Count} steps";
+                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (copy: {op} {where}).");
                             return 0;
+                        }
 
                         case SftpFlowDocument doc:
-                            Console.WriteLine(
-                                $"OK  '{doc.Flow.Name}' is valid (sftp: {doc.Flow.Direction.ToString().ToLowerInvariant()} " +
-                                $"{doc.Flow.Server.Host}:{doc.Flow.Server.Port}{doc.Flow.RemotePath} <-> {doc.Flow.Local}).");
+                        {
+                            var dir = doc.Flow.Direction.ToString().ToLowerInvariant();
+                            var where = doc.Flow.Steps.Count == 1
+                                ? $"{doc.Flow.Server.Host}:{doc.Flow.Server.Port}{doc.Flow.Steps[0].RemotePath} <-> {doc.Flow.Steps[0].Local}"
+                                : $"{doc.Flow.Server.Host}:{doc.Flow.Server.Port} ({doc.Flow.Steps.Count} steps)";
+                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (sftp: {dir} {where}).");
                             return 0;
+                        }
 
                         default:
                             throw new SqlFlowException("Unhandled document kind.");

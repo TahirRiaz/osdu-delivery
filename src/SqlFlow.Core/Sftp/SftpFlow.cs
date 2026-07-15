@@ -21,14 +21,40 @@ public sealed record SftpFlow
 
     public required SftpServer Server { get; init; }
 
-    /// <summary>Which way files move: down from the server into <see cref="Local"/> (default), or up to the server.</summary>
+    /// <summary>Which way files move: down from the server into each step's local target (default), or up to the
+    /// server. One direction applies to the whole flow.</summary>
     public SftpDirection Direction { get; init; } = SftpDirection.Download;
 
+    /// <summary>The transfer steps this flow performs, in order: each a remote-path/local-path pair with its own
+    /// selection. One flow moves as many file sets as it declares over a single connection, so a vendor that drops
+    /// several file sets is one pipeline (each remote folder to its lake folder) rather than one flow per set. Always
+    /// at least one; the single-transfer case is a one-step list. <see cref="Overwrite"/> and
+    /// <see cref="PreserveStructure"/> apply to every step.</summary>
+    public required IReadOnlyList<SftpStep> Steps { get; init; }
+
+    /// <summary>Overwrite an existing destination file; when false a collision fails rather than clobbers.</summary>
+    public bool Overwrite { get; init; } = true;
+
+    /// <summary>Preserve the source's folder structure under the destination root; flat by file name otherwise.</summary>
+    public bool PreserveStructure { get; init; } = true;
+
+    /// <summary>Optional explicit declaration of the file set(s) this transfer produces, for lineage. By default
+    /// lineage is computed from the steps themselves (each download step's local target is a written file node the
+    /// downstream ingestion reads). Declare outputs only to override that, for a step whose consumable folder differs
+    /// from its physical target: each entry binds independently, by folder, file-name glob, or path regex, to every
+    /// ingestion that reads it, so every consumer of a downloaded file gets an edge from this flow.</summary>
+    public IReadOnlyList<FileOutput> Outputs { get; init; } = [];
+}
+
+/// <summary>One transfer within an SFTP flow: a remote path paired with a local path and its own file selection. A
+/// flow lists as many steps as it needs, so one pipeline downloads (or uploads) many file sets over one connection.</summary>
+public sealed record SftpStep
+{
     /// <summary>The non-SFTP side: a data-lake URI (<c>abfss://…</c> / https) or a local/UNC path. On a download it is
     /// the target files are written to; on an upload it is the source files are read from.</summary>
     public required string Local { get; init; }
 
-    /// <summary>The directory on the SFTP server (the remote root). On download it is listed; on upload it is written to.</summary>
+    /// <summary>The directory on the SFTP server. On download it is listed; on upload it is written to.</summary>
     public string RemotePath { get; init; } = ".";
 
     /// <summary>File-name glob selecting which files transfer. Default <c>*</c>.</summary>
@@ -39,20 +65,6 @@ public sealed record SftpFlow
 
     /// <summary>Only transfer files modified within this many days (0 = all).</summary>
     public int ModifiedWithinDays { get; init; }
-
-    /// <summary>Overwrite an existing destination file; when false a collision fails rather than clobbers.</summary>
-    public bool Overwrite { get; init; } = true;
-
-    /// <summary>Preserve the source's folder structure under the destination root; flat by file name otherwise.</summary>
-    public bool PreserveStructure { get; init; } = true;
-
-    /// <summary>Optional explicit declaration of the file set(s) this transfer produces, for lineage. A download's
-    /// output is <see cref="Local"/>, so when this is empty lineage binds that single folder to the downstream
-    /// ingestion. Declare outputs when one download drops several distinct file sets (e.g. several vendor objects
-    /// into several subfolders) that feed different ingestions: each entry binds independently, by folder, file-name
-    /// glob, or path regex, to every ingestion that reads it, so every consumer of a downloaded file gets an edge
-    /// from this flow.</summary>
-    public IReadOnlyList<FileOutput> Outputs { get; init; } = [];
 }
 
 /// <summary>The direction an SFTP flow moves files.</summary>

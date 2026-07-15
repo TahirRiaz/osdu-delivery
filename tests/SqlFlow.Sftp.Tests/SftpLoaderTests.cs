@@ -40,13 +40,60 @@ public sealed class SftpLoaderTests
         Assert.Equal(22, flow.Server.Port);                         // default
         Assert.Equal("svc", flow.Server.Username);
         Assert.Equal("${keyvault:v/sftp-pwd}", flow.Server.PasswordRef);
-        Assert.Equal("/outbound", flow.RemotePath);
-        Assert.Equal("abfss://lake@acct.dfs.core.windows.net/raw/vendor", flow.Local);
-        Assert.Equal("*.xml", flow.Pattern);
-        Assert.Equal(3, flow.ModifiedWithinDays);
-        Assert.True(flow.Recursive);                                // default
+        var step = Assert.Single(flow.Steps);
+        Assert.Equal("/outbound", step.RemotePath);
+        Assert.Equal("abfss://lake@acct.dfs.core.windows.net/raw/vendor", step.Local);
+        Assert.Equal("*.xml", step.Pattern);
+        Assert.Equal(3, step.ModifiedWithinDays);
+        Assert.True(step.Recursive);                                // default
         Assert.True(flow.Overwrite);                                // default
         Assert.True(flow.PreserveStructure);                        // default
+    }
+
+    [Fact]
+    public void ItemsList_MapsEachStep()
+    {
+        var flow = Loader.Parse("""
+            flowType: sftp
+            name: Vendor_MultiDownload
+            direction: download
+            server:
+              host: sftp.vendor.com
+              username: svc
+              passwordRef: ${keyvault:v/sftp-pwd}
+            items:
+              - remotePath: /outbound/orders
+                local: abfss://lake@acct.dfs.core.windows.net/raw/orders
+                pattern: "orders_*.json"
+                modifiedWithinDays: 3
+              - remotePath: /outbound/invoices
+                local: abfss://lake@acct.dfs.core.windows.net/raw/invoices
+                pattern: "inv_*.json"
+            """);
+
+        Assert.Equal(2, flow.Steps.Count);
+        Assert.Equal("/outbound/orders", flow.Steps[0].RemotePath);
+        Assert.Equal("orders_*.json", flow.Steps[0].Pattern);
+        Assert.Equal(3, flow.Steps[0].ModifiedWithinDays);
+        Assert.EndsWith("/raw/invoices", flow.Steps[1].Local, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ItemsAndSingleLocal_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: sftp
+            name: x
+            server:
+              host: h
+              username: u
+              passwordRef: ${env:P}
+            local: abfss://lake@acct.dfs.core.windows.net/raw/a
+            items:
+              - remotePath: /b
+                local: abfss://lake@acct.dfs.core.windows.net/raw/b
+            """));
+        Assert.Contains("not both", ex.Message, StringComparison.Ordinal);
     }
 
     [Theory]

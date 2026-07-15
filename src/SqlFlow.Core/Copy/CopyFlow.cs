@@ -21,22 +21,33 @@ public sealed record CopyFlow
     /// <summary>The batch (source system) grouping label under which this flow's runs report.</summary>
     public string? Batch { get; init; }
 
-    public required CopyEndpoint Source { get; init; }
+    /// <summary>The copy steps this flow performs, in order: each a source-to-target file transfer. One flow copies as
+    /// many file sets as it declares, so a whole source system is one pipeline (e.g. a vendor's DETAIL, SESS, TRANS
+    /// folders each to their lake folder) rather than one flow per folder. Always at least one; the single-copy case
+    /// is a one-step list. The flow-level <see cref="Operation"/> and <see cref="Options"/> apply to every step.</summary>
+    public required IReadOnlyList<CopyStep> Steps { get; init; }
 
-    public required CopyEndpoint Target { get; init; }
-
-    /// <summary>What the flow does with the matched files: copy them verbatim, zip them into one archive, or unzip
-    /// each matched archive. Default <see cref="CopyOperation.Copy"/>.</summary>
+    /// <summary>What the flow does with each step's matched files: copy them verbatim, zip them into one archive, or
+    /// unzip each matched archive. Default <see cref="CopyOperation.Copy"/>.</summary>
     public CopyOperation Operation { get; init; } = CopyOperation.Copy;
 
     public CopyOptions Options { get; init; } = new();
 
-    /// <summary>Optional explicit declaration of the file set(s) this copy produces, for lineage. A copy's target is
-    /// its output, so when this is empty lineage binds the single target folder to the downstream ingestion. Declare
-    /// outputs when one copy fans files into several folders that feed different ingestions (e.g.
-    /// <c>preserveStructure</c> lands per-object subfolders): each entry binds independently, by folder, file-name
-    /// glob, or path regex, to every ingestion that reads it.</summary>
+    /// <summary>Optional explicit declaration of the file set(s) this copy produces, for lineage. By default lineage
+    /// is computed from the steps themselves (each step's target is a written file node the downstream ingestion
+    /// reads). Declare outputs only to override that, for a step whose consumable folder differs from its physical
+    /// target (e.g. <c>preserveStructure</c> lands per-object subfolders): each entry binds independently, by folder,
+    /// file-name glob, or path regex, to every ingestion that reads it.</summary>
     public IReadOnlyList<FileOutput> Outputs { get; init; } = [];
+}
+
+/// <summary>One source-to-target file transfer within a copy flow. A flow lists as many steps as it needs, so one
+/// pipeline copies many file sets, each with its own source selection and target.</summary>
+public sealed record CopyStep
+{
+    public required CopyEndpoint Source { get; init; }
+
+    public required CopyEndpoint Target { get; init; }
 }
 
 /// <summary>The transformation a copy flow applies as it moves files.</summary>

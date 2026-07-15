@@ -68,14 +68,54 @@ public sealed class YamlSftpFlowLoader
                 PrivateKeyRef = YamlDocumentParts.NullIfBlank(serverYaml.PrivateKeyRef),
                 PassphraseRef = YamlDocumentParts.NullIfBlank(serverYaml.PassphraseRef),
             },
-            Local = Require(y.Local, "local", source),
-            RemotePath = string.IsNullOrWhiteSpace(y.RemotePath) ? "." : y.RemotePath!.Trim(),
-            Pattern = string.IsNullOrWhiteSpace(y.Pattern) ? "*" : y.Pattern!.Trim(),
-            Recursive = y.Recursive ?? true,
-            ModifiedWithinDays = y.ModifiedWithinDays ?? 0,
+            Steps = MapSteps(y, source),
             Overwrite = y.Overwrite ?? true,
             PreserveStructure = y.PreserveStructure ?? true,
             Outputs = FileOutputMapping.Map(y.Output, y.Outputs, "sftp", source),
+        };
+    }
+
+    /// <summary>Builds the transfer steps from either the singular top-level <c>local:</c>/<c>remotePath:</c> (one
+    /// step) or the plural <c>items:</c> list (one step per entry). Exactly one form is allowed: declaring both, or
+    /// neither, fails at parse.</summary>
+    private static IReadOnlyList<SftpStep> MapSteps(SftpDocumentYaml y, string source)
+    {
+        var hasSingle = !string.IsNullOrWhiteSpace(y.Local) || !string.IsNullOrWhiteSpace(y.RemotePath)
+            || !string.IsNullOrWhiteSpace(y.Pattern) || y.Recursive is not null || y.ModifiedWithinDays is not null;
+        var hasItems = y.Items is { Count: > 0 };
+
+        if (hasSingle && hasItems)
+        {
+            throw new FlowValidationException(
+                $"{source}: declare either a top-level 'local'/'remotePath' or an 'items' list, not both.");
+        }
+
+        if (hasItems)
+        {
+            var steps = new List<SftpStep>(y.Items!.Count);
+            for (var i = 0; i < y.Items!.Count; i++)
+            {
+                var item = y.Items[i] ?? throw new FlowValidationException($"{source}: 'items[{i}]' must be a map.");
+                steps.Add(MapStep(item.Local, item.RemotePath, item.Pattern, item.Recursive, item.ModifiedWithinDays, $"items[{i}]", source));
+            }
+
+            return steps;
+        }
+
+        return [MapStep(y.Local, y.RemotePath, y.Pattern, y.Recursive, y.ModifiedWithinDays, null, source)];
+    }
+
+    private static SftpStep MapStep(
+        string? local, string? remotePath, string? pattern, bool? recursive, int? modifiedWithinDays, string? section, string source)
+    {
+        var localField = section is null ? "local" : $"{section}.local";
+        return new SftpStep
+        {
+            Local = Require(local, localField, source),
+            RemotePath = string.IsNullOrWhiteSpace(remotePath) ? "." : remotePath!.Trim(),
+            Pattern = string.IsNullOrWhiteSpace(pattern) ? "*" : pattern!.Trim(),
+            Recursive = recursive ?? true,
+            ModifiedWithinDays = modifiedWithinDays ?? 0,
         };
     }
 
@@ -121,11 +161,24 @@ internal sealed class SftpDocumentYaml
     public bool? Overwrite { get; set; }
     public bool? PreserveStructure { get; set; }
 
+    /// <summary>Several transfers in one pipeline: one entry per file set. The alternative to the single top-level
+    /// local/remotePath.</summary>
+    public List<SftpItemYaml>? Items { get; set; }
+
     /// <summary>A single declared output (convenience for the one-folder case).</summary>
     public FileOutputYaml? Output { get; set; }
 
     /// <summary>Several declared outputs: one entry per distinct file set the download drops.</summary>
     public List<FileOutputYaml>? Outputs { get; set; }
+}
+
+internal sealed class SftpItemYaml
+{
+    public string? Local { get; set; }
+    public string? RemotePath { get; set; }
+    public string? Pattern { get; set; }
+    public bool? Recursive { get; set; }
+    public int? ModifiedWithinDays { get; set; }
 }
 
 internal sealed class SftpServerYaml

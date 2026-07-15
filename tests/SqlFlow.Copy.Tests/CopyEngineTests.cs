@@ -36,9 +36,19 @@ public sealed class CopyEngineTests : IDisposable
         {
             Name = "T",
             Operation = op,
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = Path.Combine(_dir, src), Pattern = pattern },
+                Target = new CopyEndpoint { Location = Path.Combine(_dir, trg) },
+            }],
+            Options = new CopyOptions { PreserveStructure = preserve, ZipName = zipName },
+        };
+
+    private CopyStep Step(string src, string trg, string pattern = "*")
+        => new()
+        {
             Source = new CopyEndpoint { Location = Path.Combine(_dir, src), Pattern = pattern },
             Target = new CopyEndpoint { Location = Path.Combine(_dir, trg) },
-            Options = new CopyOptions { PreserveStructure = preserve, ZipName = zipName },
         };
 
     [Fact]
@@ -112,14 +122,16 @@ public sealed class CopyEngineTests : IDisposable
         var flow = new CopyFlow
         {
             Name = "T",
-            Source = new CopyEndpoint { Location = Path.Combine(_dir, "src") },
-            Target = new CopyEndpoint { Location = Path.Combine(_dir, "dst") },
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = Path.Combine(_dir, "src") },
+                Target = new CopyEndpoint { Location = "abfss://fs@acct.dfs.core.windows.net/x" },
+            }],
         };
         Write("src/a.txt", "x");
         // A local engine with no Azure endpoint cannot handle an abfss target.
         var engine = new CopyEngine([new LocalCopyEndpoint(TimeProvider.System)], TimeProvider.System);
-        var result = await engine.RunAsync(flow with { Target = new CopyEndpoint { Location = "abfss://fs@acct.dfs.core.windows.net/x" } },
-            Guid.NewGuid(), NullRunEventSink.Instance, default);
+        var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
         Assert.False(result.Success);
         Assert.Contains("No copy endpoint handles the target", result.Error, StringComparison.Ordinal);
     }
@@ -144,8 +156,9 @@ public sealed class CopyEngineTests : IDisposable
 
         Assert.Equal("BB_Baatbooking_00_cpy", flow.Name);
         Assert.Equal(CopyOperation.Zip, flow.Operation);
-        Assert.Equal("*.json", flow.Source.Pattern);
-        Assert.Equal(14, flow.Source.ModifiedWithinDays);
+        var step = Assert.Single(flow.Steps);
+        Assert.Equal("*.json", step.Source.Pattern);
+        Assert.Equal(14, step.Source.ModifiedWithinDays);
         Assert.Equal("bundle.zip", flow.Options.ZipName);
     }
 
@@ -154,5 +167,64 @@ public sealed class CopyEngineTests : IDisposable
     {
         var ex = Assert.Throws<FlowValidationException>(() => new YamlCopyFlowLoader().Parse("flowType: cpy\nname: x\ntarget: { location: ./out }\n"));
         Assert.Contains("'source' is required", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loader_ItemsList_MapsEachStep()
+    {
+        var flow = new YamlCopyFlowLoader().Parse("""
+            flowType: cpy
+            name: BB_Baatbooking_00_cpy
+            batch: BB
+            items:
+              - source: { location: abfss://baatbooking@acct.dfs.core.windows.net/DETAIL, pattern: "*.json", modifiedWithinDays: 14 }
+                target: { location: abfss://datalakev2@acct.dfs.core.windows.net/raw/baatbooking/history/detail }
+              - source: { location: abfss://baatbooking@acct.dfs.core.windows.net/SESS }
+                target: { location: abfss://datalakev2@acct.dfs.core.windows.net/raw/baatbooking/history/sess }
+            """);
+
+        Assert.Equal(2, flow.Steps.Count);
+        Assert.EndsWith("/DETAIL", flow.Steps[0].Source.Location, StringComparison.Ordinal);
+        Assert.EndsWith("/detail", flow.Steps[0].Target.Location, StringComparison.Ordinal);
+        Assert.Equal("*.json", flow.Steps[0].Source.Pattern);
+        Assert.EndsWith("/sess", flow.Steps[1].Target.Location, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loader_ItemsAndSingleSource_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => new YamlCopyFlowLoader().Parse("""
+            flowType: cpy
+            name: x
+            source: { location: ./a }
+            target: { location: ./b }
+            items:
+              - source: { location: ./c }
+                target: { location: ./d }
+            """));
+        Assert.Contains("not both", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Copy_MultipleSteps_CopyEachSourceToItsTarget()
+    {
+        // One pipeline, several copies: each step's files land under its own target folder, counts aggregate.
+        Write("detailsrc/d1.json", "{}");
+        Write("detailsrc/2024/d2.json", "{}");
+        Write("sesssrc/s1.json", "{}");
+
+        var flow = new CopyFlow
+        {
+            Name = "BB",
+            Steps = [Step("detailsrc", "lake/detail"), Step("sesssrc", "lake/sess")],
+        };
+        var result = await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.True(result.Success);
+        Assert.Equal(3, result.Matched);
+        Assert.Equal(3, result.FilesWritten);
+        Assert.True(File.Exists(Path.Combine(_dir, "lake", "detail", "d1.json")));
+        Assert.True(File.Exists(Path.Combine(_dir, "lake", "detail", "2024", "d2.json")));
+        Assert.True(File.Exists(Path.Combine(_dir, "lake", "sess", "s1.json")));
     }
 }

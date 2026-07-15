@@ -456,6 +456,30 @@ mod tests {
     }
 
     #[test]
+    fn copy_and_sftp_census_resolve_items_list_keys() {
+        // The multi-copy/multi-transfer items list and its per-step leaves resolve through the `[]` marker.
+        let cpy = Census::for_flow_type(Some("cpy"));
+        assert!(matches!(
+            cpy.resolve(&[AuthoredSeg::Key("items".into()), AuthoredSeg::List, AuthoredSeg::Key("source".into()), AuthoredSeg::Key("location".into())]),
+            Resolution::Exact(_)
+        ));
+        assert!(matches!(
+            cpy.resolve(&[AuthoredSeg::Key("items".into()), AuthoredSeg::List, AuthoredSeg::Key("target".into()), AuthoredSeg::Key("location".into())]),
+            Resolution::Exact(_)
+        ));
+
+        let sftp = Census::for_flow_type(Some("sftp"));
+        assert!(matches!(
+            sftp.resolve(&[AuthoredSeg::Key("items".into()), AuthoredSeg::List, AuthoredSeg::Key("local".into())]),
+            Resolution::Exact(_)
+        ));
+        assert!(matches!(
+            sftp.resolve(&[AuthoredSeg::Key("items".into()), AuthoredSeg::List, AuthoredSeg::Key("remotePath".into())]),
+            Resolution::Exact(_)
+        ));
+    }
+
+    #[test]
     fn copy_and_sftp_census_resolve_declared_output_keys() {
         // cpy and sftp share the root-level output/outputs declaration used to build lineage.
         for kind in ["cpy", "sftp"] {

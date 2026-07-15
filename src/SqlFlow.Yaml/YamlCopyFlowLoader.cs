@@ -53,19 +53,63 @@ public sealed class YamlCopyFlowLoader
     private static CopyFlow Map(CopyDocumentYaml y, string source)
     {
         var name = YamlDocumentParts.RequireFlowName(y.Name, "a cpy flow", source);
-        var sourceYaml = y.Source ?? throw new FlowValidationException($"{source}: 'source' is required.");
-        var targetYaml = y.Target ?? throw new FlowValidationException($"{source}: 'target' is required.");
 
         return new CopyFlow
         {
             Name = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
             Operation = ParseEnum(y.Operation, CopyOperation.Copy, "operation", source),
-            Source = MapEndpoint(sourceYaml, "source", source),
-            Target = MapEndpoint(targetYaml, "target", source),
+            Steps = MapSteps(y, source),
             Options = MapOptions(y.Options),
             Outputs = FileOutputMapping.Map(y.Output, y.Outputs, "cpy", source),
         };
+    }
+
+    /// <summary>Builds the copy steps from either the singular top-level <c>source:</c>/<c>target:</c> (one step, the
+    /// simple case) or the plural <c>items:</c> list (one step per entry). Exactly one form is allowed: declaring both,
+    /// or neither, fails at parse rather than silently copying nothing or copying twice.</summary>
+    private static IReadOnlyList<CopyStep> MapSteps(CopyDocumentYaml y, string source)
+    {
+        var hasSingle = y.Source is not null || y.Target is not null;
+        var hasItems = y.Items is { Count: > 0 };
+
+        if (hasSingle && hasItems)
+        {
+            throw new FlowValidationException(
+                $"{source}: declare either a top-level 'source'/'target' or an 'items' list, not both.");
+        }
+
+        if (hasItems)
+        {
+            var steps = new List<CopyStep>(y.Items!.Count);
+            for (var i = 0; i < y.Items!.Count; i++)
+            {
+                var item = y.Items[i] ?? throw new FlowValidationException($"{source}: 'items[{i}]' must be a map.");
+                var itemSource = item.Source ?? throw new FlowValidationException($"{source}: 'items[{i}].source' is required.");
+                var itemTarget = item.Target ?? throw new FlowValidationException($"{source}: 'items[{i}].target' is required.");
+                steps.Add(new CopyStep
+                {
+                    Source = MapEndpoint(itemSource, $"items[{i}].source", source),
+                    Target = MapEndpoint(itemTarget, $"items[{i}].target", source),
+                });
+            }
+
+            return steps;
+        }
+
+        if (!hasSingle)
+        {
+            throw new FlowValidationException(
+                $"{source}: a cpy flow needs a 'source'/'target' pair or an 'items' list.");
+        }
+
+        var sourceYaml = y.Source ?? throw new FlowValidationException($"{source}: 'source' is required.");
+        var targetYaml = y.Target ?? throw new FlowValidationException($"{source}: 'target' is required.");
+        return [new CopyStep
+        {
+            Source = MapEndpoint(sourceYaml, "source", source),
+            Target = MapEndpoint(targetYaml, "target", source),
+        }];
     }
 
     private static CopyEndpoint MapEndpoint(CopyEndpointYaml y, string field, string source)
@@ -132,11 +176,21 @@ internal sealed class CopyDocumentYaml
     public CopyEndpointYaml? Target { get; set; }
     public CopyOptionsYaml? Options { get; set; }
 
+    /// <summary>Several source-to-target copies in one pipeline: one entry per file set. The alternative to the single
+    /// top-level source/target.</summary>
+    public List<CopyItemYaml>? Items { get; set; }
+
     /// <summary>A single declared output (convenience for the one-folder case).</summary>
     public FileOutputYaml? Output { get; set; }
 
     /// <summary>Several declared outputs: one entry per distinct folder/pattern the copy produces.</summary>
     public List<FileOutputYaml>? Outputs { get; set; }
+}
+
+internal sealed class CopyItemYaml
+{
+    public CopyEndpointYaml? Source { get; set; }
+    public CopyEndpointYaml? Target { get; set; }
 }
 
 internal sealed class CopyEndpointYaml

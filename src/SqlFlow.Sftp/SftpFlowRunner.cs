@@ -24,8 +24,10 @@ public sealed class SftpFlowRunner
         ArgumentNullException.ThrowIfNull(options);
         var events = options.Events ?? NullRunEventSink.Instance;
 
-        events.Log(RunLogLevel.Info, "run.start",
-            $"sftp '{flow.Name}' ({flow.Direction}) {flow.Server.Host}:{flow.Server.Port}{flow.RemotePath} <-> {flow.Local}");
+        var where = flow.Steps.Count == 1
+            ? $"{flow.Server.Host}:{flow.Server.Port}{flow.Steps[0].RemotePath} <-> {flow.Steps[0].Local}"
+            : $"{flow.Server.Host}:{flow.Server.Port} ({flow.Steps.Count} steps)";
+        events.Log(RunLogLevel.Info, "run.start", $"sftp '{flow.Name}' ({flow.Direction}) {where}");
 
         var runId = options.RunId ?? Guid.NewGuid();
         var result = await _engine.RunAsync(flow, runId, events, ct).ConfigureAwait(false);

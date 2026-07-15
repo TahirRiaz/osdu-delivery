@@ -8,11 +8,13 @@ using SqlFlow.Core.Secrets;
 namespace SqlFlow.Copy;
 
 /// <summary>
-/// Runs a copy flow: selects the source and target endpoints by their location scheme, lists the matched source
-/// files, and moves them - verbatim (<c>copy</c>), bundled into one archive (<c>zip</c>), or extracted from archives
-/// (<c>unzip</c>). It is direction-agnostic: any endpoint pair works, because the transformation happens on the bytes
-/// between an endpoint read and an endpoint write. It never throws for a transfer failure; a failed/partial
-/// <see cref="CopyRunResult"/> is returned so a batch member behaves like a directly-invoked flow.
+/// Runs a copy flow: for each of the flow's steps it selects the source and target endpoints by their location
+/// scheme, lists the matched source files, and moves them - verbatim (<c>copy</c>), bundled into one archive
+/// (<c>zip</c>), or extracted from archives (<c>unzip</c>) - aggregating the matched/written counts across every
+/// step so one pipeline can copy a whole source system in one run. It is direction-agnostic: any endpoint pair works,
+/// because the transformation happens on the bytes between an endpoint read and an endpoint write. It never throws
+/// for a transfer failure; a failed/partial <see cref="CopyRunResult"/> is returned so a batch member behaves like a
+/// directly-invoked flow.
 /// </summary>
 public sealed class CopyEngine
 {
@@ -37,29 +39,38 @@ public sealed class CopyEngine
 
         try
         {
-            var source = Select(flow.Source.Location, "source");
-            var target = Select(flow.Target.Location, "target");
-
-            var items = new List<CopyItem>();
-            await foreach (var item in source.ListAsync(flow.Source, ct).ConfigureAwait(false))
+            // One flow performs many steps in order; each is an independent source-to-target transfer. The matched
+            // and written counts aggregate across every step, so one pipeline that copies a whole source system
+            // reports as a single run.
+            var multiStep = flow.Steps.Count > 1;
+            for (var i = 0; i < flow.Steps.Count; i++)
             {
-                items.Add(item);
-            }
+                ct.ThrowIfCancellationRequested();
+                var step = flow.Steps[i];
+                var source = Select(step.Source.Location, "source");
+                var target = Select(step.Target.Location, "target");
 
-            matched = items.Count;
-            log.Log(RunLogLevel.Info, "copy.list", $"matched {matched} file(s) at '{flow.Source.Location}'.");
+                var items = new List<CopyItem>();
+                await foreach (var item in source.ListAsync(step.Source, ct).ConfigureAwait(false))
+                {
+                    items.Add(item);
+                }
 
-            switch (flow.Operation)
-            {
-                case CopyOperation.Copy:
-                    await CopyAsync(flow, source, target, items, written, log, ct).ConfigureAwait(false);
-                    break;
-                case CopyOperation.Zip:
-                    await ZipAsync(flow, source, target, items, written, log, ct).ConfigureAwait(false);
-                    break;
-                case CopyOperation.Unzip:
-                    await UnzipAsync(flow, source, target, items, written, log, ct).ConfigureAwait(false);
-                    break;
+                matched += items.Count;
+                log.Log(RunLogLevel.Info, "copy.list", $"matched {items.Count} file(s) at '{step.Source.Location}'.");
+
+                switch (flow.Operation)
+                {
+                    case CopyOperation.Copy:
+                        await CopyAsync(flow, step, source, target, items, written, log, ct).ConfigureAwait(false);
+                        break;
+                    case CopyOperation.Zip:
+                        await ZipAsync(flow, step, i, multiStep, source, target, items, written, log, ct).ConfigureAwait(false);
+                        break;
+                    case CopyOperation.Unzip:
+                        await UnzipAsync(flow, step, source, target, items, written, log, ct).ConfigureAwait(false);
+                        break;
+                }
             }
 
             sw.Stop();
@@ -94,27 +105,27 @@ public sealed class CopyEngine
     }
 
     private static async Task CopyAsync(
-        CopyFlow flow, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
+        CopyFlow flow, CopyStep step, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
         List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
     {
         foreach (var item in items)
         {
             ct.ThrowIfCancellationRequested();
-            var bytes = await source.ReadAsync(flow.Source, item.AbsolutePath, ct).ConfigureAwait(false);
+            var bytes = await source.ReadAsync(step.Source, item.AbsolutePath, ct).ConfigureAwait(false);
             var relative = flow.Options.PreserveStructure ? item.RelativePath : item.Name;
-            var location = await target.WriteAsync(flow.Target, relative, bytes, flow.Options.Overwrite, ct).ConfigureAwait(false);
+            var location = await target.WriteAsync(step.Target, relative, bytes, flow.Options.Overwrite, ct).ConfigureAwait(false);
             written.Add(new CopyFileResult(location, bytes.Length));
             log.Log(RunLogLevel.Info, "copy.write", $"copied {bytes.Length} byte(s) -> '{location}'.");
         }
     }
 
     private async Task ZipAsync(
-        CopyFlow flow, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
-        List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
+        CopyFlow flow, CopyStep step, int stepIndex, bool multiStep, ICopyEndpoint source, ICopyEndpoint target,
+        IReadOnlyList<CopyItem> items, List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
     {
         if (items.Count == 0)
         {
-            log.Log(RunLogLevel.Info, "copy.zip", "no files matched; no archive written.");
+            log.Log(RunLogLevel.Info, "copy.zip", $"no files matched at '{step.Source.Location}'; no archive written.");
             return;
         }
 
@@ -124,7 +135,7 @@ public sealed class CopyEngine
             foreach (var item in items)
             {
                 ct.ThrowIfCancellationRequested();
-                var bytes = await source.ReadAsync(flow.Source, item.AbsolutePath, ct).ConfigureAwait(false);
+                var bytes = await source.ReadAsync(step.Source, item.AbsolutePath, ct).ConfigureAwait(false);
                 var entryName = (flow.Options.PreserveStructure ? item.RelativePath : item.Name).Replace('\\', '/');
                 var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
                 await using var entryStream = entry.Open();
@@ -132,23 +143,25 @@ public sealed class CopyEngine
             }
         }
 
-        var zipName = string.IsNullOrWhiteSpace(flow.Options.ZipName)
-            ? $"{flow.Name}_{_time.GetUtcNow():yyyyMMddHHmmss}.zip"
-            : flow.Options.ZipName!;
+        // A single explicit ZipName names the one archive; across several steps it is per-step (the source leaf keeps
+        // each step's archive distinct) so multiple steps never overwrite one bundle.
+        var zipName = !multiStep && !string.IsNullOrWhiteSpace(flow.Options.ZipName)
+            ? flow.Options.ZipName!
+            : $"{flow.Name}_{SourceLeaf(step.Source.Location)}_{_time.GetUtcNow():yyyyMMddHHmmss}.zip";
         var payload = buffer.ToArray();
-        var location = await target.WriteAsync(flow.Target, zipName, payload, flow.Options.Overwrite, ct).ConfigureAwait(false);
+        var location = await target.WriteAsync(step.Target, zipName, payload, flow.Options.Overwrite, ct).ConfigureAwait(false);
         written.Add(new CopyFileResult(location, payload.Length));
         log.Log(RunLogLevel.Info, "copy.zip", $"zipped {items.Count} file(s) ({payload.Length} byte(s)) -> '{location}'.");
     }
 
     private static async Task UnzipAsync(
-        CopyFlow flow, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
+        CopyFlow flow, CopyStep step, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
         List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
     {
         foreach (var item in items)
         {
             ct.ThrowIfCancellationRequested();
-            var bytes = await source.ReadAsync(flow.Source, item.AbsolutePath, ct).ConfigureAwait(false);
+            var bytes = await source.ReadAsync(step.Source, item.AbsolutePath, ct).ConfigureAwait(false);
             using var archive = new ZipArchive(new MemoryStream(bytes, writable: false), ZipArchiveMode.Read);
             // Extract each archive under a folder named for the archive (minus its extension) when preserving
             // structure, so two archives' entries never collide; flat by entry name otherwise.
@@ -168,11 +181,22 @@ public sealed class CopyEngine
                 await entryStream.CopyToAsync(entryBuffer, ct).ConfigureAwait(false);
                 var relative = prefix + (flow.Options.PreserveStructure ? entry.FullName : entry.Name);
                 var payload = entryBuffer.ToArray();
-                var location = await target.WriteAsync(flow.Target, relative, payload, flow.Options.Overwrite, ct).ConfigureAwait(false);
+                var location = await target.WriteAsync(step.Target, relative, payload, flow.Options.Overwrite, ct).ConfigureAwait(false);
                 written.Add(new CopyFileResult(location, payload.Length));
                 log.Log(RunLogLevel.Info, "copy.unzip", $"extracted {payload.Length} byte(s) -> '{location}'.");
             }
         }
+    }
+
+    private static string SourceLeaf(string location)
+    {
+        var trimmed = location.Replace('\\', '/').TrimEnd('/');
+        var slash = trimmed.LastIndexOf('/');
+        var leaf = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
+        // Keep only path-safe characters so the archive name is always writable (an abfss authority leaf could carry
+        // an '@' or ':'); fall back to the step position when nothing usable remains.
+        var clean = new string(leaf.Where(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.').ToArray());
+        return clean.Length > 0 ? clean : "step";
     }
 
     private ICopyEndpoint Select(string location, string side)

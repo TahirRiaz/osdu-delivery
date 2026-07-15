@@ -52,12 +52,15 @@ sqlflow run      lake-relay.flow.yaml
 | `flowType` | string | yes | | Must be `cpy`. |
 | `name` | string | yes | | Flow identity; seeds the stable flow id. |
 | `batch` | string | no | | Batch label recorded with the run. |
-| `operation` | enum | no | `copy` | `copy` (verbatim), `zip` (bundle matched files into one archive at the target - a zip-only run), or `unzip` (extract each matched `.zip` to the target). |
-| `source` | map | yes | | Where files are read and how they are selected. |
-| `target` | map | yes | | Where files are written. |
-| `options` | map | no | | Copy behavior. |
+| `operation` | enum | no | `copy` | `copy` (verbatim), `zip` (bundle matched files into one archive at the target - a zip-only run), or `unzip` (extract each matched `.zip` to the target). Applies to every step. |
+| `source` | map | one of | | The source of a single copy. Use `source`+`target` for one copy, or `items` for several - not both. |
+| `target` | map | one of | | The target of a single copy. |
+| `items` | list | one of | | Several copies in one pipeline: one entry per source-to-target file set (see [Copying many file sets](#copying-many-file-sets)). |
+| `options` | map | no | | Copy behavior; applies to every step. |
 | `output` | map | no | | A single explicitly declared output, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
 | `outputs` | list | no | | Several explicitly declared outputs, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
+
+A flow declares **either** a single top-level `source`/`target` pair **or** an `items` list, never both. Both forms produce the same thing internally (a list of copy steps); the single pair is the one-copy shortcut.
 
 ### source / target
 
@@ -80,6 +83,27 @@ The target ignores `pattern`/`recursive`/`modifiedWithinDays`.
 | `overwrite` | bool | no | `true` | Overwrite an existing target file; when false a collision fails rather than clobbers. |
 | `preserveStructure` | bool | no | `true` | Preserve each file's folder structure (relative to the source root) under the target; flat by name otherwise. |
 | `zipName` | string | no | `<flow>_<timestamp>.zip` | The archive name for `operation: zip`; ignored otherwise. |
+
+## Copying many file sets
+
+One `cpy` pipeline copies as many file sets as it lists, so a whole source system is one pipeline rather than one flow per folder. Each `items` entry is an independent `source`→`target` copy with its own selection; the flow-level `operation` and `options` apply to every entry. This is the shape for a vendor whose objects each land in their own folder:
+
+```yaml
+flowType: cpy
+name: BB_Baatbooking_00_cpy
+batch: BB
+operation: copy
+options:
+  overwrite: true
+  preserveStructure: true
+items:
+  - source: { location: abfss://baatbooking@dwstoragebaatbookingprod.dfs.core.windows.net/DETAIL, pattern: "*.json", modifiedWithinDays: 14 }
+    target: { location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/baatbooking/history/detail }
+  - source: { location: abfss://baatbooking@dwstoragebaatbookingprod.dfs.core.windows.net/SESS, pattern: "*.json", modifiedWithinDays: 14 }
+    target: { location: abfss://datalakev2@dwacct.dfs.core.windows.net/raw/baatbooking/history/sess }
+```
+
+The run reports one aggregated result (files matched and written across all steps). Lineage is computed from the items: each step's source is a read node and its target a written node the downstream ingestion reads, so every landed folder binds to its load and all the loads run after the one copy. Scaling to a hundred file sets is a hundred `items` entries, not a hundred pipelines.
 
 ## Authentication
 

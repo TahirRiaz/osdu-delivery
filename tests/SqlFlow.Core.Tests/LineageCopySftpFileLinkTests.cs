@@ -47,6 +47,19 @@ public sealed class LineageCopySftpFileLinkTests : IDisposable
             "target:",
             $"  location: {target}") + '\n';
 
+    /// <summary>A single cpy pipeline listing several source-to-target copies (the multi-item form).</summary>
+    private static string CopyItems(string name, params (string Source, string Target)[] items)
+    {
+        var lines = new List<string> { "flowType: cpy", $"name: {name}", "operation: copy", "items:" };
+        foreach (var (src, trg) in items)
+        {
+            lines.Add($"  - source: {{ location: {src}, pattern: \"*.json\" }}");
+            lines.Add($"    target: {{ location: {trg} }}");
+        }
+
+        return string.Join('\n', lines) + '\n';
+    }
+
     private static string SftpDownload(string name, string local, string remotePath = "/outbound")
         => string.Join('\n',
             "flowType: sftp",
@@ -172,6 +185,27 @@ public sealed class LineageCopySftpFileLinkTests : IDisposable
     }
 
     private const string Lake = "abfss://datalakev2@acct.dfs.core.windows.net/raw/baatbooking/history";
+
+    [Fact]
+    public void Copy_MultiItemPipeline_EachStepBindsToItsLoad()
+    {
+        // One copy pipeline lists two object copies (the Baatbooking shape); lineage is computed from the items, so
+        // each landed folder binds to its own load and every load runs after the single copy.
+        Write("00_cpy.flow.yaml", CopyItems("bb-cpy",
+            ("abfss://baatbooking@vendor.dfs.core.windows.net/DETAIL", $"{Lake}/detail"),
+            ("abfss://baatbooking@vendor.dfs.core.windows.net/SESS", $"{Lake}/sess")));
+        Write("01_detail.flow.yaml", FileIngestion("load-detail", "json",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/baatbooking/history/detail/", srcFile: "*.json", table: "Detail"));
+        Write("01_sess.flow.yaml", FileIngestion("load-sess", "json",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/baatbooking/history/sess/", srcFile: "*.json", table: "Sess"));
+
+        var report = Build();
+
+        Assert.True(DependsOn(report, "bb-cpy", "load-detail"));
+        Assert.True(DependsOn(report, "bb-cpy", "load-sess"));
+        Assert.True(WaveOf(report, "bb-cpy") < WaveOf(report, "load-detail"));
+        Assert.True(WaveOf(report, "bb-cpy") < WaveOf(report, "load-sess"));
+    }
 
     [Fact]
     public void Copy_DeclaredOutputs_FanOutToEachConsumer_ByFolder()
