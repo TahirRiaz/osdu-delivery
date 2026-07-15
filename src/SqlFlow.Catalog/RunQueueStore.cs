@@ -560,6 +560,65 @@ public static class RunQueueStore
                 .SetProperty(r => r.ClaimedByNode, (string?)null), ct);
     }
 
+    /// <summary>Fails runs left <c>running</c> by a node that is no longer alive. A run is an orphan when its
+    /// <c>ClaimedByNode</c> has no fleet heartbeat at or after <paramref name="staleBefore"/> (its registry row is
+    /// absent or its last-seen is older than the cutoff), or when no claimant is recorded at all: in every case the
+    /// process that was executing it is gone and no outcome will ever be recorded, so the run would otherwise sit
+    /// <c>running</c> forever and block every future run of its pipeline (the claim's pipeline gate). Unlike
+    /// <see cref="RecoverStuckRunningAsync"/>, which requeues a node's OWN restart orphans by name, this reclaims any
+    /// node's orphans by liveness, so a crashed pod that never returns under the same name is still cleared. Each run
+    /// is failed with a conditional update guarded on it still being <c>running</c>, so a run its real node completes
+    /// in the same instant is never overwritten, and concurrent reapers on multiple control-plane replicas are
+    /// idempotent; a failed group member skips its still-queued dependents, exactly as an operator cancel does.
+    /// Returns the number failed. The liveness signal is only safe to act on because a node heartbeats on a cadence
+    /// independent of its draining (<c>RunWorker.HeartbeatLoopAsync</c>), so a busy node is never mistaken for a dead
+    /// one; the caller sets <paramref name="staleBefore"/> comfortably older than that cadence.</summary>
+    public static async Task<int> ReapOrphanedRunningAsync(
+        CatalogDbContext catalog, DateTime staleBefore, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        // Candidate orphans: running rows with no live node backing them, resolved server-side as one indexed
+        // anti-join against the fleet registry. A healthy fleet returns nothing, so the steady-state cost is a
+        // single cheap read.
+        var orphans = await catalog.Runs.AsNoTracking()
+            .Where(r => r.Status == RunStatuses.Running)
+            .Where(r => r.ClaimedByNode == null
+                || !catalog.Nodes.Any(n => n.Name == r.ClaimedByNode && n.LastSeenUtc >= staleBefore))
+            .Select(r => new { r.RunId, r.ClaimedByNode })
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (orphans.Count == 0)
+        {
+            return 0;
+        }
+
+        var failed = 0;
+        foreach (var orphan in orphans)
+        {
+            var node = orphan.ClaimedByNode ?? "(unclaimed)";
+            var error =
+                $"Run orphaned: its claiming node '{node}' stopped heartbeating, so the executing process is gone "
+                + "and no outcome will ever be recorded. The control-plane orphan reaper failed it to release the "
+                + "run and its pipeline gate; re-trigger the flow to run it again.";
+            var updated = await catalog.Runs
+                .Where(r => r.RunId == orphan.RunId && r.Status == RunStatuses.Running)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, RunStatuses.Failed)
+                    .SetProperty(r => r.Success, false)
+                    .SetProperty(r => r.Error, error)
+                    .SetProperty(r => r.EndUtc, nowUtc)
+                    .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+                .ConfigureAwait(false);
+            if (updated > 0)
+            {
+                await SkipGroupDescendantsAsync(catalog, orphan.RunId, nowUtc, ct).ConfigureAwait(false);
+                failed++;
+            }
+        }
+
+        return failed;
+    }
+
     /// <summary>When a group member reaches a non-success terminal state (failed / cancelled), marks every member
     /// that transitively depends on it and is still <c>queued</c> as <c>skipped</c>: a broken upstream is never fed
     /// downstream, while independent branches of the group keep running. A no-op for a standalone run (no group), a

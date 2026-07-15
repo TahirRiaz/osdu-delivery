@@ -419,6 +419,32 @@ export interface Node {
   lastSeenUtc: string;
   version: string | null;
   online: boolean;
+  /** When set, a restart was requested and is pending until the node observes it on its next heartbeat. */
+  restartRequestedUtc: string | null;
+}
+
+/** One worker pool's desired compute state and its live resolution. `pool` is the empty string for the default
+ *  (untargeted) pool. `replicaTarget` is the count the autoscaler holds: max of queued runs, the always-on floor,
+ *  and the manual override while active. */
+export interface WorkerPool {
+  pool: string;
+  minReplicas: number;
+  manualReplicas: number;
+  manualUntilUtc: string | null;
+  manualActive: boolean;
+  queuedRuns: number;
+  replicaTarget: number;
+  updatedUtc: string | null;
+  updatedBy: string | null;
+}
+
+/** A change to a pool's desired state. Every field is optional: send `minReplicas` to set/clear the always-on
+ *  floor, or `manualReplicas` (with `manualForMinutes`) to bring workers up for a bounded window. */
+export interface WorkerPoolScaleRequest {
+  pool: string | null;
+  minReplicas?: number;
+  manualReplicas?: number;
+  manualForMinutes?: number;
 }
 
 // ---- Repo sources -----------------------------------------------------------------------------------------------------

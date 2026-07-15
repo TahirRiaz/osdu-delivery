@@ -42,6 +42,11 @@ public sealed partial class RunWorker
     /// burst of browsing must never starve flow execution of its slots.</summary>
     public const int DefaultMaxConcurrentComputeTasks = 2;
 
+    /// <summary>How often the node refreshes its fleet heartbeat, on a cadence independent of the drain loop (see
+    /// <see cref="HeartbeatLoopAsync"/>). Well under the control plane's 60s online window, so a node stays visibly
+    /// online across several beats even if one is missed, without heartbeating so often it is noise.</summary>
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
+
     private readonly IServiceProvider _services;
     private readonly DocumentExecutor _executor;
     private readonly TimeProvider _clock;
@@ -49,6 +54,20 @@ public sealed partial class RunWorker
     private readonly string _node = Environment.MachineName;
     private readonly string? _version = typeof(RunWorker).Assembly.GetName().Version?.ToString();
     private readonly GitMaterializer _materializer = new();
+
+    // The moment this incarnation started draining, stamped once in RunAsync. An operator restart request is honored
+    // only when it is newer than this, so a stale request left on the node row by a previous incarnation never
+    // bounces this one and a same-name restart can never loop.
+    private DateTime _startedUtc;
+
+    // Invoked once when this node observes a fresh restart request: the host wires it to a graceful stop (drain, then
+    // exit) so the orchestrator recreates the replica. Null in a caller that does not support restart (the observe
+    // path then does nothing).
+    private Func<CancellationToken, Task>? _onRestartRequested;
+
+    // Set the first time a restart is initiated so the stop fires exactly once, even across the several heartbeats
+    // that may elapse while the drain completes.
+    private int _restartInitiated;
 
     // The runs this node is currently executing, keyed by run id, each with its own cancellation source linked to
     // the shutdown token. An operator cancel of a running run trips its source (see PollCancellationsAsync), which
@@ -91,14 +110,26 @@ public sealed partial class RunWorker
     public async Task RunAsync(
         TimeSpan pollInterval, IReadOnlyList<string> pools, Func<TimeSpan, CancellationToken, Task> waitForWork,
         CancellationToken stoppingToken, int maxConcurrentRuns = DefaultMaxConcurrentRuns,
-        int maxConcurrentComputeTasks = DefaultMaxConcurrentComputeTasks)
+        int maxConcurrentComputeTasks = DefaultMaxConcurrentComputeTasks,
+        Func<CancellationToken, Task>? onRestartRequested = null)
     {
         ArgumentNullException.ThrowIfNull(pools);
         ArgumentNullException.ThrowIfNull(waitForWork);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentRuns, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentComputeTasks, 1);
 
+        _startedUtc = _clock.GetUtcNow().UtcDateTime;
+        _onRestartRequested = onRestartRequested;
+
         await RecoverOrphansAsync(stoppingToken).ConfigureAwait(false);
+
+        // The fleet heartbeat runs on its own cadence, decoupled from draining. A fully-saturated node blocks inside
+        // DrainAsync waiting for a concurrency slot and never returns to the top of this loop, so a heartbeat welded
+        // to the loop would stall for the whole of a long run and the node would falsely age out to "offline" while
+        // healthy and busy. Running it as an independent task keeps a node's liveness truthful under any load, which
+        // is also what lets the control-plane orphan reaper safely tell a dead node from a merely busy one. It
+        // observes stoppingToken, never throws (HeartbeatAsync is best-effort), and is awaited on shutdown below.
+        var heartbeat = HeartbeatLoopAsync(stoppingToken);
 
         using var gate = new SemaphoreSlim(maxConcurrentRuns, maxConcurrentRuns);
         using var computeGate = new SemaphoreSlim(maxConcurrentComputeTasks, maxConcurrentComputeTasks);
@@ -107,7 +138,6 @@ public sealed partial class RunWorker
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await HeartbeatAsync(stoppingToken).ConfigureAwait(false);
             await PollCancellationsAsync(stoppingToken).ConfigureAwait(false);
 
             try
@@ -146,23 +176,84 @@ public sealed partial class RunWorker
         {
             await Task.WhenAll(pending).ConfigureAwait(false);
         }
+
+        // The heartbeat loop observes the same stoppingToken and never throws, so this just joins it before the
+        // method returns (leaving no background task running past the worker's lifetime).
+        await heartbeat.ConfigureAwait(false);
     }
 
-    private async Task HeartbeatAsync(CancellationToken ct)
+    /// <summary>Refreshes the fleet heartbeat on <see cref="HeartbeatInterval"/>, independent of the drain loop, until
+    /// shutdown. Beats once immediately so a freshly started node is visible at once, then on the interval. Never
+    /// throws: <see cref="HeartbeatAsync"/> is best-effort (a transient catalog error is logged and retried next
+    /// beat), and the inter-beat delay ends quietly on shutdown.</summary>
+    private async Task HeartbeatLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var restartRequestedUtc = await HeartbeatAsync(ct).ConfigureAwait(false);
+            await MaybeHonorRestartAsync(restartRequestedUtc, ct).ConfigureAwait(false);
+            try
+            {
+                await Task.Delay(HeartbeatInterval, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    /// <summary>Beats once and returns the node's pending restart request (null when none), so the loop can honor it
+    /// on the same cadence. Best-effort: a transient catalog error is logged and treated as "no request" for this
+    /// beat.</summary>
+    private async Task<DateTime?> HeartbeatAsync(CancellationToken ct)
     {
         try
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            return await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // Shutting down; nothing to do.
+            return null; // Shutting down; nothing to do.
         }
         catch (Exception ex)
         {
             // The fleet heartbeat is best-effort: a failure must never affect draining; the next poll retries it.
+            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            return null;
+        }
+    }
+
+    /// <summary>Honors an operator's restart request observed on the heartbeat: when the request is newer than this
+    /// incarnation's start (so a stale request never bounces the replacement and a same-name restart cannot loop) and
+    /// a stop has not already begun, logs and invokes the host's graceful-stop callback exactly once. The callback
+    /// drives the same shutdown a SIGTERM would, so the drain loop finishes its in-flight work and exits, after which
+    /// the orchestrator recreates the replica. A caller that supplied no callback simply never restarts.</summary>
+    private async Task MaybeHonorRestartAsync(DateTime? requestedUtc, CancellationToken ct)
+    {
+        if (requestedUtc is not { } requested || requested <= _startedUtc || _onRestartRequested is null)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _restartInitiated, 1) != 0)
+        {
+            return; // already initiated on an earlier beat
+        }
+
+        LogRestartRequested(requested);
+        try
+        {
+            await _onRestartRequested(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The callback drove the shutdown it was meant to; nothing more to do.
+        }
+        catch (Exception ex)
+        {
             LogPollError(SecretHygiene.RedactedMessage(ex.Message));
         }
     }
@@ -844,6 +935,9 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Recovered {Count} run(s) left running by a previous worker incarnation; requeued.")]
     private partial void LogRecovered(int count);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Restart requested at {RequestedUtc:o}; draining in-flight work and exiting so the orchestrator recreates this node.")]
+    private partial void LogRestartRequested(DateTime requestedUtc);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Recovered {Count} compute task(s) left running by a previous worker incarnation; requeued.")]
     private partial void LogRecoveredTasks(int count);

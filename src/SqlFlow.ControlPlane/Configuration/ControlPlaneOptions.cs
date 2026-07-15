@@ -30,6 +30,8 @@ public sealed class ControlPlaneOptions
 
     public WorkerOptions Worker { get; set; } = new();
 
+    public ReaperOptions Reaper { get; set; } = new();
+
     public ManagedSyncOptions ManagedSync { get; set; } = new();
 
     public NotificationOptions Notifications { get; set; } = new();
@@ -87,6 +89,17 @@ public sealed class ControlPlaneOptions
         {
             throw new InvalidOperationException(
                 "ControlPlane:Worker:PollMilliseconds must be at least 250, so a misconfigured value cannot spin the drain loop against the catalog.");
+        }
+
+        if (Reaper.PollSeconds < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:Reaper:PollSeconds must be positive.");
+        }
+
+        if (Reaper.StaleAfterSeconds < 60)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Reaper:StaleAfterSeconds must be at least 60, comfortably larger than a node's heartbeat cadence, so a brief heartbeat gap never fails a live node's runs.");
         }
 
         AzureAd.Validate();
@@ -283,6 +296,19 @@ public sealed class WorkerOptions
     /// nudge; this only bounds how long schedule- and other-node-enqueued runs (and recovery) wait to be picked
     /// up. Minimum 250, so a misconfigured value cannot spin-loop the worker against the catalog.</summary>
     public int PollMilliseconds { get; set; } = 2000;
+}
+
+/// <summary>The orphan-run reaper: the control plane sweeps for runs left <c>running</c> by a node that has stopped
+/// heartbeating and fails them, releasing the run and the pipeline gate a dead node would otherwise hold forever.
+/// <see cref="PollSeconds"/> is how often it sweeps. <see cref="StaleAfterSeconds"/> is how long a claiming node may
+/// be silent before its runs are declared orphaned; it must be comfortably larger than a node's heartbeat cadence
+/// (a few beats) so a transient catalog blip never fails a live node's work. The default gives several missed beats
+/// of margin over the 60s fleet online window.</summary>
+public sealed class ReaperOptions
+{
+    public int PollSeconds { get; set; } = 30;
+
+    public int StaleAfterSeconds { get; set; } = 180;
 }
 
 /// <summary>

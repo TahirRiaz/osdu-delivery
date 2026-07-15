@@ -16,17 +16,21 @@ public sealed class RunExecutionWorker : BackgroundService
 {
     private readonly RunWorker _worker;
     private readonly RunQueueSignal _signal;
+    private readonly IHostApplicationLifetime _lifetime;
     private readonly IReadOnlyList<string> _pools;
     private readonly TimeSpan _pollInterval;
     private readonly int _maxConcurrentRuns;
 
-    public RunExecutionWorker(RunWorker worker, RunQueueSignal signal, IOptions<ControlPlaneOptions> options)
+    public RunExecutionWorker(
+        RunWorker worker, RunQueueSignal signal, IHostApplicationLifetime lifetime, IOptions<ControlPlaneOptions> options)
     {
         ArgumentNullException.ThrowIfNull(worker);
         ArgumentNullException.ThrowIfNull(signal);
+        ArgumentNullException.ThrowIfNull(lifetime);
         ArgumentNullException.ThrowIfNull(options);
         _worker = worker;
         _signal = signal;
+        _lifetime = lifetime;
         _pools = options.Value.Worker.Pools;
         // Both bounds come from ControlPlane:Worker and are validated at startup (ControlPlaneOptions.Validate):
         // the poll fallback (a nudge starts a triggered run at once; this only governs schedule-/other-node-enqueued
@@ -37,5 +41,15 @@ public sealed class RunExecutionWorker : BackgroundService
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
-        => _worker.RunAsync(_pollInterval, _pools, (timeout, ct) => _signal.WaitAsync(timeout, ct), stoppingToken, _maxConcurrentRuns);
+        // An operator restart of this in-process node stops the whole control-plane host (which, on the single-node
+        // default that runs a worker in-process, is exactly the process hosting the node): the framework then drains
+        // and the container is recreated. In the scaled estate the compute nodes are separate worker processes with
+        // Worker:Enabled=false here, so this path never stops an API-only replica.
+        => _worker.RunAsync(
+            _pollInterval, _pools, (timeout, ct) => _signal.WaitAsync(timeout, ct), stoppingToken, _maxConcurrentRuns,
+            onRestartRequested: _ =>
+            {
+                _lifetime.StopApplication();
+                return Task.CompletedTask;
+            });
 }

@@ -50,6 +50,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogNode> Nodes => Set<CatalogNode>();
 
+    public DbSet<CatalogWorkerPoolDesired> WorkerPools => Set<CatalogWorkerPoolDesired>();
+
     public DbSet<CatalogRepoSource> RepoSources => Set<CatalogRepoSource>();
 
     public DbSet<CatalogUser> Users => Set<CatalogUser>();
@@ -321,6 +323,15 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(n => n.Version).HasMaxLength(64);
             // The fleet view lists nodes most-recently-seen first.
             entity.HasIndex(n => n.LastSeenUtc);
+        });
+
+        modelBuilder.Entity<CatalogWorkerPoolDesired>(entity =>
+        {
+            entity.ToTable("WorkerPool");
+            // One desired-state row per pool; the empty string keys the default (untargeted) pool.
+            entity.HasKey(p => p.Pool);
+            entity.Property(p => p.Pool).HasMaxLength(128);
+            entity.Property(p => p.UpdatedBy).HasMaxLength(256);
         });
 
         modelBuilder.Entity<CatalogRepoSource>(entity =>

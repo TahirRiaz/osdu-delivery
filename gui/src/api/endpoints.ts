@@ -15,7 +15,7 @@ import type {
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleRunAccepted, SessionResponse, TokenResponse,
-  UpdateNotificationSubscriptionRequest, User, Wave,
+  UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
 
 export interface PageQuery {
@@ -163,6 +163,12 @@ export const scheduleApi = {
 
 export const nodeApi = {
   list: (query: PageQuery = {}) => get<PagedResult<Node>>("/api/v1/nodes", query as QueryParams),
+  /** Every worker pool's desired state and resolved replica target. */
+  listPools: () => get<WorkerPool[]>("/api/v1/nodes/pools"),
+  /** Set a pool's always-on floor and/or bounded manual override; returns the pool's new resolved state. */
+  scalePool: (request: WorkerPoolScaleRequest) => put<WorkerPool>("/api/v1/nodes/pools/scale", request),
+  /** Ask a node to drain and restart; the orchestrator recreates it. */
+  restart: (name: string) => post<void>(`/api/v1/nodes/${encodeURIComponent(name)}/restart`),
 };
 
 // ---- Datasources and ad-hoc compute ---------------------------------------------------------------------------------

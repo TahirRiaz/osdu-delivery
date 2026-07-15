@@ -791,6 +791,51 @@ public class CatalogNode
 
     /// <summary>The SQLFlow build the node is running, for spotting version skew across the fleet; null if unknown.</summary>
     public string? Version { get; set; }
+
+    /// <summary>When set, an operator has asked this node to restart. The worker observes it on its heartbeat cadence,
+    /// stops claiming, drains its in-flight work, and exits, after which the orchestrator (Container Apps / K8s)
+    /// recreates the replica. A worker honors a request only if it is newer than its own process start, so a stale
+    /// request left on a row never bounces the replacement (and a restart never loops); the request is not explicitly
+    /// cleared because the recreated replica comes up either under a new node identity, whose row is fresh, or under
+    /// the same identity but with a later start time that makes the old request inert.</summary>
+    public DateTime? RestartRequestedUtc { get; set; }
+}
+
+/// <summary>
+/// The desired compute state for one worker pool, written by the control plane (the GUI's fleet controls) and read
+/// by the autoscaler. The pool autoscales on queue depth, but that alone cannot express "keep at least one worker
+/// warm" or "bring a worker up now even though nothing is queued", so this row carries those intents: the scaler's
+/// replica target is the greatest of the pool's queued-run count, <see cref="MinReplicas"/> (an always-on floor), and
+/// <see cref="ManualReplicas"/> while <see cref="ManualUntilUtc"/> has not passed (a bounded manual override, so a
+/// one-off spawn or scale-up reverts to pure autoscaling on its own rather than pinning the pool warm forever). The
+/// control plane never talks to the orchestrator: it only writes this row, and the autoscaler (which already queries
+/// the catalog) reads it, so influencing compute needs no infrastructure credentials. One row per pool; the default
+/// untargeted pool is keyed by the empty string.
+/// </summary>
+public class CatalogWorkerPoolDesired
+{
+    /// <summary>The pool name this desired state governs; the empty string is the default (untargeted) pool, whose
+    /// runs carry a null <c>TargetPool</c>.</summary>
+    public string Pool { get; set; } = string.Empty;
+
+    /// <summary>The always-on floor: the pool is kept at at least this many replicas regardless of queue depth, so a
+    /// warm worker is always present (0, the default, restores pure autoscaling including scale-to-zero).</summary>
+    public int MinReplicas { get; set; }
+
+    /// <summary>A manual replica target that applies only while <see cref="ManualUntilUtc"/> is in the future: it
+    /// forces the pool up to this size even with nothing queued (a spawn-from-zero or a temporary scale-up), then
+    /// lapses back to autoscaling when the window ends.</summary>
+    public int ManualReplicas { get; set; }
+
+    /// <summary>When the <see cref="ManualReplicas"/> override stops applying; null or in the past means no override
+    /// is active. Bounding it in time is deliberate, so a manual spawn cannot silently keep a pool warm indefinitely.</summary>
+    public DateTime? ManualUntilUtc { get; set; }
+
+    /// <summary>When this desired state was last changed, for the fleet view's audit line.</summary>
+    public DateTime UpdatedUtc { get; set; }
+
+    /// <summary>Who last changed it (the operator's user name), for the same audit line; null if unattributed.</summary>
+    public string? UpdatedBy { get; set; }
 }
 
 /// <summary>

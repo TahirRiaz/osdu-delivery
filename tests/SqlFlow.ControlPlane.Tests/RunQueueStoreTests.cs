@@ -309,6 +309,92 @@ public sealed class RunQueueStoreTests
     }
 
     [SkippableFact]
+    public async Task ReapOrphanedRunning_FailsRunsWhoseNodeHasStoppedHeartbeating()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var deadNode = "reap-dead-" + Guid.NewGuid().ToString("N")[..8];
+        var goneNode = "reap-gone-" + Guid.NewGuid().ToString("N")[..8];
+        var (repoId2, flowName2) = NewIds();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var now = DateTime.UtcNow;
+
+            // A run claimed by a node whose last heartbeat is well before the stale cutoff (a crashed pod), and a
+            // second run claimed by a node with no registry row at all (it died without its heartbeat ever landing,
+            // or a Kubernetes replacement pod took a new name). Both are orphans.
+            var deadRun = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), now);
+            Assert.Equal(deadRun, await RunQueueStore.ClaimNextAsync(db, deadNode, [], now));
+            await NodeStore.HeartbeatAsync(db, deadNode, "1.0.0", now.AddMinutes(-10));
+
+            var goneRun = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId2, flowName2, "ing"), now);
+            Assert.Equal(goneRun, await RunQueueStore.ClaimNextAsync(db, goneNode, [], now));
+
+            var staleBefore = now.AddMinutes(-3);
+            var reaped = await RunQueueStore.ReapOrphanedRunningAsync(db, staleBefore, now);
+            Assert.True(reaped >= 2);
+
+            foreach (var runId in new[] { deadRun, goneRun })
+            {
+                var failed = await Reload(db, runId);
+                Assert.Equal(RunStatuses.Failed, failed.Status);
+                Assert.False(failed.Success);
+                Assert.NotNull(failed.EndUtc);
+                Assert.Contains("orphaned", failed.Error!, StringComparison.OrdinalIgnoreCase);
+            }
+
+            // The dead node's error names the node so an operator can see which host went away.
+            Assert.Contains(deadNode, (await Reload(db, deadRun)).Error!, StringComparison.Ordinal);
+
+            // A second sweep is a no-op: the runs are terminal, so they are no longer candidates.
+            Assert.Equal(0, await RunQueueStore.ReapOrphanedRunningAsync(db, staleBefore, DateTime.UtcNow));
+        }
+        finally
+        {
+            await DeleteNodes(cs, deadNode, goneNode);
+            await Cleanup(cs, repoId, null);
+            await Cleanup(cs, repoId2, null);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ReapOrphanedRunning_LeavesRunsOfALiveNodeAlone()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var liveNode = "reap-live-" + Guid.NewGuid().ToString("N")[..8];
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var now = DateTime.UtcNow;
+
+            // A busy node executing a long run still heartbeats on its independent cadence, so its last-seen stays
+            // fresh. The reaper must never fail its work, however long the run has been going.
+            var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), now);
+            Assert.Equal(runId, await RunQueueStore.ClaimNextAsync(db, liveNode, [], now));
+            await NodeStore.HeartbeatAsync(db, liveNode, "1.0.0", now);
+
+            var reaped = await RunQueueStore.ReapOrphanedRunningAsync(db, now.AddMinutes(-3), now);
+            _ = reaped; // other tests' orphans may exist; only this run's fate is asserted
+
+            var stillRunning = await Reload(db, runId);
+            Assert.Equal(RunStatuses.Running, stillRunning.Status);
+            Assert.Equal(liveNode, stillRunning.ClaimedByNode);
+            Assert.Null(stillRunning.EndUtc);
+        }
+        finally
+        {
+            await DeleteNodes(cs, liveNode);
+            await Cleanup(cs, repoId, null);
+        }
+    }
+
+    [SkippableFact]
     public async Task Fail_DrivesARunningRunToFailed_AndIsTerminalRespecting()
     {
         var cs = CatalogTestDb.Require();
@@ -475,6 +561,12 @@ public sealed class RunQueueStoreTests
         var dir = Path.Combine(Path.GetTempPath(), "sqlflow_rq_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    private static async Task DeleteNodes(string cs, params string[] names)
+    {
+        await using var db = CatalogDatabase.Create(cs);
+        await db.Nodes.Where(n => names.Contains(n.Name)).ExecuteDeleteAsync();
     }
 
     private static async Task Cleanup(string cs, Guid repoId, string? dir = null)

@@ -77,6 +77,15 @@ if (options.Worker.Enabled)
 // advances the next-fire atomically so multiple control-plane nodes never double-fire an occurrence.
 builder.Services.AddHostedService<SchedulerService>();
 
+// ---- Orphan reaper: a run is claimed by a node and flipped to 'running'; if that node dies without recording an
+// outcome (a crashed/evicted pod that never returns under the same name), the run would sit 'running' forever and
+// its pipeline gate would block every future run of that flow. This sweep fails such runs once their claiming node
+// has stopped heartbeating past the stale window. It is a control-plane responsibility independent of the
+// in-process worker, so it is hosted on every replica (including API-only ones); the per-run conditional update
+// makes concurrent reapers idempotent. It reads the same fleet heartbeat the Nodes page does, which is trustworthy
+// because a node heartbeats on a cadence independent of its draining (a busy node is never mistaken for a dead one).
+builder.Services.AddHostedService<OrphanRunReaper>();
+
 // ---- Managed sync: keeps the shadow catalog current from git. A background service pulls each registered repo
 // source's branch tip on its interval and runs the same catalog sync the CLI's `db sync` runs.
 builder.Services.AddHostedService<RepoSyncService>();
@@ -308,6 +317,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapDatasourceComputeEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints()
+    .MapNodeControlEndpoints()
     .MapIntegrationDebugEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own

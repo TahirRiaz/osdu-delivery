@@ -180,11 +180,15 @@ var flowEnvVars = [for (entry, i) in flowEnv: {
   secretRef: 'flow-env-${i}'
 }]
 
-// One queued run per replica, the same query as deploy/k8s/worker-pool.yaml: an untargeted worker drains
-// untargeted runs, a pooled worker drains its pool.
+// The replica target is the GREATEST of queue depth, the always-on floor, and an active manual override, all read
+// from the catalog, so the GUI's fleet controls steer scaling without the control plane ever calling the
+// orchestrator (it only writes [catalog].[WorkerPool] rows; KEDA, which already queries the catalog, reads them).
+// The same query shape as deploy/k8s/worker-pool.yaml. A pool with no WorkerPool row (ISNULL -> 0) behaves exactly
+// as the old COUNT(*) did, preserving scale-to-zero. REQUIRES the WorkerPool table (catalog migration
+// WorkerPoolDesiredAndNodeRestart): deploy the control plane first so the migration lands, then this revision.
 var queueDepthQuery = empty(pool)
-  ? 'SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] IS NULL'
-  : 'SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] = \'${pool}\''
+  ? 'SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] IS NULL)), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
+  : 'SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] = \'${pool}\')), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name

@@ -10,8 +10,11 @@ namespace SqlFlow.Catalog;
 public static class NodeStore
 {
     /// <summary>Records a node's heartbeat: refreshes its last-seen (and version), inserting the node the first time
-    /// it is heard from. Idempotent and safe to call on every poll.</summary>
-    public static async Task HeartbeatAsync(
+    /// it is heard from, and returns the node's current <see cref="CatalogNode.RestartRequestedUtc"/> so the caller
+    /// can honor an operator's restart request on the same cadence it heartbeats (null when none is pending). A
+    /// freshly inserted node has no pending request, so its first heartbeat always returns null. Idempotent and safe
+    /// to call on every poll.</summary>
+    public static async Task<DateTime?> HeartbeatAsync(
         CatalogDbContext catalog, string name, string? version, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -26,7 +29,12 @@ public static class NodeStore
             .ConfigureAwait(false);
         if (updated > 0)
         {
-            return;
+            // A second cheap indexed read on the primary key returns any pending restart request the operator stamped.
+            return await catalog.Nodes.AsNoTracking()
+                .Where(n => n.Name == name)
+                .Select(n => n.RestartRequestedUtc)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
         }
 
         catalog.Nodes.Add(new CatalogNode { Name = name, FirstSeenUtc = nowUtc, LastSeenUtc = nowUtc, Version = version });
@@ -41,5 +49,7 @@ public static class NodeStore
             var entry = catalog.Entry(catalog.Nodes.Local.First(n => n.Name == name));
             entry.State = EntityState.Detached;
         }
+
+        return null;
     }
 }

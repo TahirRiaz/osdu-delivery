@@ -614,11 +614,20 @@ internal static class Program
         Console.WriteLine($"SQLFlow worker '{worker.NodeName}' draining the run queue (poll {pollSeconds}s, pools: {poolLabel}). Press Ctrl+C to stop.");
         try
         {
-            await worker.RunAsync(TimeSpan.FromSeconds(pollSeconds), pools, (timeout, ct) => Task.Delay(timeout, ct), cts.Token).ConfigureAwait(false);
+            // An operator restart request (observed on the heartbeat) trips the same token Ctrl+C does: the loop
+            // drains its in-flight work and returns, the process exits cleanly, and the orchestrator recreates the
+            // replica.
+            await worker.RunAsync(
+                TimeSpan.FromSeconds(pollSeconds), pools, (timeout, ct) => Task.Delay(timeout, ct), cts.Token,
+                onRestartRequested: _ =>
+                {
+                    cts.Cancel();
+                    return Task.CompletedTask;
+                }).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            // Ctrl+C: a clean stop.
+            // Ctrl+C or an honored restart request: a clean stop.
         }
 
         Console.WriteLine("SQLFlow worker stopped.");
