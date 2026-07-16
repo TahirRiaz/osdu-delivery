@@ -1,0 +1,108 @@
+﻿# Generated from old SQLFlow metadata (flw.PreIngestionCSV FlowID 542) by Generate-PreFlow.ps1.
+# Stage 1 of 2 (pre): lands the CSV into [pre].[Baatbooking_detail] and builds the typed view v_Baatbooking_detail.
+name: BB_Baatbooking_detail_pre
+batch: BB
+source:
+  type: csv
+  location: https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2/raw/baatbooking/history/detail/
+  options:
+    srcFile: "detail*.csv"
+    searchSubDirectories: "true"
+    delimiter: ";"
+    includeRowNumber: "false"
+target:
+  connection: ${env:SQLFLOW_CONN_DWPREPROD}
+  schema: pre
+  table: Baatbooking_detail
+schema:
+  evolve: widen
+load:
+  mode: append
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+transform:
+  generateView: true
+  columns:
+    - { name: MEDIA_TYPE, expr: "CAST(@ColName AS int)" }
+    - { name: MTM_SER_NR, expr: "CAST(@ColName AS int)" }
+    - { name: USER_NR, expr: "CAST(@ColName AS int)" }
+    - { name: SESSION_NR, expr: "CAST(@ColName AS DECIMAL(12,0))" }
+    - { name: TRANS_NR, expr: "CAST(@ColName AS DECIMAL(12,0))" }
+    - { name: SEQ_NR, expr: "CAST(@ColName AS int)" }
+    - { name: SEQ1_NR, expr: "CAST(@ColName AS int)" }
+    - { name: SEQ2_NR, expr: "CAST(@ColName AS int)" }
+    - { name: SEQ3_NR, expr: "CAST(@ColName AS int)" }
+    - { name: TRCOMP_NR, expr: "CAST(@ColName AS int)" }
+    - { name: RSET_NR, expr: "CAST(@ColName AS int)" }
+    - { name: RGRP_NR, expr: "CAST(@ColName AS int)" }
+    - { name: ROUTE_NR, expr: "CAST(@ColName AS int)" }
+    - { name: TOUR_NR, expr: "CAST(@ColName AS int)" }
+    - { name: STOP_ID_FR, expr: "CAST(@ColName AS DECIMAL(12,0))" }
+    - { name: ZONE_ID_FR, expr: "CAST(@ColName AS int)" }
+    - { name: STOP_ID_TO, expr: "CAST(@ColName AS DECIMAL(12,0))" }
+    - { name: ZONE_ID_TO, expr: "CAST(@ColName AS int)" }
+    - { name: FDISTANCE, expr: "CAST(@ColName AS int)" }
+    - { name: DISTANCE, expr: "CAST(@ColName AS int)" }
+    - { name: DEST_TIME, expr: "CAST(@ColName AS int)" }
+    - { name: CLASS, expr: "CAST(@ColName AS int)" }
+    - { name: COMP_CODE, expr: "CAST(@ColName AS int)" }
+    - { name: FRCOMP_NR, expr: "CAST(@ColName AS int)" }
+    - { name: FSET_NR, expr: "CAST(@ColName AS int)" }
+    - { name: FGRP_NR, expr: "CAST(@ColName AS int)" }
+    - { name: DGRP_NR, expr: "CAST(@ColName AS int)" }
+    - { name: TARIFF_NR, expr: "CAST(@ColName AS int)" }
+    - { name: TAR_TYPE1, expr: "CAST(@ColName AS int)" }
+    - { name: TAR_TYPE2, expr: "CAST(@ColName AS int)" }
+    - { name: DETAIL_COUNT, expr: "CAST(@ColName AS int)" }
+    - { name: BASE_PRICE, expr: "CAST(@ColName AS int)" }
+    - { name: UNIT_PRICE, expr: "CAST(@ColName AS int)" }
+    - { name: DISCOUNT, expr: "CAST(@ColName AS int)" }
+    - { name: PAY_CALC, expr: "CAST(@ColName AS int)" }
+    - { name: VAT_CALC, expr: "CAST(@ColName AS int)" }
+    - { name: VAT_FACT, expr: "CAST(@ColName AS int)" }
+    - { name: REBATE1_NR, expr: "CAST(@ColName AS int)" }
+    - { name: REBATE2_NR, expr: "CAST(@ColName AS int)" }
+    - { name: DISC_FAC, expr: "CAST(@ColName AS int)" }
+    - { name: INV, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: CTARIFF, expr: "CAST(@ColName AS int)" }
+    - { name: PLU_CODE, expr: "CAST(@ColName AS int)" }
+    - { name: TRANS_ID, expr: "CAST(@ColName AS int)" }
+    - { name: TRCOMP_ID, expr: "CAST(@ColName AS int)" }
+    - { name: FRCOMP_ID, expr: "CAST(@ColName AS int)" }
+    - { name: DETAIL_ID, expr: "CAST(@ColName AS int)" }
+    - { name: SESS_ID, expr: "CAST(@ColName AS int)" }
+    - { name: DETAIL_STATUS, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: DUP_SEQ, expr: "CAST(@ColName AS int)" }
+    - { name: TRAVELDATE, expr: "CAST(@ColName as varchar (50))" }
+    - { name: TRAVEL_DATE, expr: "CAST(@ColName as varchar (50))" }
+    - { name: JOURNEY_TIME, expr: "CONVERT(varchar(50),@ColName)" }
+    - { name: POINT_FROM_NAME, expr: "CONVERT(varchar(50),@ColName)" }
+    - { name: POINT_TO_NAME, expr: "CONVERT(varchar(50),@ColName)" }
+    - { name: ROUTE_NAME, expr: "CONVERT(varchar(50),@ColName)" }
+    - { name: FARETYPE_NAME, expr: "CONVERT(varchar(50),@ColName)" }
+    - { name: VEHICLE, expr: "CONVERT(varchar(50),@ColName)" }
+    - { name: SEQ_NR_PRV, expr: "CAST(@ColName AS int)" }
+    - { name: SEQ_NR_NXT, expr: "CAST(@ColName AS int)" }
+    - { name: TRADD_ID, expr: "CAST(@ColName AS int)" }
+    - { name: VAT_AMOUNT, expr: "CAST(@ColName AS int)" }
+    - { name: FARETYPE_CAT, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: SECTION_ID, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: DIRECTION, expr: "CAST(@ColName AS int)" }
+    - { name: AN_CODE, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: PBE, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: TRANS_ITEM_ID, expr: "CAST(@ColName AS int)" }
+    - { name: FR_TRAVELTIME, expr: "CAST(@ColName as varchar (50))" }
+    - { name: TO_TRAVELTIME, expr: "CAST(@ColName as varchar (50))" }
+    - { name: REBATE, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: VAT, expr: "CAST(@ColName AS int)" }
+    - { name: PRICE, expr: "CAST(@ColName AS int)" }
+    - { name: ACTOR_ID, expr: "CAST(@ColName AS int)" }
+    - { name: ITEM_TYPE, expr: "CAST(@ColName AS int)" }
+    - { name: OP_MODE, expr: "CASE WHEN LEN(@ColName ) > 0 THEN CAST(@ColName AS int) ELSE NULL END" }
+    - { name: CAMPAIGN_ID, expr: "CAST(@ColName AS int)" }
+    - { name: FileRowDate_DW, expr: "CONVERT(datetime,@ColName,20)" }
+    - { name: FileDate_DW, expr: "CAST(@ColName as decimal(14,0))" }
+    - { name: FileSize_DW, expr: "CAST(@ColName as decimal(18,0))" }
+    - { name: FileName_DW, expr: "CAST(@ColName as varchar (255))" }
+    - { name: DataSet_DW, expr: "CAST(@ColName as numeric(14,0))" }

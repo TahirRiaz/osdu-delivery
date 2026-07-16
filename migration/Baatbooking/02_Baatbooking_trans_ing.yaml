@@ -1,0 +1,32 @@
+﻿# Generated from old SQLFlow metadata (flw.Ingestion FlowID 548) by Generate-OdsFlow.ps1.
+# Stage 2 of 2 (ods): keyed-merges the typed pre view into the ODS/arc table.
+flowType: ing
+name: BB_Baatbooking_Trans_ods
+batch: BB
+
+connections:
+  pre: ${env:SQLFLOW_CONN_DWPREPROD}
+  ods: ${env:SQLFLOW_CONN_DWDWHPROD}
+
+source:
+  server: pre
+  object: "[dw-pre-prod].[pre].[v_Baatbooking_Trans]"
+
+target:
+  server: ods
+  object: "[dw-dwh-prod].[arc].[Baatbooking_Trans]"
+  identityColumn: BaatbookingTransPK   # surrogate PK (flw.Ingestion.IdentityColumn)
+
+load:
+  keyColumns: [USER_NR, TRANS_NR, TRANS_DATE, TICKET_NR, SESS_ID, TRANS_ID, ACTOR_ID]
+
+incremental:
+  columns: [UpdatedDate_DW]
+  overlapDays: 7
+
+schema:
+  sync: true
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true

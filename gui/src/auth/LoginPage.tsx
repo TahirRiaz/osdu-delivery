@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type InputHTMLAttributes } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import Accordion from "@mui/material/Accordion";
@@ -20,8 +20,9 @@ import { isApiError } from "../api/client";
 import { CorrelationError } from "../components/CorrelationError";
 import { useAuth } from "./AuthContext";
 
-/** Held in a variable so the data-testid clears Checkbox's strict inputProps typing (see the usage below). */
-const rememberInputProps = { "data-testid": "login-remember" };
+/** Checkbox's inputProps is the strict InputHTMLAttributes, which has no data-* member; cast through unknown so the
+ * test id is accepted without loosening the component's typing. */
+const rememberInputProps = { "data-testid": "login-remember" } as unknown as InputHTMLAttributes<HTMLInputElement>;
 
 /** The Microsoft four-square mark, per their sign-in branding guidelines. */
 function MicrosoftMark() {
