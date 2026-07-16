@@ -8,24 +8,17 @@ namespace SqlFlow.Copy;
 /// <summary>
 /// The local (and UNC) filesystem endpoint. A location is handled here when it is neither an Azure storage URI nor an
 /// <c>sftp://</c> URL: a plain path, a <c>file://</c> URI, or a Windows/UNC path. Listing honors the glob, the
-/// recursion flag, and the modified-within window; writes create the target directory tree and, when overwrite is
-/// off, fail rather than clobber an existing file.
+/// recursion flag, and the engine-resolved modified window; writes create the target directory tree and, when
+/// overwrite is off, fail rather than clobber an existing file.
 /// </summary>
 public sealed class LocalCopyEndpoint : ICopyEndpoint
 {
-    private readonly TimeProvider _time;
-
-    public LocalCopyEndpoint(TimeProvider time)
-    {
-        ArgumentNullException.ThrowIfNull(time);
-        _time = time;
-    }
-
     public bool CanHandle(string location)
         => !AzureBlobCopyEndpoint.IsAzure(location)
            && !location.StartsWith("sftp://", StringComparison.OrdinalIgnoreCase);
 
-    public async IAsyncEnumerable<CopyItem> ListAsync(CopyEndpoint endpoint, [EnumeratorCancellation] CancellationToken ct)
+    public async IAsyncEnumerable<CopyItem> ListAsync(
+        CopyEndpoint endpoint, CopyModifiedWindow window, [EnumeratorCancellation] CancellationToken ct)
     {
         var root = Path.GetFullPath(LocalPath(endpoint.Location));
         if (!Directory.Exists(root))
@@ -34,9 +27,10 @@ public sealed class LocalCopyEndpoint : ICopyEndpoint
             if (File.Exists(root))
             {
                 var info = new FileInfo(root);
-                if (Matches(endpoint, info.Name, info.LastWriteTimeUtc))
+                var modified = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero);
+                if (Matches(endpoint, info.Name, modified, window))
                 {
-                    yield return new CopyItem(root, info.Name, info.Name, info.LastWriteTimeUtc, info.Length);
+                    yield return new CopyItem(root, info.Name, info.Name, modified, info.Length);
                 }
 
                 yield break;
@@ -50,13 +44,14 @@ public sealed class LocalCopyEndpoint : ICopyEndpoint
         {
             ct.ThrowIfCancellationRequested();
             var info = new FileInfo(file);
-            if (!Matches(endpoint, info.Name, info.LastWriteTimeUtc))
+            var modified = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero);
+            if (!Matches(endpoint, info.Name, modified, window))
             {
                 continue;
             }
 
             var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
-            yield return new CopyItem(file, relative, info.Name, info.LastWriteTimeUtc, info.Length);
+            yield return new CopyItem(file, relative, info.Name, modified, info.Length);
         }
 
         await Task.CompletedTask.ConfigureAwait(false);
@@ -87,24 +82,8 @@ public sealed class LocalCopyEndpoint : ICopyEndpoint
         return destination;
     }
 
-    private bool Matches(CopyEndpoint endpoint, string name, DateTime lastWriteUtc)
-    {
-        if (!FileSystemName.MatchesSimpleExpression(endpoint.Pattern, name))
-        {
-            return false;
-        }
-
-        if (endpoint.ModifiedWithinDays > 0)
-        {
-            var cutoff = _time.GetUtcNow().AddDays(-endpoint.ModifiedWithinDays);
-            if (new DateTimeOffset(lastWriteUtc, TimeSpan.Zero) < cutoff)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    private static bool Matches(CopyEndpoint endpoint, string name, DateTimeOffset lastWrite, CopyModifiedWindow window)
+        => FileSystemName.MatchesSimpleExpression(endpoint.Pattern, name) && window.Includes(lastWrite);
 
     private static string LocalPath(string location)
         => location.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ? new Uri(location).LocalPath : location;

@@ -1,3 +1,5 @@
+using SqlFlow.Core.Runs;
+
 namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>One page of results plus the totals a client needs to paginate. Offset paging (page/pageSize) is
@@ -42,6 +44,11 @@ public sealed record PipelineDetailDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
     string Lifecycle, string? SourceServer, string? TargetServer, string RelativePath, string ContentHash,
     string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>The run parameters that apply to a pipeline, driven by its flow kind and definition, so the GUI renders
+/// a trigger form of exactly the controls the engine will honor. <see cref="FlowKind"/> is the flow's kind (<c>cpy</c>,
+/// <c>file</c>, <c>ing</c>, ...); <see cref="Parameters"/> is empty for kinds with no selection surface.</summary>
+public sealed record FlowParametersDto(string FlowKind, IReadOnlyList<RunParameterDescriptor> Parameters);
 
 /// <summary>One resolved column of a pipeline's pre-ingestion transformation view: <c>declared</c> rows come
 /// from the flow YAML (the source of truth), <c>detected</c> rows from the latest run's generated view.</summary>

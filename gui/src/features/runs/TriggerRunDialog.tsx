@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import type React from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSnackbar } from "notistack";
-import Accordion from "@mui/material/Accordion";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Autocomplete from "@mui/material/Autocomplete";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -19,11 +19,20 @@ import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, runApi } from "../../api/endpoints";
-import type { RunScope } from "../../api/types";
+import type { RunParameterDescriptor, RunScope } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
+
+/** Prior-run values used to prefill the form on Re-run (ISO strings for the window; they are trimmed to the
+ * minute for the datetime-local inputs). Absent fields default to empty/off. */
+export interface TriggerRunParameterValues {
+  fullLoad?: boolean;
+  backfillFrom?: string | null;
+  backfillTo?: string | null;
+  filePattern?: string | null;
+  assertionsOnly?: boolean;
+}
 
 export interface TriggerRunDialogProps {
   open: boolean;
@@ -32,6 +41,11 @@ export interface TriggerRunDialogProps {
   repoId?: string;
   /** Prefills (and locks) the flow when launched from a pipeline detail page or a lineage node. */
   flowName?: string;
+  /** The flow's pipeline id, when the launching context knows it (pipeline detail, Re-run). Lets the dialog load
+   * the flow's applicable parameters without first resolving the id from the repo's pipeline list. */
+  flowId?: string;
+  /** Prior-run parameter values to prefill (Re-run). */
+  initialParameters?: TriggerRunParameterValues;
   /** The initial execution scope (defaults to "flow"). Set by the lineage graph's Run / Run + descendants / Run
    * batch actions and by the batch status board. */
   scope?: RunScope;
@@ -45,12 +59,25 @@ const SCOPE_LABELS: Record<RunScope, string> = {
   batch: "Whole batch",
 };
 
+/** An ISO instant (or datetime-local string) trimmed to the "yyyy-MM-ddThh:mm" a datetime-local input expects. */
+function toLocalInput(value: string | null | undefined): string {
+  return value ? value.slice(0, 16) : "";
+}
+
 /**
  * The single trigger-run path in the GUI: launched from the runs page (free choice of repo + flow), a pipeline's
- * detail page (prefilled), and the lineage graph / batch board (prefilled with a scope). A "flow" run POSTs one flow
- * and navigates to it; a "node" (flow + descendants) or "batch" run POSTs a group and navigates to the group view.
+ * detail page (prefilled), the lineage graph / batch board (prefilled with a scope), and a run's Re-run (prefilled
+ * with the prior parameters). A "flow" run POSTs one flow and navigates to it; a "node" (flow + descendants) or
+ * "batch" run POSTs a group and navigates to the group view.
+ *
+ * The parameter form is built from the selected flow's own definition: the control plane returns exactly the run
+ * parameters that flow's kind honors (a copy flow gets a modified-date window, a file flow adds a glob, a
+ * relational ingestion adds full-load / assertions and a window when it has a date column, and kinds with no
+ * selection surface get none), so a user is never shown a control the run would ignore.
  */
-export function TriggerRunDialog({ open, onClose, repoId, flowName, scope, batch }: TriggerRunDialogProps) {
+export function TriggerRunDialog({
+  open, onClose, repoId, flowName, flowId, initialParameters, scope, batch,
+}: TriggerRunDialogProps) {
   const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(repoId ?? null);
@@ -62,14 +89,22 @@ export function TriggerRunDialog({ open, onClose, repoId, flowName, scope, batch
   const [backfillFrom, setBackfillFrom] = useState("");
   const [backfillTo, setBackfillTo] = useState("");
   const [filePattern, setFilePattern] = useState("");
+  const [assertionsOnly, setAssertionsOnly] = useState(false);
 
   // A batch-locked launch (from the status board) carries no flow: force batch scope and keep it there.
   const batchLocked = batch !== undefined;
+  // Seed the form once per open, so a Re-run opens with the prior run's parameters and a fresh launch opens clean.
   useEffect(() => {
     if (open) {
       setSelectedScope(batchLocked ? "batch" : scope ?? "flow");
+      setFullLoad(initialParameters?.fullLoad ?? false);
+      setBackfillFrom(toLocalInput(initialParameters?.backfillFrom));
+      setBackfillTo(toLocalInput(initialParameters?.backfillTo));
+      setFilePattern(initialParameters?.filePattern ?? "");
+      setAssertionsOnly(initialParameters?.assertionsOnly ?? false);
     }
-  }, [open, scope, batchLocked]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const repos = useQuery({
     queryKey: ["repos", "all-for-trigger"],
@@ -85,8 +120,24 @@ export function TriggerRunDialog({ open, onClose, repoId, flowName, scope, batch
     enabled: open && !flowName && !batchLocked && Boolean(effectiveRepoId),
   });
 
-  // For a Node or Batch scope, preview which flows the run would touch (the same expansion the trigger uses), so the
-  // operator sees "will run N flows across M waves" before committing. A single flow needs no preview.
+  const isGroup = selectedScope !== "flow";
+
+  // The selected flow's pipeline id: given directly by the launching context, or resolved from the repo's pipeline
+  // list for a free-choice launch. Drives the applicable-parameters lookup.
+  const effectiveFlowId = flowId
+    ?? pipelines.data?.items.find((p) => p.name === effectiveFlow)?.id
+    ?? null;
+
+  const flowParameters = useQuery({
+    queryKey: ["pipeline-parameters", effectiveFlowId],
+    queryFn: () => pipelineApi.parameters(effectiveFlowId!),
+    enabled: open && !isGroup && Boolean(effectiveFlowId),
+  });
+  const applicable = useMemo(() => flowParameters.data?.parameters ?? [], [flowParameters.data]);
+  const paramKeys = useMemo(() => new Set(applicable.map((p) => p.key)), [applicable]);
+
+  // For a Node or Batch scope, preview which flows the run would touch, so the operator sees "will run N flows across
+  // M waves" before committing. A single flow needs no preview.
   const previewEnabled = open
     && selectedScope !== "flow"
     && Boolean(effectiveRepoId)
@@ -119,31 +170,31 @@ export function TriggerRunDialog({ open, onClose, repoId, flowName, scope, batch
   const repoOptions = useMemo(() => repos.data?.items ?? [], [repos.data]);
   const flowOptions = useMemo(() => pipelines.data?.items.map((p) => p.name) ?? [], [pipelines.data]);
 
-  const isGroup = selectedScope !== "flow";
+  const trimmedFrom = backfillFrom.trim();
+  const trimmedTo = backfillTo.trim();
+  const hasWindow = trimmedFrom !== "" || trimmedTo !== "";
+  const hasPattern = filePattern.trim() !== "";
 
   // Client-side mirror of RunParameters.Validate (single-flow only), so obvious mistakes are caught before the round
   // trip (the server validates authoritatively and its ProblemDetails still renders if anything slips through).
   const windowError = isGroup
     ? null
-    : backfillTo.trim() !== "" && backfillFrom.trim() === ""
-      ? "An end date needs a start date."
-      : fullLoad && (backfillFrom.trim() !== "" || backfillTo.trim() !== "")
-        ? "Full load and a backfill window are mutually exclusive."
-        : null;
+    : assertionsOnly && (fullLoad || hasWindow || hasPattern)
+      ? "Assertions-only cannot be combined with full load, a window, or a file pattern."
+      : trimmedTo !== "" && trimmedFrom === ""
+        ? "An end date needs a start date."
+        : fullLoad && hasWindow
+          ? "Full load and a backfill window are mutually exclusive."
+          : null;
 
-  const hasTarget = batchLocked
-    ? Boolean(batch)
-    : selectedScope === "batch"
-      ? Boolean(effectiveFlow)
-      : Boolean(effectiveFlow);
+  const hasTarget = batchLocked ? Boolean(batch) : Boolean(effectiveFlow);
   // A group run stays disabled until the preview confirms there is at least one flow to run.
   const groupReady = !isGroup || (preview.data !== undefined && preview.data.memberCount > 0);
   const canSubmit = Boolean(effectiveRepoId) && hasTarget && windowError === null && groupReady && !trigger.isPending;
 
   const submit = () => {
-    const trimmedFrom = backfillFrom.trim();
-    const trimmedTo = backfillTo.trim();
-    const trimmedPattern = filePattern.trim();
+    const single = !isGroup;
+    const applies = (key: string) => single && paramKeys.has(key);
     trigger.mutate({
       repoId: effectiveRepoId!,
       flowName: batchLocked ? "" : (effectiveFlow ?? "").trim(),
@@ -151,13 +202,97 @@ export function TriggerRunDialog({ open, onClose, repoId, flowName, scope, batch
       batch: batchLocked ? batch : null,
       pool: pool.trim() === "" ? null : pool.trim(),
       commitSha: commitSha.trim() === "" ? null : commitSha.trim(),
-      // Backfill is single-flow only; a group always runs default parameters.
-      fullLoad: isGroup ? false : fullLoad,
-      backfillFrom: isGroup || trimmedFrom === "" ? null : `${trimmedFrom}:00Z`,
-      backfillTo: isGroup || trimmedTo === "" ? null : `${trimmedTo}:00Z`,
-      filePattern: isGroup || trimmedPattern === "" ? null : trimmedPattern,
+      // Only the parameters the flow's kind honors are sent; a group always runs default parameters.
+      fullLoad: applies("fullLoad") ? fullLoad : false,
+      backfillFrom: applies("backfillWindow") && trimmedFrom !== "" ? `${trimmedFrom}:00Z` : null,
+      backfillTo: applies("backfillWindow") && trimmedTo !== "" ? `${trimmedTo}:00Z` : null,
+      filePattern: applies("filePattern") && hasPattern ? filePattern.trim() : null,
+      assertionsOnly: applies("assertionsOnly") ? assertionsOnly : false,
     });
   };
+
+  const switchProps = (testid: string) =>
+    ({ "data-testid": testid } as React.InputHTMLAttributes<HTMLInputElement>);
+
+  const renderParameter = (desc: RunParameterDescriptor) => {
+    switch (desc.input) {
+      case "Toggle": {
+        const isFull = desc.key === "fullLoad";
+        const checked = isFull ? fullLoad : assertionsOnly;
+        const onChange = isFull ? setFullLoad : setAssertionsOnly;
+        const disabled = isFull ? assertionsOnly : (fullLoad || hasWindow || hasPattern);
+        return (
+          <Box key={desc.key}>
+            <FormControlLabel
+              control={(
+                <Switch
+                  checked={checked}
+                  disabled={disabled}
+                  onChange={(e) => onChange(e.target.checked)}
+                  inputProps={switchProps(`trigger-${desc.key}`)}
+                />
+              )}
+              label={desc.label}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", ml: 6, mt: -0.5 }}>
+              {desc.help}
+            </Typography>
+          </Box>
+        );
+      }
+      case "DateRange":
+        return (
+          <Box key={desc.key}>
+            <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.75 }}>{desc.label}</Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              <TextField
+                label="From"
+                type="datetime-local"
+                size="small"
+                value={backfillFrom}
+                onChange={(e) => setBackfillFrom(e.target.value)}
+                disabled={fullLoad || assertionsOnly}
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ "data-testid": "trigger-backfill-from" }}
+                fullWidth
+              />
+              <TextField
+                label="To"
+                type="datetime-local"
+                size="small"
+                value={backfillTo}
+                onChange={(e) => setBackfillTo(e.target.value)}
+                disabled={fullLoad || assertionsOnly}
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ "data-testid": "trigger-backfill-to" }}
+                fullWidth
+              />
+            </Stack>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+              {desc.help}
+            </Typography>
+          </Box>
+        );
+      case "Glob":
+        return (
+          <TextField
+            key={desc.key}
+            label={desc.label}
+            size="small"
+            placeholder="orders_2026-03*.json"
+            helperText={desc.help}
+            value={filePattern}
+            onChange={(e) => setFilePattern(e.target.value)}
+            disabled={assertionsOnly}
+            inputProps={{ "data-testid": "trigger-file-pattern" }}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
+  const showParameters = !isGroup && Boolean(effectiveFlow);
 
   return (
     <Dialog open={open} onClose={trigger.isPending ? undefined : onClose} fullWidth maxWidth="sm" data-testid="trigger-run-dialog">
@@ -246,66 +381,33 @@ export function TriggerRunDialog({ open, onClose, repoId, flowName, scope, batch
             inputProps={{ "data-testid": "trigger-commit" }}
           />
 
-          {isGroup ? null : (
-            <Accordion
-              disableGutters
-              elevation={0}
-              sx={{ "&:before": { display: "none" }, bgcolor: "transparent" }}
+          {showParameters && (
+            <Box
+              data-testid="trigger-parameters"
+              sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, p: 2, bgcolor: "action.hover" }}
             >
-              <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 0 }} data-testid="trigger-backfill-expander">
-                <Typography variant="body2" color="text.secondary">Backfill (advanced)</Typography>
-              </AccordionSummary>
-              <AccordionDetails sx={{ px: 0 }}>
-                <Stack spacing={2}>
-                  <Typography variant="caption" color="text.secondary">
-                    Reprocess history for this run only, without editing the flow in git. A window bounds file dates
-                    (file flows) or the incremental date column (ingestion), and re-windows an export or init-load
-                    chunk plan. Keyed targets upsert, so a reload is idempotent; a keyless append will duplicate.
-                  </Typography>
-                  <FormControlLabel
-                    control={(
-                      <Switch
-                        checked={fullLoad}
-                        onChange={(e) => setFullLoad(e.target.checked)}
-                        inputProps={{ "data-testid": "trigger-full-load" } as React.InputHTMLAttributes<HTMLInputElement>}
-                      />
-                    )}
-                    label="Full load (ignore the watermark, read everything)"
-                  />
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                    <TextField
-                      label="Backfill from"
-                      type="datetime-local"
-                      value={backfillFrom}
-                      onChange={(e) => setBackfillFrom(e.target.value)}
-                      disabled={fullLoad}
-                      InputLabelProps={{ shrink: true }}
-                      inputProps={{ "data-testid": "trigger-backfill-from" }}
-                      fullWidth
-                    />
-                    <TextField
-                      label="Backfill to"
-                      type="datetime-local"
-                      value={backfillTo}
-                      onChange={(e) => setBackfillTo(e.target.value)}
-                      disabled={fullLoad}
-                      InputLabelProps={{ shrink: true }}
-                      inputProps={{ "data-testid": "trigger-backfill-to" }}
-                      fullWidth
-                    />
-                  </Stack>
-                  <TextField
-                    label="File pattern (file flows)"
-                    placeholder="orders_2023-01*.csv"
-                    helperText="Narrow which files this run reads; ignored by non-file flows."
-                    value={filePattern}
-                    onChange={(e) => setFilePattern(e.target.value)}
-                    inputProps={{ "data-testid": "trigger-file-pattern" }}
-                  />
-                  {windowError !== null && <Alert severity="warning" data-testid="trigger-backfill-error">{windowError}</Alert>}
+              <Typography variant="subtitle2">Run parameters</Typography>
+              {flowParameters.isLoading ? (
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="body2" color="text.secondary">Loading this flow's parameters...</Typography>
                 </Stack>
-              </AccordionDetails>
-            </Accordion>
+              ) : applicable.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  This flow runs as defined; it has no adjustable run parameters.
+                </Typography>
+              ) : (
+                <Stack spacing={2} sx={{ mt: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    One-off overrides applied to this run only. The flow definition in git is unchanged.
+                  </Typography>
+                  {applicable.map(renderParameter)}
+                  {windowError !== null && (
+                    <Alert severity="warning" data-testid="trigger-backfill-error">{windowError}</Alert>
+                  )}
+                </Stack>
+              )}
+            </Box>
           )}
         </Stack>
       </DialogContent>

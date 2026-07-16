@@ -28,10 +28,12 @@ public sealed class CopyFlowRunner
         var summary = flow.Steps.Count == 1
             ? $"{flow.Steps[0].Source.Location} -> {flow.Steps[0].Target.Location}"
             : $"{flow.Steps.Count} steps";
-        events.Log(RunLogLevel.Info, "run.start", $"copy '{flow.Name}' ({flow.Operation}) {summary}");
+        var parameters = options.Parameters;
+        var paramNote = parameters.IsDefault ? string.Empty : $" [parameters: {parameters.Describe()}]";
+        events.Log(RunLogLevel.Info, "run.start", $"copy '{flow.Name}' ({flow.Operation}) {summary}{paramNote}");
 
         var runId = options.RunId ?? Guid.NewGuid();
-        var result = await _engine.RunAsync(flow, runId, events, ct).ConfigureAwait(false);
+        var result = await _engine.RunAsync(flow, runId, events, ct, parameters).ConfigureAwait(false);
 
         events.Log(RunLogLevel.Info, "run.end", result.Success
             ? $"SUCCESS in {result.DurationSeconds}s: {result.FilesWritten} file(s), {result.BytesWritten} byte(s) from {result.Matched} matched"

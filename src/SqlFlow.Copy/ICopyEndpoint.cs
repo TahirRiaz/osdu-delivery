@@ -13,9 +13,11 @@ public interface ICopyEndpoint
     /// <summary>Whether this endpoint handles the given location scheme (local path, azure storage URI, sftp URL).</summary>
     bool CanHandle(string location);
 
-    /// <summary>Lists the files under the source endpoint that match its pattern / recursion / modified-within
-    /// window. Each item carries an absolute locator (for <see cref="ReadAsync"/>) and a path relative to the root.</summary>
-    IAsyncEnumerable<CopyItem> ListAsync(CopyEndpoint endpoint, CancellationToken ct);
+    /// <summary>Lists the files under the source endpoint that match its pattern and recursion and fall within the
+    /// engine-resolved <paramref name="window"/> (the run's backfill override or the endpoint's declared
+    /// <c>modifiedWithinDays</c> default). Each item carries an absolute locator (for <see cref="ReadAsync"/>) and a
+    /// path relative to the root.</summary>
+    IAsyncEnumerable<CopyItem> ListAsync(CopyEndpoint endpoint, CopyModifiedWindow window, CancellationToken ct);
 
     /// <summary>Reads a file's bytes by the absolute locator produced in <see cref="ListAsync"/>.</summary>
     Task<byte[]> ReadAsync(CopyEndpoint endpoint, string absolutePath, CancellationToken ct);

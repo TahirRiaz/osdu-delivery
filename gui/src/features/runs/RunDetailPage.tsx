@@ -42,6 +42,7 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
 import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
+import { TriggerRunDialog } from "./TriggerRunDialog";
 import { useRunTraceStream } from "./useRunTraceStream";
 
 /** A compact UTC stamp for a backfill window bound (the API sends UTC timestamps). */
@@ -220,13 +221,16 @@ function RunDetailContent({ runId }: { runId: string }) {
     },
   });
 
-  // For an ingestion run, the pipeline's stored definition says whether the flow embeds a healthCheck: block;
-  // its derived flow name powers the Health tab's "Run health check" button (the check is a sibling pipeline,
-  // so its metrics live on its own runs). Cached under the same key the pipeline detail page uses.
+  // The pipeline's stored definition serves two tabs: for an ingestion run it says whether the flow embeds a
+  // healthCheck: block (its derived flow name powers the Health tab's "Run health check" button, since the check
+  // is a sibling pipeline whose metrics live on its own runs), and for every run it backs the Source tab's flow
+  // YAML. Fetched for ing runs eagerly (the embedded-check name is needed before the Health tab opens) and for
+  // any run once the Source tab is selected, so a non-ing run pays for it only when the source is actually read.
+  // Cached under the same key the pipeline detail page uses.
   const pipelineQuery = useQuery({
     queryKey: ["pipelines", "detail", query.data?.pipelineId ?? ""],
     queryFn: () => pipelineApi.getById(query.data!.pipelineId),
-    enabled: query.data?.flowKind === "ing",
+    enabled: query.data !== undefined && (query.data.flowKind === "ing" || tab === 1),
   });
   const embeddedCheck = pipelineQuery.data ? embeddedHealthCheckName(pipelineQuery.data.definitionJson) : null;
 
@@ -269,38 +273,10 @@ function RunDetailContent({ runId }: { runId: string }) {
     },
   });
 
-  // Re-run repeats this one flow with the same operator parameters the original run carried (full load,
-  // backfill window, file pattern, target pool) but against the current code, matching the group page's
-  // re-run semantics (no commit pin). The new execution is a new run; the button navigates there.
-  const rerun = useMutation({
-    mutationFn: () => {
-      const r = query.data;
-      if (!r?.repoId) {
-        throw new Error("The run has not loaded yet.");
-      }
-
-      return runApi.trigger({
-        repoId: r.repoId,
-        flowName: r.flowName,
-        scope: "flow",
-        pool: r.targetPool,
-        fullLoad: r.fullLoad,
-        backfillFrom: r.backfillFrom,
-        backfillTo: r.backfillTo,
-        filePattern: r.filePattern,
-        assertionsOnly: r.assertionsOnly,
-      });
-    },
-    onSuccess: (accepted) => {
-      enqueueSnackbar("Re-run enqueued.", { variant: "success" });
-      if (accepted.runId) {
-        navigate(`/runs/${accepted.runId}`);
-      }
-    },
-    onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
-    },
-  });
+  // Re-run opens the trigger dialog prefilled with this run's flow and the operator parameters it carried (full
+  // load, backfill window, file pattern), so the run can be repeated as-is or adjusted before launching. The dialog
+  // renders exactly the parameters this flow's kind honors and navigates to the new run on submit.
+  const [rerunOpen, setRerunOpen] = useState(false);
 
   // The on-demand execution the Assertions and Health tabs offer: a fresh single-flow run of this run's
   // pipeline against the current code. With assertionsOnly the engine evaluates the flow's declared assertions
@@ -404,8 +380,7 @@ function RunDetailContent({ runId }: { runId: string }) {
             <Button
               variant="outlined"
               startIcon={<ReplayIcon fontSize="small" />}
-              onClick={() => rerun.mutate()}
-              disabled={rerun.isPending}
+              onClick={() => setRerunOpen(true)}
               data-testid="rerun-run"
             >
               Re-run
@@ -527,6 +502,7 @@ function RunDetailContent({ runId }: { runId: string }) {
         data-testid="run-tabs"
       >
         <Tab label="Trace" data-testid="tab-trace" />
+        <Tab label="Source" data-testid="tab-source" />
         <Tab label="Files" data-testid="tab-files" />
         <Tab label="Statements" data-testid="tab-statements" />
         <Tab label="Surrogate" data-testid="tab-surrogate-keys" />
@@ -596,6 +572,26 @@ function RunDetailContent({ runId }: { runId: string }) {
         </Stack>
       )}
       {tab === 1 && (
+        <Stack spacing={1}>
+          <Typography variant="body2" color="text.secondary">
+            The flow's YAML definition as registered in the catalog. This is the current source for this pipeline;
+            {run.commitSha
+              ? ` the run executed against commit ${run.commitSha.slice(0, 12)}, so a later change to the flow file may differ from what ran.`
+              : " if the flow file has changed since this run, the executed source may differ."}
+          </Typography>
+          {pipelineQuery.isError && (
+            <Alert severity="error" data-testid="source-error">
+              {isApiError(pipelineQuery.error) ? pipelineQuery.error.title : "Could not load the flow definition from the catalog."}
+            </Alert>
+          )}
+          {pipelineQuery.data === undefined && !pipelineQuery.isError
+            ? <Skeleton variant="rounded" height={560} data-testid="source-loading" />
+            : pipelineQuery.data !== undefined && (
+              <CodeView value={pipelineQuery.data.yaml} language="yaml" height={560} lsp data-testid="run-source-yaml" />
+            )}
+        </Stack>
+      )}
+      {tab === 2 && (
         <PagedTable
           queryKey={["runs", runId, "files"]}
           fetchPage={(page, pageSize) => runApi.files(runId, { page, pageSize })}
@@ -605,7 +601,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           data-testid="files-table"
         />
       )}
-      {tab === 2 && (
+      {tab === 3 && (
         <PagedTable
           queryKey={["runs", runId, "statements"]}
           fetchPage={(page, pageSize) => runApi.statements(runId, { page, pageSize })}
@@ -622,7 +618,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           data-testid="statements-table"
         />
       )}
-      {tab === 3 && (
+      {tab === 4 && (
         <PagedTable
           queryKey={["runs", runId, "surrogate-keys"]}
           fetchPage={(page, pageSize) => runApi.surrogateKeys(runId, { page, pageSize })}
@@ -632,7 +628,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           data-testid="surrogate-keys-table"
         />
       )}
-      {tab === 4 && (
+      {tab === 5 && (
         <Stack spacing={1}>
           {run.flowKind === "ing" && run.repoId !== null && (
             <Stack direction="row" spacing={1} alignItems="center">
@@ -664,7 +660,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           />
         </Stack>
       )}
-      {tab === 5 && (
+      {tab === 6 && (
         <Stack spacing={1}>
           {run.flowKind === "hc" && run.repoId !== null && (
             <Stack direction="row" spacing={1} alignItems="center">
@@ -774,6 +770,22 @@ function RunDetailContent({ runId }: { runId: string }) {
         onConfirm={() => cancel.mutate()}
         onClose={() => setConfirmOpen(false)}
       />
+      {run.repoId !== null && (
+        <TriggerRunDialog
+          open={rerunOpen}
+          onClose={() => setRerunOpen(false)}
+          repoId={run.repoId}
+          flowName={run.flowName}
+          flowId={run.pipelineId}
+          initialParameters={{
+            fullLoad: run.fullLoad,
+            backfillFrom: run.backfillFrom,
+            backfillTo: run.backfillTo,
+            filePattern: run.filePattern,
+            assertionsOnly: run.assertionsOnly,
+          }}
+        />
+      )}
     </Page>
   );
 }

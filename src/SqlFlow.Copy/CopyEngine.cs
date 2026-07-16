@@ -29,10 +29,13 @@ public sealed class CopyEngine
         _time = time;
     }
 
-    public async Task<CopyRunResult> RunAsync(CopyFlow flow, Guid runId, IRunEventSink log, CancellationToken ct)
+    public async Task<CopyRunResult> RunAsync(
+        CopyFlow flow, Guid runId, IRunEventSink log, CancellationToken ct, RunParameters? parameters = null)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(log);
+        var runParams = parameters ?? RunParameters.None;
+        var now = _time.GetUtcNow();
         var sw = Stopwatch.StartNew();
         var written = new List<CopyFileResult>();
         var matched = 0;
@@ -50,14 +53,16 @@ public sealed class CopyEngine
                 var source = Select(step.Source.Location, "source");
                 var target = Select(step.Target.Location, "target");
 
+                var window = ResolveWindow(step.Source, runParams, now);
                 var items = new List<CopyItem>();
-                await foreach (var item in source.ListAsync(step.Source, ct).ConfigureAwait(false))
+                await foreach (var item in source.ListAsync(step.Source, window, ct).ConfigureAwait(false))
                 {
                     items.Add(item);
                 }
 
                 matched += items.Count;
-                log.Log(RunLogLevel.Info, "copy.list", $"matched {items.Count} file(s) at '{step.Source.Location}'.");
+                log.Log(RunLogLevel.Info, "copy.list",
+                    $"matched {items.Count} file(s) at '{step.Source.Location}'{DescribeWindow(window)}.");
 
                 switch (flow.Operation)
                 {
@@ -198,6 +203,42 @@ public sealed class CopyEngine
         var clean = new string(leaf.Where(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.').ToArray());
         return clean.Length > 0 ? clean : "step";
     }
+
+    /// <summary>
+    /// The effective modified-date filter for a source step: an operational backfill window (from the run's
+    /// parameters) overrides the flow's declared <c>modifiedWithinDays</c>; a full-load run copies everything the
+    /// definition selects (no date filter); otherwise the endpoint's <c>modifiedWithinDays</c> default applies,
+    /// computed against the engine's clock. <c>filePattern</c> and <c>assertionsOnly</c> have no meaning for a
+    /// byte-for-byte copy and are ignored here (the run log still records the supplied parameters).
+    /// </summary>
+    private static CopyModifiedWindow ResolveWindow(CopyEndpoint source, RunParameters parameters, DateTimeOffset now)
+    {
+        if (parameters.BackfillFrom is { } from)
+        {
+            var to = parameters.BackfillTo is { } t
+                ? new DateTimeOffset(DateTime.SpecifyKind(t, DateTimeKind.Utc))
+                : (DateTimeOffset?)null;
+            return new CopyModifiedWindow(new DateTimeOffset(DateTime.SpecifyKind(from, DateTimeKind.Utc)), to);
+        }
+
+        if (parameters.FullLoad)
+        {
+            return CopyModifiedWindow.Unbounded;
+        }
+
+        return source.ModifiedWithinDays > 0
+            ? new CopyModifiedWindow(now.AddDays(-source.ModifiedWithinDays), null)
+            : CopyModifiedWindow.Unbounded;
+    }
+
+    private static string DescribeWindow(CopyModifiedWindow window)
+        => window switch
+        {
+            { From: { } f, To: { } t } => $" (modified {f:yyyy-MM-dd} .. {t:yyyy-MM-dd})",
+            { From: { } f } => $" (modified since {f:yyyy-MM-dd})",
+            { To: { } t } => $" (modified until {t:yyyy-MM-dd})",
+            _ => string.Empty,
+        };
 
     private ICopyEndpoint Select(string location, string side)
         => _endpoints.FirstOrDefault(e => e.CanHandle(location))

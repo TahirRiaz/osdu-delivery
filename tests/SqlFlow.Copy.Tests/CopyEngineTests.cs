@@ -21,7 +21,7 @@ public sealed class CopyEngineTests : IDisposable
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
-    private static CopyEngine Engine() => new([new LocalCopyEndpoint(TimeProvider.System)], TimeProvider.System);
+    private static CopyEngine Engine() => new([new LocalCopyEndpoint()], TimeProvider.System);
 
     private string Write(string relative, string content)
     {
@@ -130,7 +130,7 @@ public sealed class CopyEngineTests : IDisposable
         };
         Write("src/a.txt", "x");
         // A local engine with no Azure endpoint cannot handle an abfss target.
-        var engine = new CopyEngine([new LocalCopyEndpoint(TimeProvider.System)], TimeProvider.System);
+        var engine = new CopyEngine([new LocalCopyEndpoint()], TimeProvider.System);
         var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
         Assert.False(result.Success);
         Assert.Contains("No copy endpoint handles the target", result.Error, StringComparison.Ordinal);
@@ -203,6 +203,74 @@ public sealed class CopyEngineTests : IDisposable
                 target: { location: ./d }
             """));
         Assert.Contains("not both", ex.Message, StringComparison.Ordinal);
+    }
+
+    private CopyFlow FlowWithWindow(string src, string trg, int modifiedWithinDays)
+        => new()
+        {
+            Name = "T",
+            Operation = CopyOperation.Copy,
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = Path.Combine(_dir, src), ModifiedWithinDays = modifiedWithinDays },
+                Target = new CopyEndpoint { Location = Path.Combine(_dir, trg) },
+            }],
+        };
+
+    [Fact]
+    public async Task Copy_ModifiedWithinDays_ExcludesOlderFilesByDefault()
+    {
+        // The flow's declared window (the baatbooking runbook's 14 days) is the default when no override is supplied.
+        var oldFile = Write("src/old.json", "{}");
+        var newFile = Write("src/new.json", "{}");
+        File.SetLastWriteTimeUtc(oldFile, DateTime.UtcNow.AddDays(-30));
+        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow.AddDays(-1));
+
+        var result = await Engine().RunAsync(FlowWithWindow("src", "dst", 14), Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.FilesWritten);
+        Assert.True(File.Exists(Path.Combine(_dir, "dst", "new.json")));
+        Assert.False(File.Exists(Path.Combine(_dir, "dst", "old.json")));
+    }
+
+    [Fact]
+    public async Task Copy_BackfillWindow_OverridesModifiedWithinDays_ToReachHistory()
+    {
+        // A trigger-time backfill window replaces the 14-day default, reaching files it would otherwise exclude.
+        var oldFile = Write("src/old.json", "{}");
+        var newFile = Write("src/new.json", "{}");
+        File.SetLastWriteTimeUtc(oldFile, DateTime.UtcNow.AddDays(-30));
+        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow.AddDays(-1));
+
+        var parameters = new RunParameters
+        {
+            BackfillFrom = DateTime.UtcNow.AddDays(-40),
+            BackfillTo = DateTime.UtcNow.AddDays(-20),
+        };
+        var result = await Engine().RunAsync(
+            FlowWithWindow("src", "dst", 14), Guid.NewGuid(), NullRunEventSink.Instance, default, parameters);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.FilesWritten);
+        Assert.True(File.Exists(Path.Combine(_dir, "dst", "old.json")));
+        Assert.False(File.Exists(Path.Combine(_dir, "dst", "new.json")));
+    }
+
+    [Fact]
+    public async Task Copy_FullLoad_IgnoresModifiedWithinDays()
+    {
+        var oldFile = Write("src/old.json", "{}");
+        var newFile = Write("src/new.json", "{}");
+        File.SetLastWriteTimeUtc(oldFile, DateTime.UtcNow.AddDays(-100));
+        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow.AddDays(-1));
+
+        var result = await Engine().RunAsync(
+            FlowWithWindow("src", "dst", 14), Guid.NewGuid(), NullRunEventSink.Instance, default,
+            new RunParameters { FullLoad = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.FilesWritten);
     }
 
     [Fact]

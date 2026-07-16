@@ -1,9 +1,11 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.ControlPlane.Api;
@@ -28,6 +30,7 @@ public static class CatalogEndpoints
         pipelines.MapGet("/projects", ListPipelineProjectsAsync).WithName("ListPipelineProjects");
         pipelines.MapGet("/{id:guid}", GetPipelineAsync).WithName("GetPipeline");
         pipelines.MapGet("/{id:guid}/definition", GetPipelineDefinitionAsync).WithName("GetPipelineDefinition");
+        pipelines.MapGet("/{id:guid}/parameters", GetPipelineParametersAsync).WithName("GetPipelineParameters");
         pipelines.MapGet("/{id:guid}/columns", GetPipelineColumnsAsync).WithName("GetPipelineColumns");
         pipelines.MapGet("/{id:guid}/files", GetPipelineFilesAsync).WithName("GetPipelineFiles");
 
@@ -232,6 +235,85 @@ public static class CatalogEndpoints
         return json is null
             ? NotFound("pipeline", id)
             : TypedResults.Text(json, "application/json");
+    }
+
+    /// <summary>
+    /// The run parameters that apply to this pipeline, so the GUI can build a trigger form driven by the flow's own
+    /// definition rather than showing every control for every kind. The applicable set comes from the shared
+    /// <see cref="RunParameterApplicability"/> (the same per-kind rules the engine honors); for a relational
+    /// ingestion the backfill window is offered only when the definition declares an incremental date column a window
+    /// can bound.
+    /// </summary>
+    private static async Task<Results<Ok<FlowParametersDto>, ProblemHttpResult>> GetPipelineParametersAsync(
+        Guid id, CatalogDbContext db, CancellationToken ct)
+    {
+        var row = await db.Pipelines.AsNoTracking().Where(x => x.Id == id)
+            .Select(x => new { x.Kind, x.DefinitionJson })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (row is null)
+        {
+            return NotFound("pipeline", id);
+        }
+
+        var descriptors = RunParameterApplicability.For(row.Kind, HasIncrementalDateColumn(row.DefinitionJson));
+        return TypedResults.Ok(new FlowParametersDto(row.Kind, descriptors));
+    }
+
+    /// <summary>Whether the flow definition declares a non-empty incremental date column anywhere (a tolerant probe
+    /// over the stored definition JSON, so it holds across the definition's exact nesting/casing). A malformed or
+    /// absent definition reports false, which correctly withholds the window from a flow that cannot bound one.</summary>
+    private static bool HasIncrementalDateColumn(string? definitionJson)
+    {
+        if (string.IsNullOrWhiteSpace(definitionJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(definitionJson);
+            return FindNonEmptyDateColumn(doc.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool FindNonEmptyDateColumn(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    if (string.Equals(prop.Name, "dateColumn", StringComparison.OrdinalIgnoreCase)
+                        && prop.Value.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(prop.Value.GetString()))
+                    {
+                        return true;
+                    }
+
+                    if (FindNonEmptyDateColumn(prop.Value))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (FindNonEmptyDateColumn(item))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            default:
+                return false;
+        }
     }
 
     /// <summary>

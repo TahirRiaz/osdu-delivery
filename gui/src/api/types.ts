@@ -302,6 +302,25 @@ export interface RunHealthCheckMetric {
   error: string | null;
 }
 
+export type RunParameterInput = "Toggle" | "DateRange" | "Glob";
+
+/** One run parameter that applies to a flow, with the metadata the trigger form renders from. `key` maps back to
+ *  the trigger request: "fullLoad", "backfillWindow" (backfillFrom/backfillTo), "filePattern", "assertionsOnly". */
+export interface RunParameterDescriptor {
+  key: string;
+  input: RunParameterInput;
+  label: string;
+  help: string;
+}
+
+/** The run parameters that apply to a pipeline, driven by its kind and definition (the same per-kind rules the
+ *  engine honors). `parameters` is empty for kinds with no selection surface (stored procedure, health check,
+ *  inventory), so the trigger form shows only controls the run will actually honor. */
+export interface FlowParameters {
+  flowKind: string;
+  parameters: RunParameterDescriptor[];
+}
+
 export interface RunTriggerRequest {
   repoId: string;
   flowName: string;

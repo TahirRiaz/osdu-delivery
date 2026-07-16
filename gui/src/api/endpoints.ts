@@ -11,6 +11,7 @@ import type {
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, MyNotificationOptions, Node, NodeScript,
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
+  FlowParameters,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
@@ -65,6 +66,8 @@ export const pipelineApi = {
   projects: (repoId?: string) =>
     get<string[]>("/api/v1/pipelines/projects", repoId ? { repoId } : {}),
   getById: (id: string) => get<PipelineDetail>(`/api/v1/pipelines/${id}`),
+  /** The run parameters that apply to this flow (kind + definition driven), for the dynamic trigger form. */
+  parameters: (id: string) => get<FlowParameters>(`/api/v1/pipelines/${id}/parameters`),
   columns: (id: string) => get<PipelineColumn[]>(`/api/v1/pipelines/${id}/columns`),
   files: (id: string, query: PipelineFilesQuery = {}) =>
     get<PagedResult<PipelineFile>>(`/api/v1/pipelines/${id}/files`, query as QueryParams),

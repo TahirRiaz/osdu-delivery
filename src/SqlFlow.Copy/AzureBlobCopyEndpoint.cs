@@ -37,12 +37,12 @@ public sealed class AzureBlobCopyEndpoint : ICopyEndpoint
 
     public bool CanHandle(string location) => IsAzure(location);
 
-    public async IAsyncEnumerable<CopyItem> ListAsync(CopyEndpoint endpoint, [EnumeratorCancellation] CancellationToken ct)
+    public async IAsyncEnumerable<CopyItem> ListAsync(
+        CopyEndpoint endpoint, CopyModifiedWindow window, [EnumeratorCancellation] CancellationToken ct)
     {
         var loc = AzureBlobLocation.Parse(endpoint.Location);
         var container = await ContainerAsync(endpoint, loc, ct).ConfigureAwait(false);
         var prefix = loc.BlobPath.Length == 0 ? null : loc.BlobPath.TrimEnd('/') + "/";
-        var cutoff = endpoint.ModifiedWithinDays > 0 ? DateTimeOffset.UtcNow.AddDays(-endpoint.ModifiedWithinDays) : (DateTimeOffset?)null;
 
         await foreach (var blob in container.GetBlobsAsync(prefix: prefix, cancellationToken: ct).ConfigureAwait(false))
         {
@@ -70,7 +70,7 @@ public sealed class AzureBlobCopyEndpoint : ICopyEndpoint
             }
 
             var modified = blob.Properties.LastModified;
-            if (cutoff is { } c && modified is { } m && m < c)
+            if (!window.Includes(modified))
             {
                 continue;
             }
