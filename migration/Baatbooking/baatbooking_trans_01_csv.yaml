@@ -4,7 +4,7 @@ name: baatbooking_trans_01_csv
 batch: BB
 source:
   type: csv
-  location: https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2/raw/baatbooking/history/trans/
+  location: https://dwdatalakeprodv2.dfs.core.windows.net/datalakev2/raw/baatbooking/history/trans/
   options:
     srcFile: "trans*.csv"
     searchSubDirectories: "true"
