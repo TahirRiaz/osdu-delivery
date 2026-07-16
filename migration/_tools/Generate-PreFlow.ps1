@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory)] [int]    $FlowId,
     [Parameter(Mandatory)] [string] $OutDir,
     [Parameter(Mandatory)] [string] $StorageUrlBase,
-    [string] $Server   = 'localhost',
+    [string] $Server   = '92.221.59.28',
     [string] $MetaDb   = 'dw-sqlflow-prod-last',
     [string] $User     = 'SQLFlow',
     [string] $Password = 'fhin352',

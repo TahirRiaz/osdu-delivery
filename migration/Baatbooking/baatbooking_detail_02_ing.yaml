@@ -21,7 +21,7 @@ load:
   keyColumns: [USER_NR, TRANS_NR, ROUTE_NR, TOUR_NR, STOP_ID_FR, STOP_ID_TO, TRANS_ID, DETAIL_ID, FR_TRAVELTIME, TO_TRAVELTIME]
 
 incremental:
-  columns: [UpdatedDate_DW]
+  columns: [FileDate_DW]
   overlapDays: 7
 
 schema:

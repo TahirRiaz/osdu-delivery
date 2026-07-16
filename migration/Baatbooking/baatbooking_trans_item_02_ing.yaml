@@ -21,7 +21,7 @@ load:
   keyColumns: [TRANS_ITEM_ID, USER_NR, SESSION_NR, TRANS_NR, SESS_ID, TRANS_ID, REFERENCE]
 
 incremental:
-  columns: [UpdatedDate_DW]
+  columns: [FileDate_DW]
   overlapDays: 7
 
 schema:

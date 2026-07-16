@@ -20,14 +20,17 @@ If the user gives only a readable name, derive the batch code by querying the me
 
 ## Configuration (this environment)
 
-- SQL Server: `localhost`, user `SQLFlow` (password in `B:\SQLFlowUpgradeV3\creds.txt` and `.sqlflow/env`).
-- Legacy metadata DB: **`dw-sqlflow-prod-last`** (the old SQLFlow control DB; read-only, never write to it).
+- SQL Server (local targets + catalog): `localhost`, user `SQLFlow` (password in `B:\SQLFlowUpgradeV3\creds.txt` and `.sqlflow/env`).
+- Legacy source server: **`92.221.59.28`** (hosts the old SQLFlow control DB the migration reads from; NOT localhost).
+- Legacy metadata DB: **`dw-sqlflow-prod-last`** on `92.221.59.28` (the old SQLFlow control DB; read-only, never write to it).
 - Targets (local): pre landing -> **`dw-pre-prod`** (schema `pre`); ods/arc -> **`dw-dwh-prod`** (schema `arc`).
 - Official V3 catalog: **`dw-sqlflow-prodV3`** (`SQLFLOW_CATALOG_DB` in `.sqlflow/env`).
 - Data lake (source files): account `dwdatalakestorev2prod`, container `datalakev2`; storage URL base
   `https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2`.
 - Reference prod DDL (for schema comparison): `B:\SQLFlowUpgradeV3\dw-dwh-prod\` and `...\dw-pre-prod\`.
-- Generators: `migration/_tools/Generate-PreFlow.ps1`, `migration/_tools/Generate-OdsFlow.ps1`.
+- Generators: `migration/_tools/Generate-PreFlow.ps1`, `migration/_tools/Generate-OdsFlow.ps1`. Both read the
+  legacy metadata over the network and default `-Server` to the IP **`92.221.59.28`** (the metadata DB is NOT
+  on localhost). Pass `-Server` only to override.
 
 ### Credentials caveat (important)
 
@@ -136,6 +139,12 @@ SELECT [Database],[Schema],Name,Kind FROM catalog.Object ORDER BY 1,2,3;   -- li
   across the estate and must NOT be generated). Omit when NULL.
 - Merge keys from `KeyColumns`; incremental watermark from `IncrementalColumns` + `NoOfOverlapDays`; audit
   columns from `SysColumns` (`InsertedDate_DW`, `UpdatedDate_DW`, created as `datetime`).
+- **Incremental watermark must be a source-view column.** The ods source is the typed pre view, whose only
+  high-water columns are the file provenance stamps (`FileDate_DW` etc.), not the target-side audit columns.
+  Legacy flows that used `UpdatedDate_DW`/`InsertedDate_DW` as `IncrementalColumns` (those were audit columns
+  on the old ingestion source table) must be remapped to `FileDate_DW`, the view's per-file high-water column;
+  the engine throws `Incremental column '...' is not among the source columns` otherwise. The ods generator
+  does this remap automatically; business (non-audit) incremental columns pass through unchanged.
 
 ## Definition of done for a source
 

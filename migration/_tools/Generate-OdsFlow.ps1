@@ -6,7 +6,7 @@
 param(
     [Parameter(Mandatory)] [int]    $FlowId,
     [Parameter(Mandatory)] [string] $OutDir,
-    [string] $Server   = 'localhost',
+    [string] $Server   = '92.221.59.28',
     [string] $MetaDb   = 'dw-sqlflow-prod-last',
     [string] $User     = 'SQLFlow',
     [string] $Password = 'fhin352'
@@ -48,6 +48,17 @@ $overlap = [int]$f[4]; $identity = $f[5].Trim('[',']')
 $sysCols = ($f[6] -split ',') | ForEach-Object { $_.Trim().ToUpper() }
 $batch = $f[7]; $truncate = ($f[8] -eq '1'); $skipUpd = ($f[9] -eq '1'); $skipIns = ($f[10] -eq '1')
 $srcFilter = $f[11]; $ignoreCols = Cols $f[12]
+
+# In legacy SQLFlow the ingestion source was itself a table carrying audit stamps (UpdatedDate_DW /
+# InsertedDate_DW), and the flow used one of those as its incremental watermark. In the V3 two-stage design
+# the ods source is the typed pre view, which does NOT carry those target-side audit columns; it carries the
+# file-date provenance stamp (FileDate_DW). The engine requires every incremental column to exist in the source
+# (IncrementalWindowResolver rejects an unknown watermark column), so remap an audit watermark to FileDate_DW,
+# the pre view's actual per-file high-water column. Non-audit (business) incremental columns pass through.
+$auditWatermarks = @('UpdatedDate_DW', 'InsertedDate_DW')
+if ($incCols) {
+    $incCols = @($incCols | ForEach-Object { if ($auditWatermarks -contains $_) { 'FileDate_DW' } else { $_ } } | Select-Object -Unique)
+}
 
 # Target table name (bare) drives the file name and flow name.
 $table = ([regex]::Matches($trgObj, '\[([^\]]+)\]') | ForEach-Object { $_.Groups[1].Value })[-1]
