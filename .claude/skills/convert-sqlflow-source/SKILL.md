@@ -13,13 +13,20 @@ production schema and registered in the official V3 catalog so progress is visib
 ## Inputs
 
 - **Batch code** (required): the legacy `Batch` value, e.g. `BB`. Used to find the flows in the metadata DB.
-- **Readable source name** (required): the human folder name, e.g. `Baatbooking`. Folder = `migration/<ReadableName>/`.
+- **Readable source name** (required): the human folder name, e.g. `Baatbooking`. Output folder =
+  `C:\Projects\dwh-pipelines-prod\<ReadableName>\` (see Configuration; this is the official pipelines repo).
 - **Scope** (optional): specific tables/FlowIDs. Default = every active flow in the batch.
 
 If the user gives only a readable name, derive the batch code by querying the metadata (see Discovery), or ask.
 
 ## Configuration (this environment)
 
+- **Official output repo**: **`C:\Projects\dwh-pipelines-prod`** (git remote `origin` ->
+  `https://bitbucket.org/kolumbuscode/dwh-pipelines-prod.git`). This is where converted/migrated flows live
+  and ship from. Each source is a top-level folder `C:\Projects\dwh-pipelines-prod\<ReadableName>\` holding its
+  flow YAMLs plus a generated `.sqlflow\lineage\`. Generate flow files straight into this folder, commit there,
+  and push to Bitbucket (token + auth scheme in the `bitbucket-prod-repo-push` memory). The SQLFlowV3 repo's
+  `migration/` folder is the tooling/scratch area only, not a shipping location.
 - SQL Server (local targets + catalog): `localhost`, user `SQLFlow` (password in `B:\SQLFlowUpgradeV3\creds.txt` and `.sqlflow/env`).
 - Legacy source server: **`92.221.59.28`** (hosts the old SQLFlow control DB the migration reads from; NOT localhost).
 - Legacy metadata DB: **`dw-sqlflow-prod-last`** on `92.221.59.28` (the old SQLFlow control DB; read-only, never write to it).
@@ -45,7 +52,9 @@ Verify once with `dotnet run --project src/SqlFlow.Cli --no-build -- auth --scop
 
 ## Procedure
 
-Run from the repo root `b:\SQLFlowV3`. Build the CLI first if needed: `dotnet build src/SqlFlow.Cli -c Debug`.
+Run the tooling from the SQLFlowV3 repo root `c:\Projects\SQLFlowV3` (the generators and CLI live here; they
+write flow files into the pipelines repo via `-OutDir`). Build the CLI first if needed:
+`dotnet build src/SqlFlow.Cli -c Debug`.
 
 ### 1. Discover the flows in the batch
 
@@ -69,23 +78,27 @@ the same way for others.)
 
 ### 3. Generate the flow files (one pre per CSV FlowID, one ods per Ingestion FlowID)
 
+Write straight into the official pipelines repo. `$OUT` is that source's folder there:
+
 ```powershell
+$OUT = 'C:\Projects\dwh-pipelines-prod\<ReadableName>'
 foreach ($id in <csv-flowids>) {
-  ./migration/_tools/Generate-PreFlow.ps1 -FlowId $id -OutDir migration/<ReadableName> `
+  ./migration/_tools/Generate-PreFlow.ps1 -FlowId $id -OutDir $OUT `
      -StorageUrlBase 'https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2'
 }
 foreach ($id in <ingestion-flowids>) {
-  ./migration/_tools/Generate-OdsFlow.ps1 -FlowId $id -OutDir migration/<ReadableName>
+  ./migration/_tools/Generate-OdsFlow.ps1 -FlowId $id -OutDir $OUT
 }
 ```
 
-Produces `migration/<ReadableName>/<Table>.01_pre.flow.yaml` and `<Table>.02_ods.flow.yaml`.
+Produces `<ReadableName>\<table>_01_csv.yaml` (pre) and `<table>_02_ing.yaml` (ods), where `<table>` is the
+lowercased target table name.
 
 ### 4. Validate, then test with a bounded window
 
 ```bash
-dotnet run --project src/SqlFlow.Cli --no-build -- validate migration/<ReadableName>/<Table>.01_pre.flow.yaml
-dotnet run --project src/SqlFlow.Cli --no-build -- validate migration/<ReadableName>/<Table>.02_ods.flow.yaml
+dotnet run --project src/SqlFlow.Cli --no-build -- validate "C:/Projects/dwh-pipelines-prod/<ReadableName>/<table>_01_csv.yaml"
+dotnet run --project src/SqlFlow.Cli --no-build -- validate "C:/Projects/dwh-pipelines-prod/<ReadableName>/<table>_02_ing.yaml"
 ```
 
 For a fast test load, temporarily narrow the pre flow's `location` to one partition (e.g. `.../<dataset>/2018/05/`)
@@ -103,7 +116,7 @@ equivalent `numeric(14,0)`).
 ### 6. Register in the catalog
 
 ```bash
-dotnet run --project src/SqlFlow.Cli --no-build -- db sync migration/<ReadableName> --repo <ReadableName> --connect
+dotnet run --project src/SqlFlow.Cli --no-build -- db sync "C:/Projects/dwh-pipelines-prod/<ReadableName>" --repo <ReadableName> --connect
 ```
 
 Use **`--connect`** so the derived tier reads each generated view's actual source from `sys.sql_modules`,
@@ -119,11 +132,19 @@ SELECT Name, Kind, Batch, Wave FROM catalog.Pipeline WHERE Batch = '<BATCH>' ORD
 SELECT [Database],[Schema],Name,Kind FROM catalog.Object ORDER BY 1,2,3;   -- lineage
 ```
 
+### 7. Ship: commit and push the pipelines repo
+
+The generated flows live in `C:\Projects\dwh-pipelines-prod`; commit the new `<ReadableName>\` folder there and
+push to Bitbucket. Use the token + `x-bitbucket-api-token-auth` scheme from the `bitbucket-prod-repo-push`
+memory (pushing via the named `origin` prompts for credentials and hangs). Commit as the human user, never
+attribute to Claude.
+
 ## Naming standard (do not deviate)
 
-- Folder: `migration/<ReadableName>/` (readable, e.g. `Baatbooking`, not the cryptic batch code).
-- File: `<Table>.01_pre.flow.yaml` and `<Table>.02_ods.flow.yaml` (numeric prefix keeps pre before ods).
-- Flow `name:`: `<Batch>_<Table>_<stage>` (e.g. `BB_Baatbooking_sess_ods`).
+- Folder: `C:\Projects\dwh-pipelines-prod\<ReadableName>\` (readable, e.g. `Baatbooking`, not the cryptic batch code).
+- File: `<table>_01_csv.yaml` (pre) and `<table>_02_ing.yaml` (ods), where `<table>` is the lowercased target
+  table name (e.g. `baatbooking_detail_01_csv.yaml`). The numeric prefix keeps pre before ods.
+- Flow `name:` matches the file stem: `<table>_01_csv` / `<table>_02_ing` (the generators emit this).
 - `batch:` field carries the batch code inside every file.
 - **Object names (tables/views) are locked to production** and must match exactly, including casing.
 
