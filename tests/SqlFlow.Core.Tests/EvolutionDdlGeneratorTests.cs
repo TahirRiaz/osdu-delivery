@@ -27,7 +27,15 @@ public sealed class EvolutionDdlGeneratorTests
 
         var batch = EvolutionDdlGenerator.Generate(Customer, plan, allowTableRewrite: false);
 
-        var statement = Assert.Single(batch.Statements);
+        Assert.Equal(2, batch.Statements.Count);
+
+        // The schema is ensured first (idempotent), then the guarded create runs in the same metadata batch.
+        var ensure = batch.Statements[0];
+        Assert.False(ensure.IsCreateTable);
+        Assert.Equal(DdlCost.MetadataOnly, ensure.Cost);
+        Assert.Equal("IF SCHEMA_ID(N'dbo') IS NULL EXEC(N'CREATE SCHEMA [dbo]');", ensure.Text);
+
+        var statement = batch.Statements[1];
         Assert.True(statement.IsCreateTable);
         Assert.Equal(DdlCost.MetadataOnly, statement.Cost);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[Customer]', N'U') IS NULL", statement.Text, StringComparison.Ordinal);

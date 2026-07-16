@@ -39,6 +39,15 @@ public static class EvolutionDdlGenerator
 
         if (plan.CreateTable)
         {
+            // The target schema (pre, ods, ...) may not exist on a first-ever run; ensure it before the CREATE
+            // TABLE so the create never fails with "schema does not exist". The SCHEMA_ID guard makes it a no-op
+            // once the schema is present. It runs in the same metadata-only batch as the create.
+            statements.Add(new DdlStatement
+            {
+                Text = EnsureSchemaStatement(target.Schema),
+                Cost = DdlCost.MetadataOnly,
+            });
+
             statements.Add(new DdlStatement
             {
                 Text = CreateTableStatement(qualified, literal, target.Name, plan.CreateColumns),
@@ -101,6 +110,11 @@ public static class EvolutionDdlGenerator
         var nullability = column.IsNullable ? "NULL" : "NOT NULL";
         return $"[{Escape(column.Name)}] {column.DataType.Render()}{identity} {nullability}";
     }
+
+    /// <summary>An idempotent CREATE SCHEMA guarded by SCHEMA_ID. CREATE SCHEMA must begin its own batch, so
+    /// it is wrapped in EXEC to run inside the applier's metadata-only transaction alongside the create.</summary>
+    private static string EnsureSchemaStatement(string schema)
+        => $"IF SCHEMA_ID(N'{Literal(schema)}') IS NULL EXEC(N'CREATE SCHEMA [{Escape(schema)}]');";
 
     private static string Qualify(RelationalObject target) => $"[{Escape(target.Schema)}].[{Escape(target.Name)}]";
 

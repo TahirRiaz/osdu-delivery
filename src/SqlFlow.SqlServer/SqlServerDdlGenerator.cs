@@ -28,7 +28,12 @@ public sealed class SqlServerDdlGenerator : IDdlGenerator
             }
 
             builder.Append(");");
-            return [builder.ToString()];
+
+            // The target schema (pre, ods, ...) may not exist yet on a first-ever run; ensure it before the
+            // CREATE TABLE so the create never fails with "schema does not exist". The guard makes it a no-op
+            // when the schema is already present (dbo, or a schema created by a prior run). Each statement runs
+            // as its own batch, which CREATE SCHEMA requires; the EXEC wrapper satisfies that.
+            return [EnsureSchemaStatement(target.Schema), builder.ToString()];
         }
 
         // Columns added to an existing (potentially populated) table must be NULLable: there is no
@@ -36,6 +41,16 @@ public sealed class SqlServerDdlGenerator : IDdlGenerator
         return delta.ColumnsToAdd
             .Select(c => $"ALTER TABLE {target.QualifiedName} ADD {Column(c, forNewTable: false)};")
             .ToList();
+    }
+
+    /// <summary>An idempotent CREATE SCHEMA guarded by SCHEMA_ID, matching the pattern the ingestion runner
+    /// and control-plane provisioning already use. CREATE SCHEMA must be the first (only) statement in its
+    /// batch, so it is wrapped in EXEC to run inside the shared DDL transaction.</summary>
+    private static string EnsureSchemaStatement(string schema)
+    {
+        var literal = schema.Replace("'", "''", StringComparison.Ordinal);
+        var escaped = schema.Replace("]", "]]", StringComparison.Ordinal);
+        return $"IF SCHEMA_ID(N'{literal}') IS NULL EXEC(N'CREATE SCHEMA [{escaped}]');";
     }
 
     private static string Column(ColumnDefinition column, bool forNewTable)

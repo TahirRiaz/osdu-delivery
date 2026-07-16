@@ -24,10 +24,28 @@ public sealed class SqlServerDdlGeneratorTests
 
         var sql = Generator.Generate(Target, delta);
 
-        Assert.Single(sql);
-        Assert.Contains("CREATE TABLE [dbo].[Orders]", sql[0], StringComparison.Ordinal);
-        Assert.Contains("[OrderId] BIGINT NOT NULL", sql[0], StringComparison.Ordinal);
-        Assert.Contains("[Amount] DECIMAL(38, 6) NULL", sql[0], StringComparison.Ordinal);
+        Assert.Equal(2, sql.Count);
+        Assert.Equal("IF SCHEMA_ID(N'dbo') IS NULL EXEC(N'CREATE SCHEMA [dbo]');", sql[0]);
+        Assert.Contains("CREATE TABLE [dbo].[Orders]", sql[1], StringComparison.Ordinal);
+        Assert.Contains("[OrderId] BIGINT NOT NULL", sql[1], StringComparison.Ordinal);
+        Assert.Contains("[Amount] DECIMAL(38, 6) NULL", sql[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Generate_CreateTable_EnsuresNonDefaultSchemaFirst()
+    {
+        var target = new TargetSpec { Connection = "x", Schema = "pre", Table = "Baatbooking_detail" };
+        var delta = new SchemaDelta
+        {
+            CreateTable = true,
+            ColumnsToAdd = [new ColumnDefinition { Name = "MEDIA_TYPE", SqlType = "varchar(255)", IsNullable = true }],
+        };
+
+        var sql = Generator.Generate(target, delta);
+
+        Assert.Equal(2, sql.Count);
+        Assert.Equal("IF SCHEMA_ID(N'pre') IS NULL EXEC(N'CREATE SCHEMA [pre]');", sql[0]);
+        Assert.Contains("CREATE TABLE [pre].[Baatbooking_detail]", sql[1], StringComparison.Ordinal);
     }
 
     [Fact]

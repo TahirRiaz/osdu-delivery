@@ -446,8 +446,7 @@ public sealed class SchemaEvolutionEdgeCaseTests
             CreateTable = true,
             CreateColumns = [EvoCol("A", "int"), EvoCol("B", "nvarchar(10)")],
         };
-        var statement = Assert.Single(EvolutionDdlGenerator.Generate(EvoTarget, plan, allowTableRewrite: false).Statements);
-        Assert.True(statement.IsCreateTable);
+        var statement = Assert.Single(EvolutionDdlGenerator.Generate(EvoTarget, plan, allowTableRewrite: false).Statements, s => s.IsCreateTable);
         Assert.DoesNotContain("PRIMARY KEY", statement.Text, StringComparison.Ordinal);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[Customer]', N'U') IS NULL", statement.Text, StringComparison.Ordinal);
     }
@@ -465,7 +464,7 @@ public sealed class SchemaEvolutionEdgeCaseTests
                 EvoCol("C", "nvarchar(10)"),
             ],
         };
-        var statement = Assert.Single(EvolutionDdlGenerator.Generate(EvoTarget, plan, allowTableRewrite: false).Statements);
+        var statement = Assert.Single(EvolutionDdlGenerator.Generate(EvoTarget, plan, allowTableRewrite: false).Statements, s => s.IsCreateTable);
         Assert.Contains("PRIMARY KEY CLUSTERED ([A], [B])", statement.Text, StringComparison.Ordinal);
     }
 
@@ -473,7 +472,8 @@ public sealed class SchemaEvolutionEdgeCaseTests
     public void CreateTablePlan_FoldsInPendingAdds_ReturnsOnlyCreate()
     {
         // When the table is being created, pending additive columns are folded into the create (the planner
-        // produces a create OR adds, never both); the generator returns only the single CREATE statement.
+        // produces a create OR adds, never both); the generator returns only the ensure-schema guard plus the
+        // single CREATE statement, never a separate ADD.
         var plan = new EvolutionPlan
         {
             CreateTable = true,
@@ -481,8 +481,7 @@ public sealed class SchemaEvolutionEdgeCaseTests
             ColumnsToAdd = [EvoCol("Ignored", "int")],
         };
 
-        var statement = Assert.Single(EvolutionDdlGenerator.Generate(EvoTarget, plan, allowTableRewrite: false).Statements);
-        Assert.True(statement.IsCreateTable);
+        var statement = Assert.Single(EvolutionDdlGenerator.Generate(EvoTarget, plan, allowTableRewrite: false).Statements, s => s.IsCreateTable);
         Assert.DoesNotContain("Ignored", statement.Text, StringComparison.Ordinal);
     }
 
