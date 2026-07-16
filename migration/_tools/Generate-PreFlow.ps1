@@ -126,7 +126,7 @@ foreach ($c in $cols) {
     [void]$sb.AppendLine($line)
 }
 
-$outFile = Join-Path $OutDir ("{0}.01_pre.flow.yaml" -f $table)
+$outFile = Join-Path $OutDir ("{0}.01_pre.yaml" -f $table)
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 $sb.ToString() | Set-Content -Path $outFile -Encoding utf8 -NoNewline
 Write-Host "wrote $outFile ($($cols.Count) transform column(s))"

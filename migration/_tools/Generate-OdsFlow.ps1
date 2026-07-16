@@ -99,7 +99,7 @@ if ($incCols.Count -gt 0) {
 [void]$sb.AppendLine("  insertedDate: $(( $sysCols -contains 'INSERTEDDATE_DW' ).ToString().ToLower())")
 [void]$sb.AppendLine("  updatedDate: $(( $sysCols -contains 'UPDATEDDATE_DW' ).ToString().ToLower())")
 
-$outFile = Join-Path $OutDir ("{0}.02_ods.flow.yaml" -f $table)
+$outFile = Join-Path $OutDir ("{0}.02_ods.yaml" -f $table)
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 $sb.ToString() | Set-Content -Path $outFile -Encoding utf8 -NoNewline
 Write-Host "wrote $outFile (keys: $($keyCols.Count), incremental: $($incCols.Count), identity: $(if($identity){$identity}else{'none'}))"

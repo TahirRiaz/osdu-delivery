@@ -34,7 +34,12 @@ public sealed class FlowSetCollector
         }
 
         var result = new CollectionResult();
-        var files = Directory.EnumerateFiles(root, "*.flow.yaml", SearchOption.AllDirectories)
+        // A flow document is any *.yaml under the estate; the historical .flow.yaml suffix is no longer required (it
+        // still matches, so existing repos keep working). A .yaml that does not parse as a flow is a library, config,
+        // or unrelated file and is silently ignored, not reported as broken. Shared-schedule libraries are handled by
+        // ResolveSchedules, so they are excluded from the flow parse here.
+        var files = Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)
+            .Where(f => !IsScheduleLibraryFile(f))
             .OrderBy(f => f, StringComparer.Ordinal);
 
         // File producers (invokes that land files) and consumers (file ingestions) are gathered across the whole
@@ -46,14 +51,25 @@ public sealed class FlowSetCollector
         foreach (var file in files)
         {
             var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            FlowDocument document;
             try
             {
-                Collect(result, _documents.LoadFile(file), relative, File.GetLastWriteTimeUtc(file), root, producers, consumers);
+                document = _documents.LoadFile(file);
             }
-            catch (Exception ex) when (ex is SqlFlowException or IOException or UnauthorizedAccessException)
+            catch (SqlFlowException)
             {
-                result.Warnings.Add($"{relative}: skipped: {ex.Message}");
+                // The .yaml did not parse as a flow document: under extension-based discovery it is a non-flow file
+                // (a library, config, or unrelated yaml), so it is ignored rather than reported as a broken flow.
+                continue;
             }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The file matched but could not be read: a real problem worth surfacing, distinct from a non-flow file.
+                result.Warnings.Add($"{relative}: skipped: {ex.Message}");
+                continue;
+            }
+
+            Collect(result, document, relative, File.GetLastWriteTimeUtc(file), root, producers, consumers);
         }
 
         ReconcileFileLinks(result, producers, consumers, root);
@@ -77,8 +93,9 @@ public sealed class FlowSetCollector
     }
 
     /// <summary>Whether a file is a shared-schedule library: named <c>schedules.yaml</c> or ending in
-    /// <c>.schedules.yaml</c>. These are not flow documents (the flow scan globs <c>*.flow.yaml</c>) and never
-    /// become pipelines; they only publish named schedules for flows to reference.</summary>
+    /// <c>.schedules.yaml</c>. These are not flow documents (they are excluded from the flow parse and handled by
+    /// <see cref="ResolveSchedules"/>) and never become pipelines; they only publish named schedules for flows to
+    /// reference.</summary>
     private static bool IsScheduleLibraryFile(string path)
     {
         var name = Path.GetFileName(path);

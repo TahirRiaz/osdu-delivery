@@ -1634,7 +1634,7 @@ internal static class Program
 
                     var targetObject = $"{targetSchema ?? item.Schema}.{item.Name}";
                     var yaml = CatalogScaffolder.ToIngestionYaml(obj, ScaffoldOptionsFor(args, source, kind, targetObject, flowName: null, keys: []));
-                    var file = Path.Combine(outDir, SafeFileName($"{item.Schema}.{item.Name}") + ".flow.yaml");
+                    var file = Path.Combine(outDir, SafeFileName($"{item.Schema}.{item.Name}") + ".yaml");
                     await File.WriteAllTextAsync(file, yaml).ConfigureAwait(false);
                     Console.WriteLine($"  {file}");
                     written++;
