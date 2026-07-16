@@ -68,7 +68,7 @@ $cols = $rows | ForEach-Object {
 $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine("# Generated from old SQLFlow metadata (flw.PreIngestionCSV FlowID $FlowId) by Generate-PreFlow.ps1.")
 [void]$sb.AppendLine("# Stage 1 of 2 (pre): lands the CSV into [$schema].[$table] and builds the typed view v_$table.")
-[void]$sb.AppendLine("name: $($h.Batch)_${table}_pre")
+[void]$sb.AppendLine("name: $($table.ToLower())_01_csv")
 [void]$sb.AppendLine("batch: $($h.Batch)")
 [void]$sb.AppendLine("source:")
 [void]$sb.AppendLine("  type: csv")

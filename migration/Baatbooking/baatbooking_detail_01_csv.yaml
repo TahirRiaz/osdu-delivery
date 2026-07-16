@@ -1,6 +1,6 @@
-﻿# Generated from old SQLFlow metadata (flw.PreIngestionCSV FlowID 542) by Generate-PreFlow.ps1.
+# Generated from old SQLFlow metadata (flw.PreIngestionCSV FlowID 542) by Generate-PreFlow.ps1.
 # Stage 1 of 2 (pre): lands the CSV into [pre].[Baatbooking_detail] and builds the typed view v_Baatbooking_detail.
-name: BB_Baatbooking_detail_pre
+name: baatbooking_detail_01_csv
 batch: BB
 source:
   type: csv
