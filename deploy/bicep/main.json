@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5974304332703997929"
+      "templateHash": "7479813873324023348"
     }
   },
   "parameters": {
@@ -110,18 +110,32 @@
         "description": "Username paired with gitToken when the host requires one: a Bitbucket app password takes the account username, a Bitbucket repository access token takes x-token-auth; GitHub ignores it. Empty sends the token alone."
       }
     },
-    "workerFlowEnvNames": {
+    "azureAdTenantId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer \"Sign in with Microsoft\" on the login page (alongside local username/password); leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on the SPA app registration."
+      }
+    },
+    "azureAdClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Client id of the SPA app registration users sign in with. Set together with azureAdTenantId to enable SSO."
+      }
+    },
+    "azureAdDefaultRole": {
+      "type": "string",
+      "defaultValue": "viewer",
+      "metadata": {
+        "description": "Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards in the GUI)."
+      }
+    },
+    "workerFlowEnv": {
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Environment variable names for the ${env:...} references the worker pool's flows use, e.g. ['SQLFlowSinkConStr']. Values go in workerFlowEnvValues."
-      }
-    },
-    "workerFlowEnvValues": {
-      "type": "secureObject",
-      "defaultValue": {},
-      "metadata": {
-        "description": "Values for workerFlowEnvNames, keyed by name, e.g. { SQLFlowSinkConStr: 'Server=...' }. Each lands in Key Vault and resolves on the worker only, never in the control plane."
+        "description": "ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per ${env:...} reference the worker pool's flows use: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: 'SQLFLOW_CONN_ERP', secretName: 'erp-source-conn' }]. Data-source credentials are put in the vault out of band and never pass through this template; the worker reads them under its own identity, so they never reach the control plane."
       }
     },
     "aiFoundryName": {
@@ -329,6 +343,20 @@
         "description": "Name of the catalog database on that server."
       }
     },
+    "preDatabaseName": {
+      "type": "string",
+      "defaultValue": "SqlFlowPre",
+      "metadata": {
+        "description": "Name of the staging database flows land raw ingests in, reachable from flow YAML as ${env:SQLFLOW_CONN_PRE}."
+      }
+    },
+    "dwhDatabaseName": {
+      "type": "string",
+      "defaultValue": "SqlFlowDwh",
+      "metadata": {
+        "description": "Name of the warehouse database flows publish modelled data to, reachable from flow YAML as ${env:SQLFLOW_CONN_DWH}."
+      }
+    },
     "sqlDatabaseSku": {
       "type": "object",
       "defaultValue": {
@@ -338,20 +366,22 @@
       "metadata": {
         "description": "Catalog database SKU (ignored when existingSqlServer is set). The catalog is metadata plus the run queue: modest, but polled continuously, so avoid serverless auto-pause."
       }
+    },
+    "dataDatabaseSku": {
+      "type": "object",
+      "defaultValue": {
+        "name": "S1",
+        "tier": "Standard"
+      },
+      "metadata": {
+        "description": "SKU for the pre and dwh databases (ignored when existingSqlServer is set). These carry the data, so they are sized apart from the catalog."
+      }
     }
   },
   "variables": {
-    "copy": [
-      {
-        "name": "workerFlowEnv",
-        "count": "[length(parameters('workerFlowEnvNames'))]",
-        "input": {
-          "name": "[parameters('workerFlowEnvNames')[copyIndex('workerFlowEnv')]]",
-          "secretName": "[format('sqlflow-flow-env-{0}', copyIndex('workerFlowEnv'))]"
-        }
-      }
-    ],
     "catalogConnectionSecretName": "sqlflow-catalog-db",
+    "preConnectionSecretName": "sqlflow-pre-db",
+    "dwhConnectionSecretName": "sqlflow-dwh-db",
     "jwtSigningKeySecretName": "sqlflow-jwt-signing-key",
     "adminPasswordSecretName": "sqlflow-admin-password",
     "gitTokenSecretName": "sqlflow-git-token",
@@ -363,8 +393,19 @@
     "slackBotUsesApiKey": "[not(equals(parameters('slackBotProvider'), 'AzureFoundry'))]",
     "slackBotProviderReady": "[if(variables('slackBotUsesApiKey'), not(empty(parameters('slackBotModelApiKey'))), and(not(empty(parameters('aiFoundryName'))), not(empty(parameters('aiFoundryModelName')))))]",
     "slackBotEnabled": "[and(and(and(and(and(variables('mcpEnabled'), not(empty(parameters('slackBotImage')))), not(empty(parameters('slackAppToken')))), not(empty(parameters('slackBotToken')))), not(empty(parameters('slackBotSqlflowToken')))), variables('slackBotProviderReady'))]",
+    "quotedSqlAdminPassword": "[format('''{0}''', replace(parameters('sqlAdminPassword'), '''', ''''''))]",
     "scalerPasswordEncoded": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parameters('sqlAdminPassword'), '%', '%25'), '+', '%2B'), '/', '%2F'), '=', '%3D'), ' ', '%20'), '@', '%40'), ':', '%3A'), '?', '%3F'), '#', '%23'), '&', '%26'), ';', '%3B')]",
     "scalerConnectionSecretName": "sqlflow-catalog-db-scaler",
+    "builtInFlowEnv": [
+      {
+        "name": "SQLFLOW_CONN_PRE",
+        "secretName": "[variables('preConnectionSecretName')]"
+      },
+      {
+        "name": "SQLFLOW_CONN_DWH",
+        "secretName": "[variables('dwhConnectionSecretName')]"
+      }
+    ],
     "aiFoundryProjectEndpoint": "[if(empty(parameters('aiFoundryName')), '', format('https://{0}.services.ai.azure.com/api/projects/{1}', parameters('aiFoundryName'), parameters('aiFoundryProjectName')))]"
   },
   "resources": [
@@ -455,11 +496,63 @@
       ]
     },
     {
+      "condition": "[empty(parameters('existingSqlServer'))]",
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[format('{0}/{1}', parameters('sqlServerName'), parameters('preDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "sku": "[parameters('dataDatabaseSku')]",
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
+      "condition": "[empty(parameters('existingSqlServer'))]",
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[format('{0}/{1}', parameters('sqlServerName'), parameters('dwhDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "sku": "[parameters('dataDatabaseSku')]",
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.KeyVault/vaults/secrets",
       "apiVersion": "2023-07-01",
       "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('catalogConnectionSecretName'))]",
       "properties": {
-        "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password=''{3}'';Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('catalogDatabaseName'), parameters('sqlAdminLogin'), replace(parameters('sqlAdminPassword'), '''', ''''''))]"
+        "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password={3};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('catalogDatabaseName'), parameters('sqlAdminLogin'), variables('quotedSqlAdminPassword'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('preConnectionSecretName'))]",
+      "properties": {
+        "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password={3};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('preDatabaseName'), parameters('sqlAdminLogin'), variables('quotedSqlAdminPassword'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('dwhConnectionSecretName'))]",
+      "properties": {
+        "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password={3};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('dwhDatabaseName'), parameters('sqlAdminLogin'), variables('quotedSqlAdminPassword'))]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
@@ -561,21 +654,6 @@
       ]
     },
     {
-      "copy": {
-        "name": "flowEnvSecrets",
-        "count": "[length(parameters('workerFlowEnvNames'))]"
-      },
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), format('sqlflow-flow-env-{0}', copyIndex()))]",
-      "properties": {
-        "value": "[parameters('workerFlowEnvValues')[parameters('workerFlowEnvNames')[copyIndex()]]]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
-      ]
-    },
-    {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
       "name": "sqlflow-control-plane-app",
@@ -624,6 +702,15 @@
           "gitUsername": {
             "value": "[parameters('gitUsername')]"
           },
+          "azureAdTenantId": {
+            "value": "[parameters('azureAdTenantId')]"
+          },
+          "azureAdClientId": {
+            "value": "[parameters('azureAdClientId')]"
+          },
+          "azureAdDefaultRole": {
+            "value": "[parameters('azureAdDefaultRole')]"
+          },
           "acrName": {
             "value": "[parameters('acrName')]"
           },
@@ -644,7 +731,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "9992240872878985180"
+              "templateHash": "11624777409897010932"
             }
           },
           "parameters": {
@@ -757,6 +844,27 @@
                 "description": "CIDRs of the ingress hops to trust for X-Forwarded-* headers. Leave empty to keep proxy trust off; per-client rate limiting then keys on the ingress hop address instead of the real client."
               }
             },
+            "azureAdTenantId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer \"Sign in with Microsoft\" on the login page; leave empty for local username/password only."
+              }
+            },
+            "azureAdClientId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdTenantId to enable SSO."
+              }
+            },
+            "azureAdDefaultRole": {
+              "type": "string",
+              "defaultValue": "viewer",
+              "metadata": {
+                "description": "Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards)."
+              }
+            },
             "acrName": {
               "type": "string",
               "defaultValue": "",
@@ -826,7 +934,8 @@
             "bootstrapEnv": "[if(empty(parameters('bootstrapAdminPasswordSecretName')), createArray(), createArray(createObject('name', 'ControlPlane__Bootstrap__AdminUsername', 'value', parameters('bootstrapAdminUsername')), createObject('name', 'ControlPlane__Bootstrap__AdminPasswordReference', 'secretRef', 'bootstrap-admin-password')))]",
             "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
-            "proxyEnv": "[if(empty(parameters('proxyKnownNetworks')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Proxy__Enabled', 'value', 'true')), variables('proxyNetworkEnv')))]"
+            "proxyEnv": "[if(empty(parameters('proxyKnownNetworks')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Proxy__Enabled', 'value', 'true')), variables('proxyNetworkEnv')))]",
+            "entraEnv": "[if(or(empty(parameters('azureAdTenantId')), empty(parameters('azureAdClientId'))), createArray(), createArray(createObject('name', 'ControlPlane__AzureAd__TenantId', 'value', parameters('azureAdTenantId')), createObject('name', 'ControlPlane__AzureAd__ClientId', 'value', parameters('azureAdClientId')), createObject('name', 'ControlPlane__AzureAd__DefaultRole', 'value', parameters('azureAdDefaultRole'))))]"
           },
           "resources": [
             {
@@ -896,7 +1005,7 @@
                         "cpu": "[json('0.5')]",
                         "memory": "1.0Gi"
                       },
-                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'))]",
+                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
                       "probes": [
                         {
                           "type": "Liveness",
@@ -1002,7 +1111,7 @@
             "value": "[parameters('gitUsername')]"
           },
           "flowEnv": {
-            "value": "[variables('workerFlowEnv')]"
+            "value": "[concat(variables('builtInFlowEnv'), parameters('workerFlowEnv'))]"
           },
           "scalerConnectionSecretName": {
             "value": "[variables('scalerConnectionSecretName')]"
@@ -1024,7 +1133,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "15080314050561981020"
+              "templateHash": "7942348693565850366"
             }
           },
           "parameters": {
@@ -1174,7 +1283,7 @@
             "scalerSecretRef": "[if(empty(parameters('scalerConnectionSecretName')), 'catalog-db', 'catalog-scaler')]",
             "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
-            "queueDepthQuery": "[if(empty(parameters('pool')), 'SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] IS NULL', format('SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] = ''{0}''', parameters('pool')))]"
+            "queueDepthQuery": "[if(empty(parameters('pool')), 'SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] IS NULL)), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N''''), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N''''), 0))) AS t(v))', format('SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] = ''{0}'')), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N''{1}''), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N''{2}''), 0))) AS t(v))', parameters('pool'), parameters('pool'), parameters('pool')))]"
           },
           "resources": [
             {
@@ -1296,10 +1405,13 @@
         "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('catalogDatabaseName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('catalogConnectionSecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('scalerConnectionSecretName'))]",
-        "flowEnvSecrets",
+        "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('dwhDatabaseName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('dwhConnectionSecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('gitTokenSecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('preDatabaseName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('preConnectionSecretName'))]",
         "[resourceId('Microsoft.Sql/servers/firewallRules', parameters('sqlServerName'), 'AllowAllWindowsAzureIps')]"
       ]
     },
@@ -2430,6 +2542,13 @@
         "description": "Sign in here with the bootstrap admin (adminUsername/adminPassword)."
       },
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-gui-app'), '2025-04-01').outputs.guiUrl.value]"
+    },
+    "entraRedirectUri": {
+      "type": "string",
+      "metadata": {
+        "description": "When Entra SSO is configured, add this exact origin as a redirect URI on the SPA app registration (Single-page application platform); empty when azureAdClientId was not set."
+      },
+      "value": "[if(empty(parameters('azureAdClientId')), '', reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-gui-app'), '2025-04-01').outputs.guiUrl.value)]"
     },
     "controlPlaneBaseUrl": {
       "type": "string",

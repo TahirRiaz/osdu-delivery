@@ -1,6 +1,6 @@
 // The full SQLFlow estate on Azure Container Apps in one resource-group deployment: Log Analytics and the
-// Container Apps environment, a Key Vault holding every secret, an Azure SQL catalog database, and the three
-// apps composed from the per-tier templates in this directory:
+// Container Apps environment, a Key Vault holding every secret, the three Azure SQL databases every estate
+// has (catalog, pre, dwh), and the three apps composed from the per-tier templates in this directory:
 //
 //   gui.bicep            the SPA, external ingress; calls the control plane cross-origin
 //   control-plane.bicep  the API (in-process worker OFF: API replicas do API work only), CORS'd to the GUI
@@ -84,12 +84,8 @@ param azureAdClientId string = ''
 @description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards in the GUI).')
 param azureAdDefaultRole string = 'viewer'
 
-@description('Environment variable names for the \${env:...} references the worker pool\'s flows use, e.g. [\'SQLFlowSinkConStr\']. Values go in workerFlowEnvValues.')
-param workerFlowEnvNames array = []
-
-@secure()
-@description('Values for workerFlowEnvNames, keyed by name, e.g. { SQLFlowSinkConStr: \'Server=...\' }. Each lands in Key Vault and resolves on the worker only, never in the control plane.')
-param workerFlowEnvValues object = {}
+@description('ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per \${env:...} reference the worker pool\'s flows use: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: \'SQLFLOW_CONN_ERP\', secretName: \'erp-source-conn\' }]. Data-source credentials are put in the vault out of band and never pass through this template; the worker reads them under its own identity, so they never reach the control plane.')
+param workerFlowEnv array = []
 
 @description('Name for an Azure AI Foundry account (also its endpoint subdomain, globally unique) deployed alongside the estate, with the control plane and worker identities granted caller access. Empty skips AI Foundry.')
 param aiFoundryName string = ''
@@ -184,14 +180,28 @@ param sqlServerName string = 'sqlflow-sql-${uniqueString(resourceGroup().id)}'
 @description('Name of the catalog database on that server.')
 param catalogDatabaseName string = 'SqlFlowCatalog'
 
+@description('Name of the staging database flows land raw ingests in, reachable from flow YAML as \${env:SQLFLOW_CONN_PRE}.')
+param preDatabaseName string = 'SqlFlowPre'
+
+@description('Name of the warehouse database flows publish modelled data to, reachable from flow YAML as \${env:SQLFLOW_CONN_DWH}.')
+param dwhDatabaseName string = 'SqlFlowDwh'
+
 @description('Catalog database SKU (ignored when existingSqlServer is set). The catalog is metadata plus the run queue: modest, but polled continuously, so avoid serverless auto-pause.')
 param sqlDatabaseSku object = {
   name: 'S1'
   tier: 'Standard'
 }
 
+@description('SKU for the pre and dwh databases (ignored when existingSqlServer is set). These carry the data, so they are sized apart from the catalog.')
+param dataDatabaseSku object = {
+  name: 'S1'
+  tier: 'Standard'
+}
+
 // Secret names shared with the per-tier templates (their defaults match these).
 var catalogConnectionSecretName = 'sqlflow-catalog-db'
+var preConnectionSecretName = 'sqlflow-pre-db'
+var dwhConnectionSecretName = 'sqlflow-dwh-db'
 var jwtSigningKeySecretName = 'sqlflow-jwt-signing-key'
 var adminPasswordSecretName = 'sqlflow-admin-password'
 var gitTokenSecretName = 'sqlflow-git-token'
@@ -286,6 +296,29 @@ resource catalogDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = 
   }
 }
 
+// The two data databases every estate has: pre stages raw ingests, dwh holds the modelled result. Like the
+// catalog they are only created when this template creates the server; on an existing server (a Managed
+// Instance) the databases are provisioned out of band, and only their connection secrets are wired here.
+resource preDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = if (empty(existingSqlServer)) {
+  parent: sqlServer
+  name: preDatabaseName
+  location: location
+  sku: dataDatabaseSku
+  properties: {
+    collation: 'SQL_Latin1_General_CP1_CI_AS'
+  }
+}
+
+resource dwhDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = if (empty(existingSqlServer)) {
+  parent: sqlServer
+  name: dwhDatabaseName
+  location: location
+  sku: dataDatabaseSku
+  properties: {
+    collation: 'SQL_Latin1_General_CP1_CI_AS'
+  }
+}
+
 // host,port for the connection string: the created server on the standard port, or the existing address with
 // its own port when it carries one (a Managed Instance public endpoint is host,3342).
 var catalogServerAddress = empty(existingSqlServer)
@@ -296,7 +329,14 @@ var catalogServerAddress = empty(existingSqlServer)
 // admin is used because logins cannot be created from ARM; switching the apps to least-privilege credentials
 // (or Entra-authenticated access for their managed identities) later means updating only this secret. The
 // password is quoted (embedded single quotes doubled) so any complex value survives ADO.NET parsing.
-var catalogConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${catalogDatabaseName};User ID=${sqlAdminLogin};Password=\'${replace(sqlAdminPassword, '\'', '\'\'')}\';Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
+var quotedSqlAdminPassword = '\'${replace(sqlAdminPassword, '\'', '\'\'')}\''
+var catalogConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${catalogDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
+
+// The pre and dwh connection strings, same server and credential as the catalog, differing only in the
+// database. Flows reach them by the fixed names ${env:SQLFLOW_CONN_PRE} and ${env:SQLFLOW_CONN_DWH}, so a
+// document moves between estates unchanged: only these secrets' values differ.
+var preConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${preDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
+var dwhConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${dwhDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 
 // A SECOND connection string, for the KEDA scale rule only. The scaler is go-mssqldb, not .NET SqlClient: it
 // does not strip the single quotes ADO.NET puts around the password, so reusing catalogConnectionString makes
@@ -316,6 +356,22 @@ resource catalogDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: catalogConnectionSecretName
   properties: {
     value: catalogConnectionString
+  }
+}
+
+resource preDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: preConnectionSecretName
+  properties: {
+    value: preConnectionString
+  }
+}
+
+resource dwhDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: dwhConnectionSecretName
+  properties: {
+    value: dwhConnectionString
   }
 }
 
@@ -383,20 +439,6 @@ resource slackBotModelApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01
   }
 }
 
-// One vault secret per flow environment reference, indexed to match the worker module's flowEnv entries.
-resource flowEnvSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for (envName, i) in workerFlowEnvNames: {
-  parent: keyVault
-  name: 'sqlflow-flow-env-${i}'
-  properties: {
-    value: workerFlowEnvValues[envName]
-  }
-}]
-
-var workerFlowEnv = [for (envName, i) in workerFlowEnvNames: {
-  name: envName
-  secretName: 'sqlflow-flow-env-${i}'
-}]
-
 // Each app's FQDN is <app>.<environment default domain>, so the cross-origin wiring (GUI -> API base URL,
 // control plane -> CORS origin) is computed up front instead of creating a dependency cycle between the apps.
 var controlPlaneFqdn = '${controlPlaneName}.${managedEnvironment.properties.defaultDomain}'
@@ -441,6 +483,20 @@ module controlPlane 'control-plane.bicep' = {
   ]
 }
 
+// The two data databases are wired under fixed names in every estate, so a flow document referencing
+// ${env:SQLFLOW_CONN_PRE} or ${env:SQLFLOW_CONN_DWH} moves from test to prod unchanged. Caller-supplied
+// data-source references follow, and must not reuse these two names.
+var builtInFlowEnv = [
+  {
+    name: 'SQLFLOW_CONN_PRE'
+    secretName: preConnectionSecretName
+  }
+  {
+    name: 'SQLFLOW_CONN_DWH'
+    secretName: dwhConnectionSecretName
+  }
+]
+
 module worker 'worker.bicep' = {
   name: 'sqlflow-worker-app'
   params: {
@@ -453,7 +509,7 @@ module worker 'worker.bicep' = {
     pool: workerPool
     gitTokenSecretName: empty(gitToken) ? '' : gitTokenSecretName
     gitUsername: gitUsername
-    flowEnv: workerFlowEnv
+    flowEnv: concat(builtInFlowEnv, workerFlowEnv)
     scalerConnectionSecretName: scalerConnectionSecretName
     acrName: acrName
     acrLoginServer: acrLoginServer
@@ -462,9 +518,12 @@ module worker 'worker.bicep' = {
   dependsOn: [
     catalogDbSecret
     catalogScalerSecret
+    preDbSecret
+    dwhDbSecret
     gitTokenSecret
-    flowEnvSecrets
     catalogDatabase
+    preDatabase
+    dwhDatabase
     sqlAllowAzureServices
   ]
 }

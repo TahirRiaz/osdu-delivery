@@ -71,9 +71,12 @@ the user); point ADF at `controlPlaneBaseUrl` (see `deploy/adf`). How the k8s la
   `minReplicas: 0`. Add a pool with another deployment of it (`-p name=sqlflow-worker-<pool> pool=<pool>`).
 - **Secrets live in Key Vault, read by managed identity**: no secret value appears in the templates or app
   configuration, and the same identities resolve `${keyvault:...}` references at run time
-  (`SQLFLOW_AZURE_AUTH=mi`). Flow `${env:...}` references land on the worker via
-  `workerFlowEnvNames`/`workerFlowEnvValues`. The deploying principal needs to create role assignments (Owner
-  or User Access Administrator) and to write vault secrets (Key Vault Secrets Officer; the vault uses RBAC).
+  (`SQLFLOW_AZURE_AUTH=mi`). The three estate databases are wired for free: flows reach staging and the
+  warehouse as `${env:SQLFLOW_CONN_PRE}` and `${env:SQLFLOW_CONN_DWH}`, fixed names in every estate, so a
+  document moves from test to prod unchanged. Data-source references are added via `workerFlowEnv`, one
+  `{ name, secretName }` entry per reference naming a secret created in the vault out of band, so no
+  data-source credential passes through the template. The deploying principal needs to create role assignments
+  (Owner or User Access Administrator) and to write vault secrets (Key Vault Secrets Officer; the vault uses RBAC).
 - **Catalog on Azure SQL**: the connection string (SQL auth) exists only as the `sqlflow-catalog-db` vault
   secret; the server allows Azure-service traffic because consumption-plan apps have no fixed egress address.
   Hardening path: a VNet-integrated environment with a private endpoint to SQL, and least-privilege or Entra
