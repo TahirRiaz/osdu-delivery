@@ -667,6 +667,74 @@ public sealed class CsvSourceReaderTests : IDisposable
 
         var error = await Assert.ThrowsAsync<NoSourceFilesException>(() => _reader.GetColumnsAsync(source));
         Assert.Contains("date window", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        // The window, not an absent file, is what emptied the selection: the one candidate was examined.
+        Assert.Equal(NoSourceFilesReason.NoneSelected, error.Reason);
+        Assert.Contains("examined 1 file(s)", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An empty location and a location whose files are all older than the watermark are different outcomes, and
+    /// the second must never be reported as the first: it is the normal resting state of an incremental flow,
+    /// while the first is what a wrong path or pattern looks like.
+    /// </summary>
+    [Fact]
+    public async Task Open_IncrementalAfterDate_FilesExistButNoneNewer_ReportsNoneAfterWatermark()
+    {
+        var path = Path.Combine(_dir, "old.csv");
+        File.WriteAllText(path, "OrderId\n1\n");
+        File.SetLastWriteTimeUtc(path, new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        var source = new SourceSpec
+        {
+            Type = "csv",
+            Location = _dir,
+            Options = new Dictionary<string, string?>
+            {
+                ["srcFile"] = "*.csv",
+                ["incrementalAfterDate"] = "2024-02-01T12:00:00.0000000Z",
+            },
+        };
+
+        var error = await Assert.ThrowsAsync<NoSourceFilesException>(() => _reader.GetColumnsAsync(source));
+
+        Assert.Equal(NoSourceFilesReason.NoneAfterWatermark, error.Reason);
+        Assert.Contains("2024-02-01 12:00:00Z", error.Message, StringComparison.Ordinal);
+        Assert.Contains("examined 1 file(s)", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Open_IncrementalAfterDate_LocationEmpty_ReportsNoCandidatesAndBlamesNoWatermark()
+    {
+        var source = new SourceSpec
+        {
+            Type = "csv",
+            Location = _dir,
+            Options = new Dictionary<string, string?>
+            {
+                ["srcFile"] = "*.csv",
+                ["incrementalAfterDate"] = "2024-02-01T12:00:00.0000000Z",
+            },
+        };
+
+        var error = await Assert.ThrowsAsync<NoSourceFilesException>(() => _reader.GetColumnsAsync(source));
+
+        // Nothing ever reached the watermark test, so the message must not imply the watermark excluded anything.
+        Assert.Equal(NoSourceFilesReason.NoCandidates, error.Reason);
+        Assert.DoesNotContain("watermark", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("newer than", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("*.csv", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Open_NoFilesMatchTheGlob_ReportsNoCandidates()
+    {
+        Csv("present.csv", "OrderId\n1\n");
+        var source = Folder(new() { ["srcFile"] = "*.nomatch" });
+
+        var error = await Assert.ThrowsAsync<NoSourceFilesException>(() => _reader.GetColumnsAsync(source));
+
+        Assert.Equal(NoSourceFilesReason.NoCandidates, error.Reason);
     }
 
     [Fact]

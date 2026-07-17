@@ -61,6 +61,11 @@ public sealed class IncrementalIntegrationTests : IDisposable
             Assert.Equal(0, noop.RowsLoaded);
             Assert.Equal(2, await IntegrationDb.RowCountAsync(cs, table));
 
+            // A run that correctly finds nothing new must not report a failed stage. The source read reaches a
+            // definite answer ("no file is newer than the watermark") and the engine acts on it, so the trace of
+            // this healthy no-op carries no error for an operator to chase down.
+            Assert.DoesNotContain(noop.Trace, t => !t.Succeeded);
+
             // Third run with a newer file ingests only that file.
             var third = await IntegrationDb.RealRunner().RunAsync(
                 Flow(cs, DatedCsv("day2.csv", "OrderId\n3\n4\n5\n", new DateTime(2024, 2, 1, 0, 0, 0, DateTimeKind.Utc)), table));

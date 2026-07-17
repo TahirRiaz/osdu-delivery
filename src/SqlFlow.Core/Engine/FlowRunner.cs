@@ -317,8 +317,22 @@ public sealed class FlowRunner
             // Incremental runs commonly find nothing new; that is a clean no-op, not a failure. The
             // probe runs before any target mutation, so there is nothing to roll back here.
             var totalMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
-            _logger.LogInformation("Flow '{Flow}': no new files to load ({Reason}).", flow.Name, ex.Message);
-            Emit(context, $"Flow '{flow.Name}': no new files to load");
+
+            // A location holding no candidate file at all is also a no-op, but not an unremarkable one: it is
+            // indistinguishable from a wrong path or pattern, and a flow that quietly loads nothing forever is
+            // the failure mode this warning exists to catch. Files that are merely all older than the watermark
+            // are the opposite - the expected resting state - and stay at info.
+            var noCandidates = ex.Reason == NoSourceFilesReason.NoCandidates;
+            if (noCandidates)
+            {
+                _logger.LogWarning("Flow '{Flow}' loaded nothing: {Reason}", flow.Name, ex.Message);
+            }
+            else
+            {
+                _logger.LogInformation("Flow '{Flow}': {Reason}", flow.Name, ex.Message);
+            }
+
+            Emit(context, $"Flow '{flow.Name}': {ex.Message}", noCandidates ? FlowEventLevel.Warning : FlowEventLevel.Info);
 
             return new FlowResult
             {
@@ -674,7 +688,14 @@ public sealed class FlowRunner
         var connectionString = resolvedConnection ?? await _secrets.ResolveAsync(flow.Target.Connection, ct).ConfigureAwait(false);
         var reader = ResolveReader(flow.Source.Type);
 
-        var sourceColumns = await StageAsync("source.columns", context, () => reader.GetColumnsAsync(flow.Source, ct)).ConfigureAwait(false);
+        // An incremental read that selects no files is a no-op, not a failure: RunAsync turns it into a clean
+        // zero-row success, so the stage reports it as an outcome. A full load has no such fallback, and there an
+        // empty source really is the failure it looks like.
+        var sourceColumns = await StageAsync(
+            "source.columns",
+            context,
+            () => reader.GetColumnsAsync(flow.Source, ct),
+            benign: ex => ex is NoSourceFilesException && flow.Incremental is { FullLoad: false }).ConfigureAwait(false);
         var desired = DesiredSchemaBuilder.Build(flow.Target, sourceColumns, flow.Schema, _typeMapper);
         var actual = await StageAsync("target.introspect", context, () => _schema.GetTableSchemaAsync(connectionString, flow.Target.Schema, flow.Target.Table, ct)).ConfigureAwait(false);
         var delta = SchemaDiffer.Diff(desired, actual, flow.Schema.Evolve);
@@ -696,7 +717,19 @@ public sealed class FlowRunner
         };
     }
 
-    private async Task<T> StageAsync<T>(string operation, RunContext context, Func<Task<T>> action, Func<T, long?>? rows = null)
+    /// <summary>
+    /// Runs one stage of a flow and reports it to both the trace and the live event stream: start, elapsed time,
+    /// optional row count, and outcome. <paramref name="benign"/> recognizes an exception that is a normal
+    /// outcome the caller converts into a clean result rather than a stage failure (an incremental read finding
+    /// nothing new). A benign throw still propagates and only its reporting changes, so a healthy run shows no
+    /// failed stage for work that did exactly what it should.
+    /// </summary>
+    private async Task<T> StageAsync<T>(
+        string operation,
+        RunContext context,
+        Func<Task<T>> action,
+        Func<T, long?>? rows = null,
+        Func<Exception, bool>? benign = null)
     {
         using var activity = SqlFlowDiagnostics.ActivitySource.StartActivity(operation);
         Emit(context, $"{operation} started", FlowEventLevel.Trace, operation);
@@ -724,6 +757,25 @@ public sealed class FlowRunner
         catch (Exception ex)
         {
             var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+
+            // The stage ran to a definite, correct answer and the caller turns that answer into a clean result.
+            // It is reported as the outcome it is, not as a failure: an operator scanning the trace of a
+            // successful run must not find an error row explaining why the run was fine.
+            if (benign?.Invoke(ex) == true)
+            {
+                context.Trace.Add(new TraceEntry { Operation = operation, ElapsedMs = elapsedMs, Succeeded = true, Detail = ex.Message });
+                context.Events.Publish(new FlowEvent
+                {
+                    RunId = context.RunId,
+                    FlowId = context.FlowId,
+                    FlowName = context.FlowName,
+                    Stage = operation,
+                    ElapsedMs = elapsedMs,
+                    Message = $"{operation}: {ex.Message}",
+                });
+                throw;
+            }
+
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             context.Trace.Add(new TraceEntry { Operation = operation, ElapsedMs = elapsedMs, Succeeded = false, Detail = ex.Message });
             context.Events.Publish(new FlowEvent

@@ -61,11 +61,15 @@ Everything else is owned by the base and is therefore identical across formats: 
 
 Selected files are processed in deterministic order: modified timestamp ascending (files without one sort first), then name with ordinal comparison.
 
-When no files survive the filters, a `NoSourceFilesException` spells out every active filter, for example:
+When no files survive, a `NoSourceFilesException` reports which of three distinct outcomes it was, carried on its `Reason` (src/SqlFlow.Core/SqlFlowException.cs). "The location holds nothing" and "every file is older than the watermark" have different causes and different fixes, so they are never reported as the same thing. The `FileDateFilter` tallies what it examined and why it rejected it during the walk, which classifies the outcome without a second, unpruned listing of the tree:
 
-```text
-No files under './data' matched the filters (pattern '*.csv', path mask 'orders_\d{8}', date window [2026-01-01 .. max], incremental watermark (> 2026-06-01)).
-```
+| Reason | When | Message |
+| --- | --- | --- |
+| `NoCandidates` | The glob matched nothing anywhere under the location, so no filter was ever reached. An empty folder, or a wrong path or pattern. | `No files under './data' match pattern '*.csv'.` |
+| `NoneAfterWatermark` | The watermark is the only date bound and it excluded everything: an incremental flow with nothing new. | `No new files under './data': nothing matching pattern '*.csv' is newer than 2026-06-01 00:00:00Z (examined 128 file(s), pruned 12 out-of-window folder(s)).` |
+| `NoneSelected` | Candidates exist but the init window or path mask excluded them (or a window and a watermark are both set, so no single bound can be blamed). | `No files under './data' matched the filters (pattern '*.csv', path mask 'orders_\d{8}', date window [2026-01-01 .. max]); examined 128 file(s).` |
+
+Because a `NoCandidates` result never reached the date test, its message never mentions the watermark: an empty location must not be explained by a filter that excluded nothing. Every non-`NoCandidates` message states what the walk covered, so an empty result carries its evidence and not just its verdict.
 
 ### Cross-file schema union
 

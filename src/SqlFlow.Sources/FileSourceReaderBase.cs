@@ -701,15 +701,79 @@ public abstract class FileSourceReaderBase : ISourceReader
 
         if (files.Count == 0)
         {
-            var filters = new List<string> { $"pattern '{pattern}'" };
-            if (pathMask is not null) filters.Add($"path mask '{options.SrcPathMask}'");
-            if (options.FileDate is not null) filters.Add($"file date from {options.FileDate.Source.ToString().ToLowerInvariant()}");
-            if (from is not null || to is not null) filters.Add($"date window [{options.InitFromFileDate ?? "min"} .. {options.InitToFileDate ?? "max"}]");
-            if (after is not null) filters.Add($"incremental watermark (> {options.IncrementalAfterDate})");
-            throw new NoSourceFilesException($"No files under '{options.SrcPath}' matched the filters ({string.Join(", ", filters)}).");
+            throw NoFilesSelected(options, pattern, pathMask, from, to, after, filter.Tally);
         }
 
         return (store, files);
+    }
+
+    /// <summary>
+    /// Explains an empty selection in terms of what the walk actually saw. "The location holds nothing" and
+    /// "every file is older than the watermark" have different causes and different fixes, and the engine reports
+    /// them differently, so the classification comes from the filter's tally rather than from the empty list
+    /// alone, which cannot distinguish them.
+    /// </summary>
+    private static NoSourceFilesException NoFilesSelected(
+        FileSourceOptions options,
+        string pattern,
+        Regex? pathMask,
+        DateTime? from,
+        DateTime? to,
+        DateTime? after,
+        FileDateTally tally)
+    {
+        // Nothing reached the filter and no folder was pruned: the glob matched no file anywhere under the
+        // location, so the filters are irrelevant here and listing them would only misdirect. An inactive filter
+        // is never handed to the store and so also tallies zero, which lands here for the same true reason.
+        if (tally.Tested == 0 && tally.PrunedDirectories == 0)
+        {
+            return new NoSourceFilesException(
+                NoSourceFilesReason.NoCandidates,
+                $"No files under '{options.SrcPath}' match pattern '{pattern}'.");
+        }
+
+        // The watermark is the only date bound in play and it is what emptied the selection: nothing is new. When
+        // an init window is also set, a rejected file cannot be attributed to one bound or the other, so that case
+        // falls through to the general message below instead of guessing which one excluded it.
+        if (after is { } watermark && from is null && to is null
+            && (tally.DateRejected > 0 || tally.PrunedDirectories > 0))
+        {
+            return new NoSourceFilesException(
+                NoSourceFilesReason.NoneAfterWatermark,
+                $"No new files under '{options.SrcPath}': nothing matching pattern '{pattern}' is newer than "
+                + $"{watermark.ToString("u", CultureInfo.InvariantCulture)} ({Examined(tally)}).");
+        }
+
+        var filters = new List<string> { $"pattern '{pattern}'" };
+        if (pathMask is not null) filters.Add($"path mask '{options.SrcPathMask}'");
+        if (options.FileDate is not null) filters.Add($"file date from {options.FileDate.Source.ToString().ToLowerInvariant()}");
+        if (from is not null || to is not null) filters.Add($"date window [{options.InitFromFileDate ?? "min"} .. {options.InitToFileDate ?? "max"}]");
+        if (after is not null) filters.Add($"incremental watermark (> {options.IncrementalAfterDate})");
+
+        return new NoSourceFilesException(
+            NoSourceFilesReason.NoneSelected,
+            $"No files under '{options.SrcPath}' matched the filters ({string.Join(", ", filters)}); {Examined(tally)}.");
+    }
+
+    /// <summary>
+    /// What the walk covered, so an empty result carries its evidence and not just its verdict: "examined 128
+    /// file(s)" and "pruned 12 out-of-window folder(s)" are the difference between a filter that is working and a
+    /// location that was never really read.
+    /// </summary>
+    private static string Examined(FileDateTally tally)
+    {
+        var parts = new List<string>(2);
+        if (tally.Tested > 0)
+        {
+            parts.Add($"examined {tally.Tested} file(s)");
+        }
+
+        if (tally.PrunedDirectories > 0)
+        {
+            parts.Add($"pruned {tally.PrunedDirectories} out-of-window folder(s)");
+        }
+
+        return string.Join(", ", parts);
     }
 
     /// <summary>Generated name for a column with no header: Column1, Column2, ... (1-based).</summary>

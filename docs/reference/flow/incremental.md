@@ -121,7 +121,14 @@ A missing probe table or a `NULL` `MAX` yields no watermark and the run loads al
 
 File discovery applies `incrementalAfterDate` as an exclusive lower bound through `FileDateFilter` (src/SqlFlow.Sources/FileDateFilter.cs): a file is included only when its date interval ends strictly after the bound. The same filter also carries the flow's `initFromFileDate`/`initToFileDate` window, so init-load windows and the incremental bound share one selection path; when a `fileDate` spec is configured the date is read from the path or name, otherwise the file's modified timestamp is used, and path-derived dates let whole partition folders be pruned before they are walked.
 
-A run that finds no new files is a clean success, not a failure: the engine logs `Flow '<name>': no new files to load` and returns a result with zero rows (src/SqlFlow.Core/Engine/FlowRunner.cs). This is proven end to end by tests/SqlFlow.Core.Tests/Integration/IncrementalIntegrationTests.cs (first run seeds, an older file is a no-op, a newer file loads only itself) and tests/SqlFlow.Core.Tests/Integration/IncrementalWindowIntegrationTests.cs.
+A run that finds no new files is a clean success, not a failure, and it is reported as one throughout (src/SqlFlow.Core/Engine/FlowRunner.cs). The `source.columns` stage reaches a definite answer rather than failing, so it is traced as a succeeded stage at info level, not as an error: a healthy no-op leaves no error row in the trace for an operator to chase down. Only a full load, which has no such fallback, treats an empty source as the failure it is.
+
+What the run line says depends on why the read came up empty (the `Reason` on `NoSourceFilesException`, see [file-source-pipeline](../concepts/file-source-pipeline.md)):
+
+- Files exist but none are newer than the watermark (`NoneAfterWatermark`, the normal resting state): info, `Flow '<name>': No new files under '<path>': nothing matching pattern '<glob>' is newer than <watermark> (examined N file(s)).`
+- The location holds no candidate file at all (`NoCandidates`): **warning**, `Flow '<name>': No files under '<path>' match pattern '<glob>'.` The run still succeeds with zero rows, but this is what a wrong path or pattern looks like, and a flow that quietly loads nothing forever is the failure mode the warning exists to catch.
+
+This is proven end to end by tests/SqlFlow.Core.Tests/Integration/IncrementalIntegrationTests.cs (first run seeds, an older file is a no-op that records no failed stage, a newer file loads only itself) and tests/SqlFlow.Core.Tests/Integration/IncrementalWindowIntegrationTests.cs; the reason classification is pinned by tests/SqlFlow.Core.Tests/CsvSourceReaderTests.cs.
 
 ## Row-level mode mechanics
 
