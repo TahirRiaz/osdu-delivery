@@ -1,32 +1,33 @@
-import { Suspense, lazy } from "react";
+import { Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import LinearProgress from "@mui/material/LinearProgress";
 import LoginPage from "./auth/LoginPage";
 import { RequireAuth, RequireScope } from "./auth/RequireAuth";
 import AppShell from "./layout/AppShell";
+import { lazyRoute } from "./lib/lazyRoute";
 
 // Feature pages are lazy so heavy dependencies (Monaco, React Flow, Recharts) load with their page, not at boot.
-const DashboardPage = lazy(() => import("./features/dashboard/DashboardPage"));
-const RunsPage = lazy(() => import("./features/runs/RunsPage"));
-const RunDetailPage = lazy(() => import("./features/runs/RunDetailPage"));
-const RunGroupPage = lazy(() => import("./features/runs/RunGroupPage"));
-const NodesPage = lazy(() => import("./features/nodes/NodesPage"));
-const ReposPage = lazy(() => import("./features/repos/ReposPage"));
-const RepoDetailPage = lazy(() => import("./features/repos/RepoDetailPage"));
-const PipelinesPage = lazy(() => import("./features/pipelines/PipelinesPage"));
-const PipelineDetailPage = lazy(() => import("./features/pipelines/PipelineDetailPage"));
-const SchedulesPage = lazy(() => import("./features/schedules/SchedulesPage"));
-const ScheduleTimelinePage = lazy(() => import("./features/schedules/ScheduleTimelinePage"));
-const DatasourcesPage = lazy(() => import("./features/datasources/DatasourcesPage"));
-const IntegrationsPage = lazy(() => import("./features/integrations/IntegrationsPage"));
-const DatasourceBrowsePage = lazy(() => import("./features/datasources/DatasourceBrowsePage"));
-const UniqueKeyDetectionPage = lazy(() => import("./features/datasources/UniqueKeyDetectionPage"));
-const LineagePage = lazy(() => import("./features/lineage/LineagePage"));
-const LineageGraphPage = lazy(() => import("./features/lineage/LineageGraphPage"));
-const SearchPage = lazy(() => import("./features/search/SearchPage"));
-const UsersPage = lazy(() => import("./features/users/UsersPage"));
-const AccessTokensPage = lazy(() => import("./features/tokens/AccessTokensPage"));
-const NotificationsPage = lazy(() => import("./features/notifications/NotificationsPage"));
+const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
+const RunsPage = lazyRoute("RunsPage", () => import("./features/runs/RunsPage"));
+const RunDetailPage = lazyRoute("RunDetailPage", () => import("./features/runs/RunDetailPage"));
+const RunGroupPage = lazyRoute("RunGroupPage", () => import("./features/runs/RunGroupPage"));
+const NodesPage = lazyRoute("NodesPage", () => import("./features/nodes/NodesPage"));
+const ReposPage = lazyRoute("ReposPage", () => import("./features/repos/ReposPage"));
+const RepoDetailPage = lazyRoute("RepoDetailPage", () => import("./features/repos/RepoDetailPage"));
+const PipelinesPage = lazyRoute("PipelinesPage", () => import("./features/pipelines/PipelinesPage"));
+const PipelineDetailPage = lazyRoute("PipelineDetailPage", () => import("./features/pipelines/PipelineDetailPage"));
+const SchedulesPage = lazyRoute("SchedulesPage", () => import("./features/schedules/SchedulesPage"));
+const ScheduleTimelinePage = lazyRoute("ScheduleTimelinePage", () => import("./features/schedules/ScheduleTimelinePage"));
+const DatasourcesPage = lazyRoute("DatasourcesPage", () => import("./features/datasources/DatasourcesPage"));
+const IntegrationsPage = lazyRoute("IntegrationsPage", () => import("./features/integrations/IntegrationsPage"));
+const DatasourceBrowsePage = lazyRoute("DatasourceBrowsePage", () => import("./features/datasources/DatasourceBrowsePage"));
+const UniqueKeyDetectionPage = lazyRoute("UniqueKeyDetectionPage", () => import("./features/datasources/UniqueKeyDetectionPage"));
+const LineagePage = lazyRoute("LineagePage", () => import("./features/lineage/LineagePage"));
+const LineageGraphPage = lazyRoute("LineageGraphPage", () => import("./features/lineage/LineageGraphPage"));
+const SearchPage = lazyRoute("SearchPage", () => import("./features/search/SearchPage"));
+const UsersPage = lazyRoute("UsersPage", () => import("./features/users/UsersPage"));
+const AccessTokensPage = lazyRoute("AccessTokensPage", () => import("./features/tokens/AccessTokensPage"));
+const NotificationsPage = lazyRoute("NotificationsPage", () => import("./features/notifications/NotificationsPage"));
 
 /** The graph moved from /lineage/graph to /lineage; forward old links, preserving the repo/view query string. */
 function LineageGraphRedirect() {
