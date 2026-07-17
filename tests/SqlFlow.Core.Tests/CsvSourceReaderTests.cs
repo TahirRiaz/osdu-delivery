@@ -726,6 +726,41 @@ public sealed class CsvSourceReaderTests : IDisposable
         Assert.Contains("*.csv", error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The partitioned-lake shape: the date lives in the path, so whole out-of-window folders are pruned and no
+    /// file is ever examined. The tally must still separate this from an empty location, otherwise the cheaper
+    /// the pruning gets the more it looks like a misconfigured path.
+    /// </summary>
+    [Fact]
+    public async Task Open_IncrementalAfterDate_PartitionFoldersAllPruned_StillReportsNoneAfterWatermark()
+    {
+        var partition = Path.Combine(_dir, "year=2024", "month=01", "day=15");
+        Directory.CreateDirectory(partition);
+        File.WriteAllText(Path.Combine(partition, "orders.csv"), "OrderId\n1\n");
+
+        var source = new SourceSpec
+        {
+            Type = "csv",
+            Location = _dir,
+            Options = new Dictionary<string, string?>
+            {
+                ["srcFile"] = "*.csv",
+                ["searchSubDirectories"] = "true",
+                ["fileDate.from"] = "path",
+                ["fileDate.hive"] = "true",
+                ["incrementalAfterDate"] = "2025-06-01T00:00:00.0000000Z",
+            },
+        };
+
+        var error = await Assert.ThrowsAsync<NoSourceFilesException>(() => _reader.GetColumnsAsync(source));
+
+        // The 2024 partition never overlaps a 2025 watermark, so it is skipped whole: nothing was examined, yet
+        // this is emphatically not an empty location.
+        Assert.Equal(NoSourceFilesReason.NoneAfterWatermark, error.Reason);
+        Assert.Contains("pruned 1 out-of-window folder(s)", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("examined", error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Open_NoFilesMatchTheGlob_ReportsNoCandidates()
     {
