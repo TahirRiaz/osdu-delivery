@@ -117,6 +117,20 @@ public sealed class CopyEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelled_Propagates_RatherThanReportingFailure()
+    {
+        Write("src/detail.json", "{\"o\":1}");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Cancelled is its own terminal state, so the engine must NOT swallow the cancellation into a
+        // Success = false result: that artifact would record an operator's cancel as a failed run. The callers
+        // (RunWorker, the CLI) distinguish an operator cancel from a shutdown, so the cancellation reaches them.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Engine().RunAsync(Flow(CopyOperation.Copy, "src", "dst"), Guid.NewGuid(), NullRunEventSink.Instance, cts.Token));
+    }
+
+    [Fact]
     public async Task UnknownEndpoint_FailsCleanly()
     {
         var flow = new CopyFlow

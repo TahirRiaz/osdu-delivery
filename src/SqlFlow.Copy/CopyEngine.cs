@@ -90,10 +90,14 @@ public sealed class CopyEngine
                 Files = written,
             };
         }
-        catch (Exception ex) when (ex is SqlFlowException or IOException or OperationCanceledException or InvalidOperationException)
+        // A cancellation is deliberately NOT caught here: cancelled is a distinct terminal state from failed, and it
+        // is the caller that knows which one this is (an operator cancel of a queued run vs. a node shutdown). Turning
+        // it into a failed result here would record an operator's cancel as a failure and strand a shutdown-interrupted
+        // run that should be requeued, so it propagates to RunWorker / the CLI, which own that decision.
+        catch (Exception ex) when (!ct.IsCancellationRequested && ex is SqlFlowException or IOException or InvalidOperationException)
         {
             sw.Stop();
-            var message = ex is OperationCanceledException ? "run cancelled" : SecretHygiene.RedactedMessage(ex.Message);
+            var message = SecretHygiene.RedactedMessage(ex.Message);
             log.Log(RunLogLevel.Info, "copy.error", message);
             return new CopyRunResult
             {
