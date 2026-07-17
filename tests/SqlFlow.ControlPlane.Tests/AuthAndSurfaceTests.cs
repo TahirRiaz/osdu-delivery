@@ -65,6 +65,31 @@ public sealed class AuthAndSurfaceTests : IClassFixture<ControlPlaneAppFactory>
     }
 
     [Fact]
+    public async Task Renew_WithABootstrapToken_Returns403_BecauseBreakGlassNeverRolls()
+    {
+        using var client = _factory.CreateClient();
+        var token = await IssueTokenAsync(client, ControlPlaneAppFactory.BootstrapSecret, ["read"]);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri("/api/v1/auth/renew", UriKind.Relative));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+        using var response = await client.SendAsync(request);
+
+        // Authenticated, and still refused: the bootstrap token carries no auth_time, so there is no interactive
+        // session behind it to roll. It is meant to lapse and be presented again deliberately.
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Renew_WithoutAToken_Returns401()
+    {
+        using var client = _factory.CreateClient();
+
+        using var response = await client.PostAsync(new Uri("/api/v1/auth/renew", UriKind.Relative), content: null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task IssueToken_WithWrongSecret_Returns401()
     {
         using var client = _factory.CreateClient();

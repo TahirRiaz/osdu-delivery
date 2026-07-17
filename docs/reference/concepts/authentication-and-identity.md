@@ -56,7 +56,19 @@ Two further sign-in surfaces exist for clients that cannot drive an interactive 
 - `scope`: a space-delimited scope list, for example `read operate admin`
 - `iss` / `aud`: `ControlPlane:Jwt:Issuer` (default `sqlflow-control-plane`) and `ControlPlane:Jwt:Audience` (default `sqlflow`)
 
-User-backed tokens (local login and Entra exchange) additionally carry `role` (the role name) and `uid` (the catalog user id) so the GUI can shape itself without a second call. Bootstrap tokens carry neither. Expiry is `ControlPlane:Jwt:AccessTokenMinutes` (default 60, valid range 1 to 1440).
+User-backed tokens (local login and Entra exchange) additionally carry `role` (the role name) and `uid` (the catalog user id) so the GUI can shape itself without a second call, plus `auth_time`: when the user actually proved who they are. Bootstrap tokens carry none of these. Expiry is `ControlPlane:Jwt:AccessTokenMinutes` (default 720, valid range 1 to 1440).
+
+## Sessions roll, they do not expire under the user
+
+`AccessTokenMinutes` is one token's life, not the user's. A signed-in GUI trades its token for a fresh one at `POST /auth/renew` before the current one lapses, and again whenever SQLFlow is opened, so the person stays signed in for as long as they keep working while any single issued token (including a leaked one) stays short-lived. Ticking "Keep me signed in on this device" at sign-in puts the session in `localStorage` rather than `sessionStorage`, so it survives a browser restart and can roll on the next visit.
+
+The call is authenticated by the very token it replaces, so there is no second long-lived refresh credential to store or leak. Three things bound it:
+
+- **`auth_time`**: carried unchanged through every roll, so the cap below is measured from the real sign-in and not from the newest token.
+- **`ControlPlane:Jwt:SessionMaxDays`** (default 30): past this, renewal is refused and a real sign-in is the only way back.
+- **A re-read of the account on every roll**: deactivating a user, changing their role, or deleting the role takes effect at their next renewal instead of lingering for the life of an issued token.
+
+Renewal is refused outright (403) for any credential with no `auth_time`: a personal access token (which already carries its own lifetime), the break-glass bootstrap token, and the device grant, whose long-lived path is a personal access token instead.
 
 Scopes gate the API surface in src/SqlFlow.ControlPlane/Program.cs: the read surface (catalog, runs, lineage, search, schedules, nodes, repo sources, summary) requires `read`; triggering and cancelling runs, schedule writes, and repo-source writes require `operate`; proposing pipelines to a repo source as a pull request requires `author`; user and role administration requires `admin`. The `author` scope is separate from `operate` because it pushes a branch to a source repo (a higher trust boundary than running a flow).
 
@@ -169,7 +181,8 @@ All settings live in the `ControlPlane` configuration section (appsettings or en
 | `ControlPlane:Jwt:Issuer` | `sqlflow-control-plane` | Token issuer claim |
 | `ControlPlane:Jwt:Audience` | `sqlflow` | Token audience claim |
 | `ControlPlane:Jwt:SigningKey` | none, required | HS256 key, at least 32 bytes, sourced from a secret |
-| `ControlPlane:Jwt:AccessTokenMinutes` | `60` | Token lifetime, 1 to 1440 |
+| `ControlPlane:Jwt:AccessTokenMinutes` | `720` | One token's lifetime, 1 to 1440. Not how long a user stays signed in: the GUI rolls its token at `POST /auth/renew` |
+| `ControlPlane:Jwt:SessionMaxDays` | `30` | Absolute ceiling on a rolling session, measured from the actual sign-in, 1 to 365 |
 | `ControlPlane:Jwt:BootstrapSecret` | unset | Enables `POST /auth/token`; at least 32 bytes when set |
 | `ControlPlane:AzureAd:Enabled` | unset (auto) | Explicit override. Unset: SSO auto-enables when `TenantId` and `ClientId` are both set. `true`: require SSO (startup error if a credential is missing). `false`: force off even with credentials |
 | `ControlPlane:AzureAd:TenantId` | none | The Entra tenant whose users may sign in; setting this and `ClientId` auto-enables SSO |

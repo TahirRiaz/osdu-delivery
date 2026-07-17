@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.JsonWebTokens;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.ControlPlane.Security;
@@ -23,6 +25,10 @@ namespace SqlFlow.ControlPlane.Api;
 /// </list>
 /// Every path issues the same HS256 SQLFlow token, so authorization downstream is identical regardless of how the
 /// caller signed in. <c>GET /auth/providers</c> tells the login page which of these are available.
+/// <para>Sessions roll rather than expire under the user: <c>POST /auth/renew</c> trades a live interactive token for
+/// a fresh one, so a token stays short-lived (and a leaked one stays short-lived) while the person behind it stays
+/// signed in for as long as they keep working. Renewal re-reads the account every time, so deactivating a user or
+/// changing their role takes effect at their next roll instead of lingering for the life of an issued token.</para>
 /// </summary>
 public static class AuthEndpoints
 {
@@ -47,6 +53,13 @@ public static class AuthEndpoints
             .AllowAnonymous()
             .WithTags("Authentication")
             .WithName("Login");
+
+        // Roll a live interactive session onto a fresh token. Authenticated by the very token being replaced, so
+        // there is no separate refresh credential to store, leak, or revoke.
+        group.MapPost("/auth/renew", RenewAsync)
+            .RequireAuthorization("read")
+            .WithTags("Authentication")
+            .WithName("RenewSession");
 
         // OAuth 2.0 device-authorization grant (RFC 8628): the sign-in path for the MCP server and any headless
         // client. Start and token polling are anonymous (the device_code is the secret); approval/denial run under
@@ -196,10 +209,71 @@ public static class AuthEndpoints
         };
     }
 
+    /// <summary>
+    /// Rolls a live interactive session onto a fresh token, keeping the original authentication time so the absolute
+    /// cap is measured from the real sign-in. The presented token authenticates the call, which is what makes this
+    /// safe without a second long-lived credential: a caller can only roll a session they already hold, and only
+    /// while it is still valid. Once a session lapses there is no way back in but to sign in.
+    /// <para>Refused for any credential that must not roll (no <c>auth_time</c>: a personal access token, the
+    /// break-glass bootstrap token, a device grant), past the absolute cap, and for an account that has since been
+    /// deactivated or had its role withdrawn.</para>
+    /// </summary>
+    private static async Task<Results<Ok<SessionResponse>, ProblemHttpResult>> RenewAsync(
+        CatalogDbContext catalog, TokenIssuer issuer, IOptions<ControlPlaneOptions> options, TimeProvider clock,
+        HttpContext httpContext, CancellationToken ct)
+    {
+        NeverCache(httpContext);
+        var principal = httpContext.User;
+
+        var authTimeClaim = principal.FindFirst(JwtRegisteredClaimNames.AuthTime)?.Value;
+        if (!long.TryParse(authTimeClaim, NumberStyles.Integer, CultureInfo.InvariantCulture, out var authTimeUnix))
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "This credential does not renew",
+                detail: "Only an interactive sign-in session renews. A personal access token already carries its own lifetime, and a break-glass session is deliberately not extendable.");
+        }
+
+        var nowUtc = clock.GetUtcNow().UtcDateTime;
+        var authTimeUtc = DateTimeOffset.FromUnixTimeSeconds(authTimeUnix).UtcDateTime;
+        var maxAge = TimeSpan.FromDays(options.Value.Jwt.SessionMaxDays);
+        if (nowUtc - authTimeUtc >= maxAge)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "Session has reached its maximum age",
+                detail: $"A session renews for at most {options.Value.Jwt.SessionMaxDays} days after signing in; sign in again to continue.");
+        }
+
+        if (!Guid.TryParse(principal.FindFirst("uid")?.Value, out var userId))
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "This credential does not renew",
+                detail: "The session is not backed by a user account.");
+        }
+
+        // Re-read the account on every roll. This is the point where a deactivation or a role change catches up with
+        // an already-issued token, which is what keeps a long rolling session from outliving the authority behind it.
+        var user = await UserStore.FindByIdAsync(catalog, userId, ct).ConfigureAwait(false);
+        if (user is null || !user.Active)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "Account is no longer active",
+                detail: "This account has been deactivated or removed; sign in again if you believe this is an error.");
+        }
+
+        return await IssueSessionAsync(catalog, issuer, user, nowUtc, ct, authTimeUtc).ConfigureAwait(false);
+    }
+
     /// <summary>Loads the user's role grants and issues the session. Fails closed (403) when the role row is
-    /// gone: a user whose role was deleted has no defined scopes and must not get a fallback grant.</summary>
+    /// gone: a user whose role was deleted has no defined scopes and must not get a fallback grant.
+    /// <paramref name="authTimeUtc"/> carries the original sign-in time through a renewal; null means this
+    /// <em>is</em> the sign-in, so the authentication time is now.</summary>
     private static async Task<Results<Ok<SessionResponse>, ProblemHttpResult>> IssueSessionAsync(
-        CatalogDbContext catalog, TokenIssuer issuer, CatalogUser user, DateTime nowUtc, CancellationToken ct)
+        CatalogDbContext catalog, TokenIssuer issuer, CatalogUser user, DateTime nowUtc, CancellationToken ct,
+        DateTime? authTimeUtc = null)
     {
         var role = await UserStore.FindRoleAsync(catalog, user.Role, ct).ConfigureAwait(false);
         if (role is null)
@@ -211,7 +285,7 @@ public static class AuthEndpoints
         }
 
         var scopes = role.Scopes.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var result = issuer.Issue(user.Username, scopes, nowUtc, user.Role, user.Id);
+        var result = issuer.Issue(user.Username, scopes, nowUtc, user.Role, user.Id, authTimeUtc ?? nowUtc);
         var expiresIn = (int)Math.Max(1, (result.ExpiresUtc - nowUtc).TotalSeconds);
         return TypedResults.Ok(new SessionResponse(result.Token, "Bearer", expiresIn, user.Username, user.Role, scopes));
     }

@@ -314,7 +314,7 @@ The pipeline's activities:
 
 - **Pool routing**: add `"pool": "<pool>"` to the `TriggerRun` body to route the run to a node serving that pool; omit it for any node.
 - **Version pinning**: add `"commitSha": "<sha>"` to run an exact committed version. The value must be a 4 to 64 character hexadecimal git object id; otherwise the API returns 400 with `commitSha must be a 4- to 64-character hexadecimal git object id (or omitted to pin to the last synced commit).` (`src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs`). Omitting it pins the run to the repo's last synced commit.
-- **Token lifetime**: the pipeline fetches one token up front. If a flow can outlive `ControlPlane:Jwt:AccessTokenMinutes` (default 60, valid range 1 to 1440), raise that value or move `GetToken` inside the polling loop.
+- **Token lifetime**: the pipeline fetches one token up front, and a bootstrap token does not renew (only an interactive sign-in rolls). If a flow can outlive `ControlPlane:Jwt:AccessTokenMinutes` (default 720, valid range 1 to 1440), raise that value or move `GetToken` inside the polling loop.
 - **Secrets in ADF**: in production, source `bootstrapSecret` from a Key Vault linked service rather than a parameter value.
 
 ## Local source databases for development

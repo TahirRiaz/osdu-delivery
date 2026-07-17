@@ -33,6 +33,10 @@ export const authApi = {
   exchange: (token: string) => postAnonymous<SessionResponse>("/api/v1/auth/exchange", { token }),
   bootstrapToken: (secret: string, scopes: string[]) =>
     postAnonymous<TokenResponse>("/api/v1/auth/token", { secret, subject: null, scopes }),
+  /** Trade the live session token for a fresh one; authenticated by the token it replaces. AuthContext drives this
+   * on a timer so a working session never lapses under the user. Answers 401/403 once the session may no longer
+   * roll (past the absolute cap, account deactivated, or a credential that does not renew at all). */
+  renew: () => post<SessionResponse>("/api/v1/auth/renew"),
 };
 
 // ---- Dashboard ------------------------------------------------------------------------------------------------------

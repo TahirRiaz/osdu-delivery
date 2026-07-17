@@ -70,6 +70,11 @@ public sealed class ControlPlaneOptions
             throw new InvalidOperationException("ControlPlane:Jwt:AccessTokenMinutes must be between 1 and 1440.");
         }
 
+        if (Jwt.SessionMaxDays is < 1 or > 365)
+        {
+            throw new InvalidOperationException("ControlPlane:Jwt:SessionMaxDays must be between 1 and 365.");
+        }
+
         if (RateLimit.PermitPerWindow < 1 || RateLimit.WindowSeconds < 1)
         {
             throw new InvalidOperationException("ControlPlane:RateLimit:PermitPerWindow and WindowSeconds must be positive.");
@@ -134,7 +139,15 @@ public sealed class JwtOptions
     /// <summary>The HS256 signing key (>= 32 bytes). Required; sourced from a secret, never a literal.</summary>
     public string? SigningKey { get; set; }
 
-    public int AccessTokenMinutes { get; set; } = 60;
+    /// <summary>How long one issued session token is valid. A signed-in GUI rolls its token well before this lapses
+    /// (<c>POST /auth/renew</c>), so this is not how long a user stays signed in: it is how long a leaked token keeps
+    /// working, and how long a working day may pause before the session lapses on its own.</summary>
+    public int AccessTokenMinutes { get; set; } = 720;
+
+    /// <summary>The absolute ceiling on a rolled session: renewal is refused once this long has passed since the
+    /// user actually authenticated, no matter how continuously they have used SQLFlow. Bounds "keep me signed in on
+    /// this device" so it is a long convenience, not a permanent one.</summary>
+    public int SessionMaxDays { get; set; } = 30;
 
     /// <summary>When set, the bootstrap token endpoint is enabled and issues a token for callers that present
     /// this exact secret. Left null in production once a real identity provider is in place (Identity phase);

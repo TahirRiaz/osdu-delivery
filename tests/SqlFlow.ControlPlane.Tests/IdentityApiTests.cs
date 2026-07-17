@@ -272,6 +272,77 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     }
 
     [SkippableFact]
+    public async Task Renew_RollsALiveSessionOntoAFreshToken_ThatOpensTheSameSurface()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var username = $"renew-test-{Guid.NewGuid():N}";
+        const string password = "a-long-test-password-1234";
+
+        try
+        {
+            await SeedLocalUserAsync(cs, username, password, RoleNames.Admin);
+            using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+            using var client = factory.CreateClient();
+
+            var session = await WaitForLoginAsync(client, username, password);
+
+            using var renewResponse = await SendAsync(client, session.AccessToken, HttpMethod.Post, "/api/v1/auth/renew", null);
+            Assert.Equal(HttpStatusCode.OK, renewResponse.StatusCode);
+            var renewed = await renewResponse.Content.ReadFromJsonAsync<SessionResponse>();
+            Assert.NotNull(renewed);
+            Assert.Equal(username, renewed.Subject);
+            Assert.Equal(RoleNames.Admin, renewed.Role);
+            Assert.True(renewed.ExpiresIn > 0);
+            // A genuinely new token, not the one presented handed back.
+            Assert.NotEqual(session.AccessToken, renewed.AccessToken);
+
+            // The rolled token carries the same authority as the one it replaced.
+            using var users = await SendAsync(client, renewed.AccessToken, HttpMethod.Get, "/api/v1/users", null);
+            Assert.Equal(HttpStatusCode.OK, users.StatusCode);
+        }
+        finally
+        {
+            await CleanupUsersAsync(cs, username);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Renew_ForAnAccountDeactivatedSinceSignIn_Returns401()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var username = $"renew-off-{Guid.NewGuid():N}";
+        const string password = "a-long-test-password-1234";
+
+        try
+        {
+            // A viewer, not an admin: the catalog refuses to deactivate the last remaining admin, which would leave
+            // this test asserting against a mutation that never applied.
+            await SeedLocalUserAsync(cs, username, password, RoleNames.Viewer);
+            using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+            using var client = factory.CreateClient();
+
+            var session = await WaitForLoginAsync(client, username, password);
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var user = await UserStore.FindByUsernameAsync(db, username);
+                Assert.Equal(UserMutation.Applied, await UserStore.SetActiveAsync(db, user!.Id, active: false, DateTime.UtcNow));
+            }
+
+            // The roll is where a deactivation catches up with an already-issued token: without this, a rolling
+            // session would outlive the authority behind it.
+            using var response = await SendAsync(client, session.AccessToken, HttpMethod.Post, "/api/v1/auth/renew", null);
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+        finally
+        {
+            await CleanupUsersAsync(cs, username);
+        }
+    }
+
+    [SkippableFact]
     public async Task Exchange_ForADeactivatedUser_Returns403()
     {
         var cs = CatalogTestDb.Require();

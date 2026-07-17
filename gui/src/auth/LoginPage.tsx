@@ -167,8 +167,11 @@ export default function LoginPage() {
 
             <form onSubmit={submitLocal}>
               <Stack spacing={2}>
+                {/* A password manager keys off name + autocomplete together: with autocomplete alone the field is
+                    recognised inconsistently, so both are set here and the pair is what makes save/autofill offer. */}
                 <TextField
                   label="Username"
+                  name="username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
@@ -178,6 +181,7 @@ export default function LoginPage() {
                 />
                 <TextField
                   label="Password"
+                  name="password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

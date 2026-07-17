@@ -133,7 +133,8 @@ All settings bind from the `ControlPlane` configuration section (environment var
 | `Jwt:Issuer` | `sqlflow-control-plane` | Required non-blank |
 | `Jwt:Audience` | `sqlflow` | Required non-blank |
 | `Jwt:SigningKey` | none | Required; at least 32 UTF-8 bytes for HS256; source it from a secret, never a literal |
-| `Jwt:AccessTokenMinutes` | `60` | Range 1..1440 |
+| `Jwt:AccessTokenMinutes` | `720` | Range 1..1440. One token's life; a signed-in GUI rolls its token at `POST /auth/renew` rather than letting it lapse |
+| `Jwt:SessionMaxDays` | `30` | Range 1..365. The absolute ceiling on a rolling session, measured from the actual sign-in |
 | `Jwt:BootstrapSecret` | unset | Optional; at least 32 bytes when set; `POST /auth/token` is only mapped when set |
 | `AzureAd:Enabled` | `false` | When true, `TenantId` and `ClientId` are required |
 | `AzureAd:Authority` | derived | Defaults to `https://login.microsoftonline.com/{TenantId}/v2.0` |

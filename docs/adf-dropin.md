@@ -81,9 +81,10 @@ flow surfaces as a failed ADF pipeline.
 - **Secrets in ADF.** The template takes `bootstrapSecret` as a secure-string parameter for simplicity. In
   production, source it from a **Key Vault linked service** instead of a parameter value, and prefer issuing scoped,
   revocable API keys over reusing the bootstrap secret once that capability ships.
-- **Long-running flows and token lifetime.** The pipeline fetches one token up front. If a flow can run longer than
-  the control plane's `ControlPlane:Jwt:AccessTokenMinutes`, either raise that value or move the `GetToken` step
-  inside the polling loop so each poll re-authenticates.
+- **Long-running flows and token lifetime.** The pipeline fetches one token up front, and a bootstrap token does not
+  renew: only an interactive sign-in rolls onto a fresh token. If a flow can run longer than the control plane's
+  `ControlPlane:Jwt:AccessTokenMinutes` (default 720), either raise that value or move the `GetToken` step inside the
+  polling loop so each poll re-authenticates.
 - **Routing.** To pin a flow to a specific worker pool, add `"pool": "<pool>"` to the `TriggerRun` body; to run an
   exact committed version, add `"commitSha": "<sha>"`.
 - **Native dependencies.** The image installs `libssl3` for LibGit2Sharp (SHA-pinned git materialization). If you
