@@ -179,10 +179,10 @@ public sealed class RunGroupQueueTests
             await SeedPipelineAsync(db, repoId, C, wave: 1, batch: $"bt_{suffix}");
             await SeedDependencyAsync(db, repoId, A, B);
 
-            var node = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Node, null);
+            var node = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Node);
             Assert.Equal(new[] { A, B }, node.Members.Select(m => m.FlowName).OrderBy(x => x).ToArray());
 
-            var flow = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Flow, null);
+            var flow = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Flow);
             Assert.Equal(new[] { A }, flow.Members.Select(m => m.FlowName).ToArray());
         }
         finally
@@ -192,7 +192,7 @@ public sealed class RunGroupQueueTests
     }
 
     [SkippableFact]
-    public async Task Expand_Batch_ReturnsEveryActiveFlowInTheBatch()
+    public async Task ExpandSchedule_ReturnsItsMembersInWaveOrder_AndOnlyItsMembers()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -202,20 +202,78 @@ public sealed class RunGroupQueueTests
         {
             await using var db = CatalogDatabase.Create(cs);
             string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
-            var batch = $"bt_{suffix}";
-            await SeedPipelineAsync(db, repoId, A, wave: 0, batch: batch);
-            await SeedPipelineAsync(db, repoId, B, wave: 1, batch: batch);
-            // C belongs to a different batch, so it is not part of this batch run.
-            await SeedPipelineAsync(db, repoId, C, wave: 0, batch: $"other_{suffix}");
+            await SeedPipelineAsync(db, repoId, A, wave: 0, batch: "small");
+            await SeedPipelineAsync(db, repoId, B, wave: 1, batch: "large");
+            // C carries the same batch tag as A but never joined the schedule. Under membership a label match is not
+            // a join, which is exactly what the old batch scope got wrong.
+            await SeedPipelineAsync(db, repoId, C, wave: 0, batch: "small");
 
-            var expansion = await RunScopeExpander.ExpandAsync(db, repoId, null, RunScope.Batch, batch);
-            Assert.Equal(batch, expansion.Anchor);
-            Assert.Equal(new[] { A, B }, expansion.Members.Select(m => m.FlowName).OrderBy(x => x).ToArray());
+            var scheduleId = await SeedScheduleAsync(db, repoId, $"nightly_{suffix}", [A, B]);
+
+            var expansion = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}");
+            Assert.Equal($"nightly_{suffix}", expansion.Anchor);
+            Assert.Equal(new[] { A, B }, expansion.Members.Select(m => m.FlowName).ToArray());
+            Assert.Equal(new[] { 0, 1 }, expansion.Members.Select(m => m.Wave).ToArray());
         }
         finally
         {
             await Cleanup(cs, repoId);
         }
+    }
+
+    [SkippableFact]
+    public async Task ExpandSchedule_BatchFilter_NarrowsToTaggedMembersOnly()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
+            await SeedPipelineAsync(db, repoId, A, wave: 0, batch: "small");
+            await SeedPipelineAsync(db, repoId, B, wave: 1, batch: "large");
+            await SeedPipelineAsync(db, repoId, C, wave: 0, batch: "small");
+
+            // A and B joined; C did not, though it is tagged 'small'.
+            var scheduleId = await SeedScheduleAsync(db, repoId, $"nightly_{suffix}", [A, B]);
+
+            // "Run the nightly, but only the small tables": a subset of the members, never a widening of them.
+            var filtered = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}", "small");
+            Assert.Equal(new[] { A }, filtered.Members.Select(m => m.FlowName).ToArray());
+
+            // A tag no member carries runs nothing rather than falling back to the whole set.
+            var none = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}", "medium");
+            Assert.Empty(none.Members);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    /// <summary>Seeds a schedule with an explicit member set, the shape the estate scan produces.</summary>
+    private static async Task<Guid> SeedScheduleAsync(
+        CatalogDbContext db, Guid repoId, string name, IReadOnlyList<string> members)
+    {
+        var now = DateTime.UtcNow;
+        var id = CatalogIdentity.YamlSchedule(repoId, name);
+        db.Schedules.Add(new CatalogSchedule
+        {
+            Id = id, RepoId = repoId, Name = name, Cron = "0 4 * * *", Timezone = "UTC",
+            Enabled = true, Source = "yaml", CreatedUtc = now, UpdatedUtc = now,
+        });
+        foreach (var member in members)
+        {
+            db.ScheduleMembers.Add(new CatalogScheduleMember
+            {
+                ScheduleId = id, PipelineId = CatalogIdentity.Pipeline(repoId, member), RepoId = repoId, FlowName = member,
+            });
+        }
+
+        await db.SaveChangesAsync();
+        return id;
     }
 
     private static (Guid RepoId, string Suffix) NewRepo()

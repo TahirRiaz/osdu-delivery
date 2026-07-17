@@ -2,7 +2,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace SqlFlow.Catalog;
 
-/// <summary>The three ways a run can be scoped, the V3 equivalent of the legacy Flow / Node / Batch executions.</summary>
+/// <summary>The ways a manual run can be scoped. A SCHEDULE is not scoped: it runs its member set, and membership
+/// is the only selector (see <see cref="CatalogScheduleMember"/>).</summary>
 public enum RunScope
 {
     /// <summary>One flow (the default single-flow trigger).</summary>
@@ -10,30 +11,22 @@ public enum RunScope
 
     /// <summary>A flow and all of its transitive descendants (legacy "Node").</summary>
     Node,
-
-    /// <summary>Every active flow in one batch / data source (legacy "Batch").</summary>
-    Batch,
 }
 
-/// <summary>The stored spelling of a <see cref="RunScope"/>: the persisted vocabulary a schedule's scope column and
-/// the YAML <c>scope:</c> key share, so the string form lives in exactly one place. Parse with
-/// <see cref="RunScopeExpander.TryParseScope"/>.</summary>
+/// <summary>The stored spelling of a <see cref="RunScope"/>, so the string form lives in exactly one place. Parse
+/// with <see cref="RunScopeExpander.TryParseScope"/>.</summary>
 public static class RunScopes
 {
-    /// <summary>One flow: the schedule's own flow, enqueued as a single run.</summary>
+    /// <summary>One flow, enqueued as a single run.</summary>
     public const string Flow = "flow";
 
     /// <summary>A flow and all of its transitive descendants.</summary>
     public const string Node = "node";
 
-    /// <summary>Every active flow in one batch / data source.</summary>
-    public const string Batch = "batch";
-
     /// <summary>The stored spelling of a scope.</summary>
     public static string From(RunScope scope) => scope switch
     {
         RunScope.Node => Node,
-        RunScope.Batch => Batch,
         _ => Flow,
     };
 }
@@ -41,8 +34,8 @@ public static class RunScopes
 /// <summary>One flow selected by a scope expansion, with the wave that orders it within the set.</summary>
 public sealed record RunScopeMember(string FlowName, string FlowKind, int Wave);
 
-/// <summary>The result of expanding a scope: what the set was anchored on (a flow name for Node, a batch label for
-/// Batch, the flow name for Flow) and the ordered member flows.</summary>
+/// <summary>The result of expanding a set: what it was anchored on (the flow name for Flow/Node, the schedule name
+/// for a schedule's member set) and the ordered member flows.</summary>
 public sealed record RunScopeExpansion(RunScope Scope, string Anchor, IReadOnlyList<RunScopeMember> Members);
 
 /// <summary>
@@ -62,7 +55,6 @@ public static class RunScopeExpander
     {
         "flow" or "" or null => RunScope.Flow,
         "node" => RunScope.Node,
-        "batch" => RunScope.Batch,
         _ => null,
     };
 
@@ -74,8 +66,7 @@ public static class RunScopeExpander
     /// rather than in an undefined order.
     /// </summary>
     public static async Task<RunScopeExpansion> ExpandAsync(
-        CatalogDbContext catalog, Guid repoId, string? anchorFlow, RunScope scope, string? batch,
-        CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string? anchorFlow, RunScope scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
@@ -83,9 +74,36 @@ public static class RunScopeExpander
         {
             RunScope.Flow => await ExpandFlowAsync(catalog, repoId, anchorFlow, ct).ConfigureAwait(false),
             RunScope.Node => await ExpandNodeAsync(catalog, repoId, anchorFlow, ct).ConfigureAwait(false),
-            RunScope.Batch => await ExpandBatchAsync(catalog, repoId, anchorFlow, batch, ct).ConfigureAwait(false),
             _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "Unknown run scope."),
         };
+    }
+
+    /// <summary>
+    /// The member set of a schedule, in wave order: what one fire runs. Membership is the only selector, so this
+    /// reads <see cref="CatalogScheduleMember"/> rather than matching any label. <paramref name="batchFilter"/>
+    /// optionally narrows the set to members carrying that <c>batch:</c> tag, which is how "run the nightly, but
+    /// only the small tables" is expressed; it never widens the set, so a filter can only ever run a subset of what
+    /// the schedule already owns. Inactive and <c>mode: manual</c> members are excluded exactly as they are from a
+    /// node expansion: a manual flow reserved itself for a direct trigger.
+    /// </summary>
+    public static async Task<RunScopeExpansion> ExpandScheduleAsync(
+        CatalogDbContext catalog, Guid repoId, Guid scheduleId, string scheduleName, string? batchFilter = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        var filter = string.IsNullOrWhiteSpace(batchFilter) ? null : batchFilter.Trim();
+        var members = await (
+            from member in catalog.ScheduleMembers.AsNoTracking().Where(m => m.ScheduleId == scheduleId)
+            join pipeline in catalog.Pipelines.AsNoTracking() on member.PipelineId equals pipeline.Id
+            where pipeline.RepoId == repoId && pipeline.Active
+                  && pipeline.ExecutionMode != PipelineExecutionModes.Manual
+                  && (filter == null || (pipeline.Batch ?? CatalogPipeline.DefaultBatch) == filter)
+            orderby pipeline.Wave < 0 ? 0 : pipeline.Wave, pipeline.Name
+            select new RunScopeMember(pipeline.Name, pipeline.Kind, pipeline.Wave < 0 ? 0 : pipeline.Wave))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        return new RunScopeExpansion(RunScope.Flow, scheduleName, members);
     }
 
     private static async Task<RunScopeExpansion> ExpandFlowAsync(
@@ -158,34 +176,6 @@ public static class RunScopeExpander
         // when manual, because the caller named it explicitly and a direct request IS the manual trigger.
         var members = await MembersByIdAsync(catalog, repoId, reachable, anchorId, ct).ConfigureAwait(false);
         return new RunScopeExpansion(RunScope.Node, flowName, members);
-    }
-
-    private static async Task<RunScopeExpansion> ExpandBatchAsync(
-        CatalogDbContext catalog, Guid repoId, string? anchorFlow, string? batch, CancellationToken ct)
-    {
-        // The batch label is taken directly when supplied, otherwise from the anchor flow's own batch (coalesced to
-        // the default label exactly as every batch-grouping surface does).
-        var label = batch?.Trim();
-        if (string.IsNullOrEmpty(label))
-        {
-            var flowName = RequireAnchor(anchorFlow);
-            var anchorId = CatalogIdentity.Pipeline(repoId, flowName);
-            label = await catalog.Pipelines.AsNoTracking()
-                .Where(p => p.Id == anchorId && p.RepoId == repoId)
-                .Select(p => p.Batch)
-                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            label = string.IsNullOrWhiteSpace(label) ? CatalogPipeline.DefaultBatch : label;
-        }
-
-        // Manual-mode flows never join a batch execution: their own document reserved them for a direct trigger.
-        var members = await catalog.Pipelines.AsNoTracking()
-            .Where(p => p.RepoId == repoId && p.Active
-                        && p.ExecutionMode != PipelineExecutionModes.Manual
-                        && (p.Batch ?? CatalogPipeline.DefaultBatch) == label)
-            .OrderBy(p => p.Wave < 0 ? 0 : p.Wave).ThenBy(p => p.Name)
-            .Select(p => new RunScopeMember(p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave))
-            .ToListAsync(ct).ConfigureAwait(false);
-        return new RunScopeExpansion(RunScope.Batch, label!, members);
     }
 
     private static async Task<IReadOnlyList<RunScopeMember>> MembersByIdAsync(

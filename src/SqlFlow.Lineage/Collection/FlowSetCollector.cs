@@ -104,22 +104,26 @@ public sealed class FlowSetCollector
     }
 
     /// <summary>
-    /// Builds the repo's shared-schedule library and resolves each flow's <c>schedule: &lt;name&gt;</c> reference to
-    /// the referenced cadence, in place on the collected flows. A named schedule may be defined in a dedicated
-    /// <c>schedules.yaml</c> library file or as a <c>name:</c>d inline block on any flow; the two sources share one
-    /// namespace, and the first definition of a name wins (a redefinition is warned). A reference to an unknown name
-    /// leaves that flow unscheduled with a warning, never a broken schedule.
+    /// Builds the repo's named schedules and their MEMBER SETS. A schedule is defined once (a <c>schedules.yaml</c>
+    /// library entry, or an inline block on a flow) and flows join it by name with <c>schedule: &lt;name&gt;</c>; a
+    /// flow may join several. Joining is membership, never a cadence copy: the schedule fires once and runs every
+    /// member as a single wave-ordered group, which is what keeps a source's loads from racing the merges that read
+    /// them. An unnamed inline block takes its declaring flow's name, so every schedule is named and every fire has a
+    /// member set. Library entries and inline names share one namespace and the first definition of a name wins (a
+    /// redefinition is warned). A reference to an unknown name leaves that flow unscheduled with a warning, never a
+    /// broken schedule.
     /// </summary>
     private void ResolveSchedules(CollectionResult result, string root)
     {
-        var library = new Dictionary<string, ScheduleSpec>(StringComparer.OrdinalIgnoreCase);
+        var library = new Dictionary<string, CollectedSchedule>(StringComparer.OrdinalIgnoreCase);
 
         void Register(string name, ScheduleSpec spec, string origin)
         {
-            if (!library.TryAdd(name, spec))
+            var schedule = new CollectedSchedule { Name = name, Spec = spec with { Name = name, Refs = [] }, Origin = origin };
+            if (!library.TryAdd(name, schedule))
             {
                 result.Warnings.Add(
-                    $"schedule name '{name}' is declared more than once ({origin} redefines an earlier definition); the first wins.");
+                    $"schedule name '{name}' is declared more than once ({origin} redefines {library[name].Origin}); the first wins.");
             }
         }
 
@@ -149,34 +153,92 @@ public sealed class FlowSetCollector
             }
         }
 
-        // 2) Named inline blocks a flow publishes for reuse (schedule: with a name: key).
+        // 2) Inline blocks. A name: publishes the cadence for other flows to join; an unnamed block is still a
+        //    schedule, named after its flow. Either way the declaring flow is a member: writing a cadence on a flow
+        //    schedules that flow.
         foreach (var flow in result.Flows)
         {
-            if (flow.Schedule is { Ref: null, Name: { Length: > 0 } name } inline)
+            if (flow.Schedule is { IsReference: false } inline)
             {
-                Register(name, inline with { Ref = null }, $"'{flow.Node.Name}' ({flow.Node.File})");
+                Register(
+                    string.IsNullOrWhiteSpace(inline.Name) ? flow.Node.Name : inline.Name,
+                    inline,
+                    $"'{flow.Node.Name}' ({flow.Node.File})");
             }
         }
 
-        // 3) Resolve references in place; strip the resolution metadata so a resolved schedule is a plain cadence.
-        for (var i = 0; i < result.Flows.Count; i++)
+        // 3) Bind membership. The declaring flow of an inline block joins its own schedule; a referencing flow joins
+        //    each name it lists. A flow can appear once per schedule at most, so a repeated reference is idempotent.
+        void Join(string scheduleName, string flowName)
         {
-            var flow = result.Flows[i];
-            if (flow.Schedule is not { Ref: { Length: > 0 } reference })
+            var members = library[scheduleName].Members;
+            if (!members.Contains(flowName, StringComparer.OrdinalIgnoreCase))
             {
-                continue;
+                members.Add(flowName);
             }
+        }
 
-            if (library.TryGetValue(reference, out var resolved))
+        foreach (var flow in result.Flows)
+        {
+            switch (flow.Schedule)
             {
-                result.Flows[i] = flow with { Schedule = resolved with { Name = null, Ref = null } };
+                case { IsReference: false } inline:
+                {
+                    var name = string.IsNullOrWhiteSpace(inline.Name) ? flow.Node.Name : inline.Name;
+                    // A losing redefinition (warned above) still joins the winning schedule of that name: the author
+                    // asked for this cadence under this name, and the first definition is the one that survives.
+                    Join(name, flow.Node.Name);
+                    break;
+                }
+
+                case { IsReference: true } reference:
+                {
+                    foreach (var name in reference.Refs)
+                    {
+                        if (library.ContainsKey(name))
+                        {
+                            Join(name, flow.Node.Name);
+                        }
+                        else
+                        {
+                            result.Warnings.Add(
+                                $"'{flow.Node.Name}' ({flow.Node.File}) joins schedule '{name}', which no schedules.yaml or " +
+                                "named inline block defines; the flow is left unscheduled.");
+                        }
+                    }
+
+                    break;
+                }
             }
-            else
+        }
+
+        // 4) A library entry nothing joined never fires. That is a real authoring mistake (a renamed source, a typo
+        //    on the referencing side), so it is surfaced rather than sitting in the catalog as a schedule with an
+        //    empty set.
+        foreach (var schedule in library.Values)
+        {
+            if (schedule.Members.Count == 0)
             {
                 result.Warnings.Add(
-                    $"'{flow.Node.Name}' ({flow.Node.File}) references schedule '{reference}', which no schedules.yaml or " +
-                    "named inline block defines; the flow is left unscheduled.");
-                result.Flows[i] = flow with { Schedule = null };
+                    $"schedule '{schedule.Name}' ({schedule.Origin}) has no members: no flow joins it with " +
+                    $"'schedule: {schedule.Name}', so it would fire nothing.");
+            }
+        }
+
+        result.Schedules.AddRange(library.Values.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase));
+
+        // 5) Every flow that automatic dispatch could run should be attached to a schedule. A 'mode: manual' flow
+        //    opted out deliberately, so it is exempt; anything else that joined nothing will simply never run, which
+        //    is almost always an oversight rather than an intent.
+        var attached = new HashSet<string>(
+            library.Values.SelectMany(s => s.Members), StringComparer.OrdinalIgnoreCase);
+        foreach (var flow in result.Flows)
+        {
+            if (!attached.Contains(flow.Node.Name) && flow.Node.Mode != Core.Runs.ExecutionMode.Manual)
+            {
+                result.Warnings.Add(
+                    $"'{flow.Node.Name}' ({flow.Node.File}) is attached to no schedule and is not 'mode: manual', " +
+                    "so nothing will ever run it; join one with 'schedule: <name>'.");
             }
         }
     }

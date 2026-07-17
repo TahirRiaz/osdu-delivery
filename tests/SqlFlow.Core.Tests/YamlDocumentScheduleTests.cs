@@ -100,10 +100,10 @@ public sealed class YamlDocumentScheduleTests
     }
 
     [Fact]
-    public void Parse_ScalarSchedule_IsCapturedAsAnUnresolvedReference()
+    public void Parse_ScalarSchedule_IsCapturedAsAMembershipReference()
     {
-        // `schedule: nightly` is a bare scalar: a reference to a shared schedule by name. A single-file parse has no
-        // view of the library, so it carries the name and no cadence; the repo scan resolves it.
+        // `schedule: nightly` is a bare scalar: this flow JOINS the shared schedule named nightly. It carries the
+        // name and never a cadence (joining is membership, not a copy); the repo scan binds it to the definition.
         var doc = Loader.Parse("""
             name: orders
             schedule: nightly
@@ -117,9 +117,33 @@ public sealed class YamlDocumentScheduleTests
             """);
 
         Assert.NotNull(doc.Schedule);
-        Assert.Equal("nightly", doc.Schedule!.Ref);
+        Assert.True(doc.Schedule!.IsReference);
+        Assert.Equal(["nightly"], doc.Schedule.Refs);
         Assert.Null(doc.Schedule.Cron);
         Assert.Null(doc.Schedule.IntervalSeconds);
+    }
+
+    [Fact]
+    public void Parse_SequenceSchedule_JoinsEveryNamedSchedule()
+    {
+        // `schedule: [a, b]` lets one flow sit in more than one schedule: a nightly full refresh and an hourly
+        // subset, say. Each named schedule fires on its own cadence and runs this flow as one of its members.
+        var doc = Loader.Parse("""
+            name: dim_currency
+            schedule: [dwh_nightly, dwh_small_hourly]
+            source:
+              type: csv
+              location: ./dim_currency.csv
+            target:
+              connection: ${env:SQLFLOW_CONN_DWH}
+              schema: dbo
+              table: DimCurrency
+            """);
+
+        Assert.NotNull(doc.Schedule);
+        Assert.True(doc.Schedule!.IsReference);
+        Assert.Equal(["dwh_nightly", "dwh_small_hourly"], doc.Schedule.Refs);
+        Assert.Null(doc.Schedule.Cron);
     }
 
     [Fact]
@@ -145,7 +169,8 @@ public sealed class YamlDocumentScheduleTests
         Assert.Equal("nightly", doc.Schedule!.Name);
         Assert.Equal("0 6 * * *", doc.Schedule.Cron);
         Assert.Equal("Europe/Oslo", doc.Schedule.Timezone);
-        Assert.Null(doc.Schedule.Ref);
+        Assert.False(doc.Schedule.IsReference);
+        Assert.Empty(doc.Schedule.Refs);
     }
 
     [Fact]

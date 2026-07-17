@@ -114,16 +114,34 @@ public sealed class ExecutionModeApiTests
             db.FlowDependencies.Add(Dependency(repoId, "load-orders", "watch-revenue"));
             await db.SaveChangesAsync();
 
-            // Batch scope: the manual health check never joins the set.
-            var batch = await RunScopeExpander.ExpandAsync(db, repoId, anchorFlow: null, RunScope.Batch, batch: "BB");
-            Assert.Equal(["load-orders", "watch-orders"], batch.Members.Select(m => m.FlowName).Order().ToArray());
+            // A schedule all three joined: the manual health check never runs on a fire, because mode: manual
+            // reserves a flow for a direct trigger and firing a schedule it sits in is not that.
+            var scheduleId = Guid.CreateVersion7();
+            db.Schedules.Add(new CatalogSchedule
+            {
+                Id = scheduleId, RepoId = repoId, Name = "nightly", Cron = "0 4 * * *", Timezone = "UTC",
+                Enabled = true, Source = "yaml", CreatedUtc = now, UpdatedUtc = now,
+            });
+            foreach (var member in new[] { "load-orders", "watch-orders", "watch-revenue" })
+            {
+                db.ScheduleMembers.Add(new CatalogScheduleMember
+                {
+                    ScheduleId = scheduleId, PipelineId = CatalogIdentity.Pipeline(repoId, member),
+                    RepoId = repoId, FlowName = member,
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            var fired = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, "nightly");
+            Assert.Equal(["load-orders", "watch-orders"], fired.Members.Select(m => m.FlowName).Order().ToArray());
 
             // Node scope: the manual descendant is excluded too.
-            var node = await RunScopeExpander.ExpandAsync(db, repoId, "load-orders", RunScope.Node, batch: null);
+            var node = await RunScopeExpander.ExpandAsync(db, repoId, "load-orders", RunScope.Node);
             Assert.Equal(["load-orders", "watch-orders"], node.Members.Select(m => m.FlowName).Order().ToArray());
 
             // A manual anchor is kept: naming it directly IS the manual trigger.
-            var manualAnchor = await RunScopeExpander.ExpandAsync(db, repoId, "watch-revenue", RunScope.Node, batch: null);
+            var manualAnchor = await RunScopeExpander.ExpandAsync(db, repoId, "watch-revenue", RunScope.Node);
             Assert.Equal("watch-revenue", Assert.Single(manualAnchor.Members).FlowName);
         }
         finally

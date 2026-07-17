@@ -48,6 +48,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogSchedule> Schedules => Set<CatalogSchedule>();
 
+    public DbSet<CatalogScheduleMember> ScheduleMembers => Set<CatalogScheduleMember>();
+
     public DbSet<CatalogNode> Nodes => Set<CatalogNode>();
 
     public DbSet<CatalogWorkerPoolDesired> WorkerPools => Set<CatalogWorkerPoolDesired>();
@@ -304,16 +306,31 @@ public sealed class CatalogDbContext : DbContext
         {
             entity.ToTable("Schedule");
             entity.HasKey(s => s.Id);
-            entity.Property(s => s.FlowName).HasMaxLength(400).IsRequired();
-            entity.Property(s => s.Scope).HasMaxLength(16).IsRequired().HasDefaultValue(RunScopes.Flow);
+            entity.Property(s => s.Name).HasMaxLength(400).IsRequired();
             entity.Property(s => s.Cron).HasMaxLength(256);
             entity.Property(s => s.Timezone).HasMaxLength(64).IsRequired();
             entity.Property(s => s.Source).HasMaxLength(16).IsRequired();
             entity.HasIndex(s => s.RepoId);
-            entity.HasIndex(s => s.PipelineId);
+            // A name is what flows join, so it identifies exactly one schedule in a repo. The estate scan already
+            // collapses a redefined name to the first definition; the unique index is what keeps two sync paths (or
+            // a yaml schedule and an api one) from racing a second row into existence behind it.
+            entity.HasIndex(s => new { s.RepoId, s.Name }).IsUnique();
             // The scheduler scans for due, active schedules ordered by when they are next due:
             // WHERE Enabled = 1 AND Paused = 0 AND NextFireUtc <= now.
             entity.HasIndex(s => s.NextFireUtc);
+        });
+
+        modelBuilder.Entity<CatalogScheduleMember>(entity =>
+        {
+            entity.ToTable("ScheduleMember");
+            // A flow joins a schedule at most once; the composite key makes a repeated join idempotent rather than
+            // a duplicate that would enqueue the flow twice in one fire.
+            entity.HasKey(m => new { m.ScheduleId, m.PipelineId });
+            entity.Property(m => m.FlowName).HasMaxLength(400).IsRequired();
+            entity.HasIndex(m => m.RepoId);
+            // "Which schedules is this flow in?": the flow detail page's Schedules tab, and the only way a flow that
+            // declares no schedule of its own can still show the one that runs it.
+            entity.HasIndex(m => m.PipelineId);
         });
 
         modelBuilder.Entity<CatalogNode>(entity =>

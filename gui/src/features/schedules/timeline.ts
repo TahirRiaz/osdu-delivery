@@ -94,10 +94,11 @@ function toBar(run: RunSummary): RunBar {
 }
 
 /**
- * Builds one lane per schedule, filling each with the runs of its pipeline. Lanes are ordered busiest-first
- * (then by flow name) so the schedules that actually run rise to the top and idle ones settle below, the same
- * reading order the reference timeline uses. A schedule with no runs in the window still gets a lane, so its
- * silence is visible rather than hidden.
+ * Builds one lane per schedule, filling each with the runs of every flow that joined it. A schedule fires its whole
+ * member set as one group, so the lane has to span all of them: showing one flow's runs would hide most of what the
+ * fire actually did. Lanes are ordered busiest-first (then by name) so the schedules that actually run rise to the
+ * top and idle ones settle below, the same reading order the reference timeline uses. A schedule with no runs in the
+ * window still gets a lane, so its silence is visible rather than hidden.
  */
 export function buildRows(schedules: readonly Schedule[], runs: readonly RunSummary[]): TimelineRow[] {
   const barsByPipeline = new Map<string, RunBar[]>();
@@ -112,11 +113,14 @@ export function buildRows(schedules: readonly Schedule[], runs: readonly RunSumm
   }
 
   const rows = schedules.map<TimelineRow>((schedule) => {
-    const bars = (barsByPipeline.get(schedule.pipelineId) ?? []).slice().sort((a, b) => a.startMs - b.startMs);
+    const bars = schedule.memberPipelineIds
+      .flatMap((pipelineId) => barsByPipeline.get(pipelineId) ?? [])
+      .slice()
+      .sort((a, b) => a.startMs - b.startMs);
     const last = bars.reduce<RunBar | null>((newest, bar) => (newest === null || bar.endMs > newest.endMs ? bar : newest), null);
     return {
       scheduleId: schedule.id,
-      label: schedule.flowName,
+      label: schedule.name,
       trigger: triggerLabel(schedule),
       enabled: schedule.enabled,
       paused: schedule.paused,

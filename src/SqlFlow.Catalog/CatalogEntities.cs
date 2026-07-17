@@ -1054,16 +1054,12 @@ public class CatalogSchedule
 
     public Guid RepoId { get; set; }
 
-    /// <summary>The pipeline this schedule fires (its stable, repo-scoped id); a soft link, no FK.</summary>
-    public Guid PipelineId { get; set; }
-
-    public string FlowName { get; set; } = string.Empty;
-
-    /// <summary>How much the fire runs, as a <see cref="RunScope"/> name: <c>flow</c> (default, just
-    /// <see cref="FlowName"/>), <c>node</c> (that flow plus its lineage descendants), or <c>batch</c> (every active
-    /// flow in its batch). A node/batch schedule expands through lineage at fire time and enqueues one wave-gated
-    /// run group instead of a single run, so the set executes in dependency order.</summary>
-    public string Scope { get; set; } = RunScopes.Flow;
+    /// <summary>
+    /// The schedule's name: what a flow joins with <c>schedule: &lt;name&gt;</c>, and this row's identity within the
+    /// repo. Every schedule is named (an unnamed inline block takes its declaring flow's name), so a fire always
+    /// resolves to a member set. Unique per repo.
+    /// </summary>
+    public string Name { get; set; } = string.Empty;
 
     /// <summary>A standard cron expression (5 fields, or 6 with seconds), evaluated in <see cref="Timezone"/>. Null
     /// when the schedule is interval-based.</summary>
@@ -1097,17 +1093,39 @@ public class CatalogSchedule
 
     public DateTime? LastFireUtc { get; set; }
 
-    /// <summary>The run id the most recent fire enqueued, for tracing a scheduled run back to its schedule. For a
-    /// scope that fired a whole group this is the group's first member; <see cref="LastGroupId"/> carries the set.</summary>
+    /// <summary>The run id the most recent fire enqueued, for tracing a scheduled run back to its schedule. When the
+    /// fire ran a whole member set this is the group's first member; <see cref="LastGroupId"/> carries the set.</summary>
     public Guid? LastRunId { get; set; }
 
-    /// <summary>The run group the most recent fire enqueued, when the scope expanded to a wave-gated set; null for a
-    /// flow-scoped schedule (which enqueues a single run) or a schedule that has never fired.</summary>
+    /// <summary>The run group the most recent fire enqueued, when the schedule has more than one member; null for a
+    /// single-member schedule (which enqueues a single run) or a schedule that has never fired.</summary>
     public Guid? LastGroupId { get; set; }
 
     public DateTime CreatedUtc { get; set; }
 
     public DateTime UpdatedUtc { get; set; }
+}
+
+/// <summary>
+/// One flow's membership of one schedule: the join a flow makes by writing <c>schedule: &lt;name&gt;</c>. This is
+/// the ONLY selector for what a fire runs. A schedule fires once and enqueues every member as a single wave-ordered
+/// run group, so a member never starts before the flows it depends on; a flow may join several schedules (a nightly
+/// full refresh and an hourly subset, say), which is why this is a table and not a column. Soft links, no FKs, like
+/// the rest of the catalog: the rows are reconciled from git on every sync.
+/// </summary>
+public class CatalogScheduleMember
+{
+    /// <summary>The schedule joined (<see cref="CatalogSchedule.Id"/>).</summary>
+    public Guid ScheduleId { get; set; }
+
+    /// <summary>The member flow's stable, repo-scoped pipeline id.</summary>
+    public Guid PipelineId { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The member's flow name, carried so a membership reads on its own without joining the pipeline
+    /// table (and survives a flow that has not synced yet).</summary>
+    public string FlowName { get; set; } = string.Empty;
 }
 
 /// <summary>

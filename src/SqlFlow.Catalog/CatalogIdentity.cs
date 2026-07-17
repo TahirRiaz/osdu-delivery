@@ -17,12 +17,16 @@ public static class CatalogIdentity
         return FlowIdentity.FromName($"{repoId:N}/{flowName}");
     }
 
-    /// <summary>The deterministic id of a flow's YAML-declared schedule: one per flow, so re-syncing the same
-    /// estate updates the schedule row in place rather than duplicating it. API-created schedules get a fresh id
-    /// instead (a flow can carry its git schedule plus ad-hoc API schedules).</summary>
-    public static Guid YamlSchedule(Guid repoId, string flowName)
+    /// <summary>
+    /// The deterministic id of a YAML-declared schedule: one per NAME within a repo, so re-syncing the same estate
+    /// updates the schedule row in place rather than duplicating it, and every flow that joins the name lands on the
+    /// one row. Names are matched case-insensitively (as the estate scan resolves them), so the id is computed from
+    /// the lowercased name and two spellings of a name cannot become two schedules. API-created schedules get a
+    /// fresh id instead.
+    /// </summary>
+    public static Guid YamlSchedule(Guid repoId, string scheduleName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        return FlowIdentity.FromName($"{repoId:N}/{flowName}/schedule");
+        ArgumentException.ThrowIfNullOrWhiteSpace(scheduleName);
+        return FlowIdentity.FromName($"{repoId:N}/schedule/{scheduleName.ToLowerInvariant()}");
     }
 }

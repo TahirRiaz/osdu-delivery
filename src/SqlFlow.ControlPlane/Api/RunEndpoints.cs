@@ -363,7 +363,8 @@ public static class RunEndpoints
         if (parsed is null)
         {
             return TypedResults.Problem(
-                detail: "scope must be one of 'flow', 'node', or 'batch'.",
+                detail: "scope must be one of 'flow' or 'node'. To preview what a whole source runs, read its "
+                        + "schedule's plan (GET /schedules/{id}/plan): a schedule's members are what a fire runs.",
                 statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
@@ -372,8 +373,7 @@ public static class RunEndpoints
         {
             expansion = await RunScopeExpander.ExpandAsync(
                     db, repoId,
-                    string.IsNullOrWhiteSpace(flowName) ? null : flowName.Trim(), parsed.Value,
-                    string.IsNullOrWhiteSpace(batch) ? null : batch.Trim(), ct)
+                    string.IsNullOrWhiteSpace(flowName) ? null : flowName.Trim(), parsed.Value, ct)
                 .ConfigureAwait(false);
         }
         catch (ArgumentException ex)

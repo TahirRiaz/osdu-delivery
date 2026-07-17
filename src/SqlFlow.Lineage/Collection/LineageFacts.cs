@@ -46,11 +46,34 @@ public sealed record CollectedFlow
     /// <summary>The source-side server identity, when the kind has one (ing/exp).</summary>
     public string? SourceServerRef { get; init; }
 
-    /// <summary>The flow's declared schedule from its <c>schedule:</c> block, or null when it declares none; carried
-    /// from the document so the catalog sync can mirror git schedules into the schedule table.</summary>
+    /// <summary>The flow's <c>schedule:</c> declaration, or null when it declares none: either an inline cadence or
+    /// a membership reference to named schedules. Carried from the document so <see cref="CollectionResult.Schedules"/>
+    /// can be resolved once the whole estate is in hand.</summary>
     public SqlFlow.Core.ScheduleSpec? Schedule { get; init; }
 
     public required DateTime FileWriteUtc { get; init; }
+}
+
+/// <summary>
+/// One named schedule the estate declares, together with the flows that joined it. Every schedule is named: a
+/// <c>schedules.yaml</c> entry and a <c>name:</c>d inline block use their declared name, and an unnamed inline block
+/// takes its declaring flow's name, so one identity rule covers all three and a fire always has a member set.
+/// </summary>
+public sealed record CollectedSchedule
+{
+    /// <summary>The schedule's name: its reference target and its identity in the catalog.</summary>
+    public required string Name { get; init; }
+
+    /// <summary>The cadence (cron or interval, time zone, enabled, catchup).</summary>
+    public required SqlFlow.Core.ScheduleSpec Spec { get; init; }
+
+    /// <summary>Where the definition came from, for warnings (a library file's relative path, or a flow and file).</summary>
+    public required string Origin { get; init; }
+
+    /// <summary>The flow names that joined this schedule: the flow that declared it inline, plus every flow whose
+    /// <c>schedule:</c> references it by name. A fire runs exactly this set, ordered by lineage wave. Empty when a
+    /// library entry nothing references.</summary>
+    public List<string> Members { get; } = [];
 }
 
 /// <summary>An object a collector saw created, with its generating DDL and (for a plain table) its columns.
@@ -123,6 +146,11 @@ public sealed record SynonymLink
 public sealed class CollectionResult
 {
     public List<CollectedFlow> Flows { get; } = [];
+
+    /// <summary>Every named schedule the estate declares, with the flows that joined it, resolved once the whole
+    /// repo is in hand (a reference can point at a definition in any file). This is the authority on WHAT a fire
+    /// runs: a schedule fires once and runs its member set as one wave-ordered group. Ordered by name.</summary>
+    public List<CollectedSchedule> Schedules { get; } = [];
 
     public List<LineageFact> Facts { get; } = [];
 

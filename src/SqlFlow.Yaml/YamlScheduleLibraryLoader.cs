@@ -33,8 +33,6 @@ public sealed class YamlScheduleLibraryLoader
 
     private sealed class ScheduleEntryYaml
     {
-        public string? Scope { get; set; }
-
         public string? Cron { get; set; }
 
         public int? IntervalSeconds { get; set; }
@@ -88,7 +86,6 @@ public sealed class YamlScheduleLibraryLoader
             schedules.Add(new NamedSchedule(name, new ScheduleSpec
             {
                 Name = name,
-                Scope = string.IsNullOrWhiteSpace(entry.Scope) ? null : entry.Scope.Trim(),
                 Cron = string.IsNullOrWhiteSpace(entry.Cron) ? null : entry.Cron.Trim(),
                 IntervalSeconds = entry.IntervalSeconds,
                 Timezone = string.IsNullOrWhiteSpace(entry.Timezone) ? "UTC" : entry.Timezone.Trim(),

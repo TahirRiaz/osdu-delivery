@@ -52,7 +52,7 @@ public static class ScheduleStore
     }
 
     /// <summary>Records the run a fire enqueued, so a scheduled run traces back to its schedule. Clears
-    /// <see cref="CatalogSchedule.LastGroupId"/>: a flow-scoped fire is a single run, not a set.</summary>
+    /// <see cref="CatalogSchedule.LastGroupId"/>: a single-member fire is one run, not a set.</summary>
     public static Task SetLastRunAsync(CatalogDbContext catalog, Guid id, Guid runId, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -79,67 +79,64 @@ public static class ScheduleStore
     }
 
     /// <summary>
-    /// Upserts a YAML-declared schedule (deterministic id per flow). A new schedule is inserted with the computed
-    /// next fire. An existing one has its definition refreshed from git, but the operational state set through the
-    /// API is preserved: a <see cref="CatalogSchedule.Paused"/> flag survives the re-sync, and the next-fire cadence
-    /// is only reset when the cron/interval/time-zone actually changed (an unchanged sync never disturbs the
-    /// firing rhythm). Returns the schedule id.
+    /// Upserts a YAML-declared schedule (deterministic id per NAME) together with its member set. A new schedule is
+    /// inserted with the computed next fire. An existing one has its definition refreshed from git, but the
+    /// operational state set through the API is preserved: a <see cref="CatalogSchedule.Paused"/> flag survives the
+    /// re-sync, and the next-fire cadence is only reset when the cron/interval/time-zone actually changed (an
+    /// unchanged sync never disturbs the firing rhythm). Returns the schedule id.
     /// </summary>
     public static Task<Guid> UpsertYamlScheduleAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, string scope, string? cron, int? intervalSeconds,
-        string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
+        int? intervalSeconds, string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc,
+        DateTime nowUtc, CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, flowName, scope, cron, intervalSeconds, timezone, enabled, catchup, computedNextFireUtc, nowUtc, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, computedNextFireUtc, nowUtc, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
-    /// not open a transaction or save, so the catalog sync can call it for every flow inside its own one
+    /// not open a transaction or save, so the catalog sync can call it for every schedule inside its own one
     /// transaction (the public <see cref="UpsertYamlScheduleAsync"/> wraps this for standalone callers).</summary>
     public static async Task<Guid> StageYamlUpsertAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, string scope, string? cron, int? intervalSeconds,
-        string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
+        int? intervalSeconds, string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc,
+        DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(members);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scheduleName);
 
-        var id = CatalogIdentity.YamlSchedule(repoId, flowName);
+        var id = CatalogIdentity.YamlSchedule(repoId, scheduleName);
+        var existing = await catalog.Schedules.AsTracking()
+            .FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
+        if (existing is null)
         {
-            var existing = await catalog.Schedules.AsTracking()
-                .FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
-            if (existing is null)
+            catalog.Schedules.Add(new CatalogSchedule
             {
-                catalog.Schedules.Add(new CatalogSchedule
-                {
-                    Id = id,
-                    RepoId = repoId,
-                    PipelineId = CatalogIdentity.Pipeline(repoId, flowName),
-                    FlowName = flowName,
-                    Scope = scope,
-                    Cron = cron,
-                    IntervalSeconds = intervalSeconds,
-                    Timezone = timezone,
-                    Enabled = enabled,
-                    Catchup = catchup,
-                    Source = "yaml",
-                    NextFireUtc = computedNextFireUtc,
-                    CreatedUtc = nowUtc,
-                    UpdatedUtc = nowUtc,
-                });
-                return id;
-            }
-
-            // Only the TIMING definition resets the cadence. The scope changes what a fire runs, not when, so
-            // re-scoping a schedule must not shift its next fire or disturb its rhythm.
+                Id = id,
+                RepoId = repoId,
+                Name = scheduleName,
+                Cron = cron,
+                IntervalSeconds = intervalSeconds,
+                Timezone = timezone,
+                Enabled = enabled,
+                Catchup = catchup,
+                Source = "yaml",
+                NextFireUtc = computedNextFireUtc,
+                CreatedUtc = nowUtc,
+                UpdatedUtc = nowUtc,
+            });
+        }
+        else
+        {
+            // Only the TIMING definition resets the cadence. Membership changes what a fire runs, not when, so
+            // adding or removing a member must not shift the next fire or disturb the rhythm.
             var definitionChanged = existing.Cron != cron
                 || existing.IntervalSeconds != intervalSeconds
                 || existing.Timezone != timezone;
 
             existing.RepoId = repoId;
-            existing.PipelineId = CatalogIdentity.Pipeline(repoId, flowName);
-            existing.FlowName = flowName;
-            existing.Scope = scope;
+            existing.Name = scheduleName;
             existing.Cron = cron;
             existing.IntervalSeconds = intervalSeconds;
             existing.Timezone = timezone;
@@ -153,8 +150,45 @@ public static class ScheduleStore
             {
                 existing.NextFireUtc = computedNextFireUtc;
             }
+        }
 
-            return id;
+        await StageMembersAsync(catalog, repoId, id, members, ct).ConfigureAwait(false);
+        return id;
+    }
+
+    /// <summary>
+    /// Replaces a schedule's member set with exactly <paramref name="members"/>: git is the authority on who joined,
+    /// so a flow that dropped its <c>schedule:</c> line stops being fired and a new joiner starts. Rows already
+    /// correct are left untouched rather than deleted and reinserted, so an unchanged sync writes nothing.
+    /// </summary>
+    private static async Task StageMembersAsync(
+        CatalogDbContext catalog, Guid repoId, Guid scheduleId, IReadOnlyCollection<string> members, CancellationToken ct)
+    {
+        var wanted = members
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .ToDictionary(m => CatalogIdentity.Pipeline(repoId, m), m => m);
+
+        var existing = await catalog.ScheduleMembers.AsTracking()
+            .Where(m => m.ScheduleId == scheduleId)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        foreach (var row in existing)
+        {
+            if (!wanted.Remove(row.PipelineId))
+            {
+                catalog.ScheduleMembers.Remove(row);
+            }
+        }
+
+        foreach (var (pipelineId, flowName) in wanted)
+        {
+            catalog.ScheduleMembers.Add(new CatalogScheduleMember
+            {
+                ScheduleId = scheduleId,
+                PipelineId = pipelineId,
+                RepoId = repoId,
+                FlowName = flowName,
+            });
         }
     }
 
@@ -168,46 +202,41 @@ public static class ScheduleStore
         var stale = await catalog.Schedules.AsTracking()
             .Where(s => s.RepoId == repoId && s.Source == "yaml" && !keepIds.Contains(s.Id))
             .ToListAsync(ct).ConfigureAwait(false);
+        if (stale.Count == 0)
+        {
+            return;
+        }
+
+        // The memberships go with the schedule: nothing else references them, and a member row left behind would
+        // survive as an orphan that no fire could ever reach.
+        var staleIds = stale.Select(s => s.Id).ToList();
+        var orphanedMembers = await catalog.ScheduleMembers.AsTracking()
+            .Where(m => staleIds.Contains(m.ScheduleId))
+            .ToListAsync(ct).ConfigureAwait(false);
+        catalog.ScheduleMembers.RemoveRange(orphanedMembers);
         catalog.Schedules.RemoveRange(stale);
     }
 
-    /// <summary>Stages the removal of ONE flow's YAML schedule, the single-flow counterpart to
-    /// <see cref="StageRemoveYamlSchedulesNotInAsync"/>: the per-run write-back calls this when a flow's YAML no
-    /// longer declares a usable schedule, so the mirror stops firing without touching any other flow's rows.
-    /// API-created schedules are never touched. Staged on the context; the caller's transaction commits it.</summary>
-    public static async Task StageRemoveYamlScheduleAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(catalog);
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        var id = CatalogIdentity.YamlSchedule(repoId, flowName);
-        var row = await catalog.Schedules.AsTracking()
-            .FirstOrDefaultAsync(s => s.Id == id && s.Source == "yaml", ct).ConfigureAwait(false);
-        if (row is not null)
-        {
-            catalog.Schedules.Remove(row);
-        }
-    }
-
-    /// <summary>Creates an ad-hoc API schedule with a fresh id; a flow can carry its git schedule plus API ones.</summary>
+    /// <summary>Creates an ad-hoc API schedule with a fresh id and an explicit member set. A repo can carry its git
+    /// schedules plus API ones; the name must not collide with a git schedule's (the caller checks, and the unique
+    /// index is the backstop).</summary>
     public static Task<Guid> CreateApiScheduleAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, string scope, string? cron, int? intervalSeconds,
-        string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
+        int? intervalSeconds, string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc,
+        DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(members);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scheduleName);
 
         var id = Guid.CreateVersion7();
-        return CatalogTransaction.InSerializableAsync(catalog, () =>
+        return CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
             catalog.Schedules.Add(new CatalogSchedule
             {
                 Id = id,
                 RepoId = repoId,
-                PipelineId = CatalogIdentity.Pipeline(repoId, flowName),
-                FlowName = flowName,
-                Scope = scope,
+                Name = scheduleName,
                 Cron = cron,
                 IntervalSeconds = intervalSeconds,
                 Timezone = timezone,
@@ -218,7 +247,8 @@ public static class ScheduleStore
                 CreatedUtc = nowUtc,
                 UpdatedUtc = nowUtc,
             });
-            return Task.FromResult(id);
+            await StageMembersAsync(catalog, repoId, id, members, ct).ConfigureAwait(false);
+            return id;
         }, ct);
     }
 
@@ -239,10 +269,11 @@ public static class ScheduleStore
         return affected > 0 ? ScheduleMutation.Applied : ScheduleMutation.NotFound;
     }
 
-    /// <summary>Deletes a schedule by id (the API delete).</summary>
+    /// <summary>Deletes a schedule by id, with its memberships (the API delete).</summary>
     public static async Task<ScheduleMutation> DeleteAsync(CatalogDbContext catalog, Guid id, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
+        await catalog.ScheduleMembers.Where(m => m.ScheduleId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         var affected = await catalog.Schedules.Where(s => s.Id == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         return affected > 0 ? ScheduleMutation.Applied : ScheduleMutation.NotFound;
     }

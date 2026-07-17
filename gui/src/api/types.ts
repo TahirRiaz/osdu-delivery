@@ -393,11 +393,11 @@ export interface RunGroup {
 export interface Schedule {
   id: string;
   repoId: string;
-  pipelineId: string;
-  flowName: string;
-  /** What a fire runs: just `flowName` ("flow"), it plus its lineage descendants ("node"), or every active flow in
-   * its batch ("batch"). A node/batch schedule enqueues one wave-ordered run group. */
-  scope: RunScope;
+  /** The schedule's name: what a flow joins with `schedule: <name>`, and its identity within the repo. What a fire
+   * runs is its MEMBER SET (the flows that joined it), enqueued as one wave-ordered run group. */
+  name: string;
+  /** The pipeline ids of the flows that joined this schedule: exactly what a fire runs, wave-ordered. */
+  memberPipelineIds: string[];
   cron: string | null;
   intervalSeconds: number | null;
   timezone: string;
@@ -409,7 +409,8 @@ export interface Schedule {
   nextFireUtc: string | null;
   lastFireUtc: string | null;
   lastRunId: string | null;
-  /** The run group the last fire enqueued, when the scope expanded to a set; null for a flow-scoped schedule. */
+  /** The run group the last fire enqueued, when the schedule has more than one member; null for a single-member
+   * schedule (which enqueues one run) or one that has never fired. */
   lastGroupId: string | null;
   createdUtc: string;
   updatedUtc: string;
@@ -417,14 +418,15 @@ export interface Schedule {
 
 export interface CreateScheduleRequest {
   repoId: string;
-  flowName: string;
+  /** The flow names that join this schedule: membership is what a fire runs, so at least one is required. */
+  members: string[];
   cron?: string | null;
   intervalSeconds?: number | null;
   timezone?: string | null;
   enabled?: boolean | null;
   catchup?: boolean | null;
-  /** Defaults to "flow" when omitted. */
-  scope?: RunScope | null;
+  /** What other flows would join with `schedule: <name>`. Defaults to the first member's flow name. */
+  name?: string | null;
 }
 
 export interface ScheduleCreated {

@@ -122,7 +122,7 @@ public sealed partial class SchedulerService : BackgroundService
         }
         catch (Exception ex)
         {
-            LogFireError(schedule.Id, schedule.FlowName, SecretHygiene.RedactedMessage(ex.Message));
+            LogFireError(schedule.Id, schedule.Name, SecretHygiene.RedactedMessage(ex.Message));
         }
         finally
         {
@@ -156,57 +156,44 @@ public sealed partial class SchedulerService : BackgroundService
             // No computable next fire (a malformed cron/time zone, or a cron with no further occurrence): the claim
             // above advanced the schedule to null, so it is parked and not scanned again, and this occurrence is not
             // enqueued.
-            LogParked(schedule.Id, schedule.FlowName);
+            LogParked(schedule.Id, schedule.Name);
             return;
         }
 
-        // Enqueue through the shared fire path (the same one the manual run-now endpoint uses): it verifies the flow
-        // is active, enqueues, and stamps the last run. honorManualMode is true here because a schedule is automatic
-        // dispatch, so a flow declaring mode: manual is left un-fired (loudly, so the contradiction is visible); the
-        // occurrence's next fire has already advanced, so the cadence simply moves on.
-        var fire = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, honorManualMode: true, now, ct)
-            .ConfigureAwait(false);
+        // Enqueue through the shared fire path (the same one the manual run-now endpoint uses): it expands the
+        // schedule's member set, enqueues it in wave order, and stamps the last run/group. A member declaring
+        // mode: manual is excluded there, since a schedule is automatic dispatch and that flag reserves a flow for a
+        // direct trigger; the occurrence's next fire has already advanced, so the cadence simply moves on.
+        var fire = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, now, ct).ConfigureAwait(false);
         switch (fire.Outcome)
         {
-            case ScheduleFire.Outcome.PipelineInactive:
-                LogPipelineInactive(schedule.Id, schedule.FlowName);
-                break;
-            case ScheduleFire.Outcome.PipelineManual:
-                LogPipelineManual(schedule.Id, schedule.FlowName);
-                break;
             case ScheduleFire.Outcome.ScopeEmpty:
-                LogScopeEmpty(schedule.Id, schedule.FlowName, schedule.Scope);
+                LogScopeEmpty(schedule.Id, schedule.Name);
                 break;
             case ScheduleFire.Outcome.Enqueued:
-                LogFired(schedule.Id, schedule.FlowName, fire.RunId);
+                LogFired(schedule.Id, schedule.Name, fire.RunId);
                 break;
             case ScheduleFire.Outcome.EnqueuedGroup:
-                LogFiredGroup(schedule.Id, schedule.Scope, fire.MemberCount, schedule.FlowName, fire.GroupId ?? Guid.Empty);
+                LogFiredGroup(schedule.Id, fire.MemberCount, schedule.Name, fire.GroupId ?? Guid.Empty);
                 break;
         }
     }
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} fired: enqueued run {RunId} for flow '{FlowName}'.")]
-    private partial void LogFired(Guid scheduleId, string flowName, Guid runId);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} ('{ScheduleName}') fired: enqueued run {RunId} for its single member.")]
+    private partial void LogFired(Guid scheduleId, string scheduleName, Guid runId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} fired ({Scope}): enqueued {MemberCount} flow(s) from '{FlowName}' as wave-ordered run group {GroupId}.")]
-    private partial void LogFiredGroup(Guid scheduleId, string scope, int memberCount, string flowName, Guid groupId);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} ('{ScheduleName}') fired: enqueued its {MemberCount} members as wave-ordered run group {GroupId}.")]
+    private partial void LogFiredGroup(Guid scheduleId, int memberCount, string scheduleName, Guid groupId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: the {Scope} scope anchored on '{FlowName}' resolved to no runnable flow; nothing enqueued this occurrence.")]
-    private partial void LogScopeEmpty(Guid scheduleId, string flowName, string scope);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} ('{ScheduleName}') resolved to no runnable flow: nothing joins it, or every member is deactivated or mode: manual. Nothing enqueued this occurrence.")]
+    private partial void LogScopeEmpty(Guid scheduleId, string scheduleName);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} for flow '{FlowName}' has no computable next fire (invalid cron/timezone or exhausted) and was parked.")]
-    private partial void LogParked(Guid scheduleId, string flowName);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: flow '{FlowName}' is inactive or removed; not enqueued this occurrence.")]
-    private partial void LogPipelineInactive(Guid scheduleId, string flowName);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: flow '{FlowName}' declares mode: manual, so the schedule never fires it; trigger it directly or remove the schedule.")]
-    private partial void LogPipelineManual(Guid scheduleId, string flowName);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} ('{ScheduleName}') has no computable next fire (invalid cron/timezone or exhausted) and was parked.")]
+    private partial void LogParked(Guid scheduleId, string scheduleName);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Scheduler tick error: {Error}")]
     private partial void LogTickError(string error);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Schedule {ScheduleId} for flow '{FlowName}' failed to fire: {Error}")]
-    private partial void LogFireError(Guid scheduleId, string flowName, string error);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Schedule {ScheduleId} ('{ScheduleName}') failed to fire: {Error}")]
+    private partial void LogFireError(Guid scheduleId, string scheduleName, string error);
 }

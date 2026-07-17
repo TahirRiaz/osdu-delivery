@@ -25,7 +25,7 @@ public sealed class ScheduleApiTests
         var token = await IssueTokenAsync(client, ["read"]);
 
         using var response = await PostAsync(client, token, "/api/v1/schedules",
-            new CreateScheduleRequest(Guid.NewGuid(), "flow", "0 6 * * *", null, "UTC", true));
+            new CreateScheduleRequest(Guid.NewGuid(), ["flow"], "0 6 * * *", null, "UTC", true));
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
@@ -39,7 +39,7 @@ public sealed class ScheduleApiTests
         var token = await IssueTokenAsync(client, ["operate"]);
 
         using var response = await PostAsync(client, token, "/api/v1/schedules",
-            new CreateScheduleRequest(Guid.NewGuid(), "flow", "not a cron", null, "UTC", true));
+            new CreateScheduleRequest(Guid.NewGuid(), ["flow"], "not a cron", null, "UTC", true));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
@@ -57,7 +57,7 @@ public sealed class ScheduleApiTests
         var token = await IssueTokenAsync(client, ["operate"]);
 
         using var response = await PostAsync(client, token, "/api/v1/schedules",
-            new CreateScheduleRequest(FlowIdentity.FromName("nope_" + Guid.NewGuid().ToString("N")), "no_such", "0 6 * * *", null, "UTC", true));
+            new CreateScheduleRequest(FlowIdentity.FromName("nope_" + Guid.NewGuid().ToString("N")), ["no_such"], "0 6 * * *", null, "UTC", true));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -81,7 +81,7 @@ public sealed class ScheduleApiTests
             // Create.
             Guid id;
             using (var create = await PostAsync(client, token, "/api/v1/schedules",
-                new CreateScheduleRequest(repoId, flowName, "0 6 * * *", null, "Europe/Oslo", true)))
+                new CreateScheduleRequest(repoId, [flowName], "0 6 * * *", null, "Europe/Oslo", true)))
             {
                 Assert.Equal(HttpStatusCode.Created, create.StatusCode);
                 var created = await create.Content.ReadFromJsonAsync<ScheduleCreated>();
@@ -180,7 +180,7 @@ public sealed class ScheduleApiTests
             // test; only the explicit run-now should enqueue a run.
             Guid scheduleId;
             using (var create = await PostAsync(client, token, "/api/v1/schedules",
-                new CreateScheduleRequest(repoId, flowName, "0 6 1 1 *", null, "UTC", true)))
+                new CreateScheduleRequest(repoId, [flowName], "0 6 1 1 *", null, "UTC", true)))
             {
                 Assert.Equal(HttpStatusCode.Created, create.StatusCode);
                 var created = await create.Content.ReadFromJsonAsync<ScheduleCreated>();
@@ -240,8 +240,8 @@ public sealed class ScheduleApiTests
                 {
                     Id = scheduleId,
                     RepoId = repoId,
-                    PipelineId = pipelineId,
-                    FlowName = flowName,
+                    Name = flowName,
+
                     Cron = "0 6 * * *",
                     Timezone = "UTC",
                     Enabled = true,

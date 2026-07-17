@@ -19,8 +19,6 @@ import RadioGroup from "@mui/material/RadioGroup";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
-import ToggleButton from "@mui/material/ToggleButton";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -30,7 +28,7 @@ import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
-import type { RunScope, Schedule } from "../../api/types";
+import type { Schedule } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
 import { Page } from "../../components/Page";
@@ -38,21 +36,14 @@ import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ScheduleStateBadge } from "../../components/StatusBadge";
-import { ScheduleScopePreview } from "./ScheduleScopePreview";
-
-/** What each scope runs, in the operator's words. */
-const SCOPE_HELP: Record<RunScope, string> = {
-  flow: "Only the flow itself.",
-  node: "The flow and everything downstream of it, in dependency order.",
-  batch: "Every active flow in the flow's batch, in dependency order.",
-};
 
 function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [repoId, setRepoId] = useState<string | null>(null);
-  const [flowName, setFlowName] = useState<string | null>(null);
-  const [scope, setScope] = useState<RunScope>("flow");
+  // Membership is the only selector: a schedule runs the flows that joined it, in lineage wave order.
+  const [members, setMembers] = useState<string[]>([]);
+  const [name, setName] = useState("");
   const [triggerKind, setTriggerKind] = useState<"cron" | "interval">("cron");
   const [cron, setCron] = useState("");
   const [intervalText, setIntervalText] = useState("");
@@ -84,13 +75,14 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
 
   const intervalValid = /^\d+$/.test(intervalText.trim()) && Number.parseInt(intervalText.trim(), 10) > 0;
   const triggerValid = triggerKind === "cron" ? cron.trim() !== "" : intervalValid;
-  const canSubmit = repoId !== null && flowName !== null && triggerValid && !create.isPending;
+  const canSubmit = repoId !== null && members.length > 0 && triggerValid && !create.isPending;
 
   const submit = () => {
     create.mutate({
       repoId: repoId!,
-      flowName: flowName!,
-      scope,
+      members,
+      // Blank falls back to the first member's flow name, matching how an unnamed inline block is named after its flow.
+      name: name.trim() === "" ? null : name.trim(),
       cron: triggerKind === "cron" ? cron.trim() : null,
       intervalSeconds: triggerKind === "interval" ? Number.parseInt(intervalText.trim(), 10) : null,
       timezone: timezone.trim() === "" ? "UTC" : timezone.trim(),
@@ -115,7 +107,7 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
             value={repoOptions.find((r) => r.id === repoId) ?? null}
             onChange={(_, repo) => {
               setRepoId(repo?.id ?? null);
-              setFlowName(null);
+              setMembers([]);
             }}
             loading={repos.isLoading}
             renderInput={(params) => (
@@ -123,36 +115,29 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
             )}
           />
           <Autocomplete
+            multiple
             options={flowOptions}
-            value={flowName}
-            onChange={(_, value) => setFlowName(value)}
+            value={members}
+            onChange={(_, value) => setMembers(value)}
             disabled={repoId === null}
             loading={pipelines.isLoading}
             renderInput={(params) => (
-              <TextField {...params} label="Flow" inputProps={{ ...params.inputProps, "data-testid": "schedule-flow" }} />
+              <TextField
+                {...params}
+                label="Flows this schedule runs"
+                helperText="One fire enqueues every flow here as a single wave-ordered group, so a flow never runs before what it depends on."
+                inputProps={{ ...params.inputProps, "data-testid": "schedule-members" }}
+              />
             )}
           />
 
-          <FormControl>
-            <FormLabel>Runs</FormLabel>
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={scope}
-              onChange={(_, value: RunScope | null) => value !== null && setScope(value)}
-              sx={{ mt: 0.5 }}
-              data-testid="schedule-scope"
-            >
-              <ToggleButton value="flow" data-testid="schedule-scope-flow">This flow</ToggleButton>
-              <ToggleButton value="node" data-testid="schedule-scope-node">Flow + dependents</ToggleButton>
-              <ToggleButton value="batch" data-testid="schedule-scope-batch">Whole batch</ToggleButton>
-            </ToggleButtonGroup>
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75 }}>
-              {SCOPE_HELP[scope]}
-            </Typography>
-          </FormControl>
-
-          <ScheduleScopePreview repoId={repoId} flowName={flowName} scope={scope} />
+          <TextField
+            label="Name (optional)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            helperText="What flows would join with 'schedule: <name>'. Defaults to the first flow's name."
+            inputProps={{ "data-testid": "schedule-name" }}
+          />
 
           <FormControl>
             <FormLabel>Trigger</FormLabel>
@@ -288,35 +273,41 @@ export default function SchedulesPage() {
 
   const columns: Column<Schedule>[] = [
     {
-      id: "flow",
-      header: "Flow",
+      id: "name",
+      header: "Schedule",
       render: (row) => (
         <Link
           component={RouterLink}
-          to={`/pipelines/${row.pipelineId}`}
+          to={`/schedules/${row.id}`}
           fontWeight={600}
           underline="hover"
-          data-testid="schedule-flow-link"
+          data-testid="schedule-name-link"
         >
-          {row.flowName}
+          {row.name}
         </Link>
       ),
     },
     {
-      id: "scope",
+      id: "members",
       header: "Runs",
-      render: (row) => (row.scope === "flow" ? (
-        <Tooltip title={SCOPE_HELP.flow}>
-          <Typography variant="body2" color="text.secondary">this flow</Typography>
+      render: (row) => (row.memberPipelineIds.length === 1 ? (
+        <Tooltip title="One flow joined this schedule, so a fire enqueues a single run.">
+          <Typography variant="body2" color="text.secondary">1 flow</Typography>
         </Tooltip>
       ) : (
-        <Tooltip title={SCOPE_HELP[row.scope]}>
+        <Tooltip
+          title={
+            row.memberPipelineIds.length === 0
+              ? "No flow joins this schedule, so a fire runs nothing. Join one with 'schedule: <name>'."
+              : "The flows that joined this schedule. One fire enqueues them all as a single wave-ordered group."
+          }
+        >
           <Chip
             size="small"
-            color="primary"
+            color={row.memberPipelineIds.length === 0 ? "warning" : "primary"}
             variant="outlined"
-            label={row.scope === "batch" ? "whole batch" : "flow + dependents"}
-            data-testid="schedule-scope-chip"
+            label={`${row.memberPipelineIds.length} flows`}
+            data-testid="schedule-members-chip"
           />
         </Tooltip>
       )),
@@ -495,7 +486,7 @@ export default function SchedulesPage() {
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Delete schedule"
-        message={`Delete the schedule for "${deleteTarget?.flowName ?? ""}"? This cannot be undone.`}
+        message={`Delete the schedule "${deleteTarget?.name ?? ""}"? This cannot be undone.`}
         confirmLabel="Delete"
         danger
         busy={remove.isPending}

@@ -128,8 +128,10 @@ public sealed class CatalogSync
         public required FlowDocument? Document { get; init; }
     }
 
-    /// <summary>One validated git-declared schedule, ready to stage into the schedule table.</summary>
-    private sealed record PreparedSchedule(string FlowName, Core.ScheduleSpec Spec, DateTime NextFireUtc);
+    /// <summary>One validated git-declared schedule, with the flows that joined it, ready to stage into the schedule
+    /// and schedule-member tables.</summary>
+    private sealed record PreparedSchedule(
+        string Name, IReadOnlyList<string> Members, Core.ScheduleSpec Spec, DateTime NextFireUtc);
 
     /// <summary>One run artifact awaiting insertion: the projected header row (client-keyed, so re-adding it on
     /// a transaction retry is safe) and the parsed document its detail rows project from inside the transaction,
@@ -164,7 +166,8 @@ public sealed class CatalogSync
             ? collected.Flows.Where(f => !excludedFlowPaths.Contains(Normalize(f.Node.File))).ToList()
             : collected.Flows;
 
-        var (pipelines, presentIds, schedules, anyUnreadable) = PreparePipelines(root, repoId, flows, nowUtc, warnings, ct);
+        var (pipelines, presentIds, schedules, anyUnreadable) =
+            PreparePipelines(root, repoId, flows, collected.Schedules, nowUtc, warnings, ct);
 
         // The stored state this pass reconciles against, read outside the transaction: the known run ids (so only
         // new artifacts are parsed and retained) and the active pipelines' content hashes (the lineage gate).
@@ -324,7 +327,8 @@ public sealed class CatalogSync
     /// mirror entries. File IO and pure computation only; nothing here touches the database.
     /// </summary>
     private (List<PreparedPipeline> Pipelines, HashSet<Guid> PresentIds, List<PreparedSchedule> Schedules, bool AnyUnreadable) PreparePipelines(
-        string root, Guid repoId, IReadOnlyList<CollectedFlow> flows, DateTime nowUtc, List<string> warnings, CancellationToken ct)
+        string root, Guid repoId, IReadOnlyList<CollectedFlow> flows, IReadOnlyList<CollectedSchedule> collectedSchedules,
+        DateTime nowUtc, List<string> warnings, CancellationToken ct)
     {
         var pipelines = new List<PreparedPipeline>();
         var present = new HashSet<Guid>();
@@ -386,36 +390,27 @@ public sealed class CatalogSync
             });
         }
 
-        // Mirror git-declared schedules: a flow's schedule lives in its YAML and is validated here (pure); the
-        // staging into the schedule table happens inside the sync's transaction.
+        // Mirror git-declared schedules. A schedule is defined once by NAME (a schedules.yaml entry, or an inline
+        // block on a flow) and flows JOIN it by name; the estate scan has already resolved both shapes, and every
+        // reference, into a named schedule with its member set. Validated here (pure); the staging into the schedule
+        // and member tables happens inside the sync's transaction.
+        var presentNames = flows.Select(f => f.Node.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var schedules = new List<PreparedSchedule>();
-        var scheduledPipelineIds = new HashSet<Guid>();
-        foreach (var flow in flows)
+        foreach (var schedule in collectedSchedules)
         {
-            var pipelineId = CatalogIdentity.Pipeline(repoId, flow.Node.Name);
-            if (!scheduledPipelineIds.Add(pipelineId) || flow.Schedule is not { } spec)
-            {
-                continue; // a duplicate flow name (first wins) or no schedule declared
-            }
-
+            var spec = schedule.Spec;
             if (!ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
             {
-                warnings.Add($"'{flow.Node.Name}' ({flow.Node.File}) has an invalid schedule: {scheduleError}");
+                warnings.Add($"schedule '{schedule.Name}' ({schedule.Origin}) is invalid: {scheduleError}");
                 continue;
             }
 
-            // The scope decides what the fire expands to through lineage. An unknown value is a warning and the
-            // schedule is dropped rather than quietly narrowed to the single flow, which would look like the rest of
-            // the set had simply stopped running.
-            if (RunScopeExpander.TryParseScope(spec.Scope) is null)
-            {
-                warnings.Add(
-                    $"'{flow.Node.Name}' ({flow.Node.File}) has an invalid schedule scope '{spec.Scope}'; use 'flow', 'node', or 'batch'.");
-                continue;
-            }
-
+            // A member the selection excluded from this sync has no pipeline row to enqueue, so it is not stored as a
+            // member. The expansion would skip it anyway (it joins only active pipelines), and leaving it out keeps
+            // the stored member set an honest answer to "what does this fire run".
+            var members = schedule.Members.Where(presentNames.Contains).ToList();
             var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
-            schedules.Add(new PreparedSchedule(flow.Node.Name, spec, nextFire));
+            schedules.Add(new PreparedSchedule(schedule.Name, members, spec, nextFire));
         }
 
         return (pipelines, present, schedules, anyUnreadable);
@@ -534,19 +529,21 @@ public sealed class CatalogSync
         var deleted = removedIds.Count;
         if (deleted > 0)
         {
-            await context.Schedules.Where(s => removedIds.Contains(s.PipelineId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            // A pipeline that left the estate takes its memberships with it, so no schedule tries to enqueue a flow
+            // that no longer exists. The schedule itself survives: it belongs to a name, not to any one flow.
+            await context.ScheduleMembers.Where(m => removedIds.Contains(m.PipelineId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             context.Pipelines.RemoveRange(removedIds.Select(id => existing[id]));
         }
 
-        // Stage the validated yaml schedule mirror: an operator's API pause is preserved and API-created
-        // schedules are never touched; a flow whose schedule left git has its yaml schedule removed. Staged on
-        // this context so the changes commit inside the sync's own transaction (the store's transaction-free
-        // variants).
+        // Stage the validated yaml schedule mirror, each schedule with the member set git says joined it: an
+        // operator's API pause is preserved and API-created schedules are never touched; a schedule that left git is
+        // removed with its memberships. Staged on this context so the changes commit inside the sync's own
+        // transaction (the store's transaction-free variants).
         var scheduleKeep = new HashSet<Guid>();
         foreach (var schedule in schedules)
         {
             var scheduleId = await ScheduleStore.StageYamlUpsertAsync(
-                context, repoId, schedule.FlowName, ScopeOf(schedule.Spec), schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
+                context, repoId, schedule.Name, schedule.Members, schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
                 schedule.Spec.Timezone, schedule.Spec.Enabled, schedule.Spec.Catchup, schedule.NextFireUtc, nowUtc, ct).ConfigureAwait(false);
             scheduleKeep.Add(scheduleId);
         }
@@ -938,65 +935,12 @@ public sealed class CatalogSync
             }
         }
 
-        // Mirror each declared flow's YAML schedule exactly as the full sync does. The shared projection puts the
-        // document's schedule: block on the primary header and never on a derived sibling, so a declared, valid
-        // schedule is upserted through the same store call (an operator's API pause survives; the cadence only
-        // resets when the timing definition changed) and anything else has its mirror removed, the single-flow
-        // counterpart of the full sync's not-in-keep removal. This is what keeps a run-only catalog's Schedules
-        // current without waiting for a full estate sync.
-        foreach (var header in headers)
-        {
-            await MirrorSingleFlowScheduleAsync(context, repoId, header.Name, relativePath, header.Schedule, nowUtc, warnings, ct).ConfigureAwait(false);
-        }
-
+        // Schedules are deliberately NOT mirrored here. A schedule belongs to a name and owns a MEMBER SET, and
+        // membership is a repo-wide fact: this flow's document cannot say who else joined the name, so writing the
+        // schedule from one file would either invent an empty member set or clobber the one the full estate scan
+        // established. The full sync owns schedules; a run-only write-back leaves them exactly as it found them.
         return primaryChange;
     }
-
-    /// <summary>Upserts or removes ONE flow's YAML schedule mirror from its parsed document, sharing the exact
-    /// validation, next-fire computation, and warning wording with the full sync's <see cref="PreparePipelines"/>
-    /// schedule pass. Staged on the context; the caller's transaction commits it.</summary>
-    private static async Task MirrorSingleFlowScheduleAsync(
-        CatalogDbContext context, Guid repoId, string flowName, string relativePath, Core.ScheduleSpec? spec,
-        DateTime nowUtc, List<string> warnings, CancellationToken ct)
-    {
-        // A `schedule: <name>` reference cannot be resolved from a single-file parse (the shared library lives across
-        // the repo, only visible to the full estate scan). Leave whatever the full sync established for this flow
-        // untouched rather than mirror an unresolved reference or wrongly clear a valid row; the full sync reconciles
-        // referenced schedules. A named or plain inline schedule carries its cadence and is mirrored normally below.
-        if (spec is { Ref: not null })
-        {
-            return;
-        }
-
-        if (spec is not null)
-        {
-            if (RunScopeExpander.TryParseScope(spec.Scope) is null)
-            {
-                warnings.Add(
-                    $"'{flowName}' ({relativePath}) has an invalid schedule scope '{spec.Scope}'; use 'flow', 'node', or 'batch'.");
-            }
-            else if (ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
-            {
-                var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
-                await ScheduleStore.StageYamlUpsertAsync(
-                    context, repoId, flowName, ScopeOf(spec), spec.Cron, spec.IntervalSeconds, spec.Timezone,
-                    spec.Enabled, spec.Catchup, nextFire, nowUtc, ct).ConfigureAwait(false);
-                return;
-            }
-            else
-            {
-                warnings.Add($"'{flowName}' ({relativePath}) has an invalid schedule: {scheduleError}");
-            }
-        }
-
-        await ScheduleStore.StageRemoveYamlScheduleAsync(context, repoId, flowName, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>The stored scope of a validated schedule spec: an absent <c>scope:</c> means the schedule fires only
-    /// its own flow. Callers validate with <see cref="RunScopeExpander.TryParseScope"/> first, so the parse here
-    /// cannot fail.</summary>
-    private static string ScopeOf(Core.ScheduleSpec spec)
-        => RunScopes.From(RunScopeExpander.TryParseScope(spec.Scope) ?? RunScope.Flow);
 
     /// <summary>Upserts one pipeline row from an already-read document, one header at a time (shared by the
     /// primary flow and any derived sibling). Declared columns refresh alongside, gated by the header's kind so

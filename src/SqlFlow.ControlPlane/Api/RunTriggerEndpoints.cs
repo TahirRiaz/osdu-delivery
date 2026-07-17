@@ -183,9 +183,8 @@ public static class RunTriggerEndpoints
                 title: "Invalid run parameters");
         }
 
-        // Node needs an anchor flow; Batch needs either the batch label or an anchor flow to read the label from.
+        // Node needs an anchor flow to expand descendants from.
         var anchorFlow = string.IsNullOrWhiteSpace(request.FlowName) ? null : request.FlowName.Trim();
-        var batch = string.IsNullOrWhiteSpace(request.Batch) ? null : request.Batch.Trim();
         if (scope == RunScope.Node && anchorFlow is null)
         {
             return TypedResults.Problem(
@@ -194,19 +193,11 @@ public static class RunTriggerEndpoints
                 title: "Invalid request");
         }
 
-        if (scope == RunScope.Batch && anchorFlow is null && batch is null)
-        {
-            return TypedResults.Problem(
-                detail: "A batch-scoped run requires either a batch label or a flowName to read the batch from.",
-                statusCode: StatusCodes.Status400BadRequest,
-                title: "Invalid request");
-        }
-
         RunScopeExpansion expansion;
         try
         {
             expansion = await RunScopeExpander
-                .ExpandAsync(db, request.RepoId, anchorFlow, scope, batch, ct)
+                .ExpandAsync(db, request.RepoId, anchorFlow, scope, ct)
                 .ConfigureAwait(false);
         }
         catch (ArgumentException ex)

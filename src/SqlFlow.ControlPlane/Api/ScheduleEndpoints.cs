@@ -10,15 +10,16 @@ namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>A schedule as the API returns it: its timing, scope, lifecycle flags, source, and the next/last fire.</summary>
 public sealed record ScheduleDto(
-    Guid Id, Guid RepoId, Guid PipelineId, string FlowName, string Scope, string? Cron, int? IntervalSeconds, string Timezone,
+    Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
     Guid? LastGroupId, DateTime CreatedUtc, DateTime UpdatedUtc);
 
-/// <summary>The body to create an ad-hoc API schedule: a flow reference, exactly one of cron / intervalSeconds, and
-/// optionally the scope the fire expands to (<c>flow</c> by default, or <c>node</c> / <c>batch</c>).</summary>
+/// <summary>The body to create an ad-hoc API schedule: the member flows it runs, exactly one of cron /
+/// intervalSeconds, and optionally a name (defaulting to the first member's flow name). Membership is what a fire
+/// runs, so a schedule with no members is rejected.</summary>
 public sealed record CreateScheduleRequest(
-    Guid RepoId, string FlowName, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled,
-    bool? Catchup = null, string? Scope = null);
+    Guid RepoId, IReadOnlyList<string> Members, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled,
+    bool? Catchup = null, string? Name = null);
 
 /// <summary>The created-schedule acknowledgement.</summary>
 public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
@@ -37,7 +38,7 @@ public sealed record SchedulePlanMemberDto(string FlowName, string FlowKind, int
 /// finished.
 /// </summary>
 public sealed record SchedulePlanDto(
-    Guid ScheduleId, Guid RepoId, string FlowName, string Scope, string? Cron, int? IntervalSeconds, string Timezone,
+    Guid ScheduleId, Guid RepoId, string Name, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Paused, DateTime? NextFireUtc, DateTime? LastFireUtc, string Anchor, int MemberCount,
     int WaveCount, IReadOnlyList<SchedulePlanMemberDto> Members);
 
@@ -84,7 +85,10 @@ public static class ScheduleEndpoints
 
         if (pipelineId is { } pid)
         {
-            query = query.Where(s => s.PipelineId == pid);
+            // "Which schedules run this flow?", answered by MEMBERSHIP rather than ownership. A flow that declares no
+            // schedule of its own but joined one with 'schedule: <name>' is still listed here, which is the whole
+            // point: it is scheduled, and the GUI must be able to say so.
+            query = query.Where(s => db.ScheduleMembers.Any(m => m.ScheduleId == s.Id && m.PipelineId == pid));
         }
 
         if (!string.IsNullOrWhiteSpace(source))
@@ -98,10 +102,10 @@ public static class ScheduleEndpoints
             query = query.Where(s => s.Enabled == e);
         }
 
-        var ordered = query.OrderBy(s => s.FlowName).ThenBy(s => s.Id);
+        var ordered = query.OrderBy(s => s.Name).ThenBy(s => s.Id);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered.Skip((p - 1) * size).Take(size)
-            .Select(Project).ToListAsync(ct).ConfigureAwait(false);
+            .Select(Project(db)).ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<ScheduleDto>(items, p, size, total));
     }
 
@@ -109,7 +113,7 @@ public static class ScheduleEndpoints
         Guid id, CatalogDbContext db, CancellationToken ct)
     {
         var dto = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
-            .Select(Project).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            .Select(Project(db)).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null
             ? TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found")
             : TypedResults.Ok(dto);
@@ -118,8 +122,7 @@ public static class ScheduleEndpoints
     /// <summary>
     /// The schedule's cadence plus the flows it actually runs, in wave order. The membership comes from the same
     /// <see cref="RunScopeExpander"/> the fire itself uses, so this answers "when does this source get updated, and
-    /// what runs in which order" with exactly what the scheduler will enqueue rather than a second opinion. A
-    /// flow-scoped schedule reports its single flow.
+    /// what runs in which order" with exactly what the scheduler will enqueue rather than a second opinion.
     /// </summary>
     private static async Task<Results<Ok<SchedulePlanDto>, ProblemHttpResult>> GetSchedulePlanAsync(
         Guid id, CatalogDbContext db, CancellationToken ct)
@@ -130,17 +133,14 @@ public static class ScheduleEndpoints
             return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 
-        // A stored scope is already validated on write; fall back to flow so a legacy/hand-edited row still reports a
-        // plan instead of failing the read.
-        var scope = RunScopeExpander.TryParseScope(schedule.Scope) ?? RunScope.Flow;
         var expansion = await RunScopeExpander
-            .ExpandAsync(db, schedule.RepoId, schedule.FlowName, scope, batch: null, ct).ConfigureAwait(false);
+            .ExpandScheduleAsync(db, schedule.RepoId, schedule.Id, schedule.Name, batchFilter: null, ct).ConfigureAwait(false);
 
         var members = expansion.Members
             .Select(m => new SchedulePlanMemberDto(m.FlowName, m.FlowKind, m.Wave))
             .ToList();
         return TypedResults.Ok(new SchedulePlanDto(
-            schedule.Id, schedule.RepoId, schedule.FlowName, RunScopes.From(scope), schedule.Cron,
+            schedule.Id, schedule.RepoId, schedule.Name, schedule.Cron,
             schedule.IntervalSeconds, schedule.Timezone, schedule.Enabled, schedule.Paused, schedule.NextFireUtc,
             schedule.LastFireUtc, expansion.Anchor, members.Count,
             members.Select(m => m.Wave).Distinct().Count(), members));
@@ -149,10 +149,11 @@ public static class ScheduleEndpoints
     private static async Task<Results<Created<ScheduleCreated>, ProblemHttpResult>> CreateScheduleAsync(
         CreateScheduleRequest request, CatalogDbContext db, TimeProvider clock, CancellationToken ct)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.FlowName))
+        if (request is null || request.Members is not { Count: > 0 })
         {
             return TypedResults.Problem(
-                detail: "A schedule requires a non-blank flowName.", statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+                detail: "A schedule requires at least one member flow: membership is what a fire runs.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
         var timezone = string.IsNullOrWhiteSpace(request.Timezone) ? "UTC" : request.Timezone.Trim();
@@ -161,47 +162,66 @@ public static class ScheduleEndpoints
             return TypedResults.Problem(detail: error, statusCode: StatusCodes.Status400BadRequest, title: "Invalid schedule");
         }
 
-        // The scope decides what a fire expands to; an unknown value is rejected here rather than silently narrowing
-        // to a single flow, which would look like the schedule was simply not running the rest of the set.
-        if (RunScopeExpander.TryParseScope(request.Scope) is not { } parsedScope)
+        var members = request.Members
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Select(m => m.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (members.Count == 0)
         {
             return TypedResults.Problem(
-                detail: $"Unknown schedule scope '{request.Scope}'. Use 'flow', 'node', or 'batch'.",
-                statusCode: StatusCodes.Status400BadRequest, title: "Invalid schedule");
+                detail: "A schedule requires at least one non-blank member flow name.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
-        var flowName = request.FlowName.Trim();
-        var pipelineId = CatalogIdentity.Pipeline(request.RepoId, flowName);
-        var active = await db.Pipelines.AsNoTracking()
-            .Where(pl => pl.Id == pipelineId && pl.RepoId == request.RepoId)
-            .Select(pl => (bool?)pl.Active).FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (active != true)
+        // Every member must be a real, active flow: a schedule pointing at a name that does not exist would sit in
+        // the catalog looking armed while firing nothing.
+        var memberIds = members.ToDictionary(m => CatalogIdentity.Pipeline(request.RepoId, m), m => m);
+        var activeIds = await db.Pipelines.AsNoTracking()
+            .Where(pl => pl.RepoId == request.RepoId && pl.Active && memberIds.Keys.Contains(pl.Id))
+            .Select(pl => pl.Id).ToListAsync(ct).ConfigureAwait(false);
+        var missing = memberIds.Where(kv => !activeIds.Contains(kv.Key)).Select(kv => kv.Value).ToList();
+        if (missing.Count > 0)
         {
             return TypedResults.Problem(
-                detail: $"No active pipeline '{flowName}' in repo '{request.RepoId}'.",
+                detail: $"No active pipeline in repo '{request.RepoId}' for: {string.Join(", ", missing)}.",
                 statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        // The name is this schedule's identity in the repo, so a collision with a git-declared or existing API
+        // schedule is rejected here rather than left to the unique index to surface as a 500.
+        var name = string.IsNullOrWhiteSpace(request.Name) ? members[0] : request.Name.Trim();
+        if (await db.Schedules.AsNoTracking()
+                .AnyAsync(s => s.RepoId == request.RepoId && s.Name == name, ct).ConfigureAwait(false))
+        {
+            return TypedResults.Problem(
+                detail: $"Repo '{request.RepoId}' already has a schedule named '{name}'.",
+                statusCode: StatusCodes.Status409Conflict, title: "Duplicate schedule");
         }
 
         var now = clock.GetUtcNow().UtcDateTime;
         var next = ScheduleClock.NextFire(request.Cron, request.IntervalSeconds, timezone, now);
         var id = await ScheduleStore.CreateApiScheduleAsync(
-            db, request.RepoId, flowName, RunScopes.From(parsedScope), request.Cron, request.IntervalSeconds, timezone,
+            db, request.RepoId, name, members, request.Cron, request.IntervalSeconds, timezone,
             request.Enabled ?? true, request.Catchup ?? false, next ?? now, now, ct).ConfigureAwait(false);
 
         return TypedResults.Created($"/api/v1/schedules/{id}", new ScheduleCreated(id, next));
     }
 
     /// <summary>
-    /// Fires a schedule right now, on demand: it enqueues the schedule's work through the same durable path the
+    /// Fires a schedule right now, on demand: it enqueues the schedule's member set through the same durable path the
     /// automatic scheduler and a direct manual trigger take, and stamps the schedule so the fire is visible in its
-    /// "last run". A flow-scoped schedule enqueues one run; a node/batch-scoped one expands through lineage and
-    /// enqueues a wave-ordered run group, and the response points at the group. The cadence is untouched (the next
-    /// scheduled fire does not move), so this is a safe way to test a schedule. Unlike the automatic scheduler it also
-    /// runs a flow declaring <c>mode: manual</c>, because the invoke is deliberate. Answers 202 with the run (and
-    /// group) reference, 404 for an unknown schedule, and 409 when the scope has nothing runnable.
+    /// "last run". One member enqueues one run; several expand in wave order into a run group, and the response points
+    /// at the group. The cadence is untouched (the next scheduled fire does not move), so this is a safe way to test a
+    /// schedule.
+    /// <para>
+    /// The optional <c>batch</c> query parameter narrows the fire to members carrying that <c>batch:</c> tag: "run the
+    /// nightly, but only the small tables". It can only select a subset of the schedule's own members.
+    /// </para>
+    /// Answers 202 with the run (and group) reference, 404 for an unknown schedule, and 409 when nothing is runnable.
     /// </summary>
     private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
-        Guid id, CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
+        Guid id, string? batch, CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
     {
         var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
         if (schedule is null)
@@ -209,14 +229,16 @@ public static class ScheduleEndpoints
             return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 
+        var filter = string.IsNullOrWhiteSpace(batch) ? null : batch.Trim();
         var now = clock.GetUtcNow().UtcDateTime;
         var fire = await ScheduleFire
-            .EnqueueAsync(db, dispatcher, schedule, honorManualMode: false, now, ct).ConfigureAwait(false);
+            .EnqueueAsync(db, dispatcher, schedule, now, ct, filter).ConfigureAwait(false);
         if (!fire.Queued)
         {
-            var detail = fire.Outcome == ScheduleFire.Outcome.ScopeEmpty
-                ? $"The {schedule.Scope} scope anchored on '{schedule.FlowName}' resolved to no runnable flow."
-                : $"Flow '{schedule.FlowName}' is inactive or removed, so the schedule has nothing to run.";
+            var detail = filter is null
+                ? $"Schedule '{schedule.Name}' resolved to no runnable flow: nothing joins it, or every member is "
+                  + "deactivated or mode: manual."
+                : $"Schedule '{schedule.Name}' has no runnable member carrying batch '{filter}'.";
             return TypedResults.Problem(
                 detail: detail, statusCode: StatusCodes.Status409Conflict, title: "Cannot run schedule");
         }
@@ -264,7 +286,7 @@ public static class ScheduleEndpoints
         }
 
         var dto = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
-            .Select(Project).FirstAsync(ct).ConfigureAwait(false);
+            .Select(Project(db)).FirstAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(dto);
     }
 
@@ -277,9 +299,13 @@ public static class ScheduleEndpoints
             : TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
     }
 
-    // An expression (not a method) so EF Core can translate the projection into the SELECT column list.
-    private static readonly Expression<Func<CatalogSchedule, ScheduleDto>> Project = s => new ScheduleDto(
-        s.Id, s.RepoId, s.PipelineId, s.FlowName, s.Scope, s.Cron, s.IntervalSeconds, s.Timezone,
+    // An expression (not a method body) so EF Core translates the projection into the SELECT column list. It takes the
+    // context because the member count is a correlated subquery over the member table: a schedule's whole meaning is
+    // what it runs, so a list that could not say how many flows that is would be answering the wrong question.
+    private static Expression<Func<CatalogSchedule, ScheduleDto>> Project(CatalogDbContext db) => s => new ScheduleDto(
+        s.Id, s.RepoId, s.Name,
+        db.ScheduleMembers.Where(m => m.ScheduleId == s.Id).Select(m => m.PipelineId).ToList(),
+        s.Cron, s.IntervalSeconds, s.Timezone,
         s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.LastGroupId,
         s.CreatedUtc, s.UpdatedUtc);
 }

@@ -105,12 +105,11 @@ public sealed class YamlDocumentLoader
 
     private sealed class ScheduleYaml
     {
-        /// <summary>Set when the block was a bare scalar (<c>schedule: nightly</c>): the referenced schedule name.</summary>
-        public string? Ref { get; set; }
+        /// <summary>Set when the key was a bare scalar (<c>schedule: nightly</c>) or a sequence
+        /// (<c>schedule: [nightly, hourly]</c>): the named schedules this flow joins.</summary>
+        public List<string> Refs { get; set; } = [];
 
         public string? Name { get; set; }
-
-        public string? Scope { get; set; }
 
         public string? Cron { get; set; }
 
@@ -124,14 +123,12 @@ public sealed class YamlDocumentLoader
     }
 
     /// <summary>The mapping shape the converter delegates an inline <c>schedule:</c> block to: the same inline fields
-    /// as <see cref="ScheduleYaml"/> minus the scalar-only <c>Ref</c>. It is deliberately NOT accepted by
+    /// as <see cref="ScheduleYaml"/> minus the reference-only <c>Refs</c>. It is deliberately NOT accepted by
     /// <see cref="ScheduleYamlConverter"/>, so the normal object deserializer binds it (camelCase, coercion,
     /// unknown-key tolerance) without recursing back into the converter.</summary>
     private sealed class InlineScheduleYaml
     {
         public string? Name { get; set; }
-
-        public string? Scope { get; set; }
 
         public string? Cron { get; set; }
 
@@ -145,10 +142,11 @@ public sealed class YamlDocumentLoader
     }
 
     /// <summary>
-    /// The <c>schedule:</c> block is written two ways: a bare scalar (a reference to a shared schedule by name, e.g.
-    /// <c>schedule: nightly</c>) or a mapping (an inline schedule, optionally carrying a <c>name:</c> to publish it
-    /// for reuse). YamlDotNet cannot bind both shapes to one type, so this converter reads the scalar form itself
-    /// and hands the mapping form to the normal deserializer.
+    /// The <c>schedule:</c> key is written three ways: a bare scalar (joining one shared schedule by name, e.g.
+    /// <c>schedule: nightly</c>), a sequence (joining several, e.g. <c>schedule: [nightly, hourly]</c>, so one flow
+    /// can sit in a nightly full refresh and an hourly subset), or a mapping (an inline cadence, optionally carrying
+    /// a <c>name:</c> to publish it for others to join). YamlDotNet cannot bind all three shapes to one type, so this
+    /// converter reads the scalar and sequence forms itself and hands the mapping form to the normal deserializer.
     /// </summary>
     private sealed class ScheduleYamlConverter : IYamlTypeConverter
     {
@@ -156,11 +154,24 @@ public sealed class YamlDocumentLoader
 
         public object? ReadYaml(IParser parser, Type type, ObjectDeserializer rootDeserializer)
         {
+            // schedule: nightly
             if (parser.TryConsume<Scalar>(out var scalar))
             {
                 return string.IsNullOrWhiteSpace(scalar.Value)
                     ? null
-                    : new ScheduleYaml { Ref = scalar.Value.Trim() };
+                    : new ScheduleYaml { Refs = [scalar.Value.Trim()] };
+            }
+
+            // schedule: [nightly, hourly]
+            if (parser.Current is SequenceStart)
+            {
+                var names = rootDeserializer(typeof(List<string>)) as List<string> ?? [];
+                var refs = names
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => n.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                return refs.Count == 0 ? null : new ScheduleYaml { Refs = refs };
             }
 
             if (rootDeserializer(typeof(InlineScheduleYaml)) is not InlineScheduleYaml inline)
@@ -171,7 +182,6 @@ public sealed class YamlDocumentLoader
             return new ScheduleYaml
             {
                 Name = inline.Name,
-                Scope = inline.Scope,
                 Cron = inline.Cron,
                 IntervalSeconds = inline.IntervalSeconds,
                 Timezone = inline.Timezone,
@@ -335,12 +345,13 @@ public sealed class YamlDocumentLoader
             return null;
         }
 
-        // A bare-scalar reference (schedule: nightly): carry the name for the repo-wide scan to resolve. The
-        // referenced cadence is not known here (a single-file parse has no view of the shared library), so no
-        // cron/interval is set until resolution.
-        if (!string.IsNullOrWhiteSpace(schedule.Ref))
+        // A membership declaration (schedule: nightly, or schedule: [nightly, hourly]): carry the names for the
+        // repo-wide scan to bind. The cadence is deliberately NOT copied onto the flow (a single-file parse has no
+        // view of the shared library anyway): the flow JOINS those schedules, and each one fires once for all of
+        // its members.
+        if (schedule.Refs.Count > 0)
         {
-            return new ScheduleSpec { Ref = schedule.Ref.Trim() };
+            return new ScheduleSpec { Refs = schedule.Refs };
         }
 
         // An inline block carrying neither a cron nor an interval declares nothing to fire; treat it as absent so
@@ -354,7 +365,6 @@ public sealed class YamlDocumentLoader
         return new ScheduleSpec
         {
             Name = string.IsNullOrWhiteSpace(schedule.Name) ? null : schedule.Name.Trim(),
-            Scope = string.IsNullOrWhiteSpace(schedule.Scope) ? null : schedule.Scope.Trim(),
             Cron = string.IsNullOrWhiteSpace(schedule.Cron) ? null : schedule.Cron.Trim(),
             IntervalSeconds = schedule.IntervalSeconds,
             Timezone = string.IsNullOrWhiteSpace(schedule.Timezone) ? "UTC" : schedule.Timezone.Trim(),

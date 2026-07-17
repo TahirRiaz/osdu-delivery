@@ -138,7 +138,7 @@ public sealed class LineageCollectorTests : IDisposable
         """;
 
     [Fact]
-    public void Schedules_ReferenceToDedicatedLibrary_ResolvesToTheNamedCadence()
+    public void Schedules_ReferenceToDedicatedLibrary_BecomesOneScheduleWithBothMembers()
     {
         Write("schedules.yaml", """
             schedules:
@@ -149,12 +149,20 @@ public sealed class LineageCollectorTests : IDisposable
 
         var collected = new FlowSetCollector().Collect(_root);
 
+        // ONE schedule with two members, not two schedules with a copied cadence: the whole point of the model, and
+        // what makes the fire a single wave-ordered group instead of a race.
+        var nightly = Assert.Single(collected.Schedules);
+        Assert.Equal("nightly", nightly.Name);
+        Assert.Equal("0 6 * * *", nightly.Spec.Cron);
+        Assert.Equal("Europe/Oslo", nightly.Spec.Timezone);
+        Assert.Equal(["alpha", "beta"], nightly.Members.OrderBy(m => m, StringComparer.Ordinal));
+
+        // The referencing flows carry the membership, never a cadence of their own.
         foreach (var name in new[] { "alpha", "beta" })
         {
             var flow = collected.Flows.Single(f => f.Node.Name == name);
-            Assert.Equal("0 6 * * *", flow.Schedule!.Cron);
-            Assert.Equal("Europe/Oslo", flow.Schedule.Timezone);
-            Assert.Null(flow.Schedule.Ref);
+            Assert.True(flow.Schedule!.IsReference);
+            Assert.Null(flow.Schedule.Cron);
         }
 
         // The library file is not itself a flow.
@@ -162,7 +170,7 @@ public sealed class LineageCollectorTests : IDisposable
     }
 
     [Fact]
-    public void Schedules_NamedInlineBlock_IsReusableByOtherFlowsByName()
+    public void Schedules_NamedInlineBlock_TakesTheDeclaringFlowAndEveryJoinerAsMembers()
     {
         Write("publisher.flow.yaml", IngestionFlow("publisher", """
             schedule:
@@ -174,14 +182,48 @@ public sealed class LineageCollectorTests : IDisposable
 
         var collected = new FlowSetCollector().Collect(_root);
 
-        // The publisher keeps its own inline schedule; the consumer resolves to the very same cadence by name.
-        var publisher = collected.Flows.Single(f => f.Node.Name == "publisher");
-        Assert.Equal("0 6 * * *", publisher.Schedule!.Cron);
+        // Declaring the cadence inline schedules the declaring flow too, so publisher and consumer are members of
+        // the one schedule and one fire runs both.
+        var nightly = Assert.Single(collected.Schedules);
+        Assert.Equal("nightly", nightly.Name);
+        Assert.Equal("0 6 * * *", nightly.Spec.Cron);
+        Assert.Equal(["consumer", "publisher"], nightly.Members.OrderBy(m => m, StringComparer.Ordinal));
+    }
 
-        var consumer = collected.Flows.Single(f => f.Node.Name == "consumer");
-        Assert.Equal("0 6 * * *", consumer.Schedule!.Cron);
-        Assert.Equal("Europe/Oslo", consumer.Schedule.Timezone);
-        Assert.Null(consumer.Schedule.Ref);
+    [Fact]
+    public void Schedules_UnnamedInlineBlock_IsNamedAfterItsFlowAndHasThatOneMember()
+    {
+        Write("solo.flow.yaml", IngestionFlow("solo", """
+            schedule:
+              cron: "0 6 * * *"
+            """));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        // Every schedule is named, so a plain inline block still resolves to a member set a fire can run.
+        var schedule = Assert.Single(collected.Schedules);
+        Assert.Equal("solo", schedule.Name);
+        Assert.Equal(["solo"], schedule.Members);
+    }
+
+    [Fact]
+    public void Schedules_SequenceReference_JoinsTheFlowToEverySchedule()
+    {
+        Write("schedules.yaml", """
+            schedules:
+              dwh_nightly:      { cron: "0 4 * * *" }
+              dwh_small_hourly: { cron: "0 * * * *" }
+            """);
+        Write("small.flow.yaml", IngestionFlow("dim_currency", "schedule: [dwh_nightly, dwh_small_hourly]"));
+        Write("big.flow.yaml", IngestionFlow("fact_sales", "schedule: dwh_nightly"));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        var nightly = collected.Schedules.Single(s => s.Name == "dwh_nightly");
+        Assert.Equal(["dim_currency", "fact_sales"], nightly.Members.OrderBy(m => m, StringComparer.Ordinal));
+
+        var hourly = collected.Schedules.Single(s => s.Name == "dwh_small_hourly");
+        Assert.Equal(["dim_currency"], hourly.Members);
     }
 
     [Fact]
@@ -191,9 +233,37 @@ public sealed class LineageCollectorTests : IDisposable
 
         var collected = new FlowSetCollector().Collect(_root);
 
-        var orphan = collected.Flows.Single(f => f.Node.Name == "orphan");
-        Assert.Null(orphan.Schedule);
-        Assert.Contains(collected.Warnings, w => w.Contains("references schedule 'ghost'", StringComparison.Ordinal));
+        Assert.Empty(collected.Schedules);
+        Assert.Contains(collected.Warnings, w => w.Contains("joins schedule 'ghost'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Schedules_LibraryEntryNobodyJoins_Warns()
+    {
+        // A schedule with no members fires nothing. That is a renamed source or a typo on the joining side, not an
+        // intent, so it is surfaced rather than sitting in the catalog looking armed.
+        Write("schedules.yaml", """
+            schedules:
+              nightly: { cron: "0 6 * * *" }
+            """);
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        Assert.Contains(collected.Warnings, w => w.Contains("has no members", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Schedules_FlowAttachedToNothing_Warns()
+    {
+        // The check that makes "every pipeline must be attached to a schedule" enforceable: a flow nothing schedules
+        // will never run, and until membership was explicit that was indistinguishable from a flow swept up by a label.
+        Write("stray.flow.yaml", IngestionFlow("stray", string.Empty));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        Assert.Contains(collected.Warnings, w =>
+            w.Contains("'stray'", StringComparison.Ordinal)
+            && w.Contains("attached to no schedule", StringComparison.Ordinal));
     }
 
     private void WriteRunArtifact(string flowName, string resultJson, DateTime writtenUtc)

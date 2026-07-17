@@ -419,7 +419,7 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
                 Assert.Equal("yaml", schedule.Source);
                 Assert.Equal("0 6 * * *", schedule.Cron);
                 Assert.Equal("UTC", schedule.Timezone);
-                Assert.Equal(pipelineId, schedule.PipelineId);
+                Assert.True(await db.ScheduleMembers.AnyAsync(m => m.ScheduleId == scheduleId && m.PipelineId == pipelineId));
                 Assert.True(schedule.Enabled);
                 Assert.NotNull(schedule.NextFireUtc);
 
@@ -612,15 +612,22 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task RecordRun_MirrorsYamlSchedule_CreatesUpdatesAndRemoves()
+    public async Task RecordRun_LeavesSchedulesToTheFullSync()
     {
+        // A schedule owns a MEMBER SET, and membership is a repo-wide fact: one flow's document cannot say who else
+        // joined the name. So the per-run write-back deliberately does not touch schedules at all; writing one from a
+        // single file would either invent an empty member set or clobber the one the estate scan established. This
+        // pins that contract: a write-back neither removes an established schedule nor rewrites its cadence, and the
+        // full sync remains the only thing that reconciles them.
         var cs = IntegrationDb.Require();
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repo = "cat_sched_" + suffix;
         var repoId = FlowIdentity.FromName(repo);
         var flowName = "sched_orders_" + suffix;
         var flowFile = Path.Combine(_dir, "flows", "orders.flow.yaml");
+        // An unnamed inline block is named after its declaring flow, so that is this schedule's identity.
         var scheduleId = CatalogIdentity.YamlSchedule(repoId, flowName);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
 
         WriteScheduledFlow(flowName, "flows/orders.flow.yaml", "0 6 * * *");
         var runId = Guid.NewGuid();
@@ -638,38 +645,51 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
 
         try
         {
-            // The write-back alone (no full SyncAsync) mirrors the declared schedule: created, enabled, armed.
+            // The full sync establishes the schedule, with the declaring flow as its one member.
             await using (var db = CatalogDatabase.Create(cs))
             {
-                await new CatalogSync().RecordRunAsync(db, flowFile, runJson, repo, null, DateTime.UtcNow);
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
                 var schedule = await db.Schedules.SingleAsync(s => s.Id == scheduleId);
                 Assert.Equal("0 6 * * *", schedule.Cron);
                 Assert.Equal("yaml", schedule.Source);
-                Assert.Equal(flowName, schedule.FlowName);
+                Assert.Equal(flowName, schedule.Name);
                 Assert.True(schedule.Enabled);
                 Assert.NotNull(schedule.NextFireUtc);
+                Assert.True(await db.ScheduleMembers.AnyAsync(m => m.ScheduleId == scheduleId && m.PipelineId == pipelineId));
             }
 
-            // A changed cron in the YAML flows through on the next write-back.
+            // A cron change plus a write-back: the run lands, the schedule is untouched. The write-back is not the
+            // authority on schedules, so it must not act on what it can only half-see.
             WriteScheduledFlow(flowName, "flows/orders.flow.yaml", "30 7 * * *");
             await using (var db = CatalogDatabase.Create(cs))
             {
                 await new CatalogSync().RecordRunAsync(db, flowFile, runJson, repo, null, DateTime.UtcNow);
                 var schedule = await db.Schedules.SingleAsync(s => s.Id == scheduleId);
+                Assert.Equal("0 6 * * *", schedule.Cron);
+                Assert.True(await db.Runs.AnyAsync(r => r.RunId == runId));
+            }
+
+            // The full sync is what reconciles it.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+                var schedule = await db.Schedules.SingleAsync(s => s.Id == scheduleId);
                 Assert.Equal("30 7 * * *", schedule.Cron);
             }
 
-            // Removing the schedule: block from the YAML removes the mirror, so it stops firing.
+            // Removing the schedule: block from the YAML removes it, with its memberships, on the next full sync.
             WriteFlow(flowName, "flows/orders.flow.yaml");
             await using (var db = CatalogDatabase.Create(cs))
             {
-                await new CatalogSync().RecordRunAsync(db, flowFile, runJson, repo, null, DateTime.UtcNow);
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
                 Assert.False(await db.Schedules.AnyAsync(s => s.Id == scheduleId));
+                Assert.False(await db.ScheduleMembers.AnyAsync(m => m.ScheduleId == scheduleId));
             }
         }
         finally
         {
             await using var db = CatalogDatabase.Create(cs);
+            await db.ScheduleMembers.Where(m => m.RepoId == repoId).ExecuteDeleteAsync();
             await db.Schedules.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
             await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
