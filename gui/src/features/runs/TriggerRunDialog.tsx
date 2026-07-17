@@ -114,10 +114,13 @@ export function TriggerRunDialog({
 
   const effectiveRepoId = repoId ?? selectedRepoId;
   const effectiveFlow = flowName ?? selectedFlow;
+  // The repo's flows back the free-choice dropdown AND resolve a locked flow's pipeline id, which the applicable-
+  // parameters lookup keys on. A context that already knows the id (Re-run, pipeline detail) skips the list; a
+  // batch-locked launch needs neither, because a group always runs default parameters.
   const pipelines = useQuery({
     queryKey: ["pipelines", "for-trigger", effectiveRepoId],
     queryFn: () => pipelineApi.list({ repoId: effectiveRepoId!, active: true, page: 1, pageSize: 200 }),
-    enabled: open && !flowName && !batchLocked && Boolean(effectiveRepoId),
+    enabled: open && !batchLocked && !flowId && Boolean(effectiveRepoId),
   });
 
   const isGroup = selectedScope !== "flow";
@@ -135,6 +138,13 @@ export function TriggerRunDialog({
   });
   const applicable = useMemo(() => flowParameters.data?.parameters ?? [], [flowParameters.data]);
   const paramKeys = useMemo(() => new Set(applicable.map((p) => p.key)), [applicable]);
+
+  // "Still resolving" and "could not resolve" are each distinct from "this flow honors no parameters". Collapsing
+  // them would tell an operator a flow runs as defined while its lookup is in flight or failed, hiding the very
+  // overrides the engine would honor (a copy flow's backfill window, for one).
+  const resolvingParameters = pipelines.isLoading || flowParameters.isLoading;
+  const parametersUnavailable = !resolvingParameters
+    && (flowParameters.isError || (effectiveFlowId === null && !isGroup && Boolean(effectiveFlow)));
 
   // For a Node or Batch scope, preview which flows the run would touch, so the operator sees "will run N flows across
   // M waves" before committing. A single flow needs no preview.
@@ -387,11 +397,15 @@ export function TriggerRunDialog({
               sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, p: 2, bgcolor: "action.hover" }}
             >
               <Typography variant="subtitle2">Run parameters</Typography>
-              {flowParameters.isLoading ? (
+              {resolvingParameters ? (
                 <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
                   <CircularProgress size={16} />
                   <Typography variant="body2" color="text.secondary">Loading this flow's parameters...</Typography>
                 </Stack>
+              ) : parametersUnavailable ? (
+                <Alert severity="warning" sx={{ mt: 1.5 }} data-testid="trigger-parameters-unavailable">
+                  Could not load this flow's run parameters. Triggering now would run it with its defined defaults.
+                </Alert>
               ) : applicable.length === 0 ? (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                   This flow runs as defined; it has no adjustable run parameters.

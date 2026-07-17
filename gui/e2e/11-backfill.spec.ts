@@ -1,8 +1,10 @@
 import { expect, test } from "./helpers";
 
-// The built-in backfill through the GUI: the trigger dialog's advanced section carries per-run substitution
+// The built-in backfill through the GUI: the trigger dialog's run-parameters section carries per-run substitution
 // parameters, the client refuses an impossible window, and a triggered backfill is audited on the run detail.
 // The seeded fixture is a file flow (Csv_Basic), so a file-date window and pattern are the natural exercise.
+// The controls are rendered from the flow's applicable parameters, so each test waits on the control itself
+// rather than on a container: its presence IS the assertion that the lookup resolved.
 
 test.describe.serial("backfill", () => {
   test("the dialog refuses full load combined with a window", async ({ adminPage }) => {
@@ -13,13 +15,10 @@ test.describe.serial("backfill", () => {
     await adminPage.getByTestId("trigger-flow").fill("Csv");
     await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
 
-    await adminPage.getByTestId("trigger-backfill-expander").click();
-    await adminPage.getByTestId("trigger-full-load").check();
-    // With full load on, the window fields disable; a from-date set beforehand would conflict, so assert the
-    // guard by setting a window first then toggling full load.
-    await adminPage.getByTestId("trigger-full-load").uncheck();
+    // With full load on the window fields disable, so the conflict is reached by setting the window first and
+    // toggling full load after it.
     await adminPage.getByTestId("trigger-backfill-from").fill("2023-01-01T00:00");
-    await adminPage.getByTestId("trigger-full-load").check();
+    await adminPage.getByTestId("trigger-fullLoad").check();
     await expect(adminPage.getByTestId("trigger-backfill-error")).toBeVisible();
     await expect(adminPage.getByTestId("trigger-submit")).toBeDisabled();
   });
@@ -32,7 +31,6 @@ test.describe.serial("backfill", () => {
     await adminPage.getByTestId("trigger-flow").fill("Csv");
     await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
 
-    await adminPage.getByTestId("trigger-backfill-expander").click();
     await adminPage.getByTestId("trigger-backfill-to").fill("2023-02-01T00:00");
     await expect(adminPage.getByTestId("trigger-backfill-error")).toBeVisible();
     await expect(adminPage.getByTestId("trigger-submit")).toBeDisabled();
@@ -47,7 +45,6 @@ test.describe.serial("backfill", () => {
     await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
 
     // A wide window that includes the fixture file's date, plus a matching file pattern.
-    await adminPage.getByTestId("trigger-backfill-expander").click();
     await adminPage.getByTestId("trigger-backfill-from").fill("2000-01-01T00:00");
     await adminPage.getByTestId("trigger-backfill-to").fill("2100-01-01T00:00");
     await adminPage.getByTestId("trigger-file-pattern").fill("orders.csv");
@@ -71,8 +68,7 @@ test.describe.serial("backfill", () => {
     await adminPage.getByTestId("trigger-flow").fill("Csv");
     await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
 
-    await adminPage.getByTestId("trigger-backfill-expander").click();
-    await adminPage.getByTestId("trigger-full-load").check();
+    await adminPage.getByTestId("trigger-fullLoad").check();
     await adminPage.getByTestId("trigger-submit").click();
 
     await expect(adminPage.getByTestId("page-run-detail")).toBeVisible({ timeout: 15_000 });

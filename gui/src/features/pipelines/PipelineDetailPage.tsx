@@ -466,6 +466,7 @@ export default function PipelineDetailPage() {
           onClose={() => setTriggerOpen(false)}
           repoId={detail.repoId}
           flowName={detail.name}
+          flowId={detail.id}
         />
       )}
     </Page>

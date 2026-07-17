@@ -61,6 +61,11 @@ test.describe.serial("pipelines", () => {
     await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
     await adminPage.getByTestId("open-trigger-run").click();
     await expect(adminPage.getByTestId("trigger-run-dialog")).toBeVisible();
+    // A flow-locked launch must still resolve its own run parameters: a file flow honors full load, so the toggle
+    // is present and the dialog never claims the flow has none. Guards the launching context that prefills the
+    // flow without its pipeline id, where the parameter lookup previously never fired.
+    await expect(adminPage.getByTestId("trigger-fullLoad")).toBeVisible();
+    await expect(adminPage.getByTestId("trigger-parameters-unavailable")).toHaveCount(0);
     // Repo and flow are locked by the pipeline context; just submit.
     await adminPage.getByTestId("trigger-submit").click();
     await expect(adminPage.getByTestId("page-run-detail")).toBeVisible({ timeout: 15_000 });
