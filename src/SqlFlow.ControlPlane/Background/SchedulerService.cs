@@ -164,9 +164,9 @@ public sealed partial class SchedulerService : BackgroundService
         // is active, enqueues, and stamps the last run. honorManualMode is true here because a schedule is automatic
         // dispatch, so a flow declaring mode: manual is left un-fired (loudly, so the contradiction is visible); the
         // occurrence's next fire has already advanced, so the cadence simply moves on.
-        var (outcome, runId) = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, honorManualMode: true, now, ct)
+        var fire = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, honorManualMode: true, now, ct)
             .ConfigureAwait(false);
-        switch (outcome)
+        switch (fire.Outcome)
         {
             case ScheduleFire.Outcome.PipelineInactive:
                 LogPipelineInactive(schedule.Id, schedule.FlowName);
@@ -174,14 +174,26 @@ public sealed partial class SchedulerService : BackgroundService
             case ScheduleFire.Outcome.PipelineManual:
                 LogPipelineManual(schedule.Id, schedule.FlowName);
                 break;
+            case ScheduleFire.Outcome.ScopeEmpty:
+                LogScopeEmpty(schedule.Id, schedule.FlowName, schedule.Scope);
+                break;
             case ScheduleFire.Outcome.Enqueued:
-                LogFired(schedule.Id, schedule.FlowName, runId);
+                LogFired(schedule.Id, schedule.FlowName, fire.RunId);
+                break;
+            case ScheduleFire.Outcome.EnqueuedGroup:
+                LogFiredGroup(schedule.Id, schedule.Scope, fire.MemberCount, schedule.FlowName, fire.GroupId ?? Guid.Empty);
                 break;
         }
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} fired: enqueued run {RunId} for flow '{FlowName}'.")]
     private partial void LogFired(Guid scheduleId, string flowName, Guid runId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} fired ({Scope}): enqueued {MemberCount} flow(s) from '{FlowName}' as wave-ordered run group {GroupId}.")]
+    private partial void LogFiredGroup(Guid scheduleId, string scope, int memberCount, string flowName, Guid groupId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId}: the {Scope} scope anchored on '{FlowName}' resolved to no runnable flow; nothing enqueued this occurrence.")]
+    private partial void LogScopeEmpty(Guid scheduleId, string flowName, string scope);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} for flow '{FlowName}' has no computable next fire (invalid cron/timezone or exhausted) and was parked.")]
     private partial void LogParked(Guid scheduleId, string flowName);

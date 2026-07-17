@@ -395,6 +395,9 @@ export interface Schedule {
   repoId: string;
   pipelineId: string;
   flowName: string;
+  /** What a fire runs: just `flowName` ("flow"), it plus its lineage descendants ("node"), or every active flow in
+   * its batch ("batch"). A node/batch schedule enqueues one wave-ordered run group. */
+  scope: RunScope;
   cron: string | null;
   intervalSeconds: number | null;
   timezone: string;
@@ -406,6 +409,8 @@ export interface Schedule {
   nextFireUtc: string | null;
   lastFireUtc: string | null;
   lastRunId: string | null;
+  /** The run group the last fire enqueued, when the scope expanded to a set; null for a flow-scoped schedule. */
+  lastGroupId: string | null;
   createdUtc: string;
   updatedUtc: string;
 }
@@ -418,6 +423,8 @@ export interface CreateScheduleRequest {
   timezone?: string | null;
   enabled?: boolean | null;
   catchup?: boolean | null;
+  /** Defaults to "flow" when omitted. */
+  scope?: RunScope | null;
 }
 
 export interface ScheduleCreated {
@@ -425,9 +432,12 @@ export interface ScheduleCreated {
   nextFireUtc: string | null;
 }
 
-/** The manual run-now acknowledgement: the id of the run the schedule's flow was enqueued as. */
+/** The manual run-now acknowledgement: the run the fire enqueued (the group's first member for a scoped schedule),
+ * plus the run group and member count when the scope expanded to a wave-ordered set. */
 export interface ScheduleRunAccepted {
   runId: string;
+  groupId: string | null;
+  memberCount: number;
 }
 
 // ---- Nodes ------------------------------------------------------------------------------------------------------------

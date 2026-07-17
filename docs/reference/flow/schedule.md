@@ -15,6 +15,12 @@ keywords:
   - shared schedule
   - schedule reference
   - schedule macro
+  - scope
+  - batch schedule
+  - node schedule
+  - wave order
+  - when does a source update
+  - schedule plan
 yamlPath: schedule
 related:
   - concept-control-plane
@@ -63,10 +69,46 @@ target:
 | `timezone` | string | no | `"UTC"` | IANA time zone id the cron expression is evaluated in, for example `Europe/Oslo`. Ignored for interval schedules. |
 | `enabled` | bool | no | `true` | Whether the schedule is active. A disabled schedule is recorded in the catalog but never fires. |
 | `catchup` | bool | no | `false` | Whether missed occurrences (the host was down past a fire) are backfilled. `false` skips the missed fire and resumes at the next occurrence after now; `true` fires one missed occurrence per scheduler tick until the schedule is current again. |
+| `scope` | string | no | `"flow"` | How much the fire runs: `flow` (only the declaring flow), `node` (that flow plus every flow downstream of it), or `batch` (every active flow in the declaring flow's batch). See [Scope](#scope-what-a-fire-runs). |
 
 | `name` | string | no | none | Publishes this inline schedule under a name so other flows can reuse it with `schedule: <name>`. Metadata only: the cadence still applies to this flow. See [Reusable schedules](#reusable-schedules-define-once-reference-by-name). |
 
 Exactly one of `cron` or `intervalSeconds` must be set for the schedule to be armed. A block that sets neither is treated as absent: the loader parses it to no schedule at all (src/SqlFlow.Yaml/YamlDocumentLoader.cs, `MapSchedule`), so an empty block is never stored as a broken schedule.
+
+## Scope: what a fire runs
+
+`scope` decides how much of the estate one fire executes. It answers the common case of a whole data source that must refresh together, without giving every flow its own schedule.
+
+| Scope | What fires | Anchor |
+| --- | --- | --- |
+| `flow` (default) | Only the flow declaring the schedule, as a single run. | the flow itself |
+| `node` | The flow plus every flow transitively downstream of it in lineage. | the flow itself |
+| `batch` | Every active flow whose `batch:` matches the declaring flow's batch. | the flow's batch label |
+
+A `node` or `batch` fire resolves its members through the lineage graph at fire time (the flow dependency edges and each pipeline's topological wave, via `RunScopeExpander`) and enqueues them as **one wave-gated run group** rather than as independent runs. The run queue's claim only hands a member to a worker once every member in a lower wave is terminal (src/SqlFlow.Catalog/RunQueueStore.cs, `ClaimSqlTemplate`), which gives the two guarantees that matter:
+
+- **Waves run in order.** Wave N+1 starts only after every flow in wave N has finished, so a flow never runs before what it depends on.
+- **A wave runs concurrently.** Members sharing a wave have no gate against each other and are claimed together.
+
+Because the expansion is what actually runs, only the anchor declares the schedule. The other flows are pulled in by lineage and must **not** declare their own schedule, or each would fire the whole set again.
+
+```yaml
+# The source's one schedule, on its wave-1 acquisition flow.
+name: baatbooking_00_cpy
+batch: BB
+schedule:
+  scope: batch          # copy (wave 1) -> pre loads (wave 2) -> ods merges (wave 3)
+  cron: "0 4 * * *"
+  timezone: "Europe/Oslo"
+```
+
+Flows excluded from a group: anything inactive, and anything declaring `mode: manual` (its document reserved it for a direct trigger). A `node` anchor is the one exception, since naming it IS the manual trigger. A scope that resolves to nothing runnable is logged and fires nothing rather than failing.
+
+An unknown scope is rejected: `sqlflow db sync` warns and drops the schedule rather than silently narrowing it to the single flow, which would look like the rest of the set had quietly stopped running.
+
+### Reading a schedule's plan
+
+`GET /api/v1/schedules/{id}/plan` returns the cadence together with the resolved members in wave order, from the same expander the fire uses. It is the authoritative answer to "when does this source next update, and what runs in which order", and is exposed to the MCP server as `get_schedule_plan`.
 
 The `schedule:` value may also be written as a bare scalar (`schedule: nightly`) to reuse a schedule defined elsewhere by name, instead of an inline block. See [Reusable schedules](#reusable-schedules-define-once-reference-by-name).
 
@@ -123,7 +165,7 @@ A named schedule is defined in one of two ways, and both share a single per-repo
      weekly:    { cron: "0 5 * * 1", timezone: "UTC", catchup: true }
    ```
 
-   Each entry's fields are exactly a flow's inline `schedule:` block (`cron` or `intervalSeconds`, `timezone`, `enabled`, `catchup`); the map key is the reference name. A library file is not a flow document (the flow scan globs `*.flow.yaml`) and never becomes a pipeline. An entry that declares neither a cron nor an interval is dropped with a warning.
+   Each entry's fields are exactly a flow's inline `schedule:` block (`cron` or `intervalSeconds`, `timezone`, `enabled`, `catchup`, `scope`); the map key is the reference name. A library file is not a flow document (the flow scan globs `*.flow.yaml`) and never becomes a pipeline. An entry that declares neither a cron nor an interval is dropped with a warning.
 
 2. **A named inline block on a flow.** An inline `schedule:` block may carry a `name:` key to publish itself for reuse. That flow still runs on its own inline schedule, and any other flow in the repo can reference it by that name:
 

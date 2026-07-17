@@ -110,6 +110,8 @@ public sealed class YamlDocumentLoader
 
         public string? Name { get; set; }
 
+        public string? Scope { get; set; }
+
         public string? Cron { get; set; }
 
         public int? IntervalSeconds { get; set; }
@@ -128,6 +130,8 @@ public sealed class YamlDocumentLoader
     private sealed class InlineScheduleYaml
     {
         public string? Name { get; set; }
+
+        public string? Scope { get; set; }
 
         public string? Cron { get; set; }
 
@@ -167,6 +171,7 @@ public sealed class YamlDocumentLoader
             return new ScheduleYaml
             {
                 Name = inline.Name,
+                Scope = inline.Scope,
                 Cron = inline.Cron,
                 IntervalSeconds = inline.IntervalSeconds,
                 Timezone = inline.Timezone,
@@ -349,6 +354,7 @@ public sealed class YamlDocumentLoader
         return new ScheduleSpec
         {
             Name = string.IsNullOrWhiteSpace(schedule.Name) ? null : schedule.Name.Trim(),
+            Scope = string.IsNullOrWhiteSpace(schedule.Scope) ? null : schedule.Scope.Trim(),
             Cron = string.IsNullOrWhiteSpace(schedule.Cron) ? null : schedule.Cron.Trim(),
             IntervalSeconds = schedule.IntervalSeconds,
             Timezone = string.IsNullOrWhiteSpace(schedule.Timezone) ? "UTC" : schedule.Timezone.Trim(),

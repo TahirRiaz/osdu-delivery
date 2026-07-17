@@ -404,6 +404,16 @@ public sealed class CatalogSync
                 continue;
             }
 
+            // The scope decides what the fire expands to through lineage. An unknown value is a warning and the
+            // schedule is dropped rather than quietly narrowed to the single flow, which would look like the rest of
+            // the set had simply stopped running.
+            if (RunScopeExpander.TryParseScope(spec.Scope) is null)
+            {
+                warnings.Add(
+                    $"'{flow.Node.Name}' ({flow.Node.File}) has an invalid schedule scope '{spec.Scope}'; use 'flow', 'node', or 'batch'.");
+                continue;
+            }
+
             var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
             schedules.Add(new PreparedSchedule(flow.Node.Name, spec, nextFire));
         }
@@ -536,7 +546,7 @@ public sealed class CatalogSync
         foreach (var schedule in schedules)
         {
             var scheduleId = await ScheduleStore.StageYamlUpsertAsync(
-                context, repoId, schedule.FlowName, schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
+                context, repoId, schedule.FlowName, ScopeOf(schedule.Spec), schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
                 schedule.Spec.Timezone, schedule.Spec.Enabled, schedule.Spec.Catchup, schedule.NextFireUtc, nowUtc, ct).ConfigureAwait(false);
             scheduleKeep.Add(scheduleId);
         }
@@ -960,20 +970,33 @@ public sealed class CatalogSync
 
         if (spec is not null)
         {
-            if (ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
+            if (RunScopeExpander.TryParseScope(spec.Scope) is null)
+            {
+                warnings.Add(
+                    $"'{flowName}' ({relativePath}) has an invalid schedule scope '{spec.Scope}'; use 'flow', 'node', or 'batch'.");
+            }
+            else if (ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
             {
                 var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
                 await ScheduleStore.StageYamlUpsertAsync(
-                    context, repoId, flowName, spec.Cron, spec.IntervalSeconds, spec.Timezone,
+                    context, repoId, flowName, ScopeOf(spec), spec.Cron, spec.IntervalSeconds, spec.Timezone,
                     spec.Enabled, spec.Catchup, nextFire, nowUtc, ct).ConfigureAwait(false);
                 return;
             }
-
-            warnings.Add($"'{flowName}' ({relativePath}) has an invalid schedule: {scheduleError}");
+            else
+            {
+                warnings.Add($"'{flowName}' ({relativePath}) has an invalid schedule: {scheduleError}");
+            }
         }
 
         await ScheduleStore.StageRemoveYamlScheduleAsync(context, repoId, flowName, ct).ConfigureAwait(false);
     }
+
+    /// <summary>The stored scope of a validated schedule spec: an absent <c>scope:</c> means the schedule fires only
+    /// its own flow. Callers validate with <see cref="RunScopeExpander.TryParseScope"/> first, so the parse here
+    /// cannot fail.</summary>
+    private static string ScopeOf(Core.ScheduleSpec spec)
+        => RunScopes.From(RunScopeExpander.TryParseScope(spec.Scope) ?? RunScope.Flow);
 
     /// <summary>Upserts one pipeline row from an already-read document, one header at a time (shared by the
     /// primary flow and any derived sibling). Declared columns refresh alongside, gated by the header's kind so

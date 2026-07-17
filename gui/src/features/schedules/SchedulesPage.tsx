@@ -19,6 +19,8 @@ import RadioGroup from "@mui/material/RadioGroup";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -28,7 +30,7 @@ import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
-import type { Schedule } from "../../api/types";
+import type { RunScope, Schedule } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
 import { Page } from "../../components/Page";
@@ -36,12 +38,21 @@ import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ScheduleStateBadge } from "../../components/StatusBadge";
+import { ScheduleScopePreview } from "./ScheduleScopePreview";
+
+/** What each scope runs, in the operator's words. */
+const SCOPE_HELP: Record<RunScope, string> = {
+  flow: "Only the flow itself.",
+  node: "The flow and everything downstream of it, in dependency order.",
+  batch: "Every active flow in the flow's batch, in dependency order.",
+};
 
 function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [repoId, setRepoId] = useState<string | null>(null);
   const [flowName, setFlowName] = useState<string | null>(null);
+  const [scope, setScope] = useState<RunScope>("flow");
   const [triggerKind, setTriggerKind] = useState<"cron" | "interval">("cron");
   const [cron, setCron] = useState("");
   const [intervalText, setIntervalText] = useState("");
@@ -79,6 +90,7 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
     create.mutate({
       repoId: repoId!,
       flowName: flowName!,
+      scope,
       cron: triggerKind === "cron" ? cron.trim() : null,
       intervalSeconds: triggerKind === "interval" ? Number.parseInt(intervalText.trim(), 10) : null,
       timezone: timezone.trim() === "" ? "UTC" : timezone.trim(),
@@ -120,6 +132,27 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
               <TextField {...params} label="Flow" inputProps={{ ...params.inputProps, "data-testid": "schedule-flow" }} />
             )}
           />
+
+          <FormControl>
+            <FormLabel>Runs</FormLabel>
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={scope}
+              onChange={(_, value: RunScope | null) => value !== null && setScope(value)}
+              sx={{ mt: 0.5 }}
+              data-testid="schedule-scope"
+            >
+              <ToggleButton value="flow" data-testid="schedule-scope-flow">This flow</ToggleButton>
+              <ToggleButton value="node" data-testid="schedule-scope-node">Flow + dependents</ToggleButton>
+              <ToggleButton value="batch" data-testid="schedule-scope-batch">Whole batch</ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75 }}>
+              {SCOPE_HELP[scope]}
+            </Typography>
+          </FormControl>
+
+          <ScheduleScopePreview repoId={repoId} flowName={flowName} scope={scope} />
 
           <FormControl>
             <FormLabel>Trigger</FormLabel>
@@ -224,6 +257,15 @@ export default function SchedulesPage() {
   const runNow = useMutation({
     mutationFn: (row: Schedule) => scheduleApi.runNow(row.id),
     onSuccess: (accepted) => {
+      // A scoped schedule enqueues a wave-ordered group; land on the group, which reflects the whole set as it
+      // executes, rather than on an arbitrary single member.
+      if (accepted.groupId !== null) {
+        enqueueSnackbar(`Started ${accepted.memberCount} flows in dependency order.`, { variant: "success" });
+        void queryClient.invalidateQueries({ queryKey: ["schedules"] });
+        navigate(`/runs/groups/${accepted.groupId}`);
+        return;
+      }
+
       enqueueSnackbar("Run started.", { variant: "success" });
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       navigate(`/runs/${accepted.runId}`);
@@ -261,6 +303,25 @@ export default function SchedulesPage() {
       ),
     },
     {
+      id: "scope",
+      header: "Runs",
+      render: (row) => (row.scope === "flow" ? (
+        <Tooltip title={SCOPE_HELP.flow}>
+          <Typography variant="body2" color="text.secondary">this flow</Typography>
+        </Tooltip>
+      ) : (
+        <Tooltip title={SCOPE_HELP[row.scope]}>
+          <Chip
+            size="small"
+            color="primary"
+            variant="outlined"
+            label={row.scope === "batch" ? "whole batch" : "flow + dependents"}
+            data-testid="schedule-scope-chip"
+          />
+        </Tooltip>
+      )),
+    },
+    {
       id: "trigger",
       header: "Trigger",
       render: (row) => {
@@ -292,18 +353,36 @@ export default function SchedulesPage() {
     {
       id: "lastRun",
       header: "Last run",
-      render: (row) => (row.lastRunId !== null ? (
-        <Button
-          size="small"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/runs/${row.lastRunId}`);
-          }}
-          data-testid="schedule-last-run"
-        >
-          view
-        </Button>
-      ) : "-"),
+      render: (row) => {
+        // A scoped fire is a set, so its "last run" is the whole group, not one member.
+        if (row.lastGroupId !== null) {
+          return (
+            <Button
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(`/runs/groups/${row.lastGroupId}`);
+              }}
+              data-testid="schedule-last-group"
+            >
+              view set
+            </Button>
+          );
+        }
+
+        return row.lastRunId !== null ? (
+          <Button
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/runs/${row.lastRunId}`);
+            }}
+            data-testid="schedule-last-run"
+          >
+            view
+          </Button>
+        ) : "-";
+      },
     },
     {
       id: "actions",

@@ -91,12 +91,12 @@ public sealed class ScheduleStoreTests
 
             // Sync a YAML schedule, then an operator pauses it through the API.
             var id = await ScheduleStore.UpsertYamlScheduleAsync(
-                db, repoId, flowName, "0 6 * * *", null, "UTC", enabled: true, catchup: false, now.AddHours(1), now);
+                db, repoId, flowName, RunScopes.Flow, "0 6 * * *", null, "UTC", enabled: true, catchup: false, now.AddHours(1), now);
             await ScheduleStore.SetPausedAsync(db, id, paused: true, nextFireUtcOnResume: null, now);
 
             // A re-sync of the same (unchanged) schedule must not clear the operator's pause.
             await ScheduleStore.UpsertYamlScheduleAsync(
-                db, repoId, flowName, "0 6 * * *", null, "UTC", enabled: true, catchup: false, now.AddHours(1), now);
+                db, repoId, flowName, RunScopes.Flow, "0 6 * * *", null, "UTC", enabled: true, catchup: false, now.AddHours(1), now);
 
             var after = await db.Schedules.AsNoTracking().FirstAsync(s => s.Id == id);
             Assert.True(after.Paused);

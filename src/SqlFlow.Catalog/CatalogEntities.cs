@@ -1059,6 +1059,12 @@ public class CatalogSchedule
 
     public string FlowName { get; set; } = string.Empty;
 
+    /// <summary>How much the fire runs, as a <see cref="RunScope"/> name: <c>flow</c> (default, just
+    /// <see cref="FlowName"/>), <c>node</c> (that flow plus its lineage descendants), or <c>batch</c> (every active
+    /// flow in its batch). A node/batch schedule expands through lineage at fire time and enqueues one wave-gated
+    /// run group instead of a single run, so the set executes in dependency order.</summary>
+    public string Scope { get; set; } = RunScopes.Flow;
+
     /// <summary>A standard cron expression (5 fields, or 6 with seconds), evaluated in <see cref="Timezone"/>. Null
     /// when the schedule is interval-based.</summary>
     public string? Cron { get; set; }
@@ -1091,8 +1097,13 @@ public class CatalogSchedule
 
     public DateTime? LastFireUtc { get; set; }
 
-    /// <summary>The run id the most recent fire enqueued, for tracing a scheduled run back to its schedule.</summary>
+    /// <summary>The run id the most recent fire enqueued, for tracing a scheduled run back to its schedule. For a
+    /// scope that fired a whole group this is the group's first member; <see cref="LastGroupId"/> carries the set.</summary>
     public Guid? LastRunId { get; set; }
+
+    /// <summary>The run group the most recent fire enqueued, when the scope expanded to a wave-gated set; null for a
+    /// flow-scoped schedule (which enqueues a single run) or a schedule that has never fired.</summary>
+    public Guid? LastGroupId { get; set; }
 
     public DateTime CreatedUtc { get; set; }
 

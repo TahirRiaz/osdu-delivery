@@ -305,6 +305,7 @@ public sealed class CatalogDbContext : DbContext
             entity.ToTable("Schedule");
             entity.HasKey(s => s.Id);
             entity.Property(s => s.FlowName).HasMaxLength(400).IsRequired();
+            entity.Property(s => s.Scope).HasMaxLength(16).IsRequired().HasDefaultValue(RunScopes.Flow);
             entity.Property(s => s.Cron).HasMaxLength(256);
             entity.Property(s => s.Timezone).HasMaxLength(64).IsRequired();
             entity.Property(s => s.Source).HasMaxLength(16).IsRequired();

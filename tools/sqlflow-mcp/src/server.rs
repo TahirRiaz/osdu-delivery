@@ -797,7 +797,11 @@ impl SqlFlowMcp {
 
     // ---- Schedules, nodes, sources, summary (read) -----------------------
 
-    #[tool(description = "List schedules.")]
+    #[tool(
+        description = "List schedules: when each fires (cron/interval, timezone, next fire) and its scope \
+                       ('flow' runs one flow; 'node'/'batch' expand through lineage and run a whole set in wave \
+                       order). Start here to answer 'when does <source> get updated'."
+    )]
     async fn list_schedules(&self, Parameters(_): Parameters<EmptyInput>) -> String {
         self.get("/api/v1/schedules", &[]).await
     }
@@ -805,6 +809,17 @@ impl SqlFlowMcp {
     #[tool(description = "Get one schedule by id.")]
     async fn get_schedule(&self, Parameters(i): Parameters<GuidInput>) -> String {
         self.get(&format!("/api/v1/schedules/{}", i.id), &[]).await
+    }
+
+    #[tool(
+        description = "When a source next gets updated AND exactly what that run executes: the schedule's cadence \
+                       (cron, timezone, next/last fire) plus the lineage-resolved flows in wave order. Each member \
+                       carries its wave; members sharing a wave run concurrently, and a wave starts only once the \
+                       previous wave has finished. Use this to answer 'when does <source> update', 'what runs when \
+                       it fires', and 'in what order'."
+    )]
+    async fn get_schedule_plan(&self, Parameters(i): Parameters<GuidInput>) -> String {
+        self.get(&format!("/api/v1/schedules/{}/plan", i.id), &[]).await
     }
 
     #[tool(description = "List worker nodes (the compute fleet) and their heartbeats.")]
@@ -1120,8 +1135,12 @@ ONLINE (needs the control plane):
 const INSTRUCTIONS_ONLINE_TAIL: &str = "\
 - Read: list_repos, list_pipelines, get_pipeline, pipeline_definition, pipeline_columns, list_runs,
   get_run, run_statements/assertions/files/health_metrics, lineage_objects/_detail/_columns/_edges/
-  _waves/_dependencies, search_objects/_columns/_definitions, list_schedules, list_nodes,
-  list_repo_sources, summary.
+  _waves/_dependencies, search_objects/_columns/_definitions, list_schedules, get_schedule,
+  get_schedule_plan, list_nodes, list_repo_sources, summary.
+- \"When does <source> update?\": list_schedules finds the schedule (its cron/timezone/next fire), then
+  get_schedule_plan returns both the cadence AND the wave-ordered flows that fire runs. A schedule whose
+  scope is 'node'/'batch' runs a whole set resolved through lineage, so the plan (not the schedule's own
+  flow name) is what actually gets updated; members sharing a wave run concurrently.
 - Browse the schema: list_schemas gives every (server, database, schema) with its object count; then
   lineage_objects filters by database/schema/kind/name to enumerate the tables and views in one. This is how
   you answer open schema questions without a pre-known object key.

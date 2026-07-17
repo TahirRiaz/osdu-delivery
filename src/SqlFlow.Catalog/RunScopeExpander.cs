@@ -15,6 +15,29 @@ public enum RunScope
     Batch,
 }
 
+/// <summary>The stored spelling of a <see cref="RunScope"/>: the persisted vocabulary a schedule's scope column and
+/// the YAML <c>scope:</c> key share, so the string form lives in exactly one place. Parse with
+/// <see cref="RunScopeExpander.TryParseScope"/>.</summary>
+public static class RunScopes
+{
+    /// <summary>One flow: the schedule's own flow, enqueued as a single run.</summary>
+    public const string Flow = "flow";
+
+    /// <summary>A flow and all of its transitive descendants.</summary>
+    public const string Node = "node";
+
+    /// <summary>Every active flow in one batch / data source.</summary>
+    public const string Batch = "batch";
+
+    /// <summary>The stored spelling of a scope.</summary>
+    public static string From(RunScope scope) => scope switch
+    {
+        RunScope.Node => Node,
+        RunScope.Batch => Batch,
+        _ => Flow,
+    };
+}
+
 /// <summary>One flow selected by a scope expansion, with the wave that orders it within the set.</summary>
 public sealed record RunScopeMember(string FlowName, string FlowKind, int Wave);
 

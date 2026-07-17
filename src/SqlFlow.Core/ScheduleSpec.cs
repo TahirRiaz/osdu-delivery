@@ -25,6 +25,17 @@ public sealed record ScheduleSpec
     /// only (the cadence still applies to this flow); null for an unnamed inline schedule or a reference.</summary>
     public string? Name { get; init; }
 
+    /// <summary>
+    /// How much this schedule runs when it fires: <c>flow</c> (the default: only the flow that declares it),
+    /// <c>node</c> (that flow plus every flow downstream of it), or <c>batch</c> (every active flow in the declaring
+    /// flow's batch). A node/batch schedule expands through the lineage graph at fire time and enqueues ONE
+    /// wave-gated run group, so the set runs in dependency order and a flow never starts before what it depends on.
+    /// Null means <c>flow</c>. Held as a string for the same reason <see cref="Cron"/> is: this record is purely
+    /// declarative data with no catalog dependency, and the scope vocabulary is validated where the schedule is
+    /// mirrored into the catalog.
+    /// </summary>
+    public string? Scope { get; init; }
+
     /// <summary>A standard cron expression (5 fields, or 6 with a leading seconds field), evaluated in
     /// <see cref="Timezone"/>. Null when the schedule is interval-based or an unresolved <see cref="Ref"/>.</summary>
     public string? Cron { get; init; }

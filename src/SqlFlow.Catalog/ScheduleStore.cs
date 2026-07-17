@@ -51,7 +51,8 @@ public static class ScheduleStore
         return affected > 0;
     }
 
-    /// <summary>Records the run a fire enqueued, so a scheduled run traces back to its schedule.</summary>
+    /// <summary>Records the run a fire enqueued, so a scheduled run traces back to its schedule. Clears
+    /// <see cref="CatalogSchedule.LastGroupId"/>: a flow-scoped fire is a single run, not a set.</summary>
     public static Task SetLastRunAsync(CatalogDbContext catalog, Guid id, Guid runId, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -59,6 +60,21 @@ public static class ScheduleStore
             .Where(s => s.Id == id)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.LastRunId, runId)
+                .SetProperty(x => x.LastGroupId, (Guid?)null)
+                .SetProperty(x => x.UpdatedUtc, nowUtc), ct);
+    }
+
+    /// <summary>Records the wave-gated group a scoped fire enqueued, so the schedule traces to the whole set (and to
+    /// its first member, keeping <see cref="CatalogSchedule.LastRunId"/> meaningful for callers that show one run).</summary>
+    public static Task SetLastGroupAsync(
+        CatalogDbContext catalog, Guid id, Guid groupId, Guid firstRunId, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return catalog.Schedules
+            .Where(s => s.Id == id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.LastRunId, firstRunId)
+                .SetProperty(x => x.LastGroupId, groupId)
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct);
     }
 
@@ -70,22 +86,23 @@ public static class ScheduleStore
     /// firing rhythm). Returns the schedule id.
     /// </summary>
     public static Task<Guid> UpsertYamlScheduleAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,
-        bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string flowName, string scope, string? cron, int? intervalSeconds,
+        string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, flowName, cron, intervalSeconds, timezone, enabled, catchup, computedNextFireUtc, nowUtc, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, flowName, scope, cron, intervalSeconds, timezone, enabled, catchup, computedNextFireUtc, nowUtc, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
     /// not open a transaction or save, so the catalog sync can call it for every flow inside its own one
     /// transaction (the public <see cref="UpsertYamlScheduleAsync"/> wraps this for standalone callers).</summary>
     public static async Task<Guid> StageYamlUpsertAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,
-        bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string flowName, string scope, string? cron, int? intervalSeconds,
+        string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
 
         var id = CatalogIdentity.YamlSchedule(repoId, flowName);
         {
@@ -99,6 +116,7 @@ public static class ScheduleStore
                     RepoId = repoId,
                     PipelineId = CatalogIdentity.Pipeline(repoId, flowName),
                     FlowName = flowName,
+                    Scope = scope,
                     Cron = cron,
                     IntervalSeconds = intervalSeconds,
                     Timezone = timezone,
@@ -112,6 +130,8 @@ public static class ScheduleStore
                 return id;
             }
 
+            // Only the TIMING definition resets the cadence. The scope changes what a fire runs, not when, so
+            // re-scoping a schedule must not shift its next fire or disturb its rhythm.
             var definitionChanged = existing.Cron != cron
                 || existing.IntervalSeconds != intervalSeconds
                 || existing.Timezone != timezone;
@@ -119,6 +139,7 @@ public static class ScheduleStore
             existing.RepoId = repoId;
             existing.PipelineId = CatalogIdentity.Pipeline(repoId, flowName);
             existing.FlowName = flowName;
+            existing.Scope = scope;
             existing.Cron = cron;
             existing.IntervalSeconds = intervalSeconds;
             existing.Timezone = timezone;
@@ -170,11 +191,12 @@ public static class ScheduleStore
 
     /// <summary>Creates an ad-hoc API schedule with a fresh id; a flow can carry its git schedule plus API ones.</summary>
     public static Task<Guid> CreateApiScheduleAsync(
-        CatalogDbContext catalog, Guid repoId, string flowName, string? cron, int? intervalSeconds, string timezone,
-        bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string flowName, string scope, string? cron, int? intervalSeconds,
+        string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
 
         var id = Guid.CreateVersion7();
         return CatalogTransaction.InSerializableAsync(catalog, () =>
@@ -185,6 +207,7 @@ public static class ScheduleStore
                 RepoId = repoId,
                 PipelineId = CatalogIdentity.Pipeline(repoId, flowName),
                 FlowName = flowName,
+                Scope = scope,
                 Cron = cron,
                 IntervalSeconds = intervalSeconds,
                 Timezone = timezone,
