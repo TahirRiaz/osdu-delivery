@@ -104,6 +104,33 @@ dotnet run --project src/SqlFlow.Cli -- lineage --dir "C:/Projects/dwh-pipelines
 dotnet test --filter "Category!=Integration"    # ~4,083 pass; 1 known pre-existing failure
 ```
 
+## Windows batch traps (all three of these made dev.bat silently do NOTHING)
+
+If you edit `dev.bat` or write any `.bat` here, these will bite:
+
+- **`cmd` needs CRLF.** A batch file written with LF endings misparses labels and `for /f` blocks and
+  appears to do nothing at all, with no error. The Write/Edit tools emit LF, so re-apply CRLF after
+  touching a `.bat`: `python -c "import io;p='dev.bat';s=io.open(p,encoding='utf-8',newline='').read().replace('
+','
+');io.open(p,'w',encoding='utf-8',newline='
+').write(s)"`
+- **`az` is `az.cmd`, and `npm` is `npm.cmd`.** Invoking a `.cmd` from a `.bat` WITHOUT `call` hands
+  over control and never returns: the rest of the script silently never runs and prints nothing.
+  Always `call az ...`, `call npm ...`. (`dotnet` is a real `.exe` and needs no `call`.)
+- **A running process never sees a PATH change.** Node was installed while VS Code was open, so that
+  terminal and every window it spawns had no `npm`. `dev.bat` now locates Node itself
+  (`%ProgramFiles%
+odejs`) rather than requiring a restart; a plain terminal still needs restarting
+  to get `npm` directly.
+
+## VS Code launch.json traps
+
+- **`serverReadyAction.uriFormat` must contain exactly one `%s`.** A hardcoded URL makes VS Code
+  reject the whole config with *"Format uri ... must contain exactly one substitution placeholder"*
+  and nothing launches. To open a URL unrelated to the captured group (the GUI, when the pattern
+  matched the API's log line), drop `serverReadyAction` and let Vite's `--open` do it.
+- `.vscode/` is **git-ignored** here, so `launch.json`/`tasks.json` are local-only and never shipped.
+
 ## Machine facts
 
 - Node lives at `C:\Program Files\nodejs` (Node 24 LTS, installed via winget). If `node` is not on

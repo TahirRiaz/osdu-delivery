@@ -5,16 +5,17 @@
 # Run this once, and again whenever a connection string or key rotates in the estate. It needs
 # 'az login' with access to the resource group.
 #
-# WHY IT READS CONTAINER APP SECRETS, NOT KEY VAULT: the Key Vault secret 'dw-sqlflow-prod' is
-# STALE. It points at the OLD managed instance (dw-sql-mi-prod), while the estate actually runs on
-# dw-mi-sql-prod. The container app's own secrets are what the running system uses, so they are the
-# only trustworthy source. Using the Key Vault value gets you a connection that times out with a
-# misleading "transient failure" error.
+# WHY IT READS CONTAINER APP SECRETS, NOT KEY VAULT: the Key Vault copies of these connection
+# strings (dw-sqlflow-prod, dw-pre-prod, dw-dwh-prod) were stale in BOTH host and password. They
+# named dw-sql-mi-prod, a managed instance that NO LONGER EXISTS; the estate runs on dw-mi-sql-prod.
+# Using them gets a connection that fails with a misleading "transient failure ... consider
+# EnableRetryOnFailure" error. The container apps' own secrets are what the running system uses, so
+# they are the only trustworthy source.
 $ErrorActionPreference = "Stop"
 
 $rg = "datawarehouse-west-rg-prod-v2"
 $app = "sqlflow-v3-control-plane"
-$vault = "sqlflow-v3-secrets"
+$worker = "sqlflow-v3-worker"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $repoRoot ".sqlflow\env"
 
@@ -27,17 +28,18 @@ function Get-AppSecret([string]$name) {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($v)) { Write-Error "Could not read container app secret '$name'." }
     return $v
 }
-function Get-VaultSecret([string]$name) {
-    $v = az keyvault secret show --vault-name $vault --name $name --query value -o tsv 2>$null
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($v)) { Write-Error "Could not read Key Vault secret '$name'." }
+function Get-WorkerSecret([string]$name) {
+    $v = az containerapp secret show -n $worker -g $rg --secret-name $name --query value -o tsv 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($v)) { Write-Error "Could not read worker secret '$name'." }
     return $v
 }
 
 $catalog = Get-AppSecret "catalog-db"
 $jwt     = Get-AppSecret "jwt-signing-key"
 $git     = Get-AppSecret "git-token"
-$pre     = Get-VaultSecret "dw-pre-prod"
-$dwh     = Get-VaultSecret "dw-dwh-prod"
+# From the WORKER app: it is the thing that actually runs flows against pre/ods.
+$pre     = Get-WorkerSecret "pre-conn"
+$dwh     = Get-WorkerSecret "dwh-conn"
 
 # Issuer/audience must match the estate's, or a token minted by the cloud GUI is rejected locally.
 $issuer   = az containerapp show -n $app -g $rg --query "properties.template.containers[0].env[?name=='ControlPlane__Jwt__Issuer'].value | [0]" -o tsv
@@ -52,8 +54,8 @@ $content = @"
 # Everything RUNS on this machine; every resource is the REAL Azure estate: the same catalog, the
 # same pre/ods databases, the same lake. You are debugging the live system, locally.
 #
-# Values come from the CONTAINER APP SECRETS, not Key Vault: the Key Vault secret 'dw-sqlflow-prod'
-# is stale and points at the old MI (dw-sql-mi-prod) instead of dw-mi-sql-prod.
+# EVERY value comes from CONTAINER APP SECRETS, never Key Vault: the Key Vault copies were stale in
+# both host and password, naming the retired dw-sql-mi-prod instance.
 
 # --- Catalog: the real Azure catalog, byte-identical to what the container app uses ---
 SQLFLOW_CATALOG_DB=$catalog

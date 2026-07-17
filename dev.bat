@@ -50,13 +50,38 @@ REM findstr drops comment lines and blank lines.
 for /f "usebackq tokens=1,* delims==" %%a in (`findstr /v /r /c:"^#" ".sqlflow\env" ^| findstr /r /c:"="`) do set "%%a=%%b"
 
 REM --- Azure login is what routes Key Vault and the lake to the cloud ---
-az account show >nul 2>&1
+REM 'call' is REQUIRED: az on Windows is az.cmd, and invoking a .cmd from a .bat without 'call'
+REM transfers control and never comes back, so the rest of this script silently never runs.
+call az account show >nul 2>&1
 if errorlevel 1 (
     echo [X] Not logged in to Azure. Run:  az login
     exit /b 1
 )
 
 if /i "%~1"=="api" goto :api
+
+REM --- Node on PATH ---
+REM Node is usually installed AFTER VS Code (or this terminal) was started, and a running process
+REM never picks up a PATH change. So the terminal, and every window it spawns, has no npm until it
+REM is restarted. Rather than demand a restart, find Node and add it for this script and its children.
+where npm >nul 2>&1
+if errorlevel 1 (
+    if exist "%ProgramFiles%\nodejs\npm.cmd" set "PATH=%PATH%;%ProgramFiles%\nodejs"
+)
+where npm >nul 2>&1
+if errorlevel 1 (
+    if exist "%ProgramFiles(x86)%\nodejs\npm.cmd" set "PATH=%PATH%;%ProgramFiles(x86)%\nodejs"
+)
+where npm >nul 2>&1
+if errorlevel 1 (
+    if exist "%LOCALAPPDATA%\Programs\nodejs\npm.cmd" set "PATH=%PATH%;%LOCALAPPDATA%\Programs\nodejs"
+)
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo [X] npm not found. Install Node ^(winget install OpenJS.NodeJS.LTS^), then open a NEW terminal.
+    echo     Or run:  dev.bat api    to start the control plane without the GUI.
+    exit /b 1
+)
 
 REM --- GUI deps, first run only ---
 if not exist "gui\node_modules" (
@@ -67,7 +92,7 @@ if not exist "gui\node_modules" (
 )
 
 echo Starting the GUI on http://localhost:5173 ...
-start "SQLFlow GUI" cmd /k "cd /d %~dp0gui && npm run dev"
+start "SQLFlow GUI" cmd /k "cd /d %~dp0gui && npm run dev -- --open"
 
 :api
 echo.
