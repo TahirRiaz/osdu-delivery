@@ -70,7 +70,7 @@ public sealed class GraphEmailSender : IEmailSender, IDisposable
             // in-flight retries instead of being pinned by the cache.
             InvalidateCredential();
             throw new NotificationSendException(
-                $"acquiring a Microsoft Graph token failed: {SecretHygiene.RedactedMessage(ex.Message)}", retryable: true, ex);
+                $"acquiring a Microsoft Graph token failed: {SecretHygiene.RedactedMessage(ex)}", retryable: true, ex);
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
@@ -86,7 +86,7 @@ public sealed class GraphEmailSender : IEmailSender, IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             throw new NotificationSendException(
-                $"the Microsoft Graph sendMail request failed to complete: {SecretHygiene.RedactedMessage(ex.Message)}",
+                $"the Microsoft Graph sendMail request failed to complete: {SecretHygiene.RedactedMessage(ex)}",
                 retryable: true, ex);
         }
 

@@ -297,7 +297,7 @@ public sealed class BatchOrchestrator
                     FlowName = member.Name,
                     FlowKind = member.Kind,
                     Success = false,
-                    Error = ex.Message,
+                    Error = SecretHygiene.RedactedMessage(ex),
                 };
             }
 

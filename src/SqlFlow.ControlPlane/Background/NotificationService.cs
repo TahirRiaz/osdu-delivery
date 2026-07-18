@@ -86,7 +86,7 @@ public sealed partial class NotificationService : BackgroundService
             }
             catch (Exception ex)
             {
-                LogTickError(SecretHygiene.RedactedMessage(ex.Message));
+                LogTickError(SecretHygiene.RedactedMessage(ex));
             }
 
             try
@@ -122,7 +122,7 @@ public sealed partial class NotificationService : BackgroundService
         }
         catch (Exception ex)
         {
-            LogPhaseError(name, SecretHygiene.RedactedMessage(ex.Message));
+            LogPhaseError(name, SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -184,7 +184,7 @@ public sealed partial class NotificationService : BackgroundService
         }
         catch (Exception ex)
         {
-            LogDispatchError(subscription.Id, SecretHygiene.RedactedMessage(ex.Message));
+            LogDispatchError(subscription.Id, SecretHygiene.RedactedMessage(ex));
         }
         finally
         {
@@ -316,7 +316,7 @@ public sealed partial class NotificationService : BackgroundService
         }
         catch (Exception ex)
         {
-            LogSendError(delivery.Id, SecretHygiene.RedactedMessage(ex.Message));
+            LogSendError(delivery.Id, SecretHygiene.RedactedMessage(ex));
         }
         finally
         {
@@ -357,7 +357,7 @@ public sealed partial class NotificationService : BackgroundService
         catch (Exception ex)
         {
             var retryable = ex is not NotificationSendException { Retryable: false };
-            var error = SecretHygiene.RedactedMessage(ex.Message);
+            var error = SecretHygiene.RedactedMessage(ex);
             if (!retryable || attempt >= _options.MaxDeliveryAttempts)
             {
                 await NotificationStore.MarkDeliveryFailedAsync(catalog, delivery.Id, error, ct).ConfigureAwait(false);

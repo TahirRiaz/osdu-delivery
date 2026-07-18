@@ -60,7 +60,7 @@ public sealed class SmtpEmailSender : IEmailSender
             // (mailbox busy, greylisting). Only the permanent class is not worth retrying.
             var permanent = (int)ex.StatusCode >= 500;
             throw new NotificationSendException(
-                $"SMTP {smtp.Host}:{smtp.Port} rejected the message ({(int)ex.StatusCode} {ex.ErrorCode}): {SecretHygiene.RedactedMessage(ex.Message)}",
+                $"SMTP {smtp.Host}:{smtp.Port} rejected the message ({(int)ex.StatusCode} {ex.ErrorCode}): {SecretHygiene.RedactedMessage(ex)}",
                 retryable: !permanent, ex);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not NotificationSendException)
@@ -68,7 +68,7 @@ public sealed class SmtpEmailSender : IEmailSender
             // Connect/TLS/auth/IO failures: all environmental, all worth the backoff retry. Authentication
             // failures included: credentials are re-resolved per attempt, so a fixed secret heals the retries.
             throw new NotificationSendException(
-                $"SMTP send via {smtp.Host}:{smtp.Port} failed: {SecretHygiene.RedactedMessage(ex.Message)}",
+                $"SMTP send via {smtp.Host}:{smtp.Port} failed: {SecretHygiene.RedactedMessage(ex)}",
                 retryable: true, ex);
         }
     }

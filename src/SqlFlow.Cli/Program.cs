@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -88,7 +88,7 @@ internal static class Program
         }
         catch (SqlFlowException ex)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
 
@@ -502,7 +502,7 @@ internal static class Program
         }
         catch (SqlFlowException ex)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
     }
@@ -569,7 +569,7 @@ internal static class Program
         }
         catch (SqlFlowException ex)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
 
@@ -674,7 +674,7 @@ internal static class Program
         }
         catch (SqlFlowException ex)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
 
@@ -704,7 +704,7 @@ internal static class Program
         }
         catch (Exception ex) when (ex is not SqlFlowException)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
     }
@@ -752,7 +752,7 @@ internal static class Program
         }
         catch (SqlFlowException ex)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
 
@@ -821,7 +821,7 @@ internal static class Program
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not SqlFlowException)
         {
-            Console.Error.WriteLine($"ERROR  user 'reset-password' failed: {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  user 'reset-password' failed: {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
     }
@@ -893,7 +893,7 @@ internal static class Program
         }
         catch (SqlFlowException ex)
         {
-            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
 
@@ -979,7 +979,7 @@ internal static class Program
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Console.Error.WriteLine($"ERROR  catalog '{sub}' failed: {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  catalog '{sub}' failed: {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
     }
@@ -1068,7 +1068,7 @@ internal static class Program
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Console.Error.WriteLine(
-                $"WARN  catalog write-back skipped ({SecretHygiene.RedactedMessage(ex.Message)}); the run itself is unaffected. Run 'sqlflow db sync' to backfill.");
+                $"WARN  catalog write-back skipped ({SecretHygiene.RedactedMessage(ex)}); the run itself is unaffected. Run 'sqlflow db sync' to backfill.");
         }
     }
 
@@ -2279,6 +2279,7 @@ internal static class Program
                   --max-files <n>                Files to scan (default 100)
                   --max-records <n>              Records to scan, 0 = all (default 0)
                   --max-depth <n>                Max nesting depth to inspect (discover 10, paths/flatten 20)
+                  --default-type <sqltype>       schema.defaultColumnType in the emitted flow (flatten; default varchar(255))
               -h, --help                         Show this help
             """);
     }
@@ -2344,7 +2345,7 @@ internal static class Program
 
     private static async Task WriteFormulaAsync(SourceSpec source, FlattenIntrospection introspection, string[] args)
     {
-        var text = FlattenFlowYaml.Build(source, introspection);
+        var text = FlattenFlowYaml.Build(source, introspection, GetOption(args, "--default-type"));
         var outPath = GetOption(args, "--out", "-o");
         if (outPath is not null)
         {

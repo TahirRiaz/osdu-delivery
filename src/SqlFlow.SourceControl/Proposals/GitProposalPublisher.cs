@@ -172,7 +172,7 @@ public sealed class GitProposalPublisher : IGitProposalPublisher
         catch (LibGit2SharpException ex)
         {
             throw new SqlFlowException(
-                $"could not publish the proposal branch '{request.HeadBranch}': {SecretHygiene.RedactedMessage(ex.Message)}", ex);
+                $"could not publish the proposal branch '{request.HeadBranch}': {SecretHygiene.RedactedMessage(ex)}", ex);
         }
         finally
         {

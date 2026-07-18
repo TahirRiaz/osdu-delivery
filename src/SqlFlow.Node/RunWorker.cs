@@ -161,7 +161,7 @@ public sealed partial class RunWorker
             catch (Exception ex)
             {
                 // A poll/claim error (a transient database outage) must not end the worker; log and try next tick.
-                LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+                LogPollError(SecretHygiene.RedactedMessage(ex));
             }
 
             try
@@ -228,7 +228,7 @@ public sealed partial class RunWorker
         catch (Exception ex)
         {
             // The fleet heartbeat is best-effort: a failure must never affect draining; the next poll retries it.
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
             return null;
         }
     }
@@ -261,7 +261,7 @@ public sealed partial class RunWorker
         }
         catch (Exception ex)
         {
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -313,7 +313,7 @@ public sealed partial class RunWorker
         catch (Exception ex)
         {
             // Observing cancels is best-effort: a failure must never affect draining; the next poll retries it.
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -348,7 +348,7 @@ public sealed partial class RunWorker
         {
             // Recovery is best-effort: if the catalog is briefly unreachable at startup, the next poll retries the
             // claim path anyway. Do not let it stop the worker from starting.
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -425,7 +425,7 @@ public sealed partial class RunWorker
         {
             // RunClaimedAsync drives run failures (and operator cancels) terminal itself; this guards the scope
             // plumbing around it.
-            LogRunError(runId, SecretHygiene.RedactedMessage(ex.Message));
+            LogRunError(runId, SecretHygiene.RedactedMessage(ex));
         }
         finally
         {
@@ -495,7 +495,7 @@ public sealed partial class RunWorker
         }
         catch (Exception ex)
         {
-            LogTaskError(taskId, SecretHygiene.RedactedMessage(ex.Message));
+            LogTaskError(taskId, SecretHygiene.RedactedMessage(ex));
         }
         finally
         {
@@ -537,7 +537,7 @@ public sealed partial class RunWorker
             catch (SqlFlowException ex)
             {
                 await ComputeTaskStore.FailAsync(
-                    catalog, taskId, SecretHygiene.RedactedMessage(ex.Message), _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                    catalog, taskId, SecretHygiene.RedactedMessage(ex), _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
                 return;
             }
 
@@ -565,8 +565,8 @@ public sealed partial class RunWorker
         {
             // A failed task (unreachable source, bad object, provider error) must never kill the worker: drive it
             // terminal (best-effort) and continue.
-            LogTaskError(taskId, SecretHygiene.RedactedMessage(ex.Message));
-            await TryFailTaskAsync(catalog, taskId, SecretHygiene.RedactedMessage(ex.Message)).ConfigureAwait(false);
+            LogTaskError(taskId, SecretHygiene.RedactedMessage(ex));
+            await TryFailTaskAsync(catalog, taskId, SecretHygiene.RedactedMessage(ex)).ConfigureAwait(false);
         }
     }
 
@@ -581,7 +581,7 @@ public sealed partial class RunWorker
         }
         catch (Exception ex)
         {
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -594,7 +594,7 @@ public sealed partial class RunWorker
         }
         catch (Exception ex)
         {
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -818,8 +818,8 @@ public sealed partial class RunWorker
         {
             // A failed run (bad flow, unreachable database, IO) must never kill the worker: drive it to a terminal
             // state (best-effort) and continue to the next claim.
-            LogRunError(runId, SecretHygiene.RedactedMessage(ex.Message));
-            await TryFailAsync(catalog, runId, SecretHygiene.RedactedMessage(ex.Message)).ConfigureAwait(false);
+            LogRunError(runId, SecretHygiene.RedactedMessage(ex));
+            await TryFailAsync(catalog, runId, SecretHygiene.RedactedMessage(ex)).ConfigureAwait(false);
         }
     }
 
@@ -902,7 +902,7 @@ public sealed partial class RunWorker
         }
         catch (Exception ex)
         {
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -917,7 +917,7 @@ public sealed partial class RunWorker
         }
         catch (Exception ex)
         {
-            LogPollError(SecretHygiene.RedactedMessage(ex.Message));
+            LogPollError(SecretHygiene.RedactedMessage(ex));
         }
     }
 

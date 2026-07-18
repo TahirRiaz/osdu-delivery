@@ -71,7 +71,7 @@ public sealed partial class OrphanRunReaper : BackgroundService
             }
             catch (Exception ex)
             {
-                LogTickError(SecretHygiene.RedactedMessage(ex.Message));
+                LogTickError(SecretHygiene.RedactedMessage(ex));
             }
 
             try

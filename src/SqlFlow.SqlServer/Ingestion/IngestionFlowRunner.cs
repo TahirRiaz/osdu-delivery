@@ -11,6 +11,7 @@ using SqlFlow.Core.Invoke;
 using SqlFlow.Core.Model;
 using SqlFlow.Core.Runs;
 using SqlFlow.SqlServer.Schema;
+using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.SqlServer.Ingestion;
 
@@ -759,7 +760,7 @@ public sealed class IngestionFlowRunner
                 Success = false,
                 StagingTable = SchemaQualified(staging),
                 StagingRetained = true,
-                Error = ex.Message,
+                Error = SecretHygiene.RedactedMessage(ex),
                 StartTimeUtc = startUtc,
                 EndTimeUtc = endUtc,
                 DurationSeconds = duration,
@@ -846,7 +847,7 @@ public sealed class IngestionFlowRunner
                 RunId = runId,
                 Success = false,
                 StagingTable = SchemaQualified(staging),
-                Error = ex.Message,
+                Error = SecretHygiene.RedactedMessage(ex),
                 StartTimeUtc = startUtc,
                 EndTimeUtc = endUtc,
                 DurationSeconds = duration,

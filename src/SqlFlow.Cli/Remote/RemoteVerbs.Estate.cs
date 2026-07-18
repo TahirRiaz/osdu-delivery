@@ -1075,7 +1075,7 @@ internal static partial class RemoteVerbs
                     }
                     catch (SqlFlowException ex)
                     {
-                        Console.WriteLine($"credential:    FAIL ({SecretHygiene.RedactedMessage(ex.Message)})");
+                        Console.WriteLine($"credential:    FAIL ({SecretHygiene.RedactedMessage(ex)})");
                         failed = true;
                     }
                 }
@@ -1086,7 +1086,7 @@ internal static partial class RemoteVerbs
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"control plane: FAIL (cannot reach {url}: {SecretHygiene.RedactedMessage(ex.Message)})");
+                Console.WriteLine($"control plane: FAIL (cannot reach {url}: {SecretHygiene.RedactedMessage(ex)})");
                 failed = true;
             }
         }
@@ -1109,7 +1109,7 @@ internal static partial class RemoteVerbs
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                Console.WriteLine($"catalog db:    FAIL ({SecretHygiene.RedactedMessage(ex.Message)})");
+                Console.WriteLine($"catalog db:    FAIL ({SecretHygiene.RedactedMessage(ex)})");
                 failed = true;
             }
         }

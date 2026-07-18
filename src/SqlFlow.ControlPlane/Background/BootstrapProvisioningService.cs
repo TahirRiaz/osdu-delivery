@@ -78,7 +78,7 @@ public sealed class BootstrapProvisioningService : BackgroundService
                 var delay = attempt < RetryDelays.Length ? RetryDelays[attempt] : MaxRetryDelay;
                 _logger.LogError(
                     "Bootstrap provisioning attempt {Attempt} failed ({Error}); retrying in {Delay}s.",
-                    attempt + 1, SecretHygiene.RedactedMessage(ex.Message), (int)delay.TotalSeconds);
+                    attempt + 1, SecretHygiene.RedactedMessage(ex), (int)delay.TotalSeconds);
                 try
                 {
                     await Task.Delay(delay, stoppingToken).ConfigureAwait(false);

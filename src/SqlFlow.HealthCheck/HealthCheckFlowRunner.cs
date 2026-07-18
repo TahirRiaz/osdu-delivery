@@ -8,6 +8,7 @@ using SqlFlow.Core.Connections;
 using SqlFlow.Core.HealthChecks;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Runs;
+using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.HealthCheck;
 
@@ -149,7 +150,7 @@ public sealed class HealthCheckFlowRunner
                         LevelShifts = 0,
                         ModelTrained = false,
                         ModelTrainer = string.Empty,
-                        Error = ex.Message,
+                        Error = SecretHygiene.RedactedMessage(ex),
                     });
                 }
             }
@@ -229,7 +230,7 @@ public sealed class HealthCheckFlowRunner
                     EndTimeUtc = endUtc,
                     DurationSeconds = duration,
                     SqlTrace = trace,
-                    Error = ex.Message,
+                    Error = SecretHygiene.RedactedMessage(ex),
                 },
             };
         }

@@ -142,7 +142,7 @@ public sealed class SlackApiClient : ISlackApiClient
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             throw new NotificationSendException(
-                $"the Slack {MethodName(method)} request failed to complete: {SecretHygiene.RedactedMessage(ex.Message)}",
+                $"the Slack {MethodName(method)} request failed to complete: {SecretHygiene.RedactedMessage(ex)}",
                 retryable: true, ex);
         }
 

@@ -53,7 +53,7 @@ public sealed class CatalogCollector
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                merged.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({Core.Secrets.SecretHygiene.RedactedMessage(ex.Message)}); the offline tiers still apply.");
+                merged.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({Core.Secrets.SecretHygiene.RedactedMessage(ex)}); the offline tiers still apply.");
                 continue;
             }
 
@@ -110,7 +110,7 @@ public sealed class CatalogCollector
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            result.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({Core.Secrets.SecretHygiene.RedactedMessage(ex.Message)}); the offline tiers still apply.");
+            result.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({Core.Secrets.SecretHygiene.RedactedMessage(ex)}); the offline tiers still apply.");
         }
 
         return result;

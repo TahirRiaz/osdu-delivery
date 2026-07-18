@@ -6,6 +6,8 @@ using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Ingestion;
 
+using SqlFlow.Core.Secrets;
+
 namespace SqlFlow.SqlServer.Ingestion;
 
 /// <summary>
@@ -61,7 +63,7 @@ public sealed class SurrogateKeyExecutor : ISurrogateKeyExecutor
                     SurrogateTable = spec.SurrogateTable.QualifiedName,
                     SurrogateColumn = spec.SurrogateColumn,
                     Executed = false,
-                    Error = ex.Message,
+                    Error = SecretHygiene.RedactedMessage(ex),
                     Duration = stopwatch.Elapsed,
                     Statements = statements,
                 });

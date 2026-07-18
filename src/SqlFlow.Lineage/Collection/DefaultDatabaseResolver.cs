@@ -44,7 +44,7 @@ public static class DefaultDatabaseResolver
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 collected.Warnings.Add(
-                    $"server '{serverRef}': default database unknown ({SecretHygiene.RedactedMessage(ex.Message)}); its two-part object identities keep no database.");
+                    $"server '{serverRef}': default database unknown ({SecretHygiene.RedactedMessage(ex)}); its two-part object identities keep no database.");
                 continue;
             }
 

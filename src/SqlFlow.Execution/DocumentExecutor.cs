@@ -86,7 +86,7 @@ public sealed class DocumentExecutor : IDocumentRunner
                 FlowName = Path.GetFileName(flowFile),
                 FlowKind = "unknown",
                 Success = false,
-                Error = ex.Message,
+                Error = SecretHygiene.RedactedMessage(ex),
             };
         }
 

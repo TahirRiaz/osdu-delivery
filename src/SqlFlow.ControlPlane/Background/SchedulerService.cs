@@ -75,7 +75,7 @@ public sealed partial class SchedulerService : BackgroundService
             }
             catch (Exception ex)
             {
-                LogTickError(SecretHygiene.RedactedMessage(ex.Message));
+                LogTickError(SecretHygiene.RedactedMessage(ex));
             }
 
             try
@@ -129,7 +129,7 @@ public sealed partial class SchedulerService : BackgroundService
         }
         catch (Exception ex)
         {
-            LogFireError(schedule.Id, schedule.Name, SecretHygiene.RedactedMessage(ex.Message));
+            LogFireError(schedule.Id, schedule.Name, SecretHygiene.RedactedMessage(ex));
         }
         finally
         {

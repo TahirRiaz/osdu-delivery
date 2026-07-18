@@ -70,7 +70,7 @@ public sealed class BitbucketPullRequestPublisher : IPullRequestPublisher
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             throw new SqlFlowException(
-                $"the BitBucket pull-request request failed to complete: {SecretHygiene.RedactedMessage(ex.Message)}", ex);
+                $"the BitBucket pull-request request failed to complete: {SecretHygiene.RedactedMessage(ex)}", ex);
         }
 
         using (response)

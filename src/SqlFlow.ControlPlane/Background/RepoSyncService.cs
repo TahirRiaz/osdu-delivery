@@ -62,7 +62,7 @@ public sealed partial class RepoSyncService : BackgroundService
             }
             catch (Exception ex)
             {
-                LogScanError(SecretHygiene.RedactedMessage(ex.Message));
+                LogScanError(SecretHygiene.RedactedMessage(ex));
             }
 
             try
@@ -147,7 +147,7 @@ public sealed partial class RepoSyncService : BackgroundService
         }
         catch (Exception ex)
         {
-            var redacted = SecretHygiene.RedactedMessage(ex.Message);
+            var redacted = SecretHygiene.RedactedMessage(ex);
             LogSyncError(source.Name, redacted);
             await RecordFailureAsync(catalog, source.Id, redacted).ConfigureAwait(false);
         }
@@ -162,7 +162,7 @@ public sealed partial class RepoSyncService : BackgroundService
         }
         catch (Exception ex)
         {
-            LogScanError(SecretHygiene.RedactedMessage(ex.Message));
+            LogScanError(SecretHygiene.RedactedMessage(ex));
         }
     }
 

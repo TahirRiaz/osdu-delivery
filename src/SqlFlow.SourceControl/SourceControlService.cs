@@ -104,7 +104,7 @@ public sealed class SourceControlService
             {
                 RunId = runId,
                 Success = false,
-                Error = SecretHygiene.RedactedMessage(ex.Message),
+                Error = SecretHygiene.RedactedMessage(ex),
                 WorkingDirectory = Path.GetFullPath(repository.WorkingDirectory),
                 Remote = repository.Remote,
                 Branch = repository.Branch,

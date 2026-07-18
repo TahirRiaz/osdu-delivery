@@ -109,7 +109,7 @@ public sealed class CopyEngine
         catch (Exception ex) when (!ct.IsCancellationRequested && ex is SqlFlowException or IOException or InvalidOperationException)
         {
             sw.Stop();
-            var message = SecretHygiene.RedactedMessage(ex.Message);
+            var message = SecretHygiene.RedactedMessage(ex);
             log.Log(RunLogLevel.Info, "copy.error", message);
             return new CopyRunResult
             {

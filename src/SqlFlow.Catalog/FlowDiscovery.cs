@@ -63,7 +63,7 @@ public static class FlowDiscovery
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 results.Add(new DiscoveredFlow(
-                    relative, flow.Node.Name, flow.Node.Kind, 0, false, SecretHygiene.RedactedMessage(ex.Message), null));
+                    relative, flow.Node.Name, flow.Node.Kind, 0, false, SecretHygiene.RedactedMessage(ex), null));
             }
         }
 

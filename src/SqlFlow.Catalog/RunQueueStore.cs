@@ -374,7 +374,7 @@ public static class RunQueueStore
             }
             catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
             {
-                readError = SecretHygiene.RedactedMessage(ex.Message);
+                readError = SecretHygiene.RedactedMessage(ex);
             }
 
             // The artifact could not be read: still drive the run to a terminal state so it is never stuck.

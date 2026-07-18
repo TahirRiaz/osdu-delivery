@@ -166,7 +166,7 @@ internal static partial class RemoteVerbs
             {
                 // A token the server already rejects (revoked elsewhere, expired) cannot revoke itself, and an
                 // unreachable server must not leave the stale secret on disk; the local removal still happens.
-                Console.Error.WriteLine($"WARN  could not revoke the token server-side ({SecretHygiene.RedactedMessage(ex.Message)}); removing it locally anyway. Revoke it from the GUI's token page if it is still active.");
+                Console.Error.WriteLine($"WARN  could not revoke the token server-side ({SecretHygiene.RedactedMessage(ex)}); removing it locally anyway. Revoke it from the GUI's token page if it is still active.");
             }
         }
         else
@@ -579,7 +579,7 @@ internal static partial class RemoteVerbs
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException)
             {
-                Console.Error.WriteLine($"WARN  live trace dropped ({SecretHygiene.RedactedMessage(ex.Message)}); reconnecting.");
+                Console.Error.WriteLine($"WARN  live trace dropped ({SecretHygiene.RedactedMessage(ex)}); reconnecting.");
                 await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
             }
         }
@@ -650,7 +650,7 @@ internal static partial class RemoteVerbs
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException)
             {
-                Console.Error.WriteLine($"WARN  live group stream dropped ({SecretHygiene.RedactedMessage(ex.Message)}); reconnecting.");
+                Console.Error.WriteLine($"WARN  live group stream dropped ({SecretHygiene.RedactedMessage(ex)}); reconnecting.");
                 await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
             }
         }
@@ -804,7 +804,7 @@ internal static partial class RemoteVerbs
         }
         catch (HttpRequestException ex)
         {
-            Console.Error.WriteLine($"ERROR  cannot reach the control plane at {url}: {SecretHygiene.RedactedMessage(ex.Message)}");
+            Console.Error.WriteLine($"ERROR  cannot reach the control plane at {url}: {SecretHygiene.RedactedMessage(ex)}");
             return 1;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -77,7 +77,7 @@ internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposa
         catch (Exception ex)
         {
             _logger.LogWarning("Live statement feed for run {RunId} ended with an error: {Error}",
-                _runId, SecretHygiene.RedactedMessage(ex.Message));
+                _runId, SecretHygiene.RedactedMessage(ex));
         }
 
         await _scope.DisposeAsync().ConfigureAwait(false);
@@ -129,7 +129,7 @@ internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposa
                     _broken = true;
                     _logger.LogWarning("Live statement write for run {RunId} failed; the trace will still be "
                         + "recorded from the run artifact at completion: {Error}",
-                        _runId, SecretHygiene.RedactedMessage(ex.Message));
+                        _runId, SecretHygiene.RedactedMessage(ex));
                 }
             }
         }

@@ -373,7 +373,7 @@ public sealed class FlowRunner
             // failure outside any traced statement (the bulk load) leaves executingSequence 0 and blames nothing.
             if (executingSequence > 0)
             {
-                trace[executingSequence - 1] = trace[executingSequence - 1] with { Error = ex.Message };
+                trace[executingSequence - 1] = trace[executingSequence - 1] with { Error = SecretHygiene.RedactedMessage(ex) };
                 statements.ReportFailure(executingSequence, ex.Message);
             }
 
@@ -386,7 +386,7 @@ public sealed class FlowRunner
                 SqlTrace = trace,
                 Trace = context.Trace,
                 TotalMs = totalMs,
-                Error = ex.Message,
+                Error = SecretHygiene.RedactedMessage(ex),
                 Incremental = incrementalSummary,
             };
         }

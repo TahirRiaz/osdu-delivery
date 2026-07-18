@@ -72,7 +72,7 @@ internal sealed class CatalogRunEventSink : IFlowEventSink, IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogWarning("Live event feed for run {RunId} ended with an error: {Error}",
-                _runId, SecretHygiene.RedactedMessage(ex.Message));
+                _runId, SecretHygiene.RedactedMessage(ex));
         }
 
         await _scope.DisposeAsync().ConfigureAwait(false);
@@ -118,7 +118,7 @@ internal sealed class CatalogRunEventSink : IFlowEventSink, IAsyncDisposable
                     _broken = true;
                     _logger.LogWarning("Live event write for run {RunId} failed; the timeline will still be "
                         + "recorded from the run artifact at completion: {Error}",
-                        _runId, SecretHygiene.RedactedMessage(ex.Message));
+                        _runId, SecretHygiene.RedactedMessage(ex));
                 }
             }
         }

@@ -5,6 +5,7 @@ using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Invoke;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.StoredProcedures;
+using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.SqlServer.StoredProcedures;
 
@@ -110,7 +111,7 @@ public sealed class StoredProcedureFlowRunner
                 EndTimeUtc = endUtc,
                 DurationSeconds = duration,
                 SqlTrace = trace,
-                Error = ex.Message,
+                Error = SecretHygiene.RedactedMessage(ex),
             };
         }
     }

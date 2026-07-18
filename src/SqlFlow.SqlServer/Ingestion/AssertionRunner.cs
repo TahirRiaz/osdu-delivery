@@ -3,6 +3,7 @@ using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Runs;
+using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.SqlServer.Ingestion;
 
@@ -88,7 +89,7 @@ public sealed class AssertionRunner : IAssertionRunner
                     Result = "0",
                     AssertedValue = string.Empty,
                     Evaluated = false,
-                    Error = ex.Message,
+                    Error = SecretHygiene.RedactedMessage(ex),
                     Duration = stopwatch.Elapsed,
                 });
             }

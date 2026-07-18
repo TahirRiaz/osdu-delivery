@@ -131,7 +131,7 @@ public static class FlowProposalEndpoints
         }
         catch (SqlFlowNodeException ex)
         {
-            return Problem(SecretHygiene.RedactedMessage(ex.Message), StatusCodes.Status400BadRequest);
+            return Problem(SecretHygiene.RedactedMessage(ex), StatusCodes.Status400BadRequest);
         }
 
         if (credentials is null)
@@ -160,7 +160,7 @@ public static class FlowProposalEndpoints
         catch (SqlFlowException ex)
         {
             return Problem(
-                $"The proposal branch could not be published: {SecretHygiene.RedactedMessage(ex.Message)}",
+                $"The proposal branch could not be published: {SecretHygiene.RedactedMessage(ex)}",
                 StatusCodes.Status400BadRequest, "Proposal failed");
         }
 
@@ -187,7 +187,7 @@ public static class FlowProposalEndpoints
                 .ConfigureAwait(false);
             return Problem(
                 $"The proposal branch was pushed but the pull request could not be opened (the branch was rolled back): "
-                + SecretHygiene.RedactedMessage(ex.Message),
+                + SecretHygiene.RedactedMessage(ex),
                 StatusCodes.Status502BadGateway, "Pull request failed");
         }
     }

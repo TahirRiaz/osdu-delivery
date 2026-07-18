@@ -211,7 +211,7 @@ public sealed class CatalogSync
                     // Lineage is an enrichment: a failure to compute it (e.g. a connect-tier timeout) must not
                     // fail the whole sync. The pipeline registry and run history still land; the write phase
                     // resets the stale waves so they never read as a real execution order.
-                    lineageFailure = SecretHygiene.RedactedMessage(ex.Message);
+                    lineageFailure = SecretHygiene.RedactedMessage(ex);
                     warnings.Add($"lineage was not computed for this sync ({lineageFailure}); objects and edges left unchanged, waves reset to not-computed.");
                 }
             }
@@ -376,7 +376,7 @@ public sealed class CatalogSync
             catch (SqlFlow.Core.SqlFlowException ex)
             {
                 // FlowValidationException derives from SqlFlowException, so a malformed document is caught here too.
-                warnings.Add($"'{fullPath}' could not be parsed for the catalog definition ({SecretHygiene.RedactedMessage(ex.Message)}); stored without it.");
+                warnings.Add($"'{fullPath}' could not be parsed for the catalog definition ({SecretHygiene.RedactedMessage(ex)}); stored without it.");
             }
 
             pipelines.Add(new PreparedPipeline
@@ -635,7 +635,7 @@ public sealed class CatalogSync
             }
             catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
             {
-                warnings.Add($"run artifact '{file}' could not be read ({SecretHygiene.RedactedMessage(ex.Message)}); skipped.");
+                warnings.Add($"run artifact '{file}' could not be read ({SecretHygiene.RedactedMessage(ex)}); skipped.");
                 failed++;
             }
             finally
@@ -862,7 +862,7 @@ public sealed class CatalogSync
             }
             catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
             {
-                warnings.Add($"run artifact '{runJsonPath}' could not be read ({SecretHygiene.RedactedMessage(ex.Message)}); not recorded.");
+                warnings.Add($"run artifact '{runJsonPath}' could not be read ({SecretHygiene.RedactedMessage(ex)}); not recorded.");
             }
 
             return new RecordRunResult
@@ -904,7 +904,7 @@ public sealed class CatalogSync
         }
         catch (SqlFlow.Core.SqlFlowException ex)
         {
-            warnings.Add($"'{fullFlowPath}' could not be parsed as a flow ({SecretHygiene.RedactedMessage(ex.Message)}); its run is recorded without a pipeline row.");
+            warnings.Add($"'{fullFlowPath}' could not be parsed as a flow ({SecretHygiene.RedactedMessage(ex)}); its run is recorded without a pipeline row.");
             return PipelineChange.None;
         }
         if (headers.Count == 0)
@@ -1467,7 +1467,7 @@ public sealed class CatalogSync
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
-            warnings.Add($"'{fullPath}' could not be serialized for the catalog definition ({SecretHygiene.RedactedMessage(ex.Message)}); stored without it.");
+            warnings.Add($"'{fullPath}' could not be serialized for the catalog definition ({SecretHygiene.RedactedMessage(ex)}); stored without it.");
             return string.Empty;
         }
     }
@@ -1495,7 +1495,7 @@ public sealed class CatalogSync
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            warnings.Add($"'{relativePath}' could not be read ({SecretHygiene.RedactedMessage(ex.Message)}); left unchanged.");
+            warnings.Add($"'{relativePath}' could not be read ({SecretHygiene.RedactedMessage(ex)}); left unchanged.");
             return null;
         }
     }

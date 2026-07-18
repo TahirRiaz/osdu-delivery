@@ -65,7 +65,7 @@ public sealed class GitHubPullRequestPublisher : IPullRequestPublisher
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             throw new SqlFlowException(
-                $"the GitHub pull-request request failed to complete: {SecretHygiene.RedactedMessage(ex.Message)}", ex);
+                $"the GitHub pull-request request failed to complete: {SecretHygiene.RedactedMessage(ex)}", ex);
         }
 
         using (response)

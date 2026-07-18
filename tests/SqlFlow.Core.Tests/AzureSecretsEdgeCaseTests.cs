@@ -327,8 +327,38 @@ public sealed class AzureSecretsEdgeCaseTests
         => Assert.Equal("Password=[redacted];next", SecretHygiene.RedactedMessage("Password=;next"));
 
     [Fact]
-    public void Redact_Null_Throws()
-        => Assert.Throws<ArgumentNullException>(() => SecretHygiene.RedactedMessage(null!));
+    public void Redact_NullMessage_Throws()
+        => Assert.Throws<ArgumentNullException>(() => SecretHygiene.RedactedMessage((string)null!));
+
+    [Fact]
+    public void Redact_NullException_Throws()
+        => Assert.Throws<ArgumentNullException>(() => SecretHygiene.RedactedMessage((Exception)null!));
+
+    [Fact]
+    public void Redact_Exception_JoinsTheInnerChainAndSkipsMessagesTheWrapperAlreadyQuotes()
+    {
+        var inner = new InvalidOperationException("Invalid column name 'Hash'.");
+        var outer = new InvalidOperationException("An error occurred while saving the entity changes. See the inner exception for details.", inner);
+
+        Assert.Equal(
+            "An error occurred while saving the entity changes. See the inner exception for details. -> Invalid column name 'Hash'.",
+            SecretHygiene.RedactedMessage(outer));
+
+        var quoting = new InvalidOperationException("wrapper says: Invalid column name 'Hash'.", inner);
+        Assert.Equal("wrapper says: Invalid column name 'Hash'.", SecretHygiene.RedactedMessage(quoting));
+    }
+
+    [Fact]
+    public void Redact_Exception_FlattensAggregatesAndRedactsInnerSecrets()
+    {
+        var aggregate = new AggregateException(
+            new InvalidOperationException("branch one failed"),
+            new AggregateException(new InvalidOperationException("login failed for Server=x;Password=hunter2")));
+
+        Assert.Equal(
+            "branch one failed -> login failed for Server=x;Password=[redacted]",
+            SecretHygiene.RedactedMessage(aggregate));
+    }
 
     [Fact]
     public void Hygiene_Warning_SanitizesTheNameIntoTheNamedVariable()

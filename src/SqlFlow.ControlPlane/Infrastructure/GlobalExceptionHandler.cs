@@ -9,7 +9,7 @@ namespace SqlFlow.ControlPlane.Infrastructure;
 /// The single place every unhandled exception is turned into an RFC 7807 ProblemDetails response. A
 /// <see cref="SqlFlowException"/> (a validation/usage error) becomes a 400 with a redacted message; anything
 /// else becomes a 500 whose body never leaks internals (the message is logged, with the correlation id, server
-/// side only). All messages are run through <see cref="SecretHygiene.RedactedMessage"/> first.
+/// side only). All messages are run through <see cref="SecretHygiene.RedactedMessage(Exception)"/> first.
 /// </summary>
 public sealed class GlobalExceptionHandler : IExceptionHandler
 {
@@ -37,7 +37,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         var correlationId = httpContext.Items.TryGetValue(CorrelationIdMiddleware.HeaderName, out var id) ? id?.ToString() : httpContext.TraceIdentifier;
         var isClientError = exception is SqlFlowException;
         var status = isClientError ? StatusCodes.Status400BadRequest : StatusCodes.Status500InternalServerError;
-        var redacted = SecretHygiene.RedactedMessage(exception.Message);
+        var redacted = SecretHygiene.RedactedMessage(exception);
 
         if (isClientError)
         {

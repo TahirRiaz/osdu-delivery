@@ -123,7 +123,7 @@ public sealed class AcquireEngine
             // counters reflect what completed, and the watermark is reported but not persisted (the history reader
             // only advances from a successful run), so the next run re-fetches the un-landed remainder.
             success = false;
-            error = ex.Message;
+            error = SecretHygiene.RedactedMessage(ex);
             log.Log(RunLogLevel.Info, "acquire.error", ex.Message);
         }
         finally

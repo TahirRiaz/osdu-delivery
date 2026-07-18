@@ -121,7 +121,7 @@ public sealed class SftpEngine
         catch (Exception ex) when (!ct.IsCancellationRequested && ex is SqlFlowException or IOException or InvalidOperationException or RequestFailedException)
         {
             sw.Stop();
-            var message = SecretHygiene.RedactedMessage(ex.Message);
+            var message = SecretHygiene.RedactedMessage(ex);
             log.Log(RunLogLevel.Info, "sftp.error", message);
             return new SftpRunResult
             {

@@ -170,7 +170,7 @@ public static class RepoSourceEndpoints
         catch (Exception ex) when (ex is SqlFlowNodeException or SqlFlowException)
         {
             return TypedResults.Problem(
-                detail: SecretHygiene.RedactedMessage(ex.Message),
+                detail: SecretHygiene.RedactedMessage(ex),
                 statusCode: StatusCodes.Status400BadRequest, title: "Discover failed");
         }
     }

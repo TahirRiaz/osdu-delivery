@@ -1,5 +1,7 @@
 using Cronos;
 
+using SqlFlow.Core.Secrets;
+
 namespace SqlFlow.Catalog;
 
 /// <summary>
@@ -70,7 +72,7 @@ public static class ScheduleClock
         }
         catch (Exception ex) when (ex is CronFormatException or TimeZoneNotFoundException or InvalidTimeZoneException)
         {
-            error = ex.Message;
+            error = SecretHygiene.RedactedMessage(ex);
             return false;
         }
     }

@@ -64,6 +64,48 @@ public static class SecretHygiene
         return result;
     }
 
+    /// <summary>
+    /// The redacted, full causal chain of an exception's messages, for persisting or reporting a failure. Many
+    /// framework wrappers carry no diagnostic value themselves (EF Core's DbUpdateException says only "See the
+    /// inner exception for details" while the SqlException under it names the actual problem), so recording just
+    /// the outer <see cref="Exception.Message"/> loses the reason. This walks the chain outer-to-inner, flattens
+    /// AggregateException branches, skips an inner message a wrapper already quotes, and joins the rest with
+    /// " -> " before redacting.
+    /// </summary>
+    public static string RedactedMessage(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var messages = new List<string>();
+        AppendMessageChain(exception, messages);
+        return RedactedMessage(messages.Count > 0 ? string.Join(" -> ", messages) : exception.GetType().Name);
+    }
+
+    private static void AppendMessageChain(Exception exception, List<string> messages)
+    {
+        if (exception is AggregateException aggregate)
+        {
+            // The aggregate's own message just parenthesizes its children; recurse into the flattened branches.
+            foreach (var branch in aggregate.Flatten().InnerExceptions)
+            {
+                AppendMessageChain(branch, messages);
+            }
+
+            return;
+        }
+
+        var message = exception.Message.Trim();
+        if (message.Length > 0 && !messages.Any(m => m.Contains(message, StringComparison.Ordinal)))
+        {
+            messages.Add(message);
+        }
+
+        if (exception.InnerException is { } inner)
+        {
+            AppendMessageChain(inner, messages);
+        }
+    }
+
     /// <summary>The warning line for one offending connection. The value itself is never echoed.</summary>
     public static string Warning(string connectionName, string source)
         => $"WARN  {source}: connection '{connectionName}' embeds a credential in the document. Files under " +
