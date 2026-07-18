@@ -103,11 +103,23 @@ export interface PipelineSummary {
   /** "auto" (default: schedules and group runs execute it) or "manual" (the flow's YAML mode: it runs only
    * when triggered directly; the scheduler and batch/node expansion skip it). */
   executionMode: "auto" | "manual";
+  /** "production" (default) or "development" (the flow's YAML lifecycle:); development flows run normally
+   * but never generate notification events. */
+  lifecycle: string;
   sourceServer: string | null;
   targetServer: string | null;
   relativePath: string;
   firstSeenUtc: string;
   lastSeenUtc: string;
+}
+
+/** One batch (source-system grouping) of a repo's flows with its flow counts; a flow that declares no batch
+ * reports under the "default" batch. */
+export interface PipelineBatch {
+  repoId: string;
+  batch: string;
+  flowCount: number;
+  activeCount: number;
 }
 
 export interface PipelineDetail extends PipelineSummary {
@@ -589,6 +601,8 @@ export interface SourceDiscoverRequest {
   maxRecords?: number | null;
   /** Max nesting depth to inspect, default 10. */
   maxDepth?: number | null;
+  /** schema.defaultColumnType for the generated flow; omitted uses SQLFlow's varchar(255) default. */
+  defaultColumnType?: string | null;
 }
 
 /** One discovered path: its address, what it points at, the column it becomes, and its per-record presence. */
@@ -642,6 +656,25 @@ export interface SourceDiscoverResult {
 
 // ---- Lineage -----------------------------------------------------------------------------------------------------------
 
+/** One (server, database, schema) grouping in the catalog with how many objects it holds. A null
+ * database/schema is an object whose identity was only partially resolved (an offline sync). */
+export interface LineageSchema {
+  serverRef: string;
+  database: string | null;
+  schema: string | null;
+  objectCount: number;
+}
+
+/** One (server, database, schema, kind) grouping with its object count: the per-kind breakdown the catalog
+ * tree renders as Tables/Views/Procedures folders under each schema. */
+export interface SchemaKindCount {
+  serverRef: string;
+  database: string | null;
+  schema: string | null;
+  kind: string;
+  objectCount: number;
+}
+
 export interface LineageObject {
   key: string;
   serverRef: string;
@@ -657,7 +690,12 @@ export interface LineageObject {
 }
 
 export interface LineageObjectDetail extends LineageObject {
+  /** The module body (view/procedure/function); null for plain tables, an unconnected sync, or an encrypted module. */
   definition: string | null;
+  /** The generating script (CREATE ...); null when no lineage tier saw the object created. */
+  script: string | null;
+  scriptTier: string | null;
+  scriptUpdatedUtc: string | null;
 }
 
 export interface LineageObjectColumn {
@@ -665,6 +703,8 @@ export interface LineageObjectColumn {
   name: string;
   dataType: string | null;
   nullable: boolean;
+  /** Where the column was learned: read live (Derived) or parsed from the CREATE a run executed (Observed/Declared). */
+  tier: string;
 }
 
 /** The script behind any lineage node in one shape: a pipeline's YAML, a view/procedure's module body, or a
@@ -692,6 +732,14 @@ export interface LineageEdge {
   objectDatabase: string | null;
   objectSchema: string | null;
   tier: string;
+}
+
+/** Everything known about one object in a single payload: identity and metadata, columns, and the lineage
+ * edges that reference it. The "ask about this object" aggregate behind the catalog tree's details panel. */
+export interface ObjectDossier {
+  object: LineageObjectDetail;
+  columns: LineageObjectColumn[];
+  edges: LineageEdge[];
 }
 
 export interface WavePipeline {

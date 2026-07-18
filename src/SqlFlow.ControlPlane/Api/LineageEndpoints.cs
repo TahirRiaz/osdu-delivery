@@ -109,6 +109,13 @@ public sealed record ProjectGraphDto(
 /// objects. A null database/schema is an object whose identity was only partially resolved (an offline sync).</summary>
 public sealed record SchemaDto(string ServerRef, string? Database, string? Schema, int ObjectCount);
 
+/// <summary>One (server, database, schema, kind) grouping in the catalog with how many objects it holds: the
+/// per-kind breakdown of a schema (its Tables, Views, Procedures, ...) a caller uses to render kind-grouped
+/// folders under each schema without listing the objects themselves. A null database/schema is an object whose
+/// identity was only partially resolved (an offline sync).</summary>
+public sealed record SchemaKindCountDto(
+    string ServerRef, string? Database, string? Schema, string Kind, int ObjectCount);
+
 /// <summary>
 /// The read API over the shadow catalog's lineage graph: objects (with their columns and module bodies), the
 /// attributed lineage edges, the per-repo flow dependencies, and the computed execution waves. Every query is
@@ -125,6 +132,7 @@ public static class LineageEndpoints
 
         var lineage = group.MapGroup("/lineage").WithTags("Lineage");
         lineage.MapGet("/schemas", ListSchemasAsync).WithName("ListLineageSchemas");
+        lineage.MapGet("/schemas/kinds", ListSchemaKindsAsync).WithName("ListLineageSchemaKinds");
         lineage.MapGet("/objects", ListObjectsAsync).WithName("ListLineageObjects");
         lineage.MapGet("/objects/detail", GetObjectAsync).WithName("GetLineageObject");
         lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
@@ -171,6 +179,43 @@ public static class LineageEndpoints
             .ThenBy(s => s.Schema, StringComparer.Ordinal)
             .ToList();
         return TypedResults.Ok<IReadOnlyList<SchemaDto>>(ordered);
+    }
+
+    private static async Task<Ok<IReadOnlyList<SchemaKindCountDto>>> ListSchemaKindsAsync(
+        CatalogDbContext db, string? serverRef, string? database, string? schema, CancellationToken ct)
+    {
+        var query = db.Objects.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(serverRef))
+        {
+            query = query.Where(o => o.ServerRef == serverRef);
+        }
+
+        if (!string.IsNullOrWhiteSpace(database))
+        {
+            query = query.Where(o => o.Database == database);
+        }
+
+        if (!string.IsNullOrWhiteSpace(schema))
+        {
+            query = query.Where(o => o.Schema == schema);
+        }
+
+        // The whole per-kind breakdown in one response (no paging): the distinct (server, database, schema, kind)
+        // groupings are bounded by the estate's schema count times the handful of object kinds, not the object
+        // count, so this cannot grow without bound. Ordered so the hierarchy reads top-down and deterministically.
+        var groups = await query
+            .GroupBy(o => new { o.ServerRef, o.Database, o.Schema, o.Kind })
+            .Select(g => new SchemaKindCountDto(
+                g.Key.ServerRef, g.Key.Database, g.Key.Schema, g.Key.Kind, g.Count()))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var ordered = groups
+            .OrderBy(s => s.ServerRef, StringComparer.Ordinal)
+            .ThenBy(s => s.Database, StringComparer.Ordinal)
+            .ThenBy(s => s.Schema, StringComparer.Ordinal)
+            .ThenBy(s => s.Kind, StringComparer.Ordinal)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<SchemaKindCountDto>>(ordered);
     }
 
     private static async Task<Ok<PagedResult<ObjectDto>>> ListObjectsAsync(
@@ -621,7 +666,7 @@ public static class LineageEndpoints
     }
 
     private static async Task<Results<Ok<PagedResult<FlowDependencyDto>>, ProblemHttpResult>> GetDependenciesAsync(
-        Guid repoId, CatalogDbContext db, int? page, int? pageSize, CancellationToken ct)
+        Guid repoId, CatalogDbContext db, Guid? pipelineId, int? page, int? pageSize, CancellationToken ct)
     {
         if (!await RepoExistsAsync(db, repoId, ct).ConfigureAwait(false))
         {
@@ -629,11 +674,17 @@ public static class LineageEndpoints
         }
 
         var (p, size) = PageRequest.Normalize(page, pageSize);
+        var query = db.FlowDependencies.AsNoTracking().Where(d => d.RepoId == repoId);
+        // Narrowed to one flow's edges (both directions) when requested: a flow detail view needs "what this flow
+        // waits for" and "what it unblocks" without paging through the whole repo's dependency list.
+        if (pipelineId is { } pid)
+        {
+            query = query.Where(d => d.FromPipelineId == pid || d.ToPipelineId == pid);
+        }
+
         // A dense estate can have many flow-to-flow dependencies, so this list is paged; ordered by the flow pair,
         // then row id as a stable secondary key so a page boundary is deterministic.
-        var ordered = db.FlowDependencies.AsNoTracking()
-            .Where(d => d.RepoId == repoId)
-            .OrderBy(d => d.FromFlow).ThenBy(d => d.ToFlow).ThenBy(d => d.Id);
+        var ordered = query.OrderBy(d => d.FromFlow).ThenBy(d => d.ToFlow).ThenBy(d => d.Id);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var deps = await ordered
             .Skip((p - 1) * size).Take(size)

@@ -39,6 +39,11 @@ public sealed record PipelineSummaryDto(
     string Lifecycle, string? SourceServer, string? TargetServer, string RelativePath, DateTime FirstSeenUtc,
     DateTime LastSeenUtc);
 
+/// <summary>One batch (source-system grouping) of a repo's flows with how many flows it holds: the grouping level
+/// between a repo and its flows in batch-grouped browsing surfaces. A flow that declares no batch reports under
+/// <see cref="SqlFlow.Catalog.CatalogPipeline.DefaultBatch"/>.</summary>
+public sealed record PipelineBatchDto(Guid RepoId, string Batch, int FlowCount, int ActiveCount);
+
 /// <summary>A single pipeline with its full (secret-redacted) definition for the detail view.</summary>
 public sealed record PipelineDetailDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,

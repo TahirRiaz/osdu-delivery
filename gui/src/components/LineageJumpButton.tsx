@@ -18,7 +18,7 @@ import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
 import TableRowsOutlinedIcon from "@mui/icons-material/TableRowsOutlined";
-import { lineageApi } from "../../api/endpoints";
+import { lineageApi } from "../api/endpoints";
 
 /**
  * What a search hit can open in the lineage graph. An `object` target resolves its repo(s) on demand (the same

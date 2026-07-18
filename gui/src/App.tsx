@@ -23,6 +23,7 @@ const IntegrationsPage = lazyRoute("IntegrationsPage", () => import("./features/
 const DatasourceBrowsePage = lazyRoute("DatasourceBrowsePage", () => import("./features/datasources/DatasourceBrowsePage"));
 const DiscoverPage = lazyRoute("DiscoverPage", () => import("./features/discover/DiscoverPage"));
 const UniqueKeyDetectionPage = lazyRoute("UniqueKeyDetectionPage", () => import("./features/datasources/UniqueKeyDetectionPage"));
+const CatalogPage = lazyRoute("CatalogPage", () => import("./features/catalog/CatalogPage"));
 const LineagePage = lazyRoute("LineagePage", () => import("./features/lineage/LineagePage"));
 const LineageGraphPage = lazyRoute("LineageGraphPage", () => import("./features/lineage/LineageGraphPage"));
 const SearchPage = lazyRoute("SearchPage", () => import("./features/search/SearchPage"));
@@ -71,6 +72,8 @@ export default function App() {
           <Route path="/key-detection" element={<UniqueKeyDetectionPage />} />
           {/* Repo sources merged into the Repos page; keep the old path working for bookmarks. */}
           <Route path="/repo-sources" element={<Navigate to="/repos" replace />} />
+          {/* The explorer tree over every catalog object and flow, with per-node details. */}
+          <Route path="/catalog" element={<CatalogPage />} />
           {/* The graph is the lineage landing; the searchable object catalog is the secondary explorer. */}
           <Route path="/lineage" element={<LineageGraphPage />} />
           <Route path="/lineage/objects" element={<LineagePage />} />

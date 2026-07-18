@@ -18,7 +18,7 @@ import { isApiError } from "../../api/client";
 import type {
   AllSearchResult, ColumnHit, DefinitionHit, FileHit, FlowHit, ObjectHit, SearchCategory,
 } from "../../api/types";
-import { LineageJumpButton, type LineageJumpTarget } from "./LineageJumpButton";
+import { LineageJumpButton, type LineageJumpTarget } from "../../components/LineageJumpButton";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";

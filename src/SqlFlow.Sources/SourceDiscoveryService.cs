@@ -8,7 +8,7 @@ namespace SqlFlow.Sources;
 /// record-grain override (JSON/XML), and sample bounds. A blank <see cref="Format"/> means auto-detect.</summary>
 public sealed record SourceDiscoveryRequest(
     string Location, string? Format, string? Pattern, bool Recursive, string? RootPath,
-    int MaxFiles, int MaxRecords, int MaxDepth);
+    int MaxFiles, int MaxRecords, int MaxDepth, string? DefaultColumnType = null);
 
 /// <summary>One discovered output column and, for a flattened nested source, the path it came from.</summary>
 public sealed record DiscoveredColumn(string Name, string SqlType, bool Nullable, string? SourcePath);
@@ -34,8 +34,6 @@ public sealed record SourceDiscoveryResult(
 /// </summary>
 public sealed class SourceDiscoveryService
 {
-    private const string DefaultColumnType = "nvarchar(4000)";
-
     private readonly IReadOnlyList<ISourceReader> _readers;
     private readonly IReadOnlyList<IFileStore> _fileStores;
     private readonly ISqlTypeMapper _typeMapper;
@@ -81,7 +79,7 @@ public sealed class SourceDiscoveryService
 
     /// <summary>Resolves the source type in priority order: explicit format, then the location's own extension, then
     /// a listed representative file's extension, then content sniffing of that file's head.</summary>
-    private async Task<(string Type, string Confidence, List<string> Evidence, string? CsvDelimiter)> ResolveFormatAsync(
+    private static async Task<(string Type, string Confidence, List<string> Evidence, string? CsvDelimiter)> ResolveFormatAsync(
         IFileStore store, string location, SourceDiscoveryRequest request, CancellationToken ct)
     {
         // An explicit "tsv" is comma-CSV's tab-delimited sibling: same reader, a pinned delimiter.
@@ -129,7 +127,7 @@ public sealed class SourceDiscoveryService
         return (detection.Type, detection.Confidence, evidence, detection.CsvDelimiter);
     }
 
-    private async Task<SourceDiscoveryResult> FlattenAsync(
+    private static async Task<SourceDiscoveryResult> FlattenAsync(
         IFlattenIntrospector introspector, SourceSpec spec, SourceDiscoveryRequest request,
         string confidence, List<string> evidence, CancellationToken ct)
     {
@@ -137,15 +135,17 @@ public sealed class SourceDiscoveryService
             .IntrospectAsync(spec, request.MaxFiles, request.MaxRecords, request.MaxDepth, ct).ConfigureAwait(false);
         var inventory = introspection.Inventory;
 
+        var columnType = ResolveColumnType(request);
+        var maxType = FlattenFlowYaml.MaxVariant(columnType);
         var columns = introspection.Formula.Columns
-            .Select(c => new DiscoveredColumn(c.Name, c.IsLargeText ? "nvarchar(max)" : DefaultColumnType, true, c.SourcePath))
+            .Select(c => new DiscoveredColumn(c.Name, c.IsLargeText ? maxType : columnType, true, c.SourcePath))
             .ToList();
 
         return new SourceDiscoveryResult(
             "flatten", introspection.SourceType, confidence, evidence,
             inventory.FilesScanned, inventory.RecordsScanned, introspection.AutoDetectedGrain,
             inventory.Paths.Any(p => p.RecordCount < inventory.RecordsScanned),
-            inventory.Paths, columns, introspection.Options, FlattenFlowYaml.Build(spec, introspection));
+            inventory.Paths, columns, introspection.Options, FlattenFlowYaml.Build(spec, introspection, columnType));
     }
 
     private async Task<SourceDiscoveryResult> ColumnarAsync(
@@ -181,17 +181,22 @@ public sealed class SourceDiscoveryService
             await reader.CompleteAsync(probeSpec, ct).ConfigureAwait(false);
         }
 
+        var columnType = ResolveColumnType(request);
         var columns = sourceColumns
-            .Select(c => new DiscoveredColumn(c.Name, _typeMapper.Map(c, null, DefaultColumnType).SqlType, c.IsNullable, null))
+            .Select(c => new DiscoveredColumn(c.Name, _typeMapper.Map(c, null, columnType).SqlType, c.IsNullable, null))
             .ToList();
 
-        var yaml = FlattenFlowYaml.BuildColumnar(spec, spec.Type, sourceColumns, _typeMapper, filesScanned: 1);
+        var yaml = FlattenFlowYaml.BuildColumnar(spec, spec.Type, sourceColumns, _typeMapper, filesScanned: 1, columnType);
         var options = spec.Options.Select(o => new KeyValuePair<string, string>(o.Key, o.Value ?? string.Empty)).ToList();
 
         return new SourceDiscoveryResult(
             "columnar", spec.Type, confidence, evidence,
             1, 0, null, false, [], columns, options, yaml);
     }
+
+    /// <summary>The landing column type for a request: the caller's choice, or SQLFlow's lean <c>varchar(255)</c> default.</summary>
+    private static string ResolveColumnType(SourceDiscoveryRequest request)
+        => string.IsNullOrWhiteSpace(request.DefaultColumnType) ? FlattenFlowYaml.DefaultColumnType : request.DefaultColumnType.Trim();
 
     /// <summary>The first file (name-ordered) under a location matching the pattern, or null when nothing matches.</summary>
     private static async Task<FileRef?> FirstFileAsync(

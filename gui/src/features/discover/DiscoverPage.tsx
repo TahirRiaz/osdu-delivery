@@ -30,6 +30,10 @@ const FORMATS = [
   { value: "parquet", label: "Parquet" },
 ];
 
+// Landing column types, leanest first. varchar is single-byte (SQLFlow's default); nvarchar doubles storage and is
+// only worth it when the data is known to exceed Latin-1. Typing narrows in a later transformation stage.
+const COLUMN_TYPES = ["varchar(255)", "varchar(4000)", "varchar(max)", "nvarchar(255)", "nvarchar(4000)", "nvarchar(max)"];
+
 const CONFIDENCE_COLOR: Record<string, "success" | "info" | "warning" | "default"> = {
   explicit: "default",
   extension: "info",
@@ -71,6 +75,7 @@ export default function DiscoverPage() {
   const [maxFiles, setMaxFiles] = useState("");
   const [maxRecords, setMaxRecords] = useState("");
   const [maxDepth, setMaxDepth] = useState("");
+  const [defaultType, setDefaultType] = useState("varchar(255)");
 
   const discover = useMutation({
     mutationFn: (): Promise<SourceDiscoverResult> =>
@@ -83,6 +88,7 @@ export default function DiscoverPage() {
         maxFiles: parseCount(maxFiles) ?? null,
         maxRecords: parseCount(maxRecords) ?? null,
         maxDepth: parseCount(maxDepth) ?? null,
+        defaultColumnType: defaultType.trim() || null,
       }),
     onError: (error) =>
       enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
@@ -117,7 +123,7 @@ export default function DiscoverPage() {
 
   const canDiscover = location.trim().length > 0 && !discover.isPending;
   const advancedCount = [format, pattern.trim(), rootPath.trim(), maxFiles.trim(), maxRecords.trim(), maxDepth.trim()]
-    .filter(Boolean).length + (recursive ? 1 : 0);
+    .filter(Boolean).length + (recursive ? 1 : 0) + (defaultType !== "varchar(255)" ? 1 : 0);
 
   const downloadYaml = () => {
     if (!result) {
@@ -219,6 +225,19 @@ export default function DiscoverPage() {
                 </Stack>
 
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  <TextField
+                    select
+                    label="Default column type"
+                    value={defaultType}
+                    onChange={(e) => setDefaultType(e.target.value)}
+                    sx={{ minWidth: 200 }}
+                    helperText="Landing type; narrows later."
+                    data-testid="discover-default-type"
+                  >
+                    {COLUMN_TYPES.map((t) => (
+                      <MenuItem key={t} value={t}>{t}</MenuItem>
+                    ))}
+                  </TextField>
                   <TextField
                     label="Record grain override"
                     placeholder="rootPath / rowXPath (JSON/XML, auto if blank)"

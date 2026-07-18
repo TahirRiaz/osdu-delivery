@@ -14,6 +14,7 @@ import StorageIcon from "@mui/icons-material/Storage";
 import CableIcon from "@mui/icons-material/Cable";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import HubIcon from "@mui/icons-material/Hub";
+import MenuBookIcon from "@mui/icons-material/MenuBook";
 import SearchIcon from "@mui/icons-material/Search";
 import TravelExploreIcon from "@mui/icons-material/TravelExplore";
 import PeopleIcon from "@mui/icons-material/People";
@@ -39,16 +40,17 @@ const workspace: NavItem[] = [
   { label: "Pipelines", to: "/pipelines", icon: <AccountTreeIcon />, testId: "nav-pipelines" },
   { label: "Schedules", to: "/schedules", icon: <ScheduleIcon />, testId: "nav-schedules" },
   { label: "Timeline", to: "/schedules/timeline", icon: <TimelineIcon />, testId: "nav-schedule-timeline" },
-  { label: "Datasources", to: "/datasources", icon: <StorageIcon />, testId: "nav-datasources" },
 ];
 
 const tools: NavItem[] = [
+  { label: "Datasources", to: "/datasources", icon: <StorageIcon />, testId: "nav-datasources" },
   { label: "Discover", to: "/discover", icon: <TravelExploreIcon />, testId: "nav-discover" },
   { label: "Integrations", to: "/integrations", icon: <CableIcon />, testId: "nav-integrations" },
   { label: "Key detection", to: "/key-detection", icon: <VpnKeyIcon />, testId: "nav-key-detection" },
 ];
 
 const explore: NavItem[] = [
+  { label: "Catalog", to: "/catalog", icon: <MenuBookIcon />, testId: "nav-catalog" },
   { label: "Lineage", to: "/lineage", icon: <HubIcon />, testId: "nav-lineage" },
   { label: "Search", to: "/search", icon: <SearchIcon />, testId: "nav-search" },
 ];

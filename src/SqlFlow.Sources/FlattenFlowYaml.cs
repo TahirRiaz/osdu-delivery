@@ -12,11 +12,18 @@ namespace SqlFlow.Sources;
 /// </summary>
 public static class FlattenFlowYaml
 {
-    /// <summary>Builds the flatten-formula flow YAML for a scanned source and its introspection.</summary>
-    public static string Build(SourceSpec source, FlattenIntrospection introspection)
+    /// <summary>SQLFlow's own landing default (see <see cref="Core.Model.SchemaPolicy.DefaultColumnType"/>): a lean,
+    /// single-byte type. nvarchar is only worth its doubled storage when the data is known to exceed Latin-1.</summary>
+    public const string DefaultColumnType = "varchar(255)";
+
+    /// <summary>Builds the flatten-formula flow YAML for a scanned source and its introspection. The generated
+    /// <c>schema.defaultColumnType</c> is <paramref name="defaultColumnType"/> (defaults to <see cref="DefaultColumnType"/>);
+    /// large-text columns are widened to that type's MAX variant so they never overflow the scalar default.</summary>
+    public static string Build(SourceSpec source, FlattenIntrospection introspection, string? defaultColumnType = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(introspection);
+        var columnType = string.IsNullOrWhiteSpace(defaultColumnType) ? DefaultColumnType : defaultColumnType.Trim();
 
         var formula = introspection.Formula;
         var inventory = introspection.Inventory;
@@ -56,10 +63,11 @@ public static class FlattenFlowYaml
         sb.AppendLine("  schema: dbo");
         sb.Append("  table: ").AppendLine(name);
         sb.AppendLine("schema:");
-        sb.AppendLine("  defaultColumnType: nvarchar(4000)");
+        sb.Append("  defaultColumnType: ").AppendLine(columnType);
 
-        // Columns that hold whole-array / kept-subtree text can be arbitrarily large, so type them as
-        // nvarchar(max) rather than letting them overflow the scalar default.
+        // Columns that hold whole-array / kept-subtree text can be arbitrarily large, so type them as the MAX
+        // variant of the chosen family rather than letting them overflow the scalar default.
+        var maxType = MaxVariant(columnType);
         var largeTextColumns = formula.Columns.Where(c => c.IsLargeText).ToList();
         if (largeTextColumns.Count > 0)
         {
@@ -67,7 +75,7 @@ public static class FlattenFlowYaml
             foreach (var column in largeTextColumns)
             {
                 sb.Append("    ").Append(column.Name).AppendLine(":");
-                sb.AppendLine("      type: nvarchar(max)");
+                sb.Append("      type: ").AppendLine(maxType);
             }
         }
 
@@ -94,13 +102,14 @@ public static class FlattenFlowYaml
     /// string-first table. There is no flatten section because tabular data has no nested structure to flatten.
     /// </summary>
     public static string BuildColumnar(
-        SourceSpec source, string sourceType, IReadOnlyList<SourceColumn> columns, ISqlTypeMapper typeMapper, int filesScanned)
+        SourceSpec source, string sourceType, IReadOnlyList<SourceColumn> columns, ISqlTypeMapper typeMapper,
+        int filesScanned, string? defaultColumnType = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(columns);
         ArgumentNullException.ThrowIfNull(typeMapper);
 
-        const string defaultType = "nvarchar(4000)";
+        var defaultType = string.IsNullOrWhiteSpace(defaultColumnType) ? DefaultColumnType : defaultColumnType.Trim();
         var name = SanitizeFlowName(Path.GetFileNameWithoutExtension(source.Location ?? "flow"));
 
         var sb = new StringBuilder();
@@ -153,6 +162,10 @@ public static class FlattenFlowYaml
 
         return sb.ToString();
     }
+
+    /// <summary>The MAX-length variant of a column type's family: nvarchar(...) -> nvarchar(max), else varchar(max).</summary>
+    public static string MaxVariant(string columnType)
+        => columnType.TrimStart().StartsWith("nvarchar", StringComparison.OrdinalIgnoreCase) ? "nvarchar(max)" : "varchar(max)";
 
     private static void AppendOptionLine(StringBuilder sb, string key, string? value)
     {

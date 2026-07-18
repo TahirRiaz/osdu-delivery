@@ -8,7 +8,8 @@ import type {
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
-  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, MyNotificationOptions, Node, NodeScript,
+  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodeScript,
+  ObjectDossier, PipelineBatch, SchemaKindCount,
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
@@ -63,6 +64,8 @@ export interface PipelineListQuery extends PageQuery {
   name?: string;
   /** Root folder within the repo (the first path segment, or "(root)"); narrows the list to one source. */
   project?: string;
+  /** Batch (source-system grouping) label; "default" also matches flows that declare no batch. */
+  batch?: string;
 }
 
 export const pipelineApi = {
@@ -70,6 +73,10 @@ export const pipelineApi = {
   // The distinct projects (repo-root folders) for the list's project filter, optionally scoped to one repo.
   projects: (repoId?: string) =>
     get<string[]>("/api/v1/pipelines/projects", repoId ? { repoId } : {}),
+  // The distinct batches (source-system groupings) with flow counts, optionally scoped to one repo; a flow
+  // that declares no batch is coalesced into the "default" batch.
+  batches: (repoId?: string) =>
+    get<PipelineBatch[]>("/api/v1/pipelines/batches", repoId ? { repoId } : {}),
   getById: (id: string) => get<PipelineDetail>(`/api/v1/pipelines/${id}`),
   /** The run parameters that apply to this flow (kind + definition driven), for the dynamic trigger form. */
   parameters: (id: string) => get<FlowParameters>(`/api/v1/pipelines/${id}/parameters`),
@@ -258,7 +265,14 @@ export const sourceApi = {
 export interface LineageObjectQuery extends PageQuery {
   name?: string;
   serverRef?: string;
+  database?: string;
+  schema?: string;
   kind?: string;
+}
+
+export interface FlowDependencyQuery extends PageQuery {
+  /** Keep only the dependency edges touching this flow, in either direction (its "waits for" and "unblocks"). */
+  pipelineId?: string;
 }
 
 export interface LineageEdgeQuery extends PageQuery {
@@ -269,9 +283,17 @@ export interface LineageEdgeQuery extends PageQuery {
 }
 
 export const lineageApi = {
+  // The whole (server, database, schema) hierarchy with object counts in one response, for tree skeletons.
+  schemas: (query: { serverRef?: string; database?: string } = {}) =>
+    get<LineageSchema[]>("/api/v1/lineage/schemas", query as QueryParams),
+  // The same hierarchy broken down by object kind (Tables/Views/Procedures/...), also unpaged and bounded.
+  schemaKinds: (query: { serverRef?: string; database?: string; schema?: string } = {}) =>
+    get<SchemaKindCount[]>("/api/v1/lineage/schemas/kinds", query as QueryParams),
   objects: (query: LineageObjectQuery = {}) =>
     get<PagedResult<LineageObject>>("/api/v1/lineage/objects", query as QueryParams),
   objectDetail: (key: string) => get<LineageObjectDetail>("/api/v1/lineage/objects/detail", { key }),
+  // Everything known about one object in a single payload: identity, columns, and its lineage edges.
+  dossier: (key: string) => get<ObjectDossier>("/api/v1/lineage/objects/dossier", { key }),
   script: (key: string) => get<NodeScript>("/api/v1/lineage/script", { key }),
   objectColumns: (key: string, query: PageQuery = {}) =>
     get<PagedResult<LineageObjectColumn>>("/api/v1/lineage/objects/columns", { key, ...query } as QueryParams),
@@ -280,7 +302,7 @@ export const lineageApi = {
   edges: (repoId: string, query: LineageEdgeQuery = {}) =>
     get<PagedResult<LineageEdge>>(`/api/v1/repos/${repoId}/lineage/edges`, query as QueryParams),
   waves: (repoId: string) => get<Wave[]>(`/api/v1/repos/${repoId}/waves`),
-  dependencies: (repoId: string, query: PageQuery = {}) =>
+  dependencies: (repoId: string, query: FlowDependencyQuery = {}) =>
     get<PagedResult<FlowDependency>>(`/api/v1/repos/${repoId}/dependencies`, query as QueryParams),
   // Every selectable (repo, project) pair the lineage graph can be scoped to, for the searchable scope picker.
   projects: () => get<LineageProject[]>("/api/v1/lineage/projects"),

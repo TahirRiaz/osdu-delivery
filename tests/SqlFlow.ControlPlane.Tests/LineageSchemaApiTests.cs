@@ -72,6 +72,22 @@ public sealed class LineageSchemaApiTests
             Assert.Equal(1, schemas.Single(s => s.Schema == "stg").ObjectCount);
             Assert.All(schemas, s => Assert.Equal("DW", s.Database));
 
+            // The per-kind breakdown: dbo splits into 1 Table + 1 View, stg is 1 Table, and the counts per
+            // (schema, kind) group sum to the schema totals above.
+            var kinds = await GetJsonAsync<IReadOnlyList<SchemaKindCountDto>>(
+                client, token, $"/api/v1/lineage/schemas/kinds?serverRef={Uri.EscapeDataString(serverRef)}");
+            Assert.Equal(3, kinds.Count);
+            Assert.Equal(1, kinds.Single(k => k.Schema == "dbo" && k.Kind == "Table").ObjectCount);
+            Assert.Equal(1, kinds.Single(k => k.Schema == "dbo" && k.Kind == "View").ObjectCount);
+            Assert.Equal(1, kinds.Single(k => k.Schema == "stg" && k.Kind == "Table").ObjectCount);
+            Assert.Equal(schemas.Sum(s => s.ObjectCount), kinds.Sum(k => k.ObjectCount));
+
+            // The schema filter narrows the breakdown to one schema's kinds.
+            var dboKinds = await GetJsonAsync<IReadOnlyList<SchemaKindCountDto>>(
+                client, token, $"/api/v1/lineage/schemas/kinds?serverRef={Uri.EscapeDataString(serverRef)}&schema=dbo");
+            Assert.Equal(2, dboKinds.Count);
+            Assert.All(dboKinds, k => Assert.Equal("dbo", k.Schema));
+
             // Filtering objects by database + schema enumerates just that schema's objects.
             var dboObjects = await GetJsonAsync<PagedResult<ObjectDto>>(
                 client, token, $"/api/v1/lineage/objects?serverRef={Uri.EscapeDataString(serverRef)}&database=DW&schema=dbo&pageSize=200");

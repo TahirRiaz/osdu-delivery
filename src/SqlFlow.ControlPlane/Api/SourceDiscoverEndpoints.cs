@@ -12,7 +12,7 @@ namespace SqlFlow.ControlPlane.Api;
 /// scanned read-only; nothing is written to the catalog.</summary>
 public sealed record SourceDiscoverRequest(
     string Location, string? Format, string? Pattern, bool? Recursive, string? RootPath,
-    int? MaxFiles, int? MaxRecords, int? MaxDepth);
+    int? MaxFiles, int? MaxRecords, int? MaxDepth, string? DefaultColumnType);
 
 /// <summary>One discovered path (nested sources): its address, what it points at, the column it becomes, and how many
 /// of the scanned records carried it (<see cref="Present"/> is false when it is missing from some records).</summary>
@@ -76,7 +76,8 @@ public static class SourceDiscoverEndpoints
             request.RootPath,
             Clamp(request.MaxFiles ?? DefaultMaxFiles, 1, MaxAllowedFiles),
             Clamp(request.MaxRecords ?? DefaultMaxRecords, 0, MaxAllowedRecords),
-            Clamp(request.MaxDepth ?? DefaultMaxDepth, 1, MaxAllowedDepth));
+            Clamp(request.MaxDepth ?? DefaultMaxDepth, 1, MaxAllowedDepth),
+            string.IsNullOrWhiteSpace(request.DefaultColumnType) ? null : request.DefaultColumnType.Trim());
 
         try
         {
@@ -109,7 +110,7 @@ public static class SourceDiscoverEndpoints
             // A bad location, an empty selection, an unknown format, or a malformed sample are the caller's to fix, so
             // they surface as a 400 with a clean (secret-redacted) message rather than an opaque 500.
             return TypedResults.Problem(
-                detail: SecretHygiene.RedactedMessage(ex.Message),
+                detail: SecretHygiene.RedactedMessage(ex),
                 statusCode: StatusCodes.Status400BadRequest, title: "Discover failed");
         }
     }

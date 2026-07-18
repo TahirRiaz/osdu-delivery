@@ -178,6 +178,44 @@ pub struct ListPipelinesInput {
     pub active: Option<bool>,
     /// Substring name filter.
     pub name: Option<String>,
+    /// Batch (source-system grouping) filter; "default" also matches flows that declare no batch.
+    pub batch: Option<String>,
+    pub page: Option<i64>,
+    #[serde(rename = "pageSize")]
+    pub page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListBatchesInput {
+    /// Repository id (GUID) filter (optional).
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// Filter by active state (optional).
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DependenciesInput {
+    /// A repository id (GUID).
+    #[serde(rename = "repoId")]
+    pub repo_id: String,
+    /// Keep only the dependency edges touching this flow, in either direction (optional).
+    #[serde(rename = "pipelineId")]
+    pub pipeline_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CatalogTreeInput {
+    /// Server reference: give it to browse below one server.
+    #[serde(rename = "serverRef")]
+    pub server_ref: Option<String>,
+    /// Database: give it (with serverRef) to browse below one database.
+    pub database: Option<String>,
+    /// Schema: give it to get the schema's object-kind groups with counts.
+    pub schema: Option<String>,
+    /// Object kind (Table, View, Procedure, Function, Trigger, Synonym, File): give it to list that
+    /// kind's objects in the schema, paged.
+    pub kind: Option<String>,
     pub page: Option<i64>,
     #[serde(rename = "pageSize")]
     pub page_size: Option<i64>,
@@ -628,17 +666,31 @@ impl SqlFlowMcp {
         self.get(&format!("/api/v1/repos/{}", input.id), &[]).await
     }
 
-    #[tool(description = "List pipelines (flows), filterable by repo, kind, active state, and name.")]
+    #[tool(description = "List pipelines (flows), filterable by repo, kind, active state, name, and batch.")]
     async fn list_pipelines(&self, Parameters(i): Parameters<ListPipelinesInput>) -> String {
         let q = vec![
             ("repoId", i.repo_id.unwrap_or_default()),
             ("kind", i.kind.unwrap_or_default()),
             ("active", i.active.map(|b| b.to_string()).unwrap_or_default()),
             ("name", i.name.unwrap_or_default()),
+            ("batch", i.batch.unwrap_or_default()),
             ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
             ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
         ];
         self.get("/api/v1/pipelines", &q).await
+    }
+
+    #[tool(
+        description = "List the flow batches (source-system groupings) per repository with flow counts; a \
+            flow that declares no batch reports under the \"default\" batch. Then browse one batch's flows \
+            with list_pipelines(repoId, batch)."
+    )]
+    async fn list_flow_batches(&self, Parameters(i): Parameters<ListBatchesInput>) -> String {
+        let q = vec![
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("active", i.active.map(|b| b.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/pipelines/batches", &q).await
     }
 
     #[tool(description = "Get one pipeline (flow) by id.")]
@@ -748,6 +800,54 @@ impl SqlFlowMcp {
         self.get("/api/v1/lineage/objects/dossier", &[("key", i.key)]).await
     }
 
+    #[tool(
+        description = "Browse the catalog as a folder tree (the semantic layer): with no arguments it lists \
+            every (server, database, schema) grouping with object counts; add serverRef and/or database to \
+            narrow; add schema to get that schema's object-kind groups (Tables/Views/Procedures/...) with \
+            counts; add kind to list the objects in that group, paged. Use describe_object on a returned key \
+            for a node's full details (columns, code, relationships), and list_flow_batches / list_pipelines \
+            for the flow branch of the tree."
+    )]
+    async fn catalog_tree(&self, Parameters(i): Parameters<CatalogTreeInput>) -> String {
+        // The argument ladder mirrors the tree's levels; a deeper argument without its parents would silently
+        // aggregate across the missing level, so it is refused with directions instead.
+        if i.kind.is_some() && i.schema.is_none() {
+            return "Give schema (and serverRef/database) together with kind: kind lists the objects of one \
+                schema's kind group. Call catalog_tree with schema first to see the kind groups."
+                .to_string();
+        }
+        if i.schema.is_some() && i.server_ref.is_none() {
+            return "Give serverRef (and database) together with schema: schema names are only unique within \
+                a database. Call catalog_tree with no arguments to see the schema hierarchy."
+                .to_string();
+        }
+
+        if let Some(kind) = i.kind {
+            let q = vec![
+                ("serverRef", i.server_ref.unwrap_or_default()),
+                ("database", i.database.unwrap_or_default()),
+                ("schema", i.schema.unwrap_or_default()),
+                ("kind", kind),
+                ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
+                ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
+            ];
+            return self.get("/api/v1/lineage/objects", &q).await;
+        }
+        if i.schema.is_some() {
+            let q = vec![
+                ("serverRef", i.server_ref.unwrap_or_default()),
+                ("database", i.database.unwrap_or_default()),
+                ("schema", i.schema.unwrap_or_default()),
+            ];
+            return self.get("/api/v1/lineage/schemas/kinds", &q).await;
+        }
+        let q = vec![
+            ("serverRef", i.server_ref.unwrap_or_default()),
+            ("database", i.database.unwrap_or_default()),
+        ];
+        self.get("/api/v1/lineage/schemas", &q).await
+    }
+
     #[tool(description = "List the lineage edges (read/write relations) for a repository.")]
     async fn lineage_edges(&self, Parameters(i): Parameters<RepoIdInput>) -> String {
         self.get(&format!("/api/v1/repos/{}/lineage/edges", i.repo_id), &[]).await
@@ -758,9 +858,13 @@ impl SqlFlowMcp {
         self.get(&format!("/api/v1/repos/{}/waves", i.repo_id), &[]).await
     }
 
-    #[tool(description = "Get the flow-to-flow execution dependencies for a repository.")]
-    async fn lineage_dependencies(&self, Parameters(i): Parameters<RepoIdInput>) -> String {
-        self.get(&format!("/api/v1/repos/{}/dependencies", i.repo_id), &[]).await
+    #[tool(
+        description = "Get the flow-to-flow execution dependencies for a repository; pass pipelineId to keep \
+            only the edges touching one flow (what it waits for and what it unblocks)."
+    )]
+    async fn lineage_dependencies(&self, Parameters(i): Parameters<DependenciesInput>) -> String {
+        let q = vec![("pipelineId", i.pipeline_id.unwrap_or_default())];
+        self.get(&format!("/api/v1/repos/{}/dependencies", i.repo_id), &q).await
     }
 
     // ---- Search (read) ---------------------------------------------------

@@ -27,6 +27,7 @@ public static class CatalogEndpoints
 
         var pipelines = group.MapGroup("/pipelines").WithTags("Pipelines");
         pipelines.MapGet("/", ListPipelinesAsync).WithName("ListPipelines");
+        pipelines.MapGet("/batches", ListPipelineBatchesAsync).WithName("ListPipelineBatches");
         pipelines.MapGet("/projects", ListPipelineProjectsAsync).WithName("ListPipelineProjects");
         pipelines.MapGet("/{id:guid}", GetPipelineAsync).WithName("GetPipeline");
         pipelines.MapGet("/{id:guid}/definition", GetPipelineDefinitionAsync).WithName("GetPipelineDefinition");
@@ -116,7 +117,7 @@ public static class CatalogEndpoints
             // A domain-level failure of the sync itself (e.g. a flow document embedding a credential): report it as a
             // clean, secret-redacted 400 rather than a 500. Infrastructure faults (catalog writes) bubble to the
             // correlation-id error handler.
-            return BadRequest("Sync failed", SecretHygiene.RedactedMessage(ex.Message));
+            return BadRequest("Sync failed", SecretHygiene.RedactedMessage(ex));
         }
     }
 
@@ -144,7 +145,7 @@ public static class CatalogEndpoints
 
     private static async Task<Ok<PagedResult<PipelineSummaryDto>>> ListPipelinesAsync(
         CatalogDbContext db, Guid? repoId, string? kind, bool? active, string? name, string? project,
-        int? page, int? pageSize, CancellationToken ct)
+        string? batch, int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
 
@@ -162,6 +163,15 @@ public static class CatalogEndpoints
         if (active is { } a)
         {
             query = query.Where(x => x.Active == a);
+        }
+
+        // The default batch is a presentation label for flows that declare none, so filtering by it must match
+        // both the literal label and the null rows it stands in for (mirrors the coalescing in the batches list).
+        if (!string.IsNullOrWhiteSpace(batch))
+        {
+            query = batch == CatalogPipeline.DefaultBatch
+                ? query.Where(x => x.Batch == null || x.Batch == batch)
+                : query.Where(x => x.Batch == batch);
         }
 
         if (!string.IsNullOrWhiteSpace(name))
@@ -192,6 +202,39 @@ public static class CatalogEndpoints
                 x.SourceServer, x.TargetServer, x.RelativePath, x.FirstSeenUtc, x.LastSeenUtc))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<PipelineSummaryDto>(items, p, size, total));
+    }
+
+    /// <summary>
+    /// The distinct batches (source-system groupings) of the catalog's flows, optionally scoped to one repo, each
+    /// with its flow counts, in one response (no paging): the distinct batches are bounded by the estate's source
+    /// count, not its flow count. A flow that declares no batch is coalesced into
+    /// <see cref="CatalogPipeline.DefaultBatch"/>, matching how the pipelines list's batch filter resolves it.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<PipelineBatchDto>>> ListPipelineBatchesAsync(
+        CatalogDbContext db, Guid? repoId, bool? active, CancellationToken ct)
+    {
+        var query = db.Pipelines.AsNoTracking().AsQueryable();
+        if (repoId is { } r)
+        {
+            query = query.Where(x => x.RepoId == r);
+        }
+
+        if (active is { } a)
+        {
+            query = query.Where(x => x.Active == a);
+        }
+
+        var groups = await query
+            .GroupBy(x => new { x.RepoId, Batch = x.Batch ?? CatalogPipeline.DefaultBatch })
+            .Select(g => new PipelineBatchDto(
+                g.Key.RepoId, g.Key.Batch, g.Count(), g.Count(x => x.Active)))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var ordered = groups
+            .OrderBy(b => b.RepoId)
+            .ThenBy(b => b.Batch, StringComparer.Ordinal)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<PipelineBatchDto>>(ordered);
     }
 
     /// <summary>
