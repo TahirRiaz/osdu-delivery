@@ -21,6 +21,7 @@ const ScheduleTimelinePage = lazyRoute("ScheduleTimelinePage", () => import("./f
 const DatasourcesPage = lazyRoute("DatasourcesPage", () => import("./features/datasources/DatasourcesPage"));
 const IntegrationsPage = lazyRoute("IntegrationsPage", () => import("./features/integrations/IntegrationsPage"));
 const DatasourceBrowsePage = lazyRoute("DatasourceBrowsePage", () => import("./features/datasources/DatasourceBrowsePage"));
+const DiscoverPage = lazyRoute("DiscoverPage", () => import("./features/discover/DiscoverPage"));
 const UniqueKeyDetectionPage = lazyRoute("UniqueKeyDetectionPage", () => import("./features/datasources/UniqueKeyDetectionPage"));
 const LineagePage = lazyRoute("LineagePage", () => import("./features/lineage/LineagePage"));
 const LineageGraphPage = lazyRoute("LineageGraphPage", () => import("./features/lineage/LineageGraphPage"));
@@ -65,6 +66,7 @@ export default function App() {
           {/* The Integrations page briefly shipped as "REST APIs"; keep the old path working for bookmarks. */}
           <Route path="/rest-apis" element={<Navigate to="/integrations" replace />} />
           <Route path="/datasources/browse" element={<DatasourceBrowsePage />} />
+          <Route path="/discover" element={<DiscoverPage />} />
           {/* Top-level path (not under /datasources) so the sidebar's startsWith selection stays unambiguous. */}
           <Route path="/key-detection" element={<UniqueKeyDetectionPage />} />
           {/* Repo sources merged into the Repos page; keep the old path working for bookmarks. */}

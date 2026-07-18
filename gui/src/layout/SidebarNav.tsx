@@ -15,6 +15,7 @@ import CableIcon from "@mui/icons-material/Cable";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import HubIcon from "@mui/icons-material/Hub";
 import SearchIcon from "@mui/icons-material/Search";
+import TravelExploreIcon from "@mui/icons-material/TravelExplore";
 import PeopleIcon from "@mui/icons-material/People";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
@@ -39,6 +40,10 @@ const workspace: NavItem[] = [
   { label: "Schedules", to: "/schedules", icon: <ScheduleIcon />, testId: "nav-schedules" },
   { label: "Timeline", to: "/schedules/timeline", icon: <TimelineIcon />, testId: "nav-schedule-timeline" },
   { label: "Datasources", to: "/datasources", icon: <StorageIcon />, testId: "nav-datasources" },
+];
+
+const tools: NavItem[] = [
+  { label: "Discover", to: "/discover", icon: <TravelExploreIcon />, testId: "nav-discover" },
   { label: "Integrations", to: "/integrations", icon: <CableIcon />, testId: "nav-integrations" },
   { label: "Key detection", to: "/key-detection", icon: <VpnKeyIcon />, testId: "nav-key-detection" },
 ];
@@ -60,7 +65,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
   // Exactly one item highlights: the one whose path is the longest prefix of the current location. This lets a
   // nested route (e.g. /schedules/timeline) own the highlight instead of also lighting up its parent (/schedules).
-  const allItems = [...operate, ...workspace, ...explore, ...admin];
+  const allItems = [...operate, ...workspace, ...tools, ...explore, ...admin];
   const selectedTo = allItems.reduce((best, item) => {
     const matches = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
     return matches && item.to.length > best.length ? item.to : best;
@@ -131,6 +136,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
     <nav aria-label="Main navigation">
       {renderGroup("Operate", operate)}
       {renderGroup("Workspace", workspace)}
+      {renderGroup("Tools", tools)}
       {renderGroup("Explore", explore)}
       {hasScope("admin") && renderGroup("Admin", admin)}
     </nav>

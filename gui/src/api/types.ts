@@ -569,6 +569,77 @@ export interface RepoSourceRegistered {
   id: string;
 }
 
+// ---- Source discovery (JSON/XML flatten formula) ----------------------------------------------------------------------
+
+/** The body to discover a flattenable JSON/XML source and generate its ingestion YAML. */
+export interface SourceDiscoverRequest {
+  /** A file, folder, or URI the deployment can reach (e.g. abfss://.../data.json or a folder of files). */
+  location: string;
+  /** Pin the format (json/ndjson/jsonl/xml); omitted infers it from the extension or the folder pattern. */
+  format?: string | null;
+  /** Glob for a folder location, e.g. "*.json" or "*.xml"; ignored for a single file. */
+  pattern?: string | null;
+  /** Recurse into sub-folders when the location is a folder. */
+  recursive?: boolean | null;
+  /** Override the record grain (JSON rootPath / XML rowXPath); omitted auto-detects it from the sample. */
+  rootPath?: string | null;
+  /** Files to scan (folder locations), default 100. */
+  maxFiles?: number | null;
+  /** Records to scan, 0 = all, default 0. */
+  maxRecords?: number | null;
+  /** Max nesting depth to inspect, default 10. */
+  maxDepth?: number | null;
+}
+
+/** One discovered path: its address, what it points at, the column it becomes, and its per-record presence. */
+export interface DiscoveredPath {
+  path: string;
+  /** "value" | "container" | "repeating". */
+  kind: string;
+  column: string;
+  recordCount: number;
+  /** False when the path is missing from some scanned records (schema drift). */
+  present: boolean;
+}
+
+/** One discovered output column: name, target SQL type, nullability, and (flatten mode) its source path. */
+export interface DiscoveredColumn {
+  name: string;
+  sqlType: string;
+  nullable: boolean;
+  /** The originating JSON/XML path for a flattened column; null for a tabular column. */
+  sourcePath: string | null;
+}
+
+/** A key/value pair for the generated source.options block. */
+export interface SourceOption {
+  key: string;
+  value: string | null;
+}
+
+/** The discovery outcome. mode is "flatten" (JSON/XML: paths + grain) or "columnar" (CSV/Excel/Parquet: columns). */
+export interface SourceDiscoverResult {
+  /** "flatten" | "columnar". */
+  mode: string;
+  sourceType: string;
+  /** How the format was decided: "explicit" | "extension" | "high" | "medium" | "low". */
+  detectionConfidence: string;
+  /** Human-readable reasons for the detected format. */
+  detectionEvidence: string[];
+  /** The auto-detected record grain (rootPath/rowXPath), or null when pinned or none was found. */
+  autoDetectedGrain: string | null;
+  filesScanned: number;
+  recordsScanned: number;
+  /** True when at least one path is missing from some records. */
+  schemaDrift: boolean;
+  /** Nested-source path structure (flatten mode); empty for columnar sources. */
+  paths: DiscoveredPath[];
+  /** Output columns (columnar mode); empty for flatten mode, whose columns come from the paths. */
+  columns: DiscoveredColumn[];
+  options: SourceOption[];
+  generatedYaml: string;
+}
+
 // ---- Lineage -----------------------------------------------------------------------------------------------------------
 
 export interface LineageObject {

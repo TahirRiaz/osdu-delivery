@@ -426,19 +426,16 @@ export default function PipelineDetailPage() {
 
       <Tabs value={tab} onChange={(_, next) => setTab(next as number)} data-testid="pipeline-tabs">
         <Tab label="YAML" data-testid="pipeline-tab-yaml" />
-        <Tab label="Definition" data-testid="pipeline-tab-definition" />
         <Tab label="Transforms" data-testid="pipeline-tab-transforms" />
         <Tab label="Runs" data-testid="pipeline-tab-runs" />
         <Tab label="Files" data-testid="pipeline-tab-files" />
         <Tab label="Schedules" data-testid="pipeline-tab-schedules" />
+        <Tab label="Definition" data-testid="pipeline-tab-definition" />
       </Tabs>
 
       {tab === 0 && <CodeView value={detail.yaml} language="yaml" height={560} lsp data-testid="pipeline-yaml" />}
-      {tab === 1 && (
-        <CodeView value={prettyJson(detail.definitionJson)} language="json" height={560} data-testid="pipeline-definition" />
-      )}
-      {tab === 2 && <TransformsTab pipelineId={pipelineId} />}
-      {tab === 3 && (
+      {tab === 1 && <TransformsTab pipelineId={pipelineId} />}
+      {tab === 2 && (
         <PagedTable
           queryKey={["runs", "by-pipeline", pipelineId]}
           fetchPage={(page, pageSize) => runApi.list({ pipelineId, page, pageSize })}
@@ -449,8 +446,8 @@ export default function PipelineDetailPage() {
           emptyMessage="This pipeline has not run yet."
         />
       )}
-      {tab === 4 && <FilesTab pipelineId={pipelineId} />}
-      {tab === 5 && (
+      {tab === 3 && <FilesTab pipelineId={pipelineId} />}
+      {tab === 4 && (
         <PagedTable
           queryKey={["schedules", "by-pipeline", pipelineId]}
           fetchPage={(page, pageSize) => scheduleApi.list({ pipelineId, page, pageSize })}
@@ -458,6 +455,9 @@ export default function PipelineDetailPage() {
           rowKey={(row) => row.id}
           emptyMessage="This pipeline has no schedules."
         />
+      )}
+      {tab === 5 && (
+        <CodeView value={prettyJson(detail.definitionJson)} language="json" height={560} data-testid="pipeline-definition" />
       )}
 
       {triggerOpen && (

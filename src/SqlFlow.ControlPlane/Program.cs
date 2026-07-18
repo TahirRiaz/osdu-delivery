@@ -316,6 +316,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapDatasourceComputeEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints()
+    .MapSourceDiscoverEndpoints()
     .MapNodeControlEndpoints()
     .MapIntegrationDebugEndpoints();
 

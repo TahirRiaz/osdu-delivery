@@ -16,6 +16,7 @@ import type {
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
+  SourceDiscoverRequest, SourceDiscoverResult,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
 
@@ -243,6 +244,13 @@ export const repoSourceApi = {
   syncNow: (id: string) => post<RepoSource>(`/api/v1/repos/sources/${id}/sync`),
   // Preview-first scan: list a repo's flows without importing (nothing reaches the catalog until a sync).
   discover: (request: DiscoverRepoRequest) => post<DiscoveredFlow[]>("/api/v1/repos/discover", request),
+};
+
+// ---- Source discovery (JSON/XML flatten formula) -------------------------------------------------------------------------------
+
+export const sourceApi = {
+  /** Scan a JSON/XML file or folder, report its path structure, and generate the ingestion (flatten) YAML. */
+  discover: (request: SourceDiscoverRequest) => post<SourceDiscoverResult>("/api/v1/sources/discover", request),
 };
 
 // ---- Lineage -------------------------------------------------------------------------------------------------------------------

@@ -46,6 +46,9 @@ public static class SqlFlowEngineServices
         services.AddSingleton<ISourceReader, XmlSourceReader>();
         services.AddSingleton<ISourceReader, ParquetSourceReader>();
         services.AddSingleton<ISourceReader, DuckDbSourceReader>();
+        // Unified file discovery: one entry point that detects a source's format and generates its ingestion YAML
+        // (flatten for JSON/XML, columnar for CSV/Excel/Parquet), over the readers and stores registered above.
+        services.AddSingleton<SourceDiscoveryService>();
         services.AddSingleton<ISqlTypeMapper, SqlServerTypeMapper>();
         services.AddSingleton<ISchemaProvider, SqlServerSchemaProvider>();
         services.AddSingleton<IDdlGenerator, SqlServerDdlGenerator>();
