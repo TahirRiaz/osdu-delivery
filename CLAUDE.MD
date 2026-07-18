@@ -32,6 +32,14 @@ This applies whether the unit is minutes, hours, days, weeks, sprints, or vague 
 
 **Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path already handles it. Extend or modify the existing path rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.
 
+## Zero Warnings, Zero Errors
+
+**The solution must build with zero warnings and zero errors.** `dotnet build SqlFlow.sln` (Debug or Release) must report `Build succeeded` with no warning or error diagnostics from any project, source or test. Do not hand back work that adds a warning, and do not silence one by lowering the analyzer configuration wholesale.
+
+- Fix warnings properly at the source: correct the doc comment, add the missing culture/`IFormatProvider`, make the method static, implement `IDisposable`, forward the `CancellationToken`, and so on.
+- Suppress a warning only when the flagged behavior is deliberate and correct (for example an intentional insecure-TLS opt-in, an EF Core query where the analyzer's rewrite would break SQL translation, a serialized DTO whose member name is an API contract, or an xUnit convention). Use a narrow `#pragma warning disable`/`restore` around the exact lines, or a `[SuppressMessage]` with a `Justification` that states why. Never a blanket file- or project-wide disable.
+- Verify with a clean rebuild (`-t:Rebuild`) before committing, since an incremental build only re-reports warnings for recompiled projects.
+
 ## No TODOs, No Stubs, Production-Grade Only
 
 **It is forbidden to leave TODOs, FIXMEs, placeholders, stubs, fake return values, or "will implement later" markers in any code you write.** Every function, branch, and module you touch must be fully implemented and production-grade before you hand it back. There is no such thing as a "first pass" that is allowed to be incomplete.
