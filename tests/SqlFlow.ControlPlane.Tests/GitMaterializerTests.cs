@@ -64,6 +64,45 @@ public sealed class GitMaterializerTests
         }
     }
 
+    [Fact]
+    public async Task Materialize_ConcurrentSameCommit_DoesNotRaceOnTheGitLock()
+    {
+        var remote = NewTempDir();
+        var cache = NewTempDir();
+        try
+        {
+            var (firstSha, _) = SeedRepoWithTwoVersions(remote);
+            var materializer = new GitMaterializer(cache);
+
+            // Several runs pinned to the same commit materialize at once (a schedule firing several batches of one
+            // source). Before the per-directory lock this raced two clones into the same .git and one failed with
+            // "failed to create locked file '.../config.lock': File exists". Every task must now return the same
+            // checked-out directory with the correct content.
+            const int concurrency = 8;
+            using var start = new ManualResetEventSlim(false);
+            var tasks = new Task<string>[concurrency];
+            for (var i = 0; i < concurrency; i++)
+            {
+                tasks[i] = Task.Run(() =>
+                {
+                    start.Wait();
+                    return materializer.Materialize(remote, firstSha, credentials: null);
+                });
+            }
+
+            start.Set();
+            var dirs = await Task.WhenAll(tasks);
+
+            Assert.All(dirs, d => Assert.Equal(dirs[0], d));
+            Assert.Equal("v1", File.ReadAllText(Path.Combine(dirs[0], "flow.yaml")));
+        }
+        finally
+        {
+            DeleteDir(remote);
+            DeleteDir(cache);
+        }
+    }
+
     private static (string FirstSha, string SecondSha) SeedRepoWithTwoVersions(string path)
     {
         Repository.Init(path);

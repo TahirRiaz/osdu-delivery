@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LibGit2Sharp;
 using LibGit2Sharp.Handlers;
 using SqlFlow.Core.Secrets;
@@ -13,16 +14,31 @@ public sealed record GitMaterializerCredentials(string? Username, string Secret)
 /// commit SHA in a local cache and returns that working directory, so a run executes the precise version that was
 /// committed (reproducible) and a node can run a flow it has no locally synced copy of. Each SHA gets its own
 /// directory under the cache (keyed by remote + SHA), so a materialized commit is reused across runs and different
-/// commits never disturb each other. The node's drain loop is single-threaded, so materializations are sequential
-/// per node; different nodes use their own caches.
+/// commits never disturb each other. A node executes several claimed runs concurrently, so two runs pinned to the
+/// same commit (a schedule firing several batches of one source at once) can materialize the same directory at the
+/// same time; each working directory is guarded by its own lock so those runs serialize on the clone and the later
+/// ones reuse the finished checkout, rather than racing into the same <c>.git</c> and colliding on git's
+/// <c>config.lock</c>. The lock is process-wide (keyed by the absolute working directory), so every materializer
+/// instance in the process coordinates on the shared cache; different nodes use their own caches and processes.
 /// </summary>
 public sealed class GitMaterializer
 {
+    // One monitor object per working directory, shared across every GitMaterializer in the process (the run worker
+    // and the managed-sync service each hold their own instance but write the same cache root). A commit's clone and
+    // its reuse fast-path both run under this lock, so concurrent runs for the same commit serialize and the later
+    // ones return the finished checkout; runs for different commits take different locks and stay parallel. Entries
+    // are never removed: the set of distinct materialized directories a process touches is small and each monitor is
+    // tiny, so the map's footprint is negligible against the checkouts themselves.
+    private static readonly ConcurrentDictionary<string, object> WorkingDirLocks = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly string _cacheRoot;
 
     /// <param name="cacheRoot">Where materialized commits are cached; defaults to a per-user temp location.</param>
     public GitMaterializer(string? cacheRoot = null)
         => _cacheRoot = cacheRoot ?? Path.Combine(Path.GetTempPath(), "sqlflow", "node-cache");
+
+    private static object LockFor(string workingDir)
+        => WorkingDirLocks.GetOrAdd(Path.GetFullPath(workingDir), static _ => new object());
 
     /// <summary>
     /// Ensures <paramref name="remoteUrl"/> is checked out at <paramref name="commitSha"/> in the cache and returns
@@ -36,39 +52,48 @@ public sealed class GitMaterializer
 
         var workingDir = Path.Combine(_cacheRoot, StableFolder(remoteUrl), commitSha);
 
-        // Reuse: a cache directory already checked out at this exact commit is taken as-is.
-        if (Repository.IsValid(workingDir) && HeadIsAt(workingDir, commitSha))
-        {
-            return workingDir;
-        }
-
         ct.ThrowIfCancellationRequested();
 
-        // A partial or wrong-commit directory is rebuilt from scratch, so a previously interrupted materialization
-        // never leaves a half-checked-out tree behind.
-        if (Directory.Exists(workingDir))
+        // Serialize on this exact working directory: concurrent runs pinned to the same commit would otherwise both
+        // clone into it and collide on git's config.lock. The first to enter clones; the rest wait and hit the reuse
+        // fast-path below. Runs for other commits take other locks and stay parallel.
+        lock (LockFor(workingDir))
         {
-            DeleteDirectory(workingDir);
-        }
+            // Reuse: a cache directory already checked out at this exact commit is taken as-is (this is the fast path
+            // a waiter lands on once the first materialization of this commit has finished).
+            if (Repository.IsValid(workingDir) && HeadIsAt(workingDir, commitSha))
+            {
+                return workingDir;
+            }
 
-        Directory.CreateDirectory(workingDir);
-        try
-        {
-            var options = new CloneOptions { Checkout = false };
-            options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
-            Repository.Clone(remoteUrl, workingDir, options);
+            ct.ThrowIfCancellationRequested();
 
-            using var repo = new Repository(workingDir);
-            var commit = repo.Lookup<Commit>(commitSha)
-                ?? throw new SqlFlowNodeException($"commit '{commitSha}' was not found in '{remoteUrl}'.");
-            Commands.Checkout(repo, commit);
-            return workingDir;
-        }
-        catch (LibGit2SharpException ex)
-        {
-            // Leave nothing usable behind on failure, so the next attempt re-materializes cleanly.
-            TryDeleteDirectory(workingDir);
-            throw new SqlFlowNodeException($"could not materialize '{remoteUrl}' at '{commitSha}': {ex.Message}", ex);
+            // A partial or wrong-commit directory is rebuilt from scratch, so a previously interrupted materialization
+            // never leaves a half-checked-out tree behind.
+            if (Directory.Exists(workingDir))
+            {
+                DeleteDirectory(workingDir);
+            }
+
+            Directory.CreateDirectory(workingDir);
+            try
+            {
+                var options = new CloneOptions { Checkout = false };
+                options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
+                Repository.Clone(remoteUrl, workingDir, options);
+
+                using var repo = new Repository(workingDir);
+                var commit = repo.Lookup<Commit>(commitSha)
+                    ?? throw new SqlFlowNodeException($"commit '{commitSha}' was not found in '{remoteUrl}'.");
+                Commands.Checkout(repo, commit);
+                return workingDir;
+            }
+            catch (LibGit2SharpException ex)
+            {
+                // Leave nothing usable behind on failure, so the next attempt re-materializes cleanly.
+                TryDeleteDirectory(workingDir);
+                throw new SqlFlowNodeException($"could not materialize '{remoteUrl}' at '{commitSha}': {ex.Message}", ex);
+            }
         }
     }
 
@@ -86,29 +111,35 @@ public sealed class GitMaterializer
         var workingDir = Path.Combine(_cacheRoot, StableFolder(remoteUrl), "branch");
         ct.ThrowIfCancellationRequested();
 
-        // A fresh checkout each sync keeps the logic simple and correct (no fetch/merge edge cases); the synced
-        // estate is small and the sync runs on an interval, so re-cloning the branch tip is an acceptable cost.
-        if (Directory.Exists(workingDir))
+        // A branch sync tears down and re-clones this one per-repo directory, so two concurrent syncs of the same
+        // repo (a second control-plane node, or a fast poll interval) would collide on it; the per-directory lock
+        // serializes them. The key differs from any commit directory, so branch syncs and pinned runs never contend.
+        lock (LockFor(workingDir))
         {
-            DeleteDirectory(workingDir);
-        }
+            // A fresh checkout each sync keeps the logic simple and correct (no fetch/merge edge cases); the synced
+            // estate is small and the sync runs on an interval, so re-cloning the branch tip is an acceptable cost.
+            if (Directory.Exists(workingDir))
+            {
+                DeleteDirectory(workingDir);
+            }
 
-        Directory.CreateDirectory(workingDir);
-        try
-        {
-            var options = new CloneOptions { BranchName = string.IsNullOrWhiteSpace(branch) ? null : branch };
-            options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
-            Repository.Clone(remoteUrl, workingDir, options);
+            Directory.CreateDirectory(workingDir);
+            try
+            {
+                var options = new CloneOptions { BranchName = string.IsNullOrWhiteSpace(branch) ? null : branch };
+                options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
+                Repository.Clone(remoteUrl, workingDir, options);
 
-            using var repo = new Repository(workingDir);
-            var sha = repo.Head.Tip?.Sha
-                ?? throw new SqlFlowNodeException($"'{remoteUrl}' (branch '{branch}') has no commits to sync.");
-            return (workingDir, sha);
-        }
-        catch (LibGit2SharpException ex)
-        {
-            TryDeleteDirectory(workingDir);
-            throw new SqlFlowNodeException($"could not pull '{remoteUrl}' (branch '{branch}'): {ex.Message}", ex);
+                using var repo = new Repository(workingDir);
+                var sha = repo.Head.Tip?.Sha
+                    ?? throw new SqlFlowNodeException($"'{remoteUrl}' (branch '{branch}') has no commits to sync.");
+                return (workingDir, sha);
+            }
+            catch (LibGit2SharpException ex)
+            {
+                TryDeleteDirectory(workingDir);
+                throw new SqlFlowNodeException($"could not pull '{remoteUrl}' (branch '{branch}'): {ex.Message}", ex);
+            }
         }
     }
 
