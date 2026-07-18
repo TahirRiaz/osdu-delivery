@@ -10,24 +10,28 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The schedule API end to end through the in-memory host: authorization (a read token cannot create a schedule),
-/// validation (a malformed cron is a 400 before any database work), the not-found path, the full create -> list ->
+/// The schedule API end to end through the in-memory host: authorization (any authenticated user may manage
+/// schedules, since only user administration is scope-gated), validation (a malformed cron is a 400 before any
+/// database work), the not-found path, the full create -> list ->
 /// get -> pause -> resume -> delete lifecycle, and an end-to-end proof that the scheduler actually fires a due
 /// schedule by enqueuing a run for its pipeline. DB-backed tests seed and remove their own repo's rows.
 /// </summary>
 public sealed class ScheduleApiTests
 {
     [Fact]
-    public async Task CreateSchedule_WithReadOnlyToken_Returns403()
+    public async Task CreateSchedule_WithAnyAuthenticatedToken_IsAuthorized()
     {
+        // Managing schedules is part of the operational product every authenticated user gets: only user
+        // administration is scope-gated. So a token WITHOUT the operate scope still passes authorization and reaches
+        // the endpoint's validation, which rejects a malformed cron with a 400 (proving it was not fenced off at 403).
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
         var token = await IssueTokenAsync(client, ["read"]);
 
         using var response = await PostAsync(client, token, "/api/v1/schedules",
-            new CreateScheduleRequest(Guid.NewGuid(), ["flow"], "0 6 * * *", null, "UTC", true));
+            new CreateScheduleRequest(Guid.NewGuid(), ["flow"], "not a cron", null, "UTC", true));
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
@@ -132,15 +136,19 @@ public sealed class ScheduleApiTests
     }
 
     [Fact]
-    public async Task RunScheduleNow_WithReadOnlyToken_Returns403()
+    public async Task RunScheduleNow_WithAnyAuthenticatedToken_IsAuthorized()
     {
+        // Firing a schedule on demand is part of the operational product every authenticated user gets: only user
+        // administration is scope-gated. A token WITHOUT the operate scope therefore clears authorization (the
+        // response is neither 401 nor 403); the schedule lookup itself happens past that boundary.
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
         var token = await IssueTokenAsync(client, ["read"]);
 
         using var response = await PostAsync(client, token, $"/api/v1/schedules/{Guid.NewGuid()}/run", null);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [SkippableFact]

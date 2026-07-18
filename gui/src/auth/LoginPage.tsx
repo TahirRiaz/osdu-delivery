@@ -19,6 +19,7 @@ import { authApi } from "../api/endpoints";
 import { isApiError } from "../api/client";
 import { CorrelationError } from "../components/CorrelationError";
 import { useAuth } from "./AuthContext";
+import { readLoginPrefs } from "./loginPrefs";
 
 /** Checkbox's inputProps is the strict InputHTMLAttributes, which has no data-* member; cast through unknown so the
  * test id is accepted without loosening the component's typing. */
@@ -50,9 +51,12 @@ export default function LoginPage() {
 
   const providers = useQuery({ queryKey: ["auth", "providers"], queryFn: authApi.providers, staleTime: 60_000 });
 
-  const [username, setUsername] = useState("");
+  // Read once per mount, not on every render: the stored values seed the form, and from then on the form is the
+  // truth. `prefs` is kept so focus can land on the field that is actually still empty.
+  const [prefs] = useState(readLoginPrefs);
+  const [username, setUsername] = useState(prefs.username);
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(false);
+  const [remember, setRemember] = useState(prefs.remember);
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -74,6 +78,7 @@ export default function LoginPage() {
     }
   };
 
+  // Every sign-in path records its own prefill from the server's answer, inside beginSession; nothing to do here.
   const submitLocal = (event: FormEvent) => {
     event.preventDefault();
     void run(() => loginLocal(username, password, remember));
@@ -175,7 +180,8 @@ export default function LoginPage() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
-                  autoFocus
+                  // A returning user's username is already filled in, so the caret belongs on the password instead.
+                  autoFocus={prefs.username === ""}
                   fullWidth
                   inputProps={{ "data-testid": "login-username" }}
                 />
@@ -186,6 +192,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete="current-password"
+                  autoFocus={prefs.username !== ""}
                   fullWidth
                   inputProps={{ "data-testid": "login-password" }}
                 />

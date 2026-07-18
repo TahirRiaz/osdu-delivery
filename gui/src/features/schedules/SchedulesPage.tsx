@@ -36,6 +36,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ScheduleStateBadge } from "../../components/StatusBadge";
+import { RunScheduleDialog } from "./RunScheduleDialog";
 
 function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
   const { enqueueSnackbar } = useSnackbar();
@@ -226,6 +227,9 @@ export default function SchedulesPage() {
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Schedule | null>(null);
+  // The schedule whose pre-flight run board is open: Run-now opens it rather than firing blind, so an operator sees
+  // the waves it will run and presses Start.
+  const [runTarget, setRunTarget] = useState<Schedule | null>(null);
 
   const showError = (error: unknown) =>
     enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" });
@@ -235,25 +239,6 @@ export default function SchedulesPage() {
     onSuccess: (updated) => {
       enqueueSnackbar(updated.paused ? "Schedule paused." : "Schedule resumed.", { variant: "success" });
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
-    },
-    onError: showError,
-  });
-
-  const runNow = useMutation({
-    mutationFn: (row: Schedule) => scheduleApi.runNow(row.id),
-    onSuccess: (accepted) => {
-      // A scoped schedule enqueues a wave-ordered group; land on the group, which reflects the whole set as it
-      // executes, rather than on an arbitrary single member.
-      if (accepted.groupId !== null) {
-        enqueueSnackbar(`Started ${accepted.memberCount} flows in dependency order.`, { variant: "success" });
-        void queryClient.invalidateQueries({ queryKey: ["schedules"] });
-        navigate(`/runs/groups/${accepted.groupId}`);
-        return;
-      }
-
-      enqueueSnackbar("Run started.", { variant: "success" });
-      void queryClient.invalidateQueries({ queryKey: ["schedules"] });
-      navigate(`/runs/${accepted.runId}`);
     },
     onError: showError,
   });
@@ -381,15 +366,14 @@ export default function SchedulesPage() {
       align: "right",
       render: (row) => (
         <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-          <Tooltip title="Run now (enqueue a run to test this schedule)">
+          <Tooltip title="Run now (preview the waves, then start)">
             <span>
               <IconButton
                 size="small"
                 color="primary"
-                disabled={runNow.isPending}
                 onClick={(e) => {
                   e.stopPropagation();
-                  runNow.mutate(row);
+                  setRunTarget(row);
                 }}
                 data-testid="schedule-run-now"
               >
@@ -482,6 +466,8 @@ export default function SchedulesPage() {
       />
 
       {createOpen && <CreateScheduleDialog onClose={() => setCreateOpen(false)} />}
+
+      {runTarget && <RunScheduleDialog schedule={runTarget} onClose={() => setRunTarget(null)} />}
 
       <ConfirmDialog
         open={deleteTarget !== null}

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { isApiError, setAuthToken, setUnauthorizedHandler } from "../api/client";
 import { authApi } from "../api/endpoints";
 import type { EntraProviderInfo } from "../api/types";
+import { saveLoginPrefs } from "./loginPrefs";
 import { signInWithEntra } from "./msal";
 
 /** The signed-in session as the GUI holds it. The token also lives in the API client for request headers. */
@@ -128,6 +129,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       : [window.sessionStorage, window.localStorage];
     ephemeral.removeItem(STORAGE_KEY);
     persistent.setItem(STORAGE_KEY, JSON.stringify(full));
+
+    // What the next sign-in prefills, recorded here rather than at the form: the subject is the server's answer to
+    // who this is, so an Entra sign-in (which types no username) is covered by the same line as a local one, and a
+    // local one records the account's canonical name rather than whichever casing was typed. `renewable` is exactly
+    // the user-backed test: the break-glass session has no name worth offering back and leaves no trace.
+    if (renewable) {
+      saveLoginPrefs({ username: full.subject, remember });
+    }
+
     setAuthToken(full.token);
     setSession(full);
     setSessionEndedReason(null);
@@ -297,7 +307,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthContextValue>(() => ({
     session,
     sessionEndedReason,
-    hasScope: (scope: string) => session?.scopes.includes(scope) ?? false,
+    // The privilege model has two tiers, mirroring the control plane's authorization policies: any authenticated
+    // user gets the whole operational product, and only user administration (the "admin" scope) is fenced off. So
+    // read/operate/author are granted to any live session, and only "admin" consults the token's scopes. This keeps
+    // the UI from hiding a feature the API would in fact allow.
+    hasScope: (scope: string) => {
+      if (session === null) {
+        return false;
+      }
+
+      return scope === "admin" ? session.scopes.includes("admin") : true;
+    },
     loginLocal,
     loginEntra,
     loginBootstrap,

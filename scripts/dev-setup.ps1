@@ -16,6 +16,8 @@ $ErrorActionPreference = "Stop"
 $rg = "datawarehouse-west-rg-prod-v2"
 $app = "sqlflow-v3-control-plane"
 $worker = "sqlflow-v3-worker"
+# The SPA app registration backing the GUI's Microsoft sign-in button, looked up by display name.
+$entraAppName = "SQLFlow V3 GUI"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $repoRoot ".sqlflow\env"
 
@@ -44,6 +46,31 @@ $dwh     = Get-WorkerSecret "dwh-conn"
 # Issuer/audience must match the estate's, or a token minted by the cloud GUI is rejected locally.
 $issuer   = az containerapp show -n $app -g $rg --query "properties.template.containers[0].env[?name=='ControlPlane__Jwt__Issuer'].value | [0]" -o tsv
 $audience = az containerapp show -n $app -g $rg --query "properties.template.containers[0].env[?name=='ControlPlane__Jwt__Audience'].value | [0]" -o tsv
+
+# Entra SSO for the GUI's "Sign in with Microsoft" button. Discovered, not hardcoded: the tenant is whichever one
+# 'az login' is on, and the SPA app registration is found by name. SSO is additive, so a tenant without that
+# registration is not an error: the button simply stays hidden and username/password still works.
+$entraTenant = az account show --query tenantId -o tsv
+$entraClient = az ad app list --filter "displayName eq '$entraAppName'" --query "[0].appId" -o tsv 2>$null
+if ([string]::IsNullOrWhiteSpace($entraClient)) {
+    $entraBlock = @"
+# --- Entra SSO: OFF ---
+# No '$entraAppName' app registration was found in tenant $entraTenant, so the GUI offers username/password only.
+# Create a single-tenant SPA registration of that name with http://localhost:5173 as a redirect URI to turn it on.
+"@
+} else {
+    $entraBlock = @"
+# --- Entra SSO: the GUI's "Sign in with Microsoft" button ---
+# Turns itself on because both ids are present; there is no separate Enabled flag to set. The registration is a
+# SPA whose redirect URI is http://localhost:5173, matching the origin MSAL asks for (window.location.origin), so
+# the GUI must be on exactly that port for the popup to come back.
+#
+# FIRST Entra sign-in PROVISIONS THE USER just-in-time, with DefaultRole (viewer), IN THE SHARED CATALOG: it is a
+# real row in the real estate, not a local one. Raise the role from the GUI's user admin afterwards if needed.
+ControlPlane__AzureAd__TenantId=$entraTenant
+ControlPlane__AzureAd__ClientId=$entraClient
+"@
+}
 
 New-Item -ItemType Directory -Force -Path (Split-Path $envPath) | Out-Null
 
@@ -85,6 +112,8 @@ ControlPlane__Cors__AllowedOrigins__0=http://localhost:5173
 ControlPlane__Jwt__SigningKey=$jwt
 ControlPlane__Jwt__Issuer=$issuer
 ControlPlane__Jwt__Audience=$audience
+
+$entraBlock
 
 # --- Cloud auth: Key Vault and the data lake go through your 'az login' ---
 # This is what makes `${keyvault:...} refs in flow YAML resolve locally with no extra config.

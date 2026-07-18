@@ -25,6 +25,8 @@ REM  compare-and-swap, so nothing double-fires or double-runs. But it does mean:
 REM    - a run you trigger may execute here (good: breakpoints) or in Azure (race).
 REM    - if you leave this running overnight, YOUR MACHINE may run the 04:00 nightly.
 REM  Close the window when you are done. There is no scheduler off switch in config.
+REM  Starting dev.bat again kills whatever the last run left behind, so you never end up
+REM  with two workers on this machine racing each other for the same queue.
 REM
 REM  Flows read and WRITE the real cloud databases, exactly as the estate does.
 REM  ---------------------------------------------------------------------------
@@ -35,6 +37,17 @@ REM ============================================================================
 setlocal
 
 cd /d "%~dp0"
+
+REM --- Stop whatever the last run left behind, before anything builds ---
+REM A control plane from an earlier run keeps SqlFlow.ControlPlane.dll open, so the 'dotnet run'
+REM below fails its build with "the file is locked by another process" and you end up debugging
+REM the OLD binary. A surviving worker also keeps claiming runs off the shared queue behind your
+REM back. So: kill the port owners, kill a control plane that crashed off its port but still holds
+REM the bin\ lock (F5 sessions included), and kill the GUI window a previous dev.bat spawned.
+call :stopport 5000 "control plane"
+call :stopport 5173 "GUI"
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.ControlPlane.exe' -and $_.CommandLine -like '*SqlFlow.ControlPlane*' } | ForEach-Object { Write-Host ('Stopping previous control plane (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+taskkill /f /t /fi "WINDOWTITLE eq SQLFlow GUI*" >nul 2>&1
 
 if not exist ".sqlflow\env" (
     echo [X] .sqlflow\env is missing. Run:
@@ -104,3 +117,23 @@ echo.
 dotnet run --project src\SqlFlow.ControlPlane --urls http://localhost:5000
 
 endlocal
+exit /b
+
+REM ---------------------------------------------------------------------------
+REM  :stopport <port> <what>   free a listening port by killing the process tree that owns it.
+REM  netstat prints the owning pid in the last column; the trailing space in the pattern is what
+REM  keeps ":5000 " from also matching ":50000".
+REM  Do NOT add '-p tcp': that switch makes netstat print IPv4 ONLY, and Vite listens on
+REM  [::1]:5173, so the GUI would never be found. Bare '-ano' lists v4 and v6; the LISTENING
+REM  match drops the UDP rows on its own.
+REM ---------------------------------------------------------------------------
+:stopport
+setlocal
+set "_port=%~1"
+set "_what=%~2"
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /r /c:":%_port% .*LISTENING"') do (
+    echo Stopping previous %_what% ^(pid %%p^) on port %_port% ...
+    taskkill /f /t /pid %%p >nul 2>&1
+)
+endlocal
+goto :eof

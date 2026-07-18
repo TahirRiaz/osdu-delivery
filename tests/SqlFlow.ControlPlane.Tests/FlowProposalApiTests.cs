@@ -16,18 +16,21 @@ public sealed class FlowProposalApiTests
     private static readonly Guid SourceId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     [Fact]
-    public async Task Propose_WithoutAuthorScope_Returns403()
+    public async Task Propose_WithAnyAuthenticatedToken_IsAuthorized()
     {
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
-        // A token with read+operate but not author must not reach the authoring surface.
-        var token = await IssueTokenAsync(client, ["read", "operate"]);
+        // Authoring pull-request proposals is part of the product every authenticated user gets: only user
+        // administration is scope-gated. A token WITHOUT any authoring scope therefore reaches the authoring
+        // surface, whose title guard rejects a blank title with a 400 before any repo or git work (proving it was
+        // not fenced off at 403).
+        var token = await IssueTokenAsync(client, ["read"]);
 
         using var response = await PostAsync(client, token,
-            new ProposeFlowsRequest("Add orders flows", null, null, null,
+            new ProposeFlowsRequest("   ", null, null, null,
                 [new ProposeFlowsFile("flows/orders.01_pre.flow.yaml", "name: x")]));
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]

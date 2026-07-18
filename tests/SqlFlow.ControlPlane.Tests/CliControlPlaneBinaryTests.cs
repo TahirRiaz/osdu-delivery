@@ -426,8 +426,11 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Trigger_WithReadOnlyToken_Exit1_ExplainsTheScope()
+    public async Task Trigger_WithReadOnlyToken_Succeeds_BecauseRunningIsNotScopeGated()
     {
+        // The privilege model has two tiers: any authenticated caller may run flows, and only user administration is
+        // scope-gated. So a token minted with just the read scope triggers a run rather than being turned away for
+        // lacking "operate".
         var (dll, url, cs) = await RequireAsync();
         var username = "cli-cp-viewer-" + Suffix();
         const string password = "a-long-viewer-password-12";
@@ -438,12 +441,12 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
         try
         {
             var result = await CliBinary.RunAsync(
-                dll, ["trigger", "--repo", repoName, "--flow", flowName],
+                dll, ["trigger", "--repo", repoName, "--flow", flowName, "--json"],
                 env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
 
-            Assert.Equal(1, result.Exit);
-            Assert.Contains("403", result.StdErr, StringComparison.Ordinal);
-            Assert.Contains("operate", result.StdErr, StringComparison.Ordinal);
+            Assert.True(result.Exit == 0, result.AllOutput);
+            using var accepted = JsonDocument.Parse(result.StdOut);
+            Assert.Equal("queued", accepted.RootElement.GetProperty("status").GetString());
         }
         finally
         {

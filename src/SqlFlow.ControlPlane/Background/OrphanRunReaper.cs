@@ -62,6 +62,13 @@ public sealed partial class OrphanRunReaper : BackgroundService
             {
                 break;
             }
+            catch (ObjectDisposedException)
+            {
+                // Host teardown has disposed the DI container and the loggers out from under this tick. No work
+                // remains and logging would itself throw (the disposed Windows EventLog provider), so leave the loop
+                // quietly instead of escalating shutdown noise into a "BackgroundService failed".
+                break;
+            }
             catch (Exception ex)
             {
                 LogTickError(SecretHygiene.RedactedMessage(ex.Message));

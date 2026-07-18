@@ -15,7 +15,7 @@ import type {
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
   RunSummary, RunSurrogateKey,
-  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleRunAccepted, SessionResponse, TokenResponse,
+  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
 
@@ -158,6 +158,9 @@ export interface ScheduleListQuery extends PageQuery {
 export const scheduleApi = {
   list: (query: ScheduleListQuery = {}) => get<PagedResult<Schedule>>("/api/v1/schedules", query as QueryParams),
   getById: (id: string) => get<Schedule>(`/api/v1/schedules/${id}`),
+  // The cadence plus the flows a fire runs, in wave order, from the same expander the fire uses: the pre-flight
+  // run board reads this to show "what runs, in which order" before Start is pressed.
+  plan: (id: string) => get<SchedulePlan>(`/api/v1/schedules/${id}/plan`),
   create: (request: CreateScheduleRequest) => post<ScheduleCreated>("/api/v1/schedules", request),
   // Fire the schedule now, on demand (to test it): enqueues a run of its flow without moving the next scheduled fire.
   runNow: (id: string) => post<ScheduleRunAccepted>(`/api/v1/schedules/${id}/run`),

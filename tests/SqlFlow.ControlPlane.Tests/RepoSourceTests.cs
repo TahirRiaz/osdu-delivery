@@ -18,16 +18,19 @@ namespace SqlFlow.ControlPlane.Tests;
 public sealed class RepoSourceTests
 {
     [Fact]
-    public async Task RegisterRepoSource_WithReadOnlyToken_Returns403()
+    public async Task RegisterRepoSource_WithAnyAuthenticatedToken_IsAuthorized()
     {
+        // Managing repo sources is part of the operational product every authenticated user gets: only user
+        // administration is scope-gated. A token WITHOUT the operate scope therefore passes authorization and reaches
+        // the endpoint's validation, which rejects a blank remote URL with a 400 (proving it was not fenced at 403).
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
         var token = await IssueTokenAsync(client, ["read"]);
 
         using var response = await PostAsync(client, token, "/api/v1/repos/sources",
-            new RegisterRepoSourceRequest("repo", "https://example/r.git", "main", 300, true));
+            new RegisterRepoSourceRequest("repo", "   ", "main", 300, true));
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]

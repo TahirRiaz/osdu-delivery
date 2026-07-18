@@ -31,8 +31,10 @@ public static class RunScopes
     };
 }
 
-/// <summary>One flow selected by a scope expansion, with the wave that orders it within the set.</summary>
-public sealed record RunScopeMember(string FlowName, string FlowKind, int Wave);
+/// <summary>One flow selected by a scope expansion, with the wave that orders it within the set and the batch it
+/// carries (coalesced to <see cref="CatalogPipeline.DefaultBatch"/> when the flow declares none), so a caller can
+/// group or filter the set by batch without a second lookup.</summary>
+public sealed record RunScopeMember(string FlowName, string FlowKind, int Wave, string Batch);
 
 /// <summary>The result of expanding a set: what it was anchored on (the flow name for Flow/Node, the schedule name
 /// for a schedule's member set) and the ordered member flows.</summary>
@@ -100,7 +102,9 @@ public static class RunScopeExpander
                   && pipeline.ExecutionMode != PipelineExecutionModes.Manual
                   && (filter == null || (pipeline.Batch ?? CatalogPipeline.DefaultBatch) == filter)
             orderby pipeline.Wave < 0 ? 0 : pipeline.Wave, pipeline.Name
-            select new RunScopeMember(pipeline.Name, pipeline.Kind, pipeline.Wave < 0 ? 0 : pipeline.Wave))
+            select new RunScopeMember(
+                pipeline.Name, pipeline.Kind, pipeline.Wave < 0 ? 0 : pipeline.Wave,
+                pipeline.Batch ?? CatalogPipeline.DefaultBatch))
             .ToListAsync(ct).ConfigureAwait(false);
 
         return new RunScopeExpansion(RunScope.Flow, scheduleName, members);

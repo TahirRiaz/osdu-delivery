@@ -20,17 +20,19 @@ namespace SqlFlow.ControlPlane.Tests;
 public sealed class DatasourceApiTests
 {
     [Fact]
-    public async Task TriggerTask_WithReadOnlyToken_Returns403()
+    public async Task TriggerTask_WithAnyAuthenticatedToken_IsAuthorized()
     {
-        // Compute against a live source is the "operate" scope; a read token authenticates but is rejected by
-        // the operate group before the endpoint runs (no database needed).
+        // Ad-hoc compute against a live source is part of the operational product every authenticated user gets:
+        // only user administration is scope-gated. A token WITHOUT the operate scope therefore passes authorization
+        // and reaches the endpoint's body validation, which rejects an operation outside the closed set with a 400
+        // (proving it was not fenced off at 403).
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
         var token = await IssueTokenAsync(client, ["read"]);
 
-        using var response = await PostTaskAsync(client, token, new { reference = "${env:X}", operation = "listObjects" });
+        using var response = await PostTaskAsync(client, token, new { reference = "${env:X}", operation = "dropDatabase" });
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Theory]

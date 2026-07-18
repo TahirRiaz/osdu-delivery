@@ -442,6 +442,33 @@ export interface ScheduleRunAccepted {
   memberCount: number;
 }
 
+/** One flow a schedule runs, and the wave that orders it within a fire. */
+export interface SchedulePlanMember {
+  flowName: string;
+  flowKind: string;
+  wave: number;
+}
+
+/** When a schedule next runs and exactly what it executes: the cadence plus the lineage-resolved flows in wave
+ * order. Members sharing a wave run concurrently; a wave starts only once the previous one is terminal. This is
+ * what a fire (automatic or run-now) will enqueue, so it drives the pre-flight run board. */
+export interface SchedulePlan {
+  scheduleId: string;
+  repoId: string;
+  name: string;
+  cron: string | null;
+  intervalSeconds: number | null;
+  timezone: string;
+  enabled: boolean;
+  paused: boolean;
+  nextFireUtc: string | null;
+  lastFireUtc: string | null;
+  anchor: string;
+  memberCount: number;
+  waveCount: number;
+  members: SchedulePlanMember[];
+}
+
 // ---- Nodes ------------------------------------------------------------------------------------------------------------
 
 export interface Node {

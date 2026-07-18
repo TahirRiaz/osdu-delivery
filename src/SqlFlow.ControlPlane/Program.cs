@@ -187,18 +187,17 @@ builder.Services.AddAuthorization(authz =>
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Contains(scope) == true;
 
+    // The privilege model has exactly two tiers: any authenticated user gets the whole operational product
+    // (reading, running and cancelling flows, managing schedules and repo sources, scaling pools, and authoring
+    // pull-request proposals), and only user administration (creating accounts and granting roles) is fenced off
+    // behind the admin scope. So read, operate, and author all resolve to "signed in", and admin alone checks a
+    // scope. This is deliberate: a signed-in user is never stuck unable to use a feature the UI shows them.
     authz.AddPolicy("read", policy => policy.RequireAuthenticatedUser());
-    authz.AddPolicy("operate", policy => policy
-        .RequireAuthenticatedUser()
-        .RequireAssertion(context => HasScope(context.User, "operate")));
+    authz.AddPolicy("operate", policy => policy.RequireAuthenticatedUser());
+    authz.AddPolicy("author", policy => policy.RequireAuthenticatedUser());
     authz.AddPolicy("admin", policy => policy
         .RequireAuthenticatedUser()
         .RequireAssertion(context => HasScope(context.User, "admin")));
-    // Authoring pushes a proposal branch to a source repo and opens a pull request: a higher trust boundary than
-    // running a flow, so it is a scope of its own rather than folded into "operate".
-    authz.AddPolicy("author", policy => policy
-        .RequireAuthenticatedUser()
-        .RequireAssertion(context => HasScope(context.User, "author")));
 });
 
 // ---- Cross-cutting: problem details, OpenAPI, compression, health, rate limiting, CORS -----------------------

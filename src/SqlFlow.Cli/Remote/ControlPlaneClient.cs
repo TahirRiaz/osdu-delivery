@@ -720,7 +720,7 @@ internal sealed class ControlPlaneClient : IDisposable
         }
         else if (status == HttpStatusCode.Forbidden)
         {
-            message.Append(" (the credential lacks the required scope; triggering and cancelling need 'operate')");
+            message.Append(" (the credential lacks the required scope; only user administration is restricted, and it needs 'admin')");
         }
 
         if (!string.IsNullOrWhiteSpace(correlationId))

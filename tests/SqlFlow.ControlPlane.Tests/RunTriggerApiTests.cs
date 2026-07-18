@@ -12,9 +12,10 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The run-trigger surface (<c>POST /api/v1/runs</c>) end to end through the in-memory host. The scope tests (a
-/// read token is forbidden, a blank flow name is a 400) need no database: authorization runs before the endpoint,
-/// and the flow-name guard runs before any catalog query, so both resolve against the placeholder connection. The
+/// The run-trigger surface (<c>POST /api/v1/runs</c>) end to end through the in-memory host. The authorization
+/// tests (any authenticated token is accepted, since only user administration is scope-gated; a blank flow name is
+/// a 400) need no database: authorization runs before the endpoint, and the flow-name guard runs before any catalog
+/// query, so both resolve against the placeholder connection. The
 /// 202 (a seeded active pipeline is accepted, with a runId and a Location header) and the 404 (an unknown pipeline)
 /// are DB-backed and seed a repo + pipeline exactly like the read-API test, removing every seeded row in a finally.
 /// The contract is references-only: the request carries a repo id and a flow name, never a secret.
@@ -22,17 +23,18 @@ namespace SqlFlow.ControlPlane.Tests;
 public sealed class RunTriggerApiTests
 {
     [Fact]
-    public async Task TriggerRun_WithReadOnlyToken_Returns403()
+    public async Task TriggerRun_WithAnyAuthenticatedToken_IsAuthorized()
     {
-        // Triggering is the "operate" scope; a read token authenticates but is not authorized, so the operate
-        // group rejects it before the endpoint runs (no database needed).
+        // Triggering a run is part of the operational product every authenticated user gets: only user
+        // administration is scope-gated. A token WITHOUT the operate scope therefore passes authorization and reaches
+        // the endpoint's flow-name guard, which rejects a blank name with a 400 (proving it was not fenced at 403).
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
         var token = await IssueTokenAsync(client, ["read"]);
 
-        using var response = await PostTriggerAsync(client, token, new RunTriggerRequest(Guid.NewGuid(), "some-flow"));
+        using var response = await PostTriggerAsync(client, token, new RunTriggerRequest(Guid.NewGuid(), "  "));
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
@@ -337,16 +339,19 @@ public sealed class RunTriggerApiTests
     }
 
     [Fact]
-    public async Task CancelRun_WithReadOnlyToken_Returns403()
+    public async Task CancelRun_WithAnyAuthenticatedToken_IsAuthorized()
     {
-        // Cancelling is the "operate" scope, like triggering; a read token is rejected before the endpoint runs.
+        // Cancelling a run is part of the operational product every authenticated user gets, like triggering: only
+        // user administration is scope-gated. A token WITHOUT the operate scope therefore clears authorization
+        // (the response is neither 401 nor 403); the run lookup itself happens past that boundary.
         await using var factory = new ControlPlaneAppFactory();
         using var client = factory.CreateClient();
         var token = await IssueTokenAsync(client, ["read"]);
 
         using var response = await PostCancelAsync(client, token, Guid.NewGuid());
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [SkippableFact]

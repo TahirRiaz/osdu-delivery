@@ -66,6 +66,39 @@ test.describe("authentication", () => {
     expect(stored.session).not.toBeNull();
   });
 
+  test("a returning user's username and \"keep me signed in\" choice are prefilled after sign-out", async ({ page, request }) => {
+    await adminSession(request);
+    await page.goto("/login");
+    await page.getByTestId("login-username").fill(E2E.adminUsername);
+    await page.getByTestId("login-password").fill(E2E.adminPassword);
+    await page.getByTestId("login-remember").check();
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("page-dashboard")).toBeVisible();
+
+    await page.getByTestId("account-menu-button").click();
+    await page.getByTestId("account-logout").click();
+    await expect(page.getByTestId("login-card")).toBeVisible();
+
+    // Signing out is exactly when the prefill has to survive: the session is gone, the name is not.
+    await expect(page.getByTestId("login-username")).toHaveValue(E2E.adminUsername);
+    await expect(page.getByTestId("login-remember")).toBeChecked();
+    // The credential itself never comes back, and the caret sits where the typing still has to happen.
+    await expect(page.getByTestId("login-password")).toHaveValue("");
+    await expect(page.getByTestId("login-password")).toBeFocused();
+  });
+
+  test("a failed sign-in does not become the prefill", async ({ page, request }) => {
+    await adminSession(request);
+    await page.goto("/login");
+    await page.getByTestId("login-username").fill("no-such-user");
+    await page.getByTestId("login-password").fill("definitely-wrong-password");
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("login-error")).toBeVisible();
+
+    await page.goto("/login");
+    await expect(page.getByTestId("login-username")).toHaveValue("");
+  });
+
   test("account menu shows the subject and role; sign out returns to login", async ({ page, request }) => {
     await seedSession(page, await adminSession(request));
     await page.goto("/");

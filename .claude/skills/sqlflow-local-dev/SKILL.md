@@ -51,16 +51,21 @@ To be API-only (no local compute), set `ControlPlane__Worker__Enabled=false` in 
 
 ## Traps that will waste your time
 
-**The Key Vault secret `dw-sqlflow-prod` is STALE.** It points at the OLD managed instance
-(`dw-sql-mi-prod`); the estate runs on `dw-mi-sql-prod`. Using it gives a connection that fails with
-a misleading *"transient failure ... consider EnableRetryOnFailure"* error. **Container app secrets
-are the source of truth**, which is what `dev-setup.ps1` reads:
+**Every connection-string secret in Key Vault is DEAD.** `dw-sqlflow-prod`, `dw-pre-prod` and
+`dw-dwh-prod` all name `dw-sql-mi-prod`, a managed instance that no longer exists (`az sql mi list`
+returns only `dw-mi-sql-prod`), and their passwords are stale too. They cannot connect. Using them
+gives a misleading *"transient failure ... consider EnableRetryOnFailure"*. **The container apps'
+own secrets are the source of truth**, which is what `dev-setup.ps1` reads:
 
 ```bash
-az containerapp secret show -n sqlflow-v3-control-plane -g datawarehouse-west-rg-prod-v2 \
-  --secret-name catalog-db --query value -o tsv
-# also: jwt-signing-key, git-token, bootstrap-admin-password
+RG=datawarehouse-west-rg-prod-v2
+az containerapp secret show -n sqlflow-v3-control-plane -g $RG --secret-name catalog-db --query value -o tsv
+# control plane also has: jwt-signing-key, git-token, bootstrap-admin-password
+az containerapp secret show -n sqlflow-v3-worker -g $RG --secret-name pre-conn --query value -o tsv
+az containerapp secret show -n sqlflow-v3-worker -g $RG --secret-name dwh-conn --query value -o tsv
 ```
+Anything resolving `${keyvault:sqlflow-v3-secrets/...}` for a database is broken until the vault is
+repaired (`flows/smoke/prod_smoke.flow.yaml` is one).
 
 **CORS defaults to EMPTY, and empty means no CORS at all.** Without
 `ControlPlane__Cors__AllowedOrigins__0=http://localhost:5173` every GUI call fails with a CORS error.
@@ -108,20 +113,16 @@ dotnet test --filter "Category!=Integration"    # ~4,083 pass; 1 known pre-exist
 
 If you edit `dev.bat` or write any `.bat` here, these will bite:
 
-- **`cmd` needs CRLF.** A batch file written with LF endings misparses labels and `for /f` blocks and
-  appears to do nothing at all, with no error. The Write/Edit tools emit LF, so re-apply CRLF after
-  touching a `.bat`: `python -c "import io;p='dev.bat';s=io.open(p,encoding='utf-8',newline='').read().replace('
-','
-');io.open(p,'w',encoding='utf-8',newline='
-').write(s)"`
+- **`cmd` needs CRLF.** A batch file with LF endings misparses labels and `for /f` blocks and appears
+  to do nothing at all, with no error. The Write/Edit tools emit LF, so re-apply CRLF after touching
+  a `.bat` (a python one-liner reading with `newline=''` and writing with `newline='\r\n'` does it).
 - **`az` is `az.cmd`, and `npm` is `npm.cmd`.** Invoking a `.cmd` from a `.bat` WITHOUT `call` hands
   over control and never returns: the rest of the script silently never runs and prints nothing.
   Always `call az ...`, `call npm ...`. (`dotnet` is a real `.exe` and needs no `call`.)
 - **A running process never sees a PATH change.** Node was installed while VS Code was open, so that
-  terminal and every window it spawns had no `npm`. `dev.bat` now locates Node itself
-  (`%ProgramFiles%
-odejs`) rather than requiring a restart; a plain terminal still needs restarting
-  to get `npm` directly.
+  terminal and every window it spawned had no `npm`. `dev.bat` now locates Node itself under
+  `%ProgramFiles%\nodejs` rather than requiring a restart; a plain terminal still needs restarting to
+  get `npm` directly.
 
 ## VS Code launch.json traps
 

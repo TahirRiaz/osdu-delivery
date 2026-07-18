@@ -339,6 +339,11 @@ public sealed partial class RunWorker
         {
             // Shutting down during startup recovery; nothing to do.
         }
+        catch (ObjectDisposedException)
+        {
+            // Host teardown disposed the DI container and the loggers before startup recovery finished. Bail quietly:
+            // logging would itself throw (the disposed Windows EventLog provider) and there is nothing left to recover.
+        }
         catch (Exception ex)
         {
             // Recovery is best-effort: if the catalog is briefly unreachable at startup, the next poll retries the
