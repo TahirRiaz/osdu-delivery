@@ -19,8 +19,8 @@ public sealed class CompositeRawLandingStore : IRawLandingStore
 
     public Task<bool> ExistsAsync(string location, CancellationToken ct = default) => Select(location).ExistsAsync(location, ct);
 
-    public Task PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct = default)
-        => Select(location).PutAsync(location, content, overwrite, ct);
+    public Task<bool> PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged = true, CancellationToken ct = default)
+        => Select(location).PutAsync(location, content, overwrite, skipUnchanged, ct);
 
     private IRawLandingStore Select(string location)
         => _stores.FirstOrDefault(s => s.CanHandle(location))

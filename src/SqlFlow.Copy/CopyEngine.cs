@@ -18,6 +18,9 @@ namespace SqlFlow.Copy;
 /// </summary>
 public sealed class CopyEngine
 {
+    private static readonly IReadOnlyDictionary<string, byte[]?> EmptyIndex =
+        new Dictionary<string, byte[]?>(StringComparer.Ordinal);
+
     private readonly IReadOnlyList<ICopyEndpoint> _endpoints;
     private readonly TimeProvider _time;
 
@@ -39,6 +42,7 @@ public sealed class CopyEngine
         var sw = Stopwatch.StartNew();
         var written = new List<CopyFileResult>();
         var matched = 0;
+        var skipped = 0;
 
         try
         {
@@ -64,16 +68,23 @@ public sealed class CopyEngine
                 log.Log(RunLogLevel.Info, "copy.list",
                     $"matched {items.Count} file(s) at '{step.Source.Location}'{DescribeWindow(window)}.");
 
+                // One bulk listing of the target's existing content hashes, so an unchanged file is detected by an
+                // in-memory compare rather than a metadata round trip per file. Skipped entirely when the flow opts out
+                // of unchanged-detection (options.skipUnchanged: false), so its listing/hashing cost is not paid.
+                var targetIndex = flow.Options.SkipUnchanged && flow.Options.Overwrite
+                    ? await target.TargetHashIndexAsync(step.Target, ct).ConfigureAwait(false)
+                    : EmptyIndex;
+
                 switch (flow.Operation)
                 {
                     case CopyOperation.Copy:
-                        await CopyAsync(flow, step, source, target, items, written, log, ct).ConfigureAwait(false);
+                        skipped += await CopyAsync(flow, step, source, target, items, targetIndex, written, log, ct).ConfigureAwait(false);
                         break;
                     case CopyOperation.Zip:
-                        await ZipAsync(flow, step, i, multiStep, source, target, items, written, log, ct).ConfigureAwait(false);
+                        skipped += await ZipAsync(flow, step, i, multiStep, source, target, items, targetIndex, written, log, ct).ConfigureAwait(false);
                         break;
                     case CopyOperation.Unzip:
-                        await UnzipAsync(flow, step, source, target, items, written, log, ct).ConfigureAwait(false);
+                        skipped += await UnzipAsync(flow, step, source, target, items, targetIndex, written, log, ct).ConfigureAwait(false);
                         break;
                 }
             }
@@ -86,6 +97,7 @@ public sealed class CopyEngine
                 DurationSeconds = Math.Round(sw.Elapsed.TotalSeconds, 3),
                 Matched = matched,
                 FilesWritten = written.Count,
+                FilesSkipped = skipped,
                 BytesWritten = written.Sum(f => f.SizeBytes),
                 Files = written,
             };
@@ -107,35 +119,84 @@ public sealed class CopyEngine
                 DurationSeconds = Math.Round(sw.Elapsed.TotalSeconds, 3),
                 Matched = matched,
                 FilesWritten = written.Count,
+                FilesSkipped = skipped,
                 BytesWritten = written.Sum(f => f.SizeBytes),
                 Files = written,
             };
         }
     }
 
-    private static async Task CopyAsync(
+    private static async Task<int> CopyAsync(
         CopyFlow flow, CopyStep step, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
-        List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
+        IReadOnlyDictionary<string, byte[]?> targetIndex, List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
     {
+        var skipped = 0;
         foreach (var item in items)
         {
             ct.ThrowIfCancellationRequested();
-            var bytes = await source.ReadAsync(step.Source, item.AbsolutePath, ct).ConfigureAwait(false);
             var relative = flow.Options.PreserveStructure ? item.RelativePath : item.Name;
-            var location = await target.WriteAsync(step.Target, relative, bytes, flow.Options.Overwrite, ct).ConfigureAwait(false);
-            written.Add(new CopyFileResult(location, bytes.Length));
+
+            // When the source lists a content hash (Azure blobs do), decide unchanged from the two listings alone:
+            // compare it to the target's listed hash and skip WITHOUT downloading the source or writing the target.
+            // This is the whole point - an idempotent re-run of a lake-to-lake copy transfers nothing for files that
+            // did not move.
+            if (flow.Options.Overwrite && item.ContentHash is { Length: > 0 } listedHash
+                && await TargetMatchesAsync(target, step.Target, targetIndex, relative, listedHash, ct).ConfigureAwait(false))
+            {
+                skipped++;
+                log.Log(RunLogLevel.Info, "copy.skip", $"skipped '{relative}' (no change).");
+                continue;
+            }
+
+            var bytes = await source.ReadAsync(step.Source, item.AbsolutePath, ct).ConfigureAwait(false);
+            var hash = item.ContentHash is { Length: > 0 } h ? h : ContentHash.Md5(bytes);
+
+            // A source with no listed hash (local disk) is compared only after its cheap local read, so an unchanged
+            // file still skips the target write (e.g. a needless re-upload to the lake).
+            if (flow.Options.Overwrite && item.ContentHash is not { Length: > 0 }
+                && await TargetMatchesAsync(target, step.Target, targetIndex, relative, hash, ct).ConfigureAwait(false))
+            {
+                skipped++;
+                log.Log(RunLogLevel.Info, "copy.skip", $"skipped '{relative}' (no change).");
+                continue;
+            }
+
+            var location = await target.WriteAsync(step.Target, relative, bytes, flow.Options.Overwrite, hash, ct).ConfigureAwait(false);
+            written.Add(new CopyFileResult(location, bytes.Length, Hex(hash)));
             log.Log(RunLogLevel.Info, "copy.write", $"copied {bytes.Length} byte(s) -> '{location}'.");
         }
+
+        return skipped;
     }
 
-    private async Task ZipAsync(
+    /// <summary>Whether the target already holds content whose hash equals <paramref name="hash"/>, so the file can be
+    /// skipped without transferring it. Resolved from the bulk <paramref name="targetIndex"/>; a listed-but-unhashed
+    /// entry (local disk) is hashed on demand for just that file.</summary>
+    private static async Task<bool> TargetMatchesAsync(
+        ICopyEndpoint target, CopyEndpoint endpoint, IReadOnlyDictionary<string, byte[]?> targetIndex,
+        string relativePath, byte[] hash, CancellationToken ct)
+    {
+        if (!targetIndex.TryGetValue(relativePath, out var targetHash))
+        {
+            return false; // the target has no such file
+        }
+
+        targetHash ??= await target.TargetContentHashAsync(endpoint, relativePath, ct).ConfigureAwait(false);
+        return targetHash is { Length: > 0 } && targetHash.AsSpan().SequenceEqual(hash);
+    }
+
+    /// <summary>The lowercase-hex form of a content hash, for the run's file manifest and the catalog.</summary>
+    private static string Hex(byte[] hash) => Convert.ToHexString(hash).ToLowerInvariant();
+
+    private async Task<int> ZipAsync(
         CopyFlow flow, CopyStep step, int stepIndex, bool multiStep, ICopyEndpoint source, ICopyEndpoint target,
-        IReadOnlyList<CopyItem> items, List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
+        IReadOnlyList<CopyItem> items, IReadOnlyDictionary<string, byte[]?> targetIndex, List<CopyFileResult> written,
+        IRunEventSink log, CancellationToken ct)
     {
         if (items.Count == 0)
         {
             log.Log(RunLogLevel.Info, "copy.zip", $"no files matched at '{step.Source.Location}'; no archive written.");
-            return;
+            return 0;
         }
 
         using var buffer = new MemoryStream();
@@ -158,15 +219,24 @@ public sealed class CopyEngine
             ? flow.Options.ZipName!
             : $"{flow.Name}_{SourceLeaf(step.Source.Location)}_{_time.GetUtcNow():yyyyMMddHHmmss}.zip";
         var payload = buffer.ToArray();
-        var location = await target.WriteAsync(step.Target, zipName, payload, flow.Options.Overwrite, ct).ConfigureAwait(false);
-        written.Add(new CopyFileResult(location, payload.Length));
+        var hash = ContentHash.Md5(payload);
+        if (flow.Options.Overwrite && await TargetMatchesAsync(target, step.Target, targetIndex, zipName, hash, ct).ConfigureAwait(false))
+        {
+            log.Log(RunLogLevel.Info, "copy.skip", $"skipped archive '{zipName}' (no change).");
+            return 1;
+        }
+
+        var location = await target.WriteAsync(step.Target, zipName, payload, flow.Options.Overwrite, hash, ct).ConfigureAwait(false);
+        written.Add(new CopyFileResult(location, payload.Length, Hex(hash)));
         log.Log(RunLogLevel.Info, "copy.zip", $"zipped {items.Count} file(s) ({payload.Length} byte(s)) -> '{location}'.");
+        return 0;
     }
 
-    private static async Task UnzipAsync(
+    private static async Task<int> UnzipAsync(
         CopyFlow flow, CopyStep step, ICopyEndpoint source, ICopyEndpoint target, IReadOnlyList<CopyItem> items,
-        List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
+        IReadOnlyDictionary<string, byte[]?> targetIndex, List<CopyFileResult> written, IRunEventSink log, CancellationToken ct)
     {
+        var skipped = 0;
         foreach (var item in items)
         {
             ct.ThrowIfCancellationRequested();
@@ -190,11 +260,21 @@ public sealed class CopyEngine
                 await entryStream.CopyToAsync(entryBuffer, ct).ConfigureAwait(false);
                 var relative = prefix + (flow.Options.PreserveStructure ? entry.FullName : entry.Name);
                 var payload = entryBuffer.ToArray();
-                var location = await target.WriteAsync(step.Target, relative, payload, flow.Options.Overwrite, ct).ConfigureAwait(false);
-                written.Add(new CopyFileResult(location, payload.Length));
+                var hash = ContentHash.Md5(payload);
+                if (flow.Options.Overwrite && await TargetMatchesAsync(target, step.Target, targetIndex, relative, hash, ct).ConfigureAwait(false))
+                {
+                    skipped++;
+                    log.Log(RunLogLevel.Info, "copy.skip", $"skipped '{relative}' (no change).");
+                    continue;
+                }
+
+                var location = await target.WriteAsync(step.Target, relative, payload, flow.Options.Overwrite, hash, ct).ConfigureAwait(false);
+                written.Add(new CopyFileResult(location, payload.Length, Hex(hash)));
                 log.Log(RunLogLevel.Info, "copy.unzip", $"extracted {payload.Length} byte(s) -> '{location}'.");
             }
         }
+
+        return skipped;
     }
 
     private static string SourceLeaf(string location)

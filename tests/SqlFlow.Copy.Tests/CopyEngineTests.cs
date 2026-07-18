@@ -1,4 +1,7 @@
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using SqlFlow.Copy;
 using SqlFlow.Core;
 using SqlFlow.Core.Copy;
@@ -78,6 +81,151 @@ public sealed class CopyEngineTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_dir, "flat", "one.txt")));
         Assert.True(File.Exists(Path.Combine(_dir, "flat", "two.txt")));
         Assert.False(Directory.Exists(Path.Combine(_dir, "flat", "a")));
+    }
+
+    [Fact]
+    public async Task Copy_Unchanged_SkipsRewriteAndKeepsModifiedTime()
+    {
+        // The whole point: a re-run of an unchanged file must not rewrite the target, because bumping its last-write
+        // time re-triggers downstream ingestion for a file that has not changed.
+        Write("src/detail.json", "{\"o\":1}");
+        var flow = Flow(CopyOperation.Copy, "src", "dst");
+
+        var first = await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+        Assert.Equal(1, first.FilesWritten);
+        Assert.Equal(0, first.FilesSkipped);
+
+        var target = Path.Combine(_dir, "dst", "detail.json");
+        var stampBefore = File.GetLastWriteTimeUtc(target);
+
+        var second = await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.True(second.Success);
+        Assert.Equal(1, second.Matched);
+        Assert.Equal(0, second.FilesWritten);
+        Assert.Equal(1, second.FilesSkipped);
+        Assert.Empty(second.Files);
+        Assert.Equal(stampBefore, File.GetLastWriteTimeUtc(target));
+    }
+
+    [Fact]
+    public async Task Copy_MetadataHashMatch_SkipsWithoutTransferring()
+    {
+        // The efficiency guarantee: when the source lists a content hash (as Azure blobs do), an unchanged re-run must
+        // transfer nothing - no download of the source, no write to the target - deciding purely from metadata.
+        var mem = new MemoryEndpoint();
+        mem.Store["mem://src/detail.json"] = Encoding.UTF8.GetBytes("{\"o\":1}");
+        var engine = new CopyEngine([mem], TimeProvider.System);
+        var flow = new CopyFlow
+        {
+            Name = "T",
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = "mem://src" },
+                Target = new CopyEndpoint { Location = "mem://dst" },
+            }],
+        };
+
+        var first = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+        Assert.Equal(1, first.FilesWritten);
+        Assert.Equal(1, mem.Reads);
+        Assert.Equal(1, mem.Writes);
+
+        var second = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+        Assert.True(second.Success);
+        Assert.Equal(0, second.FilesWritten);
+        Assert.Equal(1, second.FilesSkipped);
+        // No further read and no further write: the unchanged file moved zero bytes on the re-run.
+        Assert.Equal(1, mem.Reads);
+        Assert.Equal(1, mem.Writes);
+    }
+
+    [Fact]
+    public async Task Copy_SkipUnchangedDisabled_RewritesEveryRun()
+    {
+        // The gate: options.skipUnchanged=false forces every matched file to be rewritten, paying no comparison cost.
+        var mem = new MemoryEndpoint();
+        mem.Store["mem://src/detail.json"] = Encoding.UTF8.GetBytes("{\"o\":1}");
+        var engine = new CopyEngine([mem], TimeProvider.System);
+        var flow = new CopyFlow
+        {
+            Name = "T",
+            Options = new CopyOptions { SkipUnchanged = false },
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = "mem://src" },
+                Target = new CopyEndpoint { Location = "mem://dst" },
+            }],
+        };
+
+        await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+        var second = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.Equal(1, second.FilesWritten);
+        Assert.Equal(0, second.FilesSkipped);
+        Assert.Equal(2, mem.Writes); // rewritten on the second run despite identical content
+    }
+
+    [Fact]
+    public async Task Copy_MetadataHashDiffers_DownloadsAndRewrites()
+    {
+        var mem = new MemoryEndpoint();
+        mem.Store["mem://src/detail.json"] = Encoding.UTF8.GetBytes("{\"o\":1}");
+        var engine = new CopyEngine([mem], TimeProvider.System);
+        var flow = new CopyFlow
+        {
+            Name = "T",
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = "mem://src" },
+                Target = new CopyEndpoint { Location = "mem://dst" },
+            }],
+        };
+
+        await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        // The source changed: the re-run must download and rewrite it.
+        mem.Store["mem://src/detail.json"] = Encoding.UTF8.GetBytes("{\"o\":2}");
+        var second = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.Equal(1, second.FilesWritten);
+        Assert.Equal(0, second.FilesSkipped);
+        Assert.Equal(2, mem.Reads);
+        Assert.Equal(2, mem.Writes);
+        Assert.Equal("{\"o\":2}", Encoding.UTF8.GetString(mem.Store["mem://dst/detail.json"]));
+    }
+
+    [Fact]
+    public async Task Copy_ChangedContent_RewritesTarget()
+    {
+        Write("src/detail.json", "{\"o\":1}");
+        var flow = Flow(CopyOperation.Copy, "src", "dst");
+        await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        // Same file name, different bytes: the target must be rewritten, not skipped.
+        Write("src/detail.json", "{\"o\":2}");
+        var result = await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.FilesWritten);
+        Assert.Equal(0, result.FilesSkipped);
+        Assert.Equal("{\"o\":2}", await File.ReadAllTextAsync(Path.Combine(_dir, "dst", "detail.json")));
+    }
+
+    [Fact]
+    public async Task Copy_SameLengthDifferentBytes_RewritesTarget()
+    {
+        // A same-length change must still be detected: the compare is byte-for-byte, not length-only.
+        Write("src/detail.json", "AAAA");
+        var flow = Flow(CopyOperation.Copy, "src", "dst");
+        await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Write("src/detail.json", "AABA");
+        var result = await Engine().RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default);
+
+        Assert.Equal(1, result.FilesWritten);
+        Assert.Equal(0, result.FilesSkipped);
+        Assert.Equal("AABA", await File.ReadAllTextAsync(Path.Combine(_dir, "dst", "detail.json")));
     }
 
     [Fact]
@@ -309,4 +457,73 @@ public sealed class CopyEngineTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_dir, "lake", "detail", "2024", "d2.json")));
         Assert.True(File.Exists(Path.Combine(_dir, "lake", "sess", "s1.json")));
     }
+
+    /// <summary>An in-memory endpoint (scheme <c>mem://</c>) that, like the Azure endpoint, reports each file's
+    /// content hash from its listing, and counts reads and writes so a test can prove an unchanged re-run transfers
+    /// nothing. MD5 here is a content fingerprint, matching the algorithm Azure records as a blob's ContentHash.</summary>
+#pragma warning disable CA5351 // Do Not Use Broken Cryptographic Algorithms
+    private sealed class MemoryEndpoint : ICopyEndpoint
+    {
+        public readonly Dictionary<string, byte[]> Store = new(StringComparer.Ordinal);
+        public int Reads;
+        public int Writes;
+
+        public bool CanHandle(string location) => location.StartsWith("mem://", StringComparison.Ordinal);
+
+        public async IAsyncEnumerable<CopyItem> ListAsync(
+            CopyEndpoint endpoint, CopyModifiedWindow window, [EnumeratorCancellation] CancellationToken ct)
+        {
+            var prefix = endpoint.Location.TrimEnd('/') + "/";
+            foreach (var (key, bytes) in Store)
+            {
+                if (!key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var relative = key[prefix.Length..];
+                var leaf = relative.Contains('/') ? relative[(relative.LastIndexOf('/') + 1)..] : relative;
+                yield return new CopyItem(key, relative, leaf, DateTimeOffset.UnixEpoch, bytes.Length, MD5.HashData(bytes));
+            }
+
+            await Task.CompletedTask;
+        }
+
+        public Task<byte[]> ReadAsync(CopyEndpoint endpoint, string absolutePath, CancellationToken ct)
+        {
+            Reads++;
+            return Task.FromResult(Store[absolutePath]);
+        }
+
+        public Task<IReadOnlyDictionary<string, byte[]?>> TargetHashIndexAsync(CopyEndpoint endpoint, CancellationToken ct)
+        {
+            var prefix = endpoint.Location.TrimEnd('/') + "/";
+            var index = new Dictionary<string, byte[]?>(StringComparer.Ordinal);
+            foreach (var (key, bytes) in Store)
+            {
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    index[key[prefix.Length..]] = MD5.HashData(bytes);
+                }
+            }
+
+            return Task.FromResult<IReadOnlyDictionary<string, byte[]?>>(index);
+        }
+
+        public Task<byte[]?> TargetContentHashAsync(CopyEndpoint endpoint, string relativePath, CancellationToken ct)
+        {
+            var key = endpoint.Location.TrimEnd('/') + "/" + relativePath;
+            return Task.FromResult(Store.TryGetValue(key, out var bytes) ? MD5.HashData(bytes) : null);
+        }
+
+        public Task<string> WriteAsync(
+            CopyEndpoint endpoint, string relativePath, ReadOnlyMemory<byte> content, bool overwrite, byte[] contentHash, CancellationToken ct)
+        {
+            Writes++;
+            var key = endpoint.Location.TrimEnd('/') + "/" + relativePath;
+            Store[key] = content.ToArray();
+            return Task.FromResult(key);
+        }
+    }
+#pragma warning restore CA5351
 }

@@ -32,8 +32,9 @@ public sealed class SftpFlowRunner
         var runId = options.RunId ?? Guid.NewGuid();
         var result = await _engine.RunAsync(flow, runId, events, ct).ConfigureAwait(false);
 
+        var skippedNote = result.FilesSkipped > 0 ? $", {result.FilesSkipped} unchanged" : string.Empty;
         events.Log(RunLogLevel.Info, "run.end", result.Success
-            ? $"SUCCESS in {result.DurationSeconds}s: {result.FilesTransferred} file(s), {result.BytesTransferred} byte(s) from {result.Matched} matched"
+            ? $"SUCCESS in {result.DurationSeconds}s: {result.FilesTransferred} file(s), {result.BytesTransferred} byte(s) from {result.Matched} matched{skippedNote}"
             : $"FAILED after {result.DurationSeconds}s ({result.FilesTransferred} transferred before failure): {result.Error}");
 
         return result;

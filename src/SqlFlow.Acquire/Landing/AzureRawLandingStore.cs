@@ -44,20 +44,34 @@ public sealed class AzureRawLandingStore : IRawLandingStore
         }
     }
 
-    public async Task PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct = default)
+    public async Task<bool> PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged = true, CancellationToken ct = default)
     {
         var blob = BlobClient(location);
         try
         {
-            var options = new BlobUploadOptions();
             if (!overwrite)
             {
                 // Fail (rather than clobber) if the blob already exists.
-                options.Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All };
+                var options = new BlobUploadOptions { Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All } };
+                using var stream = new ReadOnlyMemoryStream(content);
+                await blob.UploadAsync(stream, options, ct).ConfigureAwait(false);
+                return true;
             }
 
-            using var stream = new ReadOnlyMemoryStream(content);
-            await blob.UploadAsync(stream, options, ct).ConfigureAwait(false);
+            if (!skipUnchanged)
+            {
+                // Write unconditionally, still stamping the MD5 so a later run can compare if the flow re-enables it.
+                await UploadStampedAsync(blob, content, ContentHash.Md5(content.Span), ct).ConfigureAwait(false);
+                return true;
+            }
+
+            // Overwriting: skip when the blob already holds byte-identical content (its ContentHash is the MD5 we stamp
+            // below), so an unchanged re-land does not bump LastModified and re-trigger the downstream file flow.
+            return await ConditionalWrite.WriteIfChangedAsync(
+                content,
+                token => BlobContentHashAsync(blob, token),
+                (md5, token) => UploadStampedAsync(blob, content, md5, token),
+                ct).ConfigureAwait(false);
         }
         catch (RequestFailedException ex) when (!overwrite && ex.Status == 409)
         {
@@ -66,6 +80,26 @@ public sealed class AzureRawLandingStore : IRawLandingStore
         catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
         {
             throw Translate(location, ex);
+        }
+    }
+
+    private static async Task UploadStampedAsync(BlobClient blob, ReadOnlyMemory<byte> content, byte[] md5, CancellationToken ct)
+    {
+        var options = new BlobUploadOptions { HttpHeaders = new BlobHttpHeaders { ContentHash = md5 } };
+        using var stream = new ReadOnlyMemoryStream(content);
+        await blob.UploadAsync(stream, options, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]?> BlobContentHashAsync(BlobClient blob, CancellationToken ct)
+    {
+        try
+        {
+            var props = await blob.GetPropertiesAsync(cancellationToken: ct).ConfigureAwait(false);
+            return props.Value.ContentHash;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
         }
     }
 

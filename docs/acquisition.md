@@ -61,6 +61,7 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | Rate limiting / request budget (svv batching) | `reliability.rateLimitRps` |
 | Per-request timeout (60/120/300s) | `reliability.timeoutSeconds` |
 | Empty-data skip (easypark, voi) | `landing.skipEmpty` |
+| Unchanged-file skip (same fetch, no rewrite) | `landing.skipUnchanged` (default true) |
 | History path with year/month/day + id tokens | `landing.pathTemplate` |
 | Raw JSON passthrough (fjord1/norled json) | `landing.format: json` (or `auto`) |
 | Binary/XLSX response (Entur report) | `landing.format: auto` (lands `.bin`/declared ext) |

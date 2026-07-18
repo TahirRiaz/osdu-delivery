@@ -45,6 +45,7 @@ public sealed class SftpEngine
         var sw = Stopwatch.StartNew();
         var files = new List<SftpFileResult>();
         var matched = 0;
+        var skipped = 0;
 
         try
         {
@@ -66,9 +67,18 @@ public sealed class SftpEngine
                         using var buffer = new MemoryStream();
                         client.DownloadFile(full, buffer);
                         var rel = flow.PreserveStructure ? relative : relative[(relative.LastIndexOf('/') + 1)..];
-                        var location = await WriteLakeAsync(step.Local, rel, buffer.ToArray(), flow.Overwrite, ct).ConfigureAwait(false);
-                        files.Add(new SftpFileResult(location, buffer.Length));
-                        log.Log(RunLogLevel.Info, "sftp.download", $"downloaded {buffer.Length} byte(s) -> '{location}'.");
+                        var (location, wrote, hash) = await WriteLakeAsync(
+                            step.Local, rel, buffer.ToArray(), flow.Overwrite, flow.SkipUnchanged, ct).ConfigureAwait(false);
+                        if (wrote)
+                        {
+                            files.Add(new SftpFileResult(location, buffer.Length, hash));
+                            log.Log(RunLogLevel.Info, "sftp.download", $"downloaded {buffer.Length} byte(s) -> '{location}'.");
+                        }
+                        else
+                        {
+                            skipped++;
+                            log.Log(RunLogLevel.Info, "sftp.skip", $"skipped '{location}' (no change).");
+                        }
                     }
                 }
                 else
@@ -100,7 +110,8 @@ public sealed class SftpEngine
             return new SftpRunResult
             {
                 RunId = runId, Success = true, DurationSeconds = Math.Round(sw.Elapsed.TotalSeconds, 3),
-                Matched = matched, FilesTransferred = files.Count, BytesTransferred = files.Sum(f => f.SizeBytes), Files = files,
+                Matched = matched, FilesTransferred = files.Count, FilesSkipped = skipped,
+                BytesTransferred = files.Sum(f => f.SizeBytes), Files = files,
             };
         }
         // A cancellation is deliberately NOT caught here: cancelled is a distinct terminal state from failed, and it
@@ -115,7 +126,8 @@ public sealed class SftpEngine
             return new SftpRunResult
             {
                 RunId = runId, Success = false, Error = message, DurationSeconds = Math.Round(sw.Elapsed.TotalSeconds, 3),
-                Matched = matched, FilesTransferred = files.Count, BytesTransferred = files.Sum(f => f.SizeBytes), Files = files,
+                Matched = matched, FilesTransferred = files.Count, FilesSkipped = skipped,
+                BytesTransferred = files.Sum(f => f.SizeBytes), Files = files,
             };
         }
     }
@@ -214,22 +226,41 @@ public sealed class SftpEngine
 
     // ---- Lake / local side --------------------------------------------------------------------------------------
 
-    private async Task<string> WriteLakeAsync(string root, string relative, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct)
+    /// <summary>Writes a downloaded file to the lake/local target, returning the location, whether bytes were actually
+    /// written, and the content hash (lowercase hex MD5). When <paramref name="skipUnchanged"/> is set and the target
+    /// already holds byte-identical content the write is skipped, so an unchanged re-download does not bump the
+    /// target's last-modified time and re-trigger downstream ingestion.</summary>
+    private async Task<(string Location, bool Wrote, string Hash)> WriteLakeAsync(
+        string root, string relative, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged, CancellationToken ct)
     {
+        var md5 = ContentHash.Md5(content.Span);
+        var hex = Convert.ToHexString(md5).ToLowerInvariant();
+
         if (AzureBlobLocation.IsAzureStorageUri(root))
         {
             var loc = AzureBlobLocation.Parse(root);
             var container = Container(loc);
             var blobName = (loc.BlobPath.TrimEnd('/').Length == 0 ? relative : $"{loc.BlobPath.TrimEnd('/')}/{relative}").TrimStart('/');
-            var options = new BlobUploadOptions();
+            var blob = container.GetBlobClient(blobName);
+
             if (!overwrite)
             {
-                options.Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All };
+                await UploadStampedAsync(blob, content, md5, new BlobRequestConditions { IfNoneMatch = ETag.All }, ct).ConfigureAwait(false);
+                return (loc.UriFor(blobName), true, hex);
             }
 
-            using var stream = new MemoryStream(content.ToArray(), writable: false);
-            await container.GetBlobClient(blobName).UploadAsync(stream, options, ct).ConfigureAwait(false);
-            return loc.UriFor(blobName);
+            if (!skipUnchanged)
+            {
+                await UploadStampedAsync(blob, content, md5, null, ct).ConfigureAwait(false);
+                return (loc.UriFor(blobName), true, hex);
+            }
+
+            var uploaded = await ConditionalWrite.WriteIfChangedAsync(
+                content,
+                token => BlobContentHashAsync(blob, token),
+                (hash, token) => UploadStampedAsync(blob, content, hash, null, token),
+                ct).ConfigureAwait(false);
+            return (loc.UriFor(blobName), uploaded, hex);
         }
 
         var destination = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
@@ -239,8 +270,44 @@ public sealed class SftpEngine
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        if (overwrite && skipUnchanged)
+        {
+            var wrote = await ConditionalWrite.WriteIfChangedAsync(
+                content,
+                token => ContentHash.OfFileAsync(destination, token),
+                (_, token) => File.WriteAllBytesAsync(destination, content, token),
+                ct).ConfigureAwait(false);
+            return (destination, wrote, hex);
+        }
+
         await File.WriteAllBytesAsync(destination, content, ct).ConfigureAwait(false);
-        return destination;
+        return (destination, true, hex);
+    }
+
+    private static async Task UploadStampedAsync(
+        BlobClient blob, ReadOnlyMemory<byte> content, byte[] md5, BlobRequestConditions? conditions, CancellationToken ct)
+    {
+        var options = new BlobUploadOptions { HttpHeaders = new BlobHttpHeaders { ContentHash = md5 } };
+        if (conditions is not null)
+        {
+            options.Conditions = conditions;
+        }
+
+        using var stream = new MemoryStream(content.ToArray(), writable: false);
+        await blob.UploadAsync(stream, options, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]?> BlobContentHashAsync(BlobClient blob, CancellationToken ct)
+    {
+        try
+        {
+            var props = await blob.GetPropertiesAsync(cancellationToken: ct).ConfigureAwait(false);
+            return props.Value.ContentHash;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
     }
 
     private async Task<List<(string Absolute, string Relative, long Size)>> ListLakeAsync(

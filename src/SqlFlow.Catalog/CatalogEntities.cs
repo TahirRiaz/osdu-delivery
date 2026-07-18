@@ -470,6 +470,11 @@ public class CatalogRunFile
     public int Columns { get; set; }
 
     public long SizeBytes { get; set; }
+
+    /// <summary>The content hash (lowercase hex MD5) of the file's bytes, when the producing flow records one (a copy
+    /// flow does). Null for a flow that reports no hash. Lets the file view show whether a re-run actually changed the
+    /// file, and a downstream reader compare byte-identity without re-reading the file.</summary>
+    public string? Hash { get; set; }
 }
 
 /// <summary>One data-quality assertion a run evaluated: the drill-down detail under a <see cref="CatalogRun"/>.</summary>

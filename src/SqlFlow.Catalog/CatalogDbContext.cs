@@ -211,6 +211,8 @@ public sealed class CatalogDbContext : DbContext
             entity.HasKey(f => f.Id);
             entity.Property(f => f.Name).HasMaxLength(512).IsRequired();
             entity.Property(f => f.Path).HasMaxLength(1024);
+            // Hex hash: 32 chars for MD5 today, sized to hold a SHA-256 (64) without a future migration.
+            entity.Property(f => f.Hash).HasMaxLength(128);
             entity.HasIndex(f => f.RunId);
         });
 

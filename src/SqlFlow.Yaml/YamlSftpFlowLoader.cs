@@ -71,6 +71,7 @@ public sealed class YamlSftpFlowLoader
             Steps = MapSteps(y, source),
             Overwrite = y.Overwrite ?? true,
             PreserveStructure = y.PreserveStructure ?? true,
+            SkipUnchanged = y.SkipUnchanged ?? true,
             Outputs = FileOutputMapping.Map(y.Output, y.Outputs, "sftp", source),
         };
     }
@@ -160,6 +161,7 @@ internal sealed class SftpDocumentYaml
     public int? ModifiedWithinDays { get; set; }
     public bool? Overwrite { get; set; }
     public bool? PreserveStructure { get; set; }
+    public bool? SkipUnchanged { get; set; }
 
     /// <summary>Several transfers in one pipeline: one entry per file set. The alternative to the single top-level
     /// local/remotePath.</summary>

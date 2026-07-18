@@ -135,6 +135,7 @@ public sealed class YamlCopyFlowLoader
         {
             Overwrite = y.Overwrite ?? true,
             PreserveStructure = y.PreserveStructure ?? true,
+            SkipUnchanged = y.SkipUnchanged ?? true,
             ZipName = YamlDocumentParts.NullIfBlank(y.ZipName),
         };
     }
@@ -208,5 +209,6 @@ internal sealed class CopyOptionsYaml
 {
     public bool? Overwrite { get; set; }
     public bool? PreserveStructure { get; set; }
+    public bool? SkipUnchanged { get; set; }
     public string? ZipName { get; set; }
 }

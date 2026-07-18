@@ -16,6 +16,11 @@ public interface IRawLandingStore
     /// <summary>True if an object already exists at the location (used to honor a no-overwrite policy).</summary>
     Task<bool> ExistsAsync(string location, CancellationToken ct = default);
 
-    /// <summary>Writes the payload, creating any parent directories. Overwrites only when <paramref name="overwrite"/> is set.</summary>
-    Task PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct = default);
+    /// <summary>Writes the payload, creating any parent directories. Overwrites only when <paramref name="overwrite"/>
+    /// is set; when overwriting and <paramref name="skipUnchanged"/> is set, a target that already holds byte-identical
+    /// content is left untouched so its last-modified time is not bumped and the downstream file flow is not
+    /// re-triggered for a fetch that returned the same file. With <paramref name="skipUnchanged"/> off the payload is
+    /// written unconditionally (no comparison). Returns <c>true</c> when bytes were written, <c>false</c> when the
+    /// write was skipped as unchanged.</summary>
+    Task<bool> PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged = true, CancellationToken ct = default);
 }

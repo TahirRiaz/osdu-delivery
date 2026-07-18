@@ -14,7 +14,7 @@ public sealed class LocalRawLandingStore : IRawLandingStore
     public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
         => Task.FromResult(File.Exists(location));
 
-    public async Task PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct = default)
+    public async Task<bool> PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged = true, CancellationToken ct = default)
     {
         var directory = Path.GetDirectoryName(location);
         if (!string.IsNullOrEmpty(directory))
@@ -22,15 +22,38 @@ public sealed class LocalRawLandingStore : IRawLandingStore
             Directory.CreateDirectory(directory);
         }
 
-        var mode = overwrite ? FileMode.Create : FileMode.CreateNew;
-        try
+        if (!overwrite)
         {
-            await using var stream = new FileStream(location, mode, FileAccess.Write, FileShare.None, bufferSize: 1 << 16, useAsync: true);
-            await stream.WriteAsync(content, ct).ConfigureAwait(false);
+            try
+            {
+                await using var stream = new FileStream(location, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize: 1 << 16, useAsync: true);
+                await stream.WriteAsync(content, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch (IOException ex) when (File.Exists(location))
+            {
+                throw new SqlFlowException($"Landing file '{location}' already exists and overwrite is disabled.", ex);
+            }
         }
-        catch (IOException ex) when (!overwrite && File.Exists(location))
+
+        if (!skipUnchanged)
         {
-            throw new SqlFlowException($"Landing file '{location}' already exists and overwrite is disabled.", ex);
+            await WriteAllAsync(location, content, ct).ConfigureAwait(false);
+            return true;
         }
+
+        // Overwriting: skip the write when the existing file is byte-identical, so an unchanged re-land does not bump
+        // its last-write time and re-trigger the downstream file flow.
+        return await ConditionalWrite.WriteIfChangedAsync(
+            content,
+            token => ContentHash.OfFileAsync(location, token),
+            (_, token) => WriteAllAsync(location, content, token),
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task WriteAllAsync(string location, ReadOnlyMemory<byte> content, CancellationToken ct)
+    {
+        await using var stream = new FileStream(location, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 1 << 16, useAsync: true);
+        await stream.WriteAsync(content, ct).ConfigureAwait(false);
     }
 }

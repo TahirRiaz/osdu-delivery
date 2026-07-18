@@ -82,6 +82,7 @@ The target ignores `pattern`/`recursive`/`modifiedWithinDays`.
 |---|---|---|---|---|
 | `overwrite` | bool | no | `true` | Overwrite an existing target file; when false a collision fails rather than clobbers. |
 | `preserveStructure` | bool | no | `true` | Preserve each file's folder structure (relative to the source root) under the target; flat by name otherwise. |
+| `skipUnchanged` | bool | no | `true` | Skip writing a file whose target copy already holds byte-identical content (compared by content hash from one target listing), so an unchanged re-run does not bump the target's modified time and re-trigger downstream ingestion. Set false to rewrite every matched file unconditionally and avoid the comparison cost. No effect when `overwrite` is false. |
 | `zipName` | string | no | `<flow>_<timestamp>.zip` | The archive name for `operation: zip`; ignored otherwise. |
 
 ## Copying many file sets

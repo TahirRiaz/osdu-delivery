@@ -42,6 +42,11 @@ public sealed class LandingPipeline
     public string ResolvedBase => _base;
     public int FilesWritten { get; private set; }
     public int Skipped { get; private set; }
+
+    /// <summary>Files that landed to a location that already held byte-identical content, so the target was left
+    /// untouched (no last-modified bump, no downstream re-trigger). A subset of <see cref="FilesWritten"/>.</summary>
+    public int Unchanged { get; private set; }
+
     public long BytesWritten { get; private set; }
     public IReadOnlyList<LandedFile> Files => _files;
 
@@ -77,22 +82,35 @@ public sealed class LandingPipeline
 
         var payload = _config.Compression == AcquireCompression.Gzip ? Gzip(item.Content) : item.Content;
         var location = _store.Combine(_base, name);
+        var wrote = true;
         if (!_dryRun)
         {
-            await _store.PutAsync(location, payload, _config.Overwrite, ct).ConfigureAwait(false);
+            wrote = await _store.PutAsync(location, payload, _config.Overwrite, _config.SkipUnchanged, ct).ConfigureAwait(false);
         }
 
         FilesWritten++;
         BytesWritten += payload.Length;
         var landed = new LandedFile(location, payload.Length, item.ContentType, item.RecordCount);
         _files.Add(landed);
-        _log.Log(RunLogLevel.Info, "landing.write", $"{(_dryRun ? "would land" : "landed")} {payload.Length} bytes to '{location}'.");
+        if (_dryRun)
+        {
+            _log.Log(RunLogLevel.Info, "landing.write", $"would land {payload.Length} bytes to '{location}'.");
+        }
+        else if (wrote)
+        {
+            _log.Log(RunLogLevel.Info, "landing.write", $"landed {payload.Length} bytes to '{location}'.");
+        }
+        else
+        {
+            Unchanged++;
+            _log.Log(RunLogLevel.Info, "landing.unchanged", $"unchanged, not rewritten: '{location}'.");
+        }
 
         if (!_dryRun && _config.PersistHeaders && item.Headers is { Count: > 0 })
         {
             var sidecar = _store.Combine(_base, $"{relative}.headers.json");
             var json = JsonSerializer.SerializeToUtf8Bytes(HeaderRedaction.Redact(item.Headers));
-            await _store.PutAsync(sidecar, json, overwrite: true, ct).ConfigureAwait(false);
+            await _store.PutAsync(sidecar, json, overwrite: true, skipUnchanged: _config.SkipUnchanged, ct: ct).ConfigureAwait(false);
         }
 
         return landed;

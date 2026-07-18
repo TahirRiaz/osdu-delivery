@@ -76,7 +76,9 @@ public sealed class AzureBlobCopyEndpoint : ICopyEndpoint
             }
 
             var relative = prefix is null ? name : name[prefix.Length..];
-            yield return new CopyItem(name, relative, leaf, modified, blob.Properties.ContentLength ?? -1);
+            // ContentHash comes back on the listing for free: the engine compares it against the target's hash to
+            // skip an unchanged blob without ever downloading it.
+            yield return new CopyItem(name, relative, leaf, modified, blob.Properties.ContentLength ?? -1, blob.Properties.ContentHash);
         }
     }
 
@@ -95,17 +97,77 @@ public sealed class AzureBlobCopyEndpoint : ICopyEndpoint
         }
     }
 
-    public async Task<string> WriteAsync(
-        CopyEndpoint endpoint, string relativePath, ReadOnlyMemory<byte> content, bool overwrite, CancellationToken ct)
+    public async Task<IReadOnlyDictionary<string, byte[]?>> TargetHashIndexAsync(CopyEndpoint endpoint, CancellationToken ct)
     {
         var loc = AzureBlobLocation.Parse(endpoint.Location);
         var container = await ContainerAsync(endpoint, loc, ct).ConfigureAwait(false);
-        var basePath = loc.BlobPath.TrimEnd('/');
-        var blobName = (basePath.Length == 0 ? relativePath : $"{basePath}/{relativePath}").TrimStart('/');
+        var prefix = loc.BlobPath.Length == 0 ? null : loc.BlobPath.TrimEnd('/') + "/";
+        var index = new Dictionary<string, byte[]?>(StringComparer.Ordinal);
+        try
+        {
+            // One listing returns every target blob with its ContentHash (MD5), so the engine compares the whole set in
+            // memory instead of a metadata call per file.
+            await foreach (var blob in container.GetBlobsAsync(prefix: prefix, cancellationToken: ct).ConfigureAwait(false))
+            {
+                var name = blob.Name;
+                var leaf = name[(name.LastIndexOf('/') + 1)..];
+                if (leaf.Length == 0)
+                {
+                    continue; // a virtual directory marker
+                }
+
+                var relative = prefix is null ? name : name[prefix.Length..];
+                index[relative] = blob.Properties.ContentHash;
+            }
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // The target container/prefix does not exist yet: nothing landed, so every file is new.
+            return index;
+        }
+        catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
+        {
+            throw Translate(endpoint.Location, ex);
+        }
+
+        return index;
+    }
+
+    public async Task<byte[]?> TargetContentHashAsync(CopyEndpoint endpoint, string relativePath, CancellationToken ct)
+    {
+        var loc = AzureBlobLocation.Parse(endpoint.Location);
+        var container = await ContainerAsync(endpoint, loc, ct).ConfigureAwait(false);
+        var blob = container.GetBlobClient(BlobName(loc, relativePath));
+        try
+        {
+            var props = await blob.GetPropertiesAsync(cancellationToken: ct).ConfigureAwait(false);
+            return props.Value.ContentHash;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
+        {
+            throw Translate(endpoint.Location, ex);
+        }
+    }
+
+    public async Task<string> WriteAsync(
+        CopyEndpoint endpoint, string relativePath, ReadOnlyMemory<byte> content, bool overwrite, byte[] contentHash, CancellationToken ct)
+    {
+        var loc = AzureBlobLocation.Parse(endpoint.Location);
+        var container = await ContainerAsync(endpoint, loc, ct).ConfigureAwait(false);
+        var blobName = BlobName(loc, relativePath);
         var blob = container.GetBlobClient(blobName);
         try
         {
-            var options = new BlobUploadOptions();
+            // Stamp ContentHash (the MD5 the engine computed) so the next run can compare byte-identity from the blob's
+            // metadata alone, through TargetContentHashAsync, and skip an unchanged file without downloading it.
+            var options = new BlobUploadOptions
+            {
+                HttpHeaders = new BlobHttpHeaders { ContentHash = contentHash },
+            };
             if (!overwrite)
             {
                 options.Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All };
@@ -123,6 +185,12 @@ public sealed class AzureBlobCopyEndpoint : ICopyEndpoint
         {
             throw Translate(endpoint.Location, ex);
         }
+    }
+
+    private static string BlobName(AzureBlobLocation loc, string relativePath)
+    {
+        var basePath = loc.BlobPath.TrimEnd('/');
+        return (basePath.Length == 0 ? relativePath : $"{basePath}/{relativePath}").TrimStart('/');
     }
 
     private Task<BlobContainerClient> ContainerAsync(CopyEndpoint endpoint, AzureBlobLocation loc, CancellationToken ct)

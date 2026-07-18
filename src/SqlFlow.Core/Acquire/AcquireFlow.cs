@@ -446,6 +446,12 @@ public sealed record AcquireLanding
 
     /// <summary>Skip landing a payload whose record array is empty (or whose body is empty), rather than writing a zero-row file.</summary>
     public bool SkipEmpty { get; init; } = true;
+
+    /// <summary>Skip rewriting a landed file whose target already holds byte-identical content, so a fetch that
+    /// returned the same file does not bump its last-modified time and re-trigger downstream ingestion. On by default.
+    /// Turn it off to write every fetched payload unconditionally, avoiding the per-file hash comparison. Has no effect
+    /// when <see cref="Overwrite"/> is false.</summary>
+    public bool SkipUnchanged { get; init; } = true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

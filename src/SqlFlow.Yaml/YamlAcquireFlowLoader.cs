@@ -266,6 +266,7 @@ public sealed class YamlAcquireFlowLoader
             Overwrite = y.Overwrite ?? true,
             PersistHeaders = y.PersistHeaders ?? false,
             SkipEmpty = y.SkipEmpty ?? true,
+            SkipUnchanged = y.SkipUnchanged ?? true,
         };
 
     private static AcquireIncremental? MapIncremental(AcquireIncrementalYaml? y, string source)
@@ -448,6 +449,7 @@ internal sealed class AcquireLandingYaml
     public bool? Overwrite { get; set; }
     public bool? PersistHeaders { get; set; }
     public bool? SkipEmpty { get; set; }
+    public bool? SkipUnchanged { get; set; }
 }
 
 internal sealed class AcquireIncrementalYaml

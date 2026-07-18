@@ -162,6 +162,11 @@ const fileColumns: Column<RunFile>[] = [
   { id: "rows", header: "Rows", align: "right", render: (row) => row.rows },
   { id: "columns", header: "Columns", align: "right", render: (row) => row.columns },
   { id: "size", header: "Size", align: "right", render: (row) => formatBytes(row.sizeBytes) },
+  {
+    id: "hash",
+    header: "Hash",
+    render: (row) => (row.hash ? <TruncatedText text={row.hash} mono maxWidth={140} /> : "-"),
+  },
 ];
 
 const surrogateKeyColumns: Column<RunSurrogateKey>[] = [

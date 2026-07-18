@@ -106,6 +106,12 @@ public sealed record CopyOptions
     /// false every file lands flat under the target root by its name.</summary>
     public bool PreserveStructure { get; init; } = true;
 
+    /// <summary>Skip writing a file whose target copy already holds byte-identical content, so an unchanged re-run does
+    /// not bump the target's last-modified time and re-trigger downstream ingestion. On by default. Turn it off to
+    /// force every matched file to be rewritten unconditionally, avoiding the one target listing (and, for a local
+    /// target, the per-file hashing) the comparison costs. Has no effect when <see cref="Overwrite"/> is false.</summary>
+    public bool SkipUnchanged { get; init; } = true;
+
     /// <summary>The archive name for <see cref="CopyOperation.Zip"/>; when absent it is <c>&lt;flow&gt;_&lt;timestamp&gt;.zip</c>.</summary>
     public string? ZipName { get; init; }
 }
@@ -125,6 +131,10 @@ public sealed record CopyRunResult
     /// <summary>Files (or archive entries) written to the target.</summary>
     public int FilesWritten { get; init; }
 
+    /// <summary>Files (or archive entries) left untouched because the target already held byte-identical content, so
+    /// the target's last-modified time was not bumped and downstream ingestion is not re-triggered for them.</summary>
+    public int FilesSkipped { get; init; }
+
     public long BytesWritten { get; init; }
 
     /// <summary>Each written target file, for the run manifest / catalog RunFile rows.</summary>
@@ -132,4 +142,8 @@ public sealed record CopyRunResult
 }
 
 /// <summary>One file written by a copy run.</summary>
-public sealed record CopyFileResult(string Location, long SizeBytes);
+/// <param name="Location">The resolved absolute location written.</param>
+/// <param name="SizeBytes">The file size in bytes.</param>
+/// <param name="Hash">The content hash (lowercase hex MD5) of the written bytes, recorded on the run's file manifest
+/// so the catalog can surface it and a later comparison can tell whether the file changed.</param>
+public sealed record CopyFileResult(string Location, long SizeBytes, string? Hash = null);

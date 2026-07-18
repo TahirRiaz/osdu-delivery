@@ -44,7 +44,7 @@ public sealed record RunDetailDto(
 
 /// <summary>One file a run processed (file flows): a drill-down row under a run.</summary>
 public sealed record RunFileDto(
-    long Id, Guid RunId, Guid? RepoId, string Name, string? Path, long Rows, int Columns, long SizeBytes);
+    long Id, Guid RunId, Guid? RepoId, string Name, string? Path, long Rows, int Columns, long SizeBytes, string? Hash);
 
 /// <summary>One data-quality assertion a run evaluated: a drill-down row under a run.</summary>
 public sealed record RunAssertionDto(
@@ -436,7 +436,7 @@ public static class RunEndpoints
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var items = await ordered
             .Skip((p - 1) * size).Take(size)
-            .Select(x => new RunFileDto(x.Id, x.RunId, x.RepoId, x.Name, x.Path, x.Rows, x.Columns, x.SizeBytes))
+            .Select(x => new RunFileDto(x.Id, x.RunId, x.RepoId, x.Name, x.Path, x.Rows, x.Columns, x.SizeBytes, x.Hash))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunFileDto>(items, p, size, total));
     }

@@ -35,8 +35,9 @@ public sealed class CopyFlowRunner
         var runId = options.RunId ?? Guid.NewGuid();
         var result = await _engine.RunAsync(flow, runId, events, ct, parameters).ConfigureAwait(false);
 
+        var skippedNote = result.FilesSkipped > 0 ? $", {result.FilesSkipped} unchanged" : string.Empty;
         events.Log(RunLogLevel.Info, "run.end", result.Success
-            ? $"SUCCESS in {result.DurationSeconds}s: {result.FilesWritten} file(s), {result.BytesWritten} byte(s) from {result.Matched} matched"
+            ? $"SUCCESS in {result.DurationSeconds}s: {result.FilesWritten} file(s), {result.BytesWritten} byte(s) from {result.Matched} matched{skippedNote}"
             : $"FAILED after {result.DurationSeconds}s ({result.FilesWritten} written before failure): {result.Error}");
 
         return result;

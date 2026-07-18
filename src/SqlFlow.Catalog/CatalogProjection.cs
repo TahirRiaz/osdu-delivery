@@ -202,8 +202,9 @@ public static class CatalogProjection
     }
 
     /// <summary>The file rows of a run, read best-effort from the run.json result: a file flow's
-    /// <c>processedFiles</c> (read inputs) and an export flow's <c>files</c> (written outputs). Both are the
-    /// per-run file drill-down; export files carry no column count.</summary>
+    /// <c>processedFiles</c> (read inputs) and an export or copy flow's <c>files</c> (written outputs). Both are the
+    /// per-run file drill-down; export/copy files carry no column count. A copy file also carries its content
+    /// <c>hash</c>, which is projected so the file view can show whether a re-run actually changed the file.</summary>
     public static IReadOnlyList<CatalogRunFile> RunFiles(JsonElement root, Guid runId, Guid repoId)
     {
         if (Prop(root, "result") is not { } result)
@@ -234,16 +235,18 @@ public static class CatalogProjection
                     Rows = Long(file, "rows") ?? 0,
                     Columns = Int(Long(file, "columns")),
                     SizeBytes = Long(file, "sizeBytes") ?? 0,
+                    Hash = NullIfBlank(Str(file, "hash")),
                 });
             }
         }
 
-        // Export flows: files[{ path, rows, bytes }] (no column count); the file name is the path's last segment.
+        // Export flows: files[{ path, rows, bytes }]; copy flows: files[{ location, sizeBytes, hash }]. Both are
+        // written outputs with no column count; the file name is the path's (or location's) last segment.
         if (Prop(result, "files") is { ValueKind: JsonValueKind.Array } exported)
         {
             foreach (var file in exported.EnumerateArray())
             {
-                var path = Str(file, "path");
+                var path = NullIfBlank(Str(file, "path")) ?? NullIfBlank(Str(file, "location"));
                 if (string.IsNullOrWhiteSpace(path))
                 {
                     continue;
@@ -257,7 +260,8 @@ public static class CatalogProjection
                     Path = path,
                     Rows = Long(file, "rows") ?? 0,
                     Columns = 0,
-                    SizeBytes = Long(file, "bytes") ?? 0,
+                    SizeBytes = Long(file, "bytes") ?? Long(file, "sizeBytes") ?? 0,
+                    Hash = NullIfBlank(Str(file, "hash")),
                 });
             }
         }

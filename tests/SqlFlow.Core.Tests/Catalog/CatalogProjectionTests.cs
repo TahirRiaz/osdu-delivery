@@ -256,6 +256,26 @@ public sealed class CatalogProjectionTests
     }
 
     [Fact]
+    public void RunFiles_MapsCopyFiles_WithLocationSizeAndHash()
+    {
+        // A copy run reports files[{ location, sizeBytes, hash }] (distinct from an export's path/rows/bytes shape).
+        var runId = Guid.Parse("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1");
+        var file = Assert.Single(CatalogProjection.RunFiles(Json($$"""
+            {
+              "flowKind": "cpy", "flowName": "BB_copy", "runId": "{{runId}}",
+              "success": true, "writtenUtc": "2026-06-17T10:00:00Z",
+              "result": { "files": [{ "location": "abfss://fs@acct.dfs.core.windows.net/raw/bb/detail.json", "sizeBytes": 512, "hash": "9e107d9d372bb6826bd81d3542a419d6" }] }
+            }
+            """), runId, Repo));
+
+        Assert.Equal("detail.json", file.Name); // last segment of the location
+        Assert.Equal("abfss://fs@acct.dfs.core.windows.net/raw/bb/detail.json", file.Path);
+        Assert.Equal(0, file.Columns);
+        Assert.Equal(512, file.SizeBytes);
+        Assert.Equal("9e107d9d372bb6826bd81d3542a419d6", file.Hash);
+    }
+
+    [Fact]
     public void RunStatements_Orders_SqlTrace_ThenDdl_WithoutDoubleCountingSurrogates()
     {
         var runId = Guid.Parse("99999999-9999-9999-9999-999999999999");

@@ -62,6 +62,7 @@ sqlflow run      vendor-settlement.flow.yaml
 | `items` | list | one of | | Several transfers in one pipeline: one entry per file set (see [Transferring many file sets](#transferring-many-file-sets)). |
 | `overwrite` | bool | no | `true` | Overwrite an existing destination file; when false a collision fails rather than clobbers. Applies to every step. |
 | `preserveStructure` | bool | no | `true` | Preserve the source's folder structure under the destination; flat by name otherwise. Applies to every step. |
+| `skipUnchanged` | bool | no | `true` | On a download, skip writing a lake/local file whose target already holds byte-identical content (compared by content hash), so an unchanged re-download does not bump its modified time and re-trigger downstream ingestion. Set false to write every downloaded file unconditionally. No effect on upload, or when `overwrite` is false. |
 | `output` | map | no | | A single explicitly declared output, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
 | `outputs` | list | no | | Several explicitly declared outputs, for lineage (see [Declared outputs](#declared-outputs-for-lineage)). |
 

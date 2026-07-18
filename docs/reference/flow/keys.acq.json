@@ -715,6 +715,14 @@
       "definedIn": "src/SqlFlow.Acquire/Engine/LandingPipeline.cs"
     },
     {
+      "path": "landing.skipUnchanged",
+      "type": "bool",
+      "required": false,
+      "default": "true",
+      "description": "Skip rewriting a landed file whose target already holds byte-identical content (compared by content hash), so a fetch that returned the same file does not bump its modified time and re-trigger downstream ingestion. Set false to write every fetched payload unconditionally. No effect when overwrite is false.",
+      "definedIn": "src/SqlFlow.Acquire/Landing/LocalRawLandingStore.cs (PutAsync)"
+    },
+    {
       "path": "incremental",
       "type": "object",
       "required": false,

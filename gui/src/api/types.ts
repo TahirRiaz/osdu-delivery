@@ -214,6 +214,7 @@ export interface RunFile {
   rows: number;
   columns: number;
   sizeBytes: number;
+  hash: string | null;
 }
 
 export interface PipelineFile {

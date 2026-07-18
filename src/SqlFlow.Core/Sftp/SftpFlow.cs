@@ -38,6 +38,12 @@ public sealed record SftpFlow
     /// <summary>Preserve the source's folder structure under the destination root; flat by file name otherwise.</summary>
     public bool PreserveStructure { get; init; } = true;
 
+    /// <summary>On a download, skip writing a lake/local file whose target already holds byte-identical content, so an
+    /// unchanged re-download does not bump its last-modified time and re-trigger downstream ingestion. On by default.
+    /// Turn it off to write every downloaded file unconditionally, avoiding the per-file hash comparison. Has no effect
+    /// on an upload, or when <see cref="Overwrite"/> is false.</summary>
+    public bool SkipUnchanged { get; init; } = true;
+
     /// <summary>Optional explicit declaration of the file set(s) this transfer produces, for lineage. By default
     /// lineage is computed from the steps themselves (each download step's local target is a written file node the
     /// downstream ingestion reads). Declare outputs only to override that, for a step whose consumable folder differs
@@ -106,9 +112,17 @@ public sealed record SftpRunResult
     public double DurationSeconds { get; init; }
     public int Matched { get; init; }
     public int FilesTransferred { get; init; }
+
+    /// <summary>Files (downloads) left untouched because the target already held byte-identical content, so its
+    /// last-modified time was not bumped and downstream ingestion is not re-triggered for them.</summary>
+    public int FilesSkipped { get; init; }
+
     public long BytesTransferred { get; init; }
     public IReadOnlyList<SftpFileResult> Files { get; init; } = [];
 }
 
 /// <summary>One file transferred by an SFTP run.</summary>
-public sealed record SftpFileResult(string Location, long SizeBytes);
+/// <param name="Location">The resolved absolute location written (or the remote target on an upload).</param>
+/// <param name="SizeBytes">The file size in bytes.</param>
+/// <param name="Hash">The content hash (lowercase hex MD5) of a downloaded file's bytes; null for an upload.</param>
+public sealed record SftpFileResult(string Location, long SizeBytes, string? Hash = null);
