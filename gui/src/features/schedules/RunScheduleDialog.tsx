@@ -243,6 +243,12 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
     }
   };
 
+  // Jump from a member row straight to that flow's run detail, closing the board on the way out.
+  const openMemberRun = (runId: string) => {
+    onClose();
+    navigate(`/runs/${runId}`);
+  };
+
   return (
     <Dialog
       open
@@ -476,13 +482,24 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                         <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
                           {planWave.members.map((member) => {
                             const live = liveByFlow.get(member.flowName);
+                            // A member becomes a link once its fire has produced a run; before Start (and for skipped
+                            // flows that never ran) there is nothing to open, so the row stays static.
+                            const runId = live?.runId ?? null;
+                            const openRun = runId === null ? undefined : () => openMemberRun(runId);
                             return (
                               <Stack
                                 key={member.flowName}
                                 direction="row"
                                 spacing={1}
                                 alignItems="center"
-                                sx={{ px: 1.5, py: 1 }}
+                                onClick={openRun}
+                                sx={{
+                                  px: 1.5,
+                                  py: 1,
+                                  ...(openRun
+                                    ? { cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }
+                                    : {}),
+                                }}
                                 data-testid="run-schedule-member"
                               >
                                 <Box sx={{ minWidth: 0, flexGrow: 1 }}>
@@ -495,6 +512,9 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                                   </Typography>
                                 </Box>
                                 <MemberStatusChip status={statusOf(member.flowName)} />
+                                {openRun && (
+                                  <OpenInNewIcon sx={{ fontSize: 15, color: "text.disabled", flexShrink: 0 }} />
+                                )}
                               </Stack>
                             );
                           })}
