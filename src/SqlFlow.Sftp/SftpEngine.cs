@@ -134,7 +134,7 @@ public sealed class SftpEngine
 
     // ---- SFTP side ----------------------------------------------------------------------------------------------
 
-    private List<(string Full, string Relative, long Size)> ListRemote(SftpClient client, SftpStep step, DateTimeOffset? cutoff)
+    private static List<(string Full, string Relative, long Size)> ListRemote(SftpClient client, SftpStep step, DateTimeOffset? cutoff)
     {
         var root = step.RemotePath;
         var found = new List<(string, string, long)>();

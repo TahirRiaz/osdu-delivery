@@ -62,7 +62,7 @@ public static class RunScopeExpander
 
     /// <summary>
     /// Expands <paramref name="scope"/> into its ordered member flows. For Flow/Node the <paramref name="anchorFlow"/>
-    /// identifies the starting flow; for Batch either <paramref name="batch"/> names the batch directly, or the
+    /// identifies the starting flow; for Batch either a <c>batch</c> names the batch directly, or the
     /// anchor flow's own batch is used. The returned members are active pipelines ordered by wave then name; a wave
     /// that lineage has not computed yet (-1) collapses to 0 so an un-analyzed set runs as a single parallel wave
     /// rather than in an undefined order.

@@ -56,6 +56,8 @@ public sealed record EdgeDto(
 /// generating script and module body, and the lineage edges that reference it. This is the "ask about this
 /// object" aggregate a model uses to reason about, or author SQL against, the object. Each list is bounded for
 /// a stable payload.</summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1720:Identifier contains type name",
+    Justification = "'Object' is the serialized JSON property name the GUI reads; renaming it would break the API contract.")]
 public sealed record ObjectDossierDto(
     ObjectDetailDto Object,
     IReadOnlyList<ObjectColumnDto> Columns,
@@ -357,7 +359,7 @@ public static class LineageEndpoints
     /// each file flow declares (the spec already in the catalog, so no run is required). The match mirrors the
     /// engine's file selection: the source's file-name glob (<c>source.options.srcFile</c>, defaulting per source
     /// type) is applied to the file NAME with the same matcher the engine's cloud store uses
-    /// (<see cref="FileSystemName.MatchesSimpleExpression(ReadOnlySpan{char}, ReadOnlySpan{char}, bool)"/>); when a
+    /// (<c>FileSystemName.MatchesSimpleExpression</c>); when a
     /// full path is given it is further constrained by the path mask (<c>source.options.srcPathMask</c>, a regex
     /// over the path) or, absent a mask, by the source <c>location</c> the path must sit under. A bare file name
     /// (no path) matches on the glob alone and can return several flows, which the caller disambiguates. This is

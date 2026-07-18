@@ -13,6 +13,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// instance serves the whole collection. Configuration mirrors the in-memory factory's deterministic test
 /// settings, delivered through the standard ASPNETCORE/ControlPlane__ environment keys.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "The gate is disposed in IAsyncLifetime.DisposeAsync, which xUnit invokes for this fixture.")]
 public sealed class ControlPlaneProcessFixture : IAsyncLifetime
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -164,4 +166,6 @@ public sealed class ControlPlaneProcessFixture : IAsyncLifetime
 
 /// <summary>One shared control-plane child process across the CLI end-to-end classes.</summary>
 [CollectionDefinition("cli-control-plane")]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix",
+    Justification = "xUnit's [CollectionDefinition] class is conventionally named with the 'Collection' suffix.")]
 public sealed class CliControlPlaneCollection : ICollectionFixture<ControlPlaneProcessFixture>;

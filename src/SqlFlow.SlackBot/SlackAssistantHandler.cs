@@ -14,7 +14,7 @@ namespace SqlFlow.SlackBot;
 /// its Slack thread, and the answer posted as a threaded reply. Processing is offloaded so the
 /// Socket Mode event loop is never blocked by a long agent run.
 /// </summary>
-public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, IEventHandler<MessageEvent>
+public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, IEventHandler<MessageEvent>, IDisposable
 {
     private readonly ISlackApiClient _slack;
     private readonly IAssistantGateway _gateway;
@@ -58,6 +58,12 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         _http.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", options.Slack.BotToken);
+    }
+
+    public void Dispose()
+    {
+        _concurrency.Dispose();
+        _http.Dispose();
     }
 
     public Task Handle(AppMention slackEvent)

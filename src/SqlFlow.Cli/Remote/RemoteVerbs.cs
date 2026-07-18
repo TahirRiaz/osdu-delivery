@@ -794,6 +794,8 @@ internal static partial class RemoteVerbs
 
     /// <summary>Runs a verb body, converting transport failures (unreachable host, TLS, timeout) into the
     /// CLI's one-line error convention, and Ctrl+C into the conventional 130.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068:CancellationToken parameters must come last",
+        Justification = "Private CLI helper: the token precedes the body delegate so every call site reads url -> token -> lambda; the delegate is required, not an optional trailing argument.")]
     private static async Task<int> GuardedAsync(Uri url, CancellationToken ct, Func<CancellationToken, Task<int>> body)
     {
         try

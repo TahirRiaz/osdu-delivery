@@ -76,6 +76,7 @@ public sealed class HttpExecutor
 
     /// <param name="requestFactory">Builds a fresh request per attempt.</param>
     /// <param name="allowStatuses">Non-2xx statuses to return instead of throwing (e.g. a 202 pagination sentinel).</param>
+    /// <param name="ct">Cancels the send, including the rate-limit wait between attempts.</param>
     public async Task<HttpFetchResult> SendAsync(
         Func<HttpRequestMessage> requestFactory,
         IReadOnlySet<int>? allowStatuses = null,

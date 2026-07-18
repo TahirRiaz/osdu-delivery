@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using SqlFlow.Acquire.Engine;
 using SqlFlow.Core.Acquire;
@@ -35,7 +36,7 @@ public sealed class EngineTests
         return string.Empty;
     }
 
-    private async Task<(AcquireRunResult Result, IReadOnlyList<string> Files, StubHttpHandler Handler)> RunAsync(
+    private static async Task<(AcquireRunResult Result, IReadOnlyList<string> Files, StubHttpHandler Handler)> RunAsync(
         StubHttpHandler handler, AcquireSource source, string pathTemplate = "data/{page}", AcquireIncremental? incremental = null)
     {
         var engine = TestEngine.Create(handler, new FakeSecrets(("token", "SECRET123")), new FixedClock(Now), out var dir);
@@ -70,7 +71,7 @@ public sealed class EngineTests
     {
         var handler = new StubHttpHandler().Json("/items", req =>
         {
-            var page = int.Parse(Query(req.RequestUri!, "page"));
+            var page = int.Parse(Query(req.RequestUri!, "page"), CultureInfo.InvariantCulture);
             return page <= 2 ? $"[{{\"id\":{page}}}]" : "[]";
         });
         var source = new AcquireSource
@@ -93,7 +94,7 @@ public sealed class EngineTests
         var seen = new List<int>();
         var handler = new StubHttpHandler().Json("/rows", req =>
         {
-            var offset = int.Parse(Query(req.RequestUri!, "offset"));
+            var offset = int.Parse(Query(req.RequestUri!, "offset"), CultureInfo.InvariantCulture);
             seen.Add(offset);
             return offset < 20 ? """[{"x":1}]""" : "[]";
         });

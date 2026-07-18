@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace SqlFlow.Cli;
@@ -69,17 +70,17 @@ internal static class CliCompletions
         builder.AppendLine("_sqlflow_completions() {");
         builder.AppendLine("  local cur prev verbs opts");
         builder.AppendLine("  cur=\"${COMP_WORDS[COMP_CWORD]}\"");
-        builder.AppendLine($"  verbs=\"{Verbs()}\"");
-        builder.AppendLine($"  opts=\"{string.Join(' ', CommonOptions)}\"");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"  verbs=\"{Verbs()}\"");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"  opts=\"{string.Join(' ', CommonOptions)}\"");
         builder.AppendLine("  if [[ ${COMP_CWORD} -eq 1 ]]; then");
         builder.AppendLine("    COMPREPLY=( $(compgen -W \"${verbs}\" -- \"${cur}\") ); return 0");
         builder.AppendLine("  fi");
         builder.AppendLine("  case \"${COMP_WORDS[1]}\" in");
         foreach (var (verb, subcommands) in Registry.Where(r => r.Subcommands.Length > 0))
         {
-            builder.AppendLine($"    {verb})");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"    {verb})");
             builder.AppendLine("      if [[ ${COMP_CWORD} -eq 2 ]]; then");
-            builder.AppendLine($"        COMPREPLY=( $(compgen -W \"{string.Join(' ', subcommands)}\" -- \"${{cur}}\") ); return 0");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"        COMPREPLY=( $(compgen -W \"{string.Join(' ', subcommands)}\" -- \"${{cur}}\") ); return 0");
             builder.AppendLine("      fi ;;");
         }
 
@@ -100,17 +101,17 @@ internal static class CliCompletions
         builder.AppendLine("# sqlflow zsh completion. Install into a directory on $fpath as _sqlflow.");
         builder.AppendLine("_sqlflow() {");
         builder.AppendLine("  local -a verbs opts");
-        builder.AppendLine($"  verbs=({Verbs()})");
-        builder.AppendLine($"  opts=({string.Join(' ', CommonOptions)})");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"  verbs=({Verbs()})");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"  opts=({string.Join(' ', CommonOptions)})");
         builder.AppendLine("  if (( CURRENT == 2 )); then");
         builder.AppendLine("    _describe 'verb' verbs; return");
         builder.AppendLine("  fi");
         builder.AppendLine("  case $words[2] in");
         foreach (var (verb, subcommands) in Registry.Where(r => r.Subcommands.Length > 0))
         {
-            builder.AppendLine($"    {verb})");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"    {verb})");
             builder.AppendLine("      if (( CURRENT == 3 )); then");
-            builder.AppendLine($"        local -a subs; subs=({string.Join(' ', subcommands)}); _describe 'subcommand' subs; return");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"        local -a subs; subs=({string.Join(' ', subcommands)}); _describe 'subcommand' subs; return");
             builder.AppendLine("      fi ;;");
         }
 
@@ -131,12 +132,12 @@ internal static class CliCompletions
         builder.AppendLine("Register-ArgumentCompleter -Native -CommandName sqlflow -ScriptBlock {");
         builder.AppendLine("    param($wordToComplete, $commandAst, $cursorPosition)");
         builder.AppendLine("    $tokens = $commandAst.CommandElements | ForEach-Object { $_.ToString() }");
-        builder.AppendLine($"    $verbs = @({string.Join(", ", Registry.Select(r => $"'{r.Verb}'"))})");
-        builder.AppendLine($"    $opts = @({string.Join(", ", CommonOptions.Select(o => $"'{o}'"))})");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"    $verbs = @({string.Join(", ", Registry.Select(r => $"'{r.Verb}'"))})");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"    $opts = @({string.Join(", ", CommonOptions.Select(o => $"'{o}'"))})");
         builder.AppendLine("    $subs = @{");
         foreach (var (verb, subcommands) in Registry.Where(r => r.Subcommands.Length > 0))
         {
-            builder.AppendLine($"        '{verb}' = @({string.Join(", ", subcommands.Select(s => $"'{s}'"))})");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"        '{verb}' = @({string.Join(", ", subcommands.Select(s => $"'{s}'"))})");
         }
 
         builder.AppendLine("    }");

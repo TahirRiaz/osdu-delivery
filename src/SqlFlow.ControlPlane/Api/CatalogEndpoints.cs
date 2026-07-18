@@ -174,9 +174,13 @@ public static class CatalogEndpoints
         // its folder prefix so nested folders under it stay included.
         if (!string.IsNullOrWhiteSpace(project))
         {
+            // Contains("/") stays a string overload: this predicate is translated to SQL by EF Core, and the
+            // char overload CA1847 suggests is not guaranteed to translate to the same CHARINDEX.
+#pragma warning disable CA1847
             query = project == ProjectPath.Root
                 ? query.Where(x => !x.RelativePath.Contains("/"))
                 : query.Where(x => x.RelativePath.StartsWith(project + "/"));
+#pragma warning restore CA1847
         }
 
         var ordered = query.OrderBy(x => x.Name).ThenBy(x => x.Id);

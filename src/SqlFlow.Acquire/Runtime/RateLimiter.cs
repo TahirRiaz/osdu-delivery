@@ -6,6 +6,8 @@ namespace SqlFlow.Acquire.Runtime;
 /// capacity so an idle limiter cannot build a burst beyond the bucket. Uses the injected <see cref="TimeProvider"/>
 /// so tests run under a paused clock. Thread-safe for the engine's bounded concurrency.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "The SemaphoreSlim's wait handle is never accessed, so it holds no unmanaged resource to release; the limiter's lifetime is the run's HttpExecutor, and making it disposable would cascade IDisposable through the executor for no benefit.")]
 public sealed class RateLimiter
 {
     private readonly double _rate;

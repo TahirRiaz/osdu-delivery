@@ -8,9 +8,12 @@ namespace SqlFlow.Core.Ingestion;
 /// </summary>
 public interface IAssertionRunner
 {
+    /// <param name="flow">The flow whose assertion definitions are evaluated.</param>
+    /// <param name="targetConnectionString">Connection to the loaded target the assertions query.</param>
     /// <param name="includeManual">False (every automatic ingestion run) evaluates only the assertions declared
     /// <c>mode: auto</c>; true (an on-demand assertions-only run) evaluates the flow's whole list, auto and
     /// manual alike.</param>
+    /// <param name="ct">Cancels the assertion evaluation.</param>
     Task<IReadOnlyList<AssertionResult>> RunAsync(
         IngestionFlow flow, string targetConnectionString, bool includeManual = false, CancellationToken ct = default);
 }

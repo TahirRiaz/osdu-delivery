@@ -77,7 +77,7 @@ public sealed class SlackSocketWorker : BackgroundService
         {
             try
             {
-                await socket.Connect().ConfigureAwait(false);
+                await socket.Connect(cancellationToken: stoppingToken).ConfigureAwait(false);
                 return;
             }
             catch (SlackException ex) when (FatalSlackErrors.Contains(ex.ErrorCode, StringComparer.Ordinal))

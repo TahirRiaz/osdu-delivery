@@ -15,7 +15,7 @@ namespace SqlFlow.SlackBot;
 /// state, so every call sends the Slack-thread transcript (already capped by MaxReplayMessages);
 /// the Slack thread stays the single durable record, which also means a bot restart loses nothing.
 /// </summary>
-public sealed class AnthropicGateway : IAssistantGateway
+public sealed class AnthropicGateway : IAssistantGateway, IDisposable
 {
     private const string McpBeta = "mcp-client-2025-11-20";
 
@@ -242,4 +242,6 @@ public sealed class AnthropicGateway : IAssistantGateway
         }
         return answer.ToString();
     }
+
+    public void Dispose() => _client.Dispose();
 }

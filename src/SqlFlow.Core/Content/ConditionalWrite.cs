@@ -17,6 +17,7 @@ public static class ConditionalWrite
     /// such object (or cannot report a hash without reading it).</param>
     /// <param name="writeStamped">Writes the payload, receiving the payload's MD5 so a store that records a content
     /// hash (Azure blob) can stamp it for the next run's comparison.</param>
+    /// <param name="ct">Cancels the hash read and the write.</param>
     public static async Task<bool> WriteIfChangedAsync(
         ReadOnlyMemory<byte> content,
         Func<CancellationToken, Task<byte[]?>> currentTargetHash,

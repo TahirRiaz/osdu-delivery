@@ -42,10 +42,10 @@ public interface IRunStatementSink
     /// <see cref="SqlTraceEntry.Sequence"/>. Must not throw: a live-persistence hiccup can never break the run.</summary>
     void Report(SqlTraceEntry entry);
 
-    /// <summary>The statement at <paramref name="sequence"/> failed with <paramref name="error"/>. Reported from
-    /// the runner's failure path so the live row is stamped with the error, mirroring the final artifact. Must not
-    /// throw.</summary>
-    void ReportFailure(int sequence, string error);
+    /// <summary>The statement at <paramref name="sequence"/> failed with <paramref name="errorMessage"/>. Reported
+    /// from the runner's failure path so the live row is stamped with the error, mirroring the final artifact. Must
+    /// not throw.</summary>
+    void ReportFailure(int sequence, string errorMessage);
 }
 
 /// <summary>The no-op default sink: a run that wants no live persistence pays nothing.</summary>
@@ -61,7 +61,7 @@ public sealed class NullRunStatementSink : IRunStatementSink
     {
     }
 
-    public void ReportFailure(int sequence, string error)
+    public void ReportFailure(int sequence, string errorMessage)
     {
     }
 }

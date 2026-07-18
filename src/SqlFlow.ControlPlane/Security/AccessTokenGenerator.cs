@@ -7,7 +7,7 @@ namespace SqlFlow.ControlPlane.Security;
 /// Mints and hashes personal access token secrets. A secret is <see cref="Prefix"/> followed by 256 bits of
 /// cryptographic randomness in URL-safe base64: the prefix makes a leaked token recognizable (and lets the auth
 /// pipeline route it to the PAT handler without a database round-trip), and the 256-bit body makes it unguessable.
-/// Only the SHA-256 <see cref="Hash"/> of the full secret is ever persisted; the cleartext is returned once to the
+/// Only the SHA-256 <c>Hash</c> of the full secret is ever persisted; the cleartext is returned once to the
 /// creator and then unrecoverable. Because the body is already high-entropy, a fast unsalted hash is correct here:
 /// there is nothing to brute-force, and it keeps authentication a single indexed lookup.
 /// </summary>

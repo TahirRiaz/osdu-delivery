@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using SqlFlow.Acquire.Runtime;
@@ -65,7 +66,7 @@ public sealed class RelativeTimeTests
     [InlineData("startOfMonth-1mo", "2026-06-01T00:00:00")]
     [InlineData("2026-01-15", "2026-01-15T00:00:00")]
     public void Resolves_expressions(string expression, string expected)
-        => Assert.Equal(DateTimeOffset.Parse(expected + "+00:00"), RelativeTime.Resolve(expression, Now));
+        => Assert.Equal(DateTimeOffset.Parse(expected + "+00:00", CultureInfo.InvariantCulture), RelativeTime.Resolve(expression, Now));
 
     [Fact]
     public void Rejects_garbage() => Assert.Throws<SqlFlowException>(() => RelativeTime.Resolve("banana", Now));

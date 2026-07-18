@@ -59,9 +59,9 @@ internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposa
         _channel.Writer.TryWrite(new Event(entry.Sequence, entry.TimestampUtc, entry.Step, entry.Sql, entry.Error, IsFailure: false));
     }
 
-    public void ReportFailure(int sequence, string error)
+    public void ReportFailure(int sequence, string errorMessage)
     {
-        _channel.Writer.TryWrite(new Event(sequence, default, string.Empty, string.Empty, error, IsFailure: true));
+        _channel.Writer.TryWrite(new Event(sequence, default, string.Empty, string.Empty, errorMessage, IsFailure: true));
     }
 
     public async ValueTask DisposeAsync()

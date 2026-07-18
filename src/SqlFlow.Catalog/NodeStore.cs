@@ -15,8 +15,8 @@ public static class NodeStore
     /// freshly inserted node has no pending request, so its first heartbeat always returns null. Idempotent and safe
     /// to call on every poll.</summary>
     public static async Task<DateTime?> HeartbeatAsync(
-        CatalogDbContext catalog, string name, string? version, DateTime nowUtc, CancellationToken ct = default,
-        string? pool = null)
+        CatalogDbContext catalog, string name, string? version, DateTime nowUtc, string? pool = null,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);

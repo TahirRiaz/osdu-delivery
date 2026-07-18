@@ -6,7 +6,7 @@ namespace SqlFlow.Yaml;
 /// <summary>
 /// The shared mapping/validation vocabulary of a health-check declaration, used by both authoring surfaces:
 /// the standalone document (flowType: hc) and the embedded <c>healthCheck:</c> block of an ingestion flow.
-/// Every helper takes a <paramref name="prefix"/> ("" for the standalone document, "healthCheck." for the
+/// Every helper takes a <c>prefix</c> ("" for the standalone document, "healthCheck." for the
 /// embedded block) so error messages always name the exact YAML path the author wrote.
 /// </summary>
 internal static class YamlHealthCheckParts

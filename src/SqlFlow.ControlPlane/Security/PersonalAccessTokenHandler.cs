@@ -12,7 +12,7 @@ namespace SqlFlow.ControlPlane.Security;
 public static class PersonalAccessTokenDefaults
 {
     /// <summary>The policy scheme every request authenticates against; it routes by token shape to either JWT
-    /// validation or the PAT handler. Deliberately not "Bearer": that name is <see cref="JwtBearerDefaults"/>'s own
+    /// validation or the PAT handler. Deliberately not "Bearer": that name is <c>JwtBearerDefaults</c>'s own
     /// scheme, which this forwards to.</summary>
     public const string PolicyScheme = "SmartBearer";
 

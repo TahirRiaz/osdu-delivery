@@ -27,7 +27,7 @@ internal static class LocalInspectVerbs
     internal sealed record ValidationResult(string File, bool Ok, string? Kind, string? Name, string? Error);
 
     /// <summary>
-    /// Validates every flow document under <paramref name="folder"/> (recursively; the .sqlflow work area is
+    /// Validates every flow document under <paramref name="target"/> (recursively; the .sqlflow work area is
     /// excluded) through the exact same loader a single-file validate uses, so both entry points accept and
     /// refuse identically. Text mode prints one line per file; --json emits the full report array. Exit 0 only
     /// when every document is valid, 1 otherwise (including an empty estate, which is a misconfiguration, not

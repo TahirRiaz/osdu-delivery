@@ -415,9 +415,9 @@ public sealed class LineageCollectorTests : IDisposable
         var collected = new FlowSetCollector().Collect(_root);
 
         // The ingestion reads the folder's file node...
-        var read = Assert.Single(collected.Facts.Where(f =>
+        var read = Assert.Single(collected.Facts, f =>
             f.Flow == "load-incoming-orders" && f.Relation == LineageRelation.Reads
-            && f.KindHint == LineageNodeKind.File));
+            && f.KindHint == LineageNodeKind.File);
         // ...and the invoke is attributed a Writes of the SAME node, so the graph chains invoke -> file -> table.
         Assert.Contains(collected.Facts, f =>
             f.Flow == "fetch-orders" && f.Relation == LineageRelation.Writes

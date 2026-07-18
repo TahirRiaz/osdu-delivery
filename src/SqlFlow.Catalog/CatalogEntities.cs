@@ -60,9 +60,9 @@ public class CatalogRepo
 /// One pipeline in the shadow catalog: a YAML flow document from the git estate mapped into a row. Git/YAML is
 /// the source of truth; this is a synchronized read-model for the GUI and for cross-file / cross-repo queries.
 /// The hot dimensions (kind, batch, source/target server) are columns; the FULL definition is kept in
-/// <see cref="DefinitionJson"/> (the parsed flow, normalized to JSON) so any field is queryable with SQL Server's
-/// JSON functions across every file and repo, and in <see cref="Yaml"/> (the original text) for display. Both are
-/// secret-redacted on the way in. <see cref="Id"/> is the flow's stable identity (the deterministic GUID the
+/// <c>DefinitionJson</c> (the parsed flow, normalized to JSON) so any field is queryable with SQL Server's
+/// JSON functions across every file and repo, and in <c>Yaml</c> (the original text) for display. Both are
+/// secret-redacted on the way in. <c>Id</c> is the flow's stable identity (the deterministic GUID the
 /// engine derives from the name), so runs join to it with no run-time database round-trip.
 /// </summary>
 /// <summary>The catalog spellings of a flow's execution mode (the YAML <c>mode:</c>), stored as a string so the

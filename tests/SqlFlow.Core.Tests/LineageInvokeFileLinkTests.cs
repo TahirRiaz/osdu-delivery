@@ -125,7 +125,7 @@ public sealed class LineageInvokeFileLinkTests : IDisposable
     }
 
     private static LineageObjectNode FileNode(LineageReport report)
-        => Assert.Single(report.Objects.Where(o => o.Kind == LineageNodeKind.File));
+        => Assert.Single(report.Objects, o => o.Kind == LineageNodeKind.File);
 
     private static bool DependsOn(LineageReport report, string fromFlow, string toFlow)
         => report.FlowDependencies.Any(d => d.FromFlow == fromFlow && d.ToFlow == toFlow);
@@ -141,7 +141,7 @@ public sealed class LineageInvokeFileLinkTests : IDisposable
 
         var report = Build();
 
-        var dep = Assert.Single(report.FlowDependencies.Where(d => d.FromFlow == "fetch-orders" && d.ToFlow == "load-orders"));
+        var dep = Assert.Single(report.FlowDependencies, d => d.FromFlow == "fetch-orders" && d.ToFlow == "load-orders");
         Assert.Contains(FileNode(report).Key, dep.ViaObjects);
     }
 
@@ -317,7 +317,7 @@ public sealed class LineageInvokeFileLinkTests : IDisposable
 
         var report = Build();
         Assert.Contains(report.Flows, f => f.Name == "fetch-orders" && f.Kind == "inv");
-        Assert.Empty(report.Edges.Where(e => e.Flow == "fetch-orders"));
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "fetch-orders");
         Assert.False(DependsOn(report, "fetch-orders", "load-orders"));
     }
 }

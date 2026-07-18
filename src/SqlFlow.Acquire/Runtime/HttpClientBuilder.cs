@@ -25,7 +25,12 @@ public static class HttpClientBuilder
 
         if (!reliability.VerifyTls)
         {
+            // Deliberate opt-in, gated behind the flow's explicit VerifyTls: false, for targets with a self-signed
+            // or enterprise-internal certificate. Accepting any certificate here is the requested behavior, not a
+            // lapse, so CA5359 is suppressed for this one assignment.
+#pragma warning disable CA5359
             handler.SslOptions.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
+#pragma warning restore CA5359
         }
 
         var client = new HttpClient(handler, disposeHandler: true)

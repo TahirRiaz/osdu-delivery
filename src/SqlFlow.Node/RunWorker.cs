@@ -219,7 +219,7 @@ public sealed partial class RunWorker
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            return await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, ct, _pool).ConfigureAwait(false);
+            return await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, _pool, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -504,6 +504,9 @@ public sealed partial class RunWorker
         }
     }
 
+    /// <param name="scope">The claimed task's own DI scope, never shared with another task.</param>
+    /// <param name="catalog">The catalog context resolved from <paramref name="scope"/>.</param>
+    /// <param name="taskId">The claimed compute task's id.</param>
     /// <param name="shutdownCt">The node's shutdown token: a trip leaves the task <c>running</c> for recovery.</param>
     /// <param name="taskCt">The per-task token (linked to shutdown): an operator cancel trips this alone, aborting
     /// the in-flight query so the task records <c>cancelled</c> rather than requeued.</param>
@@ -595,6 +598,9 @@ public sealed partial class RunWorker
         }
     }
 
+    /// <param name="scope">The claimed run's own DI scope, never shared with another run.</param>
+    /// <param name="catalog">The catalog context resolved from <paramref name="scope"/>.</param>
+    /// <param name="runId">The claimed run's id (the orchestrator-assigned id the trigger returned).</param>
     /// <param name="shutdownCt">The node's shutdown token: when it trips, the run is left <c>running</c> for the next
     /// start's recovery (never recorded terminal), so a stop-then-start never loses in-flight work.</param>
     /// <param name="runCt">The per-run token (linked to shutdown): an operator cancel trips this alone, aborting the

@@ -238,11 +238,15 @@ public static class SearchEndpoints
         // Guid.ToString() here is translated to SQL Server's CONVERT, which yields UPPERCASE; the rest of the API
         // emits lowercase GUIDs (System.Text.Json), and the GUI matches graph node ids by exact string. Lowercase
         // the ids the client keys on (pipeline, repo) so a file's lineage/pipeline jump resolves.
+        // ToLower() runs entirely server-side (translated to SQL LOWER), so the current-culture concern CA1304/CA1311
+        // raise does not apply, and the invariant overloads are not guaranteed to translate; suppress here.
+#pragma warning disable CA1304, CA1311
         select new FileHitDto(
             f.Name, f.Path, f.RunId.ToString().ToLower(), r.FlowName, r.FlowKind,
             f.Rows, f.Columns, f.SizeBytes, r.StartUtc,
             r.PipelineId.ToString().ToLower(), r.RepoId.HasValue ? r.RepoId.Value.ToString().ToLower() : null,
             repo != null ? repo.Name : null);
+#pragma warning restore CA1304, CA1311
 
     // A flow matches on its name, its repo-relative path, or a term anywhere in its YAML body.
     private static IQueryable<FlowRow> FlowRows(CatalogDbContext db, string term) =>

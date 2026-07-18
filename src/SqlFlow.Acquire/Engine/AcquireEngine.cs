@@ -48,7 +48,7 @@ public sealed class AcquireEngine
 
     public async Task<AcquireRunResult> RunAsync(
         AcquireFlow flow, Guid runId, IRunEventSink log, string? priorWatermark,
-        CancellationToken ct = default, AcquireRunOverrides? overrides = null)
+        CancellationToken ct, AcquireRunOverrides? overrides = null)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(log);
@@ -206,7 +206,7 @@ public sealed class AcquireEngine
     private HttpExecutor HttpExecutorFor(HttpClient client, AcquireReliability reliability, IReadOnlyList<string> allowlist)
         => new(client, new RetryPolicy(reliability.Retry, _time), new RateLimiter(reliability.RateLimitRps, _time), new UrlGuard(allowlist), reliability.MaxResponseBytes, _time);
 
-    private async Task<List<TemplateContext>> ExpandAsync(
+    private static async Task<List<TemplateContext>> ExpandAsync(
         AcquireSource source,
         TemplateContext ctx,
         IReadOnlyList<AcquireIteration> iterations,
@@ -237,7 +237,7 @@ public sealed class AcquireEngine
         return results;
     }
 
-    private async Task<IReadOnlyList<Action<TemplateContext>>> BindersAsync(
+    private static async Task<IReadOnlyList<Action<TemplateContext>>> BindersAsync(
         AcquireSource source,
         AcquireIteration iteration,
         TemplateContext ctx,
@@ -313,7 +313,7 @@ public sealed class AcquireEngine
         _ => from.AddDays(1),
     };
 
-    private async Task<IReadOnlyList<Action<TemplateContext>>> IdsFromBindersAsync(
+    private static async Task<IReadOnlyList<Action<TemplateContext>>> IdsFromBindersAsync(
         AcquireSource source,
         AcquireIteration iteration,
         TemplateContext ctx,

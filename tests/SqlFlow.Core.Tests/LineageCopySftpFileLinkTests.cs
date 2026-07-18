@@ -139,8 +139,8 @@ public sealed class LineageCopySftpFileLinkTests : IDisposable
 
         Assert.True(DependsOn(report, "bb-cpy-detail", "bb-load-detail"));
         // Both sides meet on exactly one canonical lake node (the two URI shapes collapsed).
-        var node = Assert.Single(report.Objects.Where(o =>
-            o.Kind == LineageNodeKind.File && o.Key.Contains("history/detail")));
+        var node = Assert.Single(report.Objects, o =>
+            o.Kind == LineageNodeKind.File && o.Key.Contains("history/detail"));
         Assert.Equal("az://acct/datalakev2/raw/baatbooking/history/detail", node.Name);
         Assert.Contains(report.Edges, e => e.Flow == "bb-cpy-detail" && e.Relation == LineageRelation.Writes && e.ObjectKey == node.Key);
         Assert.Contains(report.Edges, e => e.Flow == "bb-load-detail" && e.Relation == LineageRelation.Reads && e.ObjectKey == node.Key);

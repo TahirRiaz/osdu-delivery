@@ -1,3 +1,4 @@
+using System.Globalization;
 using SqlFlow.Acquire.Engine;
 using SqlFlow.Core.Acquire;
 using SqlFlow.Core.Runs;
@@ -46,7 +47,7 @@ public sealed class DebugTests
         {
             if (pair.StartsWith("page=", StringComparison.Ordinal))
             {
-                return int.Parse(pair["page=".Length..]);
+                return int.Parse(pair["page=".Length..], CultureInfo.InvariantCulture);
             }
         }
 

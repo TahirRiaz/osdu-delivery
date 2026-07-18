@@ -16,6 +16,8 @@ namespace SqlFlow.Tests.Integration;
 [Trait("Category", "Integration")]
 public sealed class IncrementalIntegrationTests : IDisposable
 {
+    private static readonly JsonSerializerOptions CamelCaseJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "sqlflow_inc_" + Guid.NewGuid().ToString("N"));
 
     public IncrementalIntegrationTests() => Directory.CreateDirectory(_dir);
@@ -301,7 +303,7 @@ public sealed class IncrementalIntegrationTests : IDisposable
             result = new { processedFiles = new[] { new { name = fileName, modified = (DateTimeOffset?)modified } } },
         };
 
-        var json = JsonSerializer.Serialize(artifact, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var json = JsonSerializer.Serialize(artifact, CamelCaseJson);
         RunHistoryWriter.Write(_dir, flowName, runId, DateTime.UtcNow, new Dictionary<string, string> { ["run.json"] = json });
     }
 
