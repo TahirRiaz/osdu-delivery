@@ -29,8 +29,8 @@ public sealed class RunGroupQueueTests
             await using var db = CatalogDatabase.Create(cs);
             var members = new List<RunScopeMember>
             {
-                new($"a_{suffix}", "ing", 0),
-                new($"b_{suffix}", "ing", 1),
+                new($"a_{suffix}", "ing", 0, CatalogPipeline.DefaultBatch),
+                new($"b_{suffix}", "ing", 1, CatalogPipeline.DefaultBatch),
             };
             var now = DateTime.UtcNow;
             var result = await RunQueueStore.EnqueueGroupAsync(
@@ -68,8 +68,8 @@ public sealed class RunGroupQueueTests
             await using var db = CatalogDatabase.Create(cs);
             var members = new List<RunScopeMember>
             {
-                new($"a_{suffix}", "ing", 0),
-                new($"b_{suffix}", "ing", 1),
+                new($"a_{suffix}", "ing", 0, CatalogPipeline.DefaultBatch),
+                new($"b_{suffix}", "ing", 1, CatalogPipeline.DefaultBatch),
             };
             var result = await RunQueueStore.EnqueueGroupAsync(
                 db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Node, $"a_{suffix}", members), DateTime.UtcNow);
@@ -106,9 +106,9 @@ public sealed class RunGroupQueueTests
 
             var members = new List<RunScopeMember>
             {
-                new(A, "ing", 0),
-                new(B, "ing", 1),
-                new(C, "ing", 1),
+                new(A, "ing", 0, CatalogPipeline.DefaultBatch),
+                new(B, "ing", 1, CatalogPipeline.DefaultBatch),
+                new(C, "ing", 1, CatalogPipeline.DefaultBatch),
             };
             var result = await RunQueueStore.EnqueueGroupAsync(
                 db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Node, A, members), DateTime.UtcNow);
@@ -141,8 +141,8 @@ public sealed class RunGroupQueueTests
             await using var db = CatalogDatabase.Create(cs);
             var members = new List<RunScopeMember>
             {
-                new($"a_{suffix}", "ing", 0),
-                new($"b_{suffix}", "ing", 1),
+                new($"a_{suffix}", "ing", 0, CatalogPipeline.DefaultBatch),
+                new($"b_{suffix}", "ing", 1, CatalogPipeline.DefaultBatch),
             };
             var result = await RunQueueStore.EnqueueGroupAsync(
                 db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Batch, $"bt_{suffix}", members), DateTime.UtcNow);
@@ -240,11 +240,11 @@ public sealed class RunGroupQueueTests
             var scheduleId = await SeedScheduleAsync(db, repoId, $"nightly_{suffix}", [A, B]);
 
             // "Run the nightly, but only the small tables": a subset of the members, never a widening of them.
-            var filtered = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}", "small");
+            var filtered = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}", ["small"]);
             Assert.Equal(new[] { A }, filtered.Members.Select(m => m.FlowName).ToArray());
 
             // A tag no member carries runs nothing rather than falling back to the whole set.
-            var none = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}", "medium");
+            var none = await RunScopeExpander.ExpandScheduleAsync(db, repoId, scheduleId, $"nightly_{suffix}", ["medium"]);
             Assert.Empty(none.Members);
         }
         finally

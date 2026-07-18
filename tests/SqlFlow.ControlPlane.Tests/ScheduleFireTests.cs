@@ -106,7 +106,7 @@ public sealed class ScheduleFireTests
 
             // "Run the nightly, but only the small tables."
             var fire = await ScheduleFire.EnqueueAsync(
-                db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default, batchFilter: "small");
+                db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default, batchFilter: ["small"]);
 
             Assert.Equal(ScheduleFire.Outcome.EnqueuedGroup, fire.Outcome);
             Assert.Equal(2, fire.MemberCount);

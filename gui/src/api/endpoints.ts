@@ -163,7 +163,15 @@ export const scheduleApi = {
   plan: (id: string) => get<SchedulePlan>(`/api/v1/schedules/${id}/plan`),
   create: (request: CreateScheduleRequest) => post<ScheduleCreated>("/api/v1/schedules", request),
   // Fire the schedule now, on demand (to test it): enqueues a run of its flow without moving the next scheduled fire.
-  runNow: (id: string) => post<ScheduleRunAccepted>(`/api/v1/schedules/${id}/run`),
+  // Fire the schedule now. Optional batches narrow the fire to members carrying those batch: tags ("run the
+  // nightly, but only the small and medium tables"); repeated as ?batch=a&batch=b. An empty/omitted list runs
+  // every member. A filter can only ever select a subset of the schedule's own members.
+  runNow: (id: string, batches?: string[]) => {
+    const query = batches && batches.length > 0
+      ? `?${batches.map((b) => `batch=${encodeURIComponent(b)}`).join("&")}`
+      : "";
+    return post<ScheduleRunAccepted>(`/api/v1/schedules/${id}/run${query}`);
+  },
   pause: (id: string) => post<Schedule>(`/api/v1/schedules/${id}/pause`),
   resume: (id: string) => post<Schedule>(`/api/v1/schedules/${id}/resume`),
   remove: (id: string) => del<void>(`/api/v1/schedules/${id}`),

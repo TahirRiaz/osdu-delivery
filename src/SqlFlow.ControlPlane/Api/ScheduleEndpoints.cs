@@ -28,8 +28,9 @@ public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
 /// schedule), plus the run group and member count when the scope expanded to a wave-ordered set.</summary>
 public sealed record ScheduleRunAccepted(Guid RunId, Guid? GroupId = null, int MemberCount = 1);
 
-/// <summary>One flow a schedule runs, and the wave that orders it within the fire.</summary>
-public sealed record SchedulePlanMemberDto(string FlowName, string FlowKind, int Wave);
+/// <summary>One flow a schedule runs: the wave that orders it within the fire and the batch it carries, so the run
+/// board can group or filter the plan by batch and a fire can be narrowed to one batch's flows.</summary>
+public sealed record SchedulePlanMemberDto(string FlowName, string FlowKind, int Wave, string Batch);
 
 /// <summary>
 /// When a schedule next runs and exactly what it executes: the cadence (so "when does this source get updated" is
@@ -137,7 +138,7 @@ public static class ScheduleEndpoints
             .ExpandScheduleAsync(db, schedule.RepoId, schedule.Id, schedule.Name, batchFilter: null, ct).ConfigureAwait(false);
 
         var members = expansion.Members
-            .Select(m => new SchedulePlanMemberDto(m.FlowName, m.FlowKind, m.Wave))
+            .Select(m => new SchedulePlanMemberDto(m.FlowName, m.FlowKind, m.Wave, m.Batch))
             .ToList();
         return TypedResults.Ok(new SchedulePlanDto(
             schedule.Id, schedule.RepoId, schedule.Name, schedule.Cron,
@@ -216,12 +217,13 @@ public static class ScheduleEndpoints
     /// schedule.
     /// <para>
     /// The optional <c>batch</c> query parameter narrows the fire to members carrying that <c>batch:</c> tag: "run the
-    /// nightly, but only the small tables". It can only select a subset of the schedule's own members.
+    /// nightly, but only the small tables". It may be repeated (<c>?batch=small&amp;batch=medium</c>) to run several
+    /// batches at once, and can only ever select a subset of the schedule's own members.
     /// </para>
     /// Answers 202 with the run (and group) reference, 404 for an unknown schedule, and 409 when nothing is runnable.
     /// </summary>
     private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
-        Guid id, string? batch, CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
+        Guid id, string[]? batch, CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
     {
         var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
         if (schedule is null)
@@ -229,16 +231,20 @@ public static class ScheduleEndpoints
             return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 
-        var filter = string.IsNullOrWhiteSpace(batch) ? null : batch.Trim();
+        var filter = batch is null
+            ? null
+            : batch.Where(b => !string.IsNullOrWhiteSpace(b)).Select(b => b.Trim())
+                .Distinct(StringComparer.Ordinal).ToList();
         var now = clock.GetUtcNow().UtcDateTime;
         var fire = await ScheduleFire
             .EnqueueAsync(db, dispatcher, schedule, now, ct, filter).ConfigureAwait(false);
         if (!fire.Queued)
         {
-            var detail = filter is null
+            var detail = filter is not { Count: > 0 }
                 ? $"Schedule '{schedule.Name}' resolved to no runnable flow: nothing joins it, or every member is "
                   + "deactivated or mode: manual."
-                : $"Schedule '{schedule.Name}' has no runnable member carrying batch '{filter}'.";
+                : $"Schedule '{schedule.Name}' has no runnable member carrying "
+                  + (filter.Count == 1 ? $"batch '{filter[0]}'." : $"any of the batches: {string.Join(", ", filter)}.");
             return TypedResults.Problem(
                 detail: detail, statusCode: StatusCodes.Status409Conflict, title: "Cannot run schedule");
         }

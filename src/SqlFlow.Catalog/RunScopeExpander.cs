@@ -83,31 +83,57 @@ public static class RunScopeExpander
     /// <summary>
     /// The member set of a schedule, in wave order: what one fire runs. Membership is the only selector, so this
     /// reads <see cref="CatalogScheduleMember"/> rather than matching any label. <paramref name="batchFilter"/>
-    /// optionally narrows the set to members carrying that <c>batch:</c> tag, which is how "run the nightly, but
-    /// only the small tables" is expressed; it never widens the set, so a filter can only ever run a subset of what
-    /// the schedule already owns. Inactive and <c>mode: manual</c> members are excluded exactly as they are from a
-    /// node expansion: a manual flow reserved itself for a direct trigger.
+    /// optionally narrows the set to members carrying one of those <c>batch:</c> tags, which is how "run the
+    /// nightly, but only the small and medium tables" is expressed; it never widens the set, so a filter can only
+    /// ever run a subset of what the schedule already owns. A null or empty filter runs every member. Inactive and
+    /// <c>mode: manual</c> members are excluded exactly as they are from a node expansion: a manual flow reserved
+    /// itself for a direct trigger.
     /// </summary>
     public static async Task<RunScopeExpansion> ExpandScheduleAsync(
-        CatalogDbContext catalog, Guid repoId, Guid scheduleId, string scheduleName, string? batchFilter = null,
-        CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, Guid scheduleId, string scheduleName,
+        IReadOnlyCollection<string>? batchFilter = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
-        var filter = string.IsNullOrWhiteSpace(batchFilter) ? null : batchFilter.Trim();
-        var members = await (
+        // A distinct, trimmed set of the requested batches; empty means "no filter" (every member runs). Matched
+        // against each flow's batch (coalesced to the default), so EF renders it as a SQL IN over the batch column.
+        var filter = batchFilter is null
+            ? null
+            : batchFilter.Where(b => !string.IsNullOrWhiteSpace(b)).Select(b => b.Trim())
+                .ToHashSet(StringComparer.Ordinal) is { Count: > 0 } set ? set : null;
+        var raw = await (
             from member in catalog.ScheduleMembers.AsNoTracking().Where(m => m.ScheduleId == scheduleId)
             join pipeline in catalog.Pipelines.AsNoTracking() on member.PipelineId equals pipeline.Id
             where pipeline.RepoId == repoId && pipeline.Active
                   && pipeline.ExecutionMode != PipelineExecutionModes.Manual
-                  && (filter == null || (pipeline.Batch ?? CatalogPipeline.DefaultBatch) == filter)
+                  && (filter == null || filter.Contains(pipeline.Batch ?? CatalogPipeline.DefaultBatch))
             orderby pipeline.Wave < 0 ? 0 : pipeline.Wave, pipeline.Name
             select new RunScopeMember(
                 pipeline.Name, pipeline.Kind, pipeline.Wave < 0 ? 0 : pipeline.Wave,
                 pipeline.Batch ?? CatalogPipeline.DefaultBatch))
             .ToListAsync(ct).ConfigureAwait(false);
 
-        return new RunScopeExpansion(RunScope.Flow, scheduleName, members);
+        return new RunScopeExpansion(RunScope.Flow, scheduleName, DenseWaves(raw));
+    }
+
+    /// <summary>
+    /// Renumbers a set's waves to a dense 0..N sequence over exactly the members it contains, preserving their
+    /// order. A fire's waves are then relative to what it actually runs: a batch-filtered subset, or a schedule
+    /// whose flows never include the lineage's wave 0, starts at wave 0 rather than at whatever global wave its
+    /// first member happened to sit on. The group claim gate only cares about the relative order, so the run board's
+    /// preview and the run group's step column show the same wave numbers as what executes.
+    /// </summary>
+    private static IReadOnlyList<RunScopeMember> DenseWaves(IReadOnlyList<RunScopeMember> members)
+    {
+        if (members.Count == 0)
+        {
+            return members;
+        }
+
+        var rank = members.Select(m => m.Wave).Distinct().OrderBy(w => w)
+            .Select((wave, index) => (wave, index))
+            .ToDictionary(t => t.wave, t => t.index);
+        return members.Select(m => m with { Wave = rank[m.Wave] }).ToList();
     }
 
     private static async Task<RunScopeExpansion> ExpandFlowAsync(
@@ -117,7 +143,8 @@ public static class RunScopeExpander
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
         var member = await catalog.Pipelines.AsNoTracking()
             .Where(p => p.Id == pipelineId && p.RepoId == repoId && p.Active)
-            .Select(p => new RunScopeMember(p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave))
+            .Select(p => new RunScopeMember(
+                p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         var members = member is null ? Array.Empty<RunScopeMember>() : new[] { member };
         return new RunScopeExpansion(RunScope.Flow, flowName, members);
@@ -195,7 +222,8 @@ public static class RunScopeExpander
             .Where(p => p.RepoId == repoId && p.Active && ids.Contains(p.Id)
                         && (p.Id == anchorId || p.ExecutionMode != PipelineExecutionModes.Manual))
             .OrderBy(p => p.Wave < 0 ? 0 : p.Wave).ThenBy(p => p.Name)
-            .Select(p => new RunScopeMember(p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave))
+            .Select(p => new RunScopeMember(
+                p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch))
             .ToListAsync(ct).ConfigureAwait(false);
     }
 

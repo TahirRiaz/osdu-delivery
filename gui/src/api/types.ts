@@ -443,11 +443,13 @@ export interface ScheduleRunAccepted {
   memberCount: number;
 }
 
-/** One flow a schedule runs, and the wave that orders it within a fire. */
+/** One flow a schedule runs: the wave that orders it within a fire, and the batch it carries (coalesced to the
+ * default batch when the flow declares none) so the run board can group or filter the plan by batch. */
 export interface SchedulePlanMember {
   flowName: string;
   flowKind: string;
   wave: number;
+  batch: string;
 }
 
 /** When a schedule next runs and exactly what it executes: the cadence plus the lineage-resolved flows in wave

@@ -157,6 +157,9 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
 
   const [groupId, setGroupId] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
+  // An empty set means "all batches"; any members carrying a selected batch tag are what the fire (and this board)
+  // narrows to. Multiple batches can be selected to run several at once.
+  const [selectedBatches, setSelectedBatches] = useState<string[]>([]);
   const phase: "preview" | "running" = groupId === null ? "preview" : "running";
 
   const plan = useQuery({
@@ -176,7 +179,7 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   }, [liveMembers]);
 
   const run = useMutation({
-    mutationFn: () => scheduleApi.runNow(schedule.id),
+    mutationFn: () => scheduleApi.runNow(schedule.id, selectedBatches),
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       if (accepted.groupId !== null) {
@@ -195,8 +198,20 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
     },
   });
 
-  const waves = useMemo(() => toWaves(plan.data?.members ?? []), [plan.data]);
-  const memberCount = plan.data?.memberCount ?? 0;
+  const allMembers = useMemo(() => plan.data?.members ?? [], [plan.data]);
+  // The distinct batches a fire could span. With more than one, the board offers a filter so an operator can run
+  // just one batch's flows ("the nightly, but only the small tables").
+  const batches = useMemo(
+    () => [...new Set(allMembers.map((m) => m.batch))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+    [allMembers],
+  );
+  // What the board shows and a Start actually fires: every member, or only those in the selected batches.
+  const visibleMembers = useMemo(
+    () => (selectedBatches.length === 0 ? allMembers : allMembers.filter((m) => selectedBatches.includes(m.batch))),
+    [allMembers, selectedBatches],
+  );
+  const waves = useMemo(() => toWaves(visibleMembers), [visibleMembers]);
+  const memberCount = visibleMembers.length;
 
   const statusOf = (flowName: string): MemberStatus => {
     if (phase !== "running") {
@@ -207,13 +222,13 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   };
 
   const doneCount = phase === "running"
-    ? (plan.data?.members ?? []).filter((m) => {
+    ? visibleMembers.filter((m) => {
       const s = liveByFlow.get(m.flowName)?.status;
       return s !== undefined && TERMINAL.has(s);
     }).length
     : 0;
   const failedCount = phase === "running"
-    ? (plan.data?.members ?? []).filter((m) => liveByFlow.get(m.flowName)?.status === "failed").length
+    ? visibleMembers.filter((m) => liveByFlow.get(m.flowName)?.status === "failed").length
     : 0;
   const progress = memberCount > 0 ? Math.round((doneCount / memberCount) * 100) : 0;
 
@@ -329,6 +344,46 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                 This schedule is {schedule.paused ? "paused" : "disabled"}, so it will not fire on its own. Starting
                 here runs its flows once, immediately, without changing that.
               </Alert>
+            )}
+
+            {batches.length > 1 && (
+              <Box data-testid="run-schedule-batch-filter">
+                <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.75 }}>
+                  <Typography variant="caption" color="text.secondary">Batches</Typography>
+                  <Typography variant="caption" color="text.disabled">
+                    {selectedBatches.length === 0 ? "all" : `${selectedBatches.length} selected`}
+                  </Typography>
+                </Stack>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Chip
+                    label="All batches"
+                    size="small"
+                    color={selectedBatches.length === 0 ? "primary" : "default"}
+                    variant={selectedBatches.length === 0 ? "filled" : "outlined"}
+                    onClick={phase === "running" ? undefined : () => setSelectedBatches([])}
+                    disabled={phase === "running"}
+                    data-testid="run-schedule-batch-all"
+                  />
+                  {batches.map((b) => {
+                    const on = selectedBatches.includes(b);
+                    return (
+                      <Chip
+                        key={b}
+                        label={b}
+                        size="small"
+                        color={on ? "primary" : "default"}
+                        variant={on ? "filled" : "outlined"}
+                        onClick={phase === "running"
+                          ? undefined
+                          : () => setSelectedBatches((prev) =>
+                            prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b])}
+                        disabled={phase === "running" && !on}
+                        data-testid={`run-schedule-batch-${b}`}
+                      />
+                    );
+                  })}
+                </Stack>
+              </Box>
             )}
 
             {phase === "running" && (

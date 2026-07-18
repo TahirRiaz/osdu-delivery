@@ -42,9 +42,9 @@ public static class ScheduleFire
     /// <see cref="Outcome.ScopeEmpty"/> when the set resolves to nothing runnable, which is a normal state (a source
     /// whose flows were all deactivated) and not a fault.
     /// <para>
-    /// <paramref name="batchFilter"/> narrows the fire to members carrying that <c>batch:</c> tag, for "run the
-    /// nightly, but only the small tables". It can only ever select a subset of the schedule's own members, never
-    /// pull in a flow that did not join.
+    /// <paramref name="batchFilter"/> narrows the fire to members carrying one of those <c>batch:</c> tags, for
+    /// "run the nightly, but only the small and medium tables". It can only ever select a subset of the schedule's
+    /// own members, never pull in a flow that did not join; a null or empty filter runs every member.
     /// </para>
     /// <para>
     /// A <c>mode: manual</c> member is excluded from every fire, automatic or run-now: that flag reserves a flow for
@@ -53,7 +53,7 @@ public static class ScheduleFire
     /// </summary>
     public static async Task<FireResult> EnqueueAsync(
         CatalogDbContext catalog, IRunDispatcher dispatcher, CatalogSchedule schedule,
-        DateTime nowUtc, CancellationToken ct, string? batchFilter = null)
+        DateTime nowUtc, CancellationToken ct, IReadOnlyCollection<string>? batchFilter = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(dispatcher);
