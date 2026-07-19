@@ -103,6 +103,41 @@ public sealed class GitMaterializerTests
         }
     }
 
+    [Fact]
+    public void Materialize_LeftoverInvalidCheckout_IsRebuiltInsteadOfFailing()
+    {
+        var remote = NewTempDir();
+        var cache = NewTempDir();
+        try
+        {
+            var (firstSha, _) = SeedRepoWithTwoVersions(remote);
+            var materializer = new GitMaterializer(cache);
+
+            // A first materialization leaves a valid checkout in the cache.
+            var dir = materializer.Materialize(remote, firstSha, credentials: null);
+
+            // Simulate a run that was killed mid-clone: the cache directory still exists and is non-empty, but it
+            // is no longer a valid repository. Removing .git leaves the working files behind; a read-only stray
+            // stands in for the leftover read-only git objects. Before the hardened cleanup this next call blew up
+            // with a raw "Directory not empty" IOException; it must now tear the directory down and re-clone.
+            DeleteDir(Path.Combine(dir, ".git"));
+            var stray = Path.Combine(dir, "leftover.pack");
+            File.WriteAllText(stray, "partial");
+            File.SetAttributes(stray, FileAttributes.ReadOnly);
+
+            var rebuilt = materializer.Materialize(remote, firstSha, credentials: null);
+
+            Assert.Equal(dir, rebuilt);
+            Assert.Equal("v1", File.ReadAllText(Path.Combine(rebuilt, "flow.yaml")));
+            Assert.False(File.Exists(stray));
+        }
+        finally
+        {
+            DeleteDir(remote);
+            DeleteDir(cache);
+        }
+    }
+
     private static (string FirstSha, string SecondSha) SeedRepoWithTwoVersions(string path)
     {
         Repository.Init(path);

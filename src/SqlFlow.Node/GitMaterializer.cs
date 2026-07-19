@@ -68,16 +68,13 @@ public sealed class GitMaterializer
 
             ct.ThrowIfCancellationRequested();
 
-            // A partial or wrong-commit directory is rebuilt from scratch, so a previously interrupted materialization
-            // never leaves a half-checked-out tree behind.
-            if (Directory.Exists(workingDir))
-            {
-                DeleteDirectory(workingDir);
-            }
-
-            Directory.CreateDirectory(workingDir);
             try
             {
+                // A partial or wrong-commit directory is rebuilt from scratch, so a previously interrupted
+                // materialization never leaves a half-checked-out tree behind.
+                DeleteDirectory(workingDir);
+
+                Directory.CreateDirectory(workingDir);
                 var options = new CloneOptions { Checkout = false };
                 options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
                 Repository.Clone(remoteUrl, workingDir, options);
@@ -88,9 +85,11 @@ public sealed class GitMaterializer
                 Commands.Checkout(repo, commit);
                 return workingDir;
             }
-            catch (LibGit2SharpException ex)
+            catch (Exception ex) when (ex is LibGit2SharpException or IOException or UnauthorizedAccessException)
             {
-                // Leave nothing usable behind on failure, so the next attempt re-materializes cleanly.
+                // Leave nothing usable behind on failure, so the next attempt re-materializes cleanly. Wrap the
+                // cause (a clone error, or a filesystem error cleaning up a leftover checkout) with context so the
+                // run records what could not be materialized instead of a bare "Directory not empty" message.
                 TryDeleteDirectory(workingDir);
                 throw new SqlFlowNodeException($"could not materialize '{remoteUrl}' at '{commitSha}': {ex.Message}", ex);
             }
@@ -116,16 +115,14 @@ public sealed class GitMaterializer
         // serializes them. The key differs from any commit directory, so branch syncs and pinned runs never contend.
         lock (LockFor(workingDir))
         {
-            // A fresh checkout each sync keeps the logic simple and correct (no fetch/merge edge cases); the synced
-            // estate is small and the sync runs on an interval, so re-cloning the branch tip is an acceptable cost.
-            if (Directory.Exists(workingDir))
-            {
-                DeleteDirectory(workingDir);
-            }
-
-            Directory.CreateDirectory(workingDir);
             try
             {
+                // A fresh checkout each sync keeps the logic simple and correct (no fetch/merge edge cases); the
+                // synced estate is small and the sync runs on an interval, so re-cloning the branch tip is an
+                // acceptable cost.
+                DeleteDirectory(workingDir);
+
+                Directory.CreateDirectory(workingDir);
                 var options = new CloneOptions { BranchName = string.IsNullOrWhiteSpace(branch) ? null : branch };
                 options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
                 Repository.Clone(remoteUrl, workingDir, options);
@@ -135,7 +132,7 @@ public sealed class GitMaterializer
                     ?? throw new SqlFlowNodeException($"'{remoteUrl}' (branch '{branch}') has no commits to sync.");
                 return (workingDir, sha);
             }
-            catch (LibGit2SharpException ex)
+            catch (Exception ex) when (ex is LibGit2SharpException or IOException or UnauthorizedAccessException)
             {
                 TryDeleteDirectory(workingDir);
                 throw new SqlFlowNodeException($"could not pull '{remoteUrl}' (branch '{branch}'): {ex.Message}", ex);
@@ -219,27 +216,72 @@ public sealed class GitMaterializer
 
     private static void DeleteDirectory(string path)
     {
-        // A git working tree contains read-only objects under .git; clear the attribute before deleting.
-        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+        if (!Directory.Exists(path))
         {
-            var attributes = File.GetAttributes(file);
-            if (attributes.HasFlag(FileAttributes.ReadOnly))
-            {
-                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
-            }
+            return;
         }
 
-        Directory.Delete(path, recursive: true);
+        // Delete in place if the filesystem cooperates. A node runs its cache on a container overlay filesystem,
+        // where removing a directory that holds many small files (a .git object store) can transiently fail with
+        // "Directory not empty" (ENOTEMPTY): the kernel finishes unlinking the children after the parent rmdir is
+        // attempted, so a retry succeeds once the pending unlinks settle.
+        if (TryPurgeDirectory(path))
+        {
+            return;
+        }
+
+        // Still not gone after retrying (a file is genuinely held open, or the overlay is being stubborn). A
+        // leftover partial checkout must never wedge a run, so move the tree aside instead. A rename to a sibling
+        // name on the same volume is atomic and immune to ENOTEMPTY, which frees the original path for a clean
+        // re-clone even if the moved copy cannot be removed yet; the moved copy is then purged best-effort.
+        var abandoned = path + ".stale-" + Guid.NewGuid().ToString("N");
+        Directory.Move(path, abandoned);
+        TryPurgeDirectory(abandoned);
+    }
+
+    /// <summary>
+    /// Deletes <paramref name="path"/> and everything under it, retrying to absorb the transient
+    /// "Directory not empty" / sharing-violation races that a container overlay filesystem raises while it settles
+    /// pending unlinks. Returns true if the tree is gone, false if it still could not be removed after retrying.
+    /// </summary>
+    private static bool TryPurgeDirectory(string path)
+    {
+        const int maxAttempts = 6;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                // A git working tree contains read-only objects under .git; clear the attribute before deleting.
+                foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                {
+                    var attributes = File.GetAttributes(file);
+                    if (attributes.HasFlag(FileAttributes.ReadOnly))
+                    {
+                        File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+                    }
+                }
+
+                Directory.Delete(path, recursive: true);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt >= maxAttempts)
+                {
+                    return false;
+                }
+
+                // Back off a little longer each attempt to let the filesystem finish the outstanding unlinks.
+                Thread.Sleep(25 * attempt);
+            }
+        }
     }
 
     private static void TryDeleteDirectory(string path)
     {
         try
         {
-            if (Directory.Exists(path))
-            {
-                DeleteDirectory(path);
-            }
+            DeleteDirectory(path);
         }
         catch (IOException)
         {
