@@ -28,6 +28,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogLineageEdge> LineageEdges => Set<CatalogLineageEdge>();
 
+    public DbSet<CatalogObjectRelationship> ObjectRelationships => Set<CatalogObjectRelationship>();
+
     public DbSet<CatalogFlowDependency> FlowDependencies => Set<CatalogFlowDependency>();
 
     public DbSet<CatalogRunFile> RunFiles => Set<CatalogRunFile>();
@@ -171,6 +173,9 @@ public sealed class CatalogDbContext : DbContext
             // The generating DDL is unbounded too (a wide CREATE TABLE, a long view body); nvarchar(max).
             entity.Property(o => o.Script);
             entity.Property(o => o.ScriptTier).HasMaxLength(16);
+            // The interpreted key: a handful of column names, never a blob; 1024 covers a wide composite key.
+            entity.Property(o => o.KeyColumns).HasMaxLength(1024);
+            entity.Property(o => o.KeyOrigin).HasMaxLength(16);
             // A DB-generated surrogate that serves only as the full-text KEY INDEX (Key is too wide to be one).
             entity.Property(o => o.FullTextKey).UseIdentityColumn();
             entity.HasIndex(o => o.FullTextKey).IsUnique();
@@ -192,6 +197,23 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(e => e.ObjectKey);
             entity.HasIndex(e => e.RepoId);
             entity.HasIndex(e => e.PipelineId);
+        });
+
+        modelBuilder.Entity<CatalogObjectRelationship>(entity =>
+        {
+            entity.ToTable("ObjectRelationship");
+            entity.HasKey(r => r.Id);
+            entity.Property(r => r.Name).HasMaxLength(512);
+            entity.Property(r => r.FromObjectKey).HasMaxLength(900).IsRequired();
+            entity.Property(r => r.FromColumns).HasMaxLength(1024).IsRequired();
+            entity.Property(r => r.ToObjectKey).HasMaxLength(900).IsRequired();
+            entity.Property(r => r.ToColumns).HasMaxLength(1024).IsRequired();
+            entity.Property(r => r.Origin).HasMaxLength(16).IsRequired();
+            entity.Property(r => r.Tier).HasMaxLength(16).IsRequired();
+            // The hot queries: an object's relationships in either direction, and the per-repo replacement.
+            entity.HasIndex(r => r.FromObjectKey);
+            entity.HasIndex(r => r.ToObjectKey);
+            entity.HasIndex(r => r.RepoId);
         });
 
         modelBuilder.Entity<CatalogFlowDependency>(entity =>

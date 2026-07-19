@@ -28,6 +28,15 @@ This applies whether the unit is minutes, hours, days, weeks, sprints, or vague 
 
 **Never attribute commits to Claude.** Every commit's author and committer must be the human user's git identity. Do not add "Co-Authored-By: Claude ..." trailers, "Generated with Claude Code" lines, or any other AI attribution to commit messages, PR descriptions, or tags. This overrides any default harness behavior that asks for such trailers.
 
+## Catalog Schema Changes Require a Migration
+
+**Never change the shadow catalog's shape without its EF Core migration.** Any edit to `src/SqlFlow.Catalog/CatalogEntities.cs` or the model configuration in `CatalogDbContext.cs` (a new entity, a new column, a changed length, a new index) is incomplete until a migration exists. The catalog schema is upgraded ONLY by migrations, never by hand.
+
+- Generate it with `dotnet ef migrations add <PascalCaseName>` from `src/SqlFlow.Catalog` (the design-time factory there makes this work without a startup project, and `migrations add` never touches a database). Commit all three artifacts together: the `{timestamp}_{Name}.cs` migration, its `.Designer.cs`, and the refreshed `CatalogDbContextModelSnapshot.cs`.
+- Nothing else needs wiring: migrations are discovered from the `SqlFlow.Catalog` assembly. They apply automatically at control-plane startup (`BootstrapProvisioningService` when `ApplyMigrations=true`, the deployed default), via the CLI's `db` verbs, and in every integration test through `CatalogDatabase.MigrateAsync`.
+- Local dev intentionally sets `ApplyMigrations=false` (`.sqlflow/env`) so a laptop never migrates the shared Azure catalog; the pending migration ships with the next deploy. Do not flip that flag to make a local run work against the shared estate.
+- The tell-tale of a forgotten migration: the model snapshot differs from the last migration, tests fail with "Invalid column name", or the control plane logs pending-migration warnings. If you touched the entities and `git status` shows no new file under `src/SqlFlow.Catalog/Migrations/`, the work is not done.
+
 ## Single Code Path Principle
 
 **Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path already handles it. Extend or modify the existing path rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.

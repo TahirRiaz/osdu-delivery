@@ -123,6 +123,70 @@ public sealed record CatalogObject
     public string? Warning { get; init; }
 }
 
+/// <summary>One identity a data-model observation names: the raw parts as the script wrote them (the builder
+/// resolves them to node keys with the same default-database completion and synonym follow the facts get).</summary>
+public sealed record ModelObjectRef
+{
+    public required string ServerRef { get; init; }
+
+    public string? Database { get; init; }
+
+    public string? Schema { get; init; }
+
+    public required string Name { get; init; }
+}
+
+/// <summary>One equality-join observation from a script: the two sides and their positionally-paired columns.
+/// The data model of a warehouse is interpreted from these (constraints rarely exist physically), so every
+/// distinct script exhibiting the same pair raises the relationship's confidence.</summary>
+public sealed record CollectedJoin
+{
+    public required ModelObjectRef Left { get; init; }
+
+    public required IReadOnlyList<string> LeftColumns { get; init; }
+
+    public required ModelObjectRef Right { get; init; }
+
+    public required IReadOnlyList<string> RightColumns { get; init; }
+
+    public required Core.Lineage.LineageTier Tier { get; init; }
+
+    /// <summary>The script the observation came from (a module key, a flow name, a trace step): the unit of
+    /// occurrence counting, so one script repeating a join predicate counts once.</summary>
+    public required string ScriptId { get; init; }
+}
+
+/// <summary>One key observation for a table: an explicit PRIMARY KEY clause parsed from DDL, the flow YAML's
+/// declared key columns, or the ON clause of the MERGE that loads it.</summary>
+public sealed record CollectedKeyHint
+{
+    public required ModelObjectRef Table { get; init; }
+
+    public required IReadOnlyList<string> Columns { get; init; }
+
+    public required Core.Lineage.LineageModelOrigin Origin { get; init; }
+
+    public required Core.Lineage.LineageTier Tier { get; init; }
+}
+
+/// <summary>One explicit FOREIGN KEY constraint parsed from DDL in the codebase (not read from a live system
+/// catalog): the strongest form of model relationship.</summary>
+public sealed record CollectedModelConstraint
+{
+    /// <summary>The constraint name, when the DDL named it.</summary>
+    public string? Name { get; init; }
+
+    public required ModelObjectRef From { get; init; }
+
+    public required IReadOnlyList<string> FromColumns { get; init; }
+
+    public required ModelObjectRef To { get; init; }
+
+    public required IReadOnlyList<string> ToColumns { get; init; }
+
+    public required Core.Lineage.LineageTier Tier { get; init; }
+}
+
 /// <summary>One synonym and what it points at (within reach of PARSENAME; a linked-server base keeps its
 /// server part as an unresolvable warning).</summary>
 public sealed record SynonymLink
@@ -163,6 +227,14 @@ public sealed class CollectionResult
 
     public List<CatalogObject> CatalogObjects { get; } = [];
 
+    /// <summary>The interpreted data model's raw observations: join predicates, key hints, and explicit
+    /// constraint clauses, all parsed from the codebase's SQL across the tiers.</summary>
+    public List<CollectedJoin> Joins { get; } = [];
+
+    public List<CollectedKeyHint> KeyHints { get; } = [];
+
+    public List<CollectedModelConstraint> ModelConstraints { get; } = [];
+
     public List<SynonymLink> Synonyms { get; } = [];
 
     /// <summary>Server identities proven equal at connect time (two references resolving to the same
@@ -187,6 +259,9 @@ public sealed class CollectionResult
         Facts.AddRange(other.Facts);
         ObjectArtifacts.AddRange(other.ObjectArtifacts);
         CatalogObjects.AddRange(other.CatalogObjects);
+        Joins.AddRange(other.Joins);
+        KeyHints.AddRange(other.KeyHints);
+        ModelConstraints.AddRange(other.ModelConstraints);
         Synonyms.AddRange(other.Synonyms);
         Warnings.AddRange(other.Warnings);
         foreach (var (key, value) in other.Servers)

@@ -159,7 +159,8 @@ public static class RepoSourceStore
         return affected > 0;
     }
 
-    /// <summary>Records a successful sync: the pulled commit and the time, clearing any prior error.</summary>
+    /// <summary>Records a successful sync: the pulled commit and the time, clearing any prior error and the
+    /// one-shot force-lineage request (a manual sync-now has now been honored).</summary>
     public static Task RecordSuccessAsync(
         CatalogDbContext catalog, Guid id, string commitSha, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -170,6 +171,7 @@ public static class RepoSourceStore
                 .SetProperty(x => x.LastSyncUtc, nowUtc)
                 .SetProperty(x => x.LastSyncedSha, commitSha)
                 .SetProperty(x => x.LastError, (string?)null)
+                .SetProperty(x => x.ForceLineageOnNextSync, false)
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct);
     }
 
@@ -186,7 +188,10 @@ public static class RepoSourceStore
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct);
     }
 
-    /// <summary>Makes a source due immediately (the sync-now action), so the next tick pulls it.</summary>
+    /// <summary>Makes a source due immediately (the sync-now action), so the next tick pulls it, and requests a
+    /// full lineage recompute on that sync: a manual trigger is a deliberate "refresh everything", so it bypasses
+    /// the unchanged-estate shortcut that a periodic sync relies on (which is what recomputes waves and populates
+    /// object bodies/columns from the persisted run trace). The flag clears once the sync succeeds.</summary>
     public static async Task<RepoSourceMutation> TriggerNowAsync(
         CatalogDbContext catalog, Guid id, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -195,6 +200,7 @@ public static class RepoSourceStore
             .Where(s => s.Id == id && s.Enabled)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.NextSyncUtc, nowUtc)
+                .SetProperty(x => x.ForceLineageOnNextSync, true)
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct)
             .ConfigureAwait(false);
         return affected > 0 ? RepoSourceMutation.Applied : RepoSourceMutation.NotFound;

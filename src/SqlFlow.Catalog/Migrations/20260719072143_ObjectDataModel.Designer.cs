@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SqlFlow.Catalog;
 
@@ -11,9 +12,11 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    partial class CatalogDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260719072143_ObjectDataModel")]
+    partial class ObjectDataModel
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -881,9 +884,6 @@ namespace SqlFlow.Catalog.Migrations
 
                     b.Property<string>("ExcludedFlowPaths")
                         .HasColumnType("nvarchar(max)");
-
-                    b.Property<bool>("ForceLineageOnNextSync")
-                        .HasColumnType("bit");
 
                     b.Property<string>("LastError")
                         .HasColumnType("nvarchar(max)");

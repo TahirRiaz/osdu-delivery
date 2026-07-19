@@ -6,6 +6,7 @@ using SqlFlow.Core.Lineage;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Lineage;
 using SqlFlow.Lineage.Collection;
+using SqlFlow.Lineage.Extraction;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Catalog;
@@ -144,7 +145,7 @@ public sealed class CatalogSync
     public async Task<CatalogSyncResult> SyncAsync(
         CatalogDbContext context, string estateDirectory, string repoName, string? repoRemoteUrl, DateTime nowUtc,
         bool includeDerived = false, ISecretResolver? secrets = null, IReadOnlySet<string>? excludedFlowPaths = null,
-        CancellationToken ct = default)
+        bool forceLineage = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(estateDirectory);
@@ -187,8 +188,10 @@ public sealed class CatalogSync
             // catalogs, which can change on their own, so a connected sync always recomputes. An excluded flow
             // still contributes lineage (the graph spans the whole estate) but has no stored hash to compare,
             // so a selection-scoped sync recomputes too. When nothing changed, the stored lineage IS current.
+            // A manual "sync now" forces a full recompute (the operator asked for a fresh result, including the
+            // offline object-body/column enrichment), so the unchanged-estate shortcut is bypassed.
             var anyExcluded = collected.Flows.Count != flows.Count;
-            var lineageNeeded = includeDerived || anyExcluded || runs.Count > 0
+            var lineageNeeded = forceLineage || includeDerived || anyExcluded || runs.Count > 0
                 || LineageInputsChanged(pipelines, anyUnreadable, storedActiveHashes);
 
             LineageReport? report = null;
@@ -1000,6 +1003,92 @@ public sealed class CatalogSync
         return PipelineChange.Added;
     }
 
+    /// <summary>
+    /// The offline half of identity healing: rewrites a report so each database-less object identity adopts the
+    /// registry's database-qualified row when exactly one candidate exists for the same server reference and
+    /// schema/name. A connected sync taught the catalog the object's default database; an offline re-sync must
+    /// land on that identity (objects, edges, data-model relationships, and dependency via-keys rewritten
+    /// together) instead of re-creating a weak twin row. An ambiguous candidate set (the same schema.name under
+    /// two databases of one server) leaves the weak identity untouched: a wrong merge would silently corrupt
+    /// lineage, while a split only clutters the explorer until connectivity resolves it.
+    /// </summary>
+    private static async Task<LineageReport> AdoptResolvedIdentitiesAsync(
+        CatalogDbContext context, LineageReport report, CancellationToken ct)
+    {
+        var weakNodes = report.Objects
+            .Where(o => string.IsNullOrWhiteSpace(o.Database) && o.Kind != Core.Lineage.LineageNodeKind.File)
+            .ToList();
+        if (weakNodes.Count == 0)
+        {
+            return report;
+        }
+
+        // The resolved rows these weak identities could adopt: one bounded read per involved server reference.
+        var serverRefs = weakNodes.Select(o => o.ServerRef).Distinct(StringComparer.Ordinal).ToList();
+        var candidates = await SelectByKeysAsync(
+                serverRefs,
+                chunk => context.Objects.AsNoTracking()
+                    .Where(o => chunk.Contains(o.ServerRef) && o.Database != null)
+                    .Select(o => new { o.Key, o.ServerRef, o.Database, o.Schema, o.Name })
+                    .ToListAsync(ct))
+            .ConfigureAwait(false);
+        if (candidates.Count == 0)
+        {
+            return report;
+        }
+
+        var adopted = new Dictionary<string, (string Key, string Database)>(StringComparer.Ordinal);
+        foreach (var node in weakNodes)
+        {
+            var matches = candidates
+                .Where(c => string.Equals(c.ServerRef, node.ServerRef, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(c.Schema, node.Schema, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(c.Name, node.Name, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count == 1)
+            {
+                adopted[node.Key] = (matches[0].Key, matches[0].Database!);
+            }
+        }
+
+        if (adopted.Count == 0)
+        {
+            return report;
+        }
+
+        string MapKey(string key) => adopted.TryGetValue(key, out var target) ? target.Key : key;
+
+        // Non-adopted nodes first, so a weak node whose adopted key collides with a resolved node ALSO in this
+        // report simply drops (the stronger node carries the metadata); order is then restored by key.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var objects = new List<LineageObjectNode>(report.Objects.Count);
+        foreach (var node in report.Objects.OrderBy(o => adopted.ContainsKey(o.Key) ? 1 : 0))
+        {
+            var mapped = adopted.TryGetValue(node.Key, out var target)
+                ? node with { Key = target.Key, Database = target.Database }
+                : node;
+            if (seen.Add(mapped.Key))
+            {
+                objects.Add(mapped);
+            }
+        }
+
+        objects.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+
+        return report with
+        {
+            Objects = objects,
+            // Edge records are value-equal, so a weak and a resolved spelling of the same fact collapse.
+            Edges = report.Edges.Select(e => e with { ObjectKey = MapKey(e.ObjectKey) }).Distinct().ToList(),
+            Relationships = report.Relationships
+                .Select(r => r with { FromObjectKey = MapKey(r.FromObjectKey), ToObjectKey = MapKey(r.ToObjectKey) })
+                .ToList(),
+            FlowDependencies = report.FlowDependencies
+                .Select(d => d with { ViaObjects = d.ViaObjects.Select(MapKey).ToList() })
+                .ToList(),
+        };
+    }
+
     /// <summary>Writes a precomputed lineage report into the catalog: the global object registry, the data
     /// dictionary, this repo's edges and flow dependencies, the execution waves, and the identity healing. Runs
     /// inside the sync's transaction and performs only database work; the report itself was computed before the
@@ -1007,6 +1096,14 @@ public sealed class CatalogSync
     private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected)> ApplyLineageAsync(
         CatalogDbContext context, Guid repoId, LineageReport report, bool includeDerived, DateTime nowUtc, CancellationToken ct)
     {
+        // Identity adoption, the offline half of identity healing: a database-less identity in this report
+        // adopts the registry's database-qualified row when exactly one exists for the same server reference
+        // and schema/name. A connected sync taught the catalog the object's default database; an offline
+        // re-sync (or one whose derived tier degraded to a warning) must not split the object back into a
+        // weak twin row with its edges pointing at the weak key. Ambiguity (the same schema.name under two
+        // databases of one server) keeps the weak identity, mirroring the builder's unification rule.
+        report = await AdoptResolvedIdentitiesAsync(context, report, ct).ConfigureAwait(false);
+
         // Objects are GLOBAL (shared across repos by their canonical key) - upsert, never delete. Load only the
         // keys this report mentions, so the working set scales with the report, not the whole catalog.
         var keys = report.Objects.Select(o => o.Key).Distinct().ToList();
@@ -1041,6 +1138,14 @@ public sealed class CatalogSync
                     row.Script = NullIfBlank(SecretHygiene.RedactedMessage(node.Script));
                     row.ScriptTier = node.ScriptTier?.ToString();
                     row.ScriptUpdatedUtc = nowUtc;
+                }
+
+                // The interpreted key, likewise: only overwrite when this sync's codebase named one, so a repo
+                // that never loads the object cannot wipe the key its loading repo declared.
+                if (node.KeyColumns.Count > 0)
+                {
+                    row.KeyColumns = string.Join(",", node.KeyColumns);
+                    row.KeyOrigin = node.KeyOrigin?.ToString();
                 }
 
                 row.LastSeenUtc = nowUtc;
@@ -1109,6 +1214,13 @@ public sealed class CatalogSync
             }
         }
 
+        // Offline object-body enrichment: fill each resolved object's generating script and interpreted column
+        // dictionary from the run-statement trace already persisted in the catalog, so an offline sync (no live
+        // catalog to read, no run.json on disk) still shows an object's code and columns, parsed from the exact
+        // T-SQL the engine ran. Additive to the tier-supplied columns above; a live (Derived) set is never
+        // downgraded.
+        columns += await ApplyObservedObjectScriptsAsync(context, repoId, report, touchedObjects, nowUtc, ct).ConfigureAwait(false);
+
         // Edges are this repo's view of the graph: replace them wholesale so a removed flow's edges do not linger.
         await context.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         var objectNames = report.Objects.ToDictionary(o => o.Key, o => o.Name, StringComparer.Ordinal);
@@ -1118,6 +1230,14 @@ public sealed class CatalogSync
             var name = objectNames.TryGetValue(edge.ObjectKey, out var n) ? n : edge.ObjectKey;
             context.LineageEdges.Add(CatalogProjection.Edge(edge, repoId, name));
             edges++;
+        }
+
+        // The interpreted data model is this repo's view too (its code exhibited the joins), so it is
+        // replaced per repo the same way; a dossier deduplicates the same relationship across repos at read.
+        await context.ObjectRelationships.Where(r => r.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        foreach (var relationship in report.Relationships)
+        {
+            context.ObjectRelationships.Add(CatalogProjection.Relationship(relationship, repoId));
         }
 
         // Object levels: each object's depth in the ESTATE-WIDE data-movement graph, so the explorer lists and
@@ -1190,6 +1310,64 @@ public sealed class CatalogSync
             }
         }
 
+        // The stale-spelling sweep, the second half of the twin cleanup: a weak (database-less) row recorded
+        // under a server reference the estate no longer spells (a keyvault ref replaced by an env ref) can
+        // never be derived as a twin of THIS report's keys, so the pass above cannot see it. Any non-file
+        // database-less row that this report did not touch and that no repo's edges and no data-model
+        // relationship reference anymore is residue of an older spelling, not an object: delete it, or the
+        // explorer lists it under "(unresolved)" forever. Files stay: a file identity has no database by
+        // design. The weak-row set is naturally small (identities pending resolution), so one unchunked read
+        // of the keys is bounded.
+        var staleWeakKeys = (await context.Objects
+                .Where(o => o.Database == null && o.Kind != "File")
+                .Select(o => o.Key)
+                .ToListAsync(ct).ConfigureAwait(false))
+            .Where(key => !objectNames.ContainsKey(key))
+            .ToList();
+        if (staleWeakKeys.Count > 0)
+        {
+            var edgeReferenced = await SelectByKeysAsync(
+                    staleWeakKeys,
+                    chunk => context.LineageEdges
+                        .Where(e => chunk.Contains(e.ObjectKey))
+                        .Select(e => e.ObjectKey)
+                        .Distinct()
+                        .ToListAsync(ct))
+                .ConfigureAwait(false);
+            // Two simple membership queries (per direction) instead of one SelectMany over both columns,
+            // which EF cannot translate to SQL.
+            var referencedAsFrom = await SelectByKeysAsync(
+                    staleWeakKeys,
+                    chunk => context.ObjectRelationships
+                        .Where(r => chunk.Contains(r.FromObjectKey))
+                        .Select(r => r.FromObjectKey)
+                        .Distinct()
+                        .ToListAsync(ct))
+                .ConfigureAwait(false);
+            var referencedAsTo = await SelectByKeysAsync(
+                    staleWeakKeys,
+                    chunk => context.ObjectRelationships
+                        .Where(r => chunk.Contains(r.ToObjectKey))
+                        .Select(r => r.ToObjectKey)
+                        .Distinct()
+                        .ToListAsync(ct))
+                .ConfigureAwait(false);
+            var relationshipReferenced = referencedAsFrom.Concat(referencedAsTo).ToList();
+            var sweepable = staleWeakKeys
+                .Except(edgeReferenced, StringComparer.Ordinal)
+                .Except(relationshipReferenced, StringComparer.Ordinal)
+                .ToList();
+            if (sweepable.Count > 0)
+            {
+                superseded += await ExecuteByKeysAsync(
+                        sweepable, chunk => context.Objects.Where(o => chunk.Contains(o.Key)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
+                await ExecuteByKeysAsync(
+                        sweepable, chunk => context.ObjectColumns.Where(c => chunk.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
+            }
+        }
+
         // The execution plan - lineage's primary output. Stamp each pipeline with its wave (its batch and order)
         // and replace this repo's flow-level dependency edges, so a GUI/orchestrator reads the runnable order.
         foreach (var wave in report.ExecutionPlan.Waves)
@@ -1214,6 +1392,272 @@ public sealed class CatalogSync
         }
 
         return (report.Objects.Count, superseded, columns, edges, dependencies, report.ExecutionPlan.Waves.Count, includeDerived);
+    }
+
+    /// <summary>
+    /// The offline object-body enrichment. A warehouse's engine-created objects (a transform view, a pre/arc
+    /// table) never appear as authored CREATE DDL in the YAML, and their bodies are not read from a live
+    /// catalog offline, so an offline sync would leave them identity-only skeletons: no code, no columns. But
+    /// the exact T-SQL the engine ran was captured in each run's statement trace and persists in
+    /// <see cref="CatalogRunStatement"/>. This pass re-parses the latest run's trace per active pipeline through
+    /// the SAME extractor the lineage tiers use, and stamps each created object's generating script (the CREATE
+    /// text) and interpreted column dictionary (parsed from the view's SELECT projection or the table's column
+    /// definitions) onto its catalog row. Identity-first: only objects THIS report resolved are enriched, matched
+    /// to the two-part names the generated DDL uses by an unambiguous (server reference, schema, name) key.
+    /// Tier precedence is honored throughout: an Observed script or column set never overwrites a Derived one an
+    /// earlier connected sync stored. Returns the number of column rows written.
+    /// </summary>
+    /// <summary>
+    /// Groups a report's non-file objects by the database-less location key the engine's generated two-part DDL
+    /// (`[schema].[name]`) resolves to, mapping each location to every object key that shares it. Several report
+    /// objects legitimately share one location: identity resolution leaves both a database-qualified row and a
+    /// database-less "unresolved" twin of the SAME physical table (one server reference, one schema, one name),
+    /// and both must receive the enrichment. Genuine ambiguity, the same schema.name under two DIFFERENT databases
+    /// on one server, cannot be resolved from a two-part name and is dropped (a wrong body is worse than a missing
+    /// one); a qualified-plus-null pair is not that and is kept.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> EnrichableLocations(
+        IEnumerable<LineageObjectNode> objects)
+    {
+        ArgumentNullException.ThrowIfNull(objects);
+        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var group in objects
+                     .Where(o => o.Kind != Core.Lineage.LineageNodeKind.File)
+                     .GroupBy(o => NodeKey.For(o.ServerRef, null, o.Schema, o.Name), StringComparer.Ordinal))
+        {
+            var distinctDatabases = group
+                .Select(o => o.Database)
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+            if (distinctDatabases > 1)
+            {
+                continue; // the same schema.name under two databases: not resolvable from a two-part name.
+            }
+
+            result[group.Key] = group.Select(o => o.Key).Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        return result;
+    }
+
+    private static async Task<int> ApplyObservedObjectScriptsAsync(
+        CatalogDbContext context, Guid repoId, LineageReport report,
+        IReadOnlyDictionary<string, CatalogObject> touchedObjects, DateTime nowUtc, CancellationToken ct)
+    {
+        // Index this report's non-file objects by the database-less location key the generated two-part DDL
+        // (`[schema].[name]`) resolves to, one location to all the object keys that share it (see EnrichableLocations).
+        var keysByLocation = EnrichableLocations(report.Objects);
+        if (keysByLocation.Count == 0)
+        {
+            return 0;
+        }
+
+        // The objects still awaiting a generating script. Only an object some flow WRITES or CREATES can have a
+        // generating statement in the trace, so a read-only source table is not sought (that both bounds the scan
+        // and stops a never-created object from forcing a walk of the whole history). The scan below removes a
+        // key once its creating statement is found, so it stops as soon as every written object is covered.
+        var writtenKeys = report.Edges
+            .Where(e => e.Relation is Core.Lineage.LineageRelation.Writes or Core.Lineage.LineageRelation.Creates)
+            .Select(e => e.ObjectKey)
+            .ToHashSet(StringComparer.Ordinal);
+        var remaining = new HashSet<string>(
+            keysByLocation.Values.SelectMany(keys => keys).Where(writtenKeys.Contains),
+            StringComparer.Ordinal);
+        if (remaining.Count == 0)
+        {
+            return 0;
+        }
+
+        // The active pipelines and the server each side of their generated SQL ran against (the target by
+        // default; source-step statements ran on the source), so an artifact is attributed to the right server.
+        // Read from the change tracker, not a fresh query: ApplyPipelinesAsync tracked this repo's whole
+        // pipeline set (existing rows loaded, new rows added) but has not committed it yet, so a database query
+        // inside this transaction would miss a pipeline added this pass.
+        var pipelines = context.Pipelines.Local
+            .Where(p => p.RepoId == repoId && p.Active)
+            .GroupBy(p => p.Id)
+            .ToDictionary(g => g.Key, g => (g.First().TargetServer, g.First().SourceServer));
+        if (pipelines.Count == 0)
+        {
+            return 0;
+        }
+
+        // Every committed run of this repo, newest first: an object's generating statement is taken from the most
+        // recent run that emitted it. This matters because the engine re-emits a `CREATE OR ALTER VIEW` on every
+        // run but a `CREATE TABLE` only when the table is first created or its schema drifts, so a table's DDL
+        // lives in an OLDER run than the latest one. Walking newest-first and stopping once every object is
+        // covered captures both without reading more history than needed. Only committed runs are read (a run
+        // discovered on disk THIS pass already contributed its artifacts through the lineage graph; this pass
+        // serves the runs recorded by earlier write-backs, whose run.json is not on disk when the control plane
+        // syncs a git checkout).
+        var runs = (await context.Runs.AsNoTracking()
+                .Where(r => r.RepoId == repoId)
+                .Select(r => new { r.RunId, r.PipelineId, r.WrittenUtc })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .Where(r => pipelines.ContainsKey(r.PipelineId))
+            .OrderByDescending(r => r.WrittenUtc).ThenByDescending(r => r.RunId)
+            .ToList();
+        if (runs.Count == 0)
+        {
+            return 0;
+        }
+
+        var runIds = runs.Select(r => r.RunId).ToList();
+        var statementsByRun = (await SelectByKeysAsync(
+                    runIds,
+                    chunk => context.RunStatements.AsNoTracking()
+                        .Where(s => chunk.Contains(s.RunId))
+                        .Select(s => new { s.RunId, s.Ordinal, s.Step, s.Sql })
+                        .ToListAsync(ct))
+                .ConfigureAwait(false))
+            .GroupBy(s => s.RunId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(s => s.Ordinal).ToList());
+        if (statementsByRun.Count == 0)
+        {
+            return 0;
+        }
+
+        // The generating script and column set discovered per resolved object key. First observation wins, and
+        // the scan is newest-first, so the newest emission of each object's DDL is the one kept.
+        var scripts = new Dictionary<string, CollectedObjectArtifact>(StringComparer.Ordinal);
+        var columnsByKey = new Dictionary<string, IReadOnlyList<Core.Lineage.LineageColumn>>(StringComparer.Ordinal);
+
+        void Fold(string? serverRef, IReadOnlyList<string> sql, string label)
+        {
+            if (string.IsNullOrWhiteSpace(serverRef) || sql.Count == 0)
+            {
+                return;
+            }
+
+            // GO-joined into one script so the engine's created-then-read-then-dropped staging dissolves across
+            // statements exactly as it executed, mirroring the observed run-trace collector.
+            var script = string.Join($"{Environment.NewLine}GO{Environment.NewLine}", sql);
+            var deps = TSqlLineageExtractor.Extract(script, label);
+            foreach (var artifact in ScriptFactBuilder.ObjectArtifacts(deps, serverRef, Core.Lineage.LineageTier.Observed, minimumParts: 2))
+            {
+                var location = NodeKey.For(artifact.ServerRef, null, artifact.Schema, artifact.Name);
+                if (string.IsNullOrWhiteSpace(artifact.Script) || !keysByLocation.TryGetValue(location, out var objectKeys))
+                {
+                    continue;
+                }
+
+                // Every object at this location is the same physical table (a resolved row and its database-less
+                // twin), so the one generating statement enriches all of them. Capture only those still awaiting
+                // it, so the newest emission wins and the scan can stop once all are covered.
+                foreach (var objectKey in objectKeys)
+                {
+                    if (!remaining.Remove(objectKey))
+                    {
+                        continue;
+                    }
+
+                    scripts[objectKey] = artifact;
+                    if (artifact.Columns.Count > 0)
+                    {
+                        columnsByKey[objectKey] = artifact.Columns;
+                    }
+                }
+            }
+        }
+
+        foreach (var run in runs)
+        {
+            if (remaining.Count == 0)
+            {
+                break;
+            }
+
+            if (!statementsByRun.TryGetValue(run.RunId, out var runStatements))
+            {
+                continue;
+            }
+
+            var pipeline = pipelines[run.PipelineId];
+            var sourceSql = new List<string>();
+            var targetSql = new List<string>();
+            foreach (var statement in runStatements)
+            {
+                if (string.IsNullOrWhiteSpace(statement.Sql))
+                {
+                    continue;
+                }
+
+                (statement.Step.StartsWith("source.", StringComparison.OrdinalIgnoreCase) ? sourceSql : targetSql)
+                    .Add(statement.Sql);
+            }
+
+            Fold(pipeline.TargetServer, targetSql, $"{run.PipelineId}/trace/target");
+            Fold(pipeline.SourceServer ?? pipeline.TargetServer, sourceSql, $"{run.PipelineId}/trace/source");
+        }
+
+        // Stamp the generating script onto each resolved object, redacted (a generated statement can embed a
+        // literal credential) and never over a higher-tier script an earlier connected sync stored.
+        foreach (var (objectKey, artifact) in scripts)
+        {
+            if (!touchedObjects.TryGetValue(objectKey, out var row)
+                || TierRank(nameof(Core.Lineage.LineageTier.Observed)) < TierRank(row.ScriptTier))
+            {
+                continue;
+            }
+
+            row.Script = NullIfBlank(SecretHygiene.RedactedMessage(artifact.Script!));
+            row.ScriptTier = nameof(Core.Lineage.LineageTier.Observed);
+            row.ScriptUpdatedUtc = nowUtc;
+        }
+
+        // Refresh the column dictionary for each resolved object, replace-by-key, honoring the same tier
+        // precedence as the report's own column refresh: an Observed set never overwrites a Derived one.
+        if (columnsByKey.Count == 0)
+        {
+            return 0;
+        }
+
+        var candidateKeys = columnsByKey.Keys.ToList();
+        var existingTiers = await SelectByKeysAsync(
+                candidateKeys,
+                chunk => context.ObjectColumns
+                    .Where(c => chunk.Contains(c.ObjectKey))
+                    .Select(c => new { c.ObjectKey, c.Tier })
+                    .Distinct()
+                    .ToListAsync(ct))
+            .ConfigureAwait(false);
+        var existingRankByKey = existingTiers
+            .GroupBy(x => x.ObjectKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Max(x => TierRank(x.Tier)), StringComparer.Ordinal);
+
+        var refreshKeys = candidateKeys
+            .Where(k => TierRank(nameof(Core.Lineage.LineageTier.Observed))
+                        >= (existingRankByKey.TryGetValue(k, out var rank) ? rank : -1))
+            .ToList();
+        if (refreshKeys.Count == 0)
+        {
+            return 0;
+        }
+
+        await ExecuteByKeysAsync(
+                refreshKeys, chunk => context.ObjectColumns.Where(c => chunk.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct))
+            .ConfigureAwait(false);
+
+        var written = 0;
+        foreach (var objectKey in refreshKeys)
+        {
+            foreach (var column in columnsByKey[objectKey])
+            {
+                context.ObjectColumns.Add(new CatalogObjectColumn
+                {
+                    ObjectKey = objectKey,
+                    Ordinal = column.Ordinal,
+                    Name = column.Name,
+                    DataType = column.DataType,
+                    Nullable = column.Nullable,
+                    Tier = nameof(Core.Lineage.LineageTier.Observed),
+                });
+                written++;
+            }
+        }
+
+        return written;
     }
 
     /// <summary>The authority ordering of a column/definition tier: Derived (live) beats Observed (parsed from

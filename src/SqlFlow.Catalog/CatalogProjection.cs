@@ -162,8 +162,28 @@ public static class CatalogProjection
             Script = node.Script is null ? null : NullIfBlank(SecretHygiene.RedactedMessage(node.Script)),
             ScriptTier = node.ScriptTier?.ToString(),
             ScriptUpdatedUtc = node.Script is null ? null : nowUtc,
+            KeyColumns = node.KeyColumns.Count > 0 ? string.Join(",", node.KeyColumns) : null,
+            KeyOrigin = node.KeyColumns.Count > 0 ? node.KeyOrigin?.ToString() : null,
             FirstSeenUtc = nowUtc,
             LastSeenUtc = nowUtc,
+        };
+    }
+
+    /// <summary>Projects an interpreted data-model relationship into a repo-scoped catalog row.</summary>
+    public static CatalogObjectRelationship Relationship(LineageModelRelationship relationship, Guid repoId)
+    {
+        ArgumentNullException.ThrowIfNull(relationship);
+        return new CatalogObjectRelationship
+        {
+            RepoId = repoId,
+            Name = NullIfBlank(relationship.Name),
+            FromObjectKey = relationship.FromObjectKey,
+            FromColumns = string.Join(",", relationship.FromColumns),
+            ToObjectKey = relationship.ToObjectKey,
+            ToColumns = string.Join(",", relationship.ToColumns),
+            Origin = relationship.Origin.ToString(),
+            Tier = relationship.Tier.ToString(),
+            Occurrences = relationship.Occurrences,
         };
     }
 

@@ -156,6 +156,124 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Sync_EnrichesObjectScriptAndColumns_FromPersistedRunStatements()
+    {
+        // The control-plane posture: a run recorded by an earlier write-back leaves its generated CREATE
+        // statement in the catalog (catalog.RunStatement), but its run.json is git-ignored and so absent from
+        // the estate the full sync scans. The declared tier still surfaces the target object; the offline
+        // enrichment fills that object's generating script and column dictionary from the persisted trace, so an
+        // object is not a code-less, column-less skeleton offline. The table name is unique per run to keep the
+        // global object registry isolated across test runs.
+        //
+        // Crucially, the CREATE TABLE lives in an OLDER run while a NEWER run only re-emits a view (the engine's
+        // real pattern: a table's DDL runs once, a `CREATE OR ALTER VIEW` runs every load). The enrichment must
+        // walk run history newest-first until it finds each object's creating statement, not read the latest run
+        // alone, so this seeds exactly that shape.
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_enrich_" + suffix;
+        var flowName = "cat_enrich_orders_" + suffix;
+        var targetTable = "EnrichTarget_" + suffix;
+        var repoId = FlowIdentity.FromName(repo);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var olderRunId = Guid.NewGuid();
+        var newerRunId = Guid.NewGuid();
+        const string serverRef = "${env:SQLFlowSinkConStr}";
+
+        var path = Path.Combine(_dir, "flows", "enrich.flow.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, $$"""
+            name: {{flowName}}
+            source:
+              type: csv
+              location: ./data.csv
+            target:
+              connection: {{serverRef}}
+              schema: dbo
+              table: {{targetTable}}
+            """);
+        await CatalogDatabase.MigrateAsync(cs);
+
+        try
+        {
+            // Seed the persisted run trace WITHOUT any run.json on disk. The OLDER run created the table; the
+            // NEWER run only regenerated a view and never re-emitted the table's DDL.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Runs.Add(new CatalogRun
+                {
+                    RunId = olderRunId,
+                    PipelineId = pipelineId,
+                    RepoId = repoId,
+                    FlowName = flowName,
+                    FlowKind = "file",
+                    Success = true,
+                    Status = RunStatuses.Succeeded,
+                    WrittenUtc = DateTime.UtcNow.AddHours(-2),
+                });
+                db.RunStatements.Add(new CatalogRunStatement
+                {
+                    RunId = olderRunId,
+                    RepoId = repoId,
+                    Ordinal = 1,
+                    Step = "schema.apply-ddl",
+                    Sql = $"CREATE TABLE [dbo].[{targetTable}] ([OrderID] int NOT NULL, [Customer] nvarchar(100) NULL);",
+                });
+                db.Runs.Add(new CatalogRun
+                {
+                    RunId = newerRunId,
+                    PipelineId = pipelineId,
+                    RepoId = repoId,
+                    FlowName = flowName,
+                    FlowKind = "file",
+                    Success = true,
+                    Status = RunStatuses.Succeeded,
+                    WrittenUtc = DateTime.UtcNow,
+                });
+                db.RunStatements.Add(new CatalogRunStatement
+                {
+                    RunId = newerRunId,
+                    RepoId = repoId,
+                    Ordinal = 1,
+                    Step = "transform.view",
+                    Sql = $"CREATE OR ALTER VIEW [dbo].[v_{targetTable}] AS SELECT CAST([OrderID] AS int) AS [OrderID] FROM [dbo].[{targetTable}];",
+                });
+                await db.SaveChangesAsync();
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var target = await db.Objects.SingleAsync(o => o.ServerRef == serverRef && o.Schema == "dbo" && o.Name == targetTable);
+                Assert.NotNull(target.Script);
+                Assert.Contains("CREATE TABLE", target.Script!, StringComparison.Ordinal);
+                Assert.Equal(nameof(SqlFlow.Core.Lineage.LineageTier.Observed), target.ScriptTier);
+
+                var columns = await db.ObjectColumns.Where(c => c.ObjectKey == target.Key).OrderBy(c => c.Ordinal).ToListAsync();
+                Assert.Collection(columns,
+                    c => { Assert.Equal("OrderID", c.Name); Assert.Equal("int", c.DataType); Assert.False(c.Nullable); },
+                    c => { Assert.Equal("Customer", c.Name); Assert.Equal("nvarchar(100)", c.DataType); Assert.True(c.Nullable); });
+            }
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var key = await db.Objects.Where(o => o.ServerRef == serverRef && o.Name == targetTable).Select(o => o.Key).ToListAsync();
+            await db.ObjectColumns.Where(c => key.Contains(c.ObjectKey)).ExecuteDeleteAsync();
+            await db.Objects.Where(o => o.ServerRef == serverRef && o.Name == targetTable).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
     public async Task Sync_ExpandsEmbeddedHealthCheck_IntoASiblingPipeline()
     {
         var cs = IntegrationDb.Require();
@@ -362,6 +480,75 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
                 var strong = await db.Objects.SingleAsync(o => o.Key == strongKey);
                 Assert.Equal("sinkdb", strong.Database);
                 Assert.True(await db.LineageEdges.AnyAsync(e => e.RepoId == repoId && e.ObjectKey == strongKey));
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+            await using var db = CatalogDatabase.Create(cs);
+            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+            await db.Objects.Where(o => o.Key == weakKey || o.Key == strongKey).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
+    public async Task Sync_OfflineResync_AdoptsTheResolvedIdentity_InsteadOfRecreatingTheTwin()
+    {
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_adopt_" + suffix;
+        var flowName = "cat_adopt_orders_" + suffix;
+        var table = "AdoptOrders_" + suffix;
+        var variable = "SQLFLOW_TEST_SINK_" + suffix.ToUpperInvariant();
+        var repoId = FlowIdentity.FromName(repo);
+        var serverRef = "${env:" + variable + "}";
+        var weakKey = SqlFlow.Lineage.Collection.NodeKey.For(serverRef, null, "dbo", table);
+        var strongKey = SqlFlow.Lineage.Collection.NodeKey.For(serverRef, "SinkDb", "dbo", table);
+
+        var flowPath = Path.Combine(_dir, "flows", "adopt.flow.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(flowPath)!);
+        File.WriteAllText(flowPath, $$"""
+            name: {{flowName}}
+            source:
+              type: csv
+              location: ./data.csv
+            target:
+              connection: ${env:{{variable}}}
+              schema: dbo
+              table: {{table}}
+            """);
+
+        await CatalogDatabase.MigrateAsync(cs);
+        try
+        {
+            // First sync with the reference resolvable: the connected knowledge lands the object under its
+            // database-qualified identity.
+            Environment.SetEnvironmentVariable(variable, "Server=localhost;Initial Catalog=SinkDb;Integrated Security=true;");
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+                Assert.True(await db.Objects.AnyAsync(o => o.Key == strongKey));
+            }
+
+            // The reference becomes unresolvable again (an offline sync), and the flow content changes so the
+            // lineage recomputes: the report only knows the database-less identity, and the adoption pass must
+            // land it on the registry's resolved row instead of splitting a weak twin back out.
+            Environment.SetEnvironmentVariable(variable, null);
+            File.AppendAllText(flowPath, $"{Environment.NewLine}# resynced without the sink reference resolvable{Environment.NewLine}");
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.False(await db.Objects.AnyAsync(o => o.Key == weakKey));
+                Assert.True(await db.Objects.AnyAsync(o => o.Key == strongKey));
+                Assert.True(await db.LineageEdges.AnyAsync(e => e.RepoId == repoId && e.ObjectKey == strongKey));
+                Assert.False(await db.LineageEdges.AnyAsync(e => e.RepoId == repoId && e.ObjectKey == weakKey));
             }
         }
         finally

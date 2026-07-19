@@ -675,6 +675,55 @@ export interface SchemaKindCount {
   objectCount: number;
 }
 
+/** One file endpoint decomposed to its canonical parent for the source tree: the origin system (storage
+ * account / SFTP host:port / local filesystem), the container (Azure container or UNC share; null otherwise),
+ * the folder path (slash-joined; null at the root), and the leaf name. `key` is the object key, so a leaf
+ * opens its dossier. The file twin of a schema-kind row: a file groups under its storage account exactly as a
+ * table groups under its database. */
+export type FileOriginKind =
+  | "AzureStorage" | "AmazonS3" | "GoogleCloud" | "Sftp" | "NetworkShare" | "Local" | "Other";
+
+/** One database object a flow lands data into (a written/created target), for a file source's provenance. */
+export interface LandingObject {
+  key: string;
+  database: string | null;
+  schema: string | null;
+  name: string;
+  kind: string;
+}
+
+/** One pipeline that reads a file source, with where it lands the data. */
+export interface FileConsumer {
+  pipelineId: string;
+  flow: string;
+  kind: string;
+  repoId: string;
+  lands: LandingObject[];
+}
+
+/** One pipeline that produces a file (a copy/acquire/export): where the file comes from. */
+export interface FileProducer {
+  pipelineId: string;
+  flow: string;
+  kind: string;
+  repoId: string;
+}
+
+/** A file source's provenance: which pipelines produce it and which consume it (with landing tables). */
+export interface FileFlows {
+  producers: FileProducer[];
+  consumers: FileConsumer[];
+}
+
+export interface FileNode {
+  key: string;
+  originKind: FileOriginKind;
+  origin: string;
+  container: string | null;
+  path: string | null;
+  name: string;
+}
+
 export interface LineageObject {
   key: string;
   serverRef: string;
@@ -696,6 +745,28 @@ export interface LineageObjectDetail extends LineageObject {
   script: string | null;
   scriptTier: string | null;
   scriptUpdatedUtc: string | null;
+  /** The interpreted primary/business key (comma-joined, in key order), read from the codebase (a PRIMARY KEY
+   * clause, the loading flow's YAML key columns, or the MERGE match key); null when nothing names a key. */
+  keyColumns: string | null;
+  /** How the key was interpreted: "Constraint" | "Declared" | "Merge"; null with no key. */
+  keyOrigin: string | null;
+}
+
+/** One interpreted data-model relationship as seen from a dossier's object: how this table joins the other.
+ * ownColumns/otherColumns pair positionally; origin "Constraint" is an explicit FOREIGN KEY clause in the
+ * codebase, "Join" an inference from the equality predicates the code actually joins on; occurrences counts
+ * the distinct scripts exhibiting it (the canonical join path scores highest). */
+export interface ObjectRelationship {
+  name: string | null;
+  origin: "Constraint" | "Join" | string;
+  tier: string;
+  occurrences: number;
+  otherObjectKey: string;
+  otherDatabase: string | null;
+  otherSchema: string | null;
+  otherName: string;
+  ownColumns: string;
+  otherColumns: string;
 }
 
 export interface LineageObjectColumn {
@@ -734,12 +805,17 @@ export interface LineageEdge {
   tier: string;
 }
 
-/** Everything known about one object in a single payload: identity and metadata, columns, and the lineage
- * edges that reference it. The "ask about this object" aggregate behind the catalog tree's details panel. */
+/** Everything known about one object in a single payload: identity and metadata, columns (with the
+ * interpreted key), the lineage edges that reference it, and the interpreted data-model relationships in
+ * both directions. The "ask about this object" aggregate behind the catalog tree's details panel. */
 export interface ObjectDossier {
   object: LineageObjectDetail;
   columns: LineageObjectColumn[];
   edges: LineageEdge[];
+  /** Tables this object references (it holds the joining/foreign-key side). */
+  references: ObjectRelationship[];
+  /** Tables that reference this object (it is the referenced/key side). */
+  referencedBy: ObjectRelationship[];
 }
 
 export interface WavePipeline {

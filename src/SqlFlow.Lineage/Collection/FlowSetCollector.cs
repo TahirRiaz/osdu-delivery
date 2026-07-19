@@ -315,6 +315,25 @@ public sealed class FlowSetCollector
                 ExtractHook(result, name, target, flow.Process.PreProcessOnTarget, $"{file}: preProcess", flow.Target.Table.Database);
                 ExtractHook(result, name, target, flow.Process.PostProcessOnTarget, $"{file}: postProcess", flow.Target.Table.Database);
 
+                // The YAML's declared key columns are the target's business key (the update/insert match):
+                // the declared tier of the interpreted data model, straight from the author.
+                if (flow.Load.KeyColumns.Count > 0)
+                {
+                    result.KeyHints.Add(new CollectedKeyHint
+                    {
+                        Table = new ModelObjectRef
+                        {
+                            ServerRef = target,
+                            Database = flow.Target.Table.Database,
+                            Schema = flow.Target.Table.Schema,
+                            Name = flow.Target.Table.Name,
+                        },
+                        Columns = flow.Load.KeyColumns,
+                        Origin = LineageModelOrigin.Declared,
+                        Tier = LineageTier.Declared,
+                    });
+                }
+
                 // The embedded healthCheck: block became its own flow node above (the projection's derived hc
                 // sibling); it READS the load's target, which is exactly the dependency that orders it after the
                 // load in waves and node runs.
@@ -522,6 +541,10 @@ public sealed class FlowSetCollector
         result.Facts.AddRange(ScriptFactBuilder.Facts(
             deps, flow, viaModuleKey: null, serverRef, LineageTier.Declared, minimumParts: 1));
         result.ObjectArtifacts.AddRange(ScriptFactBuilder.ObjectArtifacts(deps, serverRef, LineageTier.Declared, minimumParts: 1));
+
+        // The authored hook SQL carries data-model observations of the declared tier (joins the author
+        // wrote, constraint clauses in authored DDL), attributed to the hook label as the script unit.
+        ScriptFactBuilder.AppendModelObservations(result, deps, serverRef, LineageTier.Declared, label);
     }
 
     private static LineageFact ObjectFact(

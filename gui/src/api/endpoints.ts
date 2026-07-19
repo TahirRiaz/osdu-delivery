@@ -9,7 +9,7 @@ import type {
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodeScript,
-  ObjectDossier, PipelineBatch, SchemaKindCount,
+  ObjectDossier, PipelineBatch, SchemaKindCount, FileNode, FileFlows,
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
@@ -289,6 +289,11 @@ export const lineageApi = {
   // The same hierarchy broken down by object kind (Tables/Views/Procedures/...), also unpaged and bounded.
   schemaKinds: (query: { serverRef?: string; database?: string; schema?: string } = {}) =>
     get<SchemaKindCount[]>("/api/v1/lineage/schemas/kinds", query as QueryParams),
+  // Every file endpoint decomposed to its canonical parent (origin/container/folder/leaf), for the source
+  // tree. Unpaged and bounded: file nodes are the distinct declared locations, not physical blobs.
+  fileTree: () => get<FileNode[]>("/api/v1/lineage/file-tree"),
+  // A file source's provenance: the pipelines that produce it and consume it, with where consumers land data.
+  fileFlows: (key: string) => get<FileFlows>("/api/v1/lineage/file-flows", { key }),
   objects: (query: LineageObjectQuery = {}) =>
     get<PagedResult<LineageObject>>("/api/v1/lineage/objects", query as QueryParams),
   objectDetail: (key: string) => get<LineageObjectDetail>("/api/v1/lineage/objects/detail", { key }),

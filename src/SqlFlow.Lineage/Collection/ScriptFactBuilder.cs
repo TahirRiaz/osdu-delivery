@@ -52,6 +52,85 @@ public static class ScriptFactBuilder
         }
     }
 
+    /// <summary>
+    /// Appends one script's data-model observations (equality joins, key hints, explicit constraints) to the
+    /// collection, under the same hygiene the facts use: temp names and transient staging stay out. A side
+    /// referencing a table the script itself created-then-dropped is engine plumbing, not model knowledge.
+    /// <paramref name="scriptId"/> names the script (a module key, a flow hook label, a trace step): it is
+    /// the unit the builder counts occurrences by, so one script repeating a join counts once.
+    /// </summary>
+    public static void AppendModelObservations(
+        CollectionResult result, ScriptDependencies deps, string serverRef, LineageTier tier, string scriptId)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(deps);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverRef);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scriptId);
+
+        bool Excluded(TableName table)
+            => table.IsTemp || deps.CreatedThenDropped.Contains(table.Key);
+
+        ModelObjectRef Ref(TableName table) => new()
+        {
+            ServerRef = serverRef,
+            Database = table.Database,
+            Schema = table.Schema,
+            Name = table.Name,
+        };
+
+        foreach (var join in deps.Joins)
+        {
+            if (Excluded(join.Left) || Excluded(join.Right))
+            {
+                continue;
+            }
+
+            result.Joins.Add(new CollectedJoin
+            {
+                Left = Ref(join.Left),
+                LeftColumns = join.LeftColumns,
+                Right = Ref(join.Right),
+                RightColumns = join.RightColumns,
+                Tier = tier,
+                ScriptId = scriptId,
+            });
+        }
+
+        foreach (var key in deps.Keys)
+        {
+            if (Excluded(key.Table))
+            {
+                continue;
+            }
+
+            result.KeyHints.Add(new CollectedKeyHint
+            {
+                Table = Ref(key.Table),
+                Columns = key.Columns,
+                Origin = key.Origin,
+                Tier = tier,
+            });
+        }
+
+        foreach (var constraint in deps.ForeignKeys)
+        {
+            if (Excluded(constraint.From) || Excluded(constraint.To))
+            {
+                continue;
+            }
+
+            result.ModelConstraints.Add(new CollectedModelConstraint
+            {
+                Name = constraint.Name,
+                From = Ref(constraint.From),
+                FromColumns = constraint.FromColumns,
+                To = Ref(constraint.To),
+                ToColumns = constraint.ToColumns,
+                Tier = tier,
+            });
+        }
+    }
+
     /// <summary>The created-object artifacts of one script (the generating DDL and, for a table, its columns),
     /// under the same identity threshold the facts use: temp names and transient staging (created then
     /// dropped) stay out, so only durable objects carry a script and column dictionary into the catalog.</summary>

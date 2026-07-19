@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.Core;
 using SqlFlow.Core.Files;
 
 namespace SqlFlow.ControlPlane.Api;
@@ -26,11 +27,25 @@ public sealed record ObjectDto(
 
 /// <summary>A single lineage object with its full module body (<c>Definition</c>) and generating script
 /// (<c>Script</c>) for the detail view; the definition is null for plain tables, an unconnected sync, or an
-/// encrypted module, and the script is null when no tier saw the object created.</summary>
+/// encrypted module, and the script is null when no tier saw the object created. <c>KeyColumns</c> is the
+/// object's interpreted primary/business key (comma-joined, in key order) with <c>KeyOrigin</c> saying how it
+/// was interpreted (Constraint / Declared / Merge); both null when nothing in the codebase names a key.</summary>
 public sealed record ObjectDetailDto(
     string Key, string ServerRef, string? Database, string? Schema, string Name, string Kind, int? Level,
     string? Definition, string? Script, string? ScriptTier, DateTime? ScriptUpdatedUtc,
+    string? KeyColumns, string? KeyOrigin,
     DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>One interpreted data-model relationship as seen FROM a dossier's object: the other side's identity
+/// (key plus proper-cased location), this object's join columns (<c>OwnColumns</c>) positionally paired with
+/// the other side's (<c>OtherColumns</c>), and the interpretation strength: <c>Origin</c> is Constraint (an
+/// explicit FOREIGN KEY clause in the codebase) or Join (inferred from the equality predicates the code joins
+/// on), <c>Occurrences</c> counts the distinct scripts that exhibited it (the canonical join path scores
+/// highest), and <c>Tier</c> is the provenance of the strongest observation.</summary>
+public sealed record ObjectRelationshipDto(
+    string? Name, string Origin, string Tier, int Occurrences,
+    string OtherObjectKey, string? OtherDatabase, string? OtherSchema, string OtherName,
+    string OwnColumns, string OtherColumns);
 
 /// <summary>One column of a lineage object; <c>Tier</c> records whether it was read live (Derived) or parsed
 /// from the CREATE the run executed (Observed/Declared).</summary>
@@ -61,7 +76,9 @@ public sealed record EdgeDto(
 public sealed record ObjectDossierDto(
     ObjectDetailDto Object,
     IReadOnlyList<ObjectColumnDto> Columns,
-    IReadOnlyList<EdgeDto> Edges);
+    IReadOnlyList<EdgeDto> Edges,
+    IReadOnlyList<ObjectRelationshipDto> References,
+    IReadOnlyList<ObjectRelationshipDto> ReferencedBy);
 
 /// <summary>One repo whose lineage references an object: how many edges in that repo touch it, and whether any of
 /// them writes/creates it (the repo where a flow populates it). The list is ranked so the writing repo comes
@@ -116,6 +133,35 @@ public sealed record SchemaDto(string ServerRef, string? Database, string? Schem
 public sealed record SchemaKindCountDto(
     string ServerRef, string? Database, string? Schema, string Kind, int ObjectCount);
 
+/// <summary>One file endpoint decomposed to its canonical parent for the source tree: the origin system
+/// (<c>OriginKind</c> = AzureStorage / Sftp / Local / Other, <c>Origin</c> = the storage account, SFTP
+/// <c>host:port</c>, or filesystem), the container (an Azure container or UNC share; null otherwise), the
+/// folder path (slash-joined; null at the root), and the leaf name. <c>Key</c> is the object key, so selecting
+/// a leaf loads its dossier. This is the file twin of <see cref="SchemaKindCountDto"/>: a file groups under
+/// its storage account exactly as a table groups under its database.</summary>
+public sealed record FileNodeDto(
+    string Key, string OriginKind, string Origin, string? Container, string? Path, string Name);
+
+/// <summary>One object a flow lands data into (a written or created target), for the provenance view of a
+/// file source: where the data that came through this file ends up.</summary>
+public sealed record LandingObjectDto(string Key, string? Database, string? Schema, string Name, string Kind);
+
+/// <summary>One pipeline that reads a file source, with where it lands the data: the flow identity plus the
+/// distinct database objects it writes or creates. This is the "source, through which pipeline, to where"
+/// answer the catalog gives for a file.</summary>
+public sealed record FileConsumerDto(
+    Guid PipelineId, string Flow, string Kind, Guid RepoId, IReadOnlyList<LandingObjectDto> Lands);
+
+/// <summary>One pipeline that produces a file (writes or creates it): where the file itself comes from (a
+/// copy, an acquisition, an export), so provenance can chain upstream past the file.</summary>
+public sealed record FileProducerDto(Guid PipelineId, string Flow, string Kind, Guid RepoId);
+
+/// <summary>A file source's provenance in one payload: the pipelines that PRODUCE the file (where it comes
+/// from) and the pipelines that CONSUME it, each with the tables the data lands in (where it goes). Answers
+/// "what are the pipelines for this source, and where does the data land" without walking the whole graph.</summary>
+public sealed record FileFlowsDto(
+    IReadOnlyList<FileProducerDto> Producers, IReadOnlyList<FileConsumerDto> Consumers);
+
 /// <summary>
 /// The read API over the shadow catalog's lineage graph: objects (with their columns and module bodies), the
 /// attributed lineage edges, the per-repo flow dependencies, and the computed execution waves. Every query is
@@ -133,6 +179,8 @@ public static class LineageEndpoints
         var lineage = group.MapGroup("/lineage").WithTags("Lineage");
         lineage.MapGet("/schemas", ListSchemasAsync).WithName("ListLineageSchemas");
         lineage.MapGet("/schemas/kinds", ListSchemaKindsAsync).WithName("ListLineageSchemaKinds");
+        lineage.MapGet("/file-tree", ListFileTreeAsync).WithName("ListLineageFileTree");
+        lineage.MapGet("/file-flows", GetFileFlowsAsync).WithName("GetLineageFileFlows");
         lineage.MapGet("/objects", ListObjectsAsync).WithName("ListLineageObjects");
         lineage.MapGet("/objects/detail", GetObjectAsync).WithName("GetLineageObject");
         lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
@@ -218,6 +266,114 @@ public static class LineageEndpoints
         return TypedResults.Ok<IReadOnlyList<SchemaKindCountDto>>(ordered);
     }
 
+    /// <summary>
+    /// Every file endpoint in the catalog, each decomposed to its canonical parent (storage account / SFTP
+    /// server / UNC share / local filesystem, then container, folders, and leaf), so the GUI folds them into a
+    /// source tree the twin of the database tree: origin > container > folder > file. Returned in one response
+    /// (no paging): file nodes are the distinct file LOCATIONS flows declare (a folder a flow reads is one
+    /// node, not one per physical blob), so the set is bounded by the estate's flow count, not its data volume.
+    /// The origin is parsed with <see cref="FileOrigin"/>, which every flow type's file identity funnels
+    /// through, so no flow kind is missed and a malformed identity still yields a shown node.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<FileNodeDto>>> ListFileTreeAsync(CatalogDbContext db, CancellationToken ct)
+    {
+        var files = await db.Objects.AsNoTracking()
+            .Where(o => o.Kind == "File")
+            .Select(o => new { o.Key, o.Name })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        // Parse the Name (the clean canonical identity, e.g. az://account/container/path), not the Key: the
+        // Key is the node identity 'file|||<name>' (server-reference-prefixed and case-folded), whose prefix
+        // would defeat the scheme detection and lower-cased blob path would lose case. The Key still rides
+        // along as the leaf's object id so selecting it opens the dossier.
+        var nodes = files
+            .Select(file =>
+            {
+                var origin = FileOrigin.Parse(file.Name);
+                return new FileNodeDto(
+                    file.Key, origin.Kind.ToString(), origin.Origin, origin.Container, origin.Path, origin.Name);
+            })
+            .OrderBy(n => n.Origin, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(n => n.Container, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(n => n.Path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(n => n.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<FileNodeDto>>(nodes);
+    }
+
+    /// <summary>
+    /// A file source's provenance: the pipelines that produce it and the pipelines that consume it, each
+    /// consumer with the database objects it lands the data in. Resolved from the flow-attributed lineage
+    /// edges on this object key (across every repo, since a file identity is global): a Writes/Creates edge is
+    /// a producer, a Reads/Requires edge a consumer, and a consumer's landing is that flow's own Writes/Creates
+    /// edges onto non-file objects. Bounded: a file is touched by a handful of flows, each landing a handful of
+    /// tables. Answers "what pipelines use this source and where does the data land" in one call.
+    /// </summary>
+    private static async Task<Ok<FileFlowsDto>> GetFileFlowsAsync(CatalogDbContext db, string key, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return TypedResults.Ok(new FileFlowsDto([], []));
+        }
+
+        // Every flow-attributed edge on the file, across repos: its relation tells producer from consumer.
+        var edges = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.ObjectKey == key && e.PipelineId != null)
+            .Select(e => new { PipelineId = e.PipelineId!.Value, e.Relation })
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (edges.Count == 0)
+        {
+            return TypedResults.Ok(new FileFlowsDto([], []));
+        }
+
+        var producerIds = edges.Where(e => e.Relation is "Writes" or "Creates").Select(e => e.PipelineId).Distinct().ToList();
+        var consumerIds = edges.Where(e => e.Relation is "Reads" or "Requires").Select(e => e.PipelineId).Distinct().ToList();
+        var pipelineIds = producerIds.Concat(consumerIds).Distinct().ToList();
+
+        // The involved flows' identities (name/kind/repo) in one lookup.
+        var pipelines = (await db.Pipelines.AsNoTracking()
+                .Where(p => pipelineIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Name, p.Kind, p.RepoId })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToDictionary(p => p.Id);
+
+        // Each consumer's landing: the non-file objects it writes or creates, joined to the registry for names.
+        var landings = consumerIds.Count == 0
+            ? []
+            : await db.LineageEdges.AsNoTracking()
+                .Where(e => e.PipelineId != null && consumerIds.Contains(e.PipelineId!.Value)
+                    && (e.Relation == "Writes" || e.Relation == "Creates"))
+                .Join(db.Objects.AsNoTracking().Where(o => o.Kind != "File"), e => e.ObjectKey, o => o.Key,
+                    (e, o) => new { PipelineId = e.PipelineId!.Value, o.Key, o.Database, o.Schema, o.Name, o.Kind })
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false);
+
+        var landsByPipeline = landings
+            .GroupBy(l => l.PipelineId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<LandingObjectDto>)g
+                    .Select(l => new LandingObjectDto(l.Key, l.Database, l.Schema, l.Name, l.Kind))
+                    .OrderBy(l => l.Database, StringComparer.OrdinalIgnoreCase).ThenBy(l => l.Schema, StringComparer.OrdinalIgnoreCase).ThenBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+
+        var producers = producerIds
+            .Where(pipelines.ContainsKey)
+            .Select(id => new FileProducerDto(id, pipelines[id].Name, pipelines[id].Kind, pipelines[id].RepoId))
+            .OrderBy(p => p.Flow, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var consumers = consumerIds
+            .Where(pipelines.ContainsKey)
+            .Select(id => new FileConsumerDto(
+                id, pipelines[id].Name, pipelines[id].Kind, pipelines[id].RepoId,
+                landsByPipeline.TryGetValue(id, out var lands) ? lands : []))
+            .OrderBy(c => c.Flow, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return TypedResults.Ok(new FileFlowsDto(producers, consumers));
+    }
+
     private static async Task<Ok<PagedResult<ObjectDto>>> ListObjectsAsync(
         CatalogDbContext db, string? name, string? serverRef, string? database, string? schema, string? kind,
         int? page, int? pageSize, CancellationToken ct)
@@ -271,7 +427,7 @@ public static class LineageEndpoints
         var dto = await db.Objects.AsNoTracking().Where(o => o.Key == key)
             .Select(o => new ObjectDetailDto(
                 o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Level, o.Definition, o.Script,
-                o.ScriptTier, o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
+                o.ScriptTier, o.ScriptUpdatedUtc, o.KeyColumns, o.KeyOrigin, o.FirstSeenUtc, o.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("object", key) : TypedResults.Ok(dto);
     }
@@ -563,7 +719,7 @@ public static class LineageEndpoints
         var detail = await db.Objects.AsNoTracking().Where(o => o.Key == key)
             .Select(o => new ObjectDetailDto(
                 o.Key, o.ServerRef, o.Database, o.Schema, o.Name, o.Kind, o.Level, o.Definition, o.Script,
-                o.ScriptTier, o.ScriptUpdatedUtc, o.FirstSeenUtc, o.LastSeenUtc))
+                o.ScriptTier, o.ScriptUpdatedUtc, o.KeyColumns, o.KeyOrigin, o.FirstSeenUtc, o.LastSeenUtc))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (detail is null)
         {
@@ -589,8 +745,66 @@ public static class LineageEndpoints
                 detail.Database, detail.Schema, e.Tier))
             .ToListAsync(ct).ConfigureAwait(false);
 
-        return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges));
+        // The interpreted data model, both directions. Rows are repo-scoped (each repo's code exhibits its own
+        // observations), so the same relationship is deduplicated here by its identity, keeping the strongest
+        // interpretation (constraint over join), the highest occurrence count, and the first constraint name.
+        var rawRelationships = await db.ObjectRelationships.AsNoTracking()
+            .Where(r => r.FromObjectKey == key || r.ToObjectKey == key)
+            .OrderBy(r => r.Id)
+            .Take(MaxDossierRows)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var deduped = rawRelationships
+            .GroupBy(r => (r.FromObjectKey, r.FromColumns, r.ToObjectKey, r.ToColumns, r.Origin), r => r)
+            .Select(g => new RelationshipAggregate(
+                g.Select(r => r.Name).FirstOrDefault(n => n is not null),
+                g.Key.FromObjectKey, g.Key.FromColumns, g.Key.ToObjectKey, g.Key.ToColumns, g.Key.Origin,
+                g.Select(r => r.Tier).OrderByDescending(TierRank).First(),
+                g.Max(r => r.Occurrences)))
+            .ToList();
+
+        var otherKeys = deduped
+            .Select(r => r.FromObjectKey == key ? r.ToObjectKey : r.FromObjectKey)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var locations = await LoadObjectLocationsAsync(db, otherKeys, ct).ConfigureAwait(false);
+
+        ObjectRelationshipDto Project(RelationshipAggregate r, bool outgoing)
+        {
+            var otherKey = outgoing ? r.ToObjectKey : r.FromObjectKey;
+            var found = locations.TryGetValue(otherKey, out var other);
+            return new ObjectRelationshipDto(
+                r.Name, r.Origin, r.Tier, r.Occurrences,
+                otherKey, other.Database, other.Schema, found ? other.Name : otherKey,
+                OwnColumns: outgoing ? r.FromColumns : r.ToColumns,
+                OtherColumns: outgoing ? r.ToColumns : r.FromColumns);
+        }
+
+        var references = deduped.Where(r => r.FromObjectKey == key)
+            .Select(r => Project(r, outgoing: true))
+            .OrderByDescending(r => r.Occurrences).ThenBy(r => r.OtherName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var referencedBy = deduped.Where(r => r.ToObjectKey == key && r.FromObjectKey != key)
+            .Select(r => Project(r, outgoing: false))
+            .OrderByDescending(r => r.Occurrences).ThenBy(r => r.OtherName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges, references, referencedBy));
     }
+
+    /// <summary>Ranks a relationship tier string for the dossier's cross-repo dedupe: Derived is the live
+    /// database's view, Observed a run's, Declared the author's, mirroring <see cref="Core.Lineage.LineageTier"/>.</summary>
+    private static int TierRank(string tier) => tier switch
+    {
+        "Derived" => 2,
+        "Observed" => 1,
+        _ => 0,
+    };
+
+    /// <summary>One deduplicated data-model relationship while the dossier folds the per-repo rows.</summary>
+    private sealed record RelationshipAggregate(
+        string? Name, string FromObjectKey, string FromColumns, string ToObjectKey, string ToColumns,
+        string Origin, string Tier, int Occurrences);
 
     private static async Task<Results<Ok<PagedResult<EdgeDto>>, ProblemHttpResult>> ListEdgesAsync(
         Guid repoId, CatalogDbContext db, Guid? pipelineId, string? objectKey, string? relation, string? tier,
@@ -1002,13 +1216,13 @@ public static class LineageEndpoints
         return TypedResults.Ok(new ProjectGraphDto(pipelines, edges, openFrontier, truncated));
     }
 
-    /// <summary>The database/schema for a set of object keys from the global registry, chunked so the IN-list never
-    /// exceeds the provider's parameter limit. Keys the registry does not know (a race with identity healing) are
-    /// simply absent, and the caller falls back to nulls, exactly as the edges endpoint does.</summary>
-    private static async Task<Dictionary<string, (string? Database, string? Schema)>> LoadObjectLocationsAsync(
+    /// <summary>The database/schema/name for a set of object keys from the global registry, chunked so the IN-list
+    /// never exceeds the provider's parameter limit. Keys the registry does not know (a race with identity healing)
+    /// are simply absent, and the caller falls back to nulls, exactly as the edges endpoint does.</summary>
+    private static async Task<Dictionary<string, (string? Database, string? Schema, string Name)>> LoadObjectLocationsAsync(
         CatalogDbContext db, IReadOnlyCollection<string> keys, CancellationToken ct)
     {
-        var result = new Dictionary<string, (string?, string?)>(StringComparer.Ordinal);
+        var result = new Dictionary<string, (string?, string?, string)>(StringComparer.Ordinal);
         const int chunk = 1000;
         var all = keys.ToArray();
         for (var i = 0; i < all.Length; i += chunk)
@@ -1016,11 +1230,11 @@ public static class LineageEndpoints
             var slice = all.Skip(i).Take(chunk).ToList();
             var rows = await db.Objects.AsNoTracking()
                 .Where(o => slice.Contains(o.Key))
-                .Select(o => new { o.Key, o.Database, o.Schema })
+                .Select(o => new { o.Key, o.Database, o.Schema, o.Name })
                 .ToListAsync(ct).ConfigureAwait(false);
             foreach (var row in rows)
             {
-                result[row.Key] = (row.Database, row.Schema);
+                result[row.Key] = (row.Database, row.Schema, row.Name);
             }
         }
 

@@ -152,5 +152,10 @@ public static class RunArtifactCollector
             deps, flow.Node.Name, viaModuleKey: null, serverRef, LineageTier.Observed,
             minimumParts: 2, runId, writtenUtc, side));
         result.ObjectArtifacts.AddRange(ScriptFactBuilder.ObjectArtifacts(deps, serverRef, LineageTier.Observed, minimumParts: 2));
+
+        // The executed SQL is the codebase in motion: its joins, MERGE keys, and constraint clauses are
+        // data-model observations of the observed tier, attributed to the flow side as the script unit.
+        ScriptFactBuilder.AppendModelObservations(
+            result, deps, serverRef, LineageTier.Observed, $"{flow.Node.Name}/{side}");
     }
 }

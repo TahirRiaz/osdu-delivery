@@ -75,6 +75,16 @@ public static class TSqlLineageExtractor
         /// <summary>Pair identities already recorded, so the pair list stays deduplicated at the source.</summary>
         private readonly HashSet<(string Source, string Target)> _pairKeys = [];
 
+        /// <summary>The FROM-clause alias bindings of every enclosing query, innermost last, so a join
+        /// predicate (including a correlated subquery's) resolves its column qualifiers to real tables.
+        /// Derived tables, CTE labels, and table variables deliberately do not bind: a predicate over them
+        /// names no base-table identity the data model could use.</summary>
+        private readonly List<Dictionary<string, TableName>> _bindingScopes = [];
+
+        /// <summary>Join identities already recorded (side order normalized), so one script repeating the
+        /// same join predicate contributes one observation.</summary>
+        private readonly HashSet<string> _joinIdentities = new(StringComparer.Ordinal);
+
         /// <summary>The reads of the statement currently being extracted, WITH their dependency kind: the
         /// self-pair exemption is computed per statement (the reference scopes it that way), so a subquery
         /// read elsewhere in the script cannot legitimize a direct self-feed here.</summary>
@@ -134,6 +144,16 @@ public static class TSqlLineageExtractor
                     case AlterTableSwitchStatement switchStatement:
                         ExtractPartitionSwitch(switchStatement);
                         break;
+                    case AlterTableAddTableElementStatement alterAdd:
+                    {
+                        // ALTER TABLE ... ADD CONSTRAINT carries data-model knowledge (PRIMARY KEY /
+                        // FOREIGN KEY clauses); the alter itself is the same structural operation.
+                        var altered = TableName.From(alterAdd.SchemaObjectName, _currentDatabase);
+                        Outbound(altered, TableOperation.Alter);
+                        RecordTableConstraints(altered, alterAdd.Definition);
+                        break;
+                    }
+
                     case AlterTableStatement alterTable:
                         Outbound(TableName.From(alterTable.SchemaObjectName, _currentDatabase), TableOperation.Alter);
                         break;
@@ -151,12 +171,16 @@ public static class TSqlLineageExtractor
                         ExtractExecute(execute);
                         break;
                     case ProcedureStatementBody procedure:
+                    {
                         // CREATE/ALTER PROCEDURE: the module itself is created; its body's work is the
-                        // module's lineage.
-                        Outbound(TableName.From(procedure.ProcedureReference.Name, _currentDatabase),
+                        // module's lineage. The whole CREATE statement is the module's generating script.
+                        var procedureName = TableName.From(procedure.ProcedureReference.Name, _currentDatabase);
+                        Outbound(procedureName,
                             statement is AlterProcedureStatement ? TableOperation.Alter : TableOperation.Create);
+                        RecordCreatedObject(procedureName, LineageNodeKind.Procedure, procedure, columns: []);
                         ExtractStatementList(procedure.StatementList);
                         break;
+                    }
                     case FunctionStatementBody function:
                         ExtractFunction(function);
                         break;
@@ -264,7 +288,7 @@ public static class TSqlLineageExtractor
                     Outbound(target, TableOperation.CreateAs);
                     _deps.CtasCreated.Add(target.Key);
                     RecordMovement(target, reads);
-                    RecordCreatedObject(target, LineageNodeKind.Table, select, columns: []);
+                    RecordCreatedObject(target, LineageNodeKind.Table, select, ReadProjectionColumns(select.QueryExpression));
                 }
             });
         }
@@ -282,12 +306,13 @@ public static class TSqlLineageExtractor
                     _deps.CtasCreated.Add(target.Key);
                     RecordMovement(target, reads);
                 });
-                RecordCreatedObject(target, LineageNodeKind.Table, createTable, columns: []);
+                RecordCreatedObject(target, LineageNodeKind.Table, createTable, ReadProjectionColumns(ctasBody.QueryExpression));
                 return;
             }
 
             Outbound(target, TableOperation.Create);
             RecordCreatedObject(target, LineageNodeKind.Table, createTable, ReadColumnDefinitions(createTable.Definition));
+            RecordTableConstraints(target, createTable.Definition);
         }
 
         /// <summary>ALTER TABLE ... SWITCH [PARTITION n] TO target: a metadata-speed data movement, still a
@@ -368,23 +393,38 @@ public static class TSqlLineageExtractor
 
                 // The FROM clause is read FIRST so an aliased target (UPDATE a ... FROM dbo.T AS a) can be
                 // resolved against it, the T-SQL twin of DeltaForge's peek_resolve_update_alias.
-                if (specification.FromClause is not null)
+                PushBindings(specification.FromClause);
+                try
                 {
-                    foreach (var reference in specification.FromClause.TableReferences)
+                    if (specification.FromClause is not null)
                     {
-                        WalkTableReference(reference, subqueryDepth: 0);
-                    }
-                }
+                        foreach (var reference in specification.FromClause.TableReferences)
+                        {
+                            WalkTableReference(reference, subqueryDepth: 0);
+                        }
 
-                foreach (var clause in specification.SetClauses)
+                        foreach (var reference in specification.FromClause.TableReferences)
+                        {
+                            CollectJoinConditions(reference);
+                        }
+
+                        CollectEquiJoins(specification.WhereClause?.SearchCondition);
+                    }
+
+                    foreach (var clause in specification.SetClauses)
+                    {
+                        if (clause is AssignmentSetClause assignment)
+                        {
+                            WalkExpressionSubqueries(assignment.NewValue);
+                        }
+                    }
+
+                    WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
+                }
+                finally
                 {
-                    if (clause is AssignmentSetClause assignment)
-                    {
-                        WalkExpressionSubqueries(assignment.NewValue);
-                    }
+                    PopBindings();
                 }
-
-                WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
 
                 var target = ResolveTarget(specification.Target, specification.FromClause);
                 if (target is not null)
@@ -407,15 +447,30 @@ public static class TSqlLineageExtractor
             {
                 var specification = delete.DeleteSpecification;
 
-                if (specification.FromClause is not null)
+                PushBindings(specification.FromClause);
+                try
                 {
-                    foreach (var reference in specification.FromClause.TableReferences)
+                    if (specification.FromClause is not null)
                     {
-                        WalkTableReference(reference, subqueryDepth: 0);
-                    }
-                }
+                        foreach (var reference in specification.FromClause.TableReferences)
+                        {
+                            WalkTableReference(reference, subqueryDepth: 0);
+                        }
 
-                WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
+                        foreach (var reference in specification.FromClause.TableReferences)
+                        {
+                            CollectJoinConditions(reference);
+                        }
+
+                        CollectEquiJoins(specification.WhereClause?.SearchCondition);
+                    }
+
+                    WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
+                }
+                finally
+                {
+                    PopBindings();
+                }
 
                 var target = ResolveTarget(specification.Target, specification.FromClause);
                 if (target is not null)
@@ -469,10 +524,68 @@ public static class TSqlLineageExtractor
                 {
                     Outbound(target, TableOperation.Merge);
                     RecordMovement(target, reads);
+                    RecordMergeKey(specification, target);
                 }
 
                 ExtractOutputInto(specification, reads);
             });
+        }
+
+        /// <summary>The MERGE ON clause is the target's upsert match key: the business key the loader
+        /// identifies rows by, which in a warehouse (no physical constraints) is the primary-key knowledge.
+        /// The target-side columns of the ON equality pairs are recorded as a key observation.</summary>
+        private void RecordMergeKey(MergeSpecification specification, TableName target)
+        {
+            // A local binding scope of just the two MERGE sides: the target under its alias (ScriptDom
+            // parses "MERGE t AS a" into MergeSpecification.TableAlias, not onto the target reference) and
+            // its base name, plus the USING source, so the ON qualifiers resolve without leaking elsewhere.
+            var bindings = new Dictionary<string, TableName>(StringComparer.OrdinalIgnoreCase);
+            bindings[target.Name] = target;
+            if (specification.TableAlias?.Value is { Length: > 0 } targetAlias)
+            {
+                bindings[targetAlias] = target;
+            }
+
+            if (specification.Target is NamedTableReference { Alias.Value: { Length: > 0 } namedAlias })
+            {
+                bindings[namedAlias] = target;
+            }
+
+            CollectBindings(specification.TableReference, bindings);
+
+            _bindingScopes.Add(bindings);
+            try
+            {
+                var pairs = new List<(TableName Left, string LeftColumn, TableName Right, string RightColumn)>();
+                GatherEqualityPairs(specification.SearchCondition, pairs);
+
+                var keyColumns = new List<string>();
+                foreach (var (left, leftColumn, right, rightColumn) in pairs)
+                {
+                    if (string.Equals(left.Key, target.Key, StringComparison.Ordinal))
+                    {
+                        keyColumns.Add(leftColumn);
+                    }
+                    else if (string.Equals(right.Key, target.Key, StringComparison.Ordinal))
+                    {
+                        keyColumns.Add(rightColumn);
+                    }
+                }
+
+                if (keyColumns.Count > 0)
+                {
+                    _deps.Keys.Add(new ObservedKey
+                    {
+                        Table = target,
+                        Columns = keyColumns.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                        Origin = LineageModelOrigin.Merge,
+                    });
+                }
+            }
+            finally
+            {
+                _bindingScopes.RemoveAt(_bindingScopes.Count - 1);
+            }
         }
 
         /// <summary>OUTPUT ... INTO t: a second write target fed by the same statement.</summary>
@@ -506,29 +619,38 @@ public static class TSqlLineageExtractor
             });
 
             // The whole CREATE/ALTER VIEW statement is the view's generating script; an ALTER only re-defines
-            // the body, so treat both as the current definition.
-            RecordCreatedObject(view, LineageNodeKind.View, statement, columns: []);
+            // the body, so treat both as the current definition. The output columns are interpreted from the
+            // view's SELECT projection (its aliases and cast targets), so the catalog carries a column
+            // dictionary for the view from the codebase's own SQL, with no live connection.
+            RecordCreatedObject(view, LineageNodeKind.View, statement, ReadProjectionColumns(body.QueryExpression));
         }
 
         private void ExtractFunction(FunctionStatementBody function)
         {
-            Outbound(TableName.From(function.Name, _currentDatabase),
-                function is AlterFunctionStatement ? TableOperation.Alter : TableOperation.Create);
+            var name = TableName.From(function.Name, _currentDatabase);
+            Outbound(name, function is AlterFunctionStatement ? TableOperation.Alter : TableOperation.Create);
 
+            IReadOnlyList<LineageColumn> columns = [];
             if (function.ReturnType is SelectFunctionReturnType inline)
             {
-                // An inline TVF is a parameterized view: its body is its lineage.
+                // An inline TVF is a parameterized view: its body is its lineage, and its result columns are
+                // its SELECT projection.
                 WithStatementFrame(inline.SelectStatement.WithCtesAndXmlNamespaces,
                     _ => WalkQuery(inline.SelectStatement.QueryExpression, subqueryDepth: 0));
+                columns = ReadProjectionColumns(inline.SelectStatement.QueryExpression);
             }
 
+            // The whole CREATE/ALTER FUNCTION statement is the function's generating script (scalar and
+            // multi-statement bodies carry no interpretable result columns; the inline TVF does).
+            RecordCreatedObject(name, LineageNodeKind.Function, function, columns);
             ExtractStatementList(function.StatementList);
         }
 
         private void ExtractTrigger(TriggerStatementBody trigger)
         {
-            Outbound(TableName.From(trigger.Name, _currentDatabase),
-                trigger is AlterTriggerStatement ? TableOperation.Alter : TableOperation.Create);
+            var triggerName = TableName.From(trigger.Name, _currentDatabase);
+            Outbound(triggerName, trigger is AlterTriggerStatement ? TableOperation.Alter : TableOperation.Create);
+            RecordCreatedObject(triggerName, LineageNodeKind.Trigger, trigger, columns: []);
 
             // Inside a DML trigger's body, the inserted/deleted pseudo-tables ARE the parent object, the
             // T-SQL change-feed surface. DDL and LOGON triggers have no parent table (TriggerObject.Name is
@@ -593,41 +715,61 @@ public static class TSqlLineageExtractor
                 switch (query)
                 {
                     case QuerySpecification specification:
-                        if (specification.FromClause is not null)
+                        // This query's FROM aliases bind for the whole specification (and its correlated
+                        // subqueries), so join predicates below resolve their qualifiers to real tables.
+                        PushBindings(specification.FromClause);
+                        try
                         {
-                            foreach (var reference in specification.FromClause.TableReferences)
+                            if (specification.FromClause is not null)
                             {
-                                WalkTableReference(reference, subqueryDepth);
+                                foreach (var reference in specification.FromClause.TableReferences)
+                                {
+                                    WalkTableReference(reference, subqueryDepth);
+                                }
+
+                                // The data-model observations: every JOIN ... ON in the FROM tree, plus the
+                                // WHERE clause (the old-style equi-join spelling).
+                                foreach (var reference in specification.FromClause.TableReferences)
+                                {
+                                    CollectJoinConditions(reference);
+                                }
+
+                                CollectEquiJoins(specification.WhereClause?.SearchCondition);
                             }
+
+                            foreach (var element in specification.SelectElements)
+                            {
+                                switch (element)
+                                {
+                                    case SelectScalarExpression scalar:
+                                        WalkExpressionSubqueries(scalar.Expression);
+                                        break;
+                                    case SelectSetVariable assignment:
+                                        // SELECT @x = (subquery) ... assigns while reading.
+                                        WalkExpressionSubqueries(assignment.Expression);
+                                        break;
+                                }
+                            }
+
+                            WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
+                            WalkExpressionSubqueries(specification.HavingClause?.SearchCondition);
+                            WalkExpressionSubqueries(specification.TopRowFilter?.Expression);
+                            if (specification.OrderByClause is { } orderBy)
+                            {
+                                foreach (var ordering in orderBy.OrderByElements)
+                                {
+                                    WalkExpressionSubqueries(ordering.Expression);
+                                }
+                            }
+
+                            WalkExpressionSubqueries(specification.OffsetClause?.OffsetExpression);
+                            WalkExpressionSubqueries(specification.OffsetClause?.FetchExpression);
+                        }
+                        finally
+                        {
+                            PopBindings();
                         }
 
-                        foreach (var element in specification.SelectElements)
-                        {
-                            switch (element)
-                            {
-                                case SelectScalarExpression scalar:
-                                    WalkExpressionSubqueries(scalar.Expression);
-                                    break;
-                                case SelectSetVariable assignment:
-                                    // SELECT @x = (subquery) ... assigns while reading.
-                                    WalkExpressionSubqueries(assignment.Expression);
-                                    break;
-                            }
-                        }
-
-                        WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
-                        WalkExpressionSubqueries(specification.HavingClause?.SearchCondition);
-                        WalkExpressionSubqueries(specification.TopRowFilter?.Expression);
-                        if (specification.OrderByClause is { } orderBy)
-                        {
-                            foreach (var ordering in orderBy.OrderByElements)
-                            {
-                                WalkExpressionSubqueries(ordering.Expression);
-                            }
-                        }
-
-                        WalkExpressionSubqueries(specification.OffsetClause?.OffsetExpression);
-                        WalkExpressionSubqueries(specification.OffsetClause?.FetchExpression);
                         break;
                     case BinaryQueryExpression binary:
                         WalkQuery(binary.FirstQueryExpression, subqueryDepth);
@@ -768,6 +910,312 @@ public static class TSqlLineageExtractor
             }
 
             Inbound(TableName.From(named.SchemaObject, _currentDatabase), TableOperation.Read, subqueryDepth);
+        }
+
+        // ---- Data-model observation (interpreted keys and joins) -------------------------------------
+
+        /// <summary>Pushes a FROM clause's alias bindings as the innermost scope; always paired with
+        /// <see cref="PopBindings"/> in a finally. A null FROM pushes an empty scope so the pop stays
+        /// unconditional.</summary>
+        private void PushBindings(FromClause? fromClause)
+        {
+            var bindings = new Dictionary<string, TableName>(StringComparer.OrdinalIgnoreCase);
+            if (fromClause is not null)
+            {
+                foreach (var reference in fromClause.TableReferences)
+                {
+                    CollectBindings(reference, bindings);
+                }
+            }
+
+            _bindingScopes.Add(bindings);
+        }
+
+        private void PopBindings() => _bindingScopes.RemoveAt(_bindingScopes.Count - 1);
+
+        /// <summary>Binds each real base table of a FROM tree under its alias (or base name). CTE labels,
+        /// table variables, temp tables, derived tables, and function references bind nothing: a join over
+        /// them names no base-table identity, and skipping them keeps the inference honest rather than
+        /// guessing through indirections the reader cannot verify.</summary>
+        private void CollectBindings(TableReference reference, Dictionary<string, TableName> bindings)
+        {
+            switch (reference)
+            {
+                case NamedTableReference named:
+                {
+                    var baseName = named.SchemaObject.BaseIdentifier?.Value;
+                    if (string.IsNullOrEmpty(baseName))
+                    {
+                        return;
+                    }
+
+                    if (named.SchemaObject.Identifiers.Count == 1
+                        && (IsCteInScope(baseName) || _tableVariables.Contains(baseName)))
+                    {
+                        return;
+                    }
+
+                    var table = TableName.From(named.SchemaObject, _currentDatabase);
+                    if (table.IsTemp)
+                    {
+                        return;
+                    }
+
+                    bindings[named.Alias?.Value ?? baseName] = table;
+                    break;
+                }
+
+                case QualifiedJoin join:
+                    CollectBindings(join.FirstTableReference, bindings);
+                    CollectBindings(join.SecondTableReference, bindings);
+                    break;
+                case UnqualifiedJoin join:
+                    CollectBindings(join.FirstTableReference, bindings);
+                    CollectBindings(join.SecondTableReference, bindings);
+                    break;
+                case JoinParenthesisTableReference parenthesized:
+                    CollectBindings(parenthesized.Join, bindings);
+                    break;
+                case PivotedTableReference pivoted:
+                    CollectBindings(pivoted.TableReference, bindings);
+                    break;
+                case UnpivotedTableReference unpivoted:
+                    CollectBindings(unpivoted.TableReference, bindings);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /// <summary>Walks a FROM tree's qualified joins and records the equality predicates of each ON
+        /// clause. Derived tables are not descended: their inner queries push their own scopes when walked.</summary>
+        private void CollectJoinConditions(TableReference reference)
+        {
+            switch (reference)
+            {
+                case QualifiedJoin join:
+                    CollectJoinConditions(join.FirstTableReference);
+                    CollectJoinConditions(join.SecondTableReference);
+                    CollectEquiJoins(join.SearchCondition);
+                    break;
+                case UnqualifiedJoin join:
+                    CollectJoinConditions(join.FirstTableReference);
+                    CollectJoinConditions(join.SecondTableReference);
+                    break;
+                case JoinParenthesisTableReference parenthesized:
+                    CollectJoinConditions(parenthesized.Join);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /// <summary>Records the equality-join observations of one predicate tree: the AND-connected
+        /// column-to-column equalities between two DIFFERENT base tables, folded per table pair so a
+        /// composite key joins as one observation. OR branches and non-equality predicates are filters,
+        /// not join identity, and contribute nothing.</summary>
+        private void CollectEquiJoins(BooleanExpression? condition)
+        {
+            if (condition is null)
+            {
+                return;
+            }
+
+            var pairs = new List<(TableName Left, string LeftColumn, TableName Right, string RightColumn)>();
+            GatherEqualityPairs(condition, pairs);
+            if (pairs.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var group in pairs.GroupBy(p => (p.Left.Key, p.Right.Key)))
+            {
+                var members = group.ToList();
+                var left = members[0].Left;
+                var right = members[0].Right;
+                var leftColumns = members.Select(m => m.LeftColumn).ToList();
+                var rightColumns = members.Select(m => m.RightColumn).ToList();
+
+                // One identity per unordered pair-with-columns, so A-to-B and B-to-A collapse and a script
+                // repeating the predicate contributes a single observation.
+                var sideA = $"{left.Key}({string.Join(",", leftColumns.Select(c => c.ToLowerInvariant()))})";
+                var sideB = $"{right.Key}({string.Join(",", rightColumns.Select(c => c.ToLowerInvariant()))})";
+                var identity = string.CompareOrdinal(sideA, sideB) <= 0 ? sideA + "=" + sideB : sideB + "=" + sideA;
+                if (!_joinIdentities.Add(identity))
+                {
+                    continue;
+                }
+
+                _deps.Joins.Add(new ObservedJoin
+                {
+                    Left = left,
+                    LeftColumns = leftColumns,
+                    Right = right,
+                    RightColumns = rightColumns,
+                });
+            }
+        }
+
+        private void GatherEqualityPairs(
+            BooleanExpression? condition, List<(TableName Left, string LeftColumn, TableName Right, string RightColumn)> pairs)
+        {
+            switch (condition)
+            {
+                case BooleanBinaryExpression { BinaryExpressionType: BooleanBinaryExpressionType.And } and:
+                    GatherEqualityPairs(and.FirstExpression, pairs);
+                    GatherEqualityPairs(and.SecondExpression, pairs);
+                    break;
+                case BooleanParenthesisExpression parenthesis:
+                    GatherEqualityPairs(parenthesis.Expression, pairs);
+                    break;
+                case BooleanComparisonExpression { ComparisonType: BooleanComparisonType.Equals } equality:
+                    if (ResolveColumn(equality.FirstExpression) is { } left
+                        && ResolveColumn(equality.SecondExpression) is { } right
+                        && !string.Equals(left.Table.Key, right.Table.Key, StringComparison.Ordinal))
+                    {
+                        pairs.Add((left.Table, left.Column, right.Table, right.Column));
+                    }
+
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /// <summary>Resolves a qualified column reference (alias.Column or Table.Column) against the binding
+        /// scopes, innermost first. An unqualified column is ambiguous by construction and resolves to
+        /// nothing; guessing would poison the model with wrong relationships.</summary>
+        private (TableName Table, string Column)? ResolveColumn(ScalarExpression expression)
+        {
+            if (expression is not ColumnReferenceExpression column)
+            {
+                return null;
+            }
+
+            var identifiers = column.MultiPartIdentifier?.Identifiers;
+            if (identifiers is null || identifiers.Count < 2)
+            {
+                return null;
+            }
+
+            var qualifier = identifiers[^2].Value;
+            var name = identifiers[^1].Value;
+            if (string.IsNullOrEmpty(qualifier) || string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+
+            for (var i = _bindingScopes.Count - 1; i >= 0; i--)
+            {
+                if (_bindingScopes[i].TryGetValue(qualifier, out var table))
+                {
+                    return (table, name);
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>Records the PRIMARY KEY and FOREIGN KEY clauses of a table definition (CREATE TABLE or
+        /// ALTER TABLE ... ADD), column-level and table-level: the explicit, strongest form of data-model
+        /// knowledge the codebase carries.</summary>
+        private void RecordTableConstraints(TableName table, TableDefinition? definition)
+        {
+            if (definition is null)
+            {
+                return;
+            }
+
+            foreach (var column in definition.ColumnDefinitions)
+            {
+                var columnName = column.ColumnIdentifier?.Value;
+                if (string.IsNullOrEmpty(columnName))
+                {
+                    continue;
+                }
+
+                foreach (var constraint in column.Constraints)
+                {
+                    switch (constraint)
+                    {
+                        case UniqueConstraintDefinition { IsPrimaryKey: true }:
+                            _deps.Keys.Add(new ObservedKey
+                            {
+                                Table = table,
+                                Columns = [columnName],
+                                Origin = LineageModelOrigin.Constraint,
+                            });
+                            break;
+                        case ForeignKeyConstraintDefinition foreignKey:
+                            AddForeignKeyConstraint(table, [columnName], foreignKey);
+                            break;
+                    }
+                }
+            }
+
+            foreach (var constraint in definition.TableConstraints)
+            {
+                switch (constraint)
+                {
+                    case UniqueConstraintDefinition { IsPrimaryKey: true } primaryKey:
+                    {
+                        var columns = primaryKey.Columns
+                            .Select(c => c.Column?.MultiPartIdentifier?.Identifiers is { Count: > 0 } ids ? ids[^1].Value : null)
+                            .Where(name => !string.IsNullOrEmpty(name))
+                            .Select(name => name!)
+                            .ToList();
+                        if (columns.Count > 0)
+                        {
+                            _deps.Keys.Add(new ObservedKey
+                            {
+                                Table = table,
+                                Columns = columns,
+                                Origin = LineageModelOrigin.Constraint,
+                            });
+                        }
+
+                        break;
+                    }
+
+                    case ForeignKeyConstraintDefinition foreignKey:
+                    {
+                        var columns = foreignKey.Columns
+                            .Select(identifier => identifier.Value)
+                            .Where(name => !string.IsNullOrEmpty(name))
+                            .ToList();
+                        if (columns.Count > 0)
+                        {
+                            AddForeignKeyConstraint(table, columns, foreignKey);
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void AddForeignKeyConstraint(
+            TableName from, IReadOnlyList<string> fromColumns, ForeignKeyConstraintDefinition constraint)
+        {
+            if (constraint.ReferenceTableName is null)
+            {
+                return;
+            }
+
+            var to = TableName.From(constraint.ReferenceTableName, _currentDatabase);
+            var toColumns = constraint.ReferencedTableColumns
+                .Select(identifier => identifier.Value)
+                .Where(name => !string.IsNullOrEmpty(name))
+                .ToList();
+
+            _deps.ForeignKeys.Add(new ObservedForeignKey
+            {
+                Name = constraint.ConstraintIdentifier?.Value,
+                From = from,
+                FromColumns = fromColumns,
+                To = to,
+                ToColumns = toColumns,
+            });
         }
 
         /// <summary>Collects the subqueries of an expression subtree and walks each through the operation-wise
@@ -1122,6 +1570,75 @@ public static class TSqlLineageExtractor
 
             return columns;
         }
+
+        /// <summary>
+        /// Interprets the output columns a query projects from its SELECT list: the column name (an explicit
+        /// alias, else the trailing identifier of a simple column reference) and, when the projection casts or
+        /// converts, the target type rendered verbatim. A <c>SELECT *</c> cannot be enumerated without the
+        /// source schema, so a star (or a set-variable assignment) yields no column, the offline limit declared
+        /// rather than guessed. This is what lets a view or an inline table-valued function carry a column
+        /// dictionary interpreted from the codebase's own SQL, without a live connection. A set query
+        /// (UNION/EXCEPT) takes its column identities from the first branch, as SQL Server does.
+        /// </summary>
+        private static IReadOnlyList<LineageColumn> ReadProjectionColumns(QueryExpression? query)
+        {
+            var specification = FirstQuerySpecification(query);
+            if (specification is null)
+            {
+                return [];
+            }
+
+            var columns = new List<LineageColumn>(specification.SelectElements.Count);
+            var ordinal = 1;
+            foreach (var element in specification.SelectElements)
+            {
+                if (element is not SelectScalarExpression scalar)
+                {
+                    continue;
+                }
+
+                var name = scalar.ColumnName?.Value
+                    ?? (scalar.Expression is ColumnReferenceExpression { MultiPartIdentifier.Identifiers: { Count: > 0 } parts }
+                        ? parts[^1].Value
+                        : null);
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                columns.Add(new LineageColumn
+                {
+                    Ordinal = ordinal++,
+                    Name = name,
+                    DataType = ProjectionType(scalar.Expression),
+                    // A projection carries no nullability of its own; SQL Server columns default to nullable.
+                    Nullable = true,
+                });
+            }
+
+            return columns;
+        }
+
+        /// <summary>The first concrete <see cref="QuerySpecification"/> of a query expression: a parenthesized
+        /// query unwraps, and a set operation (UNION/EXCEPT/INTERSECT) resolves to its first branch, mirroring
+        /// how SQL Server takes the result column identities from the leading SELECT.</summary>
+        private static QuerySpecification? FirstQuerySpecification(QueryExpression? query) => query switch
+        {
+            QuerySpecification specification => specification,
+            BinaryQueryExpression binary => FirstQuerySpecification(binary.FirstQueryExpression),
+            QueryParenthesisExpression parenthesis => FirstQuerySpecification(parenthesis.QueryExpression),
+            _ => null,
+        };
+
+        /// <summary>The declared target type of a projected column when the expression casts or converts to one
+        /// (the transform-view shape the engine generates); null for any other expression, whose runtime type
+        /// is not statically knowable offline.</summary>
+        private static string? ProjectionType(ScalarExpression expression) => expression switch
+        {
+            CastCall cast => FragmentText(cast.DataType),
+            ConvertCall convert => FragmentText(convert.DataType),
+            _ => null,
+        };
 
         /// <summary>The verbatim source text of a fragment, reassembled from its token-stream span. Null when
         /// the fragment carries no token span (a synthesized node).</summary>

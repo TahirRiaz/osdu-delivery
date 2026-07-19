@@ -132,10 +132,12 @@ public sealed partial class RepoSyncService : BackgroundService
             var excludedFlowPaths = RepoSourceStore.ParseExcludedPaths(source.ExcludedFlowPaths);
 
             // The exact same catalog sync the CLI's `db sync` runs - one sync path. Offline (no derived tier): a
-            // managed sync mirrors the git estate; the connected/derived tier is a separate, opt-in concern.
+            // managed sync mirrors the git estate; the connected/derived tier is a separate, opt-in concern. A
+            // manual "sync now" carries a force-lineage request on the source, so this sync recomputes the whole
+            // graph (and the offline object-body/column enrichment) even when the commit is unchanged.
             await new CatalogSync()
                 .SyncAsync(catalog, workingDir, source.Name, source.RemoteUrl, _clock.GetUtcNow().UtcDateTime,
-                    excludedFlowPaths: excludedFlowPaths, ct: ct)
+                    excludedFlowPaths: excludedFlowPaths, forceLineage: source.ForceLineageOnNextSync, ct: ct)
                 .ConfigureAwait(false);
 
             await RepoSourceStore.RecordSuccessAsync(catalog, source.Id, sha, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);

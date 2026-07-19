@@ -14,17 +14,24 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import CloudOutlinedIcon from "@mui/icons-material/CloudOutlined";
+import ComputerOutlinedIcon from "@mui/icons-material/ComputerOutlined";
 import DnsOutlinedIcon from "@mui/icons-material/DnsOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import FolderSharedOutlinedIcon from "@mui/icons-material/FolderSharedOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
+import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
+import PublicOutlinedIcon from "@mui/icons-material/PublicOutlined";
 import SchemaOutlinedIcon from "@mui/icons-material/SchemaOutlined";
+import SourceOutlinedIcon from "@mui/icons-material/SourceOutlined";
 import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
 import { SimpleTreeView } from "@mui/x-tree-view/SimpleTreeView";
 import { TreeItem } from "@mui/x-tree-view/TreeItem";
 import { lineageApi, pipelineApi, repoApi } from "../../api/endpoints";
-import type { LineageObject, LineageSchema, PipelineBatch, PipelineSummary, SchemaKindCount } from "../../api/types";
+import type { FileNode, FileOriginKind, LineageObject, PagedResult, PipelineSummary, Repo, SchemaKindCount } from "../../api/types";
 import { compareKinds, metaForKind } from "./kindMeta";
-import { encodeNodeId, UNRESOLVED_LABEL, type CatalogNode } from "./nodeIds";
+import { encodeNodeId, UNRESOLVED_LABEL, decodeNodeId, type CatalogNode } from "./nodeIds";
 
 const LEAF_PAGE_SIZE = 200;
 
@@ -43,62 +50,65 @@ function NodeLabel({ icon, text, count }: { icon?: ReactNode; text: string; coun
   );
 }
 
-/** The skeleton hierarchy folded from the flat /lineage/schemas rows. */
-interface ServerBranch {
-  serverRef: string;
-  objectCount: number;
-  databases: DatabaseBranch[];
-}
+const lower = (value: string) => value.toLowerCase();
+const byNameCi = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
 
-interface DatabaseBranch {
-  database: string | null;
-  objectCount: number;
-  schemas: SchemaBranch[];
-}
+// ---- Databases branch (server/db > schema > kind > object) -----------------------------------------------
 
-interface SchemaBranch {
-  schema: string | null;
-  objectCount: number;
-}
+interface DatabaseBranch { database: string | null; objectCount: number; schemas: SchemaBranch[] }
+interface SchemaBranch { schema: string | null; objectCount: number; kinds: KindCount[] }
+interface KindCount { kind: string; objectCount: number }
 
-function foldSchemas(rows: LineageSchema[]): ServerBranch[] {
-  const servers = new Map<string, ServerBranch>();
+/** Folds the flat per-kind rows into database > schema > kind, excluding files (they live under Sources) and
+ * merging connection-reference aliases so one database reached via two refs is one node. */
+function foldDatabases(rows: SchemaKindCount[]): DatabaseBranch[] {
+  const databases = new Map<string | null, DatabaseBranch>();
   for (const row of rows) {
-    let server = servers.get(row.serverRef);
-    if (server === undefined) {
-      server = { serverRef: row.serverRef, objectCount: 0, databases: [] };
-      servers.set(row.serverRef, server);
+    if (row.kind === "File") {
+      continue;
     }
-    server.objectCount += row.objectCount;
-    let database = server.databases.find((d) => d.database === row.database);
+    let database = databases.get(row.database);
     if (database === undefined) {
       database = { database: row.database, objectCount: 0, schemas: [] };
-      server.databases.push(database);
+      databases.set(row.database, database);
     }
     database.objectCount += row.objectCount;
-    database.schemas.push({ schema: row.schema, objectCount: row.objectCount });
+    let schema = database.schemas.find((s) => s.schema === row.schema);
+    if (schema === undefined) {
+      schema = { schema: row.schema, objectCount: 0, kinds: [] };
+      database.schemas.push(schema);
+    }
+    schema.objectCount += row.objectCount;
+    const kind = schema.kinds.find((k) => k.kind === row.kind);
+    if (kind === undefined) {
+      schema.kinds.push({ kind: row.kind, objectCount: row.objectCount });
+    } else {
+      kind.objectCount += row.objectCount;
+    }
   }
-  // The API returns the rows ordered, so insertion order already reads top-down within each level.
-  return [...servers.values()];
+
+  const branches = [...databases.values()];
+  for (const database of branches) {
+    database.schemas.sort((a, b) => byNameCi(a.schema ?? "", b.schema ?? ""));
+    for (const schema of database.schemas) {
+      schema.kinds.sort((a, b) => compareKinds(a.kind, b.kind));
+    }
+  }
+  branches.sort((a, b) => byNameCi(a.database ?? "", b.database ?? ""));
+  return branches;
 }
 
-/** The object leaves of one (server, database, schema, kind) folder: paged, with a load-more row.
- * Selection is handled by the enclosing tree, so a leaf only renders its label. */
-function ObjectLeaves({ node }: { node: Extract<CatalogNode, { type: "kind" }> }) {
-  const parentId = encodeNodeId(node);
+/** Paged object leaves under a database kind folder, lazy-loaded on expand. */
+function PagedObjectLeaves({
+  parentId, queryKey, fetchPage,
+}: {
+  parentId: string;
+  queryKey: readonly unknown[];
+  fetchPage: (page: number) => Promise<PagedResult<LineageObject>>;
+}) {
   const objects = useInfiniteQuery({
-    queryKey: ["catalog-objects", node.serverRef, node.database, node.schema, node.kind],
-    queryFn: ({ pageParam }) => lineageApi.objects({
-      serverRef: node.serverRef,
-      // A null database/schema is a real grouping value ("(unresolved)") the filter cannot express, so those
-      // leaves list unfiltered within the kind; the counts still match because unresolved rows are rare and
-      // grouped apart. An empty string filter would be dropped by the query builder, so send only real values.
-      database: node.database ?? undefined,
-      schema: node.schema ?? undefined,
-      kind: node.kind,
-      page: pageParam,
-      pageSize: LEAF_PAGE_SIZE,
-    }),
+    queryKey,
+    queryFn: ({ pageParam }) => fetchPage(pageParam),
     initialPageParam: 1,
     getNextPageParam: (last) => (last.page * last.pageSize < last.total ? last.page + 1 : undefined),
   });
@@ -108,122 +118,309 @@ function ObjectLeaves({ node }: { node: Extract<CatalogNode, { type: "kind" }> }
   }
   if (objects.isError) {
     return (
-      <TreeItem
-        itemId={`${parentId}#error`}
-        disabled
-        label={<NodeLabel text={`Could not load objects: ${String(objects.error)}`} />}
-      />
+      <TreeItem itemId={`${parentId}#error`} disabled
+        label={<NodeLabel text={`Could not load objects: ${String(objects.error)}`} />} />
     );
   }
 
-  const pages = objects.data.pages;
-  const rows: LineageObject[] = pages.flatMap((page) => page.items);
-  const total = pages[0]?.total ?? 0;
+  const rows = objects.data.pages.flatMap((page) => page.items);
+  const total = objects.data.pages[0]?.total ?? 0;
   const remaining = total - rows.length;
-  const meta = metaForKind(node.kind);
   return (
     <>
-      {rows.length === 0 && (
-        <TreeItem itemId={`${parentId}#empty`} disabled label={<NodeLabel text="No objects" />} />
-      )}
+      {rows.length === 0 && <TreeItem itemId={`${parentId}#empty`} disabled label={<NodeLabel text="No objects" />} />}
       {rows.map((row) => (
         <TreeItem
           key={row.key}
           itemId={encodeNodeId({ type: "object", objectKey: row.key })}
-          label={<NodeLabel icon={meta.icon} text={row.name} />}
+          label={<NodeLabel icon={metaForKind(row.kind).icon} text={row.name} />}
         />
       ))}
-      {remaining > 0 && (
-        <TreeItem
-          itemId={`${parentId}#more`}
-          label={(
-            <Button
-              size="small"
-              disabled={objects.isFetchingNextPage}
-              onClick={(event) => {
-                event.stopPropagation();
-                void objects.fetchNextPage();
-              }}
-              startIcon={objects.isFetchingNextPage ? <CircularProgress size={14} /> : undefined}
-            >
-              {`Load more (${remaining} remaining)`}
-            </Button>
-          )}
-        />
-      )}
+      {remaining > 0 && <LoadMore parentId={parentId} remaining={remaining} loading={objects.isFetchingNextPage} onMore={() => void objects.fetchNextPage()} />}
     </>
   );
 }
 
-/** The flow leaves of one (repo, batch) folder: paged, with a load-more row. */
-function FlowLeaves({ repoId, batch }: { repoId: string; batch: string }) {
-  const parentId = encodeNodeId({ type: "batch", repoId, batch });
-  const flows = useInfiniteQuery({
-    queryKey: ["catalog-flows", repoId, batch],
-    queryFn: ({ pageParam }) => pipelineApi.list({ repoId, batch, page: pageParam, pageSize: LEAF_PAGE_SIZE }),
-    initialPageParam: 1,
-    getNextPageParam: (last) => (last.page * last.pageSize < last.total ? last.page + 1 : undefined),
-  });
-
-  if (flows.isPending) {
-    return <TreeItem itemId={`${parentId}#loading`} disabled label={<NodeLabel text="Loading…" />} />;
-  }
-  if (flows.isError) {
-    return (
-      <TreeItem
-        itemId={`${parentId}#error`}
-        disabled
-        label={<NodeLabel text={`Could not load flows: ${String(flows.error)}`} />}
-      />
-    );
-  }
-
-  const pages = flows.data.pages;
-  const rows: PipelineSummary[] = pages.flatMap((page) => page.items);
-  const total = pages[0]?.total ?? 0;
-  const remaining = total - rows.length;
+function LoadMore({ parentId, remaining, loading, onMore }: { parentId: string; remaining: number; loading: boolean; onMore: () => void }) {
   return (
-    <>
-      {rows.length === 0 && (
-        <TreeItem itemId={`${parentId}#empty`} disabled label={<NodeLabel text="No flows" />} />
-      )}
-      {rows.map((row) => (
-        <TreeItem
-          key={row.id}
-          itemId={encodeNodeId({ type: "flow", repoId, pipelineId: row.id })}
-          label={(
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, py: 0.25 }}>
-              <AccountTreeIcon fontSize="small" sx={{ color: "text.secondary", flexShrink: 0 }} />
-              <Typography variant="body2" noWrap sx={{ minWidth: 0, flexGrow: 1 }}>{row.name}</Typography>
-              <Chip label={row.kind} size="small" variant="outlined" sx={{ height: 18, fontSize: 11, flexShrink: 0 }} />
-            </Stack>
-          )}
-        />
-      ))}
-      {remaining > 0 && (
-        <TreeItem
-          itemId={`${parentId}#more`}
-          label={(
-            <Button
-              size="small"
-              disabled={flows.isFetchingNextPage}
-              onClick={(event) => {
-                event.stopPropagation();
-                void flows.fetchNextPage();
-              }}
-              startIcon={flows.isFetchingNextPage ? <CircularProgress size={14} /> : undefined}
-            >
-              {`Load more (${remaining} remaining)`}
-            </Button>
-          )}
-        />
-      )}
-    </>
+    <TreeItem itemId={`${parentId}#more`} label={(
+      <Button size="small" disabled={loading} startIcon={loading ? <CircularProgress size={14} /> : undefined}
+        onClick={(event) => { event.stopPropagation(); onMore(); }}>
+        {`Load more (${remaining} remaining)`}
+      </Button>
+    )} />
   );
 }
 
-/** The flat "Object matches" list under the filter box: server-side name search across every leaf, so an
- * object whose page is not yet loaded in the tree is still findable. */
+// ---- Sources branch (file origins: origin > container > folder > file) -----------------------------------
+
+interface FolderTrie {
+  folders: Map<string, FolderTrie>;
+  files: { key: string; name: string }[];
+  count: number;
+}
+
+interface OriginGroup {
+  origin: string;
+  count: number;
+  containers: Map<string, FolderTrie>;
+  root: FolderTrie;
+}
+
+interface ProviderGroup {
+  kind: FileOriginKind;
+  count: number;
+  origins: OriginGroup[];
+}
+
+const newTrie = (): FolderTrie => ({ folders: new Map(), files: [], count: 0 });
+
+/** The provider (the logical parent above a storage account): its label, icon, order, and whether it has an
+ * origin level. Local files have no distinct origin (one filesystem), so they render folders directly under
+ * the provider; every cloud/server provider groups its accounts/buckets/hosts as origins first. */
+interface ProviderMeta { label: string; icon: ReactNode; order: number; hasOrigin: boolean }
+
+const PROVIDER_META: Record<FileOriginKind, ProviderMeta> = {
+  AzureStorage: { label: "Microsoft Azure", icon: <CloudOutlinedIcon fontSize="small" />, order: 0, hasOrigin: true },
+  AmazonS3: { label: "Amazon S3", icon: <CloudOutlinedIcon fontSize="small" />, order: 1, hasOrigin: true },
+  GoogleCloud: { label: "Google Cloud", icon: <CloudOutlinedIcon fontSize="small" />, order: 2, hasOrigin: true },
+  Sftp: { label: "SFTP / FTP servers", icon: <DnsOutlinedIcon fontSize="small" />, order: 3, hasOrigin: true },
+  NetworkShare: { label: "Network shares", icon: <FolderSharedOutlinedIcon fontSize="small" />, order: 4, hasOrigin: true },
+  Local: { label: "Local files", icon: <ComputerOutlinedIcon fontSize="small" />, order: 5, hasOrigin: false },
+  Other: { label: "Other sources", icon: <PublicOutlinedIcon fontSize="small" />, order: 6, hasOrigin: true },
+};
+
+/** Folds the flat file-node list into provider > origin > (container) > folder trie > file, with recursive
+ * counts at every level. */
+function foldFileProviders(files: FileNode[]): ProviderGroup[] {
+  const providers = new Map<FileOriginKind, Map<string, OriginGroup>>();
+  for (const file of files) {
+    let origins = providers.get(file.originKind);
+    if (origins === undefined) {
+      origins = new Map();
+      providers.set(file.originKind, origins);
+    }
+    let group = origins.get(file.origin);
+    if (group === undefined) {
+      group = { origin: file.origin, count: 0, containers: new Map(), root: newTrie() };
+      origins.set(file.origin, group);
+    }
+    group.count++;
+
+    let trie: FolderTrie;
+    if (file.container !== null) {
+      trie = group.containers.get(file.container) ?? newTrie();
+      group.containers.set(file.container, trie);
+    } else {
+      trie = group.root;
+    }
+
+    trie.count++;
+    for (const segment of file.path ? file.path.split("/") : []) {
+      let child = trie.folders.get(segment);
+      if (child === undefined) {
+        child = newTrie();
+        trie.folders.set(segment, child);
+      }
+      trie = child;
+      trie.count++;
+    }
+    trie.files.push({ key: file.key, name: file.name });
+  }
+
+  return [...providers.entries()]
+    .map(([kind, origins]) => {
+      const originList = [...origins.values()].sort((a, b) => byNameCi(a.origin, b.origin));
+      return { kind, count: originList.reduce((sum, o) => sum + o.count, 0), origins: originList };
+    })
+    .sort((a, b) => PROVIDER_META[a.kind].order - PROVIDER_META[b.kind].order);
+}
+
+/** Renders a folder trie's subfolders (recursively) then its files, under the given provider/origin/container. */
+function renderTrie(provider: string, origin: string, container: string | null, parentPath: string, trie: FolderTrie): ReactNode[] {
+  const folders = [...trie.folders.entries()]
+    .sort(([a], [b]) => byNameCi(a, b))
+    .map(([name, child]) => {
+      const path = parentPath ? `${parentPath}/${name}` : name;
+      const id = encodeNodeId({ type: "folder", provider, origin, container, path });
+      return (
+        <TreeItem key={id} itemId={id} label={<NodeLabel icon={<FolderOutlinedIcon fontSize="small" />} text={name} count={child.count} />}>
+          {renderTrie(provider, origin, container, path, child)}
+        </TreeItem>
+      );
+    });
+  const files = [...trie.files]
+    .sort((a, b) => byNameCi(a.name, b.name))
+    .map((file) => (
+      <TreeItem
+        key={file.key}
+        itemId={encodeNodeId({ type: "object", objectKey: file.key })}
+        label={<NodeLabel icon={<InsertDriveFileOutlinedIcon fontSize="small" />} text={file.name} />}
+      />
+    ));
+  return [...folders, ...files];
+}
+
+function OriginNode({ provider, group }: { provider: FileOriginKind; group: OriginGroup }) {
+  const originId = encodeNodeId({ type: "origin", provider, origin: group.origin });
+  const containers = [...group.containers.entries()].sort(([a], [b]) => byNameCi(a, b));
+  return (
+    <TreeItem itemId={originId} label={<NodeLabel icon={<StorageOutlinedIcon fontSize="small" />} text={group.origin} count={group.count} />}>
+      {containers.map(([name, trie]) => {
+        const id = encodeNodeId({ type: "container", provider, origin: group.origin, container: name });
+        return (
+          <TreeItem key={id} itemId={id} label={<NodeLabel icon={<Inventory2OutlinedIcon fontSize="small" />} text={name} count={trie.count} />}>
+            {renderTrie(provider, group.origin, name, "", trie)}
+          </TreeItem>
+        );
+      })}
+      {renderTrie(provider, group.origin, null, "", group.root)}
+    </TreeItem>
+  );
+}
+
+function ProviderNode({ group }: { group: ProviderGroup }) {
+  const meta = PROVIDER_META[group.kind];
+  const providerId = encodeNodeId({ type: "provider", provider: group.kind });
+  return (
+    <TreeItem itemId={providerId} label={<NodeLabel icon={meta.icon} text={meta.label} count={group.count} />}>
+      {meta.hasOrigin
+        ? group.origins.map((o) => <OriginNode key={encodeNodeId({ type: "origin", provider: group.kind, origin: o.origin })} provider={group.kind} group={o} />)
+        // Local files have no origin level: render the filesystem's folder tree directly under the provider.
+        : group.origins.flatMap((o) => renderTrie(group.kind, o.origin, null, "", o.root))}
+    </TreeItem>
+  );
+}
+
+/** The expand chain that reveals a file leaf: its provider, origin, container, and every folder down to it. */
+function fileAncestorIds(file: FileNode): string[] {
+  const provider = file.originKind;
+  const ids = [
+    encodeNodeId({ type: "sourcesRoot" }),
+    encodeNodeId({ type: "provider", provider }),
+  ];
+  if (PROVIDER_META[provider].hasOrigin) {
+    ids.push(encodeNodeId({ type: "origin", provider, origin: file.origin }));
+  }
+  if (file.container !== null) {
+    ids.push(encodeNodeId({ type: "container", provider, origin: file.origin, container: file.container }));
+  }
+  if (file.path) {
+    let acc = "";
+    for (const segment of file.path.split("/")) {
+      acc = acc ? `${acc}/${segment}` : segment;
+      ids.push(encodeNodeId({ type: "folder", provider, origin: file.origin, container: file.container, path: acc }));
+    }
+  }
+  return ids;
+}
+
+// ---- Flows branch (repo > repository folder > batch > flow) ----------------------------------------------
+
+interface FlowLeaf { id: string; name: string; kind: string; repoId: string }
+
+/** A folder in a repo's directory structure: its subfolders, the batches of the flows sitting directly in it
+ * (batch is the flow's declared YAML attribute), and a recursive flow count. */
+interface FlowFolder {
+  folders: Map<string, FlowFolder>;
+  batches: Map<string, FlowLeaf[]>;
+  count: number;
+}
+
+const newFlowFolder = (): FlowFolder => ({ folders: new Map(), batches: new Map(), count: 0 });
+
+/** The directory segments of a flow's repo-relative path (the file name dropped): the repository folder
+ * structure that organizes the flows. */
+function flowFolderSegments(relativePath: string): string[] {
+  const normalized = relativePath.replace(/\\/g, "/");
+  const slash = normalized.lastIndexOf("/");
+  const dir = slash < 0 ? "" : normalized.slice(0, slash);
+  return dir.split("/").filter((segment) => segment.length > 0);
+}
+
+/** Folds every flow into repo > folder tree > batch > flow, with recursive flow counts at each folder. */
+function foldFlows(pipelines: PipelineSummary[]): Map<string, FlowFolder> {
+  const repos = new Map<string, FlowFolder>();
+  for (const flow of pipelines) {
+    let root = repos.get(flow.repoId);
+    if (root === undefined) {
+      root = newFlowFolder();
+      repos.set(flow.repoId, root);
+    }
+    let folder = root;
+    folder.count++;
+    for (const segment of flowFolderSegments(flow.relativePath)) {
+      let child = folder.folders.get(segment);
+      if (child === undefined) {
+        child = newFlowFolder();
+        folder.folders.set(segment, child);
+      }
+      folder = child;
+      folder.count++;
+    }
+    const batch = flow.batch ?? "default";
+    const list = folder.batches.get(batch) ?? [];
+    list.push({ id: flow.id, name: flow.name, kind: flow.kind, repoId: flow.repoId });
+    folder.batches.set(batch, list);
+  }
+  return repos;
+}
+
+/** Renders a repo folder's subfolders (recursively) then its batch groups (each with its flow leaves). */
+function renderFlowFolder(repoId: string, path: string, folder: FlowFolder): ReactNode[] {
+  const folders = [...folder.folders.entries()]
+    .sort(([a], [b]) => byNameCi(a, b))
+    .map(([name, child]) => {
+      const childPath = path ? `${path}/${name}` : name;
+      const id = encodeNodeId({ type: "flowFolder", repoId, path: childPath });
+      return (
+        <TreeItem key={id} itemId={id} label={<NodeLabel icon={<FolderOutlinedIcon fontSize="small" />} text={name} count={child.count} />}>
+          {renderFlowFolder(repoId, childPath, child)}
+        </TreeItem>
+      );
+    });
+  const batches = [...folder.batches.entries()]
+    .sort(([a], [b]) => byNameCi(a, b))
+    .map(([batch, flows]) => {
+      const id = encodeNodeId({ type: "batch", repoId, path, batch });
+      return (
+        <TreeItem key={id} itemId={id} label={<NodeLabel icon={<LayersOutlinedIcon fontSize="small" />} text={batch} count={flows.length} />}>
+          {[...flows].sort((a, b) => byNameCi(a.name, b.name)).map((flow) => (
+            <TreeItem
+              key={flow.id}
+              itemId={encodeNodeId({ type: "flow", repoId: flow.repoId, pipelineId: flow.id })}
+              label={(
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, py: 0.25 }}>
+                  <AccountTreeIcon fontSize="small" sx={{ color: "text.secondary", flexShrink: 0 }} />
+                  <Typography variant="body2" noWrap sx={{ minWidth: 0, flexGrow: 1 }}>{flow.name}</Typography>
+                  <Chip label={flow.kind} size="small" variant="outlined" sx={{ height: 18, fontSize: 11, flexShrink: 0 }} />
+                </Stack>
+              )}
+            />
+          ))}
+        </TreeItem>
+      );
+    });
+  return [...folders, ...batches];
+}
+
+/** Every expandable id under a repo's folder tree (folders + batches), for revealing matches while filtering. */
+function collectFlowIds(repoId: string, path: string, folder: FlowFolder): string[] {
+  const ids: string[] = [];
+  for (const [name, child] of folder.folders) {
+    const childPath = path ? `${path}/${name}` : name;
+    ids.push(encodeNodeId({ type: "flowFolder", repoId, path: childPath }), ...collectFlowIds(repoId, childPath, child));
+  }
+  for (const batch of folder.batches.keys()) {
+    ids.push(encodeNodeId({ type: "batch", repoId, path, batch }));
+  }
+  return ids;
+}
+
+// ---- Cross-branch object search --------------------------------------------------------------------------
+
+/** The flat "Object matches" list under the filter box: server-side name search across every object leaf
+ * (tables, views, AND files, whose name is their path), so a leaf not yet expanded in the tree is findable. */
 function ObjectMatches({ filter, onSelect }: { filter: string; onSelect: (id: string) => void }) {
   const matches = useQuery({
     queryKey: ["catalog-object-matches", filter],
@@ -244,11 +441,7 @@ function ObjectMatches({ filter, onSelect }: { filter: string; onSelect: (id: st
       <Typography variant="overline" color="text.secondary">Object matches</Typography>
       <List dense disablePadding>
         {matches.data.items.map((row) => (
-          <ListItemButton
-            key={row.key}
-            onClick={() => onSelect(encodeNodeId({ type: "object", objectKey: row.key }))}
-            sx={{ borderRadius: 1 }}
-          >
+          <ListItemButton key={row.key} onClick={() => onSelect(encodeNodeId({ type: "object", objectKey: row.key }))} sx={{ borderRadius: 1 }}>
             <ListItemIcon sx={{ minWidth: 30 }}>{metaForKind(row.kind).icon}</ListItemIcon>
             <ListItemText
               primary={row.name}
@@ -273,6 +466,8 @@ function useDebounced(value: string, delayMs: number): string {
   return debounced;
 }
 
+// ---- The tree --------------------------------------------------------------------------------------------
+
 export interface CatalogTreeProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -281,126 +476,132 @@ export interface CatalogTreeProps {
 }
 
 /**
- * The explorer tree over the whole catalog: an Objects branch (server, database, schema, then kind folders
- * with counts, then the paged object leaves) and a Flows branch (repo, then batch, then the paged flow
- * leaves). The skeleton levels arrive in four bounded calls; only leaf pages load lazily on expand. The
- * filter narrows the loaded skeleton client-side and searches every object leaf server-side.
+ * The explorer tree over the catalog, in three perspectives: Databases (the SQL estate: database > schema >
+ * kind > object, merged across connection references, files excluded), Sources (the file estate by canonical
+ * origin: storage account / SFTP server / filesystem > container > folder > file), and Flows (the pipeline
+ * estate: repo > batch > flow). The Databases and Sources skeletons arrive in bounded calls and fold client
+ * side; database object leaves and flow leaves load lazily on expand. The filter narrows every branch client
+ * side and searches every object leaf server side.
  */
 export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTreeProps) {
   const [expanded, setExpanded] = useState<string[]>(initialExpanded);
   const [filter, setFilter] = useState("");
   const debouncedFilter = useDebounced(filter.trim(), 350);
+  const needle = lower(debouncedFilter);
 
-  const schemas = useQuery({ queryKey: ["catalog-schemas"], queryFn: () => lineageApi.schemas() });
   const schemaKinds = useQuery({ queryKey: ["catalog-schema-kinds"], queryFn: () => lineageApi.schemaKinds() });
+  const fileTree = useQuery({ queryKey: ["catalog-file-tree"], queryFn: () => lineageApi.fileTree() });
   const repos = useQuery({ queryKey: ["catalog-repos"], queryFn: () => repoApi.list({ pageSize: 200 }) });
-  const batches = useQuery({ queryKey: ["catalog-batches"], queryFn: () => pipelineApi.batches() });
-
-  const servers = useMemo(() => foldSchemas(schemas.data ?? []), [schemas.data]);
-
-  // Kind folders per schema, keyed by the schema node id so lookup during render is O(1).
-  const kindsBySchema = useMemo(() => {
-    const map = new Map<string, SchemaKindCount[]>();
-    for (const row of schemaKinds.data ?? []) {
-      const id = encodeNodeId({
-        type: "schema", serverRef: row.serverRef, database: row.database, schema: row.schema,
-      });
-      const list = map.get(id);
-      if (list === undefined) {
-        map.set(id, [row]);
-      } else {
-        list.push(row);
-      }
-    }
-    for (const list of map.values()) {
-      list.sort((a, b) => compareKinds(a.kind, b.kind));
-    }
-    return map;
-  }, [schemaKinds.data]);
-
-  const batchesByRepo = useMemo(() => {
-    const map = new Map<string, PipelineBatch[]>();
-    for (const row of batches.data ?? []) {
-      const list = map.get(row.repoId);
-      if (list === undefined) {
-        map.set(row.repoId, [row]);
-      } else {
-        list.push(row);
-      }
-    }
-    return map;
-  }, [batches.data]);
-
-  // Client-side skeleton filter: keep a schema when the server/database/schema label matches; keep a
-  // server/database when any retained descendant remains. Repos/batches filter by their labels the same way.
-  const filteredServers = useMemo(() => {
-    if (debouncedFilter === "") {
-      return servers;
-    }
-    const match = (label: string | null) =>
-      (label ?? UNRESOLVED_LABEL).toLowerCase().includes(debouncedFilter.toLowerCase());
-    return servers
-      .map((server) => {
-        if (match(server.serverRef)) {
-          return server;
+  // Every flow, in as few calls as the page size allows: the folder tree needs the whole set to render, and
+  // flows are bounded by the estate's file count, not its data volume.
+  const pipelines = useQuery({
+    queryKey: ["catalog-all-pipelines"],
+    queryFn: async () => {
+      const items: PipelineSummary[] = [];
+      for (let page = 1; ; page++) {
+        const result = await pipelineApi.list({ page, pageSize: 500 });
+        items.push(...result.items);
+        if (result.items.length === 0 || result.page * result.pageSize >= result.total) {
+          break;
         }
-        const databases = server.databases
-          .map((database) => {
-            if (match(database.database)) {
-              return database;
-            }
-            const kept = database.schemas.filter((schema) => match(schema.schema));
-            return kept.length > 0 ? { ...database, schemas: kept } : null;
-          })
-          .filter((database): database is DatabaseBranch => database !== null);
-        return databases.length > 0 ? { ...server, databases } : null;
+      }
+      return items;
+    },
+  });
+
+  const databases = useMemo(() => foldDatabases(schemaKinds.data ?? []), [schemaKinds.data]);
+
+  const filteredDatabases = useMemo(() => {
+    if (needle === "") {
+      return databases;
+    }
+    const match = (label: string | null) => lower(label ?? UNRESOLVED_LABEL).includes(needle);
+    return databases
+      .map((database) => {
+        if (match(database.database)) {
+          return database;
+        }
+        const kept = database.schemas.filter((schema) => match(schema.schema));
+        return kept.length > 0 ? { ...database, schemas: kept } : null;
       })
-      .filter((server): server is ServerBranch => server !== null);
-  }, [servers, debouncedFilter]);
+      .filter((database): database is DatabaseBranch => database !== null);
+  }, [databases, needle]);
 
-  const filteredRepos = useMemo(() => {
-    const rows = repos.data?.items ?? [];
-    if (debouncedFilter === "") {
-      return rows;
-    }
-    const match = (label: string) => label.toLowerCase().includes(debouncedFilter.toLowerCase());
-    return rows.filter((repo) =>
-      match(repo.name) || (batchesByRepo.get(repo.id) ?? []).some((batch) => match(batch.batch)));
-  }, [repos.data, batchesByRepo, debouncedFilter]);
+  // Filter the flat file list (by origin/container/path/name) BEFORE folding, so a matched leaf keeps its
+  // whole provider/origin/container/folder chain.
+  const fileProviders = useMemo(() => {
+    const files = fileTree.data ?? [];
+    const kept = needle === ""
+      ? files
+      : files.filter((f) =>
+        lower(f.origin).includes(needle) || lower(f.container ?? "").includes(needle)
+        || lower(f.path ?? "").includes(needle) || lower(f.name).includes(needle));
+    return foldFileProviders(kept);
+  }, [fileTree.data, needle]);
 
-  // While filtering, force the retained upper levels open so matches are visible without hand-expanding.
+  const repoList: Repo[] = useMemo(() => (repos.data?.items ?? []).slice().sort((a, b) => byNameCi(a.name, b.name)), [repos.data]);
+
+  // Filter the flat flow list (by repo name, folder path, batch, or flow name) BEFORE folding, so a matched
+  // flow keeps its whole repo/folder/batch chain.
+  const flowsByRepo = useMemo(() => {
+    const all = pipelines.data ?? [];
+    const repoNameById = new Map((repos.data?.items ?? []).map((r) => [r.id, r.name]));
+    const kept = needle === ""
+      ? all
+      : all.filter((p) =>
+        lower(p.name).includes(needle) || lower(p.relativePath).includes(needle)
+        || lower(p.batch ?? "default").includes(needle) || lower(repoNameById.get(p.repoId) ?? "").includes(needle));
+    return foldFlows(kept);
+  }, [pipelines.data, repos.data, needle]);
+
+  // Reveal the selected file leaf (and, while filtering, the matched upper levels) without hand-expanding.
   const effectiveExpanded = useMemo(() => {
-    if (debouncedFilter === "") {
-      return expanded;
-    }
     const open = new Set(expanded);
-    open.add(encodeNodeId({ type: "objectsRoot" }));
-    open.add(encodeNodeId({ type: "flowsRoot" }));
-    for (const server of filteredServers) {
-      open.add(encodeNodeId({ type: "server", serverRef: server.serverRef }));
-      for (const database of server.databases) {
-        open.add(encodeNodeId({ type: "database", serverRef: server.serverRef, database: database.database }));
+    const selected = selectedId === null ? null : decodeNodeId(selectedId);
+    if (selected?.type === "object") {
+      const file = (fileTree.data ?? []).find((f) => f.key === selected.objectKey);
+      if (file) {
+        for (const id of fileAncestorIds(file)) {
+          open.add(id);
+        }
       }
     }
-    for (const repo of filteredRepos) {
-      open.add(encodeNodeId({ type: "repo", repoId: repo.id }));
+    if (needle !== "") {
+      open.add(encodeNodeId({ type: "databasesRoot" }));
+      open.add(encodeNodeId({ type: "sourcesRoot" }));
+      open.add(encodeNodeId({ type: "flowsRoot" }));
+      for (const database of filteredDatabases) {
+        open.add(encodeNodeId({ type: "database", database: database.database }));
+      }
+      for (const provider of fileProviders) {
+        open.add(encodeNodeId({ type: "provider", provider: provider.kind }));
+        if (PROVIDER_META[provider.kind].hasOrigin) {
+          for (const origin of provider.origins) {
+            open.add(encodeNodeId({ type: "origin", provider: provider.kind, origin: origin.origin }));
+          }
+        }
+      }
+      for (const [repoId, root] of flowsByRepo) {
+        open.add(encodeNodeId({ type: "repo", repoId }));
+        for (const id of collectFlowIds(repoId, "", root)) {
+          open.add(id);
+        }
+      }
     }
     return [...open];
-  }, [expanded, debouncedFilter, filteredServers, filteredRepos]);
+  }, [expanded, needle, selectedId, fileTree.data, filteredDatabases, fileProviders, flowsByRepo]);
 
-  const skeletonError = [schemas, schemaKinds, repos, batches].find((query) => query.isError);
+  const skeletonError = [schemaKinds, fileTree, repos, pipelines].find((query) => query.isError);
   if (skeletonError !== undefined) {
     return (
-      <Alert
-        severity="error"
+      <Alert severity="error"
         action={<Button color="inherit" size="small" onClick={() => void skeletonError.refetch()}>Retry</Button>}
-        data-testid="catalog-tree-error"
-      >
+        data-testid="catalog-tree-error">
         {`The catalog tree could not load: ${String(skeletonError.error)}`}
       </Alert>
     );
   }
-  if (schemas.isPending || schemaKinds.isPending || repos.isPending || batches.isPending) {
+  if (schemaKinds.isPending || fileTree.isPending || repos.isPending || pipelines.isPending) {
     return (
       <Stack spacing={1} data-testid="catalog-tree-loading">
         {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} height={28} />)}
@@ -409,6 +610,9 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
   }
 
   const expandedSet = new Set(effectiveExpanded);
+  const totalDbObjects = databases.reduce((sum, database) => sum + database.objectCount, 0);
+  const totalFiles = (fileTree.data ?? []).length;
+  const totalFlows = (pipelines.data ?? []).length;
 
   return (
     <Stack spacing={1.5} data-testid="catalog-tree">
@@ -433,92 +637,45 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
         }}
         aria-label="Catalog tree"
       >
+        {/* Databases */}
         <TreeItem
-          itemId={encodeNodeId({ type: "objectsRoot" })}
-          label={(
-            <NodeLabel
-              icon={<Inventory2OutlinedIcon fontSize="small" />}
-              text="Objects"
-              count={servers.reduce((sum, server) => sum + server.objectCount, 0)}
-            />
-          )}
+          itemId={encodeNodeId({ type: "databasesRoot" })}
+          label={<NodeLabel icon={<StorageOutlinedIcon fontSize="small" />} text="Databases" count={totalDbObjects} />}
         >
-          {filteredServers.length === 0 && (
-            <TreeItem itemId="objects#empty" disabled label={<NodeLabel text="No objects in the catalog yet" />} />
+          {filteredDatabases.length === 0 && (
+            <TreeItem itemId="dbs#empty" disabled label={<NodeLabel text="No database objects in the catalog yet" />} />
           )}
-          {filteredServers.map((server) => {
-            const serverId = encodeNodeId({ type: "server", serverRef: server.serverRef });
+          {filteredDatabases.map((database) => {
+            const databaseId = encodeNodeId({ type: "database", database: database.database });
             return (
-              <TreeItem
-                key={serverId}
-                itemId={serverId}
-                label={(
-                  <NodeLabel
-                    icon={<DnsOutlinedIcon fontSize="small" />}
-                    text={server.serverRef}
-                    count={server.objectCount}
-                  />
-                )}
-              >
-                {server.databases.map((database) => {
-                  const databaseId = encodeNodeId({
-                    type: "database", serverRef: server.serverRef, database: database.database,
-                  });
+              <TreeItem key={databaseId} itemId={databaseId}
+                label={<NodeLabel icon={<StorageOutlinedIcon fontSize="small" />} text={database.database ?? UNRESOLVED_LABEL} count={database.objectCount} />}>
+                {database.schemas.map((schema) => {
+                  const schemaId = encodeNodeId({ type: "schema", database: database.database, schema: schema.schema });
                   return (
-                    <TreeItem
-                      key={databaseId}
-                      itemId={databaseId}
-                      label={(
-                        <NodeLabel
-                          icon={<StorageOutlinedIcon fontSize="small" />}
-                          text={database.database ?? UNRESOLVED_LABEL}
-                          count={database.objectCount}
-                        />
-                      )}
-                    >
-                      {database.schemas.map((schema) => {
-                        const schemaNode: CatalogNode = {
-                          type: "schema",
-                          serverRef: server.serverRef,
-                          database: database.database,
-                          schema: schema.schema,
-                        };
-                        const schemaId = encodeNodeId(schemaNode);
-                        const kinds = kindsBySchema.get(schemaId) ?? [];
+                    <TreeItem key={schemaId} itemId={schemaId}
+                      label={<NodeLabel icon={<SchemaOutlinedIcon fontSize="small" />} text={schema.schema ?? UNRESOLVED_LABEL} count={schema.objectCount} />}>
+                      {schema.kinds.map((kindRow) => {
+                        const kindNode: CatalogNode = { type: "kind", database: database.database, schema: schema.schema, kind: kindRow.kind };
+                        const kindId = encodeNodeId(kindNode);
+                        const meta = metaForKind(kindRow.kind);
                         return (
-                          <TreeItem
-                            key={schemaId}
-                            itemId={schemaId}
-                            label={(
-                              <NodeLabel
-                                icon={<SchemaOutlinedIcon fontSize="small" />}
-                                text={schema.schema ?? UNRESOLVED_LABEL}
-                                count={schema.objectCount}
-                              />
-                            )}
-                          >
-                            {kinds.map((kindRow) => {
-                              const kindNode: CatalogNode = {
-                                type: "kind",
-                                serverRef: server.serverRef,
-                                database: database.database,
-                                schema: schema.schema,
-                                kind: kindRow.kind,
-                              };
-                              const kindId = encodeNodeId(kindNode);
-                              const meta = metaForKind(kindRow.kind);
-                              return (
-                                <TreeItem
-                                  key={kindId}
-                                  itemId={kindId}
-                                  label={<NodeLabel icon={meta.icon} text={meta.plural} count={kindRow.objectCount} />}
-                                >
-                                  {expandedSet.has(kindId)
-                                    ? <ObjectLeaves node={kindNode} />
-                                    : <TreeItem itemId={`${kindId}#placeholder`} disabled label={<NodeLabel text="…" />} />}
-                                </TreeItem>
-                              );
-                            })}
+                          <TreeItem key={kindId} itemId={kindId} label={<NodeLabel icon={meta.icon} text={meta.plural} count={kindRow.objectCount} />}>
+                            {expandedSet.has(kindId)
+                              ? (
+                                <PagedObjectLeaves
+                                  parentId={kindId}
+                                  queryKey={["catalog-objects", database.database, schema.schema, kindRow.kind]}
+                                  fetchPage={(page) => lineageApi.objects({
+                                    database: database.database ?? undefined,
+                                    schema: schema.schema ?? undefined,
+                                    kind: kindRow.kind,
+                                    page,
+                                    pageSize: LEAF_PAGE_SIZE,
+                                  })}
+                                />
+                              )
+                              : <TreeItem itemId={`${kindId}#placeholder`} disabled label={<NodeLabel text="…" />} />}
                           </TreeItem>
                         );
                       })}
@@ -530,57 +687,35 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
           })}
         </TreeItem>
 
+        {/* Sources (file origins, grouped by provider: Azure / Amazon S3 / Google Cloud / SFTP / ... / Local) */}
+        <TreeItem
+          itemId={encodeNodeId({ type: "sourcesRoot" })}
+          label={<NodeLabel icon={<CloudOutlinedIcon fontSize="small" />} text="Sources" count={totalFiles} />}
+        >
+          {fileProviders.length === 0 && (
+            <TreeItem itemId="sources#empty" disabled label={<NodeLabel text="No file sources in the catalog yet" />} />
+          )}
+          {fileProviders.map((group) => <ProviderNode key={encodeNodeId({ type: "provider", provider: group.kind })} group={group} />)}
+        </TreeItem>
+
+        {/* Flows (repo > repository folder > batch > flow) */}
         <TreeItem
           itemId={encodeNodeId({ type: "flowsRoot" })}
-          label={(
-            <NodeLabel
-              icon={<AccountTreeIcon fontSize="small" />}
-              text="Flows"
-              count={(batches.data ?? []).reduce((sum, batch) => sum + batch.flowCount, 0)}
-            />
-          )}
+          label={<NodeLabel icon={<AccountTreeIcon fontSize="small" />} text="Flows" count={totalFlows} />}
         >
-          {filteredRepos.length === 0 && (
-            <TreeItem itemId="flows#empty" disabled label={<NodeLabel text="No repos in the catalog yet" />} />
+          {flowsByRepo.size === 0 && (
+            <TreeItem itemId="flows#empty" disabled label={<NodeLabel text="No flows in the catalog yet" />} />
           )}
-          {filteredRepos.map((repo) => {
+          {repoList.map((repo) => {
+            const root = flowsByRepo.get(repo.id);
+            if (root === undefined) {
+              return null;
+            }
             const repoId = encodeNodeId({ type: "repo", repoId: repo.id });
-            const repoBatches = batchesByRepo.get(repo.id) ?? [];
             return (
-              <TreeItem
-                key={repoId}
-                itemId={repoId}
-                label={(
-                  <NodeLabel
-                    icon={<FolderOutlinedIcon fontSize="small" />}
-                    text={repo.name}
-                    count={repoBatches.reduce((sum, batch) => sum + batch.flowCount, 0)}
-                  />
-                )}
-              >
-                {repoBatches.length === 0 && (
-                  <TreeItem itemId={`${repoId}#empty`} disabled label={<NodeLabel text="No flows" />} />
-                )}
-                {repoBatches.map((batch) => {
-                  const batchId = encodeNodeId({ type: "batch", repoId: repo.id, batch: batch.batch });
-                  return (
-                    <TreeItem
-                      key={batchId}
-                      itemId={batchId}
-                      label={(
-                        <NodeLabel
-                          icon={<FolderOutlinedIcon fontSize="small" />}
-                          text={batch.batch}
-                          count={batch.flowCount}
-                        />
-                      )}
-                    >
-                      {expandedSet.has(batchId)
-                        ? <FlowLeaves repoId={repo.id} batch={batch.batch} />
-                        : <TreeItem itemId={`${batchId}#placeholder`} disabled label={<NodeLabel text="…" />} />}
-                    </TreeItem>
-                  );
-                })}
+              <TreeItem key={repoId} itemId={repoId}
+                label={<NodeLabel icon={<SourceOutlinedIcon fontSize="small" />} text={repo.name} count={root.count} />}>
+                {renderFlowFolder(repo.id, "", root)}
               </TreeItem>
             );
           })}

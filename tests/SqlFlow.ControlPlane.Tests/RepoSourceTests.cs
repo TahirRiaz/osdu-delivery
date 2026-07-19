@@ -109,6 +109,55 @@ public sealed class RepoSourceTests
         }
     }
 
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task TriggerNow_RequestsForcedLineage_AndASuccessfulSyncClearsIt()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var name = "src_force_" + suffix;
+        var id = FlowIdentity.FromName($"reposource/{name}");
+        var now = DateTime.UtcNow;
+
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await RepoSourceStore.UpsertAsync(db, name, "https://example/repo.git", "main", enabled: true, syncIntervalSeconds: 3600, now);
+            }
+
+            // Sync-now marks the source due immediately AND requests a full lineage recompute on that sync.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.Equal(RepoSourceMutation.Applied, await RepoSourceStore.TriggerNowAsync(db, id, now));
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var source = await db.RepoSources.AsNoTracking().SingleAsync(s => s.Id == id);
+                Assert.True(source.ForceLineageOnNextSync);
+            }
+
+            // A successful sync honors and clears the one-shot request, so the next periodic sync is cheap again.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await RepoSourceStore.RecordSuccessAsync(db, id, "abc123", now.AddSeconds(1));
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var source = await db.RepoSources.AsNoTracking().SingleAsync(s => s.Id == id);
+                Assert.False(source.ForceLineageOnNextSync);
+            }
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.RepoSources.Where(s => s.Id == id).ExecuteDeleteAsync();
+        }
+    }
+
     private static string SeedGitRepoWithFlow(string path, string flowName)
     {
         Repository.Init(path);

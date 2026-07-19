@@ -238,6 +238,18 @@ public static class LineageGraphBuilder
             var node = nodes[group.Key];
             var artifacts = group.Select(x => x.Artifact).ToList();
 
+            // An artifact from a created-object DDL knows the object's kind (a view/procedure/function the run
+            // created); adopt it when no tier has classified the node yet, so an offline object is not left
+            // Unknown when its own generating script names what it is.
+            if (node.Kind == LineageNodeKind.Unknown)
+            {
+                var kind = artifacts.Select(a => a.Kind).FirstOrDefault(k => k != LineageNodeKind.Unknown, LineageNodeKind.Unknown);
+                if (kind != LineageNodeKind.Unknown)
+                {
+                    node = node with { Kind = kind };
+                }
+            }
+
             var bestScript = artifacts.Where(a => !string.IsNullOrWhiteSpace(a.Script))
                 .OrderByDescending(a => a.Tier).FirstOrDefault();
             if (bestScript is not null && node.Script is null)
@@ -328,6 +340,114 @@ public static class LineageGraphBuilder
         // ---- The DeltaForge schedule computation. ------------------------------------------------------
         var plan = ComputeRunOrder(flows, effectiveRelations, warnings, out var flowDependencies, out var cycles);
 
+        // ---- The interpreted data model: keys first (they orient the joins), then the relationships. -----
+        string ModelKeyOf(ModelObjectRef reference)
+        {
+            var resolved = ResolveIdentity(reference.ServerRef, reference.Database, reference.Schema, reference.Name);
+            return NodeKey.For(resolved.ServerRef, resolved.Database, resolved.Schema, resolved.Name);
+        }
+
+        // One key per object: the best hint wins, ranked by how explicit the interpretation is (a PRIMARY KEY
+        // clause beats the YAML declaration beats a MERGE match key), then by tier for a stable pick.
+        var keyByObject = new Dictionary<string, CollectedKeyHint>(StringComparer.Ordinal);
+        foreach (var hint in collected.KeyHints.Where(h => h.Columns.Count > 0))
+        {
+            var key = ModelKeyOf(hint.Table);
+            if (!keyByObject.TryGetValue(key, out var current)
+                || hint.Origin < current.Origin
+                || (hint.Origin == current.Origin && hint.Tier > current.Tier))
+            {
+                keyByObject[key] = hint;
+            }
+        }
+
+        foreach (var (key, hint) in keyByObject)
+        {
+            if (nodes.TryGetValue(key, out var node))
+            {
+                nodes[key] = node with { KeyColumns = hint.Columns, KeyOrigin = hint.Origin };
+            }
+        }
+
+        bool ColumnsMatchKey(string objectKey, IReadOnlyList<string> columns)
+            => keyByObject.TryGetValue(objectKey, out var hint)
+               && hint.Columns.Count == columns.Count
+               && hint.Columns.All(c => columns.Contains(c, StringComparer.OrdinalIgnoreCase));
+
+        // Explicit constraints and observed joins aggregate into one relationship set. A join's direction is
+        // oriented by key knowledge (the side whose join columns are its own key is the referenced side);
+        // without it, the ordinal-smaller key goes first so the identity is deterministic. Occurrences count
+        // distinct scripts, so the estate's canonical join path scores highest.
+        var relationships = new Dictionary<string, (LineageModelRelationship Relationship, HashSet<string> Scripts)>(StringComparer.Ordinal);
+
+        void Accumulate(
+            string? name, string fromKey, IReadOnlyList<string> fromColumns, string toKey,
+            IReadOnlyList<string> toColumns, LineageModelOrigin origin, LineageTier tier, string scriptId)
+        {
+            if (string.Equals(fromKey, toKey, StringComparison.Ordinal) || fromColumns.Count == 0 || toColumns.Count == 0)
+            {
+                return;
+            }
+
+            var identity = string.Join("|",
+                origin == LineageModelOrigin.Constraint ? "constraint" : "join",
+                fromKey, string.Join(",", fromColumns.Select(c => c.ToLowerInvariant())),
+                toKey, string.Join(",", toColumns.Select(c => c.ToLowerInvariant())));
+
+            if (relationships.TryGetValue(identity, out var existing))
+            {
+                existing.Scripts.Add(scriptId);
+                if (tier > existing.Relationship.Tier)
+                {
+                    relationships[identity] = (existing.Relationship with { Tier = tier, Name = existing.Relationship.Name ?? name }, existing.Scripts);
+                }
+
+                return;
+            }
+
+            relationships[identity] = (new LineageModelRelationship
+            {
+                Name = name,
+                FromObjectKey = fromKey,
+                FromColumns = fromColumns,
+                ToObjectKey = toKey,
+                ToColumns = toColumns,
+                Origin = origin,
+                Tier = tier,
+                Occurrences = 1,
+            }, new HashSet<string>(StringComparer.Ordinal) { scriptId });
+        }
+
+        foreach (var constraint in collected.ModelConstraints)
+        {
+            Accumulate(
+                constraint.Name, ModelKeyOf(constraint.From), constraint.FromColumns, ModelKeyOf(constraint.To),
+                constraint.ToColumns, LineageModelOrigin.Constraint, constraint.Tier, constraint.Name ?? "constraint");
+        }
+
+        foreach (var join in collected.Joins)
+        {
+            var leftKey = ModelKeyOf(join.Left);
+            var rightKey = ModelKeyOf(join.Right);
+            var oriented =
+                ColumnsMatchKey(rightKey, join.RightColumns) ? (From: (leftKey, join.LeftColumns), To: (rightKey, join.RightColumns))
+                : ColumnsMatchKey(leftKey, join.LeftColumns) ? (From: (rightKey, join.RightColumns), To: (leftKey, join.LeftColumns))
+                : string.CompareOrdinal(leftKey, rightKey) <= 0
+                    ? (From: (leftKey, join.LeftColumns), To: (rightKey, join.RightColumns))
+                    : (From: (rightKey, join.RightColumns), To: (leftKey, join.LeftColumns));
+
+            Accumulate(
+                name: null, oriented.From.Item1, oriented.From.Item2, oriented.To.Item1, oriented.To.Item2,
+                LineageModelOrigin.Join, join.Tier, join.ScriptId);
+        }
+
+        var modelRelationships = relationships.Values
+            .Select(entry => entry.Relationship with { Occurrences = entry.Scripts.Count })
+            .OrderBy(r => r.FromObjectKey, StringComparer.Ordinal)
+            .ThenBy(r => r.ToObjectKey, StringComparer.Ordinal)
+            .ThenBy(r => r.Origin)
+            .ToList();
+
         return new LineageReport
         {
             GeneratedAtUtc = generatedAtUtc,
@@ -335,6 +455,7 @@ public static class LineageGraphBuilder
             TiersUsed = tiersUsed,
             Flows = flows.Select(f => f.Node).ToList(),
             Objects = nodes.Values.OrderBy(n => n.Key, StringComparer.Ordinal).ToList(),
+            Relationships = modelRelationships,
             Edges = edges.Values
                 .OrderBy(e => e.Flow ?? string.Empty, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(e => e.ViaModule ?? string.Empty, StringComparer.Ordinal)
@@ -724,6 +845,12 @@ public static class LineageGraphBuilder
         remapped.Facts.AddRange(collected.Facts.Select(f => f with { ServerRef = server(f.ServerRef) }));
         remapped.ObjectArtifacts.AddRange(collected.ObjectArtifacts.Select(a => a with { ServerRef = server(a.ServerRef) }));
         remapped.CatalogObjects.AddRange(collected.CatalogObjects.Select(o => o with { ServerRef = server(o.ServerRef) }));
+
+        ModelObjectRef Remap(ModelObjectRef reference) => reference with { ServerRef = server(reference.ServerRef) };
+        remapped.Joins.AddRange(collected.Joins.Select(j => j with { Left = Remap(j.Left), Right = Remap(j.Right) }));
+        remapped.KeyHints.AddRange(collected.KeyHints.Select(k => k with { Table = Remap(k.Table) }));
+        remapped.ModelConstraints.AddRange(collected.ModelConstraints.Select(c => c with { From = Remap(c.From), To = Remap(c.To) }));
+
         remapped.Synonyms.AddRange(collected.Synonyms.Select(s => s with { ServerRef = server(s.ServerRef) }));
         remapped.Warnings.AddRange(collected.Warnings);
         foreach (var (key, value) in collected.Servers)

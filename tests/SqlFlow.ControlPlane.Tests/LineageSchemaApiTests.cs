@@ -37,10 +37,18 @@ public sealed class LineageSchemaApiTests
         {
             await using (var db = CatalogDatabase.Create(cs))
             {
-                db.Objects.Add(SeedObject(ordersKey, serverRef, "DW", "dbo", "Orders", "Table", now,
-                    script: "CREATE TABLE [DW].[dbo].[Orders] ([Id] int NOT NULL, [Amount] decimal(18,2) NULL);"));
+                var orders = SeedObject(ordersKey, serverRef, "DW", "dbo", "Orders", "Table", now,
+                    script: "CREATE TABLE [DW].[dbo].[Orders] ([Id] int NOT NULL, [Amount] decimal(18,2) NULL);");
+                orders.KeyColumns = "Id";
+                orders.KeyOrigin = "Declared";
+                db.Objects.Add(orders);
                 db.Objects.Add(SeedObject($"{serverRef}|dw|dbo|vorders", serverRef, "DW", "dbo", "vOrders", "View", now));
                 db.Objects.Add(SeedObject($"{serverRef}|dw|stg|orders", serverRef, "DW", "stg", "Orders", "Table", now));
+
+                // The same interpreted relationship observed from two repos: the dossier must fold them into
+                // one row keeping the highest occurrence count, oriented from the staging table onto Orders.
+                db.ObjectRelationships.Add(SeedRelationship(repoId, $"{serverRef}|dw|stg|orders", ordersKey, 3));
+                db.ObjectRelationships.Add(SeedRelationship(FlowIdentity.FromName("other_" + suffix), $"{serverRef}|dw|stg|orders", ordersKey, 2));
 
                 db.ObjectColumns.Add(new CatalogObjectColumn { ObjectKey = ordersKey, Ordinal = 1, Name = "Id", DataType = "int", Nullable = false, Tier = "Observed" });
                 db.ObjectColumns.Add(new CatalogObjectColumn { ObjectKey = ordersKey, Ordinal = 2, Name = "Amount", DataType = "decimal(18,2)", Nullable = true, Tier = "Observed" });
@@ -102,6 +110,20 @@ public sealed class LineageSchemaApiTests
             Assert.Equal(2, dossier.Columns.Count);
             Assert.Equal(["Amount", "Id"], dossier.Columns.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal));
 
+            // The interpreted data model rides the dossier: the object's key, and the relationship rows the
+            // two repos observed folded into one incoming reference (the staging table joins onto Orders).
+            Assert.Equal("Id", dossier.Object.KeyColumns);
+            Assert.Equal("Declared", dossier.Object.KeyOrigin);
+            Assert.Empty(dossier.References);
+            var incoming = Assert.Single(dossier.ReferencedBy);
+            Assert.Equal($"{serverRef}|dw|stg|orders", incoming.OtherObjectKey);
+            Assert.Equal("Orders", incoming.OtherName);
+            Assert.Equal("stg", incoming.OtherSchema);
+            Assert.Equal("Id", incoming.OwnColumns);
+            Assert.Equal("OrderId", incoming.OtherColumns);
+            Assert.Equal("Join", incoming.Origin);
+            Assert.Equal(3, incoming.Occurrences);
+
             // The edge list joins the global registry for each object's proper-cased database/schema; an edge
             // whose object is not registered still returns, with nulls.
             var edges = await GetJsonAsync<PagedResult<EdgeDto>>(
@@ -118,6 +140,7 @@ public sealed class LineageSchemaApiTests
         {
             await using var db = CatalogDatabase.Create(cs);
             await db.ObjectColumns.Where(c => c.ObjectKey.StartsWith(serverRef)).ExecuteDeleteAsync();
+            await db.ObjectRelationships.Where(r => r.ToObjectKey.StartsWith(serverRef)).ExecuteDeleteAsync();
             await db.Objects.Where(o => o.ServerRef == serverRef).ExecuteDeleteAsync();
             await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
             await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
@@ -139,6 +162,19 @@ public sealed class LineageSchemaApiTests
             ScriptUpdatedUtc = script is null ? null : now,
             FirstSeenUtc = now,
             LastSeenUtc = now,
+        };
+
+    private static CatalogObjectRelationship SeedRelationship(Guid repoId, string fromKey, string toKey, int occurrences)
+        => new()
+        {
+            RepoId = repoId,
+            FromObjectKey = fromKey,
+            FromColumns = "OrderId",
+            ToObjectKey = toKey,
+            ToColumns = "Id",
+            Origin = "Join",
+            Tier = "Derived",
+            Occurrences = occurrences,
         };
 
     private static async Task<string> IssueReadTokenAsync(HttpClient client)

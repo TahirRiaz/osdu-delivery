@@ -107,6 +107,14 @@ public sealed record LineageObjectNode
     /// to keep a live (derived) dictionary from being overwritten by an offline (observed) one.</summary>
     public LineageTier? ColumnsTier { get; init; }
 
+    /// <summary>The object's interpreted key columns (its primary/business key), in key order: parsed from an
+    /// explicit PRIMARY KEY clause, declared by the loading flow's YAML key columns, or inferred from the
+    /// MERGE that loads it. Empty when nothing in the codebase names a key.</summary>
+    public IReadOnlyList<string> KeyColumns { get; init; } = [];
+
+    /// <summary>How <see cref="KeyColumns"/> was interpreted, or null when no key is known.</summary>
+    public LineageModelOrigin? KeyOrigin { get; init; }
+
     /// <summary>Node-scoped findings: an encrypted module whose definition is unreadable, an ambiguous
     /// database resolution, a linked-server reference that could not be expanded.</summary>
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -124,6 +132,55 @@ public sealed record LineageColumn
     public string? DataType { get; init; }
 
     public bool Nullable { get; init; }
+}
+
+/// <summary>Where an object's inferred key (or a model relationship) came from. Warehouses rarely declare
+/// physical constraints, so the data model is INTERPRETED from the codebase; the origin says how strong the
+/// interpretation is.</summary>
+public enum LineageModelOrigin
+{
+    /// <summary>An explicit PRIMARY KEY / FOREIGN KEY clause parsed from DDL in the codebase.</summary>
+    Constraint = 0,
+
+    /// <summary>Declared in a flow document (the YAML key columns of the target table).</summary>
+    Declared = 1,
+
+    /// <summary>The ON clause of a MERGE loading the table (its upsert match key).</summary>
+    Merge = 2,
+
+    /// <summary>An equality join predicate observed in the codebase's SQL (JOIN ... ON / WHERE equi-join).</summary>
+    Join = 3,
+}
+
+/// <summary>One interpreted data-model relationship between two catalog objects, distinct from the flow and
+/// module lineage in <see cref="LineageEdge"/>: how the tables JOIN, not which flow moves data. Both ends are
+/// node keys (<see cref="LineageObjectNode.Key"/>); the column lists pair positionally (FromColumns[i] joins
+/// ToColumns[i]). A <see cref="LineageModelOrigin.Constraint"/> relationship was parsed from an explicit
+/// FOREIGN KEY clause; a <see cref="LineageModelOrigin.Join"/> relationship was inferred from the equality
+/// predicates the codebase actually joins on, with <see cref="Occurrences"/> counting how many distinct
+/// scripts exhibited it (the canonical join path scores highest).</summary>
+public sealed record LineageModelRelationship
+{
+    /// <summary>The constraint name, when parsed from an explicit FOREIGN KEY clause; null for an inferred join.</summary>
+    public string? Name { get; init; }
+
+    /// <summary>The referencing side's node key (for a join without key knowledge, simply the first side seen).</summary>
+    public required string FromObjectKey { get; init; }
+
+    /// <summary>The referencing columns, in predicate/constraint order.</summary>
+    public required IReadOnlyList<string> FromColumns { get; init; }
+
+    /// <summary>The referenced side's node key.</summary>
+    public required string ToObjectKey { get; init; }
+
+    public required IReadOnlyList<string> ToColumns { get; init; }
+
+    public required LineageModelOrigin Origin { get; init; }
+
+    public required LineageTier Tier { get; init; }
+
+    /// <summary>How many distinct scripts exhibited this relationship (1 for an explicit constraint).</summary>
+    public required int Occurrences { get; init; }
 }
 
 /// <summary>One attributed lineage fact: a flow or module relating to an object.</summary>
@@ -213,9 +270,10 @@ public sealed record LineageDuplicateFlowName
 public sealed record LineageReport
 {
     /// <summary>The current lineage.json schema version written by this build. Version 2 adds the object
-    /// <see cref="LineageObjectNode.Script"/> and its offline columns: a v1 reader sees the same shape plus
-    /// new fields it can ignore.</summary>
-    public const int CurrentSchemaVersion = 2;
+    /// <see cref="LineageObjectNode.Script"/> and its offline columns; version 3 adds the interpreted data
+    /// model (the per-object <see cref="LineageObjectNode.KeyColumns"/> and the <see cref="Relationships"/>
+    /// list). Each version is additive: an older reader sees the same shape plus new fields it can ignore.</summary>
+    public const int CurrentSchemaVersion = 3;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
@@ -232,6 +290,12 @@ public sealed record LineageReport
     public required IReadOnlyList<LineageObjectNode> Objects { get; init; }
 
     public required IReadOnlyList<LineageEdge> Edges { get; init; }
+
+    /// <summary>The interpreted data model: every PK/FK-style relationship the codebase's SQL exhibits
+    /// (explicit constraint clauses plus inferred join predicates), both ends resolved to node keys and
+    /// aggregated with occurrence counts. Not required in the envelope so a version-2 document (which
+    /// predates the field) still deserializes.</summary>
+    public IReadOnlyList<LineageModelRelationship> Relationships { get; init; } = [];
 
     public required IReadOnlyList<LineageFlowDependency> FlowDependencies { get; init; }
 

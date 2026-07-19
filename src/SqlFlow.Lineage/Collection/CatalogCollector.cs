@@ -407,7 +407,7 @@ public sealed class CatalogCollector
         // walk state per call, no shared mutable state), so the readable bodies parse in parallel, bounded by
         // the processor count. Each module's warnings and facts land in its own slot; the sequential merge
         // below runs in the original catalog order, so the output is byte-for-byte what the serial walk built.
-        var extracted = new (List<string> Warnings, List<LineageFact> Facts)[modules.Count];
+        var extracted = new (List<string> Warnings, List<LineageFact> Facts, Extraction.ScriptDependencies Deps)[modules.Count];
         Parallel.For(
             0,
             modules.Count,
@@ -435,7 +435,7 @@ public sealed class CatalogCollector
                     }
                 }
 
-                extracted[i] = (deps.Warnings, facts);
+                extracted[i] = (deps.Warnings, facts, deps);
             });
 
         for (var i = 0; i < modules.Count; i++)
@@ -470,6 +470,12 @@ public sealed class CatalogCollector
 
             result.Warnings.AddRange(extracted[i].Warnings);
             result.Facts.AddRange(extracted[i].Facts);
+
+            // The module body is real, curated codebase SQL: its joins and constraint clauses are
+            // data-model observations of the derived tier, attributed to the module as the script unit.
+            ScriptFactBuilder.AppendModelObservations(
+                result, extracted[i].Deps, serverRef, LineageTier.Derived,
+                NodeKey.For(serverRef, database, schema, name));
         }
     }
 

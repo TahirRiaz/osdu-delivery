@@ -792,21 +792,49 @@ impl SqlFlowMcp {
 
     #[tool(
         description = "Describe one object in a single payload for text-to-query: its identity, columns \
-            (name/type/nullability), generating script and module body, and the lineage edges that reference \
-            it. The primary tool for answering questions about, or authoring SQL against, a specific table or \
-            view."
+            (name/type/nullability), interpreted key (keyColumns/keyOrigin, read from the codebase since \
+            warehouses rarely declare physical keys), generating script and module body, the lineage edges \
+            that reference it, and the interpreted data-model relationships (references/referencedBy: how \
+            this table JOINS other tables, inferred from the codebase's own join predicates and constraint \
+            clauses, with occurrence counts ranking the canonical join path). The primary tool for answering \
+            questions about, or authoring SQL against, a specific table or view."
     )]
     async fn describe_object(&self, Parameters(i): Parameters<KeyInput>) -> String {
         self.get("/api/v1/lineage/objects/dossier", &[("key", i.key)]).await
     }
 
     #[tool(
+        description = "List the file sources of the catalog: every file endpoint decomposed to its canonical \
+            parent, so files group by the system they live in exactly as tables group by their database. Each \
+            entry has an originKind, which is also the PROVIDER to group under (AzureStorage / AmazonS3 / \
+            GoogleCloud / Sftp / NetworkShare / Local / Other), the origin (the storage account, S3/GCS \
+            bucket, or SFTP host:port; the constant filesystem for Local), the container (Azure container or \
+            UNC share; null otherwise), the folder path, and the leaf name, plus the object key. Fold them \
+            into provider > origin > container > folder > file, and use describe_object on a key for which \
+            flows read or write that file."
+    )]
+    async fn list_file_sources(&self, Parameters(_): Parameters<EmptyInput>) -> String {
+        self.get("/api/v1/lineage/file-tree", &[]).await
+    }
+
+    #[tool(
+        description = "A file source's provenance: given a file object key, the pipelines that PRODUCE it \
+            (where it comes from) and the pipelines that CONSUME it, each with the tables the data LANDS in \
+            (where it goes). Answers 'what pipelines use this source and where does the data land' in one call, \
+            the source-to-target chain for a file."
+    )]
+    async fn file_provenance(&self, Parameters(i): Parameters<KeyInput>) -> String {
+        self.get("/api/v1/lineage/file-flows", &[("key", i.key)]).await
+    }
+
+    #[tool(
         description = "Browse the catalog as a folder tree (the semantic layer): with no arguments it lists \
             every (server, database, schema) grouping with object counts; add serverRef and/or database to \
             narrow; add schema to get that schema's object-kind groups (Tables/Views/Procedures/...) with \
-            counts; add kind to list the objects in that group, paged. Use describe_object on a returned key \
-            for a node's full details (columns, code, relationships), and list_flow_batches / list_pipelines \
-            for the flow branch of the tree."
+            counts; add kind to list the objects in that group, paged. This is the database branch; use \
+            list_file_sources for the file branch (storage accounts / SFTP servers) and list_flow_batches / \
+            list_pipelines for the flow branch. Use describe_object on any returned key for a node's full \
+            details (columns, key, code, relationships)."
     )]
     async fn catalog_tree(&self, Parameters(i): Parameters<CatalogTreeInput>) -> String {
         // The argument ladder mirrors the tree's levels; a deeper argument without its parents would silently

@@ -63,9 +63,52 @@ public sealed record CreatedObject
     /// <summary>The verbatim CREATE statement text, reconstructed from the token stream.</summary>
     public required string Ddl { get; init; }
 
-    /// <summary>The column definitions of a plain CREATE TABLE (name, rendered type, nullability); empty for a
-    /// view, a CTAS/SELECT INTO, or when the definition carried no columns.</summary>
+    /// <summary>The object's columns: a plain CREATE TABLE's column definitions (name, rendered type,
+    /// nullability), or the interpreted projection columns of a view, an inline table-valued function, or a
+    /// CTAS/SELECT INTO (the alias and cast target of each SELECT item). Empty when the definition carried no
+    /// enumerable columns (for example a <c>SELECT *</c> view, whose columns need the source schema).</summary>
     public IReadOnlyList<LineageColumn> Columns { get; init; } = [];
+}
+
+/// <summary>One equality-join observation: two tables joined on positionally-paired columns
+/// (Left.LeftColumns[i] = Right.RightColumns[i]), collected from JOIN ... ON and WHERE equi-join predicates.
+/// This is the raw material of the interpreted data model: warehouses rarely declare physical constraints,
+/// so how the codebase actually joins IS the relationship knowledge.</summary>
+public sealed record ObservedJoin
+{
+    public required TableName Left { get; init; }
+
+    public required IReadOnlyList<string> LeftColumns { get; init; }
+
+    public required TableName Right { get; init; }
+
+    public required IReadOnlyList<string> RightColumns { get; init; }
+}
+
+/// <summary>One key observation for a table: an explicit PRIMARY KEY definition parsed from DDL, or the ON
+/// clause of a MERGE loading the table (its upsert match key).</summary>
+public sealed record ObservedKey
+{
+    public required TableName Table { get; init; }
+
+    public required IReadOnlyList<string> Columns { get; init; }
+
+    public required LineageModelOrigin Origin { get; init; }
+}
+
+/// <summary>One explicit FOREIGN KEY constraint parsed from DDL (column-level or table-level).</summary>
+public sealed record ObservedForeignKey
+{
+    /// <summary>The constraint name, when the DDL named it.</summary>
+    public string? Name { get; init; }
+
+    public required TableName From { get; init; }
+
+    public required IReadOnlyList<string> FromColumns { get; init; }
+
+    public required TableName To { get; init; }
+
+    public required IReadOnlyList<string> ToColumns { get; init; }
 }
 
 /// <summary>
@@ -114,6 +157,16 @@ public sealed class ScriptDependencies
     /// its columns: the catalog attaches these to the object so its script and column dictionary are known
     /// offline.</summary>
     public Dictionary<string, CreatedObject> CreatedObjects { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The equality joins this script exhibits (real base tables on both sides, deduplicated by the
+    /// pair identity), the interpreted data model's raw observations.</summary>
+    public List<ObservedJoin> Joins { get; } = [];
+
+    /// <summary>The key observations this script yields: explicit PRIMARY KEY definitions and MERGE match keys.</summary>
+    public List<ObservedKey> Keys { get; } = [];
+
+    /// <summary>The explicit FOREIGN KEY constraints this script declares.</summary>
+    public List<ObservedForeignKey> ForeignKeys { get; } = [];
 
     public List<string> Warnings { get; } = [];
 

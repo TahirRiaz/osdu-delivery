@@ -385,9 +385,55 @@ public class CatalogObject
     /// object takes part in no data movement (a procedure a flow requires, or lineage not computed yet).</summary>
     public int? Level { get; set; }
 
+    /// <summary>The object's interpreted key columns (its primary/business key), comma-joined in key order.
+    /// Interpreted from the CODEBASE, not the live system catalog (warehouses rarely declare physical keys):
+    /// an explicit PRIMARY KEY clause in parsed DDL, the loading flow's YAML key columns, or the ON clause of
+    /// the MERGE that loads it. Null when nothing in the codebase names a key.</summary>
+    public string? KeyColumns { get; set; }
+
+    /// <summary>How <see cref="KeyColumns"/> was interpreted: Constraint / Declared / Merge. Null with no key.</summary>
+    public string? KeyOrigin { get; set; }
+
     public DateTime FirstSeenUtc { get; set; }
 
     public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// One interpreted data-model relationship between two catalog objects: how the tables JOIN, distinct from
+/// the flow/module lineage in <see cref="CatalogLineageEdge"/>. Parsed from the codebase's SQL (explicit
+/// FOREIGN KEY clauses, plus the equality predicates the code actually joins on), both ends resolved to
+/// global object keys, column lists comma-joined and positionally paired. Repo-scoped and fully replaced for
+/// a repo on each sync, like the lineage edges; a dossier deduplicates across repos at read time.
+/// </summary>
+public class CatalogObjectRelationship
+{
+    public long Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The constraint name, when parsed from an explicit FOREIGN KEY clause; null for an inferred join.</summary>
+    public string? Name { get; set; }
+
+    /// <summary>The referencing side's global object key.</summary>
+    public string FromObjectKey { get; set; } = string.Empty;
+
+    /// <summary>The referencing columns, comma-joined in predicate/constraint order.</summary>
+    public string FromColumns { get; set; } = string.Empty;
+
+    /// <summary>The referenced side's global object key.</summary>
+    public string ToObjectKey { get; set; } = string.Empty;
+
+    public string ToColumns { get; set; } = string.Empty;
+
+    /// <summary>Constraint / Join: how the relationship was interpreted.</summary>
+    public string Origin { get; set; } = string.Empty;
+
+    /// <summary>Declared / Observed / Derived: the provenance of the strongest observation.</summary>
+    public string Tier { get; set; } = string.Empty;
+
+    /// <summary>How many distinct scripts exhibited the relationship (1 for an explicit constraint).</summary>
+    public int Occurrences { get; set; }
 }
 
 /// <summary>
@@ -772,6 +818,13 @@ public class CatalogRepoSource
 
     /// <summary>The last sync's error (secret-redacted), or null when the last sync succeeded.</summary>
     public string? LastError { get; set; }
+
+    /// <summary>Set when an operator triggers a manual "sync now": the next sync recomputes lineage in full
+    /// (objects, edges, waves, and the offline object-body/column enrichment) instead of taking the cheap
+    /// unchanged-estate shortcut, then clears the flag on success. The periodic auto-sync leaves it false, so
+    /// it keeps skipping the recompute when nothing changed. A durable, cross-replica signal, since the API
+    /// request and the sync worker can run on different control-plane nodes.</summary>
+    public bool ForceLineageOnNextSync { get; set; }
 
     public DateTime CreatedUtc { get; set; }
 
