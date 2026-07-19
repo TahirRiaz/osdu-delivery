@@ -1,33 +1,21 @@
 import { useState } from "react";
 import { Link as RouterLink, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Button from "@mui/material/Button";
-import Card from "@mui/material/Card";
-import CardContent from "@mui/material/CardContent";
-import Chip from "@mui/material/Chip";
-import Link from "@mui/material/Link";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Tab from "@mui/material/Tab";
-import Tabs from "@mui/material/Tabs";
-import TextField from "@mui/material/TextField";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import PlayArrowIcon from "@mui/icons-material/PlayArrow";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import MonitorHeartIcon from "@mui/icons-material/MonitorHeart";
-import RuleIcon from "@mui/icons-material/Rule";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
+import { HeartPulse, ListChecks, Loader2, Network, Play } from "lucide-react";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
-import type { PipelineFile, RunSummary, Schedule } from "../../api/types";
+import type { PipelineColumn, PipelineFile, RunSummary, Schedule } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DataTable } from "../../components/DataTable";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
 import { EmptyState } from "../../components/EmptyState";
@@ -36,6 +24,8 @@ import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge, RunStatusBadge, ScheduleStateBadge } from "../../components/StatusBadge";
+import { TruncatedText } from "../../components/TruncatedText";
+import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
@@ -58,7 +48,11 @@ function scheduleTrigger(row: Schedule): string {
   return row.intervalSeconds !== null ? `every ${row.intervalSeconds}s` : "-";
 }
 
-const runColumns = (): Column<RunSummary>[] => [
+const numeric = (value: number | null | undefined) => (
+  <span className="font-mono tabular-nums">{value ?? "-"}</span>
+);
+
+const runColumns: Column<RunSummary>[] = [
   { id: "status", header: "Status", render: (row) => <RunStatusBadge status={row.status} /> },
   {
     id: "enqueued",
@@ -70,15 +64,55 @@ const runColumns = (): Column<RunSummary>[] => [
     header: "Duration",
     render: (row) => (row.durationSeconds !== null ? formatDurationSeconds(row.durationSeconds) : "-"),
   },
-  { id: "rowsLoaded", header: "Rows loaded", align: "right", render: (row) => row.rowsLoaded ?? "-" },
-  { id: "rowsInserted", header: "Inserted", align: "right", render: (row) => row.rowsInserted ?? "-" },
-  { id: "rowsUpdated", header: "Updated", align: "right", render: (row) => row.rowsUpdated ?? "-" },
-  { id: "rowsDeleted", header: "Deleted", align: "right", render: (row) => row.rowsDeleted ?? "-" },
-  { id: "fileCount", header: "Files", align: "right", render: (row) => (row.fileCount > 0 ? row.fileCount : "-") },
+  { id: "rowsLoaded", header: "Rows loaded", align: "right", render: (row) => numeric(row.rowsLoaded) },
+  { id: "rowsInserted", header: "Inserted", align: "right", render: (row) => numeric(row.rowsInserted) },
+  { id: "rowsUpdated", header: "Updated", align: "right", render: (row) => numeric(row.rowsUpdated) },
+  { id: "rowsDeleted", header: "Deleted", align: "right", render: (row) => numeric(row.rowsDeleted) },
+  {
+    id: "fileCount",
+    header: "Files",
+    align: "right",
+    render: (row) => numeric(row.fileCount > 0 ? row.fileCount : null),
+  },
   {
     id: "commit",
     header: "Commit",
     render: (row) => <Mono>{row.commitSha?.slice(0, 10) ?? "-"}</Mono>,
+  },
+];
+
+const transformColumns: Column<PipelineColumn>[] = [
+  {
+    id: "kind",
+    header: "Kind",
+    render: (row) => (
+      <Badge
+        variant="outline"
+        className={row.kind === "declared" ? "border-primary/50 text-primary" : undefined}
+      >
+        {row.kind}
+      </Badge>
+    ),
+  },
+  { id: "ordinal", header: "#", align: "right", render: (row) => numeric(row.ordinal) },
+  { id: "column", header: "Column", render: (row) => <Mono>{row.columnName}</Mono> },
+  { id: "source", header: "Source column", render: (row) => <Mono>{row.sourceColumn ?? "-"}</Mono> },
+  { id: "type", header: "Data type", render: (row) => <Mono>{row.dataType ?? "-"}</Mono> },
+  {
+    id: "expression",
+    header: "Expression",
+    render: (row) => <TruncatedText text={row.expression} mono maxWidth={420} />,
+  },
+  {
+    id: "flags",
+    header: "Flags",
+    render: (row) => (
+      <span className="inline-flex flex-wrap items-center gap-1">
+        {row.converted && <Badge variant="outline" className="border-success/50 text-success">typed</Badge>}
+        {row.isVirtual && <Badge variant="outline">virtual</Badge>}
+        {row.excludeFromView && <Badge variant="outline" className="border-warning/50 text-warning">excluded</Badge>}
+      </span>
+    ),
   },
 ];
 
@@ -93,17 +127,17 @@ function TransformsTab({ pipelineId }: { pipelineId: string }) {
   if (columnsQuery.isError) {
     return isApiError(columnsQuery.error)
       ? <CorrelationError error={columnsQuery.error} />
-      : <Typography color="error">{String(columnsQuery.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(columnsQuery.error)}</p>;
   }
 
   const rows = columnsQuery.data;
   if (rows === undefined) {
-    return <Skeleton variant="rounded" height={240} data-testid="pipeline-transforms-loading" />;
+    return <Skeleton className="h-60 w-full rounded-lg" data-testid="pipeline-transforms-loading" />;
   }
 
   if (rows.length === 0) {
     return (
-      <Card variant="outlined">
+      <Card className="gap-0 rounded-lg p-0">
         <EmptyState
           title="No transformations yet"
           description="Nothing is declared in this pipeline's YAML, and no run has detected any yet."
@@ -114,69 +148,13 @@ function TransformsTab({ pipelineId }: { pipelineId: string }) {
   }
 
   return (
-    <Card variant="outlined">
-      <Table size="small" data-testid="pipeline-transforms">
-        <TableHead>
-          <TableRow>
-            <TableCell>Kind</TableCell>
-            <TableCell align="right">#</TableCell>
-            <TableCell>Column</TableCell>
-            <TableCell>Source column</TableCell>
-            <TableCell>Data type</TableCell>
-            <TableCell>Expression</TableCell>
-            <TableCell>Flags</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={`${row.kind}-${row.ordinal}`} hover>
-              <TableCell>
-                <Chip
-                  size="small"
-                  label={row.kind}
-                  color={row.kind === "declared" ? "primary" : "default"}
-                  variant="outlined"
-                />
-              </TableCell>
-              <TableCell align="right">{row.ordinal}</TableCell>
-              <TableCell>
-                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
-                  {row.columnName}
-                </Typography>
-              </TableCell>
-              <TableCell>
-                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
-                  {row.sourceColumn ?? "-"}
-                </Typography>
-              </TableCell>
-              <TableCell>
-                <Typography variant="body2" component="span" sx={{ fontFamily: "monospace" }}>
-                  {row.dataType ?? "-"}
-                </Typography>
-              </TableCell>
-              <TableCell sx={{ maxWidth: 420 }}>
-                {row.expression === null ? (
-                  "-"
-                ) : (
-                  <Tooltip title={row.expression}>
-                    <Typography variant="body2" component="span" noWrap sx={{ fontFamily: "monospace", display: "block" }}>
-                      {row.expression}
-                    </Typography>
-                  </Tooltip>
-                )}
-              </TableCell>
-              <TableCell>
-                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                  {row.converted && <Chip size="small" label="typed" variant="outlined" color="success" />}
-                  {row.isVirtual && <Chip size="small" label="virtual" variant="outlined" />}
-                  {row.excludeFromView && <Chip size="small" label="excluded" variant="outlined" color="warning" />}
-                </Stack>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Card>
+    <DataTable
+      columns={transformColumns}
+      rows={rows}
+      rowKey={(row) => `${row.kind}-${row.ordinal}`}
+      emptyMessage="No transformations yet."
+      data-testid="pipeline-transforms"
+    />
   );
 }
 
@@ -185,19 +163,34 @@ const fileColumns: Column<PipelineFile>[] = [
     id: "name",
     header: "Name",
     render: (row) => (
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
-        <Tooltip title={row.path ?? row.name}>
-          <Typography variant="body2" component="span" noWrap sx={{ fontFamily: "monospace" }}>
-            {row.name}
-          </Typography>
+      <span className="inline-flex min-w-0 items-center gap-2">
+        <Tooltip delayDuration={400}>
+          <TooltipTrigger asChild>
+            <span className="inline-block max-w-[360px] truncate align-bottom font-mono text-[12px]">
+              {row.name}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" align="start" className="max-w-lg break-all">
+            {row.path ?? row.name}
+          </TooltipContent>
         </Tooltip>
-        {row.lastRun && <Chip size="small" color="primary" variant="outlined" label="last run" />}
-      </Stack>
+        {row.lastRun && <Badge variant="outline" className="border-primary/50 text-primary">last run</Badge>}
+      </span>
     ),
   },
   { id: "modified", header: "Modified", render: (row) => <RelativeTime value={row.modified} /> },
-  { id: "rows", header: "Rows", align: "right", render: (row) => (row.rows > 0 ? row.rows : "-") },
-  { id: "size", header: "Size", align: "right", render: (row) => formatBytes(row.sizeBytes) },
+  {
+    id: "rows",
+    header: "Rows",
+    align: "right",
+    render: (row) => numeric(row.rows > 0 ? row.rows : null),
+  },
+  {
+    id: "size",
+    header: "Size",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{formatBytes(row.sizeBytes)}</span>,
+  },
   { id: "lastProcessed", header: "Last processed", render: (row) => <RelativeTime value={row.lastProcessedUtc} /> },
 ];
 
@@ -207,14 +200,14 @@ const fileColumns: Column<PipelineFile>[] = [
 function FilesTab({ pipelineId }: { pipelineId: string }) {
   const [search, setSearch] = useState("");
   return (
-    <Stack spacing={1.5}>
-      <TextField
-        size="small"
+    <div className="flex flex-col gap-3">
+      <Input
         placeholder="Search files by name or path"
+        aria-label="Search files"
         value={search}
         onChange={(event) => setSearch(event.target.value)}
         data-testid="pipeline-files-search"
-        sx={{ maxWidth: 360 }}
+        className="h-8 max-w-sm"
       />
       <PagedTable
         queryKey={["pipelines", "files", pipelineId, search]}
@@ -225,24 +218,24 @@ function FilesTab({ pipelineId }: { pipelineId: string }) {
         emptyMessage="This pipeline has processed no files yet."
         data-testid="pipeline-files-table"
       />
-    </Stack>
+    </div>
   );
 }
 
 const scheduleColumns: Column<Schedule>[] = [
-  { id: "trigger", header: "Trigger", render: (row) => scheduleTrigger(row) },
+  { id: "trigger", header: "Trigger", render: (row) => <Mono>{scheduleTrigger(row)}</Mono> },
   { id: "timezone", header: "Timezone", render: (row) => row.timezone },
   {
     id: "state",
     header: "State",
     render: (row) => (
-      <Stack direction="row" spacing={0.5} alignItems="center">
+      <span className="inline-flex items-center gap-1">
         <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
-        {row.catchup && <Chip size="small" variant="outlined" label="catchup" />}
-      </Stack>
+        {row.catchup && <Badge variant="outline">catchup</Badge>}
+      </span>
     ),
   },
-  { id: "source", header: "Source", render: (row) => <Chip size="small" label={row.source} variant="outlined" /> },
+  { id: "source", header: "Source", render: (row) => <Badge variant="outline">{row.source}</Badge> },
   { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} /> },
   { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} /> },
 ];
@@ -251,8 +244,6 @@ const scheduleColumns: Column<Schedule>[] = [
 export default function PipelineDetailPage() {
   const { pipelineId = "" } = useParams();
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
-  const [tab, setTab] = useState(0);
   const [triggerOpen, setTriggerOpen] = useState(false);
 
   const detailQuery = useQuery({
@@ -260,6 +251,9 @@ export default function PipelineDetailPage() {
     queryFn: () => pipelineApi.getById(pipelineId),
     enabled: pipelineId !== "",
   });
+
+  // The workbench tab reads the pipeline's name once it is known, instead of the generic route title.
+  useTabTitle(detailQuery.data?.name);
 
   // The one-click on-demand executions next to the general trigger dialog: "Run assertions" (ingestion flows;
   // evaluates the flow's declared assertions, manual-mode ones included, against the current target and loads
@@ -281,36 +275,34 @@ export default function PipelineDetailPage() {
       });
     },
     onSuccess: (accepted, parameters) => {
-      enqueueSnackbar(parameters.assertionsOnly ? "Assertion run enqueued." : "Health check enqueued.", { variant: "success" });
+      toast.success(parameters.assertionsOnly ? "Assertion run enqueued." : "Health check enqueued.");
       if (accepted.runId) {
         navigate(`/runs/${accepted.runId}`);
       }
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
     },
   });
 
   if (detailQuery.isError) {
     return isApiError(detailQuery.error)
       ? <CorrelationError error={detailQuery.error} />
-      : <Typography color="error">{String(detailQuery.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(detailQuery.error)}</p>;
   }
 
   const detail = detailQuery.data;
   if (detail === undefined) {
     return (
       <Page data-testid="page-pipeline-detail">
-        <Card variant="outlined">
-          <CardContent>
-            <Stack spacing={1}>
-              <Skeleton width={320} height={36} />
-              <Skeleton width="70%" />
-              <Skeleton width="50%" />
-            </Stack>
-          </CardContent>
+        <Card className="gap-0 rounded-lg p-4">
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-7 w-80" />
+            <Skeleton className="h-4 w-[70%]" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
         </Card>
-        <Skeleton variant="rounded" height={320} />
+        <Skeleton className="h-80 w-full rounded-lg" />
       </Page>
     );
   }
@@ -318,97 +310,141 @@ export default function PipelineDetailPage() {
   // An ing document's embedded healthCheck: block derives a sibling hc pipeline; the button triggers it by name.
   const embeddedCheck = detail.kind === "ing" ? embeddedHealthCheckName(detail.definitionJson) : null;
 
+  // Which one-click action is in flight, so only the clicked button wears the spinner.
+  const pendingAssertions = triggerFlow.isPending && triggerFlow.variables?.assertionsOnly === true;
+  const pendingEmbedded = triggerFlow.isPending && triggerFlow.variables?.flowName !== undefined;
+  const pendingHealthCheck = triggerFlow.isPending && !pendingAssertions && !pendingEmbedded;
+
   return (
     <Page data-testid="page-pipeline-detail">
       <DetailHeaderCard
         title={detail.name}
         badges={(
           <>
-            <Chip size="small" label={detail.kind} variant="outlined" />
+            <Badge variant="outline">{detail.kind}</Badge>
             <ActiveBadge active={detail.active} />
             {detail.executionMode === "manual" && (
-              <Tooltip title="mode: manual - excluded from schedules and batch/node group runs; executes only when triggered directly.">
-                <Chip size="small" color="warning" label="manual" data-testid="pipeline-manual-mode" />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Badge
+                      variant="secondary"
+                      className="bg-warning/15 text-warning"
+                      data-testid="pipeline-manual-mode"
+                    >
+                      manual
+                    </Badge>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  mode: manual - excluded from schedules and batch/node group runs; executes only when
+                  triggered directly.
+                </TooltipContent>
               </Tooltip>
             )}
           </>
         )}
         actions={(
           <>
-            <Button
-              variant="outlined"
-              startIcon={<AccountTreeIcon />}
-              component={RouterLink}
-              to={`/lineage?repoId=${encodeURIComponent(detail.repoId)}&focus=${encodeURIComponent(pipelineId)}`}
-              data-testid="pipeline-view-lineage"
-            >
-              View in lineage
+            <Button variant="outline" size="sm" asChild data-testid="pipeline-view-lineage">
+              <RouterLink
+                to={`/lineage?repoId=${encodeURIComponent(detail.repoId)}&focus=${encodeURIComponent(pipelineId)}`}
+              >
+                <Network />
+                View in lineage
+              </RouterLink>
             </Button>
             {detail.kind === "ing" && (
-              <Tooltip title="Evaluate the flow's declared assertions (mode: manual ones included) against the current target; nothing is loaded.">
-                <span>
-                  <Button
-                    variant="outlined"
-                    startIcon={<RuleIcon />}
-                    onClick={() => triggerFlow.mutate({ assertionsOnly: true })}
-                    disabled={triggerFlow.isPending || !detail.active}
-                    data-testid="pipeline-run-assertions"
-                  >
-                    Run assertions
-                  </Button>
-                </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => triggerFlow.mutate({ assertionsOnly: true })}
+                      disabled={triggerFlow.isPending || !detail.active}
+                      data-testid="pipeline-run-assertions"
+                    >
+                      {pendingAssertions ? <Loader2 className="animate-spin" /> : <ListChecks />}
+                      Run assertions
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  Evaluate the flow's declared assertions (mode: manual ones included) against the current
+                  target; nothing is loaded.
+                </TooltipContent>
               </Tooltip>
             )}
             {detail.kind === "hc" && (
-              <Tooltip title="Run this health check now. A mode: manual health check executes only from here or a direct trigger.">
-                <span>
-                  <Button
-                    variant="outlined"
-                    startIcon={<MonitorHeartIcon />}
-                    onClick={() => triggerFlow.mutate({})}
-                    disabled={triggerFlow.isPending || !detail.active}
-                    data-testid="pipeline-run-health-check"
-                  >
-                    Run health check
-                  </Button>
-                </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => triggerFlow.mutate({})}
+                      disabled={triggerFlow.isPending || !detail.active}
+                      data-testid="pipeline-run-health-check"
+                    >
+                      {pendingHealthCheck ? <Loader2 className="animate-spin" /> : <HeartPulse />}
+                      Run health check
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  Run this health check now. A mode: manual health check executes only from here or a direct
+                  trigger.
+                </TooltipContent>
               </Tooltip>
             )}
             {embeddedCheck !== null && (
-              <Tooltip title={`Run this flow's embedded health check ('${embeddedCheck}') against the target now. Embedded checks default to mode: manual, so this button (or a direct trigger) is how they execute.`}>
-                <span>
-                  <Button
-                    variant="outlined"
-                    startIcon={<MonitorHeartIcon />}
-                    onClick={() => triggerFlow.mutate({ flowName: embeddedCheck })}
-                    disabled={triggerFlow.isPending || !detail.active}
-                    data-testid="pipeline-run-embedded-health-check"
-                  >
-                    Run health check
-                  </Button>
-                </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => triggerFlow.mutate({ flowName: embeddedCheck })}
+                      disabled={triggerFlow.isPending || !detail.active}
+                      data-testid="pipeline-run-embedded-health-check"
+                    >
+                      {pendingEmbedded ? <Loader2 className="animate-spin" /> : <HeartPulse />}
+                      Run health check
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  {`Run this flow's embedded health check ('${embeddedCheck}') against the target now. `
+                    + "Embedded checks default to mode: manual, so this button (or a direct trigger) is how "
+                    + "they execute."}
+                </TooltipContent>
               </Tooltip>
             )}
-            <Button
-              variant="contained"
-              startIcon={<PlayArrowIcon />}
-              onClick={() => setTriggerOpen(true)}
-              data-testid="open-trigger-run"
-            >
+            <Button size="sm" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
+              <Play />
               Trigger run
             </Button>
           </>
         )}
       >
         <DetailPair label="Repo">
-          <Link component={RouterLink} to={`/repos/${detail.repoId}`} data-testid="pipeline-repo-link">
+          <RouterLink
+            to={`/repos/${detail.repoId}`}
+            className="text-primary hover:underline"
+            data-testid="pipeline-repo-link"
+          >
             {detail.repoId}
-          </Link>
+          </RouterLink>
         </DetailPair>
         <DetailPair label="Project">
-          <Link component={RouterLink} to={`/repos/${detail.repoId}`} data-testid="pipeline-project-link">
+          <RouterLink
+            to={`/repos/${detail.repoId}`}
+            className="text-primary hover:underline"
+            data-testid="pipeline-project-link"
+          >
             {projectOf(detail.relativePath)}
-          </Link>
+          </RouterLink>
         </DetailPair>
         <DetailPair label="Batch">{detail.batch ?? "-"}</DetailPair>
         <DetailPair label="Wave">{detail.wave === -1 ? "-" : String(detail.wave)}</DetailPair>
@@ -416,49 +452,65 @@ export default function PipelineDetailPage() {
         <DetailPair label="Target server">{detail.targetServer ?? "-"}</DetailPair>
         <DetailPair label="Path"><Mono>{detail.relativePath}</Mono></DetailPair>
         <DetailPair label="Content hash">
-          <Tooltip title={detail.contentHash}>
-            <Mono>{detail.contentHash.slice(0, 12)}</Mono>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="font-mono text-[12px]">{detail.contentHash.slice(0, 12)}</span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-lg break-all">{detail.contentHash}</TooltipContent>
           </Tooltip>
         </DetailPair>
         <DetailPair label="First seen"><RelativeTime value={detail.firstSeenUtc} /></DetailPair>
         <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} /></DetailPair>
       </DetailHeaderCard>
 
-      <Tabs value={tab} onChange={(_, next) => setTab(next as number)} data-testid="pipeline-tabs">
-        <Tab label="YAML" data-testid="pipeline-tab-yaml" />
-        <Tab label="Transforms" data-testid="pipeline-tab-transforms" />
-        <Tab label="Runs" data-testid="pipeline-tab-runs" />
-        <Tab label="Files" data-testid="pipeline-tab-files" />
-        <Tab label="Schedules" data-testid="pipeline-tab-schedules" />
-        <Tab label="Definition" data-testid="pipeline-tab-definition" />
-      </Tabs>
+      <Tabs defaultValue="yaml">
+        <TabsList data-testid="pipeline-tabs">
+          <TabsTrigger value="yaml" data-testid="pipeline-tab-yaml">YAML</TabsTrigger>
+          <TabsTrigger value="transforms" data-testid="pipeline-tab-transforms">Transforms</TabsTrigger>
+          <TabsTrigger value="runs" data-testid="pipeline-tab-runs">Runs</TabsTrigger>
+          <TabsTrigger value="files" data-testid="pipeline-tab-files">Files</TabsTrigger>
+          <TabsTrigger value="schedules" data-testid="pipeline-tab-schedules">Schedules</TabsTrigger>
+          <TabsTrigger value="definition" data-testid="pipeline-tab-definition">Definition</TabsTrigger>
+        </TabsList>
 
-      {tab === 0 && <CodeView value={detail.yaml} language="yaml" height={560} lsp data-testid="pipeline-yaml" />}
-      {tab === 1 && <TransformsTab pipelineId={pipelineId} />}
-      {tab === 2 && (
-        <PagedTable
-          queryKey={["runs", "by-pipeline", pipelineId]}
-          fetchPage={(page, pageSize) => runApi.list({ pipelineId, page, pageSize })}
-          columns={runColumns()}
-          rowKey={(row) => row.runId}
-          onRowClick={(row) => navigate(`/runs/${row.runId}`)}
-          pollMs={5000}
-          emptyMessage="This pipeline has not run yet."
-        />
-      )}
-      {tab === 3 && <FilesTab pipelineId={pipelineId} />}
-      {tab === 4 && (
-        <PagedTable
-          queryKey={["schedules", "by-pipeline", pipelineId]}
-          fetchPage={(page, pageSize) => scheduleApi.list({ pipelineId, page, pageSize })}
-          columns={scheduleColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="This pipeline has no schedules."
-        />
-      )}
-      {tab === 5 && (
-        <CodeView value={prettyJson(detail.definitionJson)} language="json" height={560} data-testid="pipeline-definition" />
-      )}
+        <TabsContent value="yaml">
+          <CodeView value={detail.yaml} language="yaml" height={560} lsp data-testid="pipeline-yaml" />
+        </TabsContent>
+        <TabsContent value="transforms">
+          <TransformsTab pipelineId={pipelineId} />
+        </TabsContent>
+        <TabsContent value="runs">
+          <PagedTable
+            queryKey={["runs", "by-pipeline", pipelineId]}
+            fetchPage={(page, pageSize) => runApi.list({ pipelineId, page, pageSize })}
+            columns={runColumns}
+            rowKey={(row) => row.runId}
+            onRowClick={(row) => navigate(`/runs/${row.runId}`)}
+            pollMs={5000}
+            emptyMessage="This pipeline has not run yet."
+          />
+        </TabsContent>
+        <TabsContent value="files">
+          <FilesTab pipelineId={pipelineId} />
+        </TabsContent>
+        <TabsContent value="schedules">
+          <PagedTable
+            queryKey={["schedules", "by-pipeline", pipelineId]}
+            fetchPage={(page, pageSize) => scheduleApi.list({ pipelineId, page, pageSize })}
+            columns={scheduleColumns}
+            rowKey={(row) => row.id}
+            emptyMessage="This pipeline has no schedules."
+          />
+        </TabsContent>
+        <TabsContent value="definition">
+          <CodeView
+            value={prettyJson(detail.definitionJson)}
+            language="json"
+            height={560}
+            data-testid="pipeline-definition"
+          />
+        </TabsContent>
+      </Tabs>
 
       {triggerOpen && (
         <TriggerRunDialog

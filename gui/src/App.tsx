@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import LinearProgress from "@mui/material/LinearProgress";
 import LoginPage from "./auth/LoginPage";
+import { TopProgressBar } from "./components/TopProgressBar";
 import { RequireAuth, RequireScope } from "./auth/RequireAuth";
 import AppShell from "./layout/AppShell";
 import { lazyRoute } from "./lib/lazyRoute";
@@ -39,7 +39,7 @@ function LineageGraphRedirect() {
 
 export default function App() {
   return (
-    <Suspense fallback={<LinearProgress />}>
+    <Suspense fallback={<TopProgressBar />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route

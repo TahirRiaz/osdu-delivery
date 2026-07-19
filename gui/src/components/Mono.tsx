@@ -1,16 +1,10 @@
 import type { ReactNode } from "react";
-import Typography from "@mui/material/Typography";
-import type { SxProps, Theme } from "@mui/material/styles";
+import { cn } from "@/lib/utils";
 
 /**
- * Inline monospace text (commit SHAs, keys, paths, ids): the one helper replacing the scattered raw
- * `<span style={{ fontFamily: "monospace" }}>` and repeated `sx={{ fontFamily: "monospace" }}` so code-like
- * values render identically everywhere.
+ * Inline monospace text (commit SHAs, keys, paths, ids): the one helper so code-like values render
+ * identically everywhere (DESIGN.md section 4).
  */
-export function Mono({ children, sx }: { children: ReactNode; sx?: SxProps<Theme> }) {
-  return (
-    <Typography component="span" variant="body2" sx={{ fontFamily: "monospace", ...sx }}>
-      {children}
-    </Typography>
-  );
+export function Mono({ children, className }: { children: ReactNode; className?: string }) {
+  return <span className={cn("font-mono text-[12px]", className)}>{children}</span>;
 }

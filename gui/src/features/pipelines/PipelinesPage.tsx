@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Chip from "@mui/material/Chip";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { pipelineApi, repoApi } from "../../api/endpoints";
 import type { PipelineSummary } from "../../api/types";
 import { FilterBar } from "../../components/FilterBar";
@@ -17,24 +15,36 @@ import { TruncatedText } from "../../components/TruncatedText";
 
 const kinds = ["file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
+/** The radix Select cannot carry an empty-string item value, so "all" stands in for the unfiltered choice. */
+const ALL = "all";
+
 const columns: Column<PipelineSummary>[] = [
   {
     id: "name",
     header: "Name",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
+    render: (row) => <span className="font-mono text-[12px] font-medium">{row.name}</span>,
   },
   {
     id: "kind",
     header: "Kind",
     render: (row) => (
-      <Stack direction="row" spacing={0.5} alignItems="center">
-        <Chip size="small" label={row.kind} variant="outlined" />
-        {row.executionMode === "manual" && <Chip size="small" color="warning" label="manual" />}
-      </Stack>
+      <span className="inline-flex items-center gap-1">
+        <Badge variant="outline">{row.kind}</Badge>
+        {row.executionMode === "manual" && (
+          <Badge variant="secondary" className="bg-warning/15 text-warning">manual</Badge>
+        )}
+      </span>
     ),
   },
   { id: "batch", header: "Batch", render: (row) => row.batch ?? "-" },
-  { id: "wave", header: "Wave", render: (row) => (row.wave === -1 ? "-" : String(row.wave)) },
+  {
+    id: "wave",
+    header: "Wave",
+    align: "right",
+    render: (row) => (
+      <span className="font-mono tabular-nums">{row.wave === -1 ? "-" : String(row.wave)}</span>
+    ),
+  },
   { id: "active", header: "Active", render: (row) => <ActiveBadge active={row.active} /> },
   { id: "sourceServer", header: "Source", render: (row) => row.sourceServer ?? "-" },
   { id: "targetServer", header: "Target", render: (row) => row.targetServer ?? "-" },
@@ -77,72 +87,71 @@ export default function PipelinesPage() {
       <PageHeader title="Pipelines" />
 
       <FilterBar>
-        <TextField
-          select
-          size="small"
-          label="Repo"
-          value={repoFilter}
-          onChange={(e) => {
-            setRepoFilter(e.target.value);
+        <Select
+          value={repoFilter === "" ? ALL : repoFilter}
+          onValueChange={(value) => {
+            setRepoFilter(value === ALL ? "" : value);
             setProjectFilter(""); // the project options are repo-scoped; a selection from another repo is stale
           }}
-          inputProps={{ "data-testid": "filter-repo" }}
-          sx={{ minWidth: 200 }}
         >
-          <MenuItem value="">all</MenuItem>
-          {repoOptions.map((repo) => (
-            <MenuItem key={repo.id} value={repo.id}>{repo.name}</MenuItem>
-          ))}
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Project"
-          value={projectFilter}
-          onChange={(e) => setProjectFilter(e.target.value)}
-          inputProps={{ "data-testid": "filter-project" }}
-          sx={{ minWidth: 160 }}
+          <SelectTrigger size="sm" className="h-8 w-52" aria-label="Repo" data-testid="filter-repo">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>all repos</SelectItem>
+            {repoOptions.map((repo) => (
+              <SelectItem key={repo.id} value={repo.id}>{repo.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={projectFilter === "" ? ALL : projectFilter}
+          onValueChange={(value) => setProjectFilter(value === ALL ? "" : value)}
         >
-          <MenuItem value="">all</MenuItem>
-          {projectOptions.map((project) => (
-            <MenuItem key={project} value={project}>{project}</MenuItem>
-          ))}
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Kind"
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
-          inputProps={{ "data-testid": "filter-kind" }}
-          sx={{ minWidth: 140 }}
+          <SelectTrigger size="sm" className="h-8 w-44" aria-label="Project" data-testid="filter-project">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>all projects</SelectItem>
+            {projectOptions.map((project) => (
+              <SelectItem key={project} value={project}>{project}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={kindFilter === "" ? ALL : kindFilter}
+          onValueChange={(value) => setKindFilter(value === ALL ? "" : value)}
         >
-          <MenuItem value="">all</MenuItem>
-          {kinds.map((kind) => (
-            <MenuItem key={kind} value={kind}>{kind}</MenuItem>
-          ))}
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Active"
-          value={activeFilter}
-          onChange={(e) => setActiveFilter(e.target.value)}
-          inputProps={{ "data-testid": "filter-active" }}
-          sx={{ minWidth: 140 }}
+          <SelectTrigger size="sm" className="h-8 w-32" aria-label="Kind" data-testid="filter-kind">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>all kinds</SelectItem>
+            {kinds.map((kind) => (
+              <SelectItem key={kind} value={kind}>{kind}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={activeFilter === "" ? ALL : activeFilter}
+          onValueChange={(value) => setActiveFilter(value === ALL ? "" : value)}
         >
-          <MenuItem value="">all</MenuItem>
-          <MenuItem value="active">active</MenuItem>
-          <MenuItem value="inactive">inactive</MenuItem>
-        </TextField>
-        <TextField
-          size="small"
-          label="Name"
-          placeholder="Filter by name"
+          <SelectTrigger size="sm" className="h-8 w-32" aria-label="Active" data-testid="filter-active">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>all</SelectItem>
+            <SelectItem value="active">active</SelectItem>
+            <SelectItem value="inactive">inactive</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input
           value={nameInput}
           onChange={(e) => setNameInput(e.target.value)}
-          inputProps={{ "data-testid": "filter-name" }}
-          sx={{ minWidth: 220 }}
+          placeholder="Filter by name"
+          aria-label="Name"
+          data-testid="filter-name"
+          className="h-8 w-56"
         />
       </FilterBar>
 

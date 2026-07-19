@@ -1,39 +1,41 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Alert from "@mui/material/Alert";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Checkbox from "@mui/material/Checkbox";
-import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import FormGroup from "@mui/material/FormGroup";
-import IconButton from "@mui/material/IconButton";
-import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import Paper from "@mui/material/Paper";
+import { toast } from "sonner";
+import { CircleCheck, CircleMinus, Clock3, KeyRound, Loader2, TriangleAlert } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { isApiError } from "../../api/client";
 import { tokenApi } from "../../api/endpoints";
 import type { AccessToken, CreatedAccessToken } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { CopyButton } from "../../components/CopyButton";
 import { CorrelationError } from "../../components/CorrelationError";
+import { EmptyState } from "../../components/EmptyState";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { parseUtc } from "../../lib/time";
+
+/** One error-to-text mapping for every toast on this page (the API's detail wins over a generic title). */
+function errorText(error: unknown): string {
+  if (isApiError(error)) {
+    return error.detail ?? error.title;
+  }
+
+  return error instanceof Error ? error.message : String(error);
+}
 
 /** The lifecycle state a token is in, derived from its revoked/expires timestamps. */
 type TokenState = "active" | "expired" | "revoked";
@@ -49,28 +51,22 @@ function tokenState(token: AccessToken, nowMs: number): TokenState {
   return "active";
 }
 
+/** The token lifecycle pill, following the StatusBadge form (DESIGN.md 7.3): icon + label, never color alone. */
 function StateBadge({ state }: { state: TokenState }) {
-  switch (state) {
-    case "active":
-      return <Chip size="small" label="active" color="success" variant="outlined" data-testid="token-state" />;
-    case "expired":
-      return <Chip size="small" label="expired" color="warning" variant="outlined" data-testid="token-state" />;
-    case "revoked":
-      return <Chip size="small" label="revoked" color="default" variant="outlined" data-testid="token-state" />;
-  }
-}
-
-/** Copies text to the clipboard, reporting success/failure through the snackbar. */
-function useCopy() {
-  const { enqueueSnackbar } = useSnackbar();
-  return async (value: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      enqueueSnackbar(`${label} copied to the clipboard.`, { variant: "success" });
-    } catch {
-      enqueueSnackbar("Could not access the clipboard; copy it manually.", { variant: "warning" });
-    }
-  };
+  const { classes, Icon } = state === "active"
+    ? { classes: "bg-success/12 text-success", Icon: CircleCheck }
+    : state === "expired"
+      ? { classes: "bg-warning/15 text-warning", Icon: Clock3 }
+      : { classes: "bg-muted text-muted-foreground", Icon: CircleMinus };
+  return (
+    <span
+      data-testid="token-state"
+      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ${classes}`}
+    >
+      <Icon className="size-3 shrink-0" />
+      {state}
+    </span>
+  );
 }
 
 const EXPIRY_OPTIONS: { label: string; days: number | null }[] = [
@@ -83,51 +79,50 @@ const EXPIRY_OPTIONS: { label: string; days: number | null }[] = [
 
 /** The one-time reveal of a freshly created secret: the only moment the full token is ever shown. */
 function SecretReveal({ created, onClose }: { created: CreatedAccessToken; onClose: () => void }) {
-  const copy = useCopy();
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="sm" data-testid="token-secret-dialog">
-      <DialogTitle>Copy your new token</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <Alert severity="warning">
-            This is the only time the token is shown. Copy it now and store it somewhere safe; you cannot see it again.
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        if (!next) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-xl" data-testid="token-secret-dialog">
+        <SheetHeader>
+          <SheetTitle>Copy your new token</SheetTitle>
+        </SheetHeader>
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
+          <Alert>
+            <TriangleAlert className="text-warning" />
+            <AlertTitle>Shown only once</AlertTitle>
+            <AlertDescription>
+              This is the only time the token is shown. Copy it now and store it somewhere safe; you cannot
+              see it again.
+            </AlertDescription>
           </Alert>
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-              p: 1,
-              borderRadius: 1,
-              bgcolor: "action.hover",
-              fontFamily: "monospace",
-              wordBreak: "break-all",
-            }}
-          >
-            <Box sx={{ flexGrow: 1 }} data-testid="token-secret-value">{created.secret}</Box>
-            <IconButton
-              size="small"
-              aria-label="Copy token"
-              onClick={() => void copy(created.secret, "Token")}
-              data-testid="token-secret-copy"
-            >
-              <ContentCopyIcon fontSize="small" />
-            </IconButton>
-          </Box>
-          <Typography variant="body2" color="text.secondary">
-            Use it as a bearer credential: send the header <code>Authorization: Bearer {created.token.prefix}…</code>{" "}
+          <div className="flex items-start justify-between gap-2 rounded-md border border-border bg-muted/50 p-2">
+            <code className="min-w-0 break-all font-mono text-[12px] leading-5" data-testid="token-secret-value">
+              {created.secret}
+            </code>
+            <CopyButton label="Copy" text={created.secret} testId="token-secret-copy" />
+          </div>
+          <p className="text-[13px] text-muted-foreground">
+            Use it as a bearer credential: send the header{" "}
+            <code className="font-mono text-[12px]">Authorization: Bearer {created.token.prefix}...</code>{" "}
             to the control plane API.
-          </Typography>
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button variant="contained" onClick={onClose} data-testid="token-secret-done">Done</Button>
-      </DialogActions>
-    </Dialog>
+          </p>
+        </div>
+        <SheetFooter className="flex-row justify-end">
+          <Button size="sm" onClick={onClose} data-testid="token-secret-done">Done</Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
-function CreateTokenDialog({
+/** The create-token form in a right side sheet (DESIGN.md 7.4); the old dialog's testid stays on the content. */
+function CreateTokenSheet({
   ownScopes,
   onCreated,
   onClose,
@@ -148,9 +143,11 @@ function CreateTokenDialog({
       expiresInDays: expiryDays,
     }),
     onSuccess: (created) => {
+      toast.success(`Token "${created.token.name}" created.`);
       void queryClient.invalidateQueries({ queryKey: ["access-tokens"] });
       onCreated(created);
     },
+    onError: (error) => toast.error(errorText(error)),
   });
 
   const toggleScope = (scope: string) =>
@@ -160,77 +157,105 @@ function CreateTokenDialog({
   const canSubmit = name.trim() !== "" && scopes.length > 0 && !create.isPending;
 
   return (
-    <Dialog open onClose={create.isPending ? undefined : onClose} fullWidth maxWidth="sm" data-testid="create-token-dialog">
-      <DialogTitle>Create personal access token</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        if (!next && !create.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-xl" data-testid="create-token-dialog">
+        <SheetHeader>
+          <SheetTitle>Create personal access token</SheetTitle>
+        </SheetHeader>
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
           {create.isError && isApiError(create.error) && <CorrelationError error={create.error} />}
           {create.isError && !isApiError(create.error) && (
-            <Typography color="error">{String(create.error)}</Typography>
+            <p className="text-[13px] text-destructive">{String(create.error)}</p>
           )}
 
-          <TextField
-            label="Name"
-            required
-            placeholder="e.g. vscode-laptop"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            inputProps={{ "data-testid": "create-token-name", maxLength: 200 }}
-          />
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="create-token-name">Name</Label>
+            <Input
+              id="create-token-name"
+              required
+              maxLength={200}
+              placeholder="e.g. vscode-laptop"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="h-8"
+              data-testid="create-token-name"
+            />
+          </div>
 
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>Scopes</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <div className="flex flex-col gap-1.5">
+            <Label>Scopes</Label>
+            <p className="text-xs text-muted-foreground">
               A token can grant at most the scopes your own account holds.
-            </Typography>
-            <FormGroup>
+            </p>
+            <div className="flex flex-col gap-2 pt-1">
               {ownScopes.map((scope) => (
-                <FormControlLabel
-                  key={scope}
-                  control={(
-                    <Checkbox
-                      checked={scopes.includes(scope)}
-                      onChange={() => toggleScope(scope)}
-                      inputProps={{ "data-testid": `create-token-scope-${scope}` } as Record<string, string>}
-                    />
-                  )}
-                  label={scope}
-                />
+                <Label key={scope} className="flex items-center gap-2 text-[13px] font-normal">
+                  <Checkbox
+                    checked={scopes.includes(scope)}
+                    onCheckedChange={() => toggleScope(scope)}
+                    data-testid={`create-token-scope-${scope}`}
+                  />
+                  <span className="font-mono text-[12px]">{scope}</span>
+                </Label>
               ))}
-            </FormGroup>
-          </Box>
+            </div>
+            {scopes.length === 0 && (
+              <p className="text-xs text-destructive">Select at least one scope.</p>
+            )}
+          </div>
 
-          <TextField
-            select
-            label="Expiry"
-            value={expiryDays === null ? "none" : String(expiryDays)}
-            onChange={(e) => setExpiryDays(e.target.value === "none" ? null : Number(e.target.value))}
-            SelectProps={{ native: true }}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{ "data-testid": "create-token-expiry" }}
+          <div className="flex flex-col gap-1.5">
+            <Label>Expiry</Label>
+            <Select
+              value={expiryDays === null ? "none" : String(expiryDays)}
+              onValueChange={(value) => setExpiryDays(value === "none" ? null : Number(value))}
+            >
+              <SelectTrigger size="sm" className="h-8 w-full" data-testid="create-token-expiry">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EXPIRY_OPTIONS.map((option) => (
+                  <SelectItem key={option.label} value={option.days === null ? "none" : String(option.days)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <SheetFooter className="flex-row justify-end">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={create.isPending}
+            data-testid="create-token-cancel"
           >
-            {EXPIRY_OPTIONS.map((option) => (
-              <option key={option.label} value={option.days === null ? "none" : String(option.days)}>
-                {option.label}
-              </option>
-            ))}
-          </TextField>
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={create.isPending} data-testid="create-token-cancel">Cancel</Button>
-        <Button
-          variant="contained"
-          onClick={() => create.mutate()}
-          disabled={!canSubmit}
-          data-testid="create-token-submit"
-        >
-          Create
-        </Button>
-      </DialogActions>
-    </Dialog>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => create.mutate()}
+            disabled={!canSubmit}
+            data-testid="create-token-submit"
+          >
+            {create.isPending && <Loader2 className="animate-spin" />}
+            Create
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
+
+const TOKEN_HEADERS = ["Name", "Prefix", "Scopes", "Status", "Last used", "Expires", "Created", "Actions"];
 
 /**
  * Self-service management of the signed-in user's personal access tokens: long-lived bearer credentials for headless
@@ -238,7 +263,6 @@ function CreateTokenDialog({
  */
 export default function AccessTokensPage() {
   const { session } = useAuth();
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const ownScopes = useMemo(() => session?.scopes ?? [], [session]);
 
@@ -247,18 +271,18 @@ export default function AccessTokensPage() {
   const [revokeTarget, setRevokeTarget] = useState<AccessToken | null>(null);
 
   const tokensQuery = useQuery({ queryKey: ["access-tokens"], queryFn: tokenApi.list });
-  const tokens = tokensQuery.data ?? [];
+  const tokens = tokensQuery.data;
   const nowMs = Date.now();
 
   const revoke = useMutation({
     mutationFn: (token: AccessToken) => tokenApi.revoke(token.id),
     onSuccess: (_result, token) => {
-      enqueueSnackbar(`Token “${token.name}” revoked.`, { variant: "success" });
+      toast.success(`Token "${token.name}" revoked.`);
       void queryClient.invalidateQueries({ queryKey: ["access-tokens"] });
       setRevokeTarget(null);
     },
     onError: (error) => {
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" });
+      toast.error(errorText(error));
       setRevokeTarget(null);
     },
   });
@@ -267,95 +291,112 @@ export default function AccessTokensPage() {
     <Page data-testid="page-access-tokens">
       <PageHeader
         title="Personal access tokens"
+        subtitle="Use a token as a bearer credential to authenticate headless clients, such as the CLI or the VSCode extension, without signing in through the browser. Each token carries at most the scopes your account holds, and you can revoke any token here at any time."
         actions={(
-          <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-token">
+          <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="open-create-token">
+            <KeyRound />
             Create token
           </Button>
         )}
       />
 
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Use a token as a bearer credential to authenticate headless clients, such as the CLI or the VSCode extension,
-        without signing in through the browser. Each token carries at most the scopes your account holds, and you can
-        revoke any token here at any time.
-      </Typography>
-
       {tokensQuery.isError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {tokensQuery.error instanceof Error ? tokensQuery.error.message : "Could not load your tokens."}
-        </Alert>
+        isApiError(tokensQuery.error)
+          ? <CorrelationError error={tokensQuery.error} />
+          : <p className="text-[13px] text-destructive">{errorText(tokensQuery.error)}</p>
       )}
 
-      <TableContainer component={Paper} variant="outlined">
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Prefix</TableCell>
-              <TableCell>Scopes</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Last used</TableCell>
-              <TableCell>Expires</TableCell>
-              <TableCell>Created</TableCell>
-              <TableCell align="right">Actions</TableCell>
+      {/* Hand-rolled on the ui table primitives (not DataTable) so each row keeps its `token-row` testid. */}
+      <Card className="gap-0 overflow-hidden rounded-lg p-0">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              {TOKEN_HEADERS.map((header, i) => (
+                <TableHead
+                  key={header}
+                  className={`h-8 whitespace-nowrap px-3 text-xs font-medium text-muted-foreground${i === TOKEN_HEADERS.length - 1 ? " text-right" : ""}`}
+                >
+                  {header}
+                </TableHead>
+              ))}
             </TableRow>
-          </TableHead>
+          </TableHeader>
           <TableBody>
-            {tokens.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={8}>
-                  <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: "center" }}>
-                    You have no personal access tokens yet.
-                  </Typography>
+            {tokens === undefined && !tokensQuery.isError && Array.from({ length: 3 }, (_, i) => (
+              <TableRow key={`skeleton-${i}`}>
+                {TOKEN_HEADERS.map((header) => (
+                  <TableCell key={header} className="px-3 py-2">
+                    <Skeleton className="h-4 w-full" />
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+            {tokens !== undefined && tokens.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={TOKEN_HEADERS.length} className="border-0 p-0">
+                  <EmptyState
+                    icon={<KeyRound />}
+                    title="You have no personal access tokens yet"
+                    description="Create one to authenticate the CLI, the VSCode extension, or automation against the control plane API."
+                    action={(
+                      <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
+                        Create token
+                      </Button>
+                    )}
+                  />
                 </TableCell>
               </TableRow>
-            ) : (
-              tokens.map((token) => {
-                const state = tokenState(token, nowMs);
-                return (
-                  <TableRow key={token.id} data-testid="token-row">
-                    <TableCell>
-                      <Typography variant="body2" fontWeight={600}>{token.name}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Box component="code" sx={{ fontFamily: "monospace" }}>{token.prefix}…</Box>
-                    </TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
-                        {token.scopes.map((scope) => (
-                          <Chip key={scope} size="small" label={scope} variant="outlined" />
-                        ))}
-                      </Stack>
-                    </TableCell>
-                    <TableCell><StateBadge state={state} /></TableCell>
-                    <TableCell><RelativeTime value={token.lastUsedUtc} /></TableCell>
-                    <TableCell>
-                      {token.expiresUtc === null
-                        ? <Typography variant="body2" color="text.secondary">never</Typography>
-                        : <RelativeTime value={token.expiresUtc} />}
-                    </TableCell>
-                    <TableCell><RelativeTime value={token.createdUtc} /></TableCell>
-                    <TableCell align="right">
-                      <Button
-                        size="small"
-                        color="error"
-                        disabled={state === "revoked"}
-                        onClick={() => setRevokeTarget(token)}
-                        data-testid="token-revoke"
-                      >
-                        Revoke
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
             )}
+            {tokens?.map((token) => {
+              const state = tokenState(token, nowMs);
+              return (
+                <TableRow key={token.id} data-testid="token-row">
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px] font-medium">
+                    {token.name}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5">
+                    <code className="font-mono text-[12px]">{token.prefix}...</code>
+                  </TableCell>
+                  <TableCell className="px-3 py-1.5">
+                    <div className="flex flex-wrap gap-1">
+                      {token.scopes.map((scope) => (
+                        <Badge key={scope} variant="outline" className="font-mono text-[11px]">{scope}</Badge>
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5"><StateBadge state={state} /></TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                    <RelativeTime value={token.lastUsedUtc} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                    {token.expiresUtc === null
+                      ? <span className="text-muted-foreground">never</span>
+                      : <RelativeTime value={token.expiresUtc} />}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                    <RelativeTime value={token.createdUtc} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-right">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="text-destructive hover:text-destructive"
+                      disabled={state === "revoked"}
+                      onClick={() => setRevokeTarget(token)}
+                      data-testid="token-revoke"
+                    >
+                      Revoke
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
-      </TableContainer>
+      </Card>
 
       {createOpen && (
-        <CreateTokenDialog
+        <CreateTokenSheet
           ownScopes={ownScopes}
           onCreated={(created) => {
             setCreateOpen(false);
@@ -370,7 +411,7 @@ export default function AccessTokensPage() {
       <ConfirmDialog
         open={revokeTarget !== null}
         title="Revoke token"
-        message={`Revoke “${revokeTarget?.name ?? ""}”? Any client using it will stop working immediately.`}
+        message={`Revoke "${revokeTarget?.name ?? ""}"? Any client using it will stop working immediately.`}
         confirmLabel="Revoke"
         danger
         busy={revoke.isPending}

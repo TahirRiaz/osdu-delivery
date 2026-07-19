@@ -2,38 +2,36 @@ import { useCallback, useMemo, useState } from "react";
 import type React from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Alert from "@mui/material/Alert";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import IconButton from "@mui/material/IconButton";
-import LinearProgress from "@mui/material/LinearProgress";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import { alpha, useTheme } from "@mui/material/styles";
-import BoltIcon from "@mui/icons-material/Bolt";
-import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import CloseIcon from "@mui/icons-material/Close";
-import ErrorIcon from "@mui/icons-material/Error";
-import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty";
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import PlayArrowIcon from "@mui/icons-material/PlayArrow";
-import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
-import ScheduleIcon from "@mui/icons-material/Schedule";
+import { toast } from "sonner";
+import {
+  ChevronDown,
+  CircleCheck,
+  CircleMinus,
+  CircleX,
+  Clock3,
+  ExternalLink,
+  Hourglass,
+  Info,
+  Loader2,
+  Play,
+  SkipForward,
+  TriangleAlert,
+  Zap,
+} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge, badgeVariants } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { scheduleApi } from "../../api/endpoints";
 import type { RunStatus, RunSummary, Schedule, SchedulePlanMember } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { RelativeTime } from "../../components/RelativeTime";
+import { seriesColor } from "../../theme/branding";
 import { useRunGroupStream } from "../runs/useRunGroupStream";
 
 /** The status a plan member shows on the board: the live run status once a fire is underway, or "pending" before
@@ -41,9 +39,6 @@ import { useRunGroupStream } from "../runs/useRunGroupStream";
 type MemberStatus = RunStatus | "pending";
 
 const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(["succeeded", "failed", "cancelled", "skipped"]);
-
-/** The theme palette key each wave's accent border cycles through, echoing the batch-coloured rails in the board. */
-const WAVE_ACCENTS = ["warning", "secondary", "info", "success", "primary", "error"] as const;
 
 /** One wave of the plan: its members, grouped and ordered so the board renders them concurrently under one rail. */
 interface PlanWave {
@@ -61,6 +56,11 @@ function describeTrigger(cron: string | null, intervalSeconds: number | null): s
   }
 
   return "manual";
+}
+
+/** A translucent wash of a series color for the wave rails' fills, so the accent stays a token-derived value. */
+function tint(color: string, percent: number): string {
+  return `color-mix(in srgb, ${color} ${percent}%, transparent)`;
 }
 
 /** Groups the plan's flat, wave-ordered member list into the waves the board draws, each sorted by flow name so a
@@ -85,52 +85,24 @@ function toWaves(members: SchedulePlanMember[]): PlanWave[] {
 }
 
 /** The compact status glyph + label for one member row: a synthetic "pending" before Start, then the live run
- * status once the group is streaming. Kept local (not RunStatusBadge) so "pending" has a first-class rest state. */
+ * status once the group is streaming. Kept local (not RunStatusBadge) so "pending" has a first-class rest state.
+ * Tones follow DESIGN.md 3.2; the icon means color never carries the state alone. */
 function MemberStatusChip({ status }: { status: MemberStatus }) {
-  const theme = useTheme();
-  const spec: Record<MemberStatus, { label: string; color: string; icon: React.ReactNode }> = {
-    pending: {
-      label: "Pending",
-      color: theme.palette.text.disabled,
-      icon: <ScheduleIcon sx={{ fontSize: 16 }} />,
-    },
-    queued: {
-      label: "Queued",
-      color: theme.palette.info.main,
-      icon: <HourglassEmptyIcon sx={{ fontSize: 16 }} />,
-    },
-    running: {
-      label: "Running",
-      color: theme.palette.primary.main,
-      icon: <CircularProgress size={13} thickness={6} color="inherit" />,
-    },
-    succeeded: {
-      label: "Succeeded",
-      color: theme.palette.success.main,
-      icon: <CheckCircleIcon sx={{ fontSize: 16 }} />,
-    },
-    failed: {
-      label: "Failed",
-      color: theme.palette.error.main,
-      icon: <ErrorIcon sx={{ fontSize: 16 }} />,
-    },
-    cancelled: {
-      label: "Cancelled",
-      color: theme.palette.warning.main,
-      icon: <RemoveCircleOutlineIcon sx={{ fontSize: 16 }} />,
-    },
-    skipped: {
-      label: "Skipped",
-      color: theme.palette.text.disabled,
-      icon: <RemoveCircleOutlineIcon sx={{ fontSize: 16 }} />,
-    },
+  const spec: Record<MemberStatus, { label: string; className: string; icon: React.ReactNode }> = {
+    pending: { label: "Pending", className: "text-muted-foreground", icon: <Clock3 className="size-3.5" /> },
+    queued: { label: "Queued", className: "text-warning", icon: <Hourglass className="size-3.5" /> },
+    running: { label: "Running", className: "text-info", icon: <Loader2 className="size-3.5 animate-spin" /> },
+    succeeded: { label: "Succeeded", className: "text-success", icon: <CircleCheck className="size-3.5" /> },
+    failed: { label: "Failed", className: "text-destructive", icon: <CircleX className="size-3.5" /> },
+    cancelled: { label: "Cancelled", className: "text-muted-foreground", icon: <CircleMinus className="size-3.5" /> },
+    skipped: { label: "Skipped", className: "text-muted-foreground", icon: <SkipForward className="size-3.5" /> },
   };
-  const { label, color, icon } = spec[status];
+  const { label, className, icon } = spec[status];
   return (
-    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ color, minWidth: 108, justifyContent: "flex-end" }}>
+    <span className={cn("inline-flex min-w-[108px] items-center justify-end gap-1.5 text-xs font-medium", className)}>
       {icon}
-      <Typography variant="caption" sx={{ fontWeight: 600, color: "inherit" }}>{label}</Typography>
-    </Stack>
+      {label}
+    </span>
   );
 }
 
@@ -140,20 +112,19 @@ export interface RunScheduleDialogProps {
 }
 
 /**
- * The pre-flight run board for a schedule. It reads the same wave-ordered plan a fire enqueues (GET
- * /schedules/{id}/plan), lays the flows out as the batches they run in (a wave is a row of flows that run
- * concurrently; the next wave starts only once the previous is terminal), and gates execution behind Start.
+ * The pre-flight run board for a schedule, as a right-side sheet (DESIGN.md 7.4; the old dialog's testid stays
+ * on the sheet content). It reads the same wave-ordered plan a fire enqueues (GET /schedules/{id}/plan), lays the
+ * flows out as the batches they run in (a wave is a row of flows that run concurrently; the next wave starts only
+ * once the previous is terminal), and gates execution behind Start.
  *
  * On Start it fires the schedule through the existing run-now path (the cadence is untouched). A multi-flow fire
- * becomes a run group, and the board then streams that group live in place: every flow transitions Pending →
- * Queued → Running → its terminal status as the group executes, with a progress rail and a link to the full run
+ * becomes a run group, and the board then streams that group live in place: every flow transitions Pending to
+ * Queued to Running to its terminal status as the group executes, with a progress rail and a link to the full run
  * group view. A single-flow schedule has no group, so Start hands off straight to that run's detail page.
  */
 export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps) {
-  const theme = useTheme();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { enqueueSnackbar } = useSnackbar();
 
   const [groupId, setGroupId] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
@@ -183,18 +154,18 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       if (accepted.groupId !== null) {
-        // A multi-flow fire streams live in this board; keep the dialog open and switch to the running phase.
+        // A multi-flow fire streams live in this board; keep the sheet open and switch to the running phase.
         setGroupId(accepted.groupId);
         return;
       }
 
       // A single-flow schedule enqueues one run with no group to stream, so hand off to that run's detail page.
-      enqueueSnackbar("Run started.", { variant: "success" });
+      toast.success(`Run started for schedule "${schedule.name}"`);
       onClose();
       navigate(`/runs/${accepted.runId}`);
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
     },
   });
 
@@ -250,321 +221,320 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   };
 
   return (
-    <Dialog
+    <Sheet
       open
-      onClose={closeDisabled ? undefined : onClose}
-      fullWidth
-      maxWidth="sm"
-      data-testid="run-schedule-dialog"
-      PaperProps={{ sx: { backgroundImage: "none" } }}
+      onOpenChange={(next) => {
+        if (!next && !closeDisabled) {
+          onClose();
+        }
+      }}
     >
-      <DialogTitle sx={{ pb: 1.5 }}>
-        <Stack direction="row" spacing={1.5} alignItems="center">
-          <Box
-            sx={{
-              width: 40,
-              height: 40,
-              borderRadius: 1.5,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: theme.palette.warning.main,
-              bgcolor: alpha(theme.palette.warning.main, 0.14),
-            }}
-          >
-            <BoltIcon />
-          </Box>
-          <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-            <Typography variant="h6" sx={{ lineHeight: 1.2 }}>Run schedule</Typography>
-            <Typography variant="body2" color="text.secondary" noWrap data-testid="run-schedule-name">
-              {schedule.name}
-            </Typography>
-          </Box>
-          <IconButton onClick={onClose} disabled={closeDisabled} size="small" aria-label="Close">
-            <CloseIcon fontSize="small" />
-          </IconButton>
-        </Stack>
-      </DialogTitle>
+      <SheetContent className="w-full gap-0 sm:max-w-xl" data-testid="run-schedule-dialog">
+        <SheetHeader className="border-b">
+          <div className="flex items-center gap-3 pr-8">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
+              <Zap className="size-5" />
+            </div>
+            <div className="min-w-0 grow">
+              <SheetTitle>Run schedule</SheetTitle>
+              <SheetDescription className="truncate font-mono text-[12px]" data-testid="run-schedule-name">
+                {schedule.name}
+              </SheetDescription>
+            </div>
+          </div>
+        </SheetHeader>
 
-      <DialogContent dividers>
-        {plan.isError && (
-          isApiError(plan.error)
-            ? <CorrelationError error={plan.error} />
-            : <Alert severity="error">{String(plan.error)}</Alert>
-        )}
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
+          {plan.isError && (
+            isApiError(plan.error)
+              ? <CorrelationError error={plan.error} />
+              : <p className="text-[13px] text-destructive">{String(plan.error)}</p>
+          )}
 
-        {plan.isLoading && (
-          <Stack spacing={1.5} data-testid="run-schedule-loading">
-            <Skeleton variant="rounded" height={64} />
-            <Skeleton variant="rounded" height={120} />
-            <Skeleton variant="rounded" height={120} />
-          </Stack>
-        )}
+          {plan.isLoading && (
+            <div className="flex flex-col gap-3" data-testid="run-schedule-loading">
+              <Skeleton className="h-16 w-full rounded-lg" />
+              <Skeleton className="h-28 w-full rounded-lg" />
+              <Skeleton className="h-28 w-full rounded-lg" />
+            </div>
+          )}
 
-        {plan.isSuccess && (
-          <Stack spacing={2}>
-            {run.isError && isApiError(run.error) && <CorrelationError error={run.error} />}
+          {plan.isSuccess && (
+            <>
+              {run.isError && isApiError(run.error) && <CorrelationError error={run.error} />}
 
-            {/* Summary rail: what one fire runs and on what cadence. */}
-            <Box
-              sx={{
-                border: 1,
-                borderColor: "divider",
-                borderRadius: 1.5,
-                p: 1.5,
-                bgcolor: "action.hover",
-              }}
-            >
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
-                <Typography variant="subtitle2" data-testid="run-schedule-summary">
-                  {memberCount} {memberCount === 1 ? "flow" : "flows"}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">·</Typography>
-                <Typography variant="subtitle2">
-                  {waves.length} {waves.length === 1 ? "wave" : "waves"}
-                </Typography>
-                <Box sx={{ flexGrow: 1 }} />
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={describeTrigger(plan.data.cron, plan.data.intervalSeconds)}
-                  data-testid="run-schedule-cadence"
-                />
-                {!schedule.enabled && <Chip size="small" color="default" variant="outlined" label="disabled" />}
-                {schedule.paused && <Chip size="small" color="warning" label="paused" />}
-              </Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
-                {phase === "running"
-                  ? `${doneCount} of ${memberCount} done${failedCount > 0 ? `, ${failedCount} failed` : ""}.`
-                  : (
-                    <>
-                      Next scheduled fire <RelativeTime value={plan.data.nextFireUtc} />. Starting now runs it on
-                      demand and does not move the schedule.
-                    </>
+              {/* Summary rail: what one fire runs and on what cadence. */}
+              <div className="rounded-md border bg-muted/50 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[13px] font-medium" data-testid="run-schedule-summary">
+                    {memberCount} {memberCount === 1 ? "flow" : "flows"}
+                  </span>
+                  <span className="text-[13px] text-muted-foreground">·</span>
+                  <span className="text-[13px] font-medium">
+                    {waves.length} {waves.length === 1 ? "wave" : "waves"}
+                  </span>
+                  <span className="grow" />
+                  <Badge variant="outline" className="font-mono" data-testid="run-schedule-cadence">
+                    {describeTrigger(plan.data.cron, plan.data.intervalSeconds)}
+                  </Badge>
+                  {!schedule.enabled && <Badge variant="outline" className="text-muted-foreground">disabled</Badge>}
+                  {schedule.paused && (
+                    <Badge className="border-transparent bg-warning/15 text-warning">paused</Badge>
                   )}
-              </Typography>
-            </Box>
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {phase === "running"
+                    ? `${doneCount} of ${memberCount} done${failedCount > 0 ? `, ${failedCount} failed` : ""}.`
+                    : (
+                      <>
+                        Next scheduled fire <RelativeTime value={plan.data.nextFireUtc} />. Starting now runs it on
+                        demand and does not move the schedule.
+                      </>
+                    )}
+                </p>
+              </div>
 
-            {(!schedule.enabled || schedule.paused) && phase === "preview" && (
-              <Alert severity="info" data-testid="run-schedule-inactive-note">
-                This schedule is {schedule.paused ? "paused" : "disabled"}, so it will not fire on its own. Starting
-                here runs its flows once, immediately, without changing that.
-              </Alert>
-            )}
+              {(!schedule.enabled || schedule.paused) && phase === "preview" && (
+                <Alert data-testid="run-schedule-inactive-note">
+                  <Info />
+                  <AlertDescription>
+                    This schedule is {schedule.paused ? "paused" : "disabled"}, so it will not fire on its own.
+                    Starting here runs its flows once, immediately, without changing that.
+                  </AlertDescription>
+                </Alert>
+              )}
 
-            {batches.length > 1 && (
-              <Box data-testid="run-schedule-batch-filter">
-                <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.75 }}>
-                  <Typography variant="caption" color="text.secondary">Batches</Typography>
-                  <Typography variant="caption" color="text.disabled">
-                    {selectedBatches.length === 0 ? "all" : `${selectedBatches.length} selected`}
-                  </Typography>
-                </Stack>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  <Chip
-                    label="All batches"
-                    size="small"
-                    color={selectedBatches.length === 0 ? "primary" : "default"}
-                    variant={selectedBatches.length === 0 ? "filled" : "outlined"}
-                    onClick={phase === "running" ? undefined : () => setSelectedBatches([])}
-                    disabled={phase === "running"}
-                    data-testid="run-schedule-batch-all"
+              {batches.length > 1 && (
+                <div data-testid="run-schedule-batch-filter">
+                  <div className="mb-1.5 flex items-baseline gap-2">
+                    <span className="text-xs text-muted-foreground">Batches</span>
+                    <span className="text-xs text-muted-foreground/70">
+                      {selectedBatches.length === 0 ? "all" : `${selectedBatches.length} selected`}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBatches([])}
+                      disabled={phase === "running"}
+                      className={cn(
+                        badgeVariants({ variant: selectedBatches.length === 0 ? "default" : "outline" }),
+                        "cursor-pointer disabled:cursor-default disabled:opacity-50",
+                      )}
+                      data-testid="run-schedule-batch-all"
+                    >
+                      All batches
+                    </button>
+                    {batches.map((b) => {
+                      const on = selectedBatches.includes(b);
+                      return (
+                        <button
+                          key={b}
+                          type="button"
+                          onClick={() =>
+                            setSelectedBatches((prev) =>
+                              prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b])}
+                          disabled={phase === "running"}
+                          className={cn(
+                            badgeVariants({ variant: on ? "default" : "outline" }),
+                            "cursor-pointer font-mono disabled:cursor-default",
+                            phase === "running" && !on && "opacity-50",
+                          )}
+                          data-testid={`run-schedule-batch-${b}`}
+                        >
+                          {b}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {phase === "running" && (
+                <div>
+                  <Progress
+                    value={progress}
+                    className={cn(
+                      "h-1.5",
+                      failedCount > 0
+                        ? "[&_[data-slot=progress-indicator]]:bg-destructive"
+                        : ended && "[&_[data-slot=progress-indicator]]:bg-success",
+                    )}
+                    data-testid="run-schedule-progress"
                   />
-                  {batches.map((b) => {
-                    const on = selectedBatches.includes(b);
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        !ended && (connected ? "text-success" : "text-warning"),
+                        ended && "text-muted-foreground",
+                      )}
+                      data-testid="run-schedule-stream-state"
+                    >
+                      {ended ? "finished" : connected ? "live" : "reconnecting"}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {ended
+                        ? failedCount > 0
+                          ? `Finished with ${failedCount} failed.`
+                          : "All flows finished."
+                        : "Executing in dependency order."}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {nothingToRun ? (
+                <Alert data-testid="run-schedule-empty">
+                  <TriangleAlert className="text-warning" />
+                  <AlertDescription>
+                    <p>
+                      No runnable flow joins this schedule right now. A flow joins with{" "}
+                      <code className="font-mono text-xs">schedule: {schedule.name}</code>, and must be active and
+                      not <code className="font-mono text-xs">mode: manual</code>.
+                    </p>
+                  </AlertDescription>
+                </Alert>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {waves.map((planWave, index) => {
+                    // The wave rails wear the chart series palette in fixed slot order (DESIGN.md 3.4): the rail
+                    // is categorical (which wave), never a status.
+                    const accent = seriesColor(index);
+                    const running = phase === "running";
+                    const waveDone = running
+                      && planWave.members.every((m) => {
+                        const s = liveByFlow.get(m.flowName)?.status;
+                        return s !== undefined && TERMINAL.has(s);
+                      });
+                    const waveActive = running
+                      && !waveDone
+                      && planWave.members.some((m) => {
+                        const s = liveByFlow.get(m.flowName)?.status;
+                        return s === "running" || s === "queued";
+                      });
                     return (
-                      <Chip
-                        key={b}
-                        label={b}
-                        size="small"
-                        color={on ? "primary" : "default"}
-                        variant={on ? "filled" : "outlined"}
-                        onClick={phase === "running"
-                          ? undefined
-                          : () => setSelectedBatches((prev) =>
-                            prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b])}
-                        disabled={phase === "running" && !on}
-                        data-testid={`run-schedule-batch-${b}`}
-                      />
+                      <div key={planWave.wave}>
+                        {index > 0 && (
+                          <div className="my-0.5 flex justify-center text-muted-foreground">
+                            <ChevronDown className="size-4" />
+                          </div>
+                        )}
+                        <div
+                          className="overflow-hidden rounded-md border"
+                          style={{
+                            borderLeft: `3px solid ${accent}`,
+                            backgroundColor: tint(accent, waveActive ? 8 : 3),
+                          }}
+                        >
+                          <div
+                            className="flex items-center gap-2 px-3 py-2"
+                            style={{ backgroundColor: tint(accent, 6) }}
+                          >
+                            <span className="text-[11px] font-medium uppercase tracking-wider">
+                              Wave {index + 1}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {planWave.members.length} {planWave.members.length === 1 ? "flow" : "flows"} · concurrent
+                            </span>
+                            <span className="grow" />
+                            <span className="text-xs text-muted-foreground">
+                              {index === 0 ? "runs first" : "after previous"}
+                            </span>
+                            {waveDone && <CircleCheck className="size-4 text-success" />}
+                          </div>
+                          <div className="divide-y">
+                            {planWave.members.map((member) => {
+                              const live = liveByFlow.get(member.flowName);
+                              // A member becomes a link once its fire has produced a run; before Start (and for skipped
+                              // flows that never ran) there is nothing to open, so the row stays static.
+                              const runId = live?.runId ?? null;
+                              const openRun = runId === null ? undefined : () => openMemberRun(runId);
+                              return (
+                                <div
+                                  key={member.flowName}
+                                  onClick={openRun}
+                                  className={cn(
+                                    "flex items-center gap-2 px-3 py-2",
+                                    openRun !== undefined && "cursor-pointer hover:bg-accent/50",
+                                  )}
+                                  data-testid="run-schedule-member"
+                                >
+                                  <div className="min-w-0 grow">
+                                    <div className="truncate font-mono text-[12px] font-medium">
+                                      {member.flowName}
+                                    </div>
+                                    <div className="truncate text-xs text-muted-foreground">
+                                      {member.flowKind}
+                                      {running && live?.lastAction ? ` · ${live.lastAction}` : ""}
+                                    </div>
+                                  </div>
+                                  <MemberStatusChip status={statusOf(member.flowName)} />
+                                  {openRun !== undefined && (
+                                    <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
                     );
                   })}
-                </Stack>
-              </Box>
-            )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
-            {phase === "running" && (
-              <Box>
-                <LinearProgress
-                  variant="determinate"
-                  value={progress}
-                  color={failedCount > 0 ? "error" : ended ? "success" : "primary"}
-                  sx={{ height: 6, borderRadius: 3 }}
-                  data-testid="run-schedule-progress"
-                />
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    color={ended ? "default" : connected ? "success" : "warning"}
-                    label={ended ? "finished" : connected ? "live" : "reconnecting"}
-                    data-testid="run-schedule-stream-state"
-                  />
-                  <Typography variant="caption" color="text.secondary">
-                    {ended
-                      ? failedCount > 0
-                        ? `Finished with ${failedCount} failed.`
-                        : "All flows finished."
-                      : "Executing in dependency order."}
-                  </Typography>
-                </Stack>
-              </Box>
-            )}
-
-            {nothingToRun ? (
-              <Alert severity="warning" data-testid="run-schedule-empty">
-                No runnable flow joins this schedule right now. A flow joins with <code>schedule: {schedule.name}</code>,
-                and must be active and not <code>mode: manual</code>.
-              </Alert>
-            ) : (
-              <Stack spacing={1}>
-                {waves.map((planWave, index) => {
-                  const accent = theme.palette[WAVE_ACCENTS[index % WAVE_ACCENTS.length]].main;
-                  const running = phase === "running";
-                  const waveDone = running
-                    && planWave.members.every((m) => {
-                      const s = liveByFlow.get(m.flowName)?.status;
-                      return s !== undefined && TERMINAL.has(s);
-                    });
-                  const waveActive = running
-                    && !waveDone
-                    && planWave.members.some((m) => {
-                      const s = liveByFlow.get(m.flowName)?.status;
-                      return s === "running" || s === "queued";
-                    });
-                  return (
-                    <Box key={planWave.wave}>
-                      {index > 0 && (
-                        <Stack alignItems="center" sx={{ color: "text.disabled", my: 0.25 }}>
-                          <KeyboardArrowDownIcon fontSize="small" />
-                        </Stack>
-                      )}
-                      <Box
-                        sx={{
-                          borderRadius: 1.5,
-                          border: 1,
-                          borderColor: "divider",
-                          borderLeft: 3,
-                          borderLeftColor: accent,
-                          bgcolor: alpha(accent, waveActive ? 0.08 : 0.03),
-                          overflow: "hidden",
-                        }}
-                      >
-                        <Stack
-                          direction="row"
-                          spacing={1}
-                          alignItems="center"
-                          sx={{ px: 1.5, py: 1, bgcolor: alpha(accent, 0.06) }}
-                        >
-                          <Typography variant="overline" sx={{ color: accent, fontWeight: 700, letterSpacing: 0.5 }}>
-                            Wave {index + 1}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {planWave.members.length} {planWave.members.length === 1 ? "flow" : "flows"} · concurrent
-                          </Typography>
-                          <Box sx={{ flexGrow: 1 }} />
-                          {index === 0 ? (
-                            <Typography variant="caption" color="text.secondary">runs first</Typography>
-                          ) : (
-                            <Typography variant="caption" color="text.secondary">after previous</Typography>
-                          )}
-                          {waveDone && <CheckCircleIcon sx={{ fontSize: 16, color: theme.palette.success.main }} />}
-                        </Stack>
-                        <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
-                          {planWave.members.map((member) => {
-                            const live = liveByFlow.get(member.flowName);
-                            // A member becomes a link once its fire has produced a run; before Start (and for skipped
-                            // flows that never ran) there is nothing to open, so the row stays static.
-                            const runId = live?.runId ?? null;
-                            const openRun = runId === null ? undefined : () => openMemberRun(runId);
-                            return (
-                              <Stack
-                                key={member.flowName}
-                                direction="row"
-                                spacing={1}
-                                alignItems="center"
-                                onClick={openRun}
-                                sx={{
-                                  px: 1.5,
-                                  py: 1,
-                                  ...(openRun
-                                    ? { cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }
-                                    : {}),
-                                }}
-                                data-testid="run-schedule-member"
-                              >
-                                <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                                    {member.flowName}
-                                  </Typography>
-                                  <Typography variant="caption" color="text.secondary" noWrap>
-                                    {member.flowKind}
-                                    {running && live?.lastAction ? ` · ${live.lastAction}` : ""}
-                                  </Typography>
-                                </Box>
-                                <MemberStatusChip status={statusOf(member.flowName)} />
-                                {openRun && (
-                                  <OpenInNewIcon sx={{ fontSize: 15, color: "text.disabled", flexShrink: 0 }} />
-                                )}
-                              </Stack>
-                            );
-                          })}
-                        </Stack>
-                      </Box>
-                    </Box>
-                  );
-                })}
-              </Stack>
-            )}
-          </Stack>
-        )}
-      </DialogContent>
-
-      <DialogActions sx={{ px: 3, py: 2 }}>
-        {phase === "preview" ? (
-          <>
-            <Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>
-              {nothingToRun ? "Nothing to run." : "Review the waves, then start."}
-            </Typography>
-            <Button onClick={onClose} disabled={closeDisabled}>Cancel</Button>
-            <Button
-              variant="contained"
-              color="warning"
-              startIcon={run.isPending ? <CircularProgress size={16} color="inherit" /> : <PlayArrowIcon />}
-              onClick={() => run.mutate()}
-              disabled={!canStart}
-              data-testid="run-schedule-start"
-            >
-              Start
-            </Button>
-          </>
-        ) : (
-          <>
-            <Tooltip title="Open the full run group view">
-              <Button
-                startIcon={<OpenInNewIcon fontSize="small" />}
-                onClick={viewFullRun}
-                sx={{ mr: "auto" }}
-                data-testid="run-schedule-view-group"
-              >
-                View full run
+        <SheetFooter className="flex-row items-center gap-2 border-t">
+          {phase === "preview" ? (
+            <>
+              <span className="mr-auto text-xs text-muted-foreground">
+                {nothingToRun ? "Nothing to run." : "Review the waves, then start."}
+              </span>
+              <Button variant="ghost" size="sm" onClick={onClose} disabled={closeDisabled}>
+                Cancel
               </Button>
-            </Tooltip>
-            <Button variant={ended ? "contained" : "outlined"} onClick={onClose} data-testid="run-schedule-close">
-              {ended ? "Done" : "Close"}
-            </Button>
-          </>
-        )}
-      </DialogActions>
-    </Dialog>
+              <Button
+                size="sm"
+                onClick={() => run.mutate()}
+                disabled={!canStart}
+                data-testid="run-schedule-start"
+              >
+                {run.isPending ? <Loader2 className="animate-spin" /> : <Play />}
+                Start
+              </Button>
+            </>
+          ) : (
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={viewFullRun}
+                    className="mr-auto"
+                    data-testid="run-schedule-view-group"
+                  >
+                    <ExternalLink />
+                    View full run
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Open the full run group view</TooltipContent>
+              </Tooltip>
+              <Button
+                variant={ended ? "default" : "outline"}
+                size="sm"
+                onClick={onClose}
+                data-testid="run-schedule-close"
+              >
+                {ended ? "Done" : "Close"}
+              </Button>
+            </>
+          )}
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

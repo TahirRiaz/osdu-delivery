@@ -1,13 +1,11 @@
 import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Paper from "@mui/material/Paper";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import SyncIcon from "@mui/icons-material/Sync";
+import { Loader2, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isApiError } from "../../api/client";
 import { repoSourceApi } from "../../api/endpoints";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -32,7 +30,6 @@ export default function CatalogPage() {
   const selectedId = searchParams.get("node");
   const selectedNode = useMemo(() => (selectedId === null ? null : decodeNodeId(selectedId)), [selectedId]);
 
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
 
   // The catalog is built by the managed sync of the registered git sources, so "recompute" forces each enabled
@@ -71,11 +68,13 @@ export default function CatalogPage() {
       return sources.length;
     },
     onSuccess: (count) => {
-      enqueueSnackbar(`Recompute complete for ${count} source${count === 1 ? "" : "s"}.`, { variant: "success" });
+      toast.success(`Recompute complete for ${count} source${count === 1 ? "" : "s"}.`);
       void queryClient.invalidateQueries();
     },
     onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+      toast.error(isApiError(error)
+        ? error.detail ?? error.title
+        : error instanceof Error ? error.message : String(error)),
   });
 
   // The tree starts with the roots open, plus the deep-linked node's ancestor chain so it is visible.
@@ -104,38 +103,40 @@ export default function CatalogPage() {
         title="Catalog"
         subtitle="Every object and flow discovered from the flow YAML and the lineage analysis, as a browsable tree."
         actions={(
-          <Tooltip title="Re-sync every enabled git source now and recompute lineage, filling object code and columns from the run history. Refreshes when the sync completes.">
-            <span>
-              <Button
-                variant="outlined"
-                startIcon={<SyncIcon fontSize="small" />}
-                onClick={() => recompute.mutate()}
-                disabled={recompute.isPending || sourcesQuery.data === undefined}
-                data-testid="catalog-recompute"
-              >
-                {recompute.isPending ? "Recomputing…" : "Recompute lineage"}
-              </Button>
-            </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => recompute.mutate()}
+                  disabled={recompute.isPending || sourcesQuery.data === undefined}
+                  data-testid="catalog-recompute"
+                >
+                  {recompute.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                  {recompute.isPending ? "Recomputing…" : "Recompute lineage"}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              Re-sync every enabled git source now and recompute lineage, filling object code and columns from
+              the run history. Refreshes when the sync completes.
+            </TooltipContent>
           </Tooltip>
         )}
       />
-      <Box
-        sx={{
-          display: "grid",
-          gap: 2,
-          gridTemplateColumns: { xs: "1fr", md: "minmax(320px, 420px) minmax(0, 1fr)" },
-          alignItems: "start",
-        }}
-      >
-        <Paper variant="outlined" sx={{ p: 1.5, maxHeight: "calc(100vh - 220px)", overflow: "auto" }}>
+
+      {/* The explorer surface: a fixed-width tree column beside the scrollable details area. */}
+      <div className="flex flex-col overflow-hidden rounded-lg border bg-card md:flex-row">
+        <div className="max-h-80 shrink-0 overflow-y-auto border-b p-2 md:max-h-[calc(100vh-220px)] md:min-h-80 md:w-80 md:border-b-0 md:border-r">
           <CatalogTree selectedId={selectedId} onSelect={onSelect} initialExpanded={initialExpanded} />
-        </Paper>
-        <Paper variant="outlined" sx={{ p: 2.5, minHeight: 320 }}>
+        </div>
+        <div className="min-h-80 min-w-0 flex-1 overflow-y-auto p-4 md:max-h-[calc(100vh-220px)]">
           {selectedNode === null && (
-            <Typography variant="body2" color="text.secondary" data-testid="catalog-details-placeholder">
+            <p className="text-[13px] text-muted-foreground" data-testid="catalog-details-placeholder">
               Select an object or a flow in the tree to see its details: overview, columns, code, and the
               relationships extracted from the SQL.
-            </Typography>
+            </p>
           )}
           {selectedNode !== null && selectedNode.type === "object" && (
             <ObjectDetailsPanel objectKey={selectedNode.objectKey} />
@@ -144,12 +145,12 @@ export default function CatalogPage() {
             <FlowDetailsPanel repoId={selectedNode.repoId} pipelineId={selectedNode.pipelineId} />
           )}
           {selectedNode !== null && selectedNode.type !== "object" && selectedNode.type !== "flow" && (
-            <Typography variant="body2" color="text.secondary" data-testid="catalog-details-folder">
+            <p className="text-[13px] text-muted-foreground" data-testid="catalog-details-folder">
               This is a grouping level. Expand it in the tree and select an object or a flow for details.
-            </Typography>
+            </p>
           )}
-        </Paper>
-      </Box>
+        </div>
+      </div>
     </Page>
   );
 }

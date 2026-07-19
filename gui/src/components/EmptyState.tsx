@@ -1,10 +1,7 @@
 import type { ReactNode } from "react";
-import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
 
 interface EmptyStateProps {
-  /** An optional muted icon above the text. */
+  /** An optional muted icon above the text (a lucide icon; it is sized here). */
   icon?: ReactNode;
   title: ReactNode;
   /** An optional secondary line explaining what fills this space. */
@@ -15,21 +12,21 @@ interface EmptyStateProps {
 }
 
 /**
- * The one empty / no-data panel: a centered, muted message with an optional icon, secondary description, and
- * action. Used by the table shell's empty branch and by every page's own no-data state (search hint, graph
- * empty, no pipelines) so they all read the same instead of ranging from bare text to full panels.
+ * The one empty / no-data panel (DESIGN.md 8.3): a centered, muted message with an optional icon,
+ * secondary description, and action. Used by the table shell's empty branch and by every page's own
+ * no-data state so they all read the same.
  */
 export function EmptyState({ icon, title, description, action, "data-testid": testId }: EmptyStateProps) {
   return (
-    <Stack spacing={1} alignItems="center" textAlign="center" sx={{ px: 3, py: 6 }} data-testid={testId}>
+    <div className="flex flex-col items-center gap-1 px-6 py-12 text-center" data-testid={testId}>
       {icon !== undefined && (
-        <Box sx={{ color: "text.disabled", lineHeight: 0, mb: 0.5, "& svg": { fontSize: 40 } }}>{icon}</Box>
+        <div className="mb-1 text-muted-foreground/50 [&_svg]:size-10 [&_svg]:stroke-[1.25]">{icon}</div>
       )}
-      <Typography variant="subtitle1" color="text.secondary">{title}</Typography>
+      <div className="text-sm font-medium text-muted-foreground">{title}</div>
       {description !== undefined && (
-        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 460 }}>{description}</Typography>
+        <div className="max-w-md text-[13px] text-muted-foreground/80">{description}</div>
       )}
-      {action !== undefined && <Box sx={{ mt: 1 }}>{action}</Box>}
-    </Stack>
+      {action !== undefined && <div className="mt-2">{action}</div>}
+    </div>
   );
 }

@@ -1,7 +1,6 @@
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
 import type { Node } from "../../api/types";
 import { nodeApi } from "../../api/endpoints";
+import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
@@ -15,20 +14,20 @@ const columns: Column<Node>[] = [
   {
     id: "name",
     header: "Name",
-    render: (row) => <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.name}</Typography>,
+    render: (row) => <span className="font-mono text-[12px] font-medium">{row.name}</span>,
   },
   { id: "status", header: "Status", render: (row) => <OnlineBadge online={row.online} /> },
-  { id: "version", header: "Version", render: (row) => row.version ?? "-" },
+  { id: "version", header: "Version", render: (row) => <Mono>{row.version ?? "-"}</Mono> },
   { id: "firstSeen", header: "First seen", render: (row) => <RelativeTime value={row.firstSeenUtc} /> },
   { id: "lastSeen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
   {
     id: "actions",
     header: "",
     render: (row) => (
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+      <div className="flex items-center justify-end gap-2">
         <NodeRestartButton node={row} />
         <NodeDeleteButton node={row} />
-      </Stack>
+      </div>
     ),
   },
 ];
@@ -43,19 +42,17 @@ export default function NodesPage() {
         subtitle="A node is online when it heartbeated within the last minute; anything older shows as offline."
       />
 
-      <Stack spacing={3}>
-        <WorkerPoolsPanel />
+      <WorkerPoolsPanel />
 
-        <PagedTable
-          queryKey={["nodes", "list"]}
-          fetchPage={(page, pageSize) => nodeApi.list({ page, pageSize })}
-          columns={columns}
-          rowKey={(row) => row.name}
-          pollMs={5000}
-          emptyMessage="No worker nodes have registered yet."
-          data-testid="nodes-table"
-        />
-      </Stack>
+      <PagedTable
+        queryKey={["nodes", "list"]}
+        fetchPage={(page, pageSize) => nodeApi.list({ page, pageSize })}
+        columns={columns}
+        rowKey={(row) => row.name}
+        pollMs={5000}
+        emptyMessage="No worker nodes have registered yet."
+        data-testid="nodes-table"
+      />
     </Page>
   );
 }

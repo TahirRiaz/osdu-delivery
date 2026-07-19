@@ -1,19 +1,20 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Divider from "@mui/material/Divider";
-import Drawer from "@mui/material/Drawer";
-import IconButton from "@mui/material/IconButton";
-import MenuItem from "@mui/material/MenuItem";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import CloseIcon from "@mui/icons-material/Close";
+import { Network, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
 import type { LineageObject, LineageObjectColumn } from "../../api/types";
@@ -21,6 +22,7 @@ import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailPair } from "../../components/DetailPair";
 import { FilterBar } from "../../components/FilterBar";
+import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
@@ -39,28 +41,33 @@ function useDebounced(value: string, delayMs: number): string {
 }
 
 const objectTableColumns: Column<LineageObject>[] = [
-  { id: "database", header: "Database", render: (row) => row.database ?? "-" },
-  { id: "schema", header: "Schema", render: (row) => row.schema ?? "-" },
+  { id: "database", header: "Database", render: (row) => <Mono>{row.database ?? "-"}</Mono> },
+  { id: "schema", header: "Schema", render: (row) => <Mono>{row.schema ?? "-"}</Mono> },
   {
     id: "name",
     header: "Name",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
+    render: (row) => <span className="font-mono text-[12px] font-medium">{row.name}</span>,
   },
   { id: "level", header: "Level", render: (row) => row.level ?? "-", width: 72 },
-  { id: "kind", header: "Kind", render: (row) => <Chip label={row.kind} size="small" /> },
-  { id: "serverRef", header: "Server", render: (row) => row.serverRef },
+  { id: "kind", header: "Kind", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "serverRef", header: "Server", render: (row) => <Mono>{row.serverRef}</Mono> },
   { id: "lastSeen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
 ];
 
 const columnTableColumns: Column<LineageObjectColumn>[] = [
-  { id: "ordinal", header: "#", render: (row) => row.ordinal, width: 56 },
-  { id: "name", header: "Name", render: (row) => row.name },
-  { id: "dataType", header: "Data type", render: (row) => row.dataType ?? "-" },
+  {
+    id: "ordinal",
+    header: "#",
+    render: (row) => <span className="font-mono tabular-nums">{row.ordinal}</span>,
+    width: 56,
+  },
+  { id: "name", header: "Name", render: (row) => <Mono>{row.name}</Mono> },
+  { id: "dataType", header: "Data type", render: (row) => <Mono>{row.dataType ?? "-"}</Mono> },
   {
     id: "nullable",
     header: "Nullable",
     render: (row) => (
-      <Chip label={row.nullable ? "null" : "not null"} size="small" variant={row.nullable ? "outlined" : "filled"} />
+      <Badge variant={row.nullable ? "outline" : "secondary"}>{row.nullable ? "null" : "not null"}</Badge>
     ),
   },
 ];
@@ -74,55 +81,55 @@ function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
 
   if (detail.isPending) {
     return (
-      <Box sx={{ p: 3 }}>
-        <Skeleton width={240} height={36} />
-        <Skeleton width="100%" />
-        <Skeleton width="80%" />
-        <Skeleton width="60%" />
-        <Skeleton variant="rectangular" height={240} sx={{ mt: 2 }} />
-      </Box>
+      <div className="flex flex-col gap-2 p-4">
+        <Skeleton className="h-8 w-60" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-4/5" />
+        <Skeleton className="h-4 w-3/5" />
+        <Skeleton className="mt-2 h-60 w-full" />
+      </div>
     );
   }
 
   if (detail.isError) {
     return (
-      <Box sx={{ p: 3 }}>
+      <div className="p-4">
         {isApiError(detail.error)
           ? <CorrelationError error={detail.error} />
-          : <Typography color="error">{String(detail.error)}</Typography>}
-      </Box>
+          : <p className="text-[13px] text-destructive">{String(detail.error)}</p>}
+      </div>
     );
   }
 
   const data = detail.data;
   return (
-    <Box sx={{ p: 3 }}>
-      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 1 }}>
-        <Typography variant="h6" sx={{ minWidth: 0, wordBreak: "break-word" }}>{data.name}</Typography>
-        <Chip label={data.kind} size="small" />
-      </Stack>
-      <Typography variant="body2" sx={{ fontFamily: "monospace", wordBreak: "break-all", mb: 2 }} data-testid="object-key">
+    <div className="p-4">
+      <div className="mb-1 flex items-center gap-2">
+        <h2 className="min-w-0 break-words font-mono text-base font-medium">{data.name}</h2>
+        <Badge variant="secondary">{data.kind}</Badge>
+      </div>
+      <div className="mb-4 break-all font-mono text-xs text-muted-foreground" data-testid="object-key">
         {data.key}
-      </Typography>
+      </div>
 
-      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: "repeat(2, minmax(0, 1fr))", mb: 2 }}>
-        <DetailPair label="Server">{data.serverRef}</DetailPair>
-        <DetailPair label="Database">{data.database ?? "-"}</DetailPair>
-        <DetailPair label="Schema">{data.schema ?? "-"}</DetailPair>
+      <div className="mb-4 grid grid-cols-2 gap-3">
+        <DetailPair label="Server"><Mono>{data.serverRef}</Mono></DetailPair>
+        <DetailPair label="Database"><Mono>{data.database ?? "-"}</Mono></DetailPair>
+        <DetailPair label="Schema"><Mono>{data.schema ?? "-"}</Mono></DetailPair>
         <DetailPair label="Level">{data.level ?? "-"}</DetailPair>
         <DetailPair label="First seen"><RelativeTime value={data.firstSeenUtc} /></DetailPair>
         <DetailPair label="Last seen"><RelativeTime value={data.lastSeenUtc} /></DetailPair>
-      </Box>
+      </div>
 
       {data.definition !== null && (
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Definition</Typography>
+        <div className="mb-4">
+          <h3 className="mb-1.5 text-[13px] font-medium">Definition</h3>
           <CodeView value={data.definition} language="sql" height={320} data-testid="object-definition" />
-        </Box>
+        </div>
       )}
 
-      <Divider sx={{ mb: 2 }} />
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>Columns</Typography>
+      <Separator className="mb-4" />
+      <h3 className="mb-1.5 text-[13px] font-medium">Columns</h3>
       <PagedTable<LineageObjectColumn>
         queryKey={["lineage-object-columns", objectKey]}
         fetchPage={(page, pageSize) => lineageApi.objectColumns(objectKey, { page, pageSize })}
@@ -131,13 +138,13 @@ function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
         emptyMessage="No columns recorded for this object."
         data-testid="object-columns-table"
       />
-    </Box>
+    </div>
   );
 }
 
 /**
  * The lineage catalog: every object the analyzer has seen, filterable by name, kind, and server, with a
- * detail drawer (definition + columns) per object. The search page deep-links here with ?name=.
+ * detail sheet (definition + columns) per object. The search page deep-links here with ?name=.
  */
 export default function LineagePage() {
   const navigate = useNavigate();
@@ -156,46 +163,44 @@ export default function LineagePage() {
         title="Lineage"
         actions={(
           <Button
-            variant="outlined"
-            startIcon={<AccountTreeIcon />}
+            variant="outline"
+            size="sm"
             onClick={() => navigate("/lineage")}
             data-testid="open-lineage-graph"
           >
+            <Network />
             Graph view
           </Button>
         )}
       />
 
       <FilterBar>
-        <TextField
-          label="Name"
-          size="small"
+        <Input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          inputProps={{ "data-testid": "filter-object-name" }}
-          sx={{ minWidth: 220 }}
+          placeholder="Name"
+          aria-label="Name"
+          data-testid="filter-object-name"
+          className="h-8 w-56"
         />
-        <TextField
-          select
-          label="Kind"
-          size="small"
-          value={kind}
-          onChange={(event) => setKind(event.target.value)}
-          inputProps={{ "data-testid": "filter-object-kind" }}
-          sx={{ minWidth: 180 }}
-        >
-          <MenuItem value="all">All kinds</MenuItem>
-          {OBJECT_KINDS.map((option) => (
-            <MenuItem key={option} value={option}>{option}</MenuItem>
-          ))}
-        </TextField>
-        <TextField
-          label="Server ref"
-          size="small"
+        <Select value={kind} onValueChange={setKind}>
+          <SelectTrigger size="sm" className="h-8 w-40" aria-label="Kind" data-testid="filter-object-kind">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All kinds</SelectItem>
+            {OBJECT_KINDS.map((option) => (
+              <SelectItem key={option} value={option}>{option}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
           value={serverRef}
           onChange={(event) => setServerRef(event.target.value)}
-          inputProps={{ "data-testid": "filter-server-ref" }}
-          sx={{ minWidth: 220 }}
+          placeholder="Server ref"
+          aria-label="Server ref"
+          data-testid="filter-server-ref"
+          className="h-8 w-56"
         />
       </FilterBar>
 
@@ -215,20 +220,39 @@ export default function LineagePage() {
         data-testid="lineage-objects-table"
       />
 
-      <Drawer
-        anchor="right"
+      <Sheet
         open={selectedKey !== null}
-        onClose={() => setSelectedKey(null)}
-        data-testid="object-drawer"
-        PaperProps={{ sx: { width: { xs: "100%", sm: 560 } } }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedKey(null);
+          }
+        }}
       >
-        <Box sx={{ display: "flex", justifyContent: "flex-end", px: 1, pt: 1 }}>
-          <IconButton onClick={() => setSelectedKey(null)} aria-label="Close object details" data-testid="object-drawer-close">
-            <CloseIcon />
-          </IconButton>
-        </Box>
-        {selectedKey !== null && <ObjectDrawerContent objectKey={selectedKey} />}
-      </Drawer>
+        <SheetContent
+          side="right"
+          showCloseButton={false}
+          data-testid="object-drawer"
+          className="w-full gap-0 overflow-y-auto sm:max-w-[560px]"
+        >
+          <SheetTitle className="sr-only">Object details</SheetTitle>
+          <SheetDescription className="sr-only">
+            Definition and columns for the selected lineage object.
+          </SheetDescription>
+          <div className="flex justify-end px-2 pt-2">
+            <SheetClose asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Close object details"
+                data-testid="object-drawer-close"
+              >
+                <X />
+              </Button>
+            </SheetClose>
+          </div>
+          {selectedKey !== null && <ObjectDrawerContent objectKey={selectedKey} />}
+        </SheetContent>
+      </Sheet>
     </Page>
   );
 }

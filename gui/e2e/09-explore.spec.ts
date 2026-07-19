@@ -41,7 +41,7 @@ test.describe("explore", () => {
 
   test("the flows graph focuses on click and opens the pipeline from the panel", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
-    await adminPage.getByTestId("graph-repo-select").click();
+    await adminPage.getByTestId("graph-project-select").click();
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
 
     const node = adminPage.locator(".react-flow__node").first();
@@ -72,7 +72,7 @@ test.describe("explore", () => {
 
   test("the objects view draws the data flow between file and table, colored per flow", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
-    await adminPage.getByTestId("graph-repo-select").click();
+    await adminPage.getByTestId("graph-project-select").click();
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
     await adminPage.getByTestId("graph-view-objects").click();
 

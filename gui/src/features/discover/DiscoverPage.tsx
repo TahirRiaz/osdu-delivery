@@ -1,25 +1,31 @@
-import { useMemo, useState } from "react";
-import {
-  Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress, Divider,
-  FormControlLabel, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography,
-} from "@mui/material";
-import TravelExploreIcon from "@mui/icons-material/TravelExplore";
-import DownloadIcon from "@mui/icons-material/Download";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import TuneIcon from "@mui/icons-material/Tune";
+import { useMemo, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
+import { toast } from "sonner";
+import { ChevronDown, Download, Info, Loader2, SlidersHorizontal, Telescope, TriangleAlert } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { CodeView } from "../../components/CodeView";
-import { Column, DataTable } from "../../components/DataTable";
+import { DataTable, type Column } from "../../components/DataTable";
 import { CorrelationError } from "../../components/CorrelationError";
 import { isApiError } from "../../api/client";
 import { sourceApi } from "../../api/endpoints";
 import type { DiscoveredColumn, DiscoveredPath, SourceDiscoverResult } from "../../api/types";
 
+// Radix Select items cannot carry an empty value, so "auto" stands in for "let the server detect".
+const AUTO_FORMAT = "auto";
+
 const FORMATS = [
-  { value: "", label: "Auto (detect from content)" },
+  { value: AUTO_FORMAT, label: "Auto (detect from content)" },
   { value: "json", label: "JSON" },
   { value: "ndjson", label: "NDJSON" },
   { value: "jsonl", label: "JSONL" },
@@ -34,12 +40,13 @@ const FORMATS = [
 // only worth it when the data is known to exceed Latin-1. Typing narrows in a later transformation stage.
 const COLUMN_TYPES = ["varchar(255)", "varchar(4000)", "varchar(max)", "nvarchar(255)", "nvarchar(4000)", "nvarchar(max)"];
 
-const CONFIDENCE_COLOR: Record<string, "success" | "info" | "warning" | "default"> = {
-  explicit: "default",
-  extension: "info",
-  high: "success",
-  medium: "warning",
-  low: "warning",
+/** Text color per detection confidence; the label always carries the meaning too (never color alone). */
+const CONFIDENCE_CLASS: Record<string, string> = {
+  explicit: "text-muted-foreground",
+  extension: "text-info",
+  high: "text-success",
+  medium: "text-warning",
+  low: "text-warning",
 };
 
 /** Parses a text number field into a positive integer, or undefined when blank/invalid (falls back to the default). */
@@ -64,11 +71,20 @@ function presenceLabel(row: DiscoveredPath, recordsScanned: number): string {
   return row.present ? "all" : `${row.recordCount}/${recordsScanned}`;
 }
 
-export default function DiscoverPage() {
-  const { enqueueSnackbar } = useSnackbar();
+/** One field wrapper: label above the control, optional caption under it (DESIGN.md 7.5). */
+function Field({ label, caption, children }: { label: string; caption?: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      {children}
+      {caption !== undefined && <p className="text-xs text-muted-foreground">{caption}</p>}
+    </div>
+  );
+}
 
+export default function DiscoverPage() {
   const [location, setLocation] = useState("");
-  const [format, setFormat] = useState("");
+  const [format, setFormat] = useState(AUTO_FORMAT);
   const [pattern, setPattern] = useState("");
   const [recursive, setRecursive] = useState(false);
   const [rootPath, setRootPath] = useState("");
@@ -81,7 +97,7 @@ export default function DiscoverPage() {
     mutationFn: (): Promise<SourceDiscoverResult> =>
       sourceApi.discover({
         location: location.trim(),
-        format: format || null,
+        format: format === AUTO_FORMAT ? null : format,
         pattern: pattern.trim() || null,
         recursive,
         rootPath: rootPath.trim() || null,
@@ -90,8 +106,16 @@ export default function DiscoverPage() {
         maxDepth: parseCount(maxDepth) ?? null,
         defaultColumnType: defaultType.trim() || null,
       }),
+    // Discovery outlives the click (a folder scan can sample many files), so it ends with a terminal
+    // toast either way (DESIGN.md 8.2); the liveness surface below the form covers the in-between.
+    onSuccess: (result) => {
+      const shape = result.mode === "flatten"
+        ? `${result.recordsScanned} record(s), ${result.paths.length} path(s)`
+        : `${result.columns.length} column(s)`;
+      toast.success(`Discovery complete: ${result.filesScanned} file(s), ${shape}.`);
+    },
     onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+      toast.error(isApiError(error) ? error.detail ?? error.title : error instanceof Error ? error.message : String(error)),
   });
 
   const result = discover.data;
@@ -99,14 +123,16 @@ export default function DiscoverPage() {
 
   const pathColumns: Column<DiscoveredPath>[] = useMemo(
     () => [
-      { id: "path", header: "Path", render: (row) => <Typography variant="body2" sx={{ fontFamily: "monospace" }}>{row.path}</Typography> },
-      { id: "column", header: "Column", render: (row) => <Typography variant="body2" sx={{ fontFamily: "monospace" }}>{row.column}</Typography> },
-      { id: "kind", header: "Kind", render: (row) => <Chip size="small" variant="outlined" label={row.kind} /> },
+      { id: "path", header: "Path", render: (row) => <span className="font-mono text-[12px]">{row.path}</span> },
+      { id: "column", header: "Column", render: (row) => <span className="font-mono text-[12px]">{row.column}</span> },
+      { id: "kind", header: "Kind", render: (row) => <Badge variant="outline">{row.kind}</Badge> },
       {
         id: "presence",
         header: "Presence",
         align: "right",
-        render: (row) => (result ? presenceLabel(row, result.recordsScanned) : ""),
+        render: (row) => (
+          <span className="font-mono tabular-nums">{result ? presenceLabel(row, result.recordsScanned) : ""}</span>
+        ),
       },
     ],
     [result],
@@ -114,16 +140,19 @@ export default function DiscoverPage() {
 
   const columnColumns: Column<DiscoveredColumn>[] = useMemo(
     () => [
-      { id: "name", header: "Column", render: (row) => <Typography variant="body2" sx={{ fontFamily: "monospace" }}>{row.name}</Typography> },
-      { id: "type", header: "Type", render: (row) => <Chip size="small" variant="outlined" label={row.sqlType} /> },
+      { id: "name", header: "Column", render: (row) => <span className="font-mono text-[12px]">{row.name}</span> },
+      { id: "type", header: "Type", render: (row) => <Badge variant="outline" className="font-mono text-[11px]">{row.sqlType}</Badge> },
       { id: "nullable", header: "Nullable", align: "right", render: (row) => (row.nullable ? "yes" : "no") },
     ],
     [],
   );
 
   const canDiscover = location.trim().length > 0 && !discover.isPending;
-  const advancedCount = [format, pattern.trim(), rootPath.trim(), maxFiles.trim(), maxRecords.trim(), maxDepth.trim()]
-    .filter(Boolean).length + (recursive ? 1 : 0) + (defaultType !== "varchar(255)" ? 1 : 0);
+  const advancedCount = [pattern.trim(), rootPath.trim(), maxFiles.trim(), maxRecords.trim(), maxDepth.trim()]
+    .filter(Boolean).length
+    + (format !== AUTO_FORMAT ? 1 : 0)
+    + (recursive ? 1 : 0)
+    + (defaultType !== "varchar(255)" ? 1 : 0);
 
   const downloadYaml = () => {
     if (!result) {
@@ -153,12 +182,10 @@ export default function DiscoverPage() {
         subtitle="Point at any file or folder (JSON, XML, CSV, Excel, Parquet); SQLFlow detects the format, samples it, and generates the ingestion YAML."
       />
 
-      <Paper variant="outlined" sx={{ p: 3 }}>
-        <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-start" }}>
-            <TextField
-              label="Source location"
-              placeholder="abfss://container/path/ (folder or file) — format is detected automatically"
+      <Card className="gap-0 rounded-lg p-4">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
               value={location}
               onChange={(e) => setLocation(e.target.value)}
               onKeyDown={(e) => {
@@ -166,186 +193,204 @@ export default function DiscoverPage() {
                   submit();
                 }
               }}
-              fullWidth
-              required
+              placeholder="abfss://container/path/ (folder or file); the format is detected automatically"
+              aria-label="Source location"
               autoFocus
+              className="h-8 flex-1 font-mono text-[12px]"
               data-testid="discover-location"
             />
-            <Button
-              variant="contained"
-              size="large"
-              startIcon={discover.isPending ? <CircularProgress size={18} color="inherit" /> : <TravelExploreIcon />}
-              disabled={!canDiscover}
-              onClick={submit}
-              sx={{ height: 56, px: 3, flexShrink: 0 }}
-              data-testid="discover-submit"
-            >
+            <Button size="sm" disabled={!canDiscover} onClick={submit} data-testid="discover-submit">
+              {discover.isPending ? <Loader2 className="animate-spin" /> : <Telescope />}
               {discover.isPending ? "Discovering..." : "Discover"}
             </Button>
-          </Stack>
+          </div>
 
-          <Accordion disableGutters elevation={0} sx={{ bgcolor: "transparent", "&:before": { display: "none" } }}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 0, minHeight: 0 }} data-testid="discover-advanced-toggle">
-              <Stack direction="row" spacing={1} alignItems="center" color="text.secondary">
-                <TuneIcon fontSize="small" />
-                <Typography variant="body2">
-                  Advanced{advancedCount > 0 ? ` (${advancedCount} set)` : ""}
-                </Typography>
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails sx={{ px: 0, pt: 0 }}>
-              <Stack spacing={2}>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  <TextField
-                    select
-                    label="Format"
-                    value={format}
-                    onChange={(e) => setFormat(e.target.value)}
-                    sx={{ minWidth: 260 }}
-                    helperText="Auto detects from the file content."
-                    data-testid="discover-format"
-                  >
-                    {FORMATS.map((f) => (
-                      <MenuItem key={f.value} value={f.value}>{f.label}</MenuItem>
-                    ))}
-                  </TextField>
-                  <TextField
-                    label="Folder pattern"
-                    placeholder="auto per format"
-                    value={pattern}
-                    onChange={(e) => setPattern(e.target.value)}
-                    sx={{ minWidth: 160 }}
-                    helperText="Used only for a folder location."
-                    data-testid="discover-pattern"
-                  />
-                  <FormControlLabel
-                    control={<Switch checked={recursive} onChange={(e) => setRecursive(e.target.checked)} data-testid="discover-recursive" />}
-                    label="Recurse sub-folders"
-                  />
-                </Stack>
+          <Collapsible>
+            <CollapsibleTrigger
+              className="group flex items-center gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+              data-testid="discover-advanced-toggle"
+            >
+              <SlidersHorizontal className="size-4 shrink-0" />
+              Advanced{advancedCount > 0 ? ` (${advancedCount} set)` : ""}
+              <ChevronDown className="size-4 shrink-0 transition-transform duration-120 group-data-[state=open]:rotate-180" />
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="flex flex-col gap-4 pt-3">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field label="Format" caption="Auto detects from the file content.">
+                    <Select value={format} onValueChange={setFormat}>
+                      <SelectTrigger size="sm" className="h-8 w-full" data-testid="discover-format">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {FORMATS.map((f) => (
+                          <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Folder pattern" caption="Used only for a folder location.">
+                    <Input
+                      value={pattern}
+                      onChange={(e) => setPattern(e.target.value)}
+                      placeholder="auto per format"
+                      className="h-8 font-mono text-[12px]"
+                      data-testid="discover-pattern"
+                    />
+                  </Field>
+                  <Label className="flex items-center gap-2 pt-6 text-[13px] font-normal">
+                    <Switch checked={recursive} onCheckedChange={setRecursive} data-testid="discover-recursive" />
+                    Recurse sub-folders
+                  </Label>
+                </div>
 
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  <TextField
-                    select
-                    label="Default column type"
-                    value={defaultType}
-                    onChange={(e) => setDefaultType(e.target.value)}
-                    sx={{ minWidth: 200 }}
-                    helperText="Landing type; narrows later."
-                    data-testid="discover-default-type"
-                  >
-                    {COLUMN_TYPES.map((t) => (
-                      <MenuItem key={t} value={t}>{t}</MenuItem>
-                    ))}
-                  </TextField>
-                  <TextField
-                    label="Record grain override"
-                    placeholder="rootPath / rowXPath (JSON/XML, auto if blank)"
-                    value={rootPath}
-                    onChange={(e) => setRootPath(e.target.value)}
-                    sx={{ flex: 1, minWidth: 240 }}
-                    data-testid="discover-rootpath"
-                  />
-                  <TextField
-                    label="Max files"
-                    placeholder="100"
-                    value={maxFiles}
-                    onChange={(e) => setMaxFiles(e.target.value)}
-                    sx={{ width: 120 }}
-                    inputProps={{ inputMode: "numeric" }}
-                    data-testid="discover-maxfiles"
-                  />
-                  <TextField
-                    label="Max records"
-                    placeholder="0 = all"
-                    value={maxRecords}
-                    onChange={(e) => setMaxRecords(e.target.value)}
-                    sx={{ width: 120 }}
-                    inputProps={{ inputMode: "numeric" }}
-                    data-testid="discover-maxrecords"
-                  />
-                  <TextField
-                    label="Max depth"
-                    placeholder="10"
-                    value={maxDepth}
-                    onChange={(e) => setMaxDepth(e.target.value)}
-                    sx={{ width: 120 }}
-                    inputProps={{ inputMode: "numeric" }}
-                    data-testid="discover-maxdepth"
-                  />
-                </Stack>
-              </Stack>
-            </AccordionDetails>
-          </Accordion>
+                <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
+                  <Field label="Default column type" caption="Landing type; narrows later.">
+                    <Select value={defaultType} onValueChange={setDefaultType}>
+                      <SelectTrigger size="sm" className="h-8 w-full" data-testid="discover-default-type">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {COLUMN_TYPES.map((t) => (
+                          <SelectItem key={t} value={t}>{t}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <div className="sm:col-span-2 lg:col-span-2">
+                    <Field label="Record grain override" caption="rootPath / rowXPath (JSON/XML, auto if blank).">
+                      <Input
+                        value={rootPath}
+                        onChange={(e) => setRootPath(e.target.value)}
+                        className="h-8 font-mono text-[12px]"
+                        data-testid="discover-rootpath"
+                      />
+                    </Field>
+                  </div>
+                  <Field label="Max files">
+                    <Input
+                      value={maxFiles}
+                      onChange={(e) => setMaxFiles(e.target.value)}
+                      placeholder="100"
+                      inputMode="numeric"
+                      className="h-8"
+                      data-testid="discover-maxfiles"
+                    />
+                  </Field>
+                  <Field label="Max records">
+                    <Input
+                      value={maxRecords}
+                      onChange={(e) => setMaxRecords(e.target.value)}
+                      placeholder="0 = all"
+                      inputMode="numeric"
+                      className="h-8"
+                      data-testid="discover-maxrecords"
+                    />
+                  </Field>
+                  <Field label="Max depth">
+                    <Input
+                      value={maxDepth}
+                      onChange={(e) => setMaxDepth(e.target.value)}
+                      placeholder="10"
+                      inputMode="numeric"
+                      className="h-8"
+                      data-testid="discover-maxdepth"
+                    />
+                  </Field>
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
 
-          {error && (
+          {discover.isPending && (
+            <div className="flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-[13px] text-muted-foreground">
+              <Loader2 className="size-4 shrink-0 animate-spin text-info" />
+              Scanning <span className="max-w-md truncate font-mono text-[12px]">{location.trim()}</span>:
+              detecting the format and sampling records. Large folders can take a while.
+            </div>
+          )}
+
+          {error !== null && !discover.isPending && (
             isApiError(error)
               ? <CorrelationError error={error} />
-              : <Typography color="error">{String(error)}</Typography>
+              : <p className="text-[13px] text-destructive">{String(error)}</p>
           )}
-        </Stack>
-      </Paper>
+        </div>
+      </Card>
 
       {result && (
-        <Stack spacing={3}>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
-            <Chip color="primary" label={result.sourceType.toUpperCase()} data-testid="discover-format-chip" />
-            <Tooltip title={result.detectionEvidence.join("; ")}>
-              <Chip
-                size="small"
-                color={CONFIDENCE_COLOR[result.detectionConfidence] ?? "default"}
-                variant="outlined"
-                label={`format: ${result.detectionConfidence}`}
-                data-testid="discover-confidence-chip"
-              />
+        <>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge data-testid="discover-format-chip">{result.sourceType.toUpperCase()}</Badge>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge
+                  variant="outline"
+                  className={CONFIDENCE_CLASS[result.detectionConfidence] ?? "text-muted-foreground"}
+                  data-testid="discover-confidence-chip"
+                >
+                  format: {result.detectionConfidence}
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-md">{result.detectionEvidence.join("; ")}</TooltipContent>
             </Tooltip>
-            <Chip variant="outlined" label={`${result.filesScanned} file(s)`} />
+            <Badge variant="outline">{result.filesScanned} file(s)</Badge>
             {result.mode === "flatten" ? (
               <>
-                <Chip variant="outlined" label={`${result.recordsScanned} record(s)`} />
-                <Chip variant="outlined" label={`${result.paths.length} path(s)`} />
+                <Badge variant="outline">{result.recordsScanned} record(s)</Badge>
+                <Badge variant="outline">{result.paths.length} path(s)</Badge>
                 {result.autoDetectedGrain && (
-                  <Chip color="info" variant="outlined" label={`grain: ${result.autoDetectedGrain}`} />
+                  <Badge variant="outline" className="text-info">grain: {result.autoDetectedGrain}</Badge>
                 )}
-                {result.schemaDrift && <Chip color="warning" variant="outlined" label="schema drift" />}
+                {result.schemaDrift && <Badge variant="outline" className="text-warning">schema drift</Badge>}
               </>
             ) : (
-              <Chip variant="outlined" label={`${result.columns.length} column(s)`} />
+              <Badge variant="outline">{result.columns.length} column(s)</Badge>
             )}
-          </Stack>
+          </div>
 
           {result.mode === "flatten" && result.schemaDrift && (
-            <Alert severity="warning">
-              Some paths are missing from part of the sample. A path missing from a file becomes NULL for that file&apos;s
-              rows; reconcile renamed fields with <code>pathAliases</code>.
+            <Alert>
+              <TriangleAlert className="text-warning" />
+              <AlertTitle>Schema drift in the sample</AlertTitle>
+              <AlertDescription>
+                Some paths are missing from part of the sample. A path missing from a file becomes NULL for that
+                file&apos;s rows; reconcile renamed fields with{" "}
+                <code className="font-mono text-[12px]">pathAliases</code>.
+              </AlertDescription>
             </Alert>
           )}
 
           {result.mode === "flatten" ? (
             result.paths.length === 0 ? (
-              <Alert severity="info">
-                No records found. Check the location, the folder pattern, and the record grain (rootPath / rowXPath).
+              <Alert>
+                <Info />
+                <AlertDescription>
+                  No records found. Check the location, the folder pattern, and the record grain (rootPath / rowXPath).
+                </AlertDescription>
               </Alert>
             ) : (
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>Path structure</Typography>
+              <div className="flex flex-col gap-2">
+                <h2 className="text-base font-medium">Path structure</h2>
                 <DataTable
                   columns={pathColumns}
                   rows={result.paths}
                   rowKey={(row) => row.path}
-                  rowSx={(row) => (row.present ? undefined : { backgroundColor: "rgba(237, 108, 2, 0.08)" })}
+                  rowSx={(row) => (row.present
+                    ? undefined
+                    : { backgroundColor: "color-mix(in srgb, var(--warning) 8%, transparent)" })}
                   emptyMessage="No paths discovered."
                   data-testid="discover-paths"
                 />
-              </Box>
+              </div>
             )
           ) : (
-            <Box>
-              <Typography variant="subtitle1" gutterBottom>Columns</Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                Schema sampled from a representative file. A tabular source lands string-first; typing happens in a later
-                transformation stage.
-              </Typography>
+            <div className="flex flex-col gap-2">
+              <h2 className="text-base font-medium">Columns</h2>
+              <p className="text-[13px] text-muted-foreground">
+                Schema sampled from a representative file. A tabular source lands string-first; typing happens in a
+                later transformation stage.
+              </p>
               <DataTable
                 columns={columnColumns}
                 rows={result.columns}
@@ -353,29 +398,24 @@ export default function DiscoverPage() {
                 emptyMessage="No columns discovered."
                 data-testid="discover-columns"
               />
-            </Box>
+            </div>
           )}
 
-          <Box>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-              <Typography variant="subtitle1">Ingestion YAML</Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<DownloadIcon />}
-                onClick={downloadYaml}
-                data-testid="discover-download"
-              >
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-base font-medium">Ingestion YAML</h2>
+              <Button variant="outline" size="sm" onClick={downloadYaml} data-testid="discover-download">
+                <Download />
                 Download
               </Button>
-            </Stack>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              A runnable ingestion flow. Set <code>target.connection</code>, then run it to ingest the source.
-            </Typography>
-            <Divider sx={{ mb: 1 }} />
+            </div>
+            <p className="text-[13px] text-muted-foreground">
+              A runnable ingestion flow. Set <code className="font-mono text-[12px]">target.connection</code>, then
+              run it to ingest the source.
+            </p>
             <CodeView value={result.generatedYaml} language="yaml" lsp={false} height={420} data-testid="discover-yaml" />
-          </Box>
-        </Stack>
+          </div>
+        </>
       )}
     </Page>
   );

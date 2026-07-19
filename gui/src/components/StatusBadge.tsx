@@ -1,53 +1,99 @@
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
+import {
+  Ban,
+  CircleCheck,
+  CircleMinus,
+  CircleX,
+  Clock3,
+  Loader2,
+  Pause,
+  Power,
+  SkipForward,
+  Wifi,
+  WifiOff,
+  type LucideIcon,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { RunStatus } from "../api/types";
 
-/** One mapping from run status to color/affordance, used everywhere a run status renders. */
+type Tone = "success" | "destructive" | "info" | "warning" | "muted";
+
+const toneClasses: Record<Tone, string> = {
+  success: "bg-success/12 text-success",
+  destructive: "bg-destructive/12 text-destructive",
+  info: "bg-info/12 text-info",
+  warning: "bg-warning/15 text-warning",
+  muted: "bg-muted text-muted-foreground",
+};
+
+/**
+ * The one status pill (DESIGN.md 7.3): tinted background, solid text, and an icon so color never
+ * carries the state alone. Every domain badge below renders through this.
+ */
+function Pill({
+  tone,
+  label,
+  icon: Icon,
+  spin = false,
+  testId,
+}: {
+  tone: Tone;
+  label: string;
+  icon: LucideIcon;
+  spin?: boolean;
+  testId: string;
+}) {
+  return (
+    <span
+      data-testid={testId}
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
+        toneClasses[tone],
+      )}
+    >
+      <Icon className={cn("size-3 shrink-0", spin && "animate-spin")} />
+      {label}
+    </span>
+  );
+}
+
+/** One mapping from run status to tone/affordance, used everywhere a run status renders. */
 export function RunStatusBadge({ status }: { status: RunStatus | string }) {
   switch (status) {
     case "queued":
-      return <Chip size="small" label="queued" color="info" variant="outlined" data-testid="status-badge" />;
+      return <Pill tone="warning" label="queued" icon={Clock3} testId="status-badge" />;
     case "running":
-      return (
-        <Chip
-          size="small"
-          label="running"
-          color="primary"
-          icon={<CircularProgress size={12} color="inherit" />}
-          data-testid="status-badge"
-        />
-      );
+      return <Pill tone="info" label="running" icon={Loader2} spin testId="status-badge" />;
     case "succeeded":
-      return <Chip size="small" label="succeeded" color="success" data-testid="status-badge" />;
+      return <Pill tone="success" label="succeeded" icon={CircleCheck} testId="status-badge" />;
     case "failed":
-      return <Chip size="small" label="failed" color="error" data-testid="status-badge" />;
+      return <Pill tone="destructive" label="failed" icon={CircleX} testId="status-badge" />;
     case "cancelled":
-      return <Chip size="small" label="cancelled" color="warning" variant="outlined" data-testid="status-badge" />;
+      return <Pill tone="muted" label="cancelled" icon={Ban} testId="status-badge" />;
     case "skipped":
-      return <Chip size="small" label="skipped" color="default" variant="outlined" data-testid="status-badge" />;
+      return <Pill tone="muted" label="skipped" icon={SkipForward} testId="status-badge" />;
     default:
-      return <Chip size="small" label={status} data-testid="status-badge" />;
+      return <Pill tone="muted" label={status} icon={CircleMinus} testId="status-badge" />;
   }
 }
 
 export function OnlineBadge({ online }: { online: boolean }) {
   return online
-    ? <Chip size="small" label="online" color="success" data-testid="online-badge" />
-    : <Chip size="small" label="offline" color="default" variant="outlined" data-testid="online-badge" />;
+    ? <Pill tone="success" label="online" icon={Wifi} testId="online-badge" />
+    : <Pill tone="muted" label="offline" icon={WifiOff} testId="online-badge" />;
 }
 
 export function ActiveBadge({ active }: { active: boolean }) {
   return active
-    ? <Chip size="small" label="active" color="success" variant="outlined" data-testid="active-badge" />
-    : <Chip size="small" label="inactive" color="default" variant="outlined" data-testid="active-badge" />;
+    ? <Pill tone="success" label="active" icon={CircleCheck} testId="active-badge" />
+    : <Pill tone="muted" label="inactive" icon={CircleMinus} testId="active-badge" />;
 }
 
 export function ScheduleStateBadge({ enabled, paused }: { enabled: boolean; paused: boolean }) {
   if (!enabled) {
-    return <Chip size="small" label="disabled" color="default" variant="outlined" data-testid="schedule-badge" />;
+    return <Pill tone="muted" label="disabled" icon={Power} testId="schedule-badge" />;
   }
 
   return paused
-    ? <Chip size="small" label="paused" color="warning" data-testid="schedule-badge" />
-    : <Chip size="small" label="enabled" color="success" variant="outlined" data-testid="schedule-badge" />;
+    ? <Pill tone="warning" label="paused" icon={Pause} testId="schedule-badge" />
+    : <Pill tone="success" label="enabled" icon={CircleCheck} testId="schedule-badge" />;
 }

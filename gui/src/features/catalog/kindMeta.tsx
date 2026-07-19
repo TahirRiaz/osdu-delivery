@@ -1,12 +1,5 @@
 import type { ReactNode } from "react";
-import CallSplitIcon from "@mui/icons-material/CallSplit";
-import FlashOnOutlinedIcon from "@mui/icons-material/FlashOnOutlined";
-import FunctionsIcon from "@mui/icons-material/Functions";
-import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
-import ShortcutIcon from "@mui/icons-material/Shortcut";
-import TableRowsOutlinedIcon from "@mui/icons-material/TableRowsOutlined";
+import { CircleHelp, FileText, Layers, Link2, Split, SquareFunction, Table2, Zap } from "lucide-react";
 
 /** Display metadata for one object kind: the folder label the tree shows and the leaf icon. */
 export interface KindMeta {
@@ -19,21 +12,21 @@ export interface KindMeta {
 
 /** Every known object kind in display order; kinds the catalog invents later fall back to `metaForKind`. */
 export const KIND_ORDER: readonly KindMeta[] = [
-  { kind: "Table", plural: "Tables", icon: <TableRowsOutlinedIcon fontSize="small" /> },
-  { kind: "View", plural: "Views", icon: <LayersOutlinedIcon fontSize="small" /> },
-  { kind: "Procedure", plural: "Procedures", icon: <CallSplitIcon fontSize="small" /> },
-  { kind: "Function", plural: "Functions", icon: <FunctionsIcon fontSize="small" /> },
-  { kind: "Trigger", plural: "Triggers", icon: <FlashOnOutlinedIcon fontSize="small" /> },
-  { kind: "Synonym", plural: "Synonyms", icon: <ShortcutIcon fontSize="small" /> },
-  { kind: "File", plural: "Files", icon: <InsertDriveFileOutlinedIcon fontSize="small" /> },
-  { kind: "Unknown", plural: "Unknown", icon: <HelpOutlineIcon fontSize="small" /> },
+  { kind: "Table", plural: "Tables", icon: <Table2 className="size-4" /> },
+  { kind: "View", plural: "Views", icon: <Layers className="size-4" /> },
+  { kind: "Procedure", plural: "Procedures", icon: <Split className="size-4" /> },
+  { kind: "Function", plural: "Functions", icon: <SquareFunction className="size-4" /> },
+  { kind: "Trigger", plural: "Triggers", icon: <Zap className="size-4" /> },
+  { kind: "Synonym", plural: "Synonyms", icon: <Link2 className="size-4" /> },
+  { kind: "File", plural: "Files", icon: <FileText className="size-4" /> },
+  { kind: "Unknown", plural: "Unknown", icon: <CircleHelp className="size-4" /> },
 ];
 
 const BY_KIND = new Map(KIND_ORDER.map((meta) => [meta.kind, meta]));
 
 /** The display metadata for a kind, tolerating a value outside the known set (shown as-is with a neutral icon). */
 export function metaForKind(kind: string): KindMeta {
-  return BY_KIND.get(kind) ?? { kind, plural: kind, icon: <HelpOutlineIcon fontSize="small" /> };
+  return BY_KIND.get(kind) ?? { kind, plural: kind, icon: <CircleHelp className="size-4" /> };
 }
 
 /** Sorts kind values into the display order above; unknown kinds sort after the known ones, alphabetically. */

@@ -1,11 +1,9 @@
 import { useState } from "react";
-import Alert from "@mui/material/Alert";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
-import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import { ChevronDown, ChevronUp, TriangleAlert } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { UniqueKeyCandidate, UniqueKeyReport } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { DataTable, type Column } from "../../components/DataTable";
@@ -37,25 +35,35 @@ function formatSelectivity(value: number): string {
 
 const statisticsColumns: Column<UniqueKeyReport["columns"][number]>[] = [
   { id: "column", header: "Column", render: (row) => <Mono>{row.column}</Mono> },
-  { id: "distinct", header: "Distinct", align: "right", render: (row) => row.distinct.toLocaleString() },
-  { id: "nulls", header: "Nulls", align: "right", render: (row) => row.nulls.toLocaleString() },
+  {
+    id: "distinct",
+    header: "Distinct",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.distinct.toLocaleString()}</span>,
+  },
+  {
+    id: "nulls",
+    header: "Nulls",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.nulls.toLocaleString()}</span>,
+  },
   {
     id: "selectivity",
     header: "Selectivity",
     align: "right",
-    render: (row) => <Mono>{formatSelectivity(row.selectivity)}</Mono>,
+    render: (row) => <Mono className="tabular-nums">{formatSelectivity(row.selectivity)}</Mono>,
   },
 ];
 
 interface UniqueKeyReportViewProps {
   report: UniqueKeyReport;
-  /** Compact spacing for the inspector drawer; the dedicated page uses the roomier default. */
+  /** Compact spacing for the inspector sheet; the dedicated page uses the roomier default. */
   dense?: boolean;
   "data-testid"?: string;
 }
 
 /**
- * The one rendering of a unique-key detection report, shared by the inspector drawer and the dedicated
+ * The one rendering of a unique-key detection report, shared by the inspector sheet and the dedicated
  * detection page: the scan scope, the ranked candidates (with selectivity and per-candidate keyColumns copy),
  * the per-column statistics (sorted most-identifying first, collapsed by default), the columns excluded before
  * the search with their reasons, and the report note. Purely presentational; running the detection is the
@@ -74,68 +82,69 @@ export function UniqueKeyReportView({ report, dense = false, "data-testid": test
   const statistics = [...report.columns].sort((a, b) => b.selectivity - a.selectivity);
 
   return (
-    <Stack spacing={dense ? 1 : 1.5} data-testid={testId ?? "unique-key-report"}>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-        <Typography variant="body2" color="text.secondary" data-testid="report-scope">{scope}</Typography>
+    <div className={cn("flex flex-col", dense ? "gap-2" : "gap-3")} data-testid={testId ?? "unique-key-report"}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] text-muted-foreground" data-testid="report-scope">{scope}</span>
         <CopyButton
           label="Copy report JSON"
           text={JSON.stringify(report, null, 2)}
           testId="copy-report-json"
         />
-      </Stack>
+      </div>
 
       {report.candidates.length === 0 && (
-        <Alert severity="warning" data-testid="report-no-candidates">
-          No candidate key was found.
+        <Alert className="border-warning/50 text-warning" data-testid="report-no-candidates">
+          <TriangleAlert />
+          <AlertDescription className="text-warning/90">No candidate key was found.</AlertDescription>
         </Alert>
       )}
 
       {report.candidates.map((candidate, rank) => (
-        <Alert
+        <div
           key={candidate.columns.join("|")}
-          severity={candidate.isUnique ? "success" : "info"}
-          icon={false}
+          className={cn(
+            "flex flex-col gap-1 rounded-lg border px-3 py-2",
+            candidate.isUnique ? "border-success/40 bg-success/10" : "border-info/40 bg-info/10",
+          )}
           data-testid="report-candidate"
         >
-          <Stack spacing={0.5}>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography variant="body2" fontWeight={600}>{rank + 1}.</Typography>
-              <Mono sx={{ fontWeight: 600 }}>[{candidate.columns.join(", ")}]</Mono>
-              {candidate.declared && <Chip size="small" variant="outlined" color="primary" label="declared" />}
-              {candidate.isUnique && !candidate.declared && candidate.verified && (
-                <Chip size="small" variant="outlined" color="success" label="verified" />
-              )}
-              {candidate.estimated && <Chip size="small" variant="outlined" label="sample estimate" />}
-              <Chip
-                size="small"
-                variant="outlined"
-                label={`selectivity ${candidate.estimated ? "~" : ""}${formatSelectivity(candidate.selectivity)}`}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[13px] font-semibold">{rank + 1}.</span>
+            <Mono className="font-semibold">[{candidate.columns.join(", ")}]</Mono>
+            {candidate.declared && (
+              <Badge variant="outline" className="border-primary/50 text-primary">declared</Badge>
+            )}
+            {candidate.isUnique && !candidate.declared && candidate.verified && (
+              <Badge variant="outline" className="border-success/50 text-success">verified</Badge>
+            )}
+            {candidate.estimated && <Badge variant="outline">sample estimate</Badge>}
+            <Badge variant="outline" className="font-mono tabular-nums">
+              selectivity {candidate.estimated ? "~" : ""}{formatSelectivity(candidate.selectivity)}
+            </Badge>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[13px] text-foreground">{candidateLabel(candidate)}</span>
+            {candidate.isUnique && (
+              <CopyButton
+                label="Copy keyColumns YAML"
+                text={keyColumnsYaml(candidate.columns)}
+                testId="copy-key-columns"
               />
-            </Stack>
-            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
-              <Typography variant="body2">{candidateLabel(candidate)}</Typography>
-              {candidate.isUnique && (
-                <CopyButton
-                  label="Copy keyColumns YAML"
-                  text={keyColumnsYaml(candidate.columns)}
-                  testId="copy-key-columns"
-                />
-              )}
-            </Stack>
-          </Stack>
-        </Alert>
+            )}
+          </div>
+        </div>
       ))}
 
       {statistics.length > 0 && (
         <>
           <Button
-            size="small"
-            color="inherit"
-            sx={{ alignSelf: "flex-start" }}
-            startIcon={showStatistics ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+            variant="ghost"
+            size="sm"
+            className="self-start"
             onClick={() => setShowStatistics((current) => !current)}
             data-testid="toggle-column-statistics"
           >
+            {showStatistics ? <ChevronUp /> : <ChevronDown />}
             Column statistics ({statistics.length})
           </Button>
           {showStatistics && (
@@ -151,14 +160,14 @@ export function UniqueKeyReportView({ report, dense = false, "data-testid": test
       )}
 
       {report.excludedColumns.length > 0 && (
-        <Typography variant="caption" color="text.secondary" data-testid="report-excluded">
+        <span className="text-xs text-muted-foreground" data-testid="report-excluded">
           Excluded from the search: {report.excludedColumns.map((e) => `${e.column} (${e.reason})`).join(", ")}
-        </Typography>
+        </span>
       )}
 
       {report.note !== null && (
-        <Typography variant="caption" color="text.secondary" data-testid="report-note">{report.note}</Typography>
+        <span className="text-xs text-muted-foreground" data-testid="report-note">{report.note}</span>
       )}
-    </Stack>
+    </div>
   );
 }

@@ -1,34 +1,37 @@
-import Alert from "@mui/material/Alert";
-import AlertTitle from "@mui/material/AlertTitle";
-import IconButton from "@mui/material/IconButton";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import { CircleAlert, Copy } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ApiError } from "../api/client";
 
 /**
- * The one way API failures render: the RFC 7807 title/detail plus the correlation id (copyable), so what a user
- * reports maps straight to a server log line.
+ * The one way API failures render (DESIGN.md 8.3): the RFC 7807 title/detail plus the correlation id
+ * (copyable), so what a user reports maps straight to a server log line.
  */
 export function CorrelationError({ error, "data-testid": testId }: { error: ApiError; "data-testid"?: string }) {
   return (
-    <Alert severity="error" data-testid={testId ?? "api-error"}>
+    <Alert variant="destructive" data-testid={testId ?? "api-error"}>
+      <CircleAlert />
       <AlertTitle>{error.title}</AlertTitle>
-      {error.detail && <Typography variant="body2">{error.detail}</Typography>}
-      {error.correlationId && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}>
-          Correlation id: <code>{error.correlationId}</code>
-          <Tooltip title="Copy correlation id">
-            <IconButton
-              size="small"
-              aria-label="Copy correlation id"
-              onClick={() => void navigator.clipboard.writeText(error.correlationId ?? "")}
-            >
-              <ContentCopyIcon fontSize="inherit" />
-            </IconButton>
-          </Tooltip>
-        </Typography>
-      )}
+      <AlertDescription>
+        {error.detail && <p>{error.detail}</p>}
+        {error.correlationId && (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            Correlation id: <code className="font-mono">{error.correlationId}</code>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label="Copy correlation id"
+                  onClick={() => void navigator.clipboard.writeText(error.correlationId ?? "")}
+                  className="rounded-sm p-0.5 hover:bg-muted hover:text-foreground"
+                >
+                  <Copy className="size-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Copy correlation id</TooltipContent>
+            </Tooltip>
+          </span>
+        )}
+      </AlertDescription>
     </Alert>
   );
 }

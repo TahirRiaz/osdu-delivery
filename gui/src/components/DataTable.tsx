@@ -1,14 +1,9 @@
 import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
-import Paper from "@mui/material/Paper";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
+import { ChevronDown } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import { EmptyState } from "./EmptyState";
 
 export interface Column<T> {
@@ -83,15 +78,18 @@ function subClusters<T>(rows: T[], subKey: (row: T) => number | string): Cluster
   return clusterContiguous(sorted, (row) => String(subKey(row)));
 }
 
-/** One indentation step per tree depth, in theme spacing units; a leaf sits one step past the deepest node. */
-const TREE_INDENT = 3.5;
+/** One indentation step per tree depth, in pixels; a leaf sits one step past the deepest node. */
+const TREE_INDENT = 28;
+
+const alignClass = (align: Column<never>["align"]) =>
+  align === "right" ? "text-right" : align === "center" ? "text-center" : undefined;
 
 /**
- * The presentational table shell every list renders through: the bordered surface, the header row, loading
- * skeletons, the shared empty state, optional row-click affordance, and optional tree grouping (up to two
- * independently expandable node levels above the leaf rows). PagedTable wraps this with server-side paging and
- * a query; pages holding their own already-fetched rows (the repos list) render it directly, so there is one
- * table code path instead of several hand-rolled shells.
+ * The presentational table shell every list renders through (DESIGN.md 7.2): the bordered card surface,
+ * the muted header row, loading skeletons, the shared empty state, optional row-click affordance, and
+ * optional tree grouping (up to two independently expandable node levels above the leaf rows). PagedTable
+ * wraps this with server-side paging and a query; pages holding their own already-fetched rows render it
+ * directly, so there is one table code path instead of several hand-rolled shells.
  */
 export function DataTable<T>({
   columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer,
@@ -123,18 +121,18 @@ export function DataTable<T>({
     return (
       <TableRow
         key={rowKey(row)}
-        hover={canClick}
         onClick={canClick ? () => onRowClick!(row) : undefined}
-        sx={{ ...(canClick ? { cursor: "pointer" } : {}), ...(rowSx?.(row) ?? {}) }}
+        className={cn(canClick && "cursor-pointer hover:bg-accent/50")}
+        style={rowSx?.(row)}
         data-testid="table-row"
       >
         {columns.map((column, i) => (
           <TableCell
             key={column.id}
-            align={column.align}
+            className={cn("whitespace-nowrap px-3 py-1.5 text-[13px]", alignClass(column.align))}
             // Only grouped leaves (depth > 0) indent under their node; a flat row keeps the default cell
-            // padding so its first column lines up with the header (a depth of 0 must not force pl to 0).
-            sx={i === 0 && depth > 0 ? { pl: TREE_INDENT * depth } : undefined}
+            // padding so its first column lines up with the header.
+            style={i === 0 && depth > 0 ? { paddingLeft: TREE_INDENT * depth + 12 } : undefined}
           >
             {column.render(row)}
           </TableCell>
@@ -149,24 +147,21 @@ export function DataTable<T>({
     nodeId: string, depth: number, isCollapsed: boolean, nodeTestId: string, content: ReactNode,
   ) => (
     <TableRow
-      hover
       onClick={() => toggleNode(nodeId)}
-      sx={{ cursor: "pointer" }}
+      className="cursor-pointer hover:bg-accent/50"
       data-testid={nodeTestId}
       aria-expanded={!isCollapsed}
     >
-      <TableCell colSpan={columns.length} sx={{ py: 0.25 }}>
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ pl: TREE_INDENT * depth }}>
-          <KeyboardArrowDownIcon
-            fontSize="small"
-            sx={{
-              color: "text.secondary",
-              transition: "transform 120ms",
-              transform: isCollapsed ? "rotate(-90deg)" : "none",
-            }}
+      <TableCell colSpan={columns.length} className="px-3 py-1">
+        <div className="flex items-center gap-1" style={{ paddingLeft: TREE_INDENT * depth }}>
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground transition-transform duration-120",
+              isCollapsed && "-rotate-90",
+            )}
           />
           {content}
-        </Stack>
+        </div>
       </TableCell>
     </TableRow>
   );
@@ -199,29 +194,38 @@ export function DataTable<T>({
     });
 
   return (
-    <Paper variant="outlined" data-testid={testId}>
-      <TableContainer>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
+    <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={testId}>
+      {/* The ui Table brings its own overflow-x container, so wide tables scroll inside the card. */}
+      <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
               {columns.map((column) => (
-                <TableCell key={column.id} align={column.align} sx={{ width: column.width }}>
+                <TableHead
+                  key={column.id}
+                  className={cn(
+                    "h-8 whitespace-nowrap px-3 text-xs font-medium text-muted-foreground",
+                    alignClass(column.align),
+                  )}
+                  style={{ width: column.width }}
+                >
                   {column.header}
-                </TableCell>
+                </TableHead>
               ))}
             </TableRow>
-          </TableHead>
+          </TableHeader>
           <TableBody>
             {rows === undefined && Array.from({ length: skeletonRows }, (_, i) => (
               <TableRow key={`skeleton-${i}`}>
                 {columns.map((column) => (
-                  <TableCell key={column.id}><Skeleton /></TableCell>
+                  <TableCell key={column.id} className="px-3 py-2">
+                    <Skeleton className="h-4 w-full" />
+                  </TableCell>
                 ))}
               </TableRow>
             ))}
             {rows !== undefined && rows.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={columns.length} sx={{ border: 0 }}>
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={columns.length} className="border-0 p-0">
                   <EmptyState title={emptyMessage} data-testid="empty-message" />
                 </TableCell>
               </TableRow>
@@ -231,8 +235,7 @@ export function DataTable<T>({
               : rows.map((row) => dataRow(row, 0)))}
           </TableBody>
         </Table>
-      </TableContainer>
       {footer}
-    </Paper>
+    </Card>
   );
 }

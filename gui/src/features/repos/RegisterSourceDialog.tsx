@@ -1,29 +1,20 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Checkbox from "@mui/material/Checkbox";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import Collapse from "@mui/material/Collapse";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import Divider from "@mui/material/Divider";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import IconButton from "@mui/material/IconButton";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import CodeIcon from "@mui/icons-material/Code";
-import SearchIcon from "@mui/icons-material/Search";
+import { Code, Loader2, Search } from "lucide-react";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { repoSourceApi } from "../../api/endpoints";
 import type { DiscoveredFlow } from "../../api/types";
+import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 
 // Mirrors the server's guard: a whole ${scheme:locator} reference, never a raw token.
@@ -36,7 +27,6 @@ const REFERENCE_RE = /^\$\{[a-zA-Z]+:[^}]+\}$/;
  * actually imports the selected flows into the catalog, which is what the scheduler then executes.
  */
 export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [remoteUrl, setRemoteUrl] = useState("");
@@ -69,23 +59,23 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
       setIncluded(new Set(flows.map((f) => f.relativePath))); // default: import everything discovered
       setPreviewPath(null);
       if (flows.length === 0) {
-        enqueueSnackbar("No *.flow.yaml files were found in this repo/branch.", { variant: "info" });
+        toast.info("No *.flow.yaml files were found in this repo/branch.");
       }
     },
     onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
   const register = useMutation({
     mutationFn: repoSourceApi.register,
     onSuccess: () => {
-      enqueueSnackbar("Repo source registered. The next sync imports the selected flows into the catalog.", {
-        variant: "success",
-      });
+      toast.success("Repo source registered. The next sync imports the selected flows into the catalog.");
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
       void queryClient.invalidateQueries({ queryKey: ["repo-sources"] });
       onClose();
     },
+    onError: (error) =>
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
   // Never discovered: send null so the sync imports every flow (backward compatible). Otherwise send the unchecked
@@ -124,168 +114,241 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog
+    <Sheet
       open
-      onClose={register.isPending ? undefined : onClose}
-      fullWidth
-      maxWidth={discovered ? "md" : "sm"}
-      data-testid="register-source-dialog"
+      onOpenChange={(open) => {
+        if (!open && !register.isPending) {
+          onClose();
+        }
+      }}
     >
-      <DialogTitle>Register source</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          {register.isError && isApiError(register.error) && <CorrelationError error={register.error} />}
-          {register.isError && !isApiError(register.error) && (
-            <Typography color="error">{String(register.error)}</Typography>
-          )}
+      <SheetContent className="w-full gap-0 sm:max-w-xl" data-testid="register-source-dialog">
+        <SheetHeader>
+          <SheetTitle>Register source</SheetTitle>
+          <SheetDescription>
+            Track a git repo so its flows sync into the catalog on an interval.
+          </SheetDescription>
+        </SheetHeader>
 
-          <TextField
-            label="Name"
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            inputProps={{ "data-testid": "source-name" }}
-          />
-          <TextField
-            label="Remote URL"
-            required
-            placeholder="https://git.example.com/org/repo.git"
-            value={remoteUrl}
-            onChange={(e) => setRemoteUrl(e.target.value)}
-            inputProps={{ "data-testid": "source-remote-url" }}
-          />
-          <TextField
-            label="Branch"
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            helperText="Empty falls back to the server default (main)."
-            inputProps={{ "data-testid": "source-branch" }}
-          />
-          <TextField
-            label="Sync interval (seconds)"
-            type="number"
-            value={intervalText}
-            onChange={(e) => setIntervalText(e.target.value)}
-            error={!intervalValid}
-            helperText="A positive whole number of seconds between syncs."
-            inputProps={{ min: 1, "data-testid": "source-interval" }}
-          />
-          <TextField
-            label="Git username (optional)"
-            value={credentialUsername}
-            onChange={(e) => setCredentialUsername(e.target.value)}
-            helperText="Only needed for hosts that authenticate the username too (e.g. Bitbucket app passwords)."
-            inputProps={{ "data-testid": "source-credential-username" }}
-          />
-          <TextField
-            label="Credential reference (optional)"
-            placeholder="${keyvault:my-vault/github-pat}"
-            value={credentialReference}
-            onChange={(e) => setCredentialReference(e.target.value)}
-            error={!referenceValid}
-            helperText={
-              referenceValid
-                ? "A ${keyvault:vault/secret} or ${env:NAME} reference to the token. Create the secret in your vault; SQLFlow only references it. Leave blank for a public remote."
-                : "Must be a reference like ${keyvault:my-vault/github-pat}, not a raw token."
-            }
-            inputProps={{ "data-testid": "source-credential-reference" }}
-          />
-          <FormControlLabel
-            control={(
-              <Switch checked={enabled} onChange={(e) => setEnabled(e.target.checked)} data-testid="source-enabled" />
+        <div className="flex-1 overflow-y-auto px-4 pb-4">
+          <div className="flex flex-col gap-4">
+            {register.isError && isApiError(register.error) && <CorrelationError error={register.error} />}
+            {register.isError && !isApiError(register.error) && (
+              <p className="text-[13px] text-destructive">{String(register.error)}</p>
             )}
-            label="Enabled"
-          />
 
-          <Divider />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="source-name">Name</Label>
+              <Input
+                id="source-name"
+                className="h-8"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                data-testid="source-name"
+              />
+            </div>
 
-          <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap" useFlexGap>
-            <Button
-              variant="outlined"
-              startIcon={discover.isPending ? <CircularProgress size={16} /> : <SearchIcon />}
-              disabled={!canDiscover}
-              onClick={() => discover.mutate()}
-              data-testid="discover-flows"
-            >
-              {discovered ? "Re-discover flows" : "Discover flows"}
-            </Button>
-            <Typography variant="body2" color="text.secondary" sx={{ flex: 1, minWidth: 200 }}>
-              {discovered === null
-                ? "Optional: preview the repo's flows and choose which to import. Skip to import every flow."
-                : `${includedCount} of ${discovered.length} flow(s) will be imported on sync.`}
-            </Typography>
-          </Stack>
-          {discover.isError && isApiError(discover.error) && <CorrelationError error={discover.error} />}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="source-remote-url">Remote URL</Label>
+              <Input
+                id="source-remote-url"
+                className="h-8 font-mono text-[12px]"
+                required
+                placeholder="https://git.example.com/org/repo.git"
+                value={remoteUrl}
+                onChange={(e) => setRemoteUrl(e.target.value)}
+                data-testid="source-remote-url"
+              />
+            </div>
 
-          {discovered !== null && discovered.length > 0 && (
-            <Box
-              sx={{ border: 1, borderColor: "divider", borderRadius: 1, maxHeight: 340, overflow: "auto" }}
-              data-testid="discovered-flows"
-            >
-              <Stack
-                direction="row"
-                spacing={1}
-                sx={{ p: 1, position: "sticky", top: 0, bgcolor: "background.paper", zIndex: 1 }}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="source-branch">Branch</Label>
+              <Input
+                id="source-branch"
+                className="h-8 font-mono text-[12px]"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                data-testid="source-branch"
+              />
+              <p className="text-xs text-muted-foreground">Empty falls back to the server default (main).</p>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="source-interval">Sync interval (seconds)</Label>
+              <Input
+                id="source-interval"
+                className="h-8"
+                type="number"
+                min={1}
+                value={intervalText}
+                onChange={(e) => setIntervalText(e.target.value)}
+                aria-invalid={!intervalValid}
+                data-testid="source-interval"
+              />
+              <p className={intervalValid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
+                A positive whole number of seconds between syncs.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="source-credential-username">Git username (optional)</Label>
+              <Input
+                id="source-credential-username"
+                className="h-8"
+                value={credentialUsername}
+                onChange={(e) => setCredentialUsername(e.target.value)}
+                data-testid="source-credential-username"
+              />
+              <p className="text-xs text-muted-foreground">
+                Only needed for hosts that authenticate the username too (e.g. Bitbucket app passwords).
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="source-credential-reference">Credential reference (optional)</Label>
+              <Input
+                id="source-credential-reference"
+                className="h-8 font-mono text-[12px]"
+                placeholder="${keyvault:my-vault/github-pat}"
+                value={credentialReference}
+                onChange={(e) => setCredentialReference(e.target.value)}
+                aria-invalid={!referenceValid}
+                data-testid="source-credential-reference"
+              />
+              {referenceValid ? (
+                <p className="text-xs text-muted-foreground">
+                  {"A ${keyvault:vault/secret} or ${env:NAME} reference to the token. Create the secret in "
+                    + "your vault; SQLFlow only references it. Leave blank for a public remote."}
+                </p>
+              ) : (
+                <p className="text-xs text-destructive">
+                  {"Must be a reference like ${keyvault:my-vault/github-pat}, not a raw token."}
+                </p>
+              )}
+            </div>
+
+            <Label className="flex items-center gap-2 text-[13px] font-normal">
+              <Switch checked={enabled} onCheckedChange={setEnabled} data-testid="source-enabled" />
+              Enabled
+            </Label>
+
+            <Separator />
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canDiscover}
+                onClick={() => discover.mutate()}
+                data-testid="discover-flows"
               >
-                <Button size="small" onClick={() => setIncluded(new Set(discovered.map((f) => f.relativePath)))}>
-                  Select all
-                </Button>
-                <Button size="small" onClick={() => setIncluded(new Set())}>Select none</Button>
-              </Stack>
-              <Divider />
-              {discovered.map((f) => (
-                <Box key={f.relativePath} sx={{ px: 1 }} data-testid="discovered-flow-row">
-                  <Stack direction="row" alignItems="center" spacing={1}>
-                    <Checkbox
-                      size="small"
-                      checked={included.has(f.relativePath)}
-                      onChange={() => toggle(f.relativePath)}
-                      aria-label={`include ${f.relativePath}`}
-                    />
-                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                      <Typography variant="body2" fontWeight={600} noWrap>{f.flowName ?? f.relativePath}</Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap display="block">{f.relativePath}</Typography>
-                    </Box>
-                    {f.parseOk
-                      ? f.kind !== null && <Chip size="small" variant="outlined" label={f.kind} />
-                      : (
-                        <Tooltip title={f.parseError ?? "parse error"}>
-                          <Chip size="small" color="error" label="parse error" data-testid="discovered-flow-error" />
+                {discover.isPending ? <Loader2 className="animate-spin" /> : <Search />}
+                {discovered ? "Re-discover flows" : "Discover flows"}
+              </Button>
+              <p className="min-w-[200px] flex-1 text-[13px] text-muted-foreground">
+                {discovered === null
+                  ? "Optional: preview the repo's flows and choose which to import. Skip to import every flow."
+                  : `${includedCount} of ${discovered.length} flow(s) will be imported on sync.`}
+              </p>
+            </div>
+            {discover.isError && isApiError(discover.error) && <CorrelationError error={discover.error} />}
+
+            {discovered !== null && discovered.length > 0 && (
+              <div
+                className="max-h-[340px] overflow-auto rounded-md border border-input"
+                data-testid="discovered-flows"
+              >
+                <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card p-1">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setIncluded(new Set(discovered.map((f) => f.relativePath)))}
+                  >
+                    Select all
+                  </Button>
+                  <Button variant="ghost" size="xs" onClick={() => setIncluded(new Set())}>
+                    Select none
+                  </Button>
+                </div>
+                {discovered.map((f) => (
+                  <div
+                    key={f.relativePath}
+                    className="border-b border-border px-2 last:border-b-0"
+                    data-testid="discovered-flow-row"
+                  >
+                    <div className="flex items-center gap-2 py-1.5">
+                      <Checkbox
+                        checked={included.has(f.relativePath)}
+                        onCheckedChange={() => toggle(f.relativePath)}
+                        aria-label={`include ${f.relativePath}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-medium">{f.flowName ?? f.relativePath}</div>
+                        <div className="truncate font-mono text-xs text-muted-foreground">{f.relativePath}</div>
+                      </div>
+                      {f.parseOk
+                        ? f.kind !== null && <Badge variant="outline">{f.kind}</Badge>
+                        : (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Badge variant="destructive" data-testid="discovered-flow-error">
+                                  parse error
+                                </Badge>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-lg break-words">
+                              {f.parseError ?? "parse error"}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      {f.content !== null && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              aria-label="Preview"
+                              aria-pressed={previewPath === f.relativePath}
+                              onClick={() => setPreviewPath((p) => (p === f.relativePath ? null : f.relativePath))}
+                              data-testid="discovered-flow-preview"
+                            >
+                              <Code />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Preview</TooltipContent>
                         </Tooltip>
                       )}
-                    {f.content !== null && (
-                      <Tooltip title="Preview">
-                        <IconButton
-                          size="small"
-                          onClick={() => setPreviewPath((p) => (p === f.relativePath ? null : f.relativePath))}
-                          data-testid="discovered-flow-preview"
-                        >
-                          <CodeIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
+                    </div>
+                    {previewPath === f.relativePath && f.content !== null && (
+                      <div className="pb-2">
+                        <CodeView value={f.content} language="yaml" height={240} />
+                      </div>
                     )}
-                  </Stack>
-                  <Collapse in={previewPath === f.relativePath} unmountOnExit>
-                    <Box
-                      component="pre"
-                      sx={{ m: 0, mb: 1, p: 1, bgcolor: "action.hover", borderRadius: 1, fontSize: 12, overflow: "auto", maxHeight: 240 }}
-                    >
-                      {f.content}
-                    </Box>
-                  </Collapse>
-                  <Divider />
-                </Box>
-              ))}
-            </Box>
-          )}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={register.isPending} data-testid="register-source-cancel">Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!canSubmit} data-testid="register-source-submit">
-          Register
-        </Button>
-      </DialogActions>
-    </Dialog>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <SheetFooter className="flex-row justify-end gap-2 border-t border-border">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            disabled={register.isPending}
+            data-testid="register-source-cancel"
+          >
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={!canSubmit} data-testid="register-source-submit">
+            {register.isPending && <Loader2 className="animate-spin" />}
+            Register
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

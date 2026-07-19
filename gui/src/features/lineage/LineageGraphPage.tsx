@@ -14,32 +14,37 @@ import {
   type Edge as FlowEdge,
   type Node as FlowNode,
 } from "@xyflow/react";
-import Autocomplete from "@mui/material/Autocomplete";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import Divider from "@mui/material/Divider";
-import Drawer from "@mui/material/Drawer";
-import FormControl from "@mui/material/FormControl";
-import GlobalStyles from "@mui/material/GlobalStyles";
-import IconButton from "@mui/material/IconButton";
-import Menu from "@mui/material/Menu";
-import MenuItem from "@mui/material/MenuItem";
-import Paper from "@mui/material/Paper";
-import Select from "@mui/material/Select";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import ToggleButton from "@mui/material/ToggleButton";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import { useTheme } from "@mui/material/styles";
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import DownloadIcon from "@mui/icons-material/Download";
-import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import TableRowsIcon from "@mui/icons-material/TableRows";
+import { CheckIcon, ChevronRight, ChevronsUpDown, Download, Info, Loader2, Rows3 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
 import type { LineageEdge, LineageProject, RunScope, WavePipeline } from "../../api/types";
@@ -47,19 +52,46 @@ import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
-import { brandToken, seriesColor } from "../../theme/branding";
+import { seriesColor } from "../../theme/branding";
+import { useThemeMode } from "../../theme/ThemeModeContext";
 import "@xyflow/react/dist/style.css";
 
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 56;
 const LAYER_SPACING = 150; // vertical gap between layers (rows, top to bottom); clears NODE_HEIGHT + edge/label room
 const NODE_SPACING = 260;  // horizontal gap between nodes within a layer; clears NODE_WIDTH
-// The canvas is full-bleed: it fills the whole content area below the fixed app bar, with the toolbar and details
-// floating on top of it (no page header). The height subtracts only the app bar (56 xs / 64 md); negative margins
-// on the container (see the return) cancel AppShell's main padding so the graph reaches every edge.
-const CANVAS_HEIGHT = { xs: "calc(100vh - 56px)", md: "calc(100vh - 64px)" } as const;
 
 type GraphView = "flows" | "objects";
+
+/**
+ * Reads a semantic design token's current value off the document root, so graph internals that need literal
+ * colors (React Flow inline styles, the SVG export) stay in lockstep with index.css in both themes.
+ */
+function cssColor(name: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value !== "" ? value : fallback;
+}
+
+/** The literal accent colors the graph paints with, resolved from the semantic tokens for the active theme. */
+interface GraphAccents {
+  /** The focused node's fill and ring (`--primary`). */
+  focus: string;
+  /** Upstream (ancestor) highlight, the violet chart slot. */
+  upstream: string;
+  /** Downstream (descendant) highlight, the green chart slot. */
+  downstream: string;
+  /** The dashed outline marking cross-repo flows and object nodes. */
+  outline: string;
+}
+
+function readAccents(): GraphAccents {
+  return {
+    focus: cssColor("--primary", "#2f6fce"),
+    upstream: cssColor("--chart-7", "#4a3aa7"),
+    downstream: cssColor("--chart-2", "#008300"),
+    outline: cssColor("--muted-foreground", "#5b6b7f"),
+  };
+}
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}...` : value;
@@ -351,6 +383,16 @@ function buildLineageSvg(
     + `<defs>${defs}</defs>${edgeSvg}${nodeSvg}</svg>`;
 }
 
+/** The two-line label inside a graph node: name over a muted caption, both truncated to the card. */
+function NodeLabel({ name, caption }: { name: string; caption: string }) {
+  return (
+    <div className="overflow-hidden text-left">
+      <div className="truncate text-[13px] font-semibold">{name}</div>
+      <div className="truncate text-[11px] text-muted-foreground">{caption}</div>
+    </div>
+  );
+}
+
 interface FocusState {
   id: string;
   upstream: Set<string>;
@@ -361,6 +403,7 @@ interface CanvasProps {
   graph: BuiltGraph;
   focus: FocusState | null;
   colorMode: "light" | "dark";
+  accents: GraphAccents;
   /** Bumps when the node search picks a node, so the canvas centers on it. */
   centerRequest: { id: string; nonce: number; zoom?: number } | null;
   onFocus: (id: string | null) => void;
@@ -376,7 +419,7 @@ interface CanvasProps {
  * focus styling is applied in place so a focus change never resets positions the user arranged. Single click
  * focuses (upstream/downstream highlight); double click opens the node's page; clicking the pane clears focus.
  */
-function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, onNodeContextMenu, children }: CanvasProps) {
+function GraphCanvas({ graph, focus, colorMode, accents, centerRequest, onFocus, onOpen, onNodeContextMenu, children }: CanvasProps) {
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const view = useReactFlow();
 
@@ -412,11 +455,7 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
       const isUpstream = focus.upstream.has(node.id);
       const isDownstream = focus.downstream.has(node.id);
       const related = isFocus || isUpstream || isDownstream;
-      const accent = isFocus
-        ? brandToken("--sf-primary")
-        : isUpstream
-          ? brandToken("--sf-series-2")
-          : brandToken("--sf-series-7");
+      const accent = isFocus ? accents.focus : isUpstream ? accents.upstream : accents.downstream;
       return {
         ...node,
         // The focused node gets a bold ring + outer glow (and the one-shot pulse via the class) so it clearly
@@ -436,7 +475,7 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
         },
       };
     });
-  }, [flowNodes, focus]);
+  }, [flowNodes, focus, accents]);
 
   const styledEdges = useMemo(() => {
     if (focus === null) {
@@ -480,6 +519,129 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
 }
 
 /**
+ * The in-toolbar node search: an always-visible input (cmdk) whose match list drops down while a query is
+ * typed. Picking an option focuses and centers that node; the options carry role="option" for accessibility.
+ */
+function NodeSearch({ options, onPick }: {
+  options: { id: string; name: string }[];
+  onPick: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const open = query.trim() !== "";
+  return (
+    <Command className="relative w-56 overflow-visible rounded-md border border-input bg-transparent **:data-[slot=command-input-wrapper]:h-8 **:data-[slot=command-input-wrapper]:border-b-0">
+      <CommandInput
+        value={query}
+        onValueChange={setQuery}
+        placeholder="Find a node"
+        aria-label="Find a node"
+        data-testid="graph-node-search"
+        className="h-8 py-0 text-[13px]"
+      />
+      {open && (
+        <CommandList
+          className="absolute top-full left-0 z-20 mt-1 max-h-72 w-72 overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+          // Keep the input focused while an option is clicked, so the list is not dismissed mid-click.
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <CommandEmpty>No matching node.</CommandEmpty>
+          {options.map((option) => (
+            <CommandItem
+              key={option.id}
+              value={option.name}
+              onSelect={() => {
+                setQuery("");
+                onPick(option.id);
+              }}
+              className="font-mono text-[12px]"
+            >
+              {option.name}
+            </CommandItem>
+          ))}
+        </CommandList>
+      )}
+    </Command>
+  );
+}
+
+/**
+ * The searchable (repo, project) scope picker: a combobox trigger showing the current selection, with the
+ * full project list (repo, flow count) filterable in a popover. Clearing returns to the pick-a-project state.
+ */
+function ProjectSelect({ items, selected, onSelect }: {
+  items: LineageProject[];
+  selected: LineageProject | null;
+  onSelect: (option: LineageProject | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          role="combobox"
+          aria-expanded={open}
+          aria-label="Select a project"
+          data-testid="graph-project-select"
+          className="h-8 min-w-[240px] justify-between font-normal"
+        >
+          {selected !== null
+            ? <span className="truncate">{selected.repoName} / {selected.project}</span>
+            : <span className="text-muted-foreground">Select a project</span>}
+          <ChevronsUpDown className="text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-0">
+        <Command>
+          <CommandInput placeholder="Search projects" />
+          <CommandList>
+            <CommandEmpty>No projects found.</CommandEmpty>
+            {selected !== null && (
+              <CommandItem
+                value="clear-project-selection"
+                onSelect={() => {
+                  setOpen(false);
+                  onSelect(null);
+                }}
+                className="text-muted-foreground"
+              >
+                Clear selection
+              </CommandItem>
+            )}
+            {items.map((option) => {
+              const isSelected = selected !== null
+                && selected.repoId === option.repoId && selected.project === option.project;
+              return (
+                <CommandItem
+                  key={`${option.repoId}:${option.project}`}
+                  value={`${option.repoName} / ${option.project}`}
+                  onSelect={() => {
+                    setOpen(false);
+                    onSelect(option);
+                  }}
+                >
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <div className="truncate text-[13px]">{option.project}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {option.repoName} · {option.flowCount} {option.flowCount === 1 ? "flow" : "flows"}
+                    </div>
+                  </div>
+                  {isSelected && <CheckIcon className="shrink-0" />}
+                </CommandItem>
+              );
+            })}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** A legend/wave chip: secondary pill with the flow's series color as a left accent bar. */
+const chipClass = "inline-flex max-w-full items-center truncate rounded-sm bg-secondary py-0.5 pl-1.5 pr-2 font-mono text-[11px] text-secondary-foreground";
+
+/**
  * The repo-scoped lineage graph, built for two things above all: a tree-based (layered, top-to-bottom) layout
  * that reads as data flow, and navigation: click to focus a node and light up everything upstream (purple) and
  * downstream (green) of it, search to jump to a node, double click (or the panel button) to open it. Two views
@@ -489,7 +651,7 @@ function GraphCanvas({ graph, focus, colorMode, centerRequest, onFocus, onOpen, 
  */
 export default function LineageGraphPage() {
   const navigate = useNavigate();
-  const theme = useTheme();
+  const { mode } = useThemeMode();
   const [searchParams, setSearchParams] = useSearchParams();
   const repoId = searchParams.get("repoId") ?? "";
   const project = searchParams.get("project") ?? "";
@@ -503,11 +665,14 @@ export default function LineageGraphPage() {
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number; zoom?: number } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
-  // Right-click context menu on a node, and the node whose script is open in the drawer.
+  // Right-click context menu on a node, and the node whose script is open in the sheet.
   const [nodeMenu, setNodeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [scriptKey, setScriptKey] = useState<string | null>(null);
   // A flow node's Run action opens the trigger dialog prefilled with that flow and the chosen scope.
   const [runDialog, setRunDialog] = useState<{ flowName: string; scope: RunScope } | null>(null);
+
+  // The literal accent colors, re-read when the theme flips so inline node styles track the tokens.
+  const accents = useMemo(() => readAccents(), [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scriptQuery = useQuery({
     queryKey: ["lineage-node-script", scriptKey],
@@ -534,7 +699,7 @@ export default function LineageGraphPage() {
   // The one graph query: a project's cross-repo downstream closure (or a focused node's local context). Both the
   // Flows and Objects views build from this single payload; the walk crosses repos freely via global object keys.
   const projectGraph = useQuery({
-    queryKey: ["lineage-project-graph", repoId, project, activeExpand.join("")],
+    queryKey: ["lineage-project-graph", repoId, project, activeExpand.join("")],
     enabled: graphEnabled,
     queryFn: () => lineageApi.projectGraph({
       repoId: repoId || undefined,
@@ -642,6 +807,9 @@ export default function LineageGraphPage() {
     const nodes: FlowNode[] = [];
     const edges: FlowEdge[] = [];
     const seenEdges = new Set<string>();
+    const outline = cssColor("--muted-foreground", "#5b6b7f");
+    const frontierAccent = cssColor("--chart-7", "#4a3aa7");
+    const objectAccent = cssColor("--chart-2", "#008300");
 
     // Stable per-pipeline accent color and repo across the whole closure first, keyed by the pipeline id (unique
     // across repos, unlike a flow name), so a pipeline keeps its color and repo whether or not the wave filter is
@@ -673,14 +841,7 @@ export default function LineageGraphPage() {
         id: pipeline.id,
         position: { x: 0, y: 0 },
         data: {
-          label: (
-            <Box sx={{ overflow: "hidden", textAlign: "left" }}>
-              <Typography variant="body2" fontWeight={600} noWrap component="div">{pipeline.name}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">
-                {crossRepo ? `${base} · ${pipeline.repoName}` : base}
-              </Typography>
-            </Box>
-          ),
+          label: <NodeLabel name={pipeline.name} caption={crossRepo ? `${base} · ${pipeline.repoName}` : base} />,
         },
         style: crossRepo
           ? {
@@ -689,7 +850,7 @@ export default function LineageGraphPage() {
               padding: 8,
               borderRadius: 8,
               border: "1px dashed",
-              borderColor: brandToken("--sf-series-9"),
+              borderColor: outline,
               borderLeft: `5px solid ${color}`,
             }
           : {
@@ -759,12 +920,10 @@ export default function LineageGraphPage() {
         position: { x: 0, y: 0 },
         data: {
           label: (
-            <Box sx={{ overflow: "hidden", textAlign: "left" }}>
-              <Typography variant="body2" fontWeight={600} noWrap component="div">{nameByKey.get(key) ?? key}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">
-                {isFrontier ? `${base} · more downstream` : base}
-              </Typography>
-            </Box>
+            <NodeLabel
+              name={nameByKey.get(key) ?? key}
+              caption={isFrontier ? `${base} · more downstream` : base}
+            />
           ),
         },
         style: {
@@ -773,7 +932,7 @@ export default function LineageGraphPage() {
           padding: 8,
           borderRadius: 20,
           border: isFrontier ? "2px solid" : "1px dashed",
-          borderColor: isFrontier ? brandToken("--sf-series-2") : brandToken("--sf-series-7"),
+          borderColor: isFrontier ? frontierAccent : objectAccent,
         },
       });
     };
@@ -849,8 +1008,8 @@ export default function LineageGraphPage() {
         ? { label: "Open in explorer", to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}` }
         : { label: "Open pipeline", to: `/pipelines/${id}` }),
     };
-    // The series colors are theme-scoped custom properties; rebuilding on mode change keeps them in sync.
-  }, [pipelines, objectEdgesData, frontierSet, selectedWave, repoId, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+    // The accent colors are theme-scoped custom properties; rebuilding on mode change keeps them in sync.
+  }, [pipelines, objectEdgesData, frontierSet, selectedWave, repoId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Objects view: tables/files as nodes, "flow moves data from A to B" as edges, colored per flow -------------
   const objectsGraph = useMemo<BuiltGraph | null>(() => {
@@ -865,6 +1024,7 @@ export default function LineageGraphPage() {
     const nodes: FlowNode[] = [];
     const edges: FlowEdge[] = [];
     const seenEdges = new Set<string>();
+    const frontierAccent = cssColor("--chart-7", "#4a3aa7");
 
     const ensureNode = (key: string, name: string) => {
       if (names.has(key)) {
@@ -883,17 +1043,10 @@ export default function LineageGraphPage() {
         id: key,
         position: { x: 0, y: 0 },
         data: {
-          label: (
-            <Box sx={{ overflow: "hidden", textAlign: "left" }}>
-              <Typography variant="body2" fontWeight={600} noWrap component="div">{name}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap component="div">
-                {isFrontier ? `${base} · more downstream` : base}
-              </Typography>
-            </Box>
-          ),
+          label: <NodeLabel name={name} caption={isFrontier ? `${base} · more downstream` : base} />,
         },
         style: isFrontier
-          ? { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8, border: "2px solid", borderColor: brandToken("--sf-series-2") }
+          ? { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8, border: "2px solid", borderColor: frontierAccent }
           : { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8 },
       });
     };
@@ -1013,7 +1166,7 @@ export default function LineageGraphPage() {
         to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}`,
       }),
     };
-  }, [graphView, objectEdgesData, frontierSet, theme.palette.mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [graphView, objectEdgesData, frontierSet, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const graph = graphView === "flows" ? flowsGraph : objectsGraph;
 
@@ -1083,10 +1236,10 @@ export default function LineageGraphPage() {
       return;
     }
     const svg = buildLineageSvg(graph, {
-      text: theme.palette.text.primary,
-      textMuted: theme.palette.text.secondary,
-      paper: theme.palette.background.paper,
-      border: theme.palette.divider,
+      text: cssColor("--foreground", "#1d2733"),
+      textMuted: cssColor("--muted-foreground", "#5b6b7f"),
+      paper: cssColor("--card", "#ffffff"),
+      border: cssColor("--border", "#dfe5ee"),
     });
     if (svg === "") {
       return;
@@ -1101,519 +1254,481 @@ export default function LineageGraphPage() {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
-  }, [graph, graphView, repoId, repoName, theme.palette]);
+  }, [graph, graphView, repoId, repoName]);
+
+  // Whether the context-menu node is a runnable flow: a pipeline in the seed repo (only a seed-repo flow can be
+  // launched from here; cross-repo nodes and objects get the navigation actions only).
+  const menuCanRun = nodeMenu !== null && repoId !== "" && graph !== null
+    && graph.openTarget(nodeMenu.id).label === "Open pipeline"
+    && graph.repoOf.get(nodeMenu.id) === repoId;
 
   // The floating details panel: node focus (upstream/downstream trace + open) over the execution waves (flows)
   // or the per-flow edge legend (objects). It rides on the canvas via a React Flow <Panel> so the graph keeps the
   // full width, and collapses to a single button when the user wants the whole canvas.
   const detailsPanel = graph === null ? null : (
-    <Paper
-      variant="outlined"
+    <div
       data-testid="graph-side-panel"
-      sx={{
-        width: 300,
-        // Bounded to the visible canvas so a long wave list scrolls inside the panel rather than off the graph;
-        // the canvas now fills the viewport below the app bar, leaving room for the React Flow panel margins.
-        maxHeight: { xs: "calc(100vh - 96px)", md: "calc(100vh - 104px)" },
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
+      className="flex max-h-[calc(100vh-140px)] w-[300px] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm"
     >
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          px: 2,
-          py: 1,
-          flexShrink: 0,
-          borderBottom: 1,
-          borderColor: "divider",
-        }}
-      >
-        <Typography variant="subtitle2" fontWeight={700}>Details</Typography>
-        <Tooltip title="Collapse panel">
-          <IconButton size="small" onClick={() => setPanelOpen(false)} data-testid="graph-panel-collapse" aria-label="Collapse panel">
-            <ChevronRightIcon fontSize="small" />
-          </IconButton>
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Details</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setPanelOpen(false)}
+              data-testid="graph-panel-collapse"
+              aria-label="Collapse panel"
+            >
+              <ChevronRight />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Collapse panel</TooltipContent>
         </Tooltip>
-      </Box>
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", p: 2 }}>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {focus !== null && (
-          <Box data-testid="graph-focus-panel" sx={{ mb: 2 }}>
-            <Typography variant="subtitle1" fontWeight={600} noWrap>
+          <div data-testid="graph-focus-panel" className="mb-3">
+            <div className="truncate font-mono text-[13px] font-semibold">
               {graph.names.get(focus.id) ?? focus.id}
-            </Typography>
-            <Stack direction="row" spacing={1} sx={{ my: 1 }}>
-              <Chip
-                size="small"
-                label={`${focus.upstream.size} upstream`}
-                sx={{ bgcolor: brandToken("--sf-series-2"), color: brandToken("--sf-primary-contrast") }}
-              />
-              <Chip
-                size="small"
-                label={`${focus.downstream.size} downstream`}
-                sx={{ bgcolor: brandToken("--sf-series-7"), color: brandToken("--sf-primary-contrast") }}
-              />
-            </Stack>
-            <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
-              <Button size="small" variant="contained" onClick={() => openNode(focus.id)} data-testid="graph-open-selected">
+            </div>
+            <div className="my-2 flex items-center gap-1.5">
+              <Badge variant="secondary" className="gap-1.5">
+                <span
+                  aria-hidden
+                  className="size-2 rounded-full"
+                  style={{ backgroundColor: accents.upstream }}
+                />
+                {focus.upstream.size} upstream
+              </Badge>
+              <Badge variant="secondary" className="gap-1.5">
+                <span
+                  aria-hidden
+                  className="size-2 rounded-full"
+                  style={{ backgroundColor: accents.downstream }}
+                />
+                {focus.downstream.size} downstream
+              </Badge>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button size="xs" onClick={() => openNode(focus.id)} data-testid="graph-open-selected">
                 {graph.openTarget(focus.id).label}
               </Button>
-              <Button size="small" onClick={() => setScriptKey(focus.id)} data-testid="graph-view-script">
+              <Button variant="ghost" size="xs" onClick={() => setScriptKey(focus.id)} data-testid="graph-view-script">
                 View script
               </Button>
-              <Button size="small" onClick={() => focusNode(null)} data-testid="graph-clear-focus">
+              <Button variant="ghost" size="xs" onClick={() => focusNode(null)} data-testid="graph-clear-focus">
                 Clear
               </Button>
-            </Stack>
-            <Divider sx={{ mt: 2 }} />
-          </Box>
+            </div>
+            <Separator className="mt-3" />
+          </div>
         )}
 
         {graphView === "flows" ? (
           <>
-            <Typography variant="subtitle1" fontWeight={600} gutterBottom>Execution waves</Typography>
+            <h3 className="mb-1.5 text-[13px] font-medium">Execution waves</h3>
             {sortedWaves.map((wave) => (
-              <Box key={wave.wave} sx={{ mb: 1.5 }}>
-                <Typography variant="subtitle2" color="text.secondary">
+              <div key={wave.wave} className="mb-3">
+                <div className="text-xs text-muted-foreground">
                   {wave.wave === -1 ? "Unwaved (lineage not computed)" : `Wave ${wave.wave}`}
-                </Typography>
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }} data-testid="wave-list">
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1" data-testid="wave-list">
                   {wave.pipelines.map((pipeline) => (
-                    <Chip
+                    <button
+                      type="button"
                       key={pipeline.id}
-                      label={pipeline.name}
-                      size="small"
                       onClick={() => {
                         focusNode(pipeline.id);
                         setCenterRequest((previous) => ({ id: pipeline.id, nonce: (previous?.nonce ?? 0) + 1 }));
                       }}
-                      sx={{
-                        borderLeft: `4px solid ${graph.flowColors.get(pipeline.id) ?? "transparent"}`,
-                        borderRadius: 1,
-                      }}
+                      className={cn(chipClass, "cursor-pointer transition-colors hover:bg-accent")}
+                      style={{ borderLeft: `3px solid ${graph.flowColors.get(pipeline.id) ?? "transparent"}` }}
                       data-testid={`wave-pipeline-${pipeline.id}`}
-                    />
+                    >
+                      {pipeline.name}
+                    </button>
                   ))}
-                </Box>
-              </Box>
+                </div>
+              </div>
             ))}
           </>
         ) : (
           <>
-            <Typography variant="subtitle1" fontWeight={600} gutterBottom>Flows (edge colors)</Typography>
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }} data-testid="graph-flow-legend">
+            <h3 className="mb-1.5 text-[13px] font-medium">Flows (edge colors)</h3>
+            <div className="flex flex-wrap gap-1" data-testid="graph-flow-legend">
               {[...graph.flowColors.entries()].map(([flow, color]) => (
-                <Chip
-                  key={flow}
-                  label={flow}
-                  size="small"
-                  sx={{ borderLeft: `4px solid ${color}`, borderRadius: 1 }}
-                />
+                <span key={flow} className={chipClass} style={{ borderLeft: `3px solid ${color}` }}>
+                  {flow}
+                </span>
               ))}
-            </Box>
+            </div>
           </>
         )}
-      </Box>
-    </Paper>
+      </div>
+    </div>
   );
 
   return (
-    <Box
+    <div
       data-testid="page-lineage-graph"
-      sx={{
-        position: "relative",
-        // Full-bleed: negative margins cancel AppShell's main padding (2 xs / 3 md) so the canvas runs edge to
-        // edge, and the height claims the whole viewport below the app bar.
-        height: CANVAS_HEIGHT,
-        mt: { xs: -2, md: -3 },
-        mb: { xs: -2, md: -3 },
-        mx: { xs: -2, md: -3 },
-        minWidth: 0,
-        overflow: "hidden",
-        bgcolor: "background.paper",
-      }}
+      // Full-bleed: negative margins cancel the editor's content padding so the canvas runs edge to edge, and
+      // the height claims the viewport below the fixed chrome (title bar 36px + tab strip 35px + status bar 22px).
+      className="relative -m-4 h-[calc(100vh-93px)] min-w-0 overflow-hidden bg-card md:-m-6"
     >
       {/* The focused node's emphasis: its label text is forced to the primary contrast color (it sits on a solid
           primary fill), and it plays a brief glow pulse when it becomes the focus so the eye lands on it. */}
-      <GlobalStyles
-        styles={{
-          "@keyframes sfFocusPulse": {
-            "0%": { filter: "drop-shadow(0 0 2px var(--sf-primary))" },
-            "50%": { filter: "drop-shadow(0 0 16px var(--sf-primary))" },
-            "100%": { filter: "drop-shadow(0 0 2px var(--sf-primary))" },
-          },
-          ".react-flow__node.sf-focus-node": { animation: "sfFocusPulse 1.3s ease-in-out 3" },
-          ".react-flow__node.sf-focus-node .MuiTypography-root": {
-            color: "var(--sf-primary-contrast) !important",
-          },
-        }}
-      />
+      <style>{`
+        @keyframes sf-focus-pulse {
+          0% { filter: drop-shadow(0 0 2px var(--primary)); }
+          50% { filter: drop-shadow(0 0 16px var(--primary)); }
+          100% { filter: drop-shadow(0 0 2px var(--primary)); }
+        }
+        .react-flow__node.sf-focus-node { animation: sf-focus-pulse 1.3s ease-in-out 3; }
+        .react-flow__node.sf-focus-node div { color: var(--primary-foreground) !important; }
+      `}</style>
       {/* The toolbar floats over the canvas (top-left) instead of sitting in a page header, so the graph itself
           fills the whole page; the details panel floats at top-right via a React Flow <Panel>. The toolbar's max
           width leaves a clear column on the right for that panel (wider when it is open, narrow for its collapsed
           icon), so a wrapping toolbar can never slide underneath it. */}
-      <Paper
-        elevation={4}
+      <div
         data-testid="graph-toolbar"
-        sx={{
-          position: "absolute",
-          top: 12,
-          left: 12,
-          zIndex: 6,
-          maxWidth: panelOpen ? "calc(100% - 340px)" : "calc(100% - 84px)",
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          gap: 1,
-          px: 1.5,
-          py: 1,
-          bgcolor: "background.paper",
-        }}
+        className={cn(
+          "absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2 shadow-sm",
+          panelOpen ? "max-w-[calc(100%-340px)]" : "max-w-[calc(100%-84px)]",
+        )}
       >
-        <Tooltip title="Open explorer">
-          <IconButton
-            size="small"
-            color="primary"
-            onClick={() => navigate("/lineage/objects")}
-            aria-label="Open explorer"
-            data-testid="open-lineage-objects"
-          >
-            <TableRowsIcon fontSize="small" />
-          </IconButton>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => navigate("/lineage/objects")}
+              aria-label="Open explorer"
+              data-testid="open-lineage-objects"
+            >
+              <Rows3 />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Open explorer</TooltipContent>
         </Tooltip>
         {hasContent && (
-          <Tooltip title="Download SVG">
-            <IconButton
-              size="small"
-              color="primary"
-              onClick={downloadLineage}
-              aria-label="Download SVG"
-              data-testid="download-lineage"
-            >
-              <DownloadIcon fontSize="small" />
-            </IconButton>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={downloadLineage}
+                aria-label="Download SVG"
+                data-testid="download-lineage"
+              >
+                <Download />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Download SVG</TooltipContent>
           </Tooltip>
         )}
-        <ToggleButtonGroup
-          exclusive
-          size="small"
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
           value={graphView}
-          onChange={(_, value: GraphView | null) => {
-            if (value !== null) {
+          onValueChange={(value) => {
+            if (value !== "") {
               setParam("view", value === "flows" ? "" : value);
             }
           }}
+          aria-label="Graph view"
           data-testid="graph-view-toggle"
         >
-          <ToggleButton value="flows" data-testid="graph-view-flows">Flows</ToggleButton>
-          <ToggleButton value="objects" data-testid="graph-view-objects">Objects</ToggleButton>
-        </ToggleButtonGroup>
+          <ToggleGroupItem value="flows" data-testid="graph-view-flows" className="h-8 px-3 text-xs">
+            Flows
+          </ToggleGroupItem>
+          <ToggleGroupItem value="objects" data-testid="graph-view-objects" className="h-8 px-3 text-xs">
+            Objects
+          </ToggleGroupItem>
+        </ToggleGroup>
         {graphView === "flows" && sortedWaves.length > 0 && (
-          <FormControl size="small" sx={{ minWidth: 150 }}>
-            <Select
-              value={selectedWave === null ? "" : String(selectedWave)}
-              onChange={(event) => setParam("wave", event.target.value)}
-              displayEmpty
-              inputProps={{ "aria-label": "Wave" }}
-              data-testid="graph-wave-filter"
-            >
-              <MenuItem value=""><em>All waves</em></MenuItem>
+          <Select
+            value={selectedWave === null ? "all" : String(selectedWave)}
+            onValueChange={(value) => setParam("wave", value === "all" ? "" : value)}
+          >
+            <SelectTrigger size="sm" className="h-8 w-[150px]" aria-label="Wave" data-testid="graph-wave-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All waves</SelectItem>
               {sortedWaves.map((wave) => (
-                <MenuItem key={wave.wave} value={String(wave.wave)}>
+                <SelectItem key={wave.wave} value={String(wave.wave)}>
                   {wave.wave === -1 ? "Unwaved" : `Wave ${wave.wave}`}
-                </MenuItem>
+                </SelectItem>
               ))}
-            </Select>
-          </FormControl>
+            </SelectContent>
+          </Select>
         )}
         {hasContent && (
-          <Autocomplete
-            size="small"
-            sx={{ width: 240 }}
+          <NodeSearch
             options={searchOptions}
-            getOptionLabel={(option) => option.name}
-            isOptionEqualToValue={(a, b) => a.id === b.id}
-            onChange={(_, option) => {
-              if (option) {
-                focusNode(option.id);
-                setCenterRequest((previous) => ({ id: option.id, nonce: (previous?.nonce ?? 0) + 1 }));
-              }
+            onPick={(id) => {
+              focusNode(id);
+              setCenterRequest((previous) => ({ id, nonce: (previous?.nonce ?? 0) + 1 }));
             }}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                placeholder="Find a node"
-                inputProps={{ ...params.inputProps, "data-testid": "graph-node-search" }}
-              />
-            )}
           />
         )}
-        <Autocomplete
-          size="small"
-          sx={{ minWidth: 260 }}
-          options={projectItems}
-          value={selectedProject}
-          getOptionLabel={(option) => `${option.repoName} / ${option.project}`}
-          isOptionEqualToValue={(a, b) => a.repoId === b.repoId && a.project === b.project}
-          onChange={(_, option) => selectProject(option)}
-          renderOption={(props, option) => (
-            <li {...props} key={`${option.repoId}:${option.project}`}>
-              <Box sx={{ overflow: "hidden" }}>
-                <Typography variant="body2" noWrap>{option.project}</Typography>
-                <Typography variant="caption" color="text.secondary" noWrap component="div">
-                  {option.repoName} · {option.flowCount} {option.flowCount === 1 ? "flow" : "flows"}
-                </Typography>
-              </Box>
-            </li>
-          )}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              placeholder="Select a project"
-              inputProps={{ ...params.inputProps, "data-testid": "graph-project-select" }}
-            />
-          )}
-        />
-      </Paper>
+        <ProjectSelect items={projectItems} selected={selectedProject} onSelect={selectProject} />
+      </div>
 
       {queryError !== undefined && (
-        <Box sx={{ position: "absolute", top: 68, left: 12, right: 12, zIndex: 6, maxWidth: 640 }}>
+        <div className="absolute top-16 left-3 right-3 z-10 max-w-2xl">
           {isApiError(queryError)
             ? <CorrelationError error={queryError} />
-            : <Typography color="error">{String(queryError)}</Typography>}
-        </Box>
+            : <p className="text-[13px] text-destructive">{String(queryError)}</p>}
+        </div>
       )}
 
       {!graphEnabled && !projectsQuery.isError && (
-          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-empty">
+        <div className="absolute inset-0 flex items-center justify-center p-6" data-testid="graph-empty">
+          <EmptyState
+            title="Pick a project to draw its map"
+            description="The lineage graph is seeded from a project (a repo's root folder): pick one above to see its flows, the objects they read and write, and everything downstream, even across repos. Click a node to trace what feeds it and what depends on it."
+          />
+        </div>
+      )}
+
+      {resolvingFocus && !queryError && (
+        <div className="absolute inset-0 flex items-center justify-center p-6" data-testid="graph-resolving-focus-box">
+          <div className="flex flex-col items-center gap-3" data-testid="graph-resolving-focus">
+            <Loader2 className="size-7 animate-spin text-muted-foreground" />
+            <p className="text-[13px] text-muted-foreground">Locating the node in the lineage graph...</p>
+          </div>
+        </div>
+      )}
+
+      {loadingGraph && !resolvingFocus && !queryError && (
+        <Skeleton className="absolute inset-0 h-full rounded-none" data-testid="graph-loading" />
+      )}
+
+      {graphEnabled && !loadingGraph && !queryError && graph !== null && !hasContent && (
+        <div className="absolute inset-0 flex items-center justify-center p-6" data-testid="graph-no-lineage">
+          {focusSeed !== "" || focusHasNoRepo ? (
             <EmptyState
-              title="Pick a project to draw its map"
-              description="The lineage graph is seeded from a project (a repo's root folder): pick one above to see its flows, the objects they read and write, and everything downstream, even across repos. Click a node to trace what feeds it and what depends on it."
+              data-testid="graph-focus-no-repo"
+              title="No lineage references this node yet"
+              description="This node has no recorded lineage edges, so nothing feeds it and nothing depends on it. Open it in the object explorer to see its definition and columns."
+              action={(
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate("/lineage/objects")}
+                  data-testid="graph-focus-open-explorer"
+                >
+                  <Rows3 />
+                  Open explorer
+                </Button>
+              )}
             />
-          </Box>
-        )}
+          ) : (
+            <EmptyState
+              title="No lineage for this project yet"
+              description={graphView === "flows"
+                ? "This project has no active flows, or its repo has not been synced. Sync the repo, then come back."
+                : "No object edges were recorded for this project. Sync the repo (a connected sync adds the derived tier), then come back."}
+            />
+          )}
+        </div>
+      )}
 
-        {resolvingFocus && !queryError && (
-          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-resolving-focus-box">
-            <Stack alignItems="center" spacing={2} data-testid="graph-resolving-focus">
-              <CircularProgress size={28} />
-              <Typography variant="body2" color="text.secondary">Locating the node in the lineage graph…</Typography>
-            </Stack>
-          </Box>
-        )}
-
-        {loadingGraph && !resolvingFocus && !queryError && (
-          <Skeleton variant="rectangular" sx={{ position: "absolute", inset: 0, height: "100%" }} data-testid="graph-loading" />
-        )}
-
-        {graphEnabled && !loadingGraph && !queryError && graph !== null && !hasContent && (
-          <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", p: 3 }} data-testid="graph-no-lineage">
-            {focusSeed !== "" || focusHasNoRepo ? (
-              <EmptyState
-                data-testid="graph-focus-no-repo"
-                title="No lineage references this node yet"
-                description="This node has no recorded lineage edges, so nothing feeds it and nothing depends on it. Open it in the object explorer to see its definition and columns."
-                action={(
-                  <Button
-                    variant="outlined"
-                    startIcon={<TableRowsIcon />}
-                    onClick={() => navigate("/lineage/objects")}
-                    data-testid="graph-focus-open-explorer"
-                  >
-                    Open explorer
-                  </Button>
-                )}
-              />
+      {graphEnabled && !loadingGraph && !queryError && graph !== null && hasContent && (
+        <ReactFlowProvider>
+          <GraphCanvas
+            graph={graph}
+            focus={focus}
+            colorMode={mode}
+            accents={accents}
+            centerRequest={centerRequest}
+            onFocus={focusNode}
+            onOpen={openNode}
+            onNodeContextMenu={(id, position) => setNodeMenu({ id, x: position.x, y: position.y })}
+          >
+            {panelOpen ? (
+              <Panel position="top-right">{detailsPanel}</Panel>
             ) : (
-              <EmptyState
-                title="No lineage for this project yet"
-                description={graphView === "flows"
-                  ? "This project has no active flows, or its repo has not been synced. Sync the repo, then come back."
-                  : "No object edges were recorded for this project. Sync the repo (a connected sync adds the derived tier), then come back."}
-              />
-            )}
-          </Box>
-        )}
-
-        {graphEnabled && !loadingGraph && !queryError && graph !== null && hasContent && (
-          <ReactFlowProvider>
-            <GraphCanvas
-              graph={graph}
-              focus={focus}
-              colorMode={theme.palette.mode}
-              centerRequest={centerRequest}
-              onFocus={focusNode}
-              onOpen={openNode}
-              onNodeContextMenu={(id, position) => setNodeMenu({ id, x: position.x, y: position.y })}
-            >
-              {panelOpen ? (
-                <Panel position="top-right">{detailsPanel}</Panel>
-              ) : (
-                <Panel position="top-right">
-                  <Tooltip title="Show details">
-                    <IconButton
+              <Panel position="top-right">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
                       onClick={() => setPanelOpen(true)}
                       data-testid="graph-panel-open"
                       aria-label="Show details panel"
-                      sx={{ bgcolor: "background.paper", border: 1, borderColor: "divider", "&:hover": { bgcolor: "background.paper" } }}
+                      className="bg-card shadow-sm"
                     >
-                      <InfoOutlinedIcon />
-                    </IconButton>
-                  </Tooltip>
-                </Panel>
-              )}
-            </GraphCanvas>
-          </ReactFlowProvider>
-        )}
+                      <Info />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Show details</TooltipContent>
+                </Tooltip>
+              </Panel>
+            )}
+          </GraphCanvas>
+        </ReactFlowProvider>
+      )}
 
-        <Menu
-          open={nodeMenu !== null}
-          onClose={() => setNodeMenu(null)}
-          anchorReference="anchorPosition"
-          anchorPosition={nodeMenu !== null ? { top: nodeMenu.y, left: nodeMenu.x } : undefined}
-        >
-          <MenuItem
+      <DropdownMenu
+        open={nodeMenu !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setNodeMenu(null);
+          }
+        }}
+      >
+        {/* An invisible anchor pinned to the right-click position, so the menu opens at the pointer. */}
+        <DropdownMenuTrigger asChild>
+          <span
+            aria-hidden
+            className="fixed size-px"
+            style={{ top: nodeMenu?.y ?? 0, left: nodeMenu?.x ?? 0 }}
+          />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-56">
+          <DropdownMenuItem
             data-testid="node-menu-view-script"
-            onClick={() => {
+            onSelect={() => {
               if (nodeMenu !== null) {
                 setScriptKey(nodeMenu.id);
               }
-              setNodeMenu(null);
             }}
           >
             View script
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
               if (nodeMenu !== null) {
                 focusNode(nodeMenu.id);
               }
-              setNodeMenu(null);
             }}
           >
             Trace upstream / downstream
-          </MenuItem>
+          </DropdownMenuItem>
           {nodeMenu !== null && graph !== null && graph.frontier.has(nodeMenu.id) && (
-            <MenuItem
+            <DropdownMenuItem
               data-testid="node-menu-expand"
-              onClick={() => {
+              onSelect={() => {
                 if (nodeMenu !== null) {
                   expandNode(nodeMenu.id);
                 }
-                setNodeMenu(null);
               }}
             >
               Expand downstream
-            </MenuItem>
+            </DropdownMenuItem>
           )}
-          <MenuItem
-            onClick={() => {
+          <DropdownMenuItem
+            onSelect={() => {
               if (nodeMenu !== null) {
                 openNode(nodeMenu.id);
               }
-              setNodeMenu(null);
             }}
           >
             Open details
-          </MenuItem>
-          {nodeMenu !== null && repoId !== "" && graph !== null
-            && graph.openTarget(nodeMenu.id).label === "Open pipeline"
-            && graph.repoOf.get(nodeMenu.id) === repoId
-            && [
-              <Divider key="run-divider" />,
-              <MenuItem
-                key="run-flow"
+          </DropdownMenuItem>
+          {menuCanRun && graph !== null && nodeMenu !== null && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
                 data-testid="node-menu-run-flow"
-                onClick={() => {
+                onSelect={() => {
                   const flowName = graph.names.get(nodeMenu.id);
                   if (flowName) {
                     setRunDialog({ flowName, scope: "flow" });
                   }
-                  setNodeMenu(null);
                 }}
               >
                 Run flow
-              </MenuItem>,
-              <MenuItem
-                key="run-node"
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 data-testid="node-menu-run-node"
-                onClick={() => {
+                onSelect={() => {
                   const flowName = graph.names.get(nodeMenu.id);
                   if (flowName) {
                     setRunDialog({ flowName, scope: "node" });
                   }
-                  setNodeMenu(null);
                 }}
               >
                 Run flow + descendants
-              </MenuItem>,
-              <MenuItem
-                key="run-batch"
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 data-testid="node-menu-run-batch"
-                onClick={() => {
+                onSelect={() => {
                   const flowName = graph.names.get(nodeMenu.id);
                   if (flowName) {
                     setRunDialog({ flowName, scope: "batch" });
                   }
-                  setNodeMenu(null);
                 }}
               >
                 Run batch
-              </MenuItem>,
-            ]}
-        </Menu>
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
-        <TriggerRunDialog
-          open={runDialog !== null}
-          onClose={() => setRunDialog(null)}
-          repoId={repoId || undefined}
-          flowName={runDialog?.flowName}
-          scope={runDialog?.scope}
-        />
+      <TriggerRunDialog
+        open={runDialog !== null}
+        onClose={() => setRunDialog(null)}
+        repoId={repoId || undefined}
+        flowName={runDialog?.flowName}
+        scope={runDialog?.scope}
+      />
 
-        <Drawer
-          anchor="right"
-          open={scriptKey !== null}
-          onClose={() => setScriptKey(null)}
-          sx={{ zIndex: (t) => t.zIndex.modal }}
-        >
-          <Box sx={{ width: { xs: "100vw", sm: 760 }, maxWidth: "100vw", display: "flex", flexDirection: "column", height: "100%" }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} sx={{ p: 2, borderBottom: 1, borderColor: "divider" }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="subtitle1" noWrap>{scriptQuery.data?.name ?? scriptKey}</Typography>
-                {scriptQuery.data && (
-                  <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
-                    <Chip size="small" color="primary" label={scriptQuery.data.kind} />
-                    <Chip size="small" variant="outlined" label={scriptQuery.data.language.toUpperCase()} />
-                    {scriptQuery.data.source && <Chip size="small" variant="outlined" label={scriptQuery.data.source} />}
-                  </Stack>
-                )}
-              </Box>
-              <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-                <Button size="small" variant="contained" onClick={() => setScriptKey(null)}>Close</Button>
-              </Stack>
-            </Stack>
-            <Box sx={{ flex: 1, minHeight: 0, p: 2 }}>
-              {scriptQuery.isLoading && <Stack alignItems="center" sx={{ py: 4 }}><CircularProgress size={24} /></Stack>}
-              {scriptQuery.isError && (isApiError(scriptQuery.error)
-                ? <CorrelationError error={scriptQuery.error} />
-                : <Typography color="error">{String(scriptQuery.error)}</Typography>)}
-              {scriptQuery.data && (scriptQuery.data.script
-                ? (
-                  <CodeView
-                    value={scriptQuery.data.script}
-                    language={scriptQuery.data.language === "yaml" ? "yaml" : "sql"}
-                    height="calc(100vh - 128px)"
-                    data-testid="node-script-body"
-                  />
-                )
-                : <EmptyState title="No script" description="This node has no captured script yet. For database objects, run a connected sync (--connect) so the source is read." />)}
-            </Box>
-          </Box>
-        </Drawer>
-    </Box>
+      <Sheet
+        open={scriptKey !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setScriptKey(null);
+          }
+        }}
+      >
+        {/* Focus stays outside Monaco so Escape reaches the sheet, not the editor. */}
+        <SheetContent side="right" className="w-full gap-0 sm:max-w-[760px]" onOpenAutoFocus={(event) => event.preventDefault()}>
+          <SheetHeader className="border-b border-border pr-10">
+            <SheetTitle className="truncate font-mono text-sm">
+              {scriptQuery.data?.name ?? scriptKey ?? ""}
+            </SheetTitle>
+            <SheetDescription className="sr-only">
+              The captured script behind the selected lineage node.
+            </SheetDescription>
+            {scriptQuery.data && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge>{scriptQuery.data.kind}</Badge>
+                <Badge variant="outline">{scriptQuery.data.language.toUpperCase()}</Badge>
+                {scriptQuery.data.source && <Badge variant="outline">{scriptQuery.data.source}</Badge>}
+              </div>
+            )}
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {scriptQuery.isLoading && (
+              <div className="flex justify-center py-8">
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              </div>
+            )}
+            {scriptQuery.isError && (isApiError(scriptQuery.error)
+              ? <CorrelationError error={scriptQuery.error} />
+              : <p className="text-[13px] text-destructive">{String(scriptQuery.error)}</p>)}
+            {scriptQuery.data && (scriptQuery.data.script
+              ? (
+                <CodeView
+                  value={scriptQuery.data.script}
+                  language={scriptQuery.data.language === "yaml" ? "yaml" : "sql"}
+                  height="calc(100vh - 190px)"
+                  data-testid="node-script-body"
+                />
+              )
+              : <EmptyState title="No script" description="This node has no captured script yet. For database objects, run a connected sync (--connect) so the source is read." />)}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </div>
   );
 }

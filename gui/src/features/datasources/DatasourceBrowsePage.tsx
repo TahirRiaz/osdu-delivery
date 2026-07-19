@@ -1,27 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link as RouterLink, useSearchParams } from "react-router-dom";
-import Alert from "@mui/material/Alert";
-import Autocomplete from "@mui/material/Autocomplete";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import LinearProgress from "@mui/material/LinearProgress";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TablePagination from "@mui/material/TablePagination";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import LockPersonIcon from "@mui/icons-material/LockPerson";
+import { Link, useSearchParams } from "react-router-dom";
+import {
+  ArrowLeft, ChevronLeft, ChevronRight, CircleAlert, Loader2, Lock,
+} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import type {
   DatasourceDatabase, DatasourceObject, DatasourceObjectPage, DatasourceSchema,
 } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
+import { ComboBoxField } from "../../components/ComboBoxField";
 import { DataTable, type Column } from "../../components/DataTable";
 import { EmptyState } from "../../components/EmptyState";
+import { FilterBar } from "../../components/FilterBar";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
+import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { ObjectInspector } from "./ObjectInspector";
 import { useCompute } from "./useCompute";
 
@@ -29,21 +29,25 @@ const objectColumns: Column<DatasourceObject>[] = [
   {
     id: "name",
     header: "Object",
-    render: (row) => <Mono sx={{ fontWeight: 600 }}>{row.schema}.{row.name}</Mono>,
+    render: (row) => <Mono className="font-semibold">{row.schema}.{row.name}</Mono>,
   },
-  { id: "type", header: "Type", render: (row) => <Chip size="small" variant="outlined" label={row.type} /> },
+  { id: "type", header: "Type", render: (row) => <Badge variant="outline">{row.type}</Badge> },
   {
     id: "rows",
     header: "Approx. rows",
     align: "right",
-    render: (row) => (row.type === "Table" ? row.approxRows.toLocaleString() : "-"),
+    render: (row) => (
+      <span className="font-mono tabular-nums">
+        {row.type === "Table" ? row.approxRows.toLocaleString() : "-"}
+      </span>
+    ),
   },
 ];
 
 /**
  * The live browser for one datasource: databases, then schemas, then a filtered, paged table/view listing,
  * each fetched as a compute task executed by a worker node that can reach the source (the browser never
- * connects to anything itself). Clicking an object opens the live introspection drawer.
+ * connects to anything itself). Clicking an object opens the live introspection sheet.
  */
 export default function DatasourceBrowsePage() {
   const [params] = useSearchParams();
@@ -51,6 +55,7 @@ export default function DatasourceBrowsePage() {
   const kind = params.get("kind");
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
+  useTabTitle(reference === "" ? undefined : `Browse ${reference}`);
 
   const databases = useCompute<{ databases: DatasourceDatabase[] }>();
   const schemas = useCompute<{ schemas: DatasourceSchema[] }>();
@@ -122,7 +127,14 @@ export default function DatasourceBrowsePage() {
         <EmptyState
           title="No datasource selected"
           description="Open this page from the Datasources list so it knows which reference to browse."
-          action={<Button component={RouterLink} to="/datasources" startIcon={<ArrowBackIcon />}>Datasources</Button>}
+          action={(
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/datasources">
+                <ArrowLeft />
+                Datasources
+              </Link>
+            </Button>
+          )}
         />
       </Page>
     );
@@ -133,7 +145,7 @@ export default function DatasourceBrowsePage() {
       <Page data-testid="page-datasource-browse">
         <PageHeader title="Browse datasource" />
         <EmptyState
-          icon={<LockPersonIcon />}
+          icon={<Lock />}
           title="Operate scope required"
           description="Browsing runs live queries against the source through a worker node, so it needs the operate scope. Ask an administrator for the operator role."
         />
@@ -141,63 +153,71 @@ export default function DatasourceBrowsePage() {
     );
   }
 
+  const total = Number(objects.data?.total ?? 0);
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min(total, (page + 1) * pageSize);
+  const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+
   return (
     <Page data-testid="page-datasource-browse">
       <PageHeader
         title={(
-          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+          <span className="flex flex-wrap items-center gap-2">
             <span>Browse</span>
-            <Mono sx={{ fontSize: "inherit" }}>{reference}</Mono>
-            {kind !== null && <Chip size="small" variant="outlined" label={kind} />}
-          </Stack>
+            <span className="font-mono">{reference}</span>
+            {kind !== null && <Badge variant="outline">{kind}</Badge>}
+          </span>
         )}
         subtitle="Everything on this page executes as a compute task on a worker node that can reach the source."
         actions={(
-          <Button component={RouterLink} to="/datasources" startIcon={<ArrowBackIcon />} data-testid="browse-back">
-            Datasources
+          <Button variant="outline" size="sm" asChild data-testid="browse-back">
+            <Link to="/datasources">
+              <ArrowLeft />
+              Datasources
+            </Link>
           </Button>
         )}
       />
 
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }} flexWrap="wrap" useFlexGap>
-        <Autocomplete
-          sx={{ minWidth: 240 }}
-          size="small"
+      <FilterBar>
+        <ComboBoxField
+          ariaLabel="Database"
           options={databases.data?.databases.map((d) => d.name) ?? []}
+          optionValue={(name) => name}
+          renderOption={(name) => <span className="font-mono text-[12px]">{name}</span>}
           value={database}
-          onChange={(_, value) => {
+          onChange={(value) => {
             setDatabase(value);
             setSchema(null);
           }}
+          clearOption={{
+            label: "connection default",
+            onClear: () => {
+              setDatabase(null);
+              setSchema(null);
+            },
+          }}
           loading={databases.running}
-          renderInput={(inputParams) => (
-            <TextField
-              {...inputParams}
-              label="Database"
-              placeholder="connection default"
-              inputProps={{ ...inputParams.inputProps, "data-testid": "browse-database" }}
-            />
-          )}
+          placeholder="connection default"
+          loadingMessage="Loading from the source..."
+          testId="browse-database"
+          className="w-full sm:w-60"
         />
-        <Autocomplete
-          sx={{ minWidth: 200 }}
-          size="small"
+        <ComboBoxField
+          ariaLabel="Schema"
           options={schemas.data?.schemas.map((s) => s.name) ?? []}
+          optionValue={(name) => name}
+          renderOption={(name) => <span className="font-mono text-[12px]">{name}</span>}
           value={schema}
-          onChange={(_, value) => setSchema(value)}
+          onChange={(value) => setSchema(value)}
+          clearOption={{ label: "all schemas", onClear: () => setSchema(null) }}
           loading={schemas.running}
-          renderInput={(inputParams) => (
-            <TextField
-              {...inputParams}
-              label="Schema"
-              placeholder="all schemas"
-              inputProps={{ ...inputParams.inputProps, "data-testid": "browse-schema" }}
-            />
-          )}
+          placeholder="all schemas"
+          loadingMessage="Loading from the source..."
+          testId="browse-schema"
+          className="w-full sm:w-50"
         />
-        <TextField
-          size="small"
-          label="Name filter"
+        <Input
           value={nameLike}
           onChange={(e) => setNameLike(e.target.value)}
           onKeyDown={(e) => {
@@ -206,37 +226,54 @@ export default function DatasourceBrowsePage() {
             }
           }}
           onBlur={() => setAppliedNameLike(nameLike.trim())}
-          inputProps={{ "data-testid": "browse-name-filter" }}
+          placeholder="Name filter"
+          aria-label="Name filter"
+          data-testid="browse-name-filter"
+          className="h-8 w-full sm:w-44"
         />
-        <FormControlLabel
-          control={(
-            <Switch
-              checked={includeViews}
-              onChange={(e) => setIncludeViews(e.target.checked)}
-              data-testid="browse-include-views"
-            />
-          )}
-          label="Views"
-        />
-        <FormControlLabel
-          control={(
-            <Switch
-              checked={includeSystem}
-              onChange={(e) => setIncludeSystem(e.target.checked)}
-              data-testid="browse-include-system"
-            />
-          )}
-          label="System objects"
-        />
-      </Stack>
+        <Label className="flex items-center gap-2 text-[13px] font-normal">
+          <Switch
+            checked={includeViews}
+            onCheckedChange={setIncludeViews}
+            data-testid="browse-include-views"
+          />
+          Views
+        </Label>
+        <Label className="flex items-center gap-2 text-[13px] font-normal">
+          <Switch
+            checked={includeSystem}
+            onCheckedChange={setIncludeSystem}
+            data-testid="browse-include-system"
+          />
+          System objects
+        </Label>
+      </FilterBar>
 
-      {databases.error !== null && <Alert severity="error" data-testid="browse-databases-error">{databases.error}</Alert>}
-      {schemas.error !== null && databases.error === null && (
-        <Alert severity="error" data-testid="browse-schemas-error">{schemas.error}</Alert>
+      {databases.error !== null && (
+        <Alert variant="destructive" data-testid="browse-databases-error">
+          <CircleAlert />
+          <AlertDescription>{databases.error}</AlertDescription>
+        </Alert>
       )}
-      {objects.error !== null && <Alert severity="error" data-testid="browse-objects-error">{objects.error}</Alert>}
+      {schemas.error !== null && databases.error === null && (
+        <Alert variant="destructive" data-testid="browse-schemas-error">
+          <CircleAlert />
+          <AlertDescription>{schemas.error}</AlertDescription>
+        </Alert>
+      )}
+      {objects.error !== null && (
+        <Alert variant="destructive" data-testid="browse-objects-error">
+          <CircleAlert />
+          <AlertDescription>{objects.error}</AlertDescription>
+        </Alert>
+      )}
 
-      {objects.running && <LinearProgress data-testid="browse-loading" />}
+      {objects.running && (
+        <div className="flex items-center gap-2 text-[13px] text-muted-foreground" data-testid="browse-loading">
+          <Loader2 className="size-4 animate-spin" />
+          Listing objects on a worker node...
+        </div>
+      )}
 
       <DataTable
         columns={objectColumns}
@@ -248,29 +285,64 @@ export default function DatasourceBrowsePage() {
           : "No tables or views match this scope."}
         data-testid="browse-objects-table"
         footer={(
-          <TablePagination
-            component="div"
-            count={Number(objects.data?.total ?? 0)}
-            page={page}
-            onPageChange={(_, next) => {
-              setPage(next);
-              loadObjects(next, pageSize, appliedNameLike);
-            }}
-            rowsPerPage={pageSize}
-            onRowsPerPageChange={(event) => {
-              const nextSize = Number.parseInt(event.target.value, 10);
-              setPageSize(nextSize);
-              setPage(0);
-              loadObjects(0, nextSize, appliedNameLike);
-            }}
-            rowsPerPageOptions={[25, 50, 100, 200]}
-          />
+          <div className="flex items-center justify-between gap-4 border-t border-border px-3 py-1.5">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              Rows per page
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  const nextSize = Number.parseInt(value, 10);
+                  setPageSize(nextSize);
+                  setPage(0);
+                  loadObjects(0, nextSize, appliedNameLike);
+                }}
+              >
+                <SelectTrigger size="sm" className="h-7 w-[72px] text-xs" aria-label="Rows per page">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[25, 50, 100, 200].map((size) => (
+                    <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <span className="font-mono tabular-nums">{from}-{to} of {total}</span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Previous page"
+                disabled={page === 0}
+                onClick={() => {
+                  const next = Math.max(0, page - 1);
+                  setPage(next);
+                  loadObjects(next, pageSize, appliedNameLike);
+                }}
+              >
+                <ChevronLeft />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Next page"
+                disabled={page >= lastPage}
+                onClick={() => {
+                  const next = Math.min(lastPage, page + 1);
+                  setPage(next);
+                  loadObjects(next, pageSize, appliedNameLike);
+                }}
+              >
+                <ChevronRight />
+              </Button>
+            </div>
+          </div>
         )}
       />
       {objects.data !== null && (
-        <Typography variant="caption" color="text.secondary">
+        <p className="text-xs text-muted-foreground">
           {objects.data.items.length} of {objects.data.total.toLocaleString()} object(s) in scope.
-        </Typography>
+        </p>
       )}
 
       {selected !== null && (

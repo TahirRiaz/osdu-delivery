@@ -1,33 +1,32 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Alert from "@mui/material/Alert";
-import Autocomplete from "@mui/material/Autocomplete";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import Paper from "@mui/material/Paper";
-import Radio from "@mui/material/Radio";
-import RadioGroup from "@mui/material/RadioGroup";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import CancelIcon from "@mui/icons-material/Cancel";
-import KeyIcon from "@mui/icons-material/VpnKey";
-import LockPersonIcon from "@mui/icons-material/LockPerson";
+import {
+  Ban, CircleAlert, Info, KeyRound, Loader2, Lock, X,
+} from "lucide-react";
+import { toast } from "sonner";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isApiError } from "../../api/client";
 import { datasourceApi } from "../../api/endpoints";
 import type {
   ComputeTask, ComputeTaskSummary, DatasourceDatabase, DatasourceObject, DatasourceObjectPage,
   DatasourceSchema, UniqueKeyReport,
 } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
+import { ComboBoxField } from "../../components/ComboBoxField";
+import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
@@ -64,10 +63,10 @@ function elapsedLabel(sinceMs: number, nowMs: number): string {
 
 /**
  * A past detection task opened from the history list: the stored report for a succeeded task, the error for a
- * failed one, live progress otherwise (the dialog polls until the task is terminal, so an operator can follow
+ * failed one, live progress otherwise (the sheet polls until the task is terminal, so an operator can follow
  * a detection another session started).
  */
-function HistoryTaskDialog({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+function HistoryTaskSheet({ taskId, onClose }: { taskId: string; onClose: () => void }) {
   const task = useQuery({
     queryKey: ["compute-task", taskId],
     queryFn: () => datasourceApi.task(taskId),
@@ -81,46 +80,68 @@ function HistoryTaskDialog({ taskId, onClose }: { taskId: string; onClose: () =>
   const report = data?.status === "succeeded" && data.result !== null ? (data.result as UniqueKeyReport) : null;
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="md" data-testid="history-task-dialog">
-      <DialogTitle>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <span>Detection report</span>
-          {data?.target != null && <Mono sx={{ fontSize: "inherit" }}>{data.target}</Mono>}
-          {data !== undefined && <RunStatusBadge status={data.status} />}
-        </Stack>
-      </DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
+    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent
+        side="right"
+        className="w-full gap-0 sm:max-w-2xl"
+        showCloseButton={false}
+        data-testid="history-task-dialog"
+      >
+        <SheetHeader className="border-b border-border">
+          <div className="flex items-center justify-between gap-2">
+            <SheetTitle className="flex min-w-0 flex-wrap items-center gap-2 text-base">
+              <span>Detection report</span>
+              {data?.target != null && <Mono className="text-[13px] font-semibold">{data.target}</Mono>}
+              {data !== undefined && <RunStatusBadge status={data.status} />}
+            </SheetTitle>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close"
+              onClick={onClose}
+              data-testid="history-task-close"
+            >
+              <X />
+            </Button>
+          </div>
+          <SheetDescription className="sr-only">
+            The stored unique key detection report for one past compute task.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
           {task.isPending && (
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <CircularProgress size={18} />
-              <Typography variant="body2" color="text.secondary">Loading the task...</Typography>
-            </Stack>
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-24 w-full" />
+            </div>
           )}
-          {task.isError && <Alert severity="error">{String(task.error)}</Alert>}
+          {task.isError && (isApiError(task.error)
+            ? <CorrelationError error={task.error} />
+            : <p className="text-[13px] text-destructive">{String(task.error)}</p>)}
           {data !== undefined && (
-            <Typography variant="body2" color="text.secondary">
+            <p className="text-[13px] text-muted-foreground">
               <Mono>{data.sourceRef}</Mono>, enqueued <RelativeTime value={data.enqueuedUtc} />
               {data.endUtc !== null ? <>, ran {durationLabel(data.startUtc, data.endUtc)}</> : null}
               {data.requestedBy !== null ? <>, by {data.requestedBy}</> : null}
-            </Typography>
+            </p>
           )}
           {data !== undefined && (data.status === "queued" || data.status === "running") && (
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <CircularProgress size={18} />
-              <Typography variant="body2" color="text.secondary">
-                The task is {data.status}; this dialog follows it live.
-              </Typography>
-            </Stack>
+            <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              The task is {data.status}; this panel follows it live.
+            </div>
           )}
-          {data?.error != null && <Alert severity="error" data-testid="history-task-error">{data.error}</Alert>}
+          {data?.error != null && (
+            <Alert variant="destructive" data-testid="history-task-error">
+              <CircleAlert />
+              <AlertDescription>{data.error}</AlertDescription>
+            </Alert>
+          )}
           {report !== null && <UniqueKeyReportView report={report} data-testid="history-task-report" />}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} data-testid="history-task-close">Close</Button>
-      </DialogActions>
-    </Dialog>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -130,7 +151,7 @@ function HistoryTaskDialog({ taskId, onClose }: { taskId: string; onClose: () =>
  * detection as a durable compute task on a worker node, and read the full report: ranked candidates with
  * selectivity, per-column statistics, excluded columns, notes. Past detections stay on the durable task queue
  * and reopen from the history list. The scope lives in the URL, so a detection setup is shareable and the
- * inspector drawer deep-links here.
+ * inspector sheet deep-links here.
  */
 export default function UniqueKeyDetectionPage() {
   const [params, setParams] = useSearchParams();
@@ -204,8 +225,6 @@ export default function UniqueKeyDetectionPage() {
     () => (datasources.data ?? []).filter((d) => d.resolvable && detectableKind(d.kind)),
     [datasources.data],
   );
-  const selectedSource = selectableSources.find((d) => d.reference === reference)
-    ?? (reference !== "" ? { reference, kind, resolvable: true, sourcePipelines: 0, targetPipelines: 0 } : null);
   const selectedObject: DatasourceObject | null = objectName !== "" && schema !== null
     ? { schema, name: objectName, type: "Table", approxRows: 0 }
     : null;
@@ -239,6 +258,14 @@ export default function UniqueKeyDetectionPage() {
     return () => clearInterval(timer);
   }, [detect.running]);
 
+  // The terminal failure toast (DESIGN.md 8.2). A cancel (button or navigation) aborts the long-poll before
+  // any error lands, so it never toasts; the kd-cancelled notice below covers that path instead.
+  useEffect(() => {
+    if (detect.error !== null) {
+      toast.error(detect.error);
+    }
+  }, [detect.error]);
+
   const canRun = usable && schema !== null && objectName !== ""
     && !detect.running && !sampleInvalid && !widthInvalid && !candidatesInvalid;
 
@@ -260,6 +287,14 @@ export default function UniqueKeyDetectionPage() {
         verifyCandidates: verify,
         trustDeclaredKeys,
       })
+      .then((report) => {
+        // The terminal success toast (DESIGN.md 8.2); a cancelled or failed run resolves null instead.
+        if (report !== null) {
+          toast.success(report.objectName !== null
+            ? `Unique key detection finished for ${report.objectName}.`
+            : "Unique key detection finished.");
+        }
+      })
       .finally(() => setHistoryVersion((v) => v + 1));
   };
 
@@ -275,17 +310,22 @@ export default function UniqueKeyDetectionPage() {
       id: "target",
       header: "Object",
       render: (row) => (row.target !== null
-        ? <Mono sx={{ fontWeight: 600 }}>{row.target}</Mono>
-        : <Typography variant="body2" color="text.secondary">-</Typography>),
+        ? <Mono className="font-semibold">{row.target}</Mono>
+        : <span className="text-[13px] text-muted-foreground">-</span>),
     },
     { id: "reference", header: "Datasource", render: (row) => <Mono>{row.sourceRef}</Mono> },
     { id: "status", header: "Status", render: (row) => <RunStatusBadge status={row.status} /> },
     { id: "enqueued", header: "Enqueued", render: (row) => <RelativeTime value={row.enqueuedUtc} /> },
-    { id: "duration", header: "Duration", align: "right", render: (row) => durationLabel(row.startUtc, row.endUtc) },
+    {
+      id: "duration",
+      header: "Duration",
+      align: "right",
+      render: (row) => <span className="font-mono tabular-nums">{durationLabel(row.startUtc, row.endUtc)}</span>,
+    },
     {
       id: "requestedBy",
       header: "By",
-      render: (row) => row.requestedBy ?? <Typography variant="body2" color="text.secondary">-</Typography>,
+      render: (row) => row.requestedBy ?? <span className="text-[13px] text-muted-foreground">-</span>,
     },
   ];
 
@@ -294,7 +334,7 @@ export default function UniqueKeyDetectionPage() {
       <Page data-testid="page-key-detection">
         <PageHeader title="Unique key detection" />
         <EmptyState
-          icon={<LockPersonIcon />}
+          icon={<Lock />}
           title="Operate scope required"
           description="Detection profiles the live source through a worker node, so it needs the operate scope. Ask an administrator for the operator role."
         />
@@ -309,237 +349,287 @@ export default function UniqueKeyDetectionPage() {
         subtitle="Find the minimal column set(s) that uniquely identify a table's rows. A key the database already declares answers instantly from metadata; otherwise the rows are profiled on a worker node, on a random sample for large tables, and every reported key is verified against the whole table."
       />
 
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Stack spacing={2}>
-          <Typography variant="subtitle2">Target</Typography>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
-            <Autocomplete
-              sx={{ minWidth: 280 }}
-              size="small"
-              options={selectableSources}
-              getOptionLabel={(option) => option.reference}
-              isOptionEqualToValue={(option, value) => option.reference === value.reference}
-              value={selectedSource}
-              onChange={(_, value) => setScope({
-                ref: value?.reference ?? null, kind: value?.kind ?? null, db: null, schema: null, object: null,
-              })}
-              loading={datasources.isPending}
-              renderOption={(props, option) => (
-                <li {...props} key={option.reference}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Mono>{option.reference}</Mono>
-                    {option.kind !== null && <Chip size="small" variant="outlined" label={option.kind} />}
-                  </Stack>
-                </li>
-              )}
-              renderInput={(inputParams) => (
-                <TextField
-                  {...inputParams}
-                  label="Datasource"
-                  placeholder="pick a connection reference"
-                  inputProps={{ ...inputParams.inputProps, "data-testid": "kd-datasource" }}
-                />
-              )}
-            />
-            <Autocomplete
-              sx={{ minWidth: 220 }}
-              size="small"
-              disabled={!usable}
-              options={databases.data?.databases.map((d) => d.name) ?? []}
-              value={database}
-              onChange={(_, value) => setScope({ db: value, schema: null, object: null })}
-              loading={databases.running}
-              renderInput={(inputParams) => (
-                <TextField
-                  {...inputParams}
-                  label="Database"
-                  placeholder="connection default"
-                  inputProps={{ ...inputParams.inputProps, "data-testid": "kd-database" }}
-                />
-              )}
-            />
-            <Autocomplete
-              sx={{ minWidth: 200 }}
-              size="small"
-              disabled={!usable}
-              options={schemas.data?.schemas.map((s) => s.name) ?? []}
-              value={schema}
-              onChange={(_, value) => setScope({ schema: value, object: null })}
-              loading={schemas.running}
-              renderInput={(inputParams) => (
-                <TextField
-                  {...inputParams}
-                  label="Schema"
-                  placeholder="all schemas"
-                  inputProps={{ ...inputParams.inputProps, "data-testid": "kd-schema" }}
-                />
-              )}
-            />
-            <Autocomplete
-              sx={{ minWidth: 300, flexGrow: 1 }}
-              size="small"
-              disabled={!usable}
-              options={objects.data?.items ?? []}
-              getOptionLabel={(option) => `${option.schema}.${option.name}`}
-              isOptionEqualToValue={(option, value) => option.schema === value.schema && option.name === value.name}
-              value={selectedObject}
-              onChange={(_, value) => setScope({ schema: value?.schema ?? null, object: value?.name ?? null })}
-              onInputChange={(_, value, reason) => {
-                if (reason === "input") {
-                  setObjectInput(value);
-                }
-              }}
-              loading={objects.running}
-              renderOption={(props, option) => (
-                <li {...props} key={`${option.schema}.${option.name}`}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Mono>{option.schema}.{option.name}</Mono>
-                    <Chip size="small" variant="outlined" label={option.type} />
-                  </Stack>
-                </li>
-              )}
-              renderInput={(inputParams) => (
-                <TextField
-                  {...inputParams}
-                  label="Table or view"
-                  placeholder="type to search"
-                  inputProps={{ ...inputParams.inputProps, "data-testid": "kd-object" }}
-                />
-              )}
-            />
-          </Stack>
-          {databases.error !== null && <Alert severity="error" data-testid="kd-databases-error">{databases.error}</Alert>}
-          {schemas.error !== null && databases.error === null && (
-            <Alert severity="error" data-testid="kd-schemas-error">{schemas.error}</Alert>
-          )}
-          {objects.error !== null && <Alert severity="error" data-testid="kd-objects-error">{objects.error}</Alert>}
-
-          <Typography variant="subtitle2">Options</Typography>
-          <Stack direction={{ xs: "column", lg: "row" }} spacing={2} alignItems={{ lg: "center" }} flexWrap="wrap" useFlexGap>
-            <RadioGroup
-              row
-              value={sampleMode}
-              onChange={(e) => setSampleMode(e.target.value as typeof sampleMode)}
-              data-testid="kd-sample-mode"
-            >
-              <Tooltip title="Tables over 2 million rows profile a 500,000-row random sample; smaller tables get a full scan.">
-                <FormControlLabel value="auto" control={<Radio size="small" />} label="Auto sample" />
-              </Tooltip>
-              <Tooltip title="Profile every row. Exact, but expensive on a large table.">
-                <FormControlLabel value="full" control={<Radio size="small" />} label="Full scan" />
-              </Tooltip>
-              <Tooltip title="Profile a random sample of this many rows; reported keys are still verified against the whole table.">
-                <FormControlLabel value="custom" control={<Radio size="small" />} label="Sample" />
-              </Tooltip>
-            </RadioGroup>
-            {sampleMode === "custom" && (
-              <TextField
-                size="small"
-                sx={{ width: 160 }}
-                type="number"
-                label="Sample rows"
-                value={sampleSize}
-                onChange={(e) => setSampleSize(Number.parseInt(e.target.value, 10))}
-                error={sampleInvalid}
-                helperText={sampleInvalid ? "At least 1 row." : undefined}
-                inputProps={{ min: 1, "data-testid": "kd-sample-size" }}
-              />
-            )}
-            <TextField
-              size="small"
-              sx={{ width: 150 }}
-              type="number"
-              label="Max key width"
-              value={maxKeyColumns}
-              onChange={(e) => setMaxKeyColumns(Number.parseInt(e.target.value, 10))}
-              error={widthInvalid}
-              helperText={widthInvalid ? "1 to 16 columns." : undefined}
-              inputProps={{ min: 1, max: 16, "data-testid": "kd-max-columns" }}
-            />
-            <TextField
-              size="small"
-              sx={{ width: 150 }}
-              type="number"
-              label="Max candidates"
-              value={maxCandidates}
-              onChange={(e) => setMaxCandidates(Number.parseInt(e.target.value, 10))}
-              error={candidatesInvalid}
-              helperText={candidatesInvalid ? "1 to 50 candidates." : undefined}
-              inputProps={{ min: 1, max: 50, "data-testid": "kd-max-candidates" }}
-            />
-            <Tooltip title="Confirm every sampled candidate against the whole table before reporting it as unique.">
-              <FormControlLabel
-                control={<Switch checked={verify} onChange={(e) => setVerify(e.target.checked)} data-testid="kd-verify" />}
-                label="Verify on full table"
-              />
-            </Tooltip>
-            <Tooltip title="When the database already enforces a unique index or constraint, answer from that metadata without reading a row. Turn off to profile the data regardless.">
-              <FormControlLabel
-                control={(
-                  <Switch
-                    checked={trustDeclaredKeys}
-                    onChange={(e) => setTrustDeclaredKeys(e.target.checked)}
-                    data-testid="kd-trust-declared"
-                  />
-                )}
-                label="Use declared keys"
-              />
-            </Tooltip>
-          </Stack>
-
-          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Button
-              variant="contained"
-              startIcon={detect.running ? <CircularProgress size={16} color="inherit" /> : <KeyIcon />}
-              disabled={!canRun}
-              onClick={runDetection}
-              data-testid="kd-run"
-            >
-              {detect.running ? "Profiling..." : "Detect unique key"}
-            </Button>
-            {detect.running && (
+      <Card className="gap-4 rounded-lg p-4">
+        <h2 className="text-sm font-medium">Target</h2>
+        <div className="flex flex-col gap-2 md:flex-row md:flex-wrap md:items-center">
+          <ComboBoxField
+            ariaLabel="Datasource"
+            options={selectableSources}
+            optionValue={(source) => source.reference}
+            renderOption={(source) => (
               <>
-                <Button
-                  color="inherit"
-                  startIcon={<CancelIcon />}
-                  onClick={cancelDetection}
-                  data-testid="kd-cancel"
-                >
-                  Cancel
-                </Button>
-                {startedAtMs !== null && (
-                  <Typography variant="body2" color="text.secondary" data-testid="kd-elapsed">
-                    {elapsedLabel(startedAtMs, nowMs)} elapsed; a large table can take a while. Leaving this page
-                    cancels the detection.
-                  </Typography>
-                )}
+                <Mono>{source.reference}</Mono>
+                {source.kind !== null && <Badge variant="outline" className="ml-auto">{source.kind}</Badge>}
               </>
             )}
-          </Stack>
-        </Stack>
-      </Paper>
+            value={reference === "" ? null : reference}
+            onChange={(_value, source) => setScope({
+              ref: source.reference, kind: source.kind, db: null, schema: null, object: null,
+            })}
+            clearOption={{
+              label: "Clear selection",
+              onClear: () => setScope({ ref: null, kind: null, db: null, schema: null, object: null }),
+            }}
+            loading={datasources.isPending}
+            placeholder="pick a connection reference"
+            loadingMessage="Loading the datasources..."
+            emptyMessage={datasources.isError ? "Could not load the datasources." : "No detectable datasource matches."}
+            testId="kd-datasource"
+            className="w-full md:w-70"
+          />
+          <ComboBoxField
+            ariaLabel="Database"
+            options={databases.data?.databases.map((d) => d.name) ?? []}
+            optionValue={(name) => name}
+            renderOption={(name) => <span className="font-mono text-[12px]">{name}</span>}
+            value={database}
+            onChange={(value) => setScope({ db: value, schema: null, object: null })}
+            clearOption={{
+              label: "connection default",
+              onClear: () => setScope({ db: null, schema: null, object: null }),
+            }}
+            loading={databases.running}
+            disabled={!usable}
+            placeholder="connection default"
+            loadingMessage="Loading from the source..."
+            testId="kd-database"
+            className="w-full md:w-55"
+          />
+          <ComboBoxField
+            ariaLabel="Schema"
+            options={schemas.data?.schemas.map((s) => s.name) ?? []}
+            optionValue={(name) => name}
+            renderOption={(name) => <span className="font-mono text-[12px]">{name}</span>}
+            value={schema}
+            onChange={(value) => setScope({ schema: value, object: null })}
+            clearOption={{
+              label: "all schemas",
+              onClear: () => setScope({ schema: null, object: null }),
+            }}
+            loading={schemas.running}
+            disabled={!usable}
+            placeholder="all schemas"
+            loadingMessage="Loading from the source..."
+            testId="kd-schema"
+            className="w-full md:w-50"
+          />
+          <ComboBoxField
+            ariaLabel="Table or view"
+            options={objects.data?.items ?? []}
+            optionValue={(option) => `${option.schema}.${option.name}`}
+            renderOption={(option) => (
+              <>
+                <Mono>{option.schema}.{option.name}</Mono>
+                <Badge variant="outline" className="ml-auto">{option.type}</Badge>
+              </>
+            )}
+            value={selectedObject !== null ? `${selectedObject.schema}.${selectedObject.name}` : null}
+            onChange={(_value, option) => setScope({ schema: option.schema, object: option.name })}
+            clearOption={{
+              label: "Clear selection",
+              onClear: () => setScope({ schema: null, object: null }),
+            }}
+            onSearchChange={setObjectInput}
+            loading={objects.running}
+            disabled={!usable}
+            placeholder="type to search"
+            loadingMessage="Searching on a worker node..."
+            emptyMessage="No tables or views match."
+            testId="kd-object"
+            className="w-full min-w-60 flex-1 md:w-auto"
+          />
+        </div>
+        {databases.error !== null && (
+          <Alert variant="destructive" data-testid="kd-databases-error">
+            <CircleAlert />
+            <AlertDescription>{databases.error}</AlertDescription>
+          </Alert>
+        )}
+        {schemas.error !== null && databases.error === null && (
+          <Alert variant="destructive" data-testid="kd-schemas-error">
+            <CircleAlert />
+            <AlertDescription>{schemas.error}</AlertDescription>
+          </Alert>
+        )}
+        {objects.error !== null && (
+          <Alert variant="destructive" data-testid="kd-objects-error">
+            <CircleAlert />
+            <AlertDescription>{objects.error}</AlertDescription>
+          </Alert>
+        )}
 
-      {detect.error !== null && <Alert severity="error" data-testid="kd-error">{detect.error}</Alert>}
+        <h2 className="text-sm font-medium">Options</h2>
+        <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center lg:gap-4">
+          <RadioGroup
+            value={sampleMode}
+            onValueChange={(value) => setSampleMode(value as "auto" | "full" | "custom")}
+            className="flex flex-row flex-wrap items-center gap-4"
+            data-testid="kd-sample-mode"
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Label htmlFor="kd-sample-mode-auto" className="flex items-center gap-2 text-[13px] font-normal">
+                  <RadioGroupItem id="kd-sample-mode-auto" value="auto" />
+                  Auto sample
+                </Label>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                Tables over 2 million rows profile a 500,000-row random sample; smaller tables get a full scan.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Label htmlFor="kd-sample-mode-full" className="flex items-center gap-2 text-[13px] font-normal">
+                  <RadioGroupItem id="kd-sample-mode-full" value="full" />
+                  Full scan
+                </Label>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                Profile every row. Exact, but expensive on a large table.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Label htmlFor="kd-sample-mode-custom" className="flex items-center gap-2 text-[13px] font-normal">
+                  <RadioGroupItem id="kd-sample-mode-custom" value="custom" />
+                  Sample
+                </Label>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                Profile a random sample of this many rows; reported keys are still verified against the whole table.
+              </TooltipContent>
+            </Tooltip>
+          </RadioGroup>
+          {sampleMode === "custom" && (
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="kd-sample-size" className="text-xs font-normal text-muted-foreground">
+                Sample rows
+              </Label>
+              <Input
+                id="kd-sample-size"
+                type="number"
+                min={1}
+                value={Number.isFinite(sampleSize) ? sampleSize : ""}
+                onChange={(e) => setSampleSize(Number.parseInt(e.target.value, 10))}
+                aria-invalid={sampleInvalid}
+                className="h-8 w-40"
+                data-testid="kd-sample-size"
+              />
+              {sampleInvalid && <span className="text-xs text-destructive">At least 1 row.</span>}
+            </div>
+          )}
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="kd-max-columns" className="text-xs font-normal text-muted-foreground">
+              Max key width
+            </Label>
+            <Input
+              id="kd-max-columns"
+              type="number"
+              min={1}
+              max={16}
+              value={Number.isFinite(maxKeyColumns) ? maxKeyColumns : ""}
+              onChange={(e) => setMaxKeyColumns(Number.parseInt(e.target.value, 10))}
+              aria-invalid={widthInvalid}
+              className="h-8 w-36"
+              data-testid="kd-max-columns"
+            />
+            {widthInvalid && <span className="text-xs text-destructive">1 to 16 columns.</span>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="kd-max-candidates" className="text-xs font-normal text-muted-foreground">
+              Max candidates
+            </Label>
+            <Input
+              id="kd-max-candidates"
+              type="number"
+              min={1}
+              max={50}
+              value={Number.isFinite(maxCandidates) ? maxCandidates : ""}
+              onChange={(e) => setMaxCandidates(Number.parseInt(e.target.value, 10))}
+              aria-invalid={candidatesInvalid}
+              className="h-8 w-36"
+              data-testid="kd-max-candidates"
+            />
+            {candidatesInvalid && <span className="text-xs text-destructive">1 to 50 candidates.</span>}
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <Switch checked={verify} onCheckedChange={setVerify} data-testid="kd-verify" />
+                Verify on full table
+              </Label>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              Confirm every sampled candidate against the whole table before reporting it as unique.
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <Switch
+                  checked={trustDeclaredKeys}
+                  onCheckedChange={setTrustDeclaredKeys}
+                  data-testid="kd-trust-declared"
+                />
+                Use declared keys
+              </Label>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              When the database already enforces a unique index or constraint, answer from that metadata without
+              reading a row. Turn off to profile the data regardless.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button size="sm" disabled={!canRun} onClick={runDetection} data-testid="kd-run">
+            {detect.running ? <Loader2 className="animate-spin" /> : <KeyRound />}
+            {detect.running ? "Profiling..." : "Detect unique key"}
+          </Button>
+          {detect.running && (
+            <>
+              <Button variant="ghost" size="sm" onClick={cancelDetection} data-testid="kd-cancel">
+                <Ban />
+                Cancel
+              </Button>
+              {startedAtMs !== null && (
+                <span className="text-[13px] text-muted-foreground" data-testid="kd-elapsed">
+                  {elapsedLabel(startedAtMs, nowMs)} elapsed; a large table can take a while. Leaving this page
+                  cancels the detection.
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      </Card>
+
+      {detect.error !== null && (
+        <Alert variant="destructive" data-testid="kd-error">
+          <CircleAlert />
+          <AlertDescription>{detect.error}</AlertDescription>
+        </Alert>
+      )}
       {cancelled && detect.data === null && detect.error === null && (
-        <Alert severity="info" data-testid="kd-cancelled">The detection was cancelled.</Alert>
+        <Alert className="border-info/50 text-info" data-testid="kd-cancelled">
+          <Info />
+          <AlertDescription className="text-info/90">The detection was cancelled.</AlertDescription>
+        </Alert>
       )}
 
       {detect.data !== null && (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack spacing={1.5}>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography variant="subtitle2">Result</Typography>
-              {detect.data.objectName !== null && <Mono sx={{ fontWeight: 600 }}>{detect.data.objectName}</Mono>}
-            </Stack>
-            <UniqueKeyReportView report={detect.data} data-testid="kd-result" />
-          </Stack>
-        </Paper>
+        <Card className="gap-3 rounded-lg p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium">Result</h2>
+            {detect.data.objectName !== null && <Mono className="font-semibold">{detect.data.objectName}</Mono>}
+          </div>
+          <UniqueKeyReportView report={detect.data} data-testid="kd-result" />
+        </Card>
       )}
 
-      <Stack spacing={1}>
-        <Typography variant="subtitle2">
+      <div className="flex flex-col gap-2">
+        <h2 className="text-sm font-medium">
           Detection history{reference !== "" ? <> for <Mono>{reference}</Mono></> : null}
-        </Typography>
+        </h2>
         <PagedTable
           queryKey={["compute-tasks", "detectUniqueKey", reference, historyVersion]}
           fetchPage={(page, pageSize) => datasourceApi.tasks({
@@ -555,9 +645,9 @@ export default function UniqueKeyDetectionPage() {
           emptyMessage="No detections have run yet. Pick a table above and run one."
           data-testid="kd-history"
         />
-      </Stack>
+      </div>
 
-      {openTaskId !== null && <HistoryTaskDialog taskId={openTaskId} onClose={() => setOpenTaskId(null)} />}
+      {openTaskId !== null && <HistoryTaskSheet taskId={openTaskId} onClose={() => setOpenTaskId(null)} />}
     </Page>
   );
 }

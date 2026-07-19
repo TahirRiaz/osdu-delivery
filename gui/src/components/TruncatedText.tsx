@@ -1,5 +1,5 @@
-import Box from "@mui/material/Box";
-import Tooltip from "@mui/material/Tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 interface TruncatedTextProps {
   /** The full value: clipped with an ellipsis and shown in full on hover. */
@@ -20,8 +20,7 @@ interface TruncatedTextProps {
  * A single-line value that clips with an ellipsis at a fixed pixel cap and reveals the full text in a tooltip.
  * The full string stays in the DOM (only visually clipped), so it remains selectable and copyable. This is the
  * one canonical way to render potentially long free-text values (paths, URLs, object keys, SQL, errors) in a
- * table cell or detail row, replacing the scattered `slice`/`truncate` + `Tooltip` + `Mono` combinations so a
- * long value can never blow out the surrounding layout.
+ * table cell or detail row, so a long value can never blow out the surrounding layout.
  */
 export function TruncatedText({ text, maxWidth = 360, mono = false, placeholder = "-" }: TruncatedTextProps) {
   if (text === null || text === undefined || text === "") {
@@ -29,22 +28,22 @@ export function TruncatedText({ text, maxWidth = 360, mono = false, placeholder 
   }
 
   return (
-    <Tooltip title={text} enterDelay={400} placement="top-start">
-      <Box
-        component="span"
-        sx={{
-          display: "inline-block",
-          maxWidth,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          // Align the clipped inline-block with adjacent baseline text in the same cell.
-          verticalAlign: "bottom",
-          ...(mono ? { fontFamily: "monospace", fontSize: "0.8125rem" } : {}),
-        }}
-      >
+    <Tooltip delayDuration={400}>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            // align-bottom keeps the clipped inline-block on the baseline of adjacent text in the same cell
+            "inline-block max-w-full overflow-hidden text-ellipsis whitespace-nowrap align-bottom",
+            mono && "font-mono text-[12px]",
+          )}
+          style={{ maxWidth }}
+        >
+          {text}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="start" className="max-w-lg break-all">
         {text}
-      </Box>
+      </TooltipContent>
     </Tooltip>
   );
 }

@@ -1,8 +1,6 @@
-import Card from "@mui/material/Card";
-import CardActionArea from "@mui/material/CardActionArea";
-import CardContent from "@mui/material/CardContent";
-import Typography from "@mui/material/Typography";
 import { useNavigate } from "react-router-dom";
+import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 interface KpiCardProps {
   label: string;
@@ -13,23 +11,51 @@ interface KpiCardProps {
   testId?: string;
 }
 
-/** A dashboard headline number, optionally linking to the page behind it. */
+const valueColors: Record<NonNullable<KpiCardProps["color"]>, string> = {
+  primary: "text-primary",
+  success: "text-success",
+  error: "text-destructive",
+  warning: "text-warning",
+  info: "text-info",
+};
+
+/**
+ * A dashboard headline number (DESIGN.md 7.7): 11px uppercase muted label over a 24px semibold value,
+ * optionally linking to the page behind it. Full height so every card in a dashboard grid row is the
+ * same size; the grid controls the width.
+ */
 export function KpiCard({ label, value, caption, linkTo, color, testId }: KpiCardProps) {
   const navigate = useNavigate();
+
   const content = (
-    <CardContent>
-      <Typography variant="overline" color="text.secondary">{label}</Typography>
-      <Typography variant="h4" color={color ? `${color}.main` : undefined} data-testid={testId ? `${testId}-value` : undefined}>
+    <>
+      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div
+        className={cn("mt-1 font-mono text-2xl font-semibold leading-8 tabular-nums", color && valueColors[color])}
+        data-testid={testId ? `${testId}-value` : undefined}
+      >
         {value}
-      </Typography>
-      {caption && <Typography variant="caption" color="text.secondary">{caption}</Typography>}
-    </CardContent>
+      </div>
+      {caption && <div className="mt-0.5 text-xs text-muted-foreground">{caption}</div>}
+    </>
   );
 
+  if (linkTo !== undefined) {
+    return (
+      <Card className="h-full gap-0 rounded-lg p-0" data-testid={testId}>
+        <button
+          onClick={() => navigate(linkTo)}
+          className="h-full w-full rounded-lg p-4 text-left transition-colors hover:bg-accent/50 focus-visible:bg-accent/50"
+        >
+          {content}
+        </button>
+      </Card>
+    );
+  }
+
   return (
-    // Full height so every card in a dashboard grid row is the same size; the grid controls the width.
-    <Card variant="outlined" sx={{ height: "100%" }} data-testid={testId}>
-      {linkTo ? <CardActionArea onClick={() => navigate(linkTo)}>{content}</CardActionArea> : content}
+    <Card className="h-full gap-0 rounded-lg p-4" data-testid={testId}>
+      {content}
     </Card>
   );
 }

@@ -1,14 +1,9 @@
 import { useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
-import Chip from "@mui/material/Chip";
-import Link from "@mui/material/Link";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Tab from "@mui/material/Tab";
-import Tabs from "@mui/material/Tabs";
-import Typography from "@mui/material/Typography";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
 import { lineageApi, pipelineApi, repoApi } from "../../api/endpoints";
 import type { FlowDependency } from "../../api/types";
@@ -17,6 +12,7 @@ import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { DetailPair } from "../../components/DetailPair";
 import { LineageJumpButton } from "../../components/LineageJumpButton";
+import { Mono } from "../../components/Mono";
 import { RelativeTime } from "../../components/RelativeTime";
 
 /** One direction of a flow's dependency table: the other flow and the objects that mediate the edge. */
@@ -28,7 +24,7 @@ function dependencyColumns(otherFlow: (row: FlowDependency) => { name: string; p
       render: (row) => {
         const other = otherFlow(row);
         return (
-          <Link component={RouterLink} to={`/pipelines/${other.pipelineId}`} variant="body2">
+          <Link to={`/pipelines/${other.pipelineId}`} className="font-mono text-[12px] text-primary hover:underline">
             {other.name}
           </Link>
         );
@@ -38,7 +34,7 @@ function dependencyColumns(otherFlow: (row: FlowDependency) => { name: string; p
       id: "via",
       header: "Via objects",
       render: (row) => (
-        <Typography variant="body2" sx={{ wordBreak: "break-word" }}>{row.viaObjects || "-"}</Typography>
+        <span className="whitespace-normal break-words font-mono text-[12px]">{row.viaObjects || "-"}</span>
       ),
     },
   ];
@@ -71,18 +67,18 @@ export function FlowDetailsPanel({ repoId, pipelineId }: { repoId: string; pipel
 
   if (pipeline.isPending) {
     return (
-      <Box>
-        <Skeleton width={280} height={40} />
-        <Skeleton width="100%" />
-        <Skeleton width="70%" />
-        <Skeleton variant="rectangular" height={280} sx={{ mt: 2 }} />
-      </Box>
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-8 w-72 max-w-full" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="mt-2 h-64 w-full" />
+      </div>
     );
   }
   if (pipeline.isError) {
     return isApiError(pipeline.error)
       ? <CorrelationError error={pipeline.error} />
-      : <Typography color="error">{String(pipeline.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(pipeline.error)}</p>;
   }
 
   const flow = pipeline.data;
@@ -90,13 +86,13 @@ export function FlowDetailsPanel({ repoId, pipelineId }: { repoId: string; pipel
   const unblocks = (dependencies.data?.items ?? []).filter((row) => row.fromPipelineId === pipelineId);
 
   return (
-    <Box data-testid="catalog-flow-details">
-      <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
-        <Typography variant="h6" sx={{ minWidth: 0, wordBreak: "break-word" }}>{flow.name}</Typography>
-        <Chip label={flow.kind} size="small" />
-        {!flow.active && <Chip label="inactive" size="small" color="warning" variant="outlined" />}
-        <Box sx={{ flexGrow: 1 }} />
-        <Link component={RouterLink} to={`/pipelines/${flow.id}`} variant="body2" sx={{ whiteSpace: "nowrap" }}>
+    <div data-testid="catalog-flow-details">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h2 className="min-w-0 break-words font-mono text-base font-medium">{flow.name}</h2>
+        <Badge variant="secondary">{flow.kind}</Badge>
+        {!flow.active && <Badge variant="outline" className="border-warning/50 text-warning">inactive</Badge>}
+        <div className="grow" />
+        <Link to={`/pipelines/${flow.id}`} className="whitespace-nowrap text-[13px] text-primary hover:underline">
           Open pipeline page
         </Link>
         <LineageJumpButton
@@ -110,68 +106,68 @@ export function FlowDetailsPanel({ repoId, pipelineId }: { repoId: string; pipel
           }}
           variant="outlined"
         />
-      </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-all", mb: 1.5 }}>
-        {flow.relativePath}
-      </Typography>
+      </div>
+      <p className="mb-4 break-all font-mono text-xs text-muted-foreground">{flow.relativePath}</p>
 
-      <Tabs value={tab} onChange={(_event, value) => setTab(value)} sx={{ mb: 2 }} variant="scrollable">
-        <Tab label="Overview" value="overview" data-testid="catalog-tab-flow-overview" />
-        <Tab label="YAML" value="yaml" data-testid="catalog-tab-flow-yaml" />
-        <Tab label="Dependencies" value="dependencies" data-testid="catalog-tab-flow-dependencies" />
+      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="gap-4">
+        <TabsList variant="line">
+          <TabsTrigger value="overview" data-testid="catalog-tab-flow-overview">Overview</TabsTrigger>
+          <TabsTrigger value="yaml" data-testid="catalog-tab-flow-yaml">YAML</TabsTrigger>
+          <TabsTrigger value="dependencies" data-testid="catalog-tab-flow-dependencies">Dependencies</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview">
+          <div className="grid grid-cols-2 gap-3">
+            <DetailPair label="Repo">{repo.data?.name ?? repoId}</DetailPair>
+            <DetailPair label="Batch"><Mono>{flow.batch ?? "default"}</Mono></DetailPair>
+            <DetailPair label="Wave"><Mono className="tabular-nums">{flow.wave}</Mono></DetailPair>
+            <DetailPair label="Lifecycle">{flow.lifecycle}</DetailPair>
+            <DetailPair label="Execution mode">{flow.executionMode}</DetailPair>
+            <DetailPair label="Active">{flow.active ? "yes" : "no"}</DetailPair>
+            <DetailPair label="Source server">{flow.sourceServer === null ? "-" : <Mono>{flow.sourceServer}</Mono>}</DetailPair>
+            <DetailPair label="Target server">{flow.targetServer === null ? "-" : <Mono>{flow.targetServer}</Mono>}</DetailPair>
+            <DetailPair label="First seen"><RelativeTime value={flow.firstSeenUtc} /></DetailPair>
+            <DetailPair label="Last seen"><RelativeTime value={flow.lastSeenUtc} /></DetailPair>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="yaml">
+          <CodeView value={flow.yaml} language="yaml" height={420} data-testid="catalog-flow-yaml" />
+        </TabsContent>
+
+        <TabsContent value="dependencies">
+          {dependencies.isPending ? (
+            <Skeleton className="h-48 w-full" />
+          ) : dependencies.isError ? (
+            isApiError(dependencies.error)
+              ? <CorrelationError error={dependencies.error} />
+              : <p className="text-[13px] text-destructive">{String(dependencies.error)}</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <section>
+                <h3 className="mb-2 text-sm font-medium">{`Waits for (${waitsFor.length})`}</h3>
+                <DataTable<FlowDependency>
+                  columns={waitsForColumns}
+                  rows={waitsFor}
+                  rowKey={(row) => row.id}
+                  emptyMessage="Nothing upstream: this flow can start in the first wave of its group."
+                  data-testid="catalog-flow-waits-for"
+                />
+              </section>
+              <section>
+                <h3 className="mb-2 text-sm font-medium">{`Unblocks (${unblocks.length})`}</h3>
+                <DataTable<FlowDependency>
+                  columns={unblocksColumns}
+                  rows={unblocks}
+                  rowKey={(row) => row.id}
+                  emptyMessage="Nothing downstream waits on this flow."
+                  data-testid="catalog-flow-unblocks"
+                />
+              </section>
+            </div>
+          )}
+        </TabsContent>
       </Tabs>
-
-      {tab === "overview" && (
-        <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-          <DetailPair label="Repo">{repo.data?.name ?? repoId}</DetailPair>
-          <DetailPair label="Batch">{flow.batch ?? "default"}</DetailPair>
-          <DetailPair label="Wave">{flow.wave}</DetailPair>
-          <DetailPair label="Lifecycle">{flow.lifecycle}</DetailPair>
-          <DetailPair label="Execution mode">{flow.executionMode}</DetailPair>
-          <DetailPair label="Active">{flow.active ? "yes" : "no"}</DetailPair>
-          <DetailPair label="Source server">{flow.sourceServer ?? "-"}</DetailPair>
-          <DetailPair label="Target server">{flow.targetServer ?? "-"}</DetailPair>
-          <DetailPair label="First seen"><RelativeTime value={flow.firstSeenUtc} /></DetailPair>
-          <DetailPair label="Last seen"><RelativeTime value={flow.lastSeenUtc} /></DetailPair>
-        </Box>
-      )}
-
-      {tab === "yaml" && (
-        <CodeView value={flow.yaml} language="yaml" height={420} data-testid="catalog-flow-yaml" />
-      )}
-
-      {tab === "dependencies" && (
-        dependencies.isPending ? (
-          <Skeleton variant="rectangular" height={200} />
-        ) : dependencies.isError ? (
-          isApiError(dependencies.error)
-            ? <CorrelationError error={dependencies.error} />
-            : <Typography color="error">{String(dependencies.error)}</Typography>
-        ) : (
-          <Stack spacing={2}>
-            <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>{`Waits for (${waitsFor.length})`}</Typography>
-              <DataTable<FlowDependency>
-                columns={waitsForColumns}
-                rows={waitsFor}
-                rowKey={(row) => row.id}
-                emptyMessage="Nothing upstream: this flow can start in the first wave of its group."
-                data-testid="catalog-flow-waits-for"
-              />
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>{`Unblocks (${unblocks.length})`}</Typography>
-              <DataTable<FlowDependency>
-                columns={unblocksColumns}
-                rows={unblocks}
-                rowKey={(row) => row.id}
-                emptyMessage="Nothing downstream waits on this flow."
-                data-testid="catalog-flow-unblocks"
-              />
-            </Box>
-          </Stack>
-        )
-      )}
-    </Box>
+    </div>
   );
 }

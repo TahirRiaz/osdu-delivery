@@ -1,14 +1,11 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { useSnackbar } from "notistack";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Stack from "@mui/material/Stack";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import SyncIcon from "@mui/icons-material/Sync";
+import { ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { repoApi, repoSourceApi } from "../../api/endpoints";
 import type { Repo, RepoSource } from "../../api/types";
@@ -62,7 +59,6 @@ function mergeByName(repos: Repo[], sources: RepoSource[]): MergedRow[] {
  * synced repo's pipelines and lineage. */
 export default function ReposPage() {
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [registerOpen, setRegisterOpen] = useState(false);
 
@@ -80,12 +76,12 @@ export default function ReposPage() {
   const syncNow = useMutation({
     mutationFn: (id: string) => repoSourceApi.syncNow(id),
     onSuccess: () => {
-      enqueueSnackbar("Sync requested", { variant: "success" });
+      toast.success("Sync requested");
       void queryClient.invalidateQueries({ queryKey: ["repo-sources"] });
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
     },
     onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
   const rows = useMemo(
@@ -100,33 +96,44 @@ export default function ReposPage() {
   const renderSync = (source: RepoSource | undefined) => {
     if (source === undefined) {
       return (
-        <Tooltip title="Synced outside the control plane (CLI db sync); no tracked git source.">
-          <Chip size="small" variant="outlined" label="manual" />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>
+              <Badge variant="outline">manual</Badge>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            Synced outside the control plane (CLI db sync); no tracked git source.
+          </TooltipContent>
         </Tooltip>
       );
     }
 
-    return (
-      <Chip
-        size="small"
-        color={source.enabled ? "success" : "default"}
-        variant="outlined"
-        label={source.enabled ? `every ${source.syncIntervalSeconds}s` : "paused"}
-      />
+    return source.enabled ? (
+      <Badge variant="outline" className="border-success/50 text-success">
+        every {source.syncIntervalSeconds}s
+      </Badge>
+    ) : (
+      <Badge variant="outline">paused</Badge>
     );
   };
 
   const renderHealth = (source: RepoSource | undefined) => {
     if (source === undefined) {
-      return <Typography variant="body2" color="text.secondary">-</Typography>;
+      return <span className="text-muted-foreground">-</span>;
     }
 
     return source.lastError !== null ? (
-      <Tooltip title={source.lastError}>
-        <Chip size="small" color="error" label="error" data-testid="source-error" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Badge variant="destructive" data-testid="source-error">error</Badge>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-lg break-words">{source.lastError}</TooltipContent>
       </Tooltip>
     ) : (
-      <Chip size="small" color="success" variant="outlined" label="ok" />
+      <Badge variant="outline" className="border-success/50 text-success">ok</Badge>
     );
   };
 
@@ -135,12 +142,12 @@ export default function ReposPage() {
       id: "name",
       header: "Name",
       render: (row) => (
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Typography variant="body2" fontWeight={600}>{row.name}</Typography>
+        <span className="inline-flex items-center gap-2">
+          <span className="font-medium">{row.name}</span>
           {row.source !== undefined && row.repo === undefined && (
-            <Chip size="small" variant="outlined" color="warning" label="pending first sync" />
+            <Badge variant="outline" className="border-warning/50 text-warning">pending first sync</Badge>
           )}
-        </Stack>
+        </span>
       ),
     },
     {
@@ -162,11 +169,11 @@ export default function ReposPage() {
       header: "",
       align: "right",
       render: (row) => (
-        <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+        <span className="inline-flex items-center justify-end gap-1">
           {row.source !== undefined && (
             <Button
-              size="small"
-              startIcon={<SyncIcon fontSize="small" />}
+              variant="ghost"
+              size="xs"
               disabled={!row.source.enabled || syncNow.isPending}
               onClick={(e) => {
                 e.stopPropagation();
@@ -176,11 +183,14 @@ export default function ReposPage() {
               }}
               data-testid="source-sync-now"
             >
+              {syncNow.isPending && syncNow.variables === row.source.id
+                ? <Loader2 className="animate-spin" />
+                : <RefreshCw />}
               Sync now
             </Button>
           )}
-          {row.repo !== undefined && <ChevronRightIcon fontSize="small" color="action" />}
-        </Stack>
+          {row.repo !== undefined && <ChevronRight className="size-4 text-muted-foreground" />}
+        </span>
       ),
     },
   ];
@@ -190,7 +200,7 @@ export default function ReposPage() {
       <PageHeader
         title="Repos"
         actions={(
-          <Button variant="contained" onClick={() => setRegisterOpen(true)} data-testid="open-register-source">
+          <Button size="sm" onClick={() => setRegisterOpen(true)} data-testid="open-register-source">
             Register source
           </Button>
         )}
@@ -199,7 +209,7 @@ export default function ReposPage() {
       {error !== null && (
         isApiError(error)
           ? <CorrelationError error={error} />
-          : <Typography color="error">{String(error)}</Typography>
+          : <p className="text-[13px] text-destructive">{String(error)}</p>
       )}
 
       <DataTable
@@ -218,9 +228,9 @@ export default function ReposPage() {
       />
 
       {truncated && (
-        <Typography variant="caption" color="text.secondary">
+        <p className="text-xs text-muted-foreground">
           Showing the first {FETCH_CAP} repos and sources.
-        </Typography>
+        </p>
       )}
 
       {registerOpen && <RegisterSourceDialog onClose={() => setRegisterOpen(false)} />}

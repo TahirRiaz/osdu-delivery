@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { type Monaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
-import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
-import Tooltip from "@mui/material/Tooltip";
-import IconButton from "@mui/material/IconButton";
-import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import { useTheme } from "@mui/material/styles";
-import { useSnackbar } from "notistack";
+import { Copy, WandSparkles } from "lucide-react";
+import { toast } from "sonner";
 import { format as formatSql } from "sql-formatter";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { useThemeMode } from "../theme/ThemeModeContext";
 import "../lib/monacoSetup";
 import { markFlowModel, refreshDiagnostics, registerSqlflowYamlProviders } from "../lib/lsp/sqlflowLsp";
 
@@ -32,7 +30,7 @@ interface CodeViewProps {
   "data-testid"?: string;
 }
 
-/** Resolves a brand token (--sf-*) to its current value, honouring light/dark; falls back if unset. */
+/** Resolves a design token to its current value, honouring light/dark; falls back if unset. */
 function cssVar(name: string, fallback: string): string {
   if (typeof document === "undefined") {
     return fallback;
@@ -42,9 +40,10 @@ function cssVar(name: string, fallback: string): string {
 }
 
 /**
- * Defines the editor theme from the app's brand tokens (branding.css is the single colour source, so the code
- * view matches every other surface). Read live via getComputedStyle so it reflects the active mode; re-defined
- * whenever the app toggles light/dark. Rule colours are hex without '#'; editor colours keep it.
+ * Defines the editor theme from the workbench tokens (index.css is the single colour source, so the code
+ * view matches every other surface; DESIGN.md 7.6). Read live via getComputedStyle so it reflects the
+ * active mode; re-defined whenever the app toggles light/dark. Rule colours are hex without '#'; editor
+ * colours keep it.
  */
 function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
   const color = (name: string, fallback: string) => cssVar(name, fallback);
@@ -54,32 +53,32 @@ function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
     base: mode === "dark" ? "vs-dark" : "vs",
     inherit: true,
     rules: [
-      { token: "keyword", foreground: rule("--sf-primary", "#2f6fce"), fontStyle: "bold" },
-      { token: "operator", foreground: rule("--sf-text-secondary", "#4d5a6a") },
-      { token: "type", foreground: rule("--sf-info", "#0a6aa3") },
-      { token: "predefined", foreground: rule("--sf-info", "#0a6aa3") },
-      { token: "string", foreground: rule("--sf-success", "#2e7d32") },
-      { token: "number", foreground: rule("--sf-warning", "#9a7d0a") },
-      { token: "comment", foreground: rule("--sf-text-secondary", "#4d5a6a"), fontStyle: "italic" },
-      { token: "delimiter", foreground: rule("--sf-text-secondary", "#4d5a6a") },
-      { token: "tag", foreground: rule("--sf-primary", "#2f6fce") },
-      { token: "attribute.name", foreground: rule("--sf-info", "#0a6aa3") },
+      { token: "keyword", foreground: rule("--primary", "#2f6fce"), fontStyle: "bold" },
+      { token: "operator", foreground: rule("--muted-foreground", "#5b6b7f") },
+      { token: "type", foreground: rule("--info", "#0969da") },
+      { token: "predefined", foreground: rule("--info", "#0969da") },
+      { token: "string", foreground: rule("--success", "#1a7f37") },
+      { token: "number", foreground: rule("--warning", "#9a6700") },
+      { token: "comment", foreground: rule("--muted-foreground", "#5b6b7f"), fontStyle: "italic" },
+      { token: "delimiter", foreground: rule("--muted-foreground", "#5b6b7f") },
+      { token: "tag", foreground: rule("--primary", "#2f6fce") },
+      { token: "attribute.name", foreground: rule("--info", "#0969da") },
       // Semantic tokens from the flow-YAML analysis engine (see lib/lsp). These
       // carry census knowledge the YAML grammar cannot: a documented key, a key
       // the loader will ignore, and valid vs invalid enum values.
-      { token: "property", foreground: rule("--sf-info", "#0a6aa3") },
-      { token: "unknownKey", foreground: rule("--sf-warning", "#9a7d0a"), fontStyle: "italic" },
-      { token: "enumMember", foreground: rule("--sf-success", "#2e7d32") },
-      { token: "invalidValue", foreground: rule("--sf-error", "#c62828"), fontStyle: "underline" },
+      { token: "property", foreground: rule("--info", "#0969da") },
+      { token: "unknownKey", foreground: rule("--warning", "#9a6700"), fontStyle: "italic" },
+      { token: "enumMember", foreground: rule("--success", "#1a7f37") },
+      { token: "invalidValue", foreground: rule("--destructive", "#d1242f"), fontStyle: "underline" },
     ],
     colors: {
-      "editor.background": color("--sf-paper", mode === "dark" ? "#182434" : "#ffffff"),
-      "editor.foreground": color("--sf-text-primary", mode === "dark" ? "#eef3f9" : "#1d2733"),
-      "editorLineNumber.foreground": color("--sf-text-secondary", "#4d5a6a"),
-      "editorLineNumber.activeForeground": color("--sf-primary", "#2f6fce"),
-      "editorCursor.foreground": color("--sf-primary", "#2f6fce"),
-      "editorIndentGuide.background": color("--sf-divider", "#e2e8f0"),
-      "editorGutter.background": color("--sf-paper", mode === "dark" ? "#182434" : "#ffffff"),
+      "editor.background": color("--card", mode === "dark" ? "#16202f" : "#ffffff"),
+      "editor.foreground": color("--foreground", mode === "dark" ? "#dce6f2" : "#1d2733"),
+      "editorLineNumber.foreground": color("--muted-foreground", "#5b6b7f"),
+      "editorLineNumber.activeForeground": color("--primary", "#2f6fce"),
+      "editorCursor.foreground": color("--primary", "#2f6fce"),
+      "editorIndentGuide.background": color("--border", "#dfe5ee"),
+      "editorGutter.background": color("--card", mode === "dark" ? "#16202f" : "#ffffff"),
       "editor.lineHighlightBorder": "#00000000",
     },
   });
@@ -106,7 +105,7 @@ function prettyPrintSql(sql: string): string {
 
 /**
  * The Monaco surface for YAML documents, definition JSON, generated SQL, and plain-text trace payloads: syntax
- * highlight, folding, and in-editor search, themed with the app's brand palette in both light and dark. Flow-YAML
+ * highlight, folding, and in-editor search, themed with the workbench tokens in both light and dark. Flow-YAML
  * language intelligence (hover docs, census colouring, diagnostics) is on by default for YAML. Read-only by
  * default (git is the authoring surface); the debugger opts into editable mode via `readOnly={false}` +
  * `onChange`. For SQL, a toolbar offers pretty-printing (on by default, since captured statements arrive as
@@ -115,11 +114,9 @@ function prettyPrintSql(sql: string): string {
 export function CodeView({
   value, language, height = 480, lsp = true, readOnly = true, onChange, "data-testid": testId,
 }: CodeViewProps) {
-  const theme = useTheme();
-  const mode = theme.palette.mode;
+  const { mode } = useThemeMode();
   const monacoRef = useRef<Monaco | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const { enqueueSnackbar } = useSnackbar();
   const isSql = language === "sql";
   const lspOn = lsp && language === "yaml";
   const [formatSqlOn, setFormatSqlOn] = useState(true);
@@ -160,7 +157,7 @@ export function CodeView({
     }
   }, [lspOn, value]);
 
-  // The brand tokens change when the app toggles; re-define and re-apply so the editor tracks the theme.
+  // The design tokens change when the app toggles; re-define and re-apply so the editor tracks the theme.
   useEffect(() => {
     if (monacoRef.current) {
       defineSqlflowTheme(monacoRef.current, mode);
@@ -176,53 +173,49 @@ export function CodeView({
   const handleCopy = useCallback(() => {
     void navigator.clipboard
       .writeText(displayValue)
-      .then(() => enqueueSnackbar("Copied to clipboard", { variant: "success" }))
-      .catch(() => enqueueSnackbar("Could not copy to clipboard", { variant: "error" }));
-  }, [displayValue, enqueueSnackbar]);
+      .then(() => toast.success("Copied to clipboard"))
+      .catch(() => toast.error("Could not copy to clipboard"));
+  }, [displayValue]);
 
   return (
-    <Box
+    <div
       data-testid={testId ?? "code-view"}
-      sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}
+      className="overflow-hidden rounded-lg border border-border"
     >
-      <Stack
-        direction="row"
-        spacing={0.5}
-        justifyContent="flex-end"
-        alignItems="center"
-        sx={{
-          px: 0.5,
-          py: 0.25,
-          borderBottom: 1,
-          borderColor: "divider",
-          bgcolor: "action.hover",
-        }}
-      >
+      <div className="flex items-center justify-end gap-0.5 border-b border-border bg-muted/50 px-1 py-0.5">
         {isSql && (
-          <Tooltip title={formatSqlOn ? "Show original SQL" : "Format SQL"}>
-            <IconButton
-              size="small"
-              color={formatSqlOn ? "primary" : "default"}
-              aria-label={formatSqlOn ? "Show original SQL" : "Format SQL"}
-              aria-pressed={formatSqlOn}
-              onClick={() => setFormatSqlOn((on) => !on)}
-              data-testid="code-view-format"
-            >
-              <AutoFixHighIcon fontSize="small" />
-            </IconButton>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={formatSqlOn ? "Show original SQL" : "Format SQL"}
+                aria-pressed={formatSqlOn}
+                onClick={() => setFormatSqlOn((on) => !on)}
+                data-testid="code-view-format"
+                className={cn(formatSqlOn && "text-primary hover:text-primary")}
+              >
+                <WandSparkles />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{formatSqlOn ? "Show original SQL" : "Format SQL"}</TooltipContent>
           </Tooltip>
         )}
-        <Tooltip title="Copy">
-          <IconButton
-            size="small"
-            aria-label="Copy to clipboard"
-            onClick={handleCopy}
-            data-testid="code-view-copy"
-          >
-            <ContentCopyIcon fontSize="small" />
-          </IconButton>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Copy to clipboard"
+              onClick={handleCopy}
+              data-testid="code-view-copy"
+            >
+              <Copy />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Copy</TooltipContent>
         </Tooltip>
-      </Stack>
+      </div>
       <Editor
         value={displayValue}
         language={language}
@@ -236,13 +229,14 @@ export function CodeView({
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
           wordWrap: "on",
-          fontSize: 13,
+          fontSize: 12,
+          fontFamily: "'JetBrains Mono Variable', 'JetBrains Mono', Consolas, monospace",
           padding: { top: 12, bottom: 12 },
           renderLineHighlight: readOnly ? "none" : "line",
           smoothScrolling: true,
           "semanticHighlighting.enabled": true,
         }}
       />
-    </Box>
+    </div>
   );
 }

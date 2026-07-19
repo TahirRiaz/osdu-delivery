@@ -1,28 +1,15 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Accordion from "@mui/material/Accordion";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import AccordionSummary from "@mui/material/AccordionSummary";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Card from "@mui/material/Card";
-import CardContent from "@mui/material/CardContent";
-import Chip from "@mui/material/Chip";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableRow from "@mui/material/TableRow";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import FolderIcon from "@mui/icons-material/Folder";
-import PlayArrowIcon from "@mui/icons-material/PlayArrow";
-import SyncIcon from "@mui/icons-material/Sync";
+import { ChevronDown, Folder, Loader2, Network, Play, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, repoSourceApi } from "../../api/endpoints";
 import type { PipelineSummary } from "../../api/types";
@@ -34,6 +21,7 @@ import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge } from "../../components/StatusBadge";
+import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { projectOf } from "./project";
 
@@ -61,12 +49,12 @@ function PipelinesByProject({
   if (query.isError) {
     return isApiError(query.error)
       ? <CorrelationError error={query.error} />
-      : <Typography color="error">{String(query.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(query.error)}</p>;
   }
 
   const pipelines = query.data?.items;
   if (pipelines === undefined) {
-    return <Skeleton variant="rounded" height={120} />;
+    return <Skeleton className="h-28 w-full rounded-lg" />;
   }
 
   if (pipelines.length === 0) {
@@ -92,67 +80,82 @@ function PipelinesByProject({
   const projects = [...byProject.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
   return (
-    <Stack spacing={1} data-testid="repo-projects">
+    <div className="flex flex-col gap-2" data-testid="repo-projects">
       {projects.map(([project, rows]) => {
         const inactive = rows.filter((r) => !r.active).length;
         // The project's batch flow (if any): the wave-ordered "run the whole project" entry point.
         const batch = rows.find((r) => r.kind === "batch" && r.active);
         return (
-          <Accordion key={project} defaultExpanded disableGutters data-testid="repo-project">
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ flexGrow: 1, minWidth: 0 }}>
-                <FolderIcon fontSize="small" color="action" />
-                <Typography variant="body2" fontWeight={700} noWrap>{project}</Typography>
-                <Chip size="small" variant="outlined" label={`${rows.length} pipeline${rows.length === 1 ? "" : "s"}`} />
-                {inactive > 0 && (
-                  <Chip size="small" variant="outlined" color="warning" label={`${inactive} inactive`} />
-                )}
-                <Box sx={{ flexGrow: 1 }} />
+          <Collapsible key={project} defaultOpen>
+            <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="repo-project">
+              {/* The trigger spans the row up to the action button, so a nested button never sits inside it. */}
+              <div className="flex items-center gap-2 pr-2">
+                <CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left hover:bg-accent/50">
+                  <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform duration-120 group-data-[state=closed]:-rotate-90" />
+                  <Folder className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-[13px] font-semibold">{project}</span>
+                  <Badge variant="outline">{rows.length} pipeline{rows.length === 1 ? "" : "s"}</Badge>
+                  {inactive > 0 && (
+                    <Badge variant="outline" className="border-warning/50 text-warning">
+                      {inactive} inactive
+                    </Badge>
+                  )}
+                </CollapsibleTrigger>
                 {batch !== undefined && (
-                  <Tooltip title={`Run this project's batch flow '${batch.name}' (members in wave order)`}>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<PlayArrowIcon fontSize="small" />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRunBatch(batch.name);
-                      }}
-                      data-testid="run-project"
-                    >
-                      Run project
-                    </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        className="shrink-0"
+                        onClick={() => onRunBatch(batch.name)}
+                        data-testid="run-project"
+                      >
+                        <Play />
+                        Run project
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {`Run this project's batch flow '${batch.name}' (members in wave order)`}
+                    </TooltipContent>
                   </Tooltip>
                 )}
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails sx={{ p: 0 }}>
-              <Table size="small">
-                <TableBody>
-                  {rows.map((p) => (
-                    <TableRow
-                      key={p.id}
-                      hover
-                      sx={{ cursor: "pointer" }}
-                      onClick={() => onOpen(p.id)}
-                      data-testid="table-row"
-                    >
-                      <TableCell><Typography variant="body2" fontWeight={600}>{p.name}</Typography></TableCell>
-                      <TableCell><Chip size="small" variant="outlined" label={p.kind} /></TableCell>
-                      <TableCell>{p.wave === -1 ? "-" : `wave ${p.wave}`}</TableCell>
-                      <TableCell><ActiveBadge active={p.active} /></TableCell>
-                      <TableCell>
-                        <Typography variant="caption" color="text.secondary">{p.relativePath}</Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </AccordionDetails>
-          </Accordion>
+              </div>
+              <CollapsibleContent>
+                <Table>
+                  <TableBody>
+                    {rows.map((p) => (
+                      <TableRow
+                        key={p.id}
+                        className="cursor-pointer hover:bg-accent/50"
+                        onClick={() => onOpen(p.id)}
+                        data-testid="table-row"
+                      >
+                        <TableCell className="whitespace-nowrap px-3 py-1.5">
+                          <span className="font-mono text-[12px] font-medium">{p.name}</span>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-3 py-1.5">
+                          <Badge variant="outline">{p.kind}</Badge>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                          {p.wave === -1 ? "-" : `wave ${p.wave}`}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-3 py-1.5">
+                          <ActiveBadge active={p.active} />
+                        </TableCell>
+                        <TableCell className="px-3 py-1.5">
+                          <span className="font-mono text-xs text-muted-foreground">{p.relativePath}</span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
         );
       })}
-    </Stack>
+    </div>
   );
 }
 
@@ -160,7 +163,6 @@ function PipelinesByProject({
 export default function RepoDetailPage() {
   const { repoId = "" } = useParams();
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [runBatchFlow, setRunBatchFlow] = useState<string | null>(null);
@@ -172,6 +174,9 @@ export default function RepoDetailPage() {
   });
 
   const repo = repoQuery.data;
+
+  // The workbench tab reads the repo's name once it is known, instead of the generic route title.
+  useTabTitle(repo?.name);
 
   // The git source that drives this repo's auto-sync, matched by name (a repo synced by the CLI has none). Small
   // collection, so one page is fetched and the lookup happens client-side.
@@ -187,12 +192,12 @@ export default function RepoDetailPage() {
   const syncNow = useMutation({
     mutationFn: (id: string) => repoSourceApi.syncNow(id),
     onSuccess: () => {
-      enqueueSnackbar("Sync requested", { variant: "success" });
+      toast.success("Sync requested");
       void queryClient.invalidateQueries({ queryKey: ["repo-sources"] });
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
     },
     onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
   // A CLI/local-path repo has no git source for the background sync to poll, so it is re-synced inline from its
@@ -201,93 +206,102 @@ export default function RepoDetailPage() {
   const syncLocal = useMutation({
     mutationFn: (id: string) => repoApi.syncLocal(id),
     onSuccess: (result) => {
-      enqueueSnackbar(
-        `Synced: ${result.pipelinesAdded} added, ${result.pipelinesUpdated} updated, `
+      const message = `Synced: ${result.pipelinesAdded} added, ${result.pipelinesUpdated} updated, `
         + `${result.objects} objects, ${result.edges} edges, ${result.waves} waves`
         + `${result.connected ? " (connected)" : ""}`
-        + `${result.warnings.length > 0 ? `; ${result.warnings.length} warning(s)` : ""}`,
-        { variant: result.connected ? "success" : "warning" },
-      );
+        + `${result.warnings.length > 0 ? `; ${result.warnings.length} warning(s)` : ""}`;
+      if (result.connected) {
+        toast.success(message);
+      } else {
+        toast.warning(message);
+      }
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
       void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
       void queryClient.invalidateQueries({ queryKey: ["lineage-waves"] });
       void queryClient.invalidateQueries({ queryKey: ["lineage-object-edges"] });
     },
     onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
   if (repoQuery.isError) {
     return isApiError(repoQuery.error)
       ? <CorrelationError error={repoQuery.error} />
-      : <Typography color="error">{String(repoQuery.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(repoQuery.error)}</p>;
   }
 
   return (
     <Page data-testid="page-repo-detail">
       {repo === undefined ? (
-        <Card variant="outlined">
-          <CardContent>
-            <Stack spacing={1}>
-              <Skeleton width={280} height={36} />
-              <Skeleton width="60%" />
-              <Skeleton width="40%" />
-            </Stack>
-          </CardContent>
+        <Card className="gap-0 rounded-lg p-4">
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-7 w-72" />
+            <Skeleton className="h-4 w-[60%]" />
+            <Skeleton className="h-4 w-[40%]" />
+          </div>
         </Card>
       ) : (
         <DetailHeaderCard
           title={repo.name}
           badges={source !== undefined && (
             source.lastError !== null ? (
-              <Tooltip title={source.lastError}>
-                <Chip size="small" color="error" label="sync error" data-testid="repo-source-error" />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Badge variant="destructive" data-testid="repo-source-error">sync error</Badge>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-lg break-words">{source.lastError}</TooltipContent>
               </Tooltip>
             ) : (
-              <Chip size="small" color="success" variant="outlined" label="synced" />
+              <Badge variant="outline" className="border-success/50 text-success">synced</Badge>
             )
           )}
           actions={(
             <>
               {source !== undefined ? (
                 <Button
-                  variant="outlined"
-                  startIcon={<SyncIcon />}
+                  variant="outline"
+                  size="sm"
                   disabled={!source.enabled || syncNow.isPending}
                   onClick={() => syncNow.mutate(source.id)}
                   data-testid="repo-sync-now"
                 >
+                  {syncNow.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   Sync now
                 </Button>
               ) : repo.rootPath ? (
-                <Tooltip title={`Re-sync from ${repo.rootPath} (connected: reads the live database for object lineage)`}>
-                  <span>
-                    <Button
-                      variant="outlined"
-                      startIcon={<SyncIcon />}
-                      disabled={syncLocal.isPending}
-                      onClick={() => syncLocal.mutate(repoId)}
-                      data-testid="repo-sync-local"
-                    >
-                      {syncLocal.isPending ? "Syncing…" : "Sync now"}
-                    </Button>
-                  </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={syncLocal.isPending}
+                        onClick={() => syncLocal.mutate(repoId)}
+                        data-testid="repo-sync-local"
+                      >
+                        {syncLocal.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                        {syncLocal.isPending ? "Syncing..." : "Sync now"}
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-sm">
+                    {`Re-sync from ${repo.rootPath} (connected: reads the live database for object lineage)`}
+                  </TooltipContent>
                 </Tooltip>
               ) : null}
               <Button
-                variant="outlined"
-                startIcon={<AccountTreeIcon />}
+                variant="outline"
+                size="sm"
                 onClick={() => navigate(`/lineage?repoId=${repoId}`)}
                 data-testid="repo-lineage-graph"
               >
+                <Network />
                 Lineage graph
               </Button>
-              <Button
-                variant="contained"
-                startIcon={<PlayArrowIcon />}
-                onClick={() => setTriggerOpen(true)}
-                data-testid="open-trigger-run"
-              >
+              <Button size="sm" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
+                <Play />
                 Trigger run
               </Button>
             </>
@@ -314,14 +328,14 @@ export default function RepoDetailPage() {
         </DetailHeaderCard>
       )}
 
-      <Box>
-        <Typography variant="h6" gutterBottom>Projects</Typography>
+      <div className="flex flex-col gap-3">
+        <h2 className="text-base font-medium">Projects</h2>
         <PipelinesByProject
           repoId={repoId}
           onOpen={(id) => navigate(`/pipelines/${id}`)}
           onRunBatch={(flowName) => setRunBatchFlow(flowName)}
         />
-      </Box>
+      </div>
 
       {triggerOpen && <TriggerRunDialog open onClose={() => setTriggerOpen(false)} repoId={repoId} />}
       {runBatchFlow !== null && (

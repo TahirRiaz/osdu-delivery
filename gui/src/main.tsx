@@ -1,12 +1,15 @@
 import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
+import "./index.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { SnackbarProvider } from "notistack";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { isApiError } from "./api/client";
 import { AuthProvider } from "./auth/AuthContext";
+import { Toaster } from "./components/ui/sonner";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { loadRuntimeConfig } from "./config/runtime";
 import { ThemeModeProvider } from "./theme/ThemeModeContext";
 
@@ -33,13 +36,14 @@ void loadRuntimeConfig().then(() => {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <ThemeModeProvider>
-          <SnackbarProvider maxSnack={3} autoHideDuration={5000}>
+          <TooltipProvider delayDuration={300}>
             <BrowserRouter>
               <AuthProvider>
                 <App />
               </AuthProvider>
             </BrowserRouter>
-          </SnackbarProvider>
+            <Toaster position="bottom-right" closeButton />
+          </TooltipProvider>
         </ThemeModeProvider>
       </QueryClientProvider>
     </StrictMode>,

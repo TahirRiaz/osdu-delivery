@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import IconButton from "@mui/material/IconButton";
-import Menu from "@mui/material/Menu";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
+import { toast } from "sonner";
+import { Loader2, MoreVertical, UserPlus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet";
 import { isApiError } from "../../api/client";
 import { userApi } from "../../api/endpoints";
 import type { Role, User } from "../../api/types";
@@ -29,6 +30,15 @@ import { ActiveBadge } from "../../components/StatusBadge";
 
 const MIN_PASSWORD_LENGTH = 12;
 
+/** One error-to-text mapping for every toast on this page (the API's detail wins over a generic title). */
+function errorText(error: unknown): string {
+  if (isApiError(error)) {
+    return error.detail ?? error.title;
+  }
+
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** The role options for a select: the server's roles, plus the current value so an unknown role still shows. */
 function roleNames(roles: Role[], current?: string): string[] {
   const names = roles.map((role) => role.name);
@@ -40,107 +50,142 @@ function roleNames(roles: Role[], current?: string): string[] {
 }
 
 function ChangeRoleDialog({ user, roles, onClose }: { user: User; roles: Role[]; onClose: () => void }) {
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [role, setRole] = useState(user.role);
 
   const setRoleMutation = useMutation({
     mutationFn: () => userApi.setRole(user.id, role),
     onSuccess: () => {
-      enqueueSnackbar(`Role updated for ${user.username}.`, { variant: "success" });
+      toast.success(`Role updated for ${user.username}.`);
       void queryClient.invalidateQueries({ queryKey: ["users"] });
       onClose();
     },
-    onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+    onError: (error) => toast.error(errorText(error)),
   });
 
   return (
-    <Dialog open onClose={setRoleMutation.isPending ? undefined : onClose} fullWidth maxWidth="xs" data-testid="user-set-role-dialog">
-      <DialogTitle>Change role for {user.username}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField
-            select
-            label="Role"
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-            SelectProps={{ native: true }}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{ "data-testid": "user-set-role-select" }}
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !setRoleMutation.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="sm:max-w-sm" data-testid="user-set-role-dialog">
+        <DialogHeader>
+          <DialogTitle>Change role for {user.username}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <Label>Role</Label>
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger size="sm" className="h-8 w-full" data-testid="user-set-role-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {roleNames(roles, user.role).map((name) => (
+                <SelectItem key={name} value={name}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={setRoleMutation.isPending}
+            data-testid="user-set-role-cancel"
           >
-            {roleNames(roles, user.role).map((name) => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </TextField>
-        </Stack>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => setRoleMutation.mutate()}
+            disabled={setRoleMutation.isPending}
+            data-testid="user-set-role-submit"
+          >
+            {setRoleMutation.isPending && <Loader2 className="animate-spin" />}
+            Save
+          </Button>
+        </DialogFooter>
       </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={setRoleMutation.isPending} data-testid="user-set-role-cancel">Cancel</Button>
-        <Button
-          variant="contained"
-          onClick={() => setRoleMutation.mutate()}
-          disabled={setRoleMutation.isPending}
-          data-testid="user-set-role-submit"
-        >
-          Save
-        </Button>
-      </DialogActions>
     </Dialog>
   );
 }
 
 function ResetPasswordDialog({ user, onClose }: { user: User; onClose: () => void }) {
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [password, setPassword] = useState("");
 
   const setPasswordMutation = useMutation({
     mutationFn: () => userApi.setPassword(user.id, password),
     onSuccess: () => {
-      enqueueSnackbar(`Password reset for ${user.username}.`, { variant: "success" });
+      toast.success(`Password reset for ${user.username}.`);
       void queryClient.invalidateQueries({ queryKey: ["users"] });
       onClose();
     },
-    onError: (error) =>
-      enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" }),
+    onError: (error) => toast.error(errorText(error)),
   });
 
   const valid = password.length >= MIN_PASSWORD_LENGTH;
+  const showInvalid = password.length > 0 && !valid;
 
   return (
-    <Dialog open onClose={setPasswordMutation.isPending ? undefined : onClose} fullWidth maxWidth="xs" data-testid="user-set-password-dialog">
-      <DialogTitle>Reset password for {user.username}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField
-            label="New password"
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !setPasswordMutation.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="sm:max-w-sm" data-testid="user-set-password-dialog">
+        <DialogHeader>
+          <DialogTitle>Reset password for {user.username}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="user-set-password-input">New password</Label>
+          <Input
+            id="user-set-password-input"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            error={password.length > 0 && !valid}
-            helperText="At least 12 characters"
-            inputProps={{ "data-testid": "user-set-password-input" }}
+            aria-invalid={showInvalid || undefined}
+            className="h-8"
+            data-testid="user-set-password-input"
           />
-        </Stack>
+          <p className={showInvalid ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+            At least {MIN_PASSWORD_LENGTH} characters
+          </p>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={setPasswordMutation.isPending}
+            data-testid="user-set-password-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => setPasswordMutation.mutate()}
+            disabled={!valid || setPasswordMutation.isPending}
+            data-testid="user-set-password-submit"
+          >
+            {setPasswordMutation.isPending && <Loader2 className="animate-spin" />}
+            Reset
+          </Button>
+        </DialogFooter>
       </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={setPasswordMutation.isPending} data-testid="user-set-password-cancel">Cancel</Button>
-        <Button
-          variant="contained"
-          onClick={() => setPasswordMutation.mutate()}
-          disabled={!valid || setPasswordMutation.isPending}
-          data-testid="user-set-password-submit"
-        >
-          Reset
-        </Button>
-      </DialogActions>
     </Dialog>
   );
 }
 
-function CreateUserDialog({ roles, onClose }: { roles: Role[]; onClose: () => void }) {
-  const { enqueueSnackbar } = useSnackbar();
+/** The create-user form in a right side sheet (DESIGN.md 7.4); the old dialog's testid stays on the content. */
+function CreateUserSheet({ roles, onClose }: { roles: Role[]; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -157,88 +202,125 @@ function CreateUserDialog({ roles, onClose }: { roles: Role[]; onClose: () => vo
       displayName: displayName.trim() === "" ? null : displayName.trim(),
     }),
     onSuccess: (created) => {
-      enqueueSnackbar(`User ${created.username} created.`, { variant: "success" });
+      toast.success(`User ${created.username} created.`);
       void queryClient.invalidateQueries({ queryKey: ["users"] });
       onClose();
     },
+    onError: (error) => toast.error(errorText(error)),
   });
 
   const passwordValid = password.length >= MIN_PASSWORD_LENGTH;
+  const showPasswordInvalid = password.length > 0 && !passwordValid;
   const canSubmit = username.trim() !== "" && passwordValid && role !== "" && !create.isPending;
 
   return (
-    <Dialog open onClose={create.isPending ? undefined : onClose} fullWidth maxWidth="sm" data-testid="create-user-dialog">
-      <DialogTitle>Create user</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        if (!next && !create.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-xl" data-testid="create-user-dialog">
+        <SheetHeader>
+          <SheetTitle>Create user</SheetTitle>
+        </SheetHeader>
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
           {create.isError && isApiError(create.error) && <CorrelationError error={create.error} />}
           {create.isError && !isApiError(create.error) && (
-            <Typography color="error">{String(create.error)}</Typography>
+            <p className="text-[13px] text-destructive">{String(create.error)}</p>
           )}
 
-          <TextField
-            label="Username"
-            required
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            inputProps={{ "data-testid": "create-user-username" }}
-          />
-          <TextField
-            label="Password"
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            error={password.length > 0 && !passwordValid}
-            helperText="At least 12 characters"
-            inputProps={{ "data-testid": "create-user-password" }}
-          />
-          <TextField
-            select
-            label="Role"
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-            SelectProps={{ native: true }}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{ "data-testid": "create-user-role" }}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="create-user-username">Username</Label>
+            <Input
+              id="create-user-username"
+              required
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="h-8"
+              data-testid="create-user-username"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="create-user-password">Password</Label>
+            <Input
+              id="create-user-password"
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              aria-invalid={showPasswordInvalid || undefined}
+              className="h-8"
+              data-testid="create-user-password"
+            />
+            <p className={showPasswordInvalid ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+              At least {MIN_PASSWORD_LENGTH} characters
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Role</Label>
+            <Select value={role} onValueChange={setRole}>
+              <SelectTrigger size="sm" className="h-8 w-full" data-testid="create-user-role">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {roleNames(roles, "viewer").map((name) => (
+                  <SelectItem key={name} value={name}>{name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="create-user-email">Email</Label>
+            <Input
+              id="create-user-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="h-8"
+              data-testid="create-user-email"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="create-user-displayname">Display name</Label>
+            <Input
+              id="create-user-displayname"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className="h-8"
+              data-testid="create-user-displayname"
+            />
+          </div>
+        </div>
+        <SheetFooter className="flex-row justify-end">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={create.isPending}
+            data-testid="create-user-cancel"
           >
-            {roleNames(roles, "viewer").map((name) => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </TextField>
-          <TextField
-            label="Email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            inputProps={{ "data-testid": "create-user-email" }}
-          />
-          <TextField
-            label="Display name"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            inputProps={{ "data-testid": "create-user-displayname" }}
-          />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={create.isPending} data-testid="create-user-cancel">Cancel</Button>
-        <Button
-          variant="contained"
-          onClick={() => create.mutate()}
-          disabled={!canSubmit}
-          data-testid="create-user-submit"
-        >
-          Create
-        </Button>
-      </DialogActions>
-    </Dialog>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => create.mutate()}
+            disabled={!canSubmit}
+            data-testid="create-user-submit"
+          >
+            {create.isPending && <Loader2 className="animate-spin" />}
+            Create
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
 /** User administration: list/filter accounts, create local users, and manage role, password, and active state. */
 export default function UsersPage() {
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [usernameInput, setUsernameInput] = useState("");
   const [usernameFilter, setUsernameFilter] = useState("");
@@ -246,7 +328,6 @@ export default function UsersPage() {
   const [providerFilter, setProviderFilter] = useState("");
   const [activeFilter, setActiveFilter] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [menuState, setMenuState] = useState<{ anchor: HTMLElement; user: User } | null>(null);
   const [roleDialogUser, setRoleDialogUser] = useState<User | null>(null);
   const [passwordDialogUser, setPasswordDialogUser] = useState<User | null>(null);
   const [deactivateUser, setDeactivateUser] = useState<User | null>(null);
@@ -260,42 +341,37 @@ export default function UsersPage() {
   const rolesQuery = useQuery({ queryKey: ["roles"], queryFn: userApi.roles });
   const roles = rolesQuery.data ?? [];
 
-  const showError = (error: unknown) =>
-    enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" });
-
   const activate = useMutation({
     mutationFn: (user: User) => userApi.activate(user.id),
     onSuccess: (updated) => {
-      enqueueSnackbar(`User ${updated.username} activated.`, { variant: "success" });
+      toast.success(`User ${updated.username} activated.`);
       void queryClient.invalidateQueries({ queryKey: ["users"] });
     },
-    onError: showError,
+    onError: (error) => toast.error(errorText(error)),
   });
 
   const deactivate = useMutation({
     mutationFn: (user: User) => userApi.deactivate(user.id),
     onSuccess: (updated) => {
-      enqueueSnackbar(`User ${updated.username} deactivated.`, { variant: "success" });
+      toast.success(`User ${updated.username} deactivated.`);
       void queryClient.invalidateQueries({ queryKey: ["users"] });
       setDeactivateUser(null);
     },
     onError: (error) => {
-      showError(error);
+      toast.error(errorText(error));
       setDeactivateUser(null);
     },
   });
-
-  const closeMenu = () => setMenuState(null);
 
   const columns: Column<User>[] = [
     {
       id: "username",
       header: "Username",
-      render: (row) => <Typography variant="body2" fontWeight={600}>{row.username}</Typography>,
+      render: (row) => <span className="font-mono text-[12px] font-medium">{row.username}</span>,
     },
     { id: "displayName", header: "Display name", render: (row) => row.displayName ?? "-" },
-    { id: "role", header: "Role", render: (row) => <Chip size="small" label={row.role} /> },
-    { id: "provider", header: "Provider", render: (row) => <Chip size="small" label={row.provider} variant="outlined" /> },
+    { id: "role", header: "Role", render: (row) => <Badge variant="secondary">{row.role}</Badge> },
+    { id: "provider", header: "Provider", render: (row) => <Badge variant="outline">{row.provider}</Badge> },
     { id: "status", header: "Status", render: (row) => <ActiveBadge active={row.active} /> },
     { id: "lastLogin", header: "Last login", render: (row) => <RelativeTime value={row.lastLoginUtc} /> },
     { id: "created", header: "Created", render: (row) => <RelativeTime value={row.createdUtc} /> },
@@ -304,17 +380,58 @@ export default function UsersPage() {
       header: "Actions",
       align: "right",
       render: (row) => (
-        <IconButton
-          size="small"
-          aria-label={`Actions for ${row.username}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            setMenuState({ anchor: e.currentTarget, user: row });
-          }}
-          data-testid="user-actions"
-        >
-          <MoreVertIcon fontSize="small" />
-        </IconButton>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`Actions for ${row.username}`}
+              onClick={(e) => e.stopPropagation()}
+              data-testid="user-actions"
+            >
+              <MoreVertical />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" data-testid="user-actions-menu">
+            <DropdownMenuItem
+              onClick={() => setRoleDialogUser(row)}
+              data-testid="user-menu-change-role"
+            >
+              Change role
+            </DropdownMenuItem>
+            {row.provider === "local" ? (
+              <DropdownMenuItem
+                onClick={() => setPasswordDialogUser(row)}
+                data-testid="user-menu-reset-password"
+              >
+                Reset password
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem disabled data-testid="user-menu-reset-password">
+                <span className="flex flex-col">
+                  Reset password
+                  <span className="text-[11px] text-muted-foreground">Managed in Microsoft Entra ID</span>
+                </span>
+              </DropdownMenuItem>
+            )}
+            {row.active ? (
+              <DropdownMenuItem
+                onClick={() => setDeactivateUser(row)}
+                data-testid="user-menu-deactivate"
+              >
+                Deactivate
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem
+                onClick={() => activate.mutate(row)}
+                disabled={activate.isPending}
+                data-testid="user-menu-activate"
+              >
+                Activate
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       ),
     },
   ];
@@ -324,62 +441,62 @@ export default function UsersPage() {
       <PageHeader
         title="Users"
         actions={(
-          <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-user">
+          <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="open-create-user">
+            <UserPlus />
             Create user
           </Button>
         )}
       />
 
       <FilterBar>
-        <TextField
-          size="small"
-          label="Username"
-          placeholder="Filter by username"
+        <Input
           value={usernameInput}
           onChange={(e) => setUsernameInput(e.target.value)}
-          inputProps={{ "data-testid": "filter-username" }}
-          sx={{ minWidth: 220 }}
+          placeholder="Filter by username"
+          aria-label="Username"
+          className="h-8 w-56"
+          data-testid="filter-username"
         />
-        <TextField
-          select
-          size="small"
-          label="Role"
-          value={roleFilter}
-          onChange={(e) => setRoleFilter(e.target.value)}
-          inputProps={{ "data-testid": "filter-role" }}
-          sx={{ minWidth: 160 }}
+        <Select
+          value={roleFilter === "" ? "all" : roleFilter}
+          onValueChange={(value) => setRoleFilter(value === "all" ? "" : value)}
         >
-          <MenuItem value="">all</MenuItem>
-          {roles.map((role) => (
-            <MenuItem key={role.name} value={role.name}>{role.name}</MenuItem>
-          ))}
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Provider"
-          value={providerFilter}
-          onChange={(e) => setProviderFilter(e.target.value)}
-          inputProps={{ "data-testid": "filter-provider" }}
-          sx={{ minWidth: 140 }}
+          <SelectTrigger size="sm" className="h-8 w-40" aria-label="Role" data-testid="filter-role">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">all roles</SelectItem>
+            {roles.map((role) => (
+              <SelectItem key={role.name} value={role.name}>{role.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={providerFilter === "" ? "all" : providerFilter}
+          onValueChange={(value) => setProviderFilter(value === "all" ? "" : value)}
         >
-          <MenuItem value="">all</MenuItem>
-          <MenuItem value="local">local</MenuItem>
-          <MenuItem value="entra">entra</MenuItem>
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Active"
-          value={activeFilter}
-          onChange={(e) => setActiveFilter(e.target.value)}
-          inputProps={{ "data-testid": "filter-active" }}
-          sx={{ minWidth: 140 }}
+          <SelectTrigger size="sm" className="h-8 w-36" aria-label="Provider" data-testid="filter-provider">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">all providers</SelectItem>
+            <SelectItem value="local">local</SelectItem>
+            <SelectItem value="entra">entra</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={activeFilter === "" ? "all" : activeFilter}
+          onValueChange={(value) => setActiveFilter(value === "all" ? "" : value)}
         >
-          <MenuItem value="">all</MenuItem>
-          <MenuItem value="active">active</MenuItem>
-          <MenuItem value="inactive">inactive</MenuItem>
-        </TextField>
+          <SelectTrigger size="sm" className="h-8 w-36" aria-label="Active" data-testid="filter-active">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">all states</SelectItem>
+            <SelectItem value="active">active</SelectItem>
+            <SelectItem value="inactive">inactive</SelectItem>
+          </SelectContent>
+        </Select>
       </FilterBar>
 
       <PagedTable
@@ -397,68 +514,13 @@ export default function UsersPage() {
         emptyMessage="No users match the current filters."
       />
 
-      {menuState !== null && (
-        <Menu anchorEl={menuState.anchor} open onClose={closeMenu} data-testid="user-actions-menu">
-          <MenuItem
-            onClick={() => {
-              setRoleDialogUser(menuState.user);
-              closeMenu();
-            }}
-            data-testid="user-menu-change-role"
-          >
-            Change role
-          </MenuItem>
-          {menuState.user.provider === "local" ? (
-            <MenuItem
-              onClick={() => {
-                setPasswordDialogUser(menuState.user);
-                closeMenu();
-              }}
-              data-testid="user-menu-reset-password"
-            >
-              Reset password
-            </MenuItem>
-          ) : (
-            <Tooltip title="Managed in Microsoft Entra ID">
-              <span>
-                <MenuItem disabled data-testid="user-menu-reset-password">
-                  Reset password
-                </MenuItem>
-              </span>
-            </Tooltip>
-          )}
-          {menuState.user.active ? (
-            <MenuItem
-              onClick={() => {
-                setDeactivateUser(menuState.user);
-                closeMenu();
-              }}
-              data-testid="user-menu-deactivate"
-            >
-              Deactivate
-            </MenuItem>
-          ) : (
-            <MenuItem
-              onClick={() => {
-                activate.mutate(menuState.user);
-                closeMenu();
-              }}
-              disabled={activate.isPending}
-              data-testid="user-menu-activate"
-            >
-              Activate
-            </MenuItem>
-          )}
-        </Menu>
-      )}
-
       {roleDialogUser !== null && (
         <ChangeRoleDialog user={roleDialogUser} roles={roles} onClose={() => setRoleDialogUser(null)} />
       )}
       {passwordDialogUser !== null && (
         <ResetPasswordDialog user={passwordDialogUser} onClose={() => setPasswordDialogUser(null)} />
       )}
-      {createOpen && <CreateUserDialog roles={roles} onClose={() => setCreateOpen(false)} />}
+      {createOpen && <CreateUserSheet roles={roles} onClose={() => setCreateOpen(false)} />}
 
       <ConfirmDialog
         open={deactivateUser !== null}

@@ -1,27 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
-import type React from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Alert from "@mui/material/Alert";
-import Autocomplete from "@mui/material/Autocomplete";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import CircularProgress from "@mui/material/CircularProgress";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
-import ToggleButton from "@mui/material/ToggleButton";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import Typography from "@mui/material/Typography";
+import { Info, Loader2, TriangleAlert } from "lucide-react";
+import { toast } from "sonner";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, runApi } from "../../api/endpoints";
 import type { RunParameterDescriptor, RunScope } from "../../api/types";
+import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
 
 /** Prior-run values used to prefill the form on Re-run (ISO strings for the window; they are trimmed to the
@@ -64,6 +58,11 @@ function toLocalInput(value: string | null | undefined): string {
   return value ? value.slice(0, 16) : "";
 }
 
+interface ComboOption {
+  value: string;
+  label: string;
+}
+
 /**
  * The single trigger-run path in the GUI: launched from the runs page (free choice of repo + flow), a pipeline's
  * detail page (prefilled), the lineage graph / batch board (prefilled with a scope), and a run's Re-run (prefilled
@@ -79,7 +78,7 @@ export function TriggerRunDialog({
   open, onClose, repoId, flowName, flowId, initialParameters, scope, batch,
 }: TriggerRunDialogProps) {
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
+  const idPrefix = useId();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(repoId ?? null);
   const [selectedFlow, setSelectedFlow] = useState<string | null>(flowName ?? null);
   const [selectedScope, setSelectedScope] = useState<RunScope>(scope ?? "flow");
@@ -168,17 +167,29 @@ export function TriggerRunDialog({
     onSuccess: (accepted) => {
       onClose();
       if (accepted.groupId) {
-        enqueueSnackbar(`Run group queued (${accepted.memberCount} flows).`, { variant: "success" });
+        const target = selectedScope === "batch"
+          ? `batch ${(batchLocked ? batch : preview.data?.anchor) ?? effectiveFlow ?? ""}`
+          : `${effectiveFlow ?? ""} + descendants`;
+        toast.success(`Run group queued for ${target} (${accepted.memberCount ?? 0} flows).`);
         navigate(`/runs/groups/${accepted.groupId}`);
       } else {
-        enqueueSnackbar(`Run queued (${accepted.runId}).`, { variant: "success" });
+        toast.success(`Run queued: ${effectiveFlow ?? accepted.runId ?? ""}`);
         navigate(`/runs/${accepted.runId}`);
       }
     },
+    onError: (error) => {
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
+    },
   });
 
-  const repoOptions = useMemo(() => repos.data?.items ?? [], [repos.data]);
-  const flowOptions = useMemo(() => pipelines.data?.items.map((p) => p.name) ?? [], [pipelines.data]);
+  const repoOptions = useMemo<ComboOption[]>(
+    () => (repos.data?.items ?? []).map((repo) => ({ value: repo.id, label: repo.name })),
+    [repos.data],
+  );
+  const flowOptions = useMemo<ComboOption[]>(
+    () => (pipelines.data?.items ?? []).map((p) => ({ value: p.name, label: p.name })),
+    [pipelines.data],
+  );
 
   const trimmedFrom = backfillFrom.trim();
   const trimmedTo = backfillTo.trim();
@@ -221,9 +232,6 @@ export function TriggerRunDialog({
     });
   };
 
-  const switchProps = (testid: string) =>
-    ({ "data-testid": testid } as React.InputHTMLAttributes<HTMLInputElement>);
-
   const renderParameter = (desc: RunParameterDescriptor) => {
     switch (desc.input) {
       case "Toggle": {
@@ -232,70 +240,72 @@ export function TriggerRunDialog({
         const onChange = isFull ? setFullLoad : setAssertionsOnly;
         const disabled = isFull ? assertionsOnly : (fullLoad || hasWindow || hasPattern);
         return (
-          <Box key={desc.key}>
-            <FormControlLabel
-              control={(
-                <Switch
-                  checked={checked}
-                  disabled={disabled}
-                  onChange={(e) => onChange(e.target.checked)}
-                  inputProps={switchProps(`trigger-${desc.key}`)}
-                />
-              )}
-              label={desc.label}
-            />
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", ml: 6, mt: -0.5 }}>
-              {desc.help}
-            </Typography>
-          </Box>
+          <div key={desc.key} className="flex flex-col gap-1">
+            <Label className="flex items-center gap-2 text-[13px] font-normal">
+              <Switch
+                checked={checked}
+                disabled={disabled}
+                onCheckedChange={onChange}
+                data-testid={`trigger-${desc.key}`}
+              />
+              {desc.label}
+            </Label>
+            <p className="pl-10 text-xs text-muted-foreground">{desc.help}</p>
+          </div>
         );
       }
       case "DateRange":
         return (
-          <Box key={desc.key}>
-            <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.75 }}>{desc.label}</Typography>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <TextField
-                label="From"
-                type="datetime-local"
-                size="small"
-                value={backfillFrom}
-                onChange={(e) => setBackfillFrom(e.target.value)}
-                disabled={fullLoad || assertionsOnly}
-                InputLabelProps={{ shrink: true }}
-                inputProps={{ "data-testid": "trigger-backfill-from" }}
-                fullWidth
-              />
-              <TextField
-                label="To"
-                type="datetime-local"
-                size="small"
-                value={backfillTo}
-                onChange={(e) => setBackfillTo(e.target.value)}
-                disabled={fullLoad || assertionsOnly}
-                InputLabelProps={{ shrink: true }}
-                inputProps={{ "data-testid": "trigger-backfill-to" }}
-                fullWidth
-              />
-            </Stack>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
-              {desc.help}
-            </Typography>
-          </Box>
+          <div key={desc.key} className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-medium">{desc.label}</span>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="flex flex-1 flex-col gap-1">
+                <Label htmlFor={`${idPrefix}-backfill-from`} className="text-xs font-normal text-muted-foreground">
+                  From
+                </Label>
+                <Input
+                  id={`${idPrefix}-backfill-from`}
+                  type="datetime-local"
+                  className="h-8"
+                  value={backfillFrom}
+                  onChange={(event) => setBackfillFrom(event.target.value)}
+                  disabled={fullLoad || assertionsOnly}
+                  data-testid="trigger-backfill-from"
+                />
+              </div>
+              <div className="flex flex-1 flex-col gap-1">
+                <Label htmlFor={`${idPrefix}-backfill-to`} className="text-xs font-normal text-muted-foreground">
+                  To
+                </Label>
+                <Input
+                  id={`${idPrefix}-backfill-to`}
+                  type="datetime-local"
+                  className="h-8"
+                  value={backfillTo}
+                  onChange={(event) => setBackfillTo(event.target.value)}
+                  disabled={fullLoad || assertionsOnly}
+                  data-testid="trigger-backfill-to"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">{desc.help}</p>
+          </div>
         );
       case "Glob":
         return (
-          <TextField
-            key={desc.key}
-            label={desc.label}
-            size="small"
-            placeholder="orders_2026-03*.json"
-            helperText={desc.help}
-            value={filePattern}
-            onChange={(e) => setFilePattern(e.target.value)}
-            disabled={assertionsOnly}
-            inputProps={{ "data-testid": "trigger-file-pattern" }}
-          />
+          <div key={desc.key} className="flex flex-col gap-1.5">
+            <Label htmlFor={`${idPrefix}-file-pattern`}>{desc.label}</Label>
+            <Input
+              id={`${idPrefix}-file-pattern`}
+              className="h-8 font-mono"
+              placeholder="orders_2026-03*.json"
+              value={filePattern}
+              onChange={(event) => setFilePattern(event.target.value)}
+              disabled={assertionsOnly}
+              data-testid="trigger-file-pattern"
+            />
+            <p className="text-xs text-muted-foreground">{desc.help}</p>
+          </div>
         );
       default:
         return null;
@@ -305,132 +315,184 @@ export function TriggerRunDialog({
   const showParameters = !isGroup && Boolean(effectiveFlow);
 
   return (
-    <Dialog open={open} onClose={trigger.isPending ? undefined : onClose} fullWidth maxWidth="sm" data-testid="trigger-run-dialog">
-      <DialogTitle>Trigger run</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
+    <Sheet
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !trigger.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full gap-0 sm:max-w-xl" data-testid="trigger-run-dialog">
+        <SheetHeader>
+          <SheetTitle>Trigger run</SheetTitle>
+          <SheetDescription>
+            Launch one flow, a flow with its descendants, or a whole batch, in dependency order.
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
           {trigger.isError && isApiError(trigger.error) && <CorrelationError error={trigger.error} />}
 
           {repoId ? null : (
-            <Autocomplete
+            <ComboBoxField
+              label="Repo"
               options={repoOptions}
-              getOptionLabel={(repo) => repo.name}
-              value={repoOptions.find((r) => r.id === selectedRepoId) ?? null}
-              onChange={(_, repo) => {
-                setSelectedRepoId(repo?.id ?? null);
+              optionValue={(option) => option.value}
+              optionLabel={(option) => option.label}
+              value={selectedRepoId}
+              onChange={(value) => {
+                setSelectedRepoId(value);
                 setSelectedFlow(null);
               }}
               loading={repos.isLoading}
-              renderInput={(params) => (
-                <TextField {...params} label="Repo" inputProps={{ ...params.inputProps, "data-testid": "trigger-repo" }} />
-              )}
+              testId="trigger-repo"
             />
           )}
 
           {batchLocked ? (
-            <TextField label="Batch" value={batch} disabled fullWidth data-testid="trigger-batch" />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`${idPrefix}-batch`}>Batch</Label>
+              <Input
+                id={`${idPrefix}-batch`}
+                className="h-8 font-mono"
+                value={batch}
+                disabled
+                data-testid="trigger-batch"
+              />
+            </div>
           ) : flowName ? (
-            <TextField label="Flow" value={flowName} disabled fullWidth />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`${idPrefix}-flow-locked`}>Flow</Label>
+              <Input id={`${idPrefix}-flow-locked`} className="h-8 font-mono" value={flowName} disabled />
+            </div>
           ) : (
-            <Autocomplete
+            <ComboBoxField
+              label="Flow"
               options={flowOptions}
+              optionValue={(option) => option.value}
+              optionLabel={(option) => option.label}
               value={selectedFlow}
-              onChange={(_, value) => setSelectedFlow(value)}
+              onChange={setSelectedFlow}
               disabled={!effectiveRepoId}
               loading={pipelines.isLoading}
-              renderInput={(params) => (
-                <TextField {...params} label="Flow" inputProps={{ ...params.inputProps, "data-testid": "trigger-flow" }} />
-              )}
+              testId="trigger-flow"
             />
           )}
 
           {batchLocked ? null : (
-            <Stack spacing={0.5}>
-              <Typography variant="body2" color="text.secondary">Scope</Typography>
-              <ToggleButtonGroup
-                exclusive
-                size="small"
+            <div className="flex flex-col gap-1.5">
+              <Label>Scope</Label>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                size="sm"
                 value={selectedScope}
-                onChange={(_, value: RunScope | null) => value && setSelectedScope(value)}
+                onValueChange={(value) => {
+                  if (value !== "") {
+                    setSelectedScope(value as RunScope);
+                  }
+                }}
                 data-testid="trigger-scope"
               >
                 {(Object.keys(SCOPE_LABELS) as RunScope[]).map((s) => (
-                  <ToggleButton key={s} value={s} data-testid={`trigger-scope-${s}`}>
+                  <ToggleGroupItem key={s} value={s} data-testid={`trigger-scope-${s}`} className="h-8 px-2.5 text-xs">
                     {SCOPE_LABELS[s]}
-                  </ToggleButton>
+                  </ToggleGroupItem>
                 ))}
-              </ToggleButtonGroup>
-            </Stack>
+              </ToggleGroup>
+            </div>
           )}
 
           {isGroup && (
-            <Alert severity="info" data-testid="trigger-scope-preview">
-              {preview.isLoading
-                ? "Resolving the flows to run..."
-                : preview.isError
-                  ? "Could not resolve the flows to run."
-                  : preview.data && preview.data.memberCount > 0
-                    ? `Will run ${preview.data.memberCount} ${preview.data.memberCount === 1 ? "flow" : "flows"} across ${preview.data.waveCount} ${preview.data.waveCount === 1 ? "wave" : "waves"}, in dependency order`
-                      + (selectedScope === "batch" ? ` (batch "${preview.data.anchor}").` : ".")
-                    : "No flows to run for this selection."}
+            <Alert data-testid="trigger-scope-preview">
+              <Info />
+              <AlertDescription>
+                {preview.isLoading
+                  ? "Resolving the flows to run..."
+                  : preview.isError
+                    ? "Could not resolve the flows to run."
+                    : preview.data && preview.data.memberCount > 0
+                      ? `Will run ${preview.data.memberCount} ${preview.data.memberCount === 1 ? "flow" : "flows"} across ${preview.data.waveCount} ${preview.data.waveCount === 1 ? "wave" : "waves"}, in dependency order`
+                        + (selectedScope === "batch" ? ` (batch "${preview.data.anchor}").` : ".")
+                      : "No flows to run for this selection."}
+              </AlertDescription>
             </Alert>
           )}
 
-          <TextField
-            label="Pool (optional)"
-            helperText="Route the run to workers serving this pool; empty runs on any node."
-            value={pool}
-            onChange={(e) => setPool(e.target.value)}
-            inputProps={{ "data-testid": "trigger-pool" }}
-          />
-          <TextField
-            label="Commit SHA (optional)"
-            helperText="Pin the run to an exact git commit; empty pins to the repo's last synced commit."
-            value={commitSha}
-            onChange={(e) => setCommitSha(e.target.value)}
-            inputProps={{ "data-testid": "trigger-commit" }}
-          />
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`${idPrefix}-pool`}>Pool (optional)</Label>
+            <Input
+              id={`${idPrefix}-pool`}
+              className="h-8"
+              value={pool}
+              onChange={(event) => setPool(event.target.value)}
+              data-testid="trigger-pool"
+            />
+            <p className="text-xs text-muted-foreground">
+              Route the run to workers serving this pool; empty runs on any node.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`${idPrefix}-commit`}>Commit SHA (optional)</Label>
+            <Input
+              id={`${idPrefix}-commit`}
+              className="h-8 font-mono"
+              value={commitSha}
+              onChange={(event) => setCommitSha(event.target.value)}
+              data-testid="trigger-commit"
+            />
+            <p className="text-xs text-muted-foreground">
+              Pin the run to an exact git commit; empty pins to the repo's last synced commit.
+            </p>
+          </div>
 
           {showParameters && (
-            <Box
-              data-testid="trigger-parameters"
-              sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, p: 2, bgcolor: "action.hover" }}
-            >
-              <Typography variant="subtitle2">Run parameters</Typography>
+            <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="trigger-parameters">
+              <h3 className="text-[13px] font-medium">Run parameters</h3>
               {resolvingParameters ? (
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
-                  <CircularProgress size={16} />
-                  <Typography variant="body2" color="text.secondary">Loading this flow's parameters...</Typography>
-                </Stack>
+                <div className="mt-2 flex items-center gap-2 text-[13px] text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  Loading this flow's parameters...
+                </div>
               ) : parametersUnavailable ? (
-                <Alert severity="warning" sx={{ mt: 1.5 }} data-testid="trigger-parameters-unavailable">
-                  Could not load this flow's run parameters. Triggering now would run it with its defined defaults.
+                <Alert className="mt-2 text-warning" data-testid="trigger-parameters-unavailable">
+                  <TriangleAlert />
+                  <AlertDescription className="text-warning/90">
+                    Could not load this flow's run parameters. Triggering now would run it with its defined defaults.
+                  </AlertDescription>
                 </Alert>
               ) : applicable.length === 0 ? (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                <p className="mt-2 text-[13px] text-muted-foreground">
                   This flow runs as defined; it has no adjustable run parameters.
-                </Typography>
+                </p>
               ) : (
-                <Stack spacing={2} sx={{ mt: 1.5 }}>
-                  <Typography variant="caption" color="text.secondary">
+                <div className="mt-2 flex flex-col gap-3">
+                  <p className="text-xs text-muted-foreground">
                     One-off overrides applied to this run only. The flow definition in git is unchanged.
-                  </Typography>
+                  </p>
                   {applicable.map(renderParameter)}
                   {windowError !== null && (
-                    <Alert severity="warning" data-testid="trigger-backfill-error">{windowError}</Alert>
+                    <p className="text-xs font-medium text-destructive" data-testid="trigger-backfill-error">
+                      {windowError}
+                    </p>
                   )}
-                </Stack>
+                </div>
               )}
-            </Box>
+            </div>
           )}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={trigger.isPending}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!canSubmit} data-testid="trigger-submit">
-          Trigger
-        </Button>
-      </DialogActions>
-    </Dialog>
+        </div>
+
+        <SheetFooter className="flex-row justify-end gap-2 border-t border-border">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={trigger.isPending}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={!canSubmit} data-testid="trigger-submit">
+            {trigger.isPending && <Loader2 className="animate-spin" />}
+            Trigger
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

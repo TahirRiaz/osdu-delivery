@@ -1,17 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
-import Chip from "@mui/material/Chip";
-import Link from "@mui/material/Link";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Tab from "@mui/material/Tab";
-import Tabs from "@mui/material/Tabs";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import KeyIcon from "@mui/icons-material/Key";
+import { KeyRound, Network } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
 import type { LineageObjectColumn, ObjectRelationship } from "../../api/types";
@@ -21,6 +15,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { DetailPair } from "../../components/DetailPair";
 import { EmptyState } from "../../components/EmptyState";
 import { LineageJumpButton } from "../../components/LineageJumpButton";
+import { Mono } from "../../components/Mono";
 import { RelativeTime } from "../../components/RelativeTime";
 import { encodeNodeId } from "./nodeIds";
 
@@ -36,30 +31,41 @@ function keyColumnSet(keyColumns: string | null): Set<string> {
 
 function columnTableColumns(keys: Set<string>): Column<LineageObjectColumn>[] {
   return [
-    { id: "ordinal", header: "#", render: (row) => row.ordinal, width: 56 },
+    {
+      id: "ordinal",
+      header: "#",
+      align: "right",
+      render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.ordinal}</span>,
+      width: 56,
+    },
     {
       id: "name",
       header: "Name",
       render: (row) => (
-        <Stack direction="row" spacing={0.75} alignItems="center">
+        <span className="flex items-center gap-1.5">
           {keys.has(row.name.toLowerCase()) && (
-            <Tooltip title="Interpreted key column">
-              <KeyIcon sx={{ fontSize: 16, color: "warning.main" }} />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <KeyRound className="size-4 shrink-0 text-warning" />
+              </TooltipTrigger>
+              <TooltipContent>Interpreted key column</TooltipContent>
             </Tooltip>
           )}
-          <Typography variant="body2">{row.name}</Typography>
-        </Stack>
+          <Mono>{row.name}</Mono>
+        </span>
       ),
     },
-    { id: "dataType", header: "Data type", render: (row) => row.dataType ?? "-" },
+    { id: "dataType", header: "Data type", render: (row) => (row.dataType === null ? "-" : <Mono>{row.dataType}</Mono>) },
     {
       id: "nullable",
       header: "Nullable",
       render: (row) => (
-        <Chip label={row.nullable ? "null" : "not null"} size="small" variant={row.nullable ? "outlined" : "filled"} />
+        <Badge variant={row.nullable ? "outline" : "secondary"} className="text-[11px]">
+          {row.nullable ? "null" : "not null"}
+        </Badge>
       ),
     },
-    { id: "tier", header: "Tier", render: (row) => <Chip label={row.tier} size="small" variant="outlined" /> },
+    { id: "tier", header: "Tier", render: (row) => <Badge variant="outline" className="text-[11px]">{row.tier}</Badge> },
   ];
 }
 
@@ -71,9 +77,8 @@ function relationshipColumns(): Column<ObjectRelationship>[] {
       header: "Table",
       render: (row) => (
         <Link
-          component={RouterLink}
           to={`/catalog?node=${encodeURIComponent(encodeNodeId({ type: "object", objectKey: row.otherObjectKey }))}`}
-          variant="body2"
+          className="font-mono text-[12px] text-primary hover:underline"
         >
           {[row.otherDatabase, row.otherSchema, row.otherName].filter((part) => part !== null).join(".")}
         </Link>
@@ -83,22 +88,26 @@ function relationshipColumns(): Column<ObjectRelationship>[] {
       id: "join",
       header: "Join on",
       render: (row) => (
-        <Typography variant="body2" sx={{ fontFamily: "monospace", fontSize: 12, wordBreak: "break-word" }}>
+        <span className="whitespace-normal break-words font-mono text-[12px]">
           {`${row.ownColumns} = ${row.otherColumns}`}
-        </Typography>
+        </span>
       ),
     },
     {
       id: "origin",
       header: "Interpreted from",
       render: (row) => (
-        <Tooltip title={row.name ?? (row.origin === "Constraint" ? "Constraint clause in the codebase" : "Join predicates in the codebase's SQL")}>
-          <Chip
-            label={row.origin === "Constraint" ? "constraint" : "joins in code"}
-            size="small"
-            color={row.origin === "Constraint" ? "primary" : "default"}
-            variant={row.origin === "Constraint" ? "filled" : "outlined"}
-          />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex">
+              <Badge variant={row.origin === "Constraint" ? "default" : "outline"} className="text-[11px]">
+                {row.origin === "Constraint" ? "constraint" : "joins in code"}
+              </Badge>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            {row.name ?? (row.origin === "Constraint" ? "Constraint clause in the codebase" : "Join predicates in the codebase's SQL")}
+          </TooltipContent>
         </Tooltip>
       ),
       width: 140,
@@ -109,18 +118,20 @@ function relationshipColumns(): Column<ObjectRelationship>[] {
       render: (row) => `${row.occurrences} script${row.occurrences === 1 ? "" : "s"}`,
       width: 110,
     },
-    { id: "tier", header: "Tier", render: (row) => <Chip label={row.tier} size="small" variant="outlined" />, width: 100 },
+    { id: "tier", header: "Tier", render: (row) => <Badge variant="outline" className="text-[11px]">{row.tier}</Badge>, width: 100 },
   ];
 }
 
-/** A flow reference chip: its name (linking to the run/pipeline view) and kind. */
+/** A flow reference: its name (linking to the pipeline view) and kind badge. */
 function FlowRef({ pipelineId, flow, kind }: { pipelineId: string; flow: string; kind: string }) {
   return (
-    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-      <AccountTreeIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-      <Link component={RouterLink} to={`/pipelines/${pipelineId}`} variant="body2">{flow}</Link>
-      <Chip label={kind} size="small" variant="outlined" sx={{ height: 18, fontSize: 11 }} />
-    </Stack>
+    <span className="flex min-w-0 items-center gap-1.5">
+      <Network className="size-4 shrink-0 text-muted-foreground" />
+      <Link to={`/pipelines/${pipelineId}`} className="truncate font-mono text-[12px] text-primary hover:underline">
+        {flow}
+      </Link>
+      <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[11px] text-muted-foreground">{kind}</Badge>
+    </span>
   );
 }
 
@@ -134,12 +145,12 @@ function FileProvenance({ objectKey }: { objectKey: string }) {
   });
 
   if (flows.isPending) {
-    return <Skeleton variant="rectangular" height={200} />;
+    return <Skeleton className="h-48 w-full" />;
   }
   if (flows.isError) {
     return isApiError(flows.error)
       ? <CorrelationError error={flows.error} />
-      : <Typography color="error">{String(flows.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(flows.error)}</p>;
   }
 
   const { producers, consumers } = flows.data;
@@ -148,53 +159,52 @@ function FileProvenance({ objectKey }: { objectKey: string }) {
   }
 
   return (
-    <Stack spacing={2.5} data-testid="catalog-file-provenance">
-      <Box>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>{`Produced by (${producers.length})`}</Typography>
+    <div className="flex flex-col gap-5" data-testid="catalog-file-provenance">
+      <section>
+        <h3 className="mb-2 text-sm font-medium">{`Produced by (${producers.length})`}</h3>
         {producers.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
+          <p className="text-[13px] text-muted-foreground">
             Nothing in the catalog produces this file: it is an external source landing here.
-          </Typography>
+          </p>
         ) : (
-          <Stack spacing={0.75}>
+          <div className="flex flex-col gap-1.5">
             {producers.map((p) => <FlowRef key={p.pipelineId} pipelineId={p.pipelineId} flow={p.flow} kind={p.kind} />)}
-          </Stack>
+          </div>
         )}
-      </Box>
-      <Box>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>{`Consumed by (${consumers.length})`}</Typography>
+      </section>
+      <section>
+        <h3 className="mb-2 text-sm font-medium">{`Consumed by (${consumers.length})`}</h3>
         {consumers.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">No pipeline reads this file.</Typography>
+          <p className="text-[13px] text-muted-foreground">No pipeline reads this file.</p>
         ) : (
-          <Stack spacing={1.5}>
+          <div className="flex flex-col gap-3">
             {consumers.map((c) => (
-              <Box key={c.pipelineId}>
+              <div key={c.pipelineId}>
                 <FlowRef pipelineId={c.pipelineId} flow={c.flow} kind={c.kind} />
-                <Stack direction="row" spacing={0.5} alignItems="baseline" sx={{ pl: 3, mt: 0.25, flexWrap: "wrap" }} useFlexGap>
-                  <Typography variant="caption" color="text.secondary">Lands in:</Typography>
+                <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 pl-6">
+                  <span className="text-xs text-muted-foreground">Lands in:</span>
                   {c.lands.length === 0 ? (
-                    <Typography variant="caption" color="text.secondary">(no table target recorded)</Typography>
+                    <span className="text-xs text-muted-foreground">(no table target recorded)</span>
                   ) : (
                     c.lands.map((l, index) => (
-                      <span key={l.key}>
+                      <span key={l.key} className="text-xs">
                         <Link
-                          component={RouterLink}
                           to={`/catalog?node=${encodeURIComponent(encodeNodeId({ type: "object", objectKey: l.key }))}`}
-                          variant="caption"
+                          className="font-mono text-primary hover:underline"
                         >
                           {[l.database, l.schema, l.name].filter((part) => part !== null).join(".")}
                         </Link>
-                        {index < c.lands.length - 1 ? <Typography component="span" variant="caption" color="text.secondary">,</Typography> : null}
+                        {index < c.lands.length - 1 && <span className="text-muted-foreground">,</span>}
                       </span>
                     ))
                   )}
-                </Stack>
-              </Box>
+                </div>
+              </div>
             ))}
-          </Stack>
+          </div>
         )}
-      </Box>
-    </Stack>
+      </section>
+    </div>
   );
 }
 
@@ -222,18 +232,18 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
 
   if (dossier.isPending) {
     return (
-      <Box>
-        <Skeleton width={280} height={40} />
-        <Skeleton width="100%" />
-        <Skeleton width="70%" />
-        <Skeleton variant="rectangular" height={280} sx={{ mt: 2 }} />
-      </Box>
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-8 w-72 max-w-full" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="mt-2 h-64 w-full" />
+      </div>
     );
   }
   if (dossier.isError) {
     return isApiError(dossier.error)
       ? <CorrelationError error={dossier.error} />
-      : <Typography color="error">{String(dossier.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(dossier.error)}</p>;
   }
 
   const { object, columns, references, referencedBy } = dossier.data;
@@ -244,11 +254,11 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
   const isFile = object.kind === "File";
 
   return (
-    <Box data-testid="catalog-object-details">
-      <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
-        <Typography variant="h6" sx={{ minWidth: 0, wordBreak: "break-word" }}>{object.name}</Typography>
-        <Chip label={object.kind} size="small" />
-        <Box sx={{ flexGrow: 1 }} />
+    <div data-testid="catalog-object-details">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h2 className="min-w-0 break-words font-mono text-base font-medium">{object.name}</h2>
+        <Badge variant="secondary">{object.kind}</Badge>
+        <div className="grow" />
         <LineageJumpButton
           target={{
             kind: "object",
@@ -259,111 +269,120 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
           }}
           variant="outlined"
         />
-      </Stack>
-      <Typography variant="body2" sx={{ fontFamily: "monospace", wordBreak: "break-all", mb: 1.5 }}>
-        {object.key}
-      </Typography>
+      </div>
+      <p className="mb-4 break-all font-mono text-xs text-muted-foreground">{object.key}</p>
 
-      <Tabs value={tab} onChange={(_event, value) => setTab(value)} sx={{ mb: 2 }} variant="scrollable">
-        <Tab label="Overview" value="overview" data-testid="catalog-tab-overview" />
-        {isFile
-          ? <Tab label="Pipelines" value="pipelines" data-testid="catalog-tab-pipelines" />
-          : [
-            <Tab key="columns" label={`Columns (${columns.length})`} value="columns" data-testid="catalog-tab-columns" />,
-            <Tab key="code" label="Code" value="code" data-testid="catalog-tab-code" />,
-            <Tab key="relationships" label={`Relationships (${relationshipCount})`} value="relationships" data-testid="catalog-tab-relationships" />,
-          ]}
-      </Tabs>
-
-      {tab === "overview" && (
-        <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-          <DetailPair label="Server">{object.serverRef}</DetailPair>
-          <DetailPair label="Database">{object.database ?? "-"}</DetailPair>
-          <DetailPair label="Schema">{object.schema ?? "-"}</DetailPair>
-          <DetailPair label="Level">{object.level ?? "-"}</DetailPair>
-          <DetailPair label="Key">
-            {object.keyColumns === null ? "-" : (
-              <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                <KeyIcon sx={{ fontSize: 16, color: "warning.main" }} />
-                <Typography variant="body2" sx={{ fontFamily: "monospace", fontSize: 12 }}>
-                  {object.keyColumns}
-                </Typography>
-                <Tooltip
-                  title={object.keyOrigin === "Constraint"
-                    ? "From a PRIMARY KEY clause in the codebase"
-                    : object.keyOrigin === "Declared"
-                      ? "Declared by the loading flow's YAML key columns"
-                      : "From the ON clause of the MERGE that loads it"}
-                >
-                  <Chip label={object.keyOrigin?.toLowerCase()} size="small" variant="outlined" sx={{ height: 20 }} />
-                </Tooltip>
-              </Stack>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="gap-4">
+        <TabsList variant="line">
+          <TabsTrigger value="overview" data-testid="catalog-tab-overview">Overview</TabsTrigger>
+          {isFile
+            ? <TabsTrigger value="pipelines" data-testid="catalog-tab-pipelines">Pipelines</TabsTrigger>
+            : (
+              <>
+                <TabsTrigger value="columns" data-testid="catalog-tab-columns">{`Columns (${columns.length})`}</TabsTrigger>
+                <TabsTrigger value="code" data-testid="catalog-tab-code">Code</TabsTrigger>
+                <TabsTrigger value="relationships" data-testid="catalog-tab-relationships">
+                  {`Relationships (${relationshipCount})`}
+                </TabsTrigger>
+              </>
             )}
-          </DetailPair>
-          <DetailPair label="First seen"><RelativeTime value={object.firstSeenUtc} /></DetailPair>
-          <DetailPair label="Last seen"><RelativeTime value={object.lastSeenUtc} /></DetailPair>
-        </Box>
-      )}
+        </TabsList>
 
-      {tab === "pipelines" && <FileProvenance objectKey={object.key} />}
+        <TabsContent value="overview">
+          <div className="grid grid-cols-2 gap-3">
+            <DetailPair label="Server"><Mono>{object.serverRef}</Mono></DetailPair>
+            <DetailPair label="Database">{object.database === null ? "-" : <Mono>{object.database}</Mono>}</DetailPair>
+            <DetailPair label="Schema">{object.schema === null ? "-" : <Mono>{object.schema}</Mono>}</DetailPair>
+            <DetailPair label="Level">{object.level ?? "-"}</DetailPair>
+            <DetailPair label="Key">
+              {object.keyColumns === null ? "-" : (
+                <span className="flex flex-wrap items-center gap-1.5">
+                  <KeyRound className="size-4 shrink-0 text-warning" />
+                  <Mono>{object.keyColumns}</Mono>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex">
+                        <Badge variant="outline" className="text-[11px]">{object.keyOrigin?.toLowerCase()}</Badge>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {object.keyOrigin === "Constraint"
+                        ? "From a PRIMARY KEY clause in the codebase"
+                        : object.keyOrigin === "Declared"
+                          ? "Declared by the loading flow's YAML key columns"
+                          : "From the ON clause of the MERGE that loads it"}
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+              )}
+            </DetailPair>
+            <DetailPair label="First seen"><RelativeTime value={object.firstSeenUtc} /></DetailPair>
+            <DetailPair label="Last seen"><RelativeTime value={object.lastSeenUtc} /></DetailPair>
+          </div>
+        </TabsContent>
 
-      {tab === "columns" && (
-        <DataTable<LineageObjectColumn>
-          columns={columnTableColumns(keys)}
-          rows={columns}
-          rowKey={(row) => row.ordinal}
-          emptyMessage="No columns recorded for this object (a connected sync fills the column dictionary)."
-          data-testid="catalog-object-columns"
-        />
-      )}
+        <TabsContent value="pipelines">
+          <FileProvenance objectKey={object.key} />
+        </TabsContent>
 
-      {tab === "code" && (
-        script.isPending ? (
-          <Skeleton variant="rectangular" height={320} />
-        ) : script.isError ? (
-          isApiError(script.error)
-            ? <CorrelationError error={script.error} />
-            : <Typography color="error">{String(script.error)}</Typography>
-        ) : script.data.script === null ? (
-          <EmptyState title="No code captured for this object yet (no lineage tier saw it created)." />
-        ) : (
-          <CodeView
-            value={script.data.script}
-            language={script.data.language === "yaml" ? "yaml" : "sql"}
-            height={420}
-            data-testid="catalog-object-code"
+        <TabsContent value="columns">
+          <DataTable<LineageObjectColumn>
+            columns={columnTableColumns(keys)}
+            rows={columns}
+            rowKey={(row) => row.ordinal}
+            emptyMessage="No columns recorded for this object (a connected sync fills the column dictionary)."
+            data-testid="catalog-object-columns"
           />
-        )
-      )}
+        </TabsContent>
 
-      {tab === "relationships" && (
-        relationshipCount === 0 ? (
-          <EmptyState title="No data-model relationships interpreted yet: nothing in the codebase joins this object to another table." />
-        ) : (
-          <Stack spacing={2}>
-            <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>{`References (${references.length})`}</Typography>
-              <DataTable<ObjectRelationship>
-                columns={relationshipColumns()}
-                rows={references}
-                rowKey={(row) => `${row.otherObjectKey}|${row.ownColumns}|${row.origin}`}
-                emptyMessage="This object references no other table."
-                data-testid="catalog-object-references"
-              />
-            </Box>
-            <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>{`Referenced by (${referencedBy.length})`}</Typography>
-              <DataTable<ObjectRelationship>
-                columns={relationshipColumns()}
-                rows={referencedBy}
-                rowKey={(row) => `${row.otherObjectKey}|${row.ownColumns}|${row.origin}`}
-                emptyMessage="No other table references this object."
-                data-testid="catalog-object-referenced-by"
-              />
-            </Box>
-          </Stack>
-        )
-      )}
-    </Box>
+        <TabsContent value="code">
+          {script.isPending ? (
+            <Skeleton className="h-80 w-full" />
+          ) : script.isError ? (
+            isApiError(script.error)
+              ? <CorrelationError error={script.error} />
+              : <p className="text-[13px] text-destructive">{String(script.error)}</p>
+          ) : script.data.script === null ? (
+            <EmptyState title="No code captured for this object yet (no lineage tier saw it created)." />
+          ) : (
+            <CodeView
+              value={script.data.script}
+              language={script.data.language === "yaml" ? "yaml" : "sql"}
+              height={420}
+              data-testid="catalog-object-code"
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="relationships">
+          {relationshipCount === 0 ? (
+            <EmptyState title="No data-model relationships interpreted yet: nothing in the codebase joins this object to another table." />
+          ) : (
+            <div className="flex flex-col gap-4">
+              <section>
+                <h3 className="mb-2 text-sm font-medium">{`References (${references.length})`}</h3>
+                <DataTable<ObjectRelationship>
+                  columns={relationshipColumns()}
+                  rows={references}
+                  rowKey={(row) => `${row.otherObjectKey}|${row.ownColumns}|${row.origin}`}
+                  emptyMessage="This object references no other table."
+                  data-testid="catalog-object-references"
+                />
+              </section>
+              <section>
+                <h3 className="mb-2 text-sm font-medium">{`Referenced by (${referencedBy.length})`}</h3>
+                <DataTable<ObjectRelationship>
+                  columns={relationshipColumns()}
+                  rows={referencedBy}
+                  rowKey={(row) => `${row.otherObjectKey}|${row.ownColumns}|${row.origin}`}
+                  emptyMessage="No other table references this object."
+                  data-testid="catalog-object-referenced-by"
+                />
+              </section>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }

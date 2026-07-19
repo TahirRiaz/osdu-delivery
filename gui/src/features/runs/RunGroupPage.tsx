@@ -1,13 +1,12 @@
 import { useCallback, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
-import ReplayIcon from "@mui/icons-material/Replay";
+import { toast } from "sonner";
+import { Loader2, Radio, RotateCcw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import type { RunGroupCounts, RunStatus, RunSummary } from "../../api/types";
 import { isApiError } from "../../api/client";
 import { runApi } from "../../api/endpoints";
@@ -23,6 +22,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
+import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { formatDurationSeconds } from "../../lib/time";
 import { useRunGroupStream } from "./useRunGroupStream";
 
@@ -31,11 +31,16 @@ const memberColumns: Column<RunSummary>[] = [
   {
     id: "flow",
     header: "Flow",
-    render: (row) => <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.flowName}</Typography>,
+    render: (row) => <span className="font-mono text-[12px] font-medium">{row.flowName}</span>,
   },
   { id: "kind", header: "Kind", render: (row) => row.flowKind },
   { id: "batch", header: "Batch", render: (row) => row.batch },
-  { id: "step", header: "Step", align: "right", render: (row) => (row.wave >= 0 ? row.wave : "-") },
+  {
+    id: "step",
+    header: "Step",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.wave >= 0 ? row.wave : "-"}</span>,
+  },
   {
     id: "enqueued",
     header: "Enqueued",
@@ -48,12 +53,17 @@ const memberColumns: Column<RunSummary>[] = [
   },
   {
     // The member's newest trace event: while the group executes this ticks live with what each member is doing
-    // right now (the table polls every 3s); once a member ends it settles on its final event.
+    // right now; once a member ends it settles on its final event.
     id: "lastAction",
     header: "Last action",
     render: (row) => <TruncatedText text={row.lastAction} maxWidth={420} />,
   },
-  { id: "rowsLoaded", header: "Rows loaded", align: "right", render: (row) => row.rowsLoaded ?? "-" },
+  {
+    id: "rowsLoaded",
+    header: "Rows loaded",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.rowsLoaded ?? "-"}</span>,
+  },
   { id: "pool", header: "Pool", render: (row) => row.targetPool ?? "-" },
   {
     id: "commit",
@@ -62,22 +72,48 @@ const memberColumns: Column<RunSummary>[] = [
   },
 ];
 
-/** A run group's member-count chips, one per non-zero lifecycle state. */
-function CountChips({ counts }: { counts: RunGroupCounts }) {
-  const entries: [string, number, "default" | "info" | "primary" | "success" | "error" | "warning"][] = [
-    ["queued", counts.queued, "info"],
-    ["running", counts.running, "primary"],
-    ["succeeded", counts.succeeded, "success"],
-    ["failed", counts.failed, "error"],
-    ["cancelled", counts.cancelled, "warning"],
-    ["skipped", counts.skipped, "default"],
+/** A run group's member-count pills, one per non-zero lifecycle state, in the reserved status tones
+ * (DESIGN.md 3.2); the state name in the label keeps color from carrying the meaning alone. */
+function CountPills({ counts }: { counts: RunGroupCounts }) {
+  const entries: [string, number, string][] = [
+    ["queued", counts.queued, "bg-warning/15 text-warning"],
+    ["running", counts.running, "bg-info/12 text-info"],
+    ["succeeded", counts.succeeded, "bg-success/12 text-success"],
+    ["failed", counts.failed, "bg-destructive/12 text-destructive"],
+    ["cancelled", counts.cancelled, "bg-muted text-muted-foreground"],
+    ["skipped", counts.skipped, "bg-muted text-muted-foreground"],
   ];
   return (
     <>
-      {entries.filter(([, n]) => n > 0).map(([label, n, color]) => (
-        <Chip key={label} size="small" color={color} variant="outlined" label={`${n} ${label}`} />
+      {entries.filter(([, n]) => n > 0).map(([label, n, tone]) => (
+        <span
+          key={label}
+          className={cn(
+            "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
+            tone,
+          )}
+        >
+          <span className="font-mono tabular-nums">{n}</span>
+          {label}
+        </span>
       ))}
     </>
+  );
+}
+
+/** The live/reconnecting pill next to the streaming member table. */
+function StreamStateBadge({ connected }: { connected: boolean }) {
+  return (
+    <span
+      data-testid="group-stream-state"
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
+        connected ? "bg-success/12 text-success" : "bg-warning/15 text-warning",
+      )}
+    >
+      {connected ? <Radio className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
+      {connected ? "live" : "reconnecting"}
+    </span>
   );
 }
 
@@ -94,7 +130,6 @@ export default function RunGroupPage() {
 function RunGroupContent({ groupId }: { groupId: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { enqueueSnackbar } = useSnackbar();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const query = useQuery({
@@ -110,9 +145,11 @@ function RunGroupContent({ groupId }: { groupId: string }) {
       return pollingInterval(3000)();
     },
   });
+  // The group's scope label: its batch label in batch mode, its anchor flow's name in node mode.
+  useTabTitle(query.data?.anchor);
 
   // The live group: while any member is queued or running the member table is fed by the group's SSE stream
-  // (each row updates the moment its flow's status or last action changes), and the header chips roll up from
+  // (each row updates the moment its flow's status or last action changes), and the header pills roll up from
   // the streamed statuses. The end frame refetches the header and the paged member list, which the page then
   // swaps back to as the authoritative at-rest view.
   const counts = query.data?.counts;
@@ -138,26 +175,26 @@ function RunGroupContent({ groupId }: { groupId: string }) {
         : { repoId: g.repoId, flowName: g.anchor, scope: "node" });
     },
     onSuccess: (accepted) => {
-      enqueueSnackbar(`Re-run enqueued: ${accepted.memberCount ?? 0} member(s).`, { variant: "success" });
+      toast.success(`Re-run enqueued: ${accepted.memberCount ?? 0} member(s).`);
       if (accepted.groupId) {
         navigate(`/runs/groups/${accepted.groupId}`);
       }
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
     },
   });
 
   const cancel = useMutation({
     mutationFn: () => runApi.cancelGroup(groupId),
     onSuccess: () => {
-      enqueueSnackbar("Cancel requested for this run group.", { variant: "success" });
+      toast.success("Cancel requested for this run group.");
       setConfirmOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["run-groups", groupId] });
       void queryClient.invalidateQueries({ queryKey: ["runs", "group", groupId] });
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
       setConfirmOpen(false);
     },
   });
@@ -167,7 +204,7 @@ function RunGroupContent({ groupId }: { groupId: string }) {
       <Page data-testid="page-run-group">
         {isApiError(query.error)
           ? <CorrelationError error={query.error} />
-          : <Typography color="error">{String(query.error)}</Typography>}
+          : <p className="text-[13px] text-destructive">{String(query.error)}</p>}
       </Page>
     );
   }
@@ -176,8 +213,8 @@ function RunGroupContent({ groupId }: { groupId: string }) {
   if (group === undefined) {
     return (
       <Page data-testid="page-run-group">
-        <Skeleton variant="rounded" height={200} />
-        <Skeleton variant="rounded" height={320} />
+        <Skeleton className="h-50 w-full rounded-lg" />
+        <Skeleton className="h-80 w-full rounded-lg" />
       </Page>
     );
   }
@@ -185,7 +222,7 @@ function RunGroupContent({ groupId }: { groupId: string }) {
   const active = group.counts.queued > 0 || group.counts.running > 0;
   const modeLabel = group.mode === "node" ? "Flow + descendants" : "Batch";
 
-  // While streaming, the rollup chips count the streamed member statuses directly, so the header agrees with
+  // While streaming, the rollup pills count the streamed member statuses directly, so the header agrees with
   // the rows beneath it instead of trailing on the 3s header poll.
   const liveCounts: RunGroupCounts | null = active && liveMembers.length > 0
     ? (() => {
@@ -208,15 +245,16 @@ function RunGroupContent({ groupId }: { groupId: string }) {
         title={`${modeLabel}: ${group.anchor}`}
         badges={(
           <>
-            <Chip size="small" label={group.mode} variant="outlined" data-testid="group-mode" />
-            <CountChips counts={liveCounts ?? group.counts} />
+            <Badge variant="outline" data-testid="group-mode">{group.mode}</Badge>
+            <CountPills counts={liveCounts ?? group.counts} />
           </>
         )}
         actions={active
           ? (
             <Button
-              color="error"
-              variant="outlined"
+              variant="outline"
+              size="sm"
+              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setConfirmOpen(true)}
               disabled={cancel.isPending}
               data-testid="cancel-group"
@@ -226,41 +264,40 @@ function RunGroupContent({ groupId }: { groupId: string }) {
           )
           : (
             <Button
-              variant="outlined"
-              startIcon={<ReplayIcon fontSize="small" />}
+              variant="outline"
+              size="sm"
               onClick={() => rerun.mutate()}
               disabled={rerun.isPending}
               data-testid="rerun-group"
             >
+              {rerun.isPending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
               Re-run
             </Button>
           )}
       >
         <DetailPair label="Group id"><Mono>{group.groupId}</Mono></DetailPair>
         <DetailPair label="Mode">{modeLabel}</DetailPair>
-        <DetailPair label="Anchor">{group.anchor}</DetailPair>
-        <DetailPair label="Members">{group.memberCount}</DetailPair>
+        <DetailPair label="Anchor"><Mono>{group.anchor}</Mono></DetailPair>
+        <DetailPair label="Members">
+          <span className="font-mono tabular-nums">{group.memberCount}</span>
+        </DetailPair>
         <DetailPair label="Enqueued"><RelativeTime value={group.enqueuedUtc} /></DetailPair>
-        <DetailPair label="Commit">{group.commitSha ? <Mono>{group.commitSha.slice(0, 12)}</Mono> : "-"}</DetailPair>
+        <DetailPair label="Commit">
+          {group.commitSha ? <Mono>{group.commitSha.slice(0, 12)}</Mono> : "-"}
+        </DetailPair>
       </DetailHeaderCard>
 
       {active
         ? (
-          <Stack spacing={1}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Chip
-                size="small"
-                color={streamConnected ? "success" : "warning"}
-                variant="outlined"
-                label={streamConnected ? "live" : "reconnecting"}
-                data-testid="group-stream-state"
-              />
-              <Typography variant="body2" color="text.secondary">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <StreamStateBadge connected={streamConnected} />
+              <span className="text-[13px] text-muted-foreground">
                 {streamConnected
                   ? "Streaming member status and actions as the group executes."
                   : "Connection lost; resuming the stream."}
-              </Typography>
-            </Stack>
+              </span>
+            </div>
             <DataTable
               columns={memberColumns}
               rows={liveMembers.length > 0 ? liveMembers : undefined}
@@ -269,7 +306,7 @@ function RunGroupContent({ groupId }: { groupId: string }) {
               emptyMessage="This run group has no members."
               data-testid="group-members-live-table"
             />
-          </Stack>
+          </div>
         )
         : (
           <PagedTable

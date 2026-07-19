@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import Button from "@mui/material/Button";
-import Tooltip from "@mui/material/Tooltip";
-import CheckIcon from "@mui/icons-material/Check";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import { Check, Copy } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface CopyButtonProps {
   label: string;
@@ -41,17 +40,27 @@ export function CopyButton({ label, text, testId }: CopyButtonProps) {
     timer.current = setTimeout(() => setState("idle"), 1800);
   };
 
+  const button = (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => void copy()}
+      data-testid={testId}
+      className={state === "failed" ? "text-destructive hover:text-destructive" : undefined}
+    >
+      {state === "copied" ? <Check /> : <Copy />}
+      {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : label}
+    </Button>
+  );
+
+  if (state !== "failed") {
+    return button;
+  }
+
   return (
-    <Tooltip title={state === "failed" ? "The browser denied clipboard access." : ""}>
-      <Button
-        size="small"
-        color={state === "failed" ? "error" : "inherit"}
-        startIcon={state === "copied" ? <CheckIcon /> : <ContentCopyIcon />}
-        onClick={() => void copy()}
-        data-testid={testId}
-      >
-        {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : label}
-      </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent>The browser denied clipboard access.</TooltipContent>
     </Tooltip>
   );
 }

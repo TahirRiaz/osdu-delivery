@@ -1,7 +1,8 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import TablePagination from "@mui/material/TablePagination";
-import Typography from "@mui/material/Typography";
 import { type CSSProperties, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { PagedResult } from "../api/types";
 import { isApiError } from "../api/client";
 import { pollingInterval } from "../hooks/usePolling";
@@ -28,14 +29,15 @@ interface PagedTableProps<T> {
 }
 
 /**
- * The single paged list-page code path: server-side offset paging against the API's PagedResult on top of the
- * shared DataTable shell (loading skeletons, the shared error and empty rendering, optional tree grouping),
- * with optional polling for live views. Pages that already hold their rows render DataTable directly instead.
+ * The single paged list-page code path: server-side offset paging against the API's PagedResult on top of
+ * the shared DataTable shell (loading skeletons, the shared error and empty rendering, optional tree
+ * grouping), with optional polling for live views. Pages that already hold their rows render DataTable
+ * directly instead.
  */
 export function PagedTable<T>({
   queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, grouping, "data-testid": testId,
 }: PagedTableProps<T>) {
-  const [page, setPage] = useState(0); // MUI pagination is 0-based; the API is 1-based
+  const [page, setPage] = useState(0); // rendered 0-based; the API is 1-based
   const [pageSize, setPageSize] = useState(50);
 
   const query = useQuery({
@@ -48,10 +50,15 @@ export function PagedTable<T>({
   if (query.isError) {
     return isApiError(query.error)
       ? <CorrelationError error={query.error} />
-      : <Typography color="error">{String(query.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(query.error)}</p>;
   }
 
   const result = query.data;
+  const total = result?.total ?? 0;
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min(total, (page + 1) * pageSize);
+  const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+
   return (
     <DataTable
       columns={columns}
@@ -63,18 +70,48 @@ export function PagedTable<T>({
       grouping={grouping}
       data-testid={testId ?? "paged-table"}
       footer={(
-        <TablePagination
-          component="div"
-          count={result?.total ?? 0}
-          page={page}
-          onPageChange={(_, next) => setPage(next)}
-          rowsPerPage={pageSize}
-          onRowsPerPageChange={(event) => {
-            setPageSize(Number.parseInt(event.target.value, 10));
-            setPage(0);
-          }}
-          rowsPerPageOptions={[25, 50, 100, 200]}
-        />
+        <div className="flex items-center justify-between gap-4 border-t border-border px-3 py-1.5">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            Rows per page
+            <Select
+              value={String(pageSize)}
+              onValueChange={(value) => {
+                setPageSize(Number.parseInt(value, 10));
+                setPage(0);
+              }}
+            >
+              <SelectTrigger size="sm" className="h-7 w-[72px] text-xs" aria-label="Rows per page">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[25, 50, 100, 200].map((size) => (
+                  <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <span className="font-mono tabular-nums">{from}-{to} of {total}</span>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Previous page"
+              disabled={page === 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+            >
+              <ChevronLeft />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Next page"
+              disabled={page >= lastPage}
+              onClick={() => setPage((current) => Math.min(lastPage, current + 1))}
+            >
+              <ChevronRight />
+            </Button>
+          </div>
+        </div>
       )}
     />
   );

@@ -1,19 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Alert from "@mui/material/Alert";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import Stack from "@mui/material/Stack";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import CableIcon from "@mui/icons-material/Cable";
-import TravelExploreIcon from "@mui/icons-material/TravelExplore";
+import { Cable, CircleAlert, CircleCheck, Loader2, Telescope } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { datasourceApi } from "../../api/endpoints";
 import type { ConnectionTestResult, Datasource } from "../../api/types";
@@ -25,45 +20,59 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { useCompute } from "./useCompute";
 
-/** The connection-test dialog: runs the testConnection task when opened and shows the live outcome. */
-function TestConnectionDialog({ datasource, onClose }: { datasource: Datasource; onClose: () => void }) {
+/** The connection-test sheet: runs the testConnection task when opened and shows the live outcome. */
+function TestConnectionSheet({ datasource, onClose }: { datasource: Datasource; onClose: () => void }) {
   const test = useCompute<ConnectionTestResult>();
   const { run } = test;
 
-  // The dialog mounts per target, so a single on-mount run tests exactly the datasource it was opened for.
+  // The sheet mounts per target, so a single on-mount run tests exactly the datasource it was opened for.
   useEffect(() => {
     void run({ reference: datasource.reference, operation: "testConnection", kind: datasource.kind });
   }, [run, datasource.reference, datasource.kind]);
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="xs" data-testid="test-connection-dialog">
-      <DialogTitle>Test connection</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <Mono>{datasource.reference}</Mono>
+    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent side="right" className="sm:max-w-md" data-testid="test-connection-dialog">
+        <SheetHeader>
+          <SheetTitle>Test connection</SheetTitle>
+          <SheetDescription>
+            <Mono>{datasource.reference}</Mono>
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex flex-col gap-3 px-4">
           {test.running && (
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <CircularProgress size={18} />
-              <Typography variant="body2" color="text.secondary">
-                A worker node is opening the connection...
-              </Typography>
-            </Stack>
+            <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              A worker node is opening the connection...
+            </div>
           )}
-          {test.error !== null && <Alert severity="error" data-testid="test-connection-error">{test.error}</Alert>}
-          {test.data !== null && (
-            <Alert severity="success" data-testid="test-connection-ok">
-              Connected to a {test.data.kind} source
-              {test.data.database !== null ? <> (database <Mono>{test.data.database}</Mono>)</> : null}
-              {test.data.serverVersion !== null ? <>, server version {test.data.serverVersion}</> : null}
-              {" "}in {Math.round(test.data.elapsedMs)} ms.
+          {test.error !== null && (
+            <Alert variant="destructive" data-testid="test-connection-error">
+              <CircleAlert />
+              <AlertDescription>{test.error}</AlertDescription>
             </Alert>
           )}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} data-testid="test-connection-close">Close</Button>
-      </DialogActions>
-    </Dialog>
+          {test.data !== null && (
+            <Alert className="border-success/50 text-success" data-testid="test-connection-ok">
+              <CircleCheck />
+              <AlertDescription className="text-success/90">
+                <p>
+                  Connected to a {test.data.kind} source
+                  {test.data.database !== null ? <> (database <Mono>{test.data.database}</Mono>)</> : null}
+                  {test.data.serverVersion !== null ? <>, server version {test.data.serverVersion}</> : null}
+                  {" "}in {Math.round(test.data.elapsedMs)} ms.
+                </p>
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+        <SheetFooter>
+          <Button variant="outline" size="sm" onClick={onClose} data-testid="test-connection-close">
+            Close
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -88,32 +97,38 @@ export default function DatasourcesPage() {
     {
       id: "reference",
       header: "Reference",
-      render: (row) => <Mono sx={{ fontWeight: 600 }}>{row.reference}</Mono>,
+      render: (row) => <Mono className="font-semibold">{row.reference}</Mono>,
     },
     {
       id: "kind",
       header: "Kind",
       render: (row) => (row.kind !== null
-        ? <Chip size="small" variant="outlined" label={row.kind} />
-        : <Typography variant="body2" color="text.secondary">unknown</Typography>),
+        ? <Badge variant="outline">{row.kind}</Badge>
+        : <span className="text-[13px] text-muted-foreground">unknown</span>),
     },
     {
       id: "usage",
       header: "Used by",
       render: (row) => (
-        <Typography variant="body2">
+        <span className="text-[13px]">
           {row.sourcePipelines} source / {row.targetPipelines} target pipeline(s)
-        </Typography>
+        </span>
       ),
     },
     {
       id: "resolvable",
       header: "Compute",
       render: (row) => (row.resolvable
-        ? <Chip size="small" color="success" variant="outlined" label="browsable" />
+        ? <Badge variant="outline" className="border-success/50 text-success">browsable</Badge>
         : (
-          <Tooltip title="An inline connection literal is identified by hash only; a worker cannot resolve it for ad-hoc compute. Declare it as a ${...} reference to browse it.">
-            <Chip size="small" variant="outlined" label="not browsable" />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="text-muted-foreground">not browsable</Badge>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              An inline connection literal is identified by hash only; a worker cannot resolve it for ad-hoc
+              compute. Declare it as a ${"{...}"} reference to browse it.
+            </TooltipContent>
           </Tooltip>
         )),
     },
@@ -122,10 +137,10 @@ export default function DatasourcesPage() {
       header: "Actions",
       align: "right",
       render: (row) => (
-        <Stack direction="row" spacing={1} justifyContent="flex-end">
+        <span className="flex items-center justify-end gap-2">
           <Button
-            size="small"
-            startIcon={<CableIcon />}
+            variant="ghost"
+            size="xs"
             disabled={!canOperate || !row.resolvable}
             onClick={(e) => {
               e.stopPropagation();
@@ -133,12 +148,12 @@ export default function DatasourcesPage() {
             }}
             data-testid="datasource-test"
           >
+            <Cable />
             Test
           </Button>
           <Button
-            size="small"
-            variant="outlined"
-            startIcon={<TravelExploreIcon />}
+            variant="outline"
+            size="xs"
             disabled={!canOperate || !row.resolvable}
             onClick={(e) => {
               e.stopPropagation();
@@ -146,9 +161,10 @@ export default function DatasourcesPage() {
             }}
             data-testid="datasource-browse"
           >
+            <Telescope />
             Browse
           </Button>
-        </Stack>
+        </span>
       ),
     },
   ];
@@ -164,7 +180,7 @@ export default function DatasourcesPage() {
 
       {datasources.isError && (isApiError(datasources.error)
         ? <CorrelationError error={datasources.error} />
-        : <Typography color="error">{String(datasources.error)}</Typography>)}
+        : <p className="text-[13px] text-destructive">{String(datasources.error)}</p>)}
 
       {!datasources.isError && (
         <DataTable
@@ -177,7 +193,7 @@ export default function DatasourcesPage() {
       )}
 
       {testTarget !== null && (
-        <TestConnectionDialog datasource={testTarget} onClose={() => setTestTarget(null)} />
+        <TestConnectionSheet datasource={testTarget} onClose={() => setTestTarget(null)} />
       )}
     </Page>
   );

@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import Button from "@mui/material/Button";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
-import ToggleButton from "@mui/material/ToggleButton";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import Typography from "@mui/material/Typography";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { RunStatus, RunSummary } from "../../api/types";
 import { runApi } from "../../api/endpoints";
 import { FilterBar } from "../../components/FilterBar";
@@ -29,7 +27,7 @@ const baseColumns: Column<RunSummary>[] = [
   {
     id: "flow",
     header: "Flow",
-    render: (row) => <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.flowName}</Typography>,
+    render: (row) => <span className="font-mono text-[12px] font-medium">{row.flowName}</span>,
   },
   { id: "kind", header: "Kind", render: (row) => row.flowKind },
   {
@@ -42,7 +40,12 @@ const baseColumns: Column<RunSummary>[] = [
     header: "Duration",
     render: (row) => (row.durationSeconds != null ? formatDurationSeconds(row.durationSeconds) : "-"),
   },
-  { id: "rowsLoaded", header: "Rows loaded", align: "right", render: (row) => row.rowsLoaded ?? "-" },
+  {
+    id: "rowsLoaded",
+    header: "Rows loaded",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.rowsLoaded ?? "-"}</span>,
+  },
   { id: "pool", header: "Pool", render: (row) => row.targetPool ?? "-" },
   {
     id: "commit",
@@ -57,7 +60,12 @@ const flatColumns: Column<RunSummary>[] = [
   baseColumns[1],
   baseColumns[2],
   { id: "batch", header: "Batch", render: (row) => row.batch },
-  { id: "step", header: "Step", align: "right", render: (row) => (row.wave >= 0 ? row.wave : "-") },
+  {
+    id: "step",
+    header: "Step",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.wave >= 0 ? row.wave : "-"}</span>,
+  },
   ...baseColumns.slice(3),
 ];
 
@@ -90,17 +98,17 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
   const stats = groupStats(rows);
   return (
     <>
-      <Typography variant="body2" color="text.secondary" component="span">
+      <span className="text-[13px] text-muted-foreground">
         started <RelativeTime value={stats.earliest} />
-      </Typography>
+      </span>
       {stats.durationTotal != null && (
-        <Typography variant="body2" color="text.secondary" component="span">
+        <span className="text-[13px] text-muted-foreground">
           duration {formatDurationSeconds(stats.durationTotal)}
-        </Typography>
+        </span>
       )}
-      <Typography variant="body2" color="text.secondary" component="span">({rows.length})</Typography>
+      <span className="text-[13px] text-muted-foreground">({rows.length})</span>
       {stats.failed > 0 && (
-        <Typography variant="body2" color="error.main" component="span">{stats.failed} failed</Typography>
+        <span className="text-[13px] font-medium text-destructive">{stats.failed} failed</span>
       )}
     </>
   );
@@ -112,45 +120,36 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
 // data source (every flow in the batch, in dependency order) as one run group.
 function makeBatchGrouping(onRunBatch: (repoId: string | null, batch: string) => void): TableGrouping<RunSummary> {
   return {
-  groupKey: (row) => row.batch,
-  renderGroupHeader: (rows) => (
-    // flexGrow makes this stack fill the header row (it is a content-sized flex item inside the node row's
-    // cell), so the button's ml auto really pushes it to the right edge instead of leaving it mid-row where
-    // it would swallow clicks meant to collapse the group.
-    <Stack
-      direction="row"
-      spacing={1.5}
-      alignItems="baseline"
-      useFlexGap
-      flexWrap="wrap"
-      sx={{ flexGrow: 1 }}
-      data-testid="batch-group-header"
-    >
-      <Typography variant="body2" sx={{ fontWeight: 700 }}>Batch: {rows[0].batch}</Typography>
-      <GroupStatsInline rows={rows} />
-      <Button
-        size="small"
-        variant="outlined"
-        sx={{ ml: "auto" }}
-        onClick={(e) => {
-          e.stopPropagation();
-          onRunBatch(rows[0].repoId, rows[0].batch);
-        }}
-        data-testid="run-batch"
-      >
-        Run batch
-      </Button>
-    </Stack>
-  ),
-  subKey: (row) => row.wave,
-  renderSubHeader: (rows) => (
-    <Stack direction="row" spacing={1.5} alignItems="baseline" useFlexGap flexWrap="wrap" data-testid="step-group-header">
-      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-        Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}
-      </Typography>
-      <GroupStatsInline rows={rows} />
-    </Stack>
-  ),
+    groupKey: (row) => row.batch,
+    renderGroupHeader: (rows) => (
+      // grow makes this row fill the header (it is a content-sized flex item inside the node row's cell), so
+      // the button's ml-auto really pushes it to the right edge instead of leaving it mid-row where it would
+      // swallow clicks meant to collapse the group.
+      <div className="flex grow flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="batch-group-header">
+        <span className="text-[13px] font-semibold">Batch: {rows[0].batch}</span>
+        <GroupStatsInline rows={rows} />
+        <Button
+          variant="outline"
+          size="xs"
+          className="ml-auto"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRunBatch(rows[0].repoId, rows[0].batch);
+          }}
+          data-testid="run-batch"
+        >
+          <Play />
+          Run batch
+        </Button>
+      </div>
+    ),
+    subKey: (row) => row.wave,
+    renderSubHeader: (rows) => (
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="step-group-header">
+        <span className="text-[13px] font-medium">Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}</span>
+        <GroupStatsInline rows={rows} />
+      </div>
+    ),
   };
 }
 
@@ -159,9 +158,14 @@ function makeBatchGrouping(onRunBatch: (repoId: string | null, batch: string) =>
  * step, like the classic batch report. Toggled flat it is the full run history. */
 export default function RunsPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [batchRun, setBatchRun] = useState<{ repoId: string | null; batch: string } | null>(null);
-  const [status, setStatus] = useState<RunStatus | null>(null);
+  // The status bar's workload segments deep-link here as /runs?status=running|queued.
+  const [status, setStatus] = useState<RunStatus | null>(() => {
+    const fromUrl = searchParams.get("status");
+    return statuses.includes(fromUrl as RunStatus) ? (fromUrl as RunStatus) : null;
+  });
   const [kind, setKind] = useState("all");
   const [flowNameInput, setFlowNameInput] = useState("");
   const [flowName, setFlowName] = useState("");
@@ -184,62 +188,62 @@ export default function RunsPage() {
       <PageHeader
         title="Runs"
         actions={(
-          <Button variant="contained" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
+          <Button size="sm" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
+            <Play />
             Trigger run
           </Button>
         )}
       />
 
       <FilterBar>
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={status}
-          onChange={(_, value: RunStatus | null) => setStatus(value)}
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={status ?? ""}
+          onValueChange={(value) => setStatus(value === "" ? null : (value as RunStatus))}
           aria-label="Filter by status"
         >
           {statuses.map((s) => (
-            <ToggleButton key={s} value={s} data-testid={`filter-status-${s}`}>{s}</ToggleButton>
+            <ToggleGroupItem key={s} value={s} data-testid={`filter-status-${s}`} className="h-8 px-2.5 text-xs">
+              {s}
+            </ToggleGroupItem>
           ))}
-        </ToggleButtonGroup>
-        <TextField
-          size="small"
-          label="Flow name"
+        </ToggleGroup>
+        <Input
           value={flowNameInput}
           onChange={(e) => setFlowNameInput(e.target.value)}
-          inputProps={{ "data-testid": "filter-flow-name" }}
+          placeholder="Flow name"
+          aria-label="Flow name"
+          data-testid="filter-flow-name"
+          className="h-8 w-44"
         />
-        <TextField
-          size="small"
-          label="Batch"
+        <Input
           value={batchInput}
           onChange={(e) => setBatchInput(e.target.value)}
-          inputProps={{ "data-testid": "filter-batch" }}
+          placeholder="Batch"
+          aria-label="Batch"
+          data-testid="filter-batch"
+          className="h-8 w-36"
         />
-        <TextField
-          select
-          size="small"
-          label="Kind"
-          value={kind}
-          onChange={(e) => setKind(e.target.value)}
-          inputProps={{ "data-testid": "filter-kind" }}
-          sx={{ minWidth: 120 }}
-        >
-          {kinds.map((k) => (
-            <MenuItem key={k} value={k}>{k}</MenuItem>
-          ))}
-        </TextField>
-        <FormControlLabel
-          control={(
-            <Switch
-              size="small"
-              checked={groupByBatch}
-              onChange={(e) => setGroupByBatch(e.target.checked)}
-              data-testid="group-by-batch"
-            />
-          )}
-          label="Group by batch"
-        />
+        <Select value={kind} onValueChange={setKind}>
+          <SelectTrigger size="sm" className="h-8 w-28" aria-label="Kind" data-testid="filter-kind">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {kinds.map((k) => (
+              <SelectItem key={k} value={k}>{k}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Label className="flex items-center gap-2 text-[13px] font-normal">
+          <Switch
+            checked={groupByBatch}
+            onCheckedChange={setGroupByBatch}
+            data-testid="group-by-batch"
+          />
+          Group by batch
+        </Label>
       </FilterBar>
 
       <PagedTable

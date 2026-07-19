@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Button from "@mui/material/Button";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import { toast } from "sonner";
+import { Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { isApiError } from "../../api/client";
 import { nodeApi } from "../../api/endpoints";
 import type { Node } from "../../api/types";
@@ -14,19 +14,18 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
  *  removal. */
 export function NodeDeleteButton({ node }: { node: Node }) {
   const { hasScope } = useAuth();
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const remove = useMutation({
     mutationFn: () => nodeApi.delete(node.name),
     onSuccess: () => {
-      enqueueSnackbar(`Removed '${node.name}' from the fleet.`, { variant: "success" });
+      toast.success(`Removed '${node.name}' from the fleet.`);
       setConfirmOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["nodes", "list"] });
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
       setConfirmOpen(false);
     },
   });
@@ -39,14 +38,13 @@ export function NodeDeleteButton({ node }: { node: Node }) {
   return (
     <>
       <Button
-        size="small"
-        variant="outlined"
-        color="inherit"
-        startIcon={<DeleteOutlineIcon />}
+        variant="outline"
+        size="xs"
         disabled={remove.isPending}
         onClick={() => setConfirmOpen(true)}
         data-testid="node-delete-button"
       >
+        <Trash2 />
         Delete
       </Button>
       <ConfirmDialog

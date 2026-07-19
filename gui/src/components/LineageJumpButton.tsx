@@ -1,23 +1,24 @@
-import { useState, type MouseEvent } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import Divider from "@mui/material/Divider";
-import Link from "@mui/material/Link";
-import ListItemText from "@mui/material/ListItemText";
-import Menu from "@mui/material/Menu";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import CallSplitIcon from "@mui/icons-material/CallSplit";
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
-import TableRowsOutlinedIcon from "@mui/icons-material/TableRowsOutlined";
+import {
+  ChevronRight,
+  FileText,
+  Layers,
+  Loader2,
+  Network,
+  Split,
+  Table2,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { lineageApi } from "../api/endpoints";
 
 /**
@@ -33,29 +34,53 @@ export type LineageJumpTarget =
 
 function TargetIcon({ target }: { target: LineageJumpTarget }) {
   if (target.kind === "node") {
-    return <AccountTreeIcon fontSize="small" color="primary" />;
+    return <Network className="size-4 text-primary" />;
   }
   if (target.kind === "file") {
-    return <InsertDriveFileOutlinedIcon fontSize="small" color="primary" />;
+    return <FileText className="size-4 text-primary" />;
   }
   const k = target.objectKind.toLowerCase();
   if (k === "view") {
-    return <LayersOutlinedIcon fontSize="small" color="primary" />;
+    return <Layers className="size-4 text-primary" />;
   }
   if (k === "file") {
-    return <InsertDriveFileOutlinedIcon fontSize="small" color="primary" />;
+    return <FileText className="size-4 text-primary" />;
   }
   if (k === "procedure" || k === "function" || k === "trigger") {
-    return <CallSplitIcon fontSize="small" color="primary" />;
+    return <Split className="size-4 text-primary" />;
   }
-  return <TableRowsOutlinedIcon fontSize="small" color="primary" />;
+  return <Table2 className="size-4 text-primary" />;
+}
+
+/** One picker row: primary and secondary line, an optional flag badge, the chevron affordance. */
+function JumpOption({
+  primary,
+  secondary,
+  flag,
+  onSelect,
+}: {
+  primary: string;
+  secondary: string;
+  flag?: string;
+  onSelect: () => void;
+}) {
+  return (
+    <DropdownMenuItem data-testid="lineage-jump-option" onSelect={onSelect} className="items-center gap-2 py-1.5">
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px]">{primary}</span>
+        <span className="block truncate text-xs text-muted-foreground">{secondary}</span>
+      </span>
+      {flag !== undefined && <Badge variant="secondary" className="shrink-0 text-[10px]">{flag}</Badge>}
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+    </DropdownMenuItem>
+  );
 }
 
 /**
- * The lineage jump: a labeled action that opens a small picker showing exactly what you are about to open and, for
- * an object that lives in more than one repo, every graph it appears in (the repo whose flow populates it flagged
- * "populates") so you choose which to trace. A single target still shows the picker so the destination is never a
- * surprise. Selecting an option deep-links the graph focused on that node.
+ * The lineage jump: a labeled action that opens a small picker showing exactly what you are about to open and,
+ * for an object that lives in more than one repo, every graph it appears in (the repo whose flow populates it
+ * flagged "populates") so you choose which to trace. A single target still shows the picker so the destination
+ * is never a surprise. Selecting an option deep-links the graph focused on that node.
  */
 export function LineageJumpButton({
   target, variant = "text", fullLabel = false,
@@ -66,8 +91,7 @@ export function LineageJumpButton({
   fullLabel?: boolean;
 }) {
   const navigate = useNavigate();
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const open = anchor !== null;
+  const [open, setOpen] = useState(false);
 
   // Resolve which repos' graphs an object appears in (writing repo first), only once the picker is opened.
   const repos = useQuery({
@@ -83,13 +107,8 @@ export function LineageJumpButton({
     enabled: open && target.kind === "file",
   });
 
-  const openMenu = (event: MouseEvent<HTMLElement>) => {
-    event.stopPropagation();
-    setAnchor(event.currentTarget);
-  };
-  const close = () => setAnchor(null);
   const go = (repoId: string, focusId: string) => {
-    close();
+    setOpen(false);
     navigate(`/lineage?repoId=${encodeURIComponent(repoId)}&focus=${encodeURIComponent(focusId)}`);
   };
 
@@ -97,96 +116,86 @@ export function LineageJumpButton({
   const multi = objectRepos.length > 1;
 
   return (
-    <>
-      <Button
-        size="small"
-        variant={variant}
-        startIcon={<AccountTreeIcon />}
-        onClick={openMenu}
-        aria-label="View in lineage graph"
-        data-testid="search-open-graph"
-        sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
-      >
-        {fullLabel ? "View lineage" : "Lineage"}
-      </Button>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant={variant === "outlined" ? "outline" : "ghost"}
+          size="sm"
+          aria-label="View in lineage graph"
+          data-testid="search-open-graph"
+          onClick={(event) => event.stopPropagation()}
+          className="shrink-0 whitespace-nowrap"
+        >
+          <Network />
+          {fullLabel ? "View lineage" : "Lineage"}
+        </Button>
+      </DropdownMenuTrigger>
 
-      <Menu
-        anchorEl={anchor}
-        open={open}
-        onClose={close}
+      <DropdownMenuContent
+        align="end"
+        className="w-80"
         onClick={(event) => event.stopPropagation()}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-        transformOrigin={{ vertical: "top", horizontal: "right" }}
-        slotProps={{ paper: { sx: { minWidth: 300, maxWidth: 380, overflow: "hidden" } } }}
       >
-        <Box sx={{ px: 2, py: 1.5 }} data-testid="lineage-jump-menu">
-          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.6 }}>
+        <div className="px-2 py-1.5" data-testid="lineage-jump-menu">
+          <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             Open in lineage graph
-          </Typography>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.25 }}>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
             <TargetIcon target={target} />
-            <Box sx={{ minWidth: 0 }}>
-              <Typography variant="body2" fontWeight={700} noWrap>{target.label}</Typography>
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-semibold">{target.label}</div>
               {target.sublabel !== undefined && (
-                <Typography variant="caption" color="text.secondary" noWrap component="div">
-                  {target.sublabel}
-                </Typography>
+                <div className="truncate text-xs text-muted-foreground">{target.sublabel}</div>
               )}
-            </Box>
-          </Stack>
-        </Box>
-        <Divider />
+            </div>
+          </div>
+        </div>
+        <DropdownMenuSeparator />
 
         {target.kind === "node" && (
-          <MenuItem data-testid="lineage-jump-option" onClick={() => go(target.repoId, target.focusId)} sx={{ py: 1 }}>
-            <ListItemText primary={target.repoName} secondary="Trace this flow in the graph" />
-            <ChevronRightIcon fontSize="small" color="action" />
-          </MenuItem>
+          <JumpOption
+            primary={target.repoName}
+            secondary="Trace this flow in the graph"
+            onSelect={() => go(target.repoId, target.focusId)}
+          />
         )}
 
         {target.kind === "object" && (
           repos.isPending ? (
-            <MenuItem disabled sx={{ py: 1.5 }}>
-              <CircularProgress size={16} sx={{ mr: 1.5 }} /> Finding graphs…
-            </MenuItem>
+            <div className="flex items-center gap-2 px-2 py-2 text-[13px] text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Finding graphs
+            </div>
           ) : objectRepos.length === 0 ? (
-            <Box sx={{ px: 2, py: 1.5 }} data-testid="lineage-jump-empty">
-              <Typography variant="body2" color="text.secondary">
+            <div className="px-2 py-2" data-testid="lineage-jump-empty">
+              <p className="text-[13px] text-muted-foreground">
                 This object has no recorded lineage yet, so it is not in any graph.
-              </Typography>
-              <Link
-                component="button"
+              </p>
+              <button
                 type="button"
-                variant="body2"
-                sx={{ mt: 0.5 }}
-                onClick={() => { close(); navigate("/lineage/objects"); }}
+                className="mt-1 text-[13px] text-primary hover:underline"
+                onClick={() => {
+                  setOpen(false);
+                  navigate("/lineage/objects");
+                }}
               >
                 Open in the object explorer
-              </Link>
-            </Box>
+              </button>
+            </div>
           ) : (
             <>
               {multi && (
-                <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 0.5, display: "block" }}>
-                  {`Appears in ${objectRepos.length} repos — choose one`}
-                </Typography>
+                <div className="px-2 py-1 text-xs text-muted-foreground">
+                  {`Appears in ${objectRepos.length} repos; choose one`}
+                </div>
               )}
               {objectRepos.map((repo) => (
-                <MenuItem
+                <JumpOption
                   key={repo.repoId}
-                  data-testid="lineage-jump-option"
-                  onClick={() => go(repo.repoId, target.objectKey)}
-                  sx={{ py: 1 }}
-                >
-                  <ListItemText
-                    primary={repo.repoName}
-                    secondary={`${repo.edgeCount} lineage reference${repo.edgeCount === 1 ? "" : "s"}`}
-                  />
-                  {repo.writes && (
-                    <Chip size="small" color="primary" label="populates" sx={{ mx: 1, height: 20 }} />
-                  )}
-                  <ChevronRightIcon fontSize="small" color="action" />
-                </MenuItem>
+                  primary={repo.repoName}
+                  secondary={`${repo.edgeCount} lineage reference${repo.edgeCount === 1 ? "" : "s"}`}
+                  flag={repo.writes ? "populates" : undefined}
+                  onSelect={() => go(repo.repoId, target.objectKey)}
+                />
               ))}
             </>
           )
@@ -194,43 +203,35 @@ export function LineageJumpButton({
 
         {target.kind === "file" && (
           filePipelines.isPending ? (
-            <MenuItem disabled sx={{ py: 1.5 }}>
-              <CircularProgress size={16} sx={{ mr: 1.5 }} /> Matching flows…
-            </MenuItem>
+            <div className="flex items-center gap-2 px-2 py-2 text-[13px] text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Matching flows
+            </div>
           ) : (filePipelines.data?.length ?? 0) === 0 ? (
-            <Box sx={{ px: 2, py: 1.5 }} data-testid="lineage-jump-empty">
-              <Typography variant="body2" color="text.secondary">
+            <div className="px-2 py-2" data-testid="lineage-jump-empty">
+              <p className="text-[13px] text-muted-foreground">
                 No file flow's source pattern matches this file.
-              </Typography>
-            </Box>
+              </p>
+            </div>
           ) : (
             <>
               {(filePipelines.data?.length ?? 0) > 1 && (
-                <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 0.5, display: "block" }}>
-                  {`Ingested by ${filePipelines.data!.length} flows — choose one`}
-                </Typography>
+                <div className="px-2 py-1 text-xs text-muted-foreground">
+                  {`Ingested by ${filePipelines.data!.length} flows; choose one`}
+                </div>
               )}
               {filePipelines.data!.map((match) => (
-                <MenuItem
+                <JumpOption
                   key={match.pipelineId}
-                  data-testid="lineage-jump-option"
-                  onClick={() => go(match.repoId, match.pipelineId)}
-                  sx={{ py: 1 }}
-                >
-                  <ListItemText
-                    primary={match.pipelineName}
-                    secondary={`${match.repoName} · matches ${match.pattern}`}
-                  />
-                  {match.pathConfirmed && (
-                    <Chip size="small" color="primary" label="path match" sx={{ mx: 1, height: 20 }} />
-                  )}
-                  <ChevronRightIcon fontSize="small" color="action" />
-                </MenuItem>
+                  primary={match.pipelineName}
+                  secondary={`${match.repoName} matches ${match.pattern}`}
+                  flag={match.pathConfirmed ? "path match" : undefined}
+                  onSelect={() => go(match.repoId, match.pipelineId)}
+                />
               ))}
             </>
           )
         )}
-      </Menu>
-    </>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

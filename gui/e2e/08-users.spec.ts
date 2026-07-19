@@ -55,7 +55,8 @@ test.describe.serial("user administration", () => {
 
     await row.getByTestId("user-actions").click();
     await adminPage.getByTestId("user-menu-change-role").click();
-    await adminPage.getByTestId("user-set-role-select").selectOption("operator");
+    await adminPage.getByTestId("user-set-role-select").click();
+    await adminPage.getByRole("option", { name: "operator" }).click();
     await adminPage.getByTestId("user-set-role-submit").click();
 
     await expect(row.getByText("operator").first()).toBeVisible({ timeout: 15_000 });

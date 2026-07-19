@@ -1,27 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Alert from "@mui/material/Alert";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import Link from "@mui/material/Link";
-import Paper from "@mui/material/Paper";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import { alpha, useTheme } from "@mui/material/styles";
-import Tab from "@mui/material/Tab";
-import Tabs from "@mui/material/Tabs";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
-import MonitorHeartIcon from "@mui/icons-material/MonitorHeart";
-import ReplayIcon from "@mui/icons-material/Replay";
-import RuleIcon from "@mui/icons-material/Rule";
+import { toast } from "sonner";
+import { CircleAlert, Copy, HeartPulse, Info, ListChecks, Loader2, Radio, RotateCcw } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import type {
   RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey, RunTraceEntry,
 } from "../../api/types";
@@ -40,6 +30,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
+import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
 import { TriggerRunDialog } from "./TriggerRunDialog";
@@ -50,37 +41,68 @@ function fmtBound(value: string): string {
   return parseUtc(value).toISOString().replace("T", " ").replace(/:\d\d\.\d+Z$/, "");
 }
 
-/** The chip color for an incremental mode: an incremental read is the notable case (primary), a full read is
+/** A soft red wash marking a failed row (the one statement that threw). */
+const failedRowStyle: CSSProperties = {
+  backgroundColor: "color-mix(in srgb, var(--destructive) 12%, transparent)",
+};
+
+/** The badge for an incremental mode: an incremental read is the notable case (primary), a full read is
  * neutral, and the operator-driven backfill / init-load modes echo the backfill banner's warning tone. */
-function incrementalModeColor(mode: string): "primary" | "default" | "warning" {
+function IncrementalModeBadge({ mode }: { mode: string }) {
   if (mode === "incremental") {
-    return "primary";
+    return <Badge>{mode}</Badge>;
   }
 
   if (mode === "backfill" || mode === "init-load") {
-    return "warning";
+    return <Badge variant="secondary" className="bg-warning/15 text-warning">{mode}</Badge>;
   }
 
-  return "default";
+  return <Badge variant="secondary">{mode}</Badge>;
 }
 
 function YesNo({ value }: { value: boolean }) {
   return value
-    ? <Chip size="small" label="yes" color="success" variant="outlined" />
-    : <Chip size="small" label="no" color="default" variant="outlined" />;
+    ? <Badge variant="outline" className="border-success/40 text-success">yes</Badge>
+    : <Badge variant="outline" className="text-muted-foreground">no</Badge>;
 }
 
-/** The chip color for a trace level: problems stand out, info is the normal case, engine detail is muted. */
-function traceLevelColor(level: RunTraceEntry["level"]): "default" | "info" | "warning" | "error" {
+/** The badge classes for a trace level: problems stand out, info is the normal case, engine detail is muted. */
+function traceLevelClass(level: RunTraceEntry["level"]): string {
   if (level === "error") {
-    return "error";
+    return "border-destructive/40 text-destructive";
   }
 
   if (level === "warning") {
-    return "warning";
+    return "border-warning/40 text-warning";
   }
 
-  return level === "info" ? "info" : "default";
+  return level === "info" ? "border-info/40 text-info" : "text-muted-foreground";
+}
+
+/** A step name marked as failed: the error icon plus destructive text, so color never carries it alone. */
+function FailedStep({ step }: { step: string | null }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 font-semibold text-destructive">
+      <CircleAlert className="size-4 shrink-0" />
+      {step ?? "-"}
+    </span>
+  );
+}
+
+/** The live/reconnecting pill next to a streaming surface. */
+function StreamStateBadge({ connected, "data-testid": testId }: { connected: boolean; "data-testid": string }) {
+  return (
+    <span
+      data-testid={testId}
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
+        connected ? "bg-success/12 text-success" : "bg-warning/15 text-warning",
+      )}
+    >
+      {connected ? <Radio className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
+      {connected ? "live" : "reconnecting"}
+    </span>
+  );
 }
 
 /** A compact UTC clock stamp (HH:mm:ss.fff) for a trace entry; legacy statements without one show "-". */
@@ -95,27 +117,15 @@ const traceColumns: Column<RunTraceEntry>[] = [
     header: "Level",
     width: 100,
     // A statement entry is labelled "sql" (its level is always trace); event entries show their own level.
-    render: (row) => (
-      <Chip
-        size="small"
-        variant="outlined"
-        label={row.kind === "statement" ? "sql" : row.level}
-        color={row.kind === "statement" ? "default" : traceLevelColor(row.level)}
-      />
-    ),
+    render: (row) => (row.kind === "statement"
+      ? <Badge variant="outline" className="text-muted-foreground">sql</Badge>
+      : <Badge variant="outline" className={traceLevelClass(row.level)}>{row.level}</Badge>),
   },
   {
     id: "step",
     header: "Step",
     width: 220,
-    render: (row) => (row.error
-      ? (
-        <Stack direction="row" spacing={0.75} alignItems="center">
-          <ErrorOutlineIcon fontSize="small" color="error" />
-          <Typography component="span" variant="body2" color="error" fontWeight={600}>{row.step ?? "-"}</Typography>
-        </Stack>
-      )
-      : row.step ?? "-"),
+    render: (row) => (row.error ? <FailedStep step={row.step} /> : row.step ?? "-"),
   },
   {
     id: "detail",
@@ -132,14 +142,7 @@ const statementColumns: Column<RunStatement>[] = [
     id: "step",
     header: "Step",
     width: 220,
-    render: (row) => (row.error
-      ? (
-        <Stack direction="row" spacing={0.75} alignItems="center">
-          <ErrorOutlineIcon fontSize="small" color="error" />
-          <Typography component="span" variant="body2" color="error" fontWeight={600}>{row.step}</Typography>
-        </Stack>
-      )
-      : row.step),
+    render: (row) => (row.error ? <FailedStep step={row.step} /> : row.step),
   },
   {
     id: "sql",
@@ -159,9 +162,9 @@ const assertionColumns: Column<RunAssertion>[] = [
 const fileColumns: Column<RunFile>[] = [
   { id: "name", header: "Name", render: (row) => row.name },
   { id: "path", header: "Path", render: (row) => <TruncatedText text={row.path} mono maxWidth={520} /> },
-  { id: "rows", header: "Rows", align: "right", render: (row) => row.rows },
-  { id: "columns", header: "Columns", align: "right", render: (row) => row.columns },
-  { id: "size", header: "Size", align: "right", render: (row) => formatBytes(row.sizeBytes) },
+  { id: "rows", header: "Rows", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.rows}</span> },
+  { id: "columns", header: "Columns", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.columns}</span> },
+  { id: "size", header: "Size", align: "right", render: (row) => <span className="font-mono tabular-nums">{formatBytes(row.sizeBytes)}</span> },
   {
     id: "hash",
     header: "Hash",
@@ -172,8 +175,8 @@ const fileColumns: Column<RunFile>[] = [
 const surrogateKeyColumns: Column<RunSurrogateKey>[] = [
   { id: "surrogateTable", header: "Table", render: (row) => row.surrogateTable },
   { id: "surrogateColumn", header: "Column", render: (row) => row.surrogateColumn },
-  { id: "keysGenerated", header: "Keys generated", align: "right", render: (row) => row.keysGenerated },
-  { id: "rowsStamped", header: "Rows stamped", align: "right", render: (row) => row.rowsStamped },
+  { id: "keysGenerated", header: "Keys generated", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.keysGenerated}</span> },
+  { id: "rowsStamped", header: "Rows stamped", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.rowsStamped}</span> },
   { id: "isRemote", header: "Remote", render: (row) => <YesNo value={row.isRemote} /> },
   { id: "executed", header: "Executed", render: (row) => <YesNo value={row.executed} /> },
   { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
@@ -181,11 +184,11 @@ const surrogateKeyColumns: Column<RunSurrogateKey>[] = [
 
 const healthMetricColumns: Column<RunHealthCheckMetric>[] = [
   { id: "name", header: "Name", render: (row) => row.name },
-  { id: "seriesPoints", header: "Series points", align: "right", render: (row) => row.seriesPoints },
-  { id: "imputedPoints", header: "Imputed", align: "right", render: (row) => row.imputedPoints },
-  { id: "immaturePoints", header: "Immature", align: "right", render: (row) => row.immaturePoints },
-  { id: "anomalies", header: "Anomalies", align: "right", render: (row) => row.anomalies },
-  { id: "levelShifts", header: "Level shifts", align: "right", render: (row) => row.levelShifts },
+  { id: "seriesPoints", header: "Series points", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.seriesPoints}</span> },
+  { id: "imputedPoints", header: "Imputed", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.imputedPoints}</span> },
+  { id: "immaturePoints", header: "Immature", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.immaturePoints}</span> },
+  { id: "anomalies", header: "Anomalies", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.anomalies}</span> },
+  { id: "levelShifts", header: "Level shifts", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.levelShifts}</span> },
   { id: "modelTrained", header: "Model trained", render: (row) => <YesNo value={row.modelTrained} /> },
   { id: "modelTrainer", header: "Trainer", render: (row) => row.modelTrainer ?? "-" },
   { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
@@ -204,14 +207,10 @@ export default function RunDetailPage() {
 function RunDetailContent({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
-  const [tab, setTab] = useState(0);
+  const [tab, setTab] = useState("trace");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [statement, setStatement] = useState<RunStatement | null>(null);
   const [traceEntry, setTraceEntry] = useState<RunTraceEntry | null>(null);
-  const theme = useTheme();
-  // A soft red wash marking the one statement that threw (see rowSx on the Statements table below).
-  const failedRowStyle = { backgroundColor: alpha(theme.palette.error.main, 0.14) };
 
   const query = useQuery({
     queryKey: ["runs", runId],
@@ -225,6 +224,7 @@ function RunDetailContent({ runId }: { runId: string }) {
       return pollingInterval(3000)();
     },
   });
+  useTabTitle(query.data?.flowName);
 
   // The pipeline's stored definition serves two tabs: for an ingestion run it says whether the flow embeds a
   // healthCheck: block (its derived flow name powers the Health tab's "Run health check" button, since the check
@@ -235,7 +235,7 @@ function RunDetailContent({ runId }: { runId: string }) {
   const pipelineQuery = useQuery({
     queryKey: ["pipelines", "detail", query.data?.pipelineId ?? ""],
     queryFn: () => pipelineApi.getById(query.data!.pipelineId),
-    enabled: query.data !== undefined && (query.data.flowKind === "ing" || tab === 1),
+    enabled: query.data !== undefined && (query.data.flowKind === "ing" || tab === "source"),
   });
   const embeddedCheck = pipelineQuery.data ? embeddedHealthCheckName(pipelineQuery.data.definitionJson) : null;
 
@@ -268,18 +268,18 @@ function RunDetailContent({ runId }: { runId: string }) {
     onSuccess: async (text) => {
       try {
         await navigator.clipboard.writeText(text);
-        enqueueSnackbar("Trace copied to clipboard.", { variant: "success" });
+        toast.success("Trace copied to clipboard.");
       } catch {
-        enqueueSnackbar("The browser blocked clipboard access.", { variant: "error" });
+        toast.error("The browser blocked clipboard access.");
       }
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
     },
   });
 
-  // Re-run opens the trigger dialog prefilled with this run's flow and the operator parameters it carried (full
-  // load, backfill window, file pattern), so the run can be repeated as-is or adjusted before launching. The dialog
+  // Re-run opens the trigger sheet prefilled with this run's flow and the operator parameters it carried (full
+  // load, backfill window, file pattern), so the run can be repeated as-is or adjusted before launching. The sheet
   // renders exactly the parameters this flow's kind honors and navigates to the new run on submit.
   const [rerunOpen, setRerunOpen] = useState(false);
 
@@ -303,25 +303,25 @@ function RunDetailContent({ runId }: { runId: string }) {
       });
     },
     onSuccess: (accepted, parameters) => {
-      enqueueSnackbar(parameters.assertionsOnly ? "Assertion run enqueued." : "Health check enqueued.", { variant: "success" });
+      toast.success(parameters.assertionsOnly ? "Assertion run enqueued." : "Health check enqueued.");
       if (accepted.runId) {
         navigate(`/runs/${accepted.runId}`);
       }
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
     },
   });
 
   const cancel = useMutation({
     mutationFn: () => runApi.cancel(runId),
     onSuccess: () => {
-      enqueueSnackbar("Cancel requested for this run.", { variant: "success" });
+      toast.success("Cancel requested for this run.");
       setConfirmOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["runs", runId] });
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
       setConfirmOpen(false);
     },
   });
@@ -331,7 +331,7 @@ function RunDetailContent({ runId }: { runId: string }) {
       <Page data-testid="page-run-detail">
         {isApiError(query.error)
           ? <CorrelationError error={query.error} />
-          : <Typography color="error">{String(query.error)}</Typography>}
+          : <p className="text-[13px] text-destructive">{String(query.error)}</p>}
       </Page>
     );
   }
@@ -340,14 +340,14 @@ function RunDetailContent({ runId }: { runId: string }) {
   if (run === undefined) {
     return (
       <Page data-testid="page-run-detail">
-        <Skeleton variant="rounded" height={240} />
-        <Skeleton variant="rounded" height={320} />
+        <Skeleton className="h-60 w-full rounded-lg" />
+        <Skeleton className="h-80 w-full rounded-lg" />
       </Page>
     );
   }
 
   // A run can be cancelled while queued (dequeued outright) or while running (the node aborts the in-flight
-  // statement). Once a running run's cancel is in flight, the button is disabled and a "cancelling" chip shows,
+  // statement). Once a running run's cancel is in flight, the button is disabled and a "cancelling" badge shows,
   // until polling reflects the terminal "cancelled" status.
   const cancellable = run.status === "queued" || run.status === "running";
   const cancelling = run.status === "running" && run.cancelRequestedUtc !== null;
@@ -360,34 +360,35 @@ function RunDetailContent({ runId }: { runId: string }) {
           <>
             <RunStatusBadge status={run.status} />
             {cancelling && (
-              <Chip size="small" color="warning" label="cancelling" data-testid="run-cancelling" />
+              <Badge variant="secondary" className="bg-warning/15 text-warning" data-testid="run-cancelling">
+                cancelling
+              </Badge>
             )}
-            <Chip size="small" label={run.flowKind} variant="outlined" data-testid="run-kind" />
-            <Chip size="small" label={`batch: ${run.batch}`} variant="outlined" data-testid="run-batch" />
+            <Badge variant="outline" data-testid="run-kind">{run.flowKind}</Badge>
+            <Badge variant="outline" data-testid="run-batch">batch: {run.batch}</Badge>
             {run.assertionsOnly && (
-              <Chip size="small" color="info" label="assertions only" data-testid="run-assertions-only" />
+              <Badge variant="secondary" className="bg-info/12 text-info" data-testid="run-assertions-only">
+                assertions only
+              </Badge>
             )}
           </>
         )}
         actions={cancellable
           ? (
             <Button
-              color="error"
-              variant="outlined"
+              variant="outline"
+              size="sm"
+              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setConfirmOpen(true)}
               disabled={cancelling || cancel.isPending}
               data-testid="cancel-run"
             >
-              {cancelling ? "Cancelling…" : "Cancel run"}
+              {cancelling ? "Cancelling..." : "Cancel run"}
             </Button>
           )
           : (run.repoId !== null && (
-            <Button
-              variant="outlined"
-              startIcon={<ReplayIcon fontSize="small" />}
-              onClick={() => setRerunOpen(true)}
-              data-testid="rerun-run"
-            >
+            <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)} data-testid="rerun-run">
+              <RotateCcw />
               Re-run
             </Button>
           ))}
@@ -395,90 +396,121 @@ function RunDetailContent({ runId }: { runId: string }) {
         <DetailPair label="Run id"><Mono>{run.runId}</Mono></DetailPair>
         <DetailPair label="Repo">
           {run.repoId
-            ? <Link component={RouterLink} to={`/repos/${run.repoId}`} data-testid="run-repo-link">{run.repoId}</Link>
+            ? (
+              <Link
+                to={`/repos/${run.repoId}`}
+                className="font-mono text-[12px] text-primary hover:underline"
+                data-testid="run-repo-link"
+              >
+                {run.repoId}
+              </Link>
+            )
             : "-"}
         </DetailPair>
         <DetailPair label="Pipeline">
-          <Link component={RouterLink} to={`/pipelines/${run.pipelineId}`} data-testid="run-pipeline-link">
+          <Link
+            to={`/pipelines/${run.pipelineId}`}
+            className="font-mono text-[12px] text-primary hover:underline"
+            data-testid="run-pipeline-link"
+          >
             {run.pipelineId}
           </Link>
         </DetailPair>
         {run.groupId && (
           <DetailPair label="Run group">
-            <Link component={RouterLink} to={`/runs/groups/${run.groupId}`} data-testid="run-group-link">
+            <Link
+              to={`/runs/groups/${run.groupId}`}
+              className="font-mono text-[12px] text-primary hover:underline"
+              data-testid="run-group-link"
+            >
               {run.groupId}
             </Link>
           </DetailPair>
         )}
         <DetailPair label="Batch">{run.batch}</DetailPair>
-        <DetailPair label="Step">{run.wave >= 0 ? run.wave : "-"}</DetailPair>
+        <DetailPair label="Step">
+          <span className="font-mono tabular-nums">{run.wave >= 0 ? run.wave : "-"}</span>
+        </DetailPair>
         <DetailPair label="Enqueued"><RelativeTime value={run.enqueuedUtc} /></DetailPair>
         <DetailPair label="Started"><RelativeTime value={run.startUtc} /></DetailPair>
         <DetailPair label="Ended"><RelativeTime value={run.endUtc} /></DetailPair>
         <DetailPair label="Duration">
-          {run.durationSeconds != null ? formatDurationSeconds(run.durationSeconds) : "-"}
+          <span className="font-mono tabular-nums">
+            {run.durationSeconds != null ? formatDurationSeconds(run.durationSeconds) : "-"}
+          </span>
         </DetailPair>
         <DetailPair label="Claimed by node">{run.claimedByNode ?? "-"}</DetailPair>
         <DetailPair label="Host">{run.host ?? "-"}</DetailPair>
         <DetailPair label="Target pool">{run.targetPool ?? "-"}</DetailPair>
         <DetailPair label="Commit">
           {run.commitSha ? (
-            <Tooltip title={run.commitSha}>
-              <Mono>{run.commitSha.slice(0, 12)}</Mono>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="font-mono text-[12px]">{run.commitSha.slice(0, 12)}</span>
+              </TooltipTrigger>
+              <TooltipContent className="font-mono text-[11px]">{run.commitSha}</TooltipContent>
             </Tooltip>
           ) : "-"}
         </DetailPair>
-        <DetailPair label="Rows loaded">{run.rowsLoaded ?? "-"}</DetailPair>
-        <DetailPair label="Rows inserted">{run.rowsInserted ?? "-"}</DetailPair>
-        <DetailPair label="Rows updated">{run.rowsUpdated ?? "-"}</DetailPair>
-        <DetailPair label="Rows deleted">{run.rowsDeleted ?? "-"}</DetailPair>
+        <DetailPair label="Rows loaded"><span className="font-mono tabular-nums">{run.rowsLoaded ?? "-"}</span></DetailPair>
+        <DetailPair label="Rows inserted"><span className="font-mono tabular-nums">{run.rowsInserted ?? "-"}</span></DetailPair>
+        <DetailPair label="Rows updated"><span className="font-mono tabular-nums">{run.rowsUpdated ?? "-"}</span></DetailPair>
+        <DetailPair label="Rows deleted"><span className="font-mono tabular-nums">{run.rowsDeleted ?? "-"}</span></DetailPair>
       </DetailHeaderCard>
 
       {run.status === "failed" && run.error !== null && (
-        <Alert severity="error" data-testid="run-error">{run.error}</Alert>
+        <Alert variant="destructive" data-testid="run-error">
+          <CircleAlert />
+          <AlertDescription>{run.error}</AlertDescription>
+        </Alert>
       )}
 
       {run.status === "failed" && run.failedStatementSql !== null && (
-        <Paper variant="outlined" sx={{ p: 1.5, borderColor: "error.main" }} data-testid="run-failed-statement">
-          <Typography variant="subtitle2" color="error" gutterBottom>
+        <Card className="gap-2 rounded-lg border-destructive/50 p-3" data-testid="run-failed-statement">
+          <h2 className="text-[13px] font-medium text-destructive">
             Failing statement {run.failedStatementOrdinal}: {run.failedStatementStep}
-          </Typography>
+          </h2>
           <CodeView value={run.failedStatementSql} language="sql" data-testid="run-error-sql" />
-        </Paper>
+        </Card>
       )}
 
       {run.assertionsOnly && (
-        <Alert severity="info" icon={false} data-testid="run-assertions-only-banner">
-          Assertions-only run: the flow's declared assertions (manual-mode ones included) were evaluated against
-          the current target; no data was read or loaded.
+        <Alert data-testid="run-assertions-only-banner">
+          <Info />
+          <AlertDescription>
+            Assertions-only run: the flow's declared assertions (manual-mode ones included) were evaluated against
+            the current target; no data was read or loaded.
+          </AlertDescription>
         </Alert>
       )}
 
       {(run.fullLoad || run.backfillFrom || run.filePattern) && (
-        <Alert severity="info" icon={false} data-testid="run-backfill">
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
-            <Typography variant="body2" fontWeight={600}>Backfill:</Typography>
-            {run.fullLoad && <Chip size="small" label="full load" color="warning" />}
-            {run.backfillFrom && (
-              <Chip
-                size="small"
-                label={run.backfillTo
-                  ? `window ${fmtBound(run.backfillFrom)} .. ${fmtBound(run.backfillTo)}`
-                  : `from ${fmtBound(run.backfillFrom)}`}
-              />
-            )}
-            {run.filePattern && <Chip size="small" label={`files '${run.filePattern}'`} />}
-          </Stack>
+        <Alert data-testid="run-backfill">
+          <Info />
+          <AlertDescription>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">Backfill:</span>
+              {run.fullLoad && <Badge variant="secondary" className="bg-warning/15 text-warning">full load</Badge>}
+              {run.backfillFrom && (
+                <Badge variant="secondary" className="font-mono">
+                  {run.backfillTo
+                    ? `window ${fmtBound(run.backfillFrom)} .. ${fmtBound(run.backfillTo)}`
+                    : `from ${fmtBound(run.backfillFrom)}`}
+                </Badge>
+              )}
+              {run.filePattern && <Badge variant="secondary" className="font-mono">files '{run.filePattern}'</Badge>}
+            </div>
+          </AlertDescription>
         </Alert>
       )}
 
       {run.incrementalMode && (
-        <Paper variant="outlined" sx={{ p: 1.5 }} data-testid="run-incremental">
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-            <Typography variant="subtitle2">Incremental load</Typography>
-            <Chip size="small" label={run.incrementalMode} color={incrementalModeColor(run.incrementalMode)} />
-          </Stack>
-          <Stack spacing={0.75}>
+        <Card className="gap-2 rounded-lg p-3" data-testid="run-incremental">
+          <div className="flex items-center gap-2">
+            <h2 className="text-[13px] font-medium">Incremental load</h2>
+            <IncrementalModeBadge mode={run.incrementalMode} />
+          </div>
+          <div className="flex flex-col gap-2">
             {run.incrementalFilter && (
               <DetailPair label="Filter"><Mono>{run.incrementalFilter}</Mono></DetailPair>
             )}
@@ -488,64 +520,52 @@ function RunDetailContent({ runId }: { runId: string }) {
             {run.incrementalWatermarkSource && (
               <DetailPair label="Watermark source"><Mono>{run.incrementalWatermarkSource}</Mono></DetailPair>
             )}
-          </Stack>
-        </Paper>
+          </div>
+        </Card>
       )}
 
       {run.dataSetConvention && (
-        <Paper variant="outlined" sx={{ p: 1.5 }} data-testid="run-dataset-convention">
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>DataSet date detection</Typography>
+        <Card className="gap-2 rounded-lg p-3" data-testid="run-dataset-convention">
+          <h2 className="text-[13px] font-medium">DataSet date detection</h2>
           <DetailPair label="Convention"><Mono>{run.dataSetConvention}</Mono></DetailPair>
-        </Paper>
+        </Card>
       )}
 
-      <Tabs
-        value={tab}
-        onChange={(_, next: number) => setTab(next)}
-        variant="scrollable"
-        allowScrollButtonsMobile
-        data-testid="run-tabs"
-      >
-        <Tab label="Trace" data-testid="tab-trace" />
-        <Tab label="Source" data-testid="tab-source" />
-        <Tab label="Files" data-testid="tab-files" />
-        <Tab label="Statements" data-testid="tab-statements" />
-        <Tab label="Surrogate" data-testid="tab-surrogate-keys" />
-        <Tab label="Assertions" data-testid="tab-assertions" />
-        <Tab label="Health" data-testid="tab-health-metrics" />
-      </Tabs>
+      <Tabs value={tab} onValueChange={setTab} className="gap-4">
+        <TabsList variant="line" className="w-full justify-start overflow-x-auto" data-testid="run-tabs">
+          <TabsTrigger value="trace" className="flex-none" data-testid="tab-trace">Trace</TabsTrigger>
+          <TabsTrigger value="source" className="flex-none" data-testid="tab-source">Source</TabsTrigger>
+          <TabsTrigger value="files" className="flex-none" data-testid="tab-files">Files</TabsTrigger>
+          <TabsTrigger value="statements" className="flex-none" data-testid="tab-statements">Statements</TabsTrigger>
+          <TabsTrigger value="surrogate-keys" className="flex-none" data-testid="tab-surrogate-keys">Surrogate</TabsTrigger>
+          <TabsTrigger value="assertions" className="flex-none" data-testid="tab-assertions">Assertions</TabsTrigger>
+          <TabsTrigger value="health-metrics" className="flex-none" data-testid="tab-health-metrics">Health</TabsTrigger>
+        </TabsList>
 
-      {tab === 0 && (
-        <Stack spacing={1}>
-          <Stack direction="row" spacing={1} alignItems="center">
+        <TabsContent value="trace" className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {live && (
               <>
-                <Chip
-                  size="small"
-                  color={streamConnected ? "success" : "warning"}
-                  variant="outlined"
-                  label={streamConnected ? "live" : "reconnecting"}
-                  data-testid="trace-stream-state"
-                />
-                <Typography variant="body2" color="text.secondary">
+                <StreamStateBadge connected={streamConnected} data-testid="trace-stream-state" />
+                <span className="text-[13px] text-muted-foreground">
                   {streamConnected
                     ? "Streaming the trace as the run executes."
                     : "Connection lost; resuming the stream."}
-                </Typography>
+                </span>
               </>
             )}
-            <Stack sx={{ flexGrow: 1 }} />
+            <div className="grow" />
             <Button
-              size="small"
-              variant="outlined"
-              startIcon={<ContentCopyIcon fontSize="small" />}
+              variant="outline"
+              size="sm"
               onClick={() => copyTrace.mutate()}
               disabled={copyTrace.isPending}
               data-testid="copy-trace"
             >
+              {copyTrace.isPending ? <Loader2 className="animate-spin" /> : <Copy />}
               Copy trace
             </Button>
-          </Stack>
+          </div>
           {live
             ? (
               // Live mode: the SSE stream pushes each entry the moment the executing node persists it. No paging
@@ -574,84 +594,85 @@ function RunDetailContent({ runId }: { runId: string }) {
                 data-testid="trace-table"
               />
             )}
-        </Stack>
-      )}
-      {tab === 1 && (
-        <Stack spacing={1}>
-          <Typography variant="body2" color="text.secondary">
+        </TabsContent>
+        <TabsContent value="source" className="flex flex-col gap-2">
+          <p className="text-[13px] text-muted-foreground">
             The flow's YAML definition as registered in the catalog. This is the current source for this pipeline;
             {run.commitSha
               ? ` the run executed against commit ${run.commitSha.slice(0, 12)}, so a later change to the flow file may differ from what ran.`
               : " if the flow file has changed since this run, the executed source may differ."}
-          </Typography>
+          </p>
           {pipelineQuery.isError && (
-            <Alert severity="error" data-testid="source-error">
-              {isApiError(pipelineQuery.error) ? pipelineQuery.error.title : "Could not load the flow definition from the catalog."}
+            <Alert variant="destructive" data-testid="source-error">
+              <CircleAlert />
+              <AlertDescription>
+                {isApiError(pipelineQuery.error)
+                  ? pipelineQuery.error.title
+                  : "Could not load the flow definition from the catalog."}
+              </AlertDescription>
             </Alert>
           )}
           {pipelineQuery.data === undefined && !pipelineQuery.isError
-            ? <Skeleton variant="rounded" height={560} data-testid="source-loading" />
+            ? <Skeleton className="h-[560px] w-full rounded-lg" data-testid="source-loading" />
             : pipelineQuery.data !== undefined && (
               <CodeView value={pipelineQuery.data.yaml} language="yaml" height={560} lsp data-testid="run-source-yaml" />
             )}
-        </Stack>
-      )}
-      {tab === 2 && (
-        <PagedTable
-          queryKey={["runs", runId, "files"]}
-          fetchPage={(page, pageSize) => runApi.files(runId, { page, pageSize })}
-          columns={fileColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="No files were recorded for this run."
-          data-testid="files-table"
-        />
-      )}
-      {tab === 3 && (
-        <PagedTable
-          queryKey={["runs", runId, "statements"]}
-          fetchPage={(page, pageSize) => runApi.statements(runId, { page, pageSize })}
-          columns={statementColumns}
-          rowKey={(row) => row.id}
-          onRowClick={(row) => setStatement(row)}
-          // While the run is executing, the node streams each statement into the catalog as it runs, so poll to
-          // show them live; polling stops once the run reaches a terminal state.
-          pollMs={run.status === "running" ? 3000 : undefined}
-          rowSx={(row) => (row.error ? failedRowStyle : undefined)}
-          emptyMessage={run.status === "running"
-            ? "Statements will appear here as the run executes."
-            : "No statements were recorded for this run."}
-          data-testid="statements-table"
-        />
-      )}
-      {tab === 4 && (
-        <PagedTable
-          queryKey={["runs", runId, "surrogate-keys"]}
-          fetchPage={(page, pageSize) => runApi.surrogateKeys(runId, { page, pageSize })}
-          columns={surrogateKeyColumns}
-          rowKey={(row) => row.id}
-          emptyMessage="No surrogate keys were recorded for this run."
-          data-testid="surrogate-keys-table"
-        />
-      )}
-      {tab === 5 && (
-        <Stack spacing={1}>
+        </TabsContent>
+        <TabsContent value="files">
+          <PagedTable
+            queryKey={["runs", runId, "files"]}
+            fetchPage={(page, pageSize) => runApi.files(runId, { page, pageSize })}
+            columns={fileColumns}
+            rowKey={(row) => row.id}
+            emptyMessage="No files were recorded for this run."
+            data-testid="files-table"
+          />
+        </TabsContent>
+        <TabsContent value="statements">
+          <PagedTable
+            queryKey={["runs", runId, "statements"]}
+            fetchPage={(page, pageSize) => runApi.statements(runId, { page, pageSize })}
+            columns={statementColumns}
+            rowKey={(row) => row.id}
+            onRowClick={(row) => setStatement(row)}
+            // While the run is executing, the node streams each statement into the catalog as it runs, so poll to
+            // show them live; polling stops once the run reaches a terminal state.
+            pollMs={run.status === "running" ? 3000 : undefined}
+            rowSx={(row) => (row.error ? failedRowStyle : undefined)}
+            emptyMessage={run.status === "running"
+              ? "Statements will appear here as the run executes."
+              : "No statements were recorded for this run."}
+            data-testid="statements-table"
+          />
+        </TabsContent>
+        <TabsContent value="surrogate-keys">
+          <PagedTable
+            queryKey={["runs", runId, "surrogate-keys"]}
+            fetchPage={(page, pageSize) => runApi.surrogateKeys(runId, { page, pageSize })}
+            columns={surrogateKeyColumns}
+            rowKey={(row) => row.id}
+            emptyMessage="No surrogate keys were recorded for this run."
+            data-testid="surrogate-keys-table"
+          />
+        </TabsContent>
+        <TabsContent value="assertions" className="flex flex-col gap-2">
           {run.flowKind === "ing" && run.repoId !== null && (
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="body2" color="text.secondary">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-[13px] text-muted-foreground">
                 Run the flow's declared assertions on demand, including mode: manual ones; nothing is loaded.
-              </Typography>
-              <Stack sx={{ flexGrow: 1 }} />
+              </p>
+              <div className="grow" />
               <Button
-                size="small"
-                variant="outlined"
-                startIcon={<RuleIcon fontSize="small" />}
+                variant="outline"
+                size="sm"
                 onClick={() => triggerFlow.mutate({ assertionsOnly: true })}
                 disabled={triggerFlow.isPending}
                 data-testid="run-assertions"
               >
+                {triggerFlow.isPending ? <Loader2 className="animate-spin" /> : <ListChecks />}
                 Run assertions
               </Button>
-            </Stack>
+            </div>
           )}
           <PagedTable
             queryKey={["runs", runId, "assertions"]}
@@ -663,45 +684,43 @@ function RunDetailContent({ runId }: { runId: string }) {
               : "No assertions were recorded for this run."}
             data-testid="assertions-table"
           />
-        </Stack>
-      )}
-      {tab === 6 && (
-        <Stack spacing={1}>
+        </TabsContent>
+        <TabsContent value="health-metrics" className="flex flex-col gap-2">
           {run.flowKind === "hc" && run.repoId !== null && (
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="body2" color="text.secondary">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-[13px] text-muted-foreground">
                 Run this health check on demand; manual-mode (mode: manual) checks execute only from here or a direct trigger.
-              </Typography>
-              <Stack sx={{ flexGrow: 1 }} />
+              </p>
+              <div className="grow" />
               <Button
-                size="small"
-                variant="outlined"
-                startIcon={<MonitorHeartIcon fontSize="small" />}
+                variant="outline"
+                size="sm"
                 onClick={() => triggerFlow.mutate({})}
                 disabled={triggerFlow.isPending}
                 data-testid="run-health-check"
               >
+                {triggerFlow.isPending ? <Loader2 className="animate-spin" /> : <HeartPulse />}
                 Run health check
               </Button>
-            </Stack>
+            </div>
           )}
           {run.flowKind === "ing" && embeddedCheck !== null && run.repoId !== null && (
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="body2" color="text.secondary">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-[13px] text-muted-foreground">
                 This flow embeds health check '{embeddedCheck}'; it runs on demand and records its metrics on its own runs.
-              </Typography>
-              <Stack sx={{ flexGrow: 1 }} />
+              </p>
+              <div className="grow" />
               <Button
-                size="small"
-                variant="outlined"
-                startIcon={<MonitorHeartIcon fontSize="small" />}
+                variant="outline"
+                size="sm"
                 onClick={() => triggerFlow.mutate({ flowName: embeddedCheck })}
                 disabled={triggerFlow.isPending}
                 data-testid="run-embedded-health-check"
               >
+                {triggerFlow.isPending ? <Loader2 className="animate-spin" /> : <HeartPulse />}
                 Run health check
               </Button>
-            </Stack>
+            </div>
           )}
           <PagedTable
             queryKey={["runs", runId, "health-metrics"]}
@@ -715,53 +734,69 @@ function RunDetailContent({ runId }: { runId: string }) {
                 : `Health metrics are produced by health-check (hc) flows; this is a '${run.flowKind}' run.`}
             data-testid="health-metrics-table"
           />
-        </Stack>
-      )}
+        </TabsContent>
+      </Tabs>
 
-      <Dialog
+      <Sheet
         open={traceEntry !== null}
-        onClose={() => setTraceEntry(null)}
-        maxWidth="lg"
-        fullWidth
-        data-testid="trace-entry-dialog"
+        onOpenChange={(next) => {
+          if (!next) {
+            setTraceEntry(null);
+          }
+        }}
       >
-        <DialogTitle>
-          {traceEntry
-            ? (traceEntry.kind === "statement"
-              ? `Statement ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`
-              : `Event ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`)
-            : ""}
-        </DialogTitle>
-        <DialogContent>
-          {traceEntry?.error && (
-            <Alert severity="error" sx={{ mb: 2 }} data-testid="trace-entry-error">{traceEntry.error}</Alert>
-          )}
-          {traceEntry?.kind === "statement" && traceEntry.sql !== null && (
-            <CodeView value={traceEntry.sql} language="sql" data-testid="trace-entry-sql" />
-          )}
-          {traceEntry?.kind === "event" && traceEntry.message !== null && (
-            <CodeView value={traceEntry.message} language="plaintext" data-testid="trace-entry-message" />
-          )}
-        </DialogContent>
-      </Dialog>
+        {/* Focus stays outside Monaco so Escape reaches the sheet, not the editor. */}
+        <SheetContent className="w-full gap-0 sm:max-w-3xl" aria-describedby={undefined} data-testid="trace-entry-dialog" onOpenAutoFocus={(event) => event.preventDefault()}>
+          <SheetHeader>
+            <SheetTitle>
+              {traceEntry
+                ? (traceEntry.kind === "statement"
+                  ? `Statement ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`
+                  : `Event ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`)
+                : ""}
+            </SheetTitle>
+          </SheetHeader>
+          <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
+            {traceEntry?.error && (
+              <Alert variant="destructive" data-testid="trace-entry-error">
+                <CircleAlert />
+                <AlertDescription>{traceEntry.error}</AlertDescription>
+              </Alert>
+            )}
+            {traceEntry?.kind === "statement" && traceEntry.sql !== null && (
+              <CodeView value={traceEntry.sql} language="sql" data-testid="trace-entry-sql" />
+            )}
+            {traceEntry?.kind === "event" && traceEntry.message !== null && (
+              <CodeView value={traceEntry.message} language="plaintext" data-testid="trace-entry-message" />
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
 
-      <Dialog
+      <Sheet
         open={statement !== null}
-        onClose={() => setStatement(null)}
-        maxWidth="lg"
-        fullWidth
-        data-testid="statement-dialog"
+        onOpenChange={(next) => {
+          if (!next) {
+            setStatement(null);
+          }
+        }}
       >
-        <DialogTitle>
-          {statement ? `Statement ${statement.ordinal}: ${statement.step}` : ""}
-        </DialogTitle>
-        <DialogContent>
-          {statement?.error && (
-            <Alert severity="error" sx={{ mb: 2 }} data-testid="statement-error">{statement.error}</Alert>
-          )}
-          {statement && <CodeView value={statement.sql} language="sql" data-testid="statement-sql" />}
-        </DialogContent>
-      </Dialog>
+        {/* Focus stays outside Monaco so Escape reaches the sheet, not the editor. */}
+        <SheetContent className="w-full gap-0 sm:max-w-3xl" aria-describedby={undefined} data-testid="statement-dialog" onOpenAutoFocus={(event) => event.preventDefault()}>
+          <SheetHeader>
+            <SheetTitle>{statement ? `Statement ${statement.ordinal}: ${statement.step}` : ""}</SheetTitle>
+          </SheetHeader>
+          <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
+            {statement?.error && (
+              <Alert variant="destructive" data-testid="statement-error">
+                <CircleAlert />
+                <AlertDescription>{statement.error}</AlertDescription>
+              </Alert>
+            )}
+            {statement && <CodeView value={statement.sql} language="sql" data-testid="statement-sql" />}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <ConfirmDialog
         open={confirmOpen}

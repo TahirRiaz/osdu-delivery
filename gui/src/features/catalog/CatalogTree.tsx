@@ -1,33 +1,40 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import Alert from "@mui/material/Alert";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
-import List from "@mui/material/List";
-import ListItemButton from "@mui/material/ListItemButton";
-import ListItemIcon from "@mui/material/ListItemIcon";
-import ListItemText from "@mui/material/ListItemText";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import CloudOutlinedIcon from "@mui/icons-material/CloudOutlined";
-import ComputerOutlinedIcon from "@mui/icons-material/ComputerOutlined";
-import DnsOutlinedIcon from "@mui/icons-material/DnsOutlined";
-import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import FolderSharedOutlinedIcon from "@mui/icons-material/FolderSharedOutlined";
-import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
-import PublicOutlinedIcon from "@mui/icons-material/PublicOutlined";
-import SchemaOutlinedIcon from "@mui/icons-material/SchemaOutlined";
-import SourceOutlinedIcon from "@mui/icons-material/SourceOutlined";
-import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
-import { SimpleTreeView } from "@mui/x-tree-view/SimpleTreeView";
-import { TreeItem } from "@mui/x-tree-view/TreeItem";
+import {
+  ChevronDown,
+  CircleAlert,
+  Cloud,
+  Database,
+  FileText,
+  Folder,
+  FolderGit2,
+  FolderSymlink,
+  Globe,
+  HardDrive,
+  Layers,
+  Loader2,
+  Monitor,
+  Network,
+  Package,
+  Server,
+  BookOpen,
+} from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import { lineageApi, pipelineApi, repoApi } from "../../api/endpoints";
 import type { FileNode, FileOriginKind, LineageObject, PagedResult, PipelineSummary, Repo, SchemaKindCount } from "../../api/types";
 import { compareKinds, metaForKind } from "./kindMeta";
@@ -35,18 +42,173 @@ import { encodeNodeId, UNRESOLVED_LABEL, decodeNodeId, type CatalogNode } from "
 
 const LEAF_PAGE_SIZE = 200;
 
-/** A tree label row: icon, name, and a right-aligned count badge. */
-function NodeLabel({ icon, text, count }: { icon?: ReactNode; text: string; count?: number }) {
+// ---- The hand-rolled tree primitives ---------------------------------------------------------------------
+
+interface TreeState {
+  /** Every id that is currently expanded (the user's own expansion plus the auto-revealed chains). */
+  expanded: ReadonlySet<string>;
+  toggle: (id: string) => void;
+  setOpen: (id: string, open: boolean) => void;
+  selectedId: string | null;
+  select: (id: string) => void;
+}
+
+const TreeContext = createContext<TreeState | null>(null);
+const DepthContext = createContext(0);
+
+function useTreeState(): TreeState {
+  const tree = useContext(TreeContext);
+  if (tree === null) {
+    throw new Error("TreeNode rendered outside the catalog tree provider.");
+  }
+  return tree;
+}
+
+/** Pixels of indentation per tree depth level. */
+const TREE_INDENT = 14;
+
+/** The visible, keyboard-navigable rows of the tree containing `element`, in document order. */
+function navigableRows(element: HTMLElement): HTMLElement[] {
+  const root = element.closest('[role="tree"]');
+  return root === null ? [] : [...root.querySelectorAll<HTMLElement>("[data-tree-row]")];
+}
+
+interface TreeNodeProps {
+  id: string;
+  label: ReactNode;
+  /** Branch content; rendered (and mounted) only while this node is expanded, so lazy leaves stay lazy. */
+  children?: ReactNode;
+  /** Pseudo rows (loading, empty, load-more): never selectable and skipped by keyboard navigation. */
+  disabled?: boolean;
+}
+
+/**
+ * One tree row plus its (conditionally rendered) children: a 28px row with the depth indent, the rotating
+ * expand chevron for branches, hover and selection styling per the workbench side bar, and roving-focus
+ * keyboard navigation (ArrowUp/ArrowDown move, ArrowLeft/ArrowRight collapse/expand, Enter selects).
+ */
+function TreeNode({ id, label, children, disabled = false }: TreeNodeProps) {
+  const tree = useTreeState();
+  const depth = useContext(DepthContext);
+  const hasChildren = children !== undefined;
+  const isExpanded = hasChildren && tree.expanded.has(id);
+  // Pseudo rows (loading, empty, load-more) carry a "#" suffix and are not selectable nodes.
+  const selectable = !disabled && !id.includes("#");
+  const isSelected = selectable && tree.selectedId === id;
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      // Keys inside embedded controls (the load-more button) belong to them, not to tree navigation.
+      return;
+    }
+    const rows = navigableRows(event.currentTarget);
+    const index = rows.indexOf(event.currentTarget);
+    switch (event.key) {
+      case "ArrowDown":
+        rows[index + 1]?.focus();
+        break;
+      case "ArrowUp":
+        rows[index - 1]?.focus();
+        break;
+      case "ArrowRight":
+        if (hasChildren && !isExpanded) {
+          tree.setOpen(id, true);
+        } else if (hasChildren) {
+          rows[index + 1]?.focus();
+        }
+        break;
+      case "ArrowLeft":
+        if (isExpanded) {
+          tree.setOpen(id, false);
+        } else {
+          // Walk to the parent row: the nearest previous row one level shallower.
+          for (let i = index - 1; i >= 0; i--) {
+            if (Number(rows[i].dataset.depth) < depth) {
+              rows[i].focus();
+              break;
+            }
+          }
+        }
+        break;
+      case "Enter":
+        if (selectable) {
+          tree.select(id);
+        }
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  };
+
   return (
-    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, py: 0.25 }}>
-      {icon !== undefined && (
-        <Box sx={{ display: "inline-flex", color: "text.secondary", flexShrink: 0 }}>{icon}</Box>
+    <>
+      <div
+        role="treeitem"
+        aria-expanded={hasChildren ? isExpanded : undefined}
+        aria-selected={selectable ? isSelected : undefined}
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? undefined : -1}
+        data-tree-row={disabled ? undefined : ""}
+        data-depth={disabled ? undefined : depth}
+        data-id={disabled ? undefined : id}
+        onClick={disabled
+          ? undefined
+          : () => {
+            if (hasChildren) {
+              tree.toggle(id);
+            }
+            if (selectable) {
+              tree.select(id);
+            }
+          }}
+        onKeyDown={disabled ? undefined : onKeyDown}
+        className={cn(
+          "relative flex h-7 min-w-0 items-center gap-1.5 rounded-md pr-2 text-[13px] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+          disabled ? "text-muted-foreground" : "cursor-pointer select-none",
+          isSelected
+            ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+            : !disabled && "hover:bg-accent/60",
+        )}
+        style={{ paddingLeft: 8 + depth * TREE_INDENT }}
+      >
+        {isSelected && <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r bg-primary" />}
+        {hasChildren
+          ? (
+            <ChevronDown
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground transition-transform duration-120",
+                !isExpanded && "-rotate-90",
+              )}
+            />
+          )
+          : <span className="size-4 shrink-0" />}
+        {label}
+      </div>
+      {isExpanded && (
+        <div role="group">
+          <DepthContext.Provider value={depth + 1}>{children}</DepthContext.Provider>
+        </div>
       )}
-      <Typography variant="body2" noWrap sx={{ minWidth: 0, flexGrow: 1 }}>{text}</Typography>
+    </>
+  );
+}
+
+/** A tree label row's content: icon, name, an optional right-aligned count, and an optional kind badge. */
+function NodeLabel({ icon, text, count, badge }: { icon?: ReactNode; text: string; count?: number; badge?: string }) {
+  return (
+    <>
+      {icon !== undefined && <span className="inline-flex shrink-0 text-muted-foreground">{icon}</span>}
+      <span className="min-w-0 flex-1 truncate">{text}</span>
       {count !== undefined && (
-        <Chip label={count} size="small" variant="outlined" sx={{ height: 18, fontSize: 11, flexShrink: 0 }} />
+        <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 font-mono text-[11px] tabular-nums text-muted-foreground">
+          {count}
+        </Badge>
       )}
-    </Stack>
+      {badge !== undefined && (
+        <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[11px] text-muted-foreground">{badge}</Badge>
+      )}
+    </>
   );
 }
 
@@ -114,11 +276,11 @@ function PagedObjectLeaves({
   });
 
   if (objects.isPending) {
-    return <TreeItem itemId={`${parentId}#loading`} disabled label={<NodeLabel text="Loading…" />} />;
+    return <TreeNode id={`${parentId}#loading`} disabled label={<NodeLabel text="Loading…" />} />;
   }
   if (objects.isError) {
     return (
-      <TreeItem itemId={`${parentId}#error`} disabled
+      <TreeNode id={`${parentId}#error`} disabled
         label={<NodeLabel text={`Could not load objects: ${String(objects.error)}`} />} />
     );
   }
@@ -128,11 +290,11 @@ function PagedObjectLeaves({
   const remaining = total - rows.length;
   return (
     <>
-      {rows.length === 0 && <TreeItem itemId={`${parentId}#empty`} disabled label={<NodeLabel text="No objects" />} />}
+      {rows.length === 0 && <TreeNode id={`${parentId}#empty`} disabled label={<NodeLabel text="No objects" />} />}
       {rows.map((row) => (
-        <TreeItem
+        <TreeNode
           key={row.key}
-          itemId={encodeNodeId({ type: "object", objectKey: row.key })}
+          id={encodeNodeId({ type: "object", objectKey: row.key })}
           label={<NodeLabel icon={metaForKind(row.kind).icon} text={row.name} />}
         />
       ))}
@@ -143,12 +305,22 @@ function PagedObjectLeaves({
 
 function LoadMore({ parentId, remaining, loading, onMore }: { parentId: string; remaining: number; loading: boolean; onMore: () => void }) {
   return (
-    <TreeItem itemId={`${parentId}#more`} label={(
-      <Button size="small" disabled={loading} startIcon={loading ? <CircularProgress size={14} /> : undefined}
-        onClick={(event) => { event.stopPropagation(); onMore(); }}>
-        {`Load more (${remaining} remaining)`}
-      </Button>
-    )} />
+    <TreeNode
+      id={`${parentId}#more`}
+      disabled
+      label={(
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={loading}
+          className="text-primary hover:text-primary"
+          onClick={(event) => { event.stopPropagation(); onMore(); }}
+        >
+          {loading && <Loader2 className="animate-spin" />}
+          {`Load more (${remaining} remaining)`}
+        </Button>
+      )}
+    />
   );
 }
 
@@ -181,13 +353,13 @@ const newTrie = (): FolderTrie => ({ folders: new Map(), files: [], count: 0 });
 interface ProviderMeta { label: string; icon: ReactNode; order: number; hasOrigin: boolean }
 
 const PROVIDER_META: Record<FileOriginKind, ProviderMeta> = {
-  AzureStorage: { label: "Microsoft Azure", icon: <CloudOutlinedIcon fontSize="small" />, order: 0, hasOrigin: true },
-  AmazonS3: { label: "Amazon S3", icon: <CloudOutlinedIcon fontSize="small" />, order: 1, hasOrigin: true },
-  GoogleCloud: { label: "Google Cloud", icon: <CloudOutlinedIcon fontSize="small" />, order: 2, hasOrigin: true },
-  Sftp: { label: "SFTP / FTP servers", icon: <DnsOutlinedIcon fontSize="small" />, order: 3, hasOrigin: true },
-  NetworkShare: { label: "Network shares", icon: <FolderSharedOutlinedIcon fontSize="small" />, order: 4, hasOrigin: true },
-  Local: { label: "Local files", icon: <ComputerOutlinedIcon fontSize="small" />, order: 5, hasOrigin: false },
-  Other: { label: "Other sources", icon: <PublicOutlinedIcon fontSize="small" />, order: 6, hasOrigin: true },
+  AzureStorage: { label: "Microsoft Azure", icon: <Cloud className="size-4" />, order: 0, hasOrigin: true },
+  AmazonS3: { label: "Amazon S3", icon: <Cloud className="size-4" />, order: 1, hasOrigin: true },
+  GoogleCloud: { label: "Google Cloud", icon: <Cloud className="size-4" />, order: 2, hasOrigin: true },
+  Sftp: { label: "SFTP / FTP servers", icon: <Server className="size-4" />, order: 3, hasOrigin: true },
+  NetworkShare: { label: "Network shares", icon: <FolderSymlink className="size-4" />, order: 4, hasOrigin: true },
+  Local: { label: "Local files", icon: <Monitor className="size-4" />, order: 5, hasOrigin: false },
+  Other: { label: "Other sources", icon: <Globe className="size-4" />, order: 6, hasOrigin: true },
 };
 
 /** Folds the flat file-node list into provider > origin > (container) > folder trie > file, with recursive
@@ -244,18 +416,18 @@ function renderTrie(provider: string, origin: string, container: string | null, 
       const path = parentPath ? `${parentPath}/${name}` : name;
       const id = encodeNodeId({ type: "folder", provider, origin, container, path });
       return (
-        <TreeItem key={id} itemId={id} label={<NodeLabel icon={<FolderOutlinedIcon fontSize="small" />} text={name} count={child.count} />}>
+        <TreeNode key={id} id={id} label={<NodeLabel icon={<Folder className="size-4" />} text={name} count={child.count} />}>
           {renderTrie(provider, origin, container, path, child)}
-        </TreeItem>
+        </TreeNode>
       );
     });
   const files = [...trie.files]
     .sort((a, b) => byNameCi(a.name, b.name))
     .map((file) => (
-      <TreeItem
+      <TreeNode
         key={file.key}
-        itemId={encodeNodeId({ type: "object", objectKey: file.key })}
-        label={<NodeLabel icon={<InsertDriveFileOutlinedIcon fontSize="small" />} text={file.name} />}
+        id={encodeNodeId({ type: "object", objectKey: file.key })}
+        label={<NodeLabel icon={<FileText className="size-4" />} text={file.name} />}
       />
     ));
   return [...folders, ...files];
@@ -265,17 +437,17 @@ function OriginNode({ provider, group }: { provider: FileOriginKind; group: Orig
   const originId = encodeNodeId({ type: "origin", provider, origin: group.origin });
   const containers = [...group.containers.entries()].sort(([a], [b]) => byNameCi(a, b));
   return (
-    <TreeItem itemId={originId} label={<NodeLabel icon={<StorageOutlinedIcon fontSize="small" />} text={group.origin} count={group.count} />}>
+    <TreeNode id={originId} label={<NodeLabel icon={<HardDrive className="size-4" />} text={group.origin} count={group.count} />}>
       {containers.map(([name, trie]) => {
         const id = encodeNodeId({ type: "container", provider, origin: group.origin, container: name });
         return (
-          <TreeItem key={id} itemId={id} label={<NodeLabel icon={<Inventory2OutlinedIcon fontSize="small" />} text={name} count={trie.count} />}>
+          <TreeNode key={id} id={id} label={<NodeLabel icon={<Package className="size-4" />} text={name} count={trie.count} />}>
             {renderTrie(provider, group.origin, name, "", trie)}
-          </TreeItem>
+          </TreeNode>
         );
       })}
       {renderTrie(provider, group.origin, null, "", group.root)}
-    </TreeItem>
+    </TreeNode>
   );
 }
 
@@ -283,12 +455,12 @@ function ProviderNode({ group }: { group: ProviderGroup }) {
   const meta = PROVIDER_META[group.kind];
   const providerId = encodeNodeId({ type: "provider", provider: group.kind });
   return (
-    <TreeItem itemId={providerId} label={<NodeLabel icon={meta.icon} text={meta.label} count={group.count} />}>
+    <TreeNode id={providerId} label={<NodeLabel icon={meta.icon} text={meta.label} count={group.count} />}>
       {meta.hasOrigin
         ? group.origins.map((o) => <OriginNode key={encodeNodeId({ type: "origin", provider: group.kind, origin: o.origin })} provider={group.kind} group={o} />)
         // Local files have no origin level: render the filesystem's folder tree directly under the provider.
         : group.origins.flatMap((o) => renderTrie(group.kind, o.origin, null, "", o.root))}
-    </TreeItem>
+    </TreeNode>
   );
 }
 
@@ -374,9 +546,9 @@ function renderFlowFolder(repoId: string, path: string, folder: FlowFolder): Rea
       const childPath = path ? `${path}/${name}` : name;
       const id = encodeNodeId({ type: "flowFolder", repoId, path: childPath });
       return (
-        <TreeItem key={id} itemId={id} label={<NodeLabel icon={<FolderOutlinedIcon fontSize="small" />} text={name} count={child.count} />}>
+        <TreeNode key={id} id={id} label={<NodeLabel icon={<Folder className="size-4" />} text={name} count={child.count} />}>
           {renderFlowFolder(repoId, childPath, child)}
-        </TreeItem>
+        </TreeNode>
       );
     });
   const batches = [...folder.batches.entries()]
@@ -384,21 +556,15 @@ function renderFlowFolder(repoId: string, path: string, folder: FlowFolder): Rea
     .map(([batch, flows]) => {
       const id = encodeNodeId({ type: "batch", repoId, path, batch });
       return (
-        <TreeItem key={id} itemId={id} label={<NodeLabel icon={<LayersOutlinedIcon fontSize="small" />} text={batch} count={flows.length} />}>
+        <TreeNode key={id} id={id} label={<NodeLabel icon={<Layers className="size-4" />} text={batch} count={flows.length} />}>
           {[...flows].sort((a, b) => byNameCi(a.name, b.name)).map((flow) => (
-            <TreeItem
+            <TreeNode
               key={flow.id}
-              itemId={encodeNodeId({ type: "flow", repoId: flow.repoId, pipelineId: flow.id })}
-              label={(
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, py: 0.25 }}>
-                  <AccountTreeIcon fontSize="small" sx={{ color: "text.secondary", flexShrink: 0 }} />
-                  <Typography variant="body2" noWrap sx={{ minWidth: 0, flexGrow: 1 }}>{flow.name}</Typography>
-                  <Chip label={flow.kind} size="small" variant="outlined" sx={{ height: 18, fontSize: 11, flexShrink: 0 }} />
-                </Stack>
-              )}
+              id={encodeNodeId({ type: "flow", repoId: flow.repoId, pipelineId: flow.id })}
+              label={<NodeLabel icon={<Network className="size-4" />} text={flow.name} badge={flow.kind} />}
             />
           ))}
-        </TreeItem>
+        </TreeNode>
       );
     });
   return [...folders, ...batches];
@@ -428,31 +594,42 @@ function ObjectMatches({ filter, onSelect }: { filter: string; onSelect: (id: st
   });
 
   if (matches.isPending) {
-    return <Skeleton height={32} data-testid="catalog-matches-loading" />;
+    return <Skeleton className="h-8 w-full" data-testid="catalog-matches-loading" />;
   }
   if (matches.isError) {
-    return <Alert severity="error">{`Object search failed: ${String(matches.error)}`}</Alert>;
+    return (
+      <Alert variant="destructive">
+        <CircleAlert />
+        <AlertTitle>Object search failed</AlertTitle>
+        <AlertDescription>{String(matches.error)}</AlertDescription>
+      </Alert>
+    );
   }
   if (matches.data.items.length === 0) {
     return null;
   }
   return (
-    <Box data-testid="catalog-object-matches">
-      <Typography variant="overline" color="text.secondary">Object matches</Typography>
-      <List dense disablePadding>
+    <div data-testid="catalog-object-matches">
+      <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Object matches</div>
+      <div className="mt-1 flex flex-col">
         {matches.data.items.map((row) => (
-          <ListItemButton key={row.key} onClick={() => onSelect(encodeNodeId({ type: "object", objectKey: row.key }))} sx={{ borderRadius: 1 }}>
-            <ListItemIcon sx={{ minWidth: 30 }}>{metaForKind(row.kind).icon}</ListItemIcon>
-            <ListItemText
-              primary={row.name}
-              secondary={[row.database, row.schema].filter((part) => part !== null).join(".") || row.serverRef}
-              primaryTypographyProps={{ variant: "body2", noWrap: true }}
-              secondaryTypographyProps={{ variant: "caption", noWrap: true }}
-            />
-          </ListItemButton>
+          <button
+            key={row.key}
+            type="button"
+            onClick={() => onSelect(encodeNodeId({ type: "object", objectKey: row.key }))}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-accent/60"
+          >
+            <span className="inline-flex shrink-0 text-muted-foreground">{metaForKind(row.kind).icon}</span>
+            <span className="min-w-0">
+              <span className="block truncate font-mono text-[12px]">{row.name}</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {[row.database, row.schema].filter((part) => part !== null).join(".") || row.serverRef}
+              </span>
+            </span>
+          </button>
         ))}
-      </List>
-    </Box>
+      </div>
+    </div>
   );
 }
 
@@ -588,139 +765,155 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
         }
       }
     }
-    return [...open];
+    return open;
   }, [expanded, needle, selectedId, fileTree.data, filteredDatabases, fileProviders, flowsByRepo]);
+
+  const setOpen = useCallback((id: string, open: boolean) => {
+    setExpanded((current) => {
+      if (open) {
+        return current.includes(id) ? current : [...current, id];
+      }
+      return current.filter((item) => item !== id);
+    });
+  }, []);
+
+  // When the container itself receives focus (Tab), hand it to the selected row, or the first row.
+  const onTreeFocus = (event: FocusEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    const rows = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-tree-row]")];
+    (rows.find((row) => row.dataset.id === selectedId) ?? rows[0])?.focus();
+  };
 
   const skeletonError = [schemaKinds, fileTree, repos, pipelines].find((query) => query.isError);
   if (skeletonError !== undefined) {
     return (
-      <Alert severity="error"
-        action={<Button color="inherit" size="small" onClick={() => void skeletonError.refetch()}>Retry</Button>}
-        data-testid="catalog-tree-error">
-        {`The catalog tree could not load: ${String(skeletonError.error)}`}
+      <Alert variant="destructive" data-testid="catalog-tree-error">
+        <CircleAlert />
+        <AlertTitle>The catalog tree could not load</AlertTitle>
+        <AlertDescription>
+          <p>{String(skeletonError.error)}</p>
+          <Button variant="outline" size="xs" onClick={() => void skeletonError.refetch()}>Retry</Button>
+        </AlertDescription>
       </Alert>
     );
   }
   if (schemaKinds.isPending || fileTree.isPending || repos.isPending || pipelines.isPending) {
     return (
-      <Stack spacing={1} data-testid="catalog-tree-loading">
-        {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} height={28} />)}
-      </Stack>
+      <div className="flex flex-col gap-2" data-testid="catalog-tree-loading">
+        {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+      </div>
     );
   }
 
-  const expandedSet = new Set(effectiveExpanded);
+  const treeState: TreeState = {
+    expanded: effectiveExpanded,
+    setOpen,
+    toggle: (id) => setOpen(id, !effectiveExpanded.has(id)),
+    selectedId,
+    select: onSelect,
+  };
+
   const totalDbObjects = databases.reduce((sum, database) => sum + database.objectCount, 0);
   const totalFiles = (fileTree.data ?? []).length;
   const totalFlows = (pipelines.data ?? []).length;
 
   return (
-    <Stack spacing={1.5} data-testid="catalog-tree">
-      <TextField
-        size="small"
+    <div className="flex flex-col gap-3" data-testid="catalog-tree">
+      <Input
+        className="h-8"
         placeholder="Filter the tree or search objects"
+        aria-label="Filter the tree or search objects"
         value={filter}
         onChange={(event) => setFilter(event.target.value)}
-        inputProps={{ "data-testid": "catalog-filter" }}
+        data-testid="catalog-filter"
       />
       {debouncedFilter.length >= 2 && <ObjectMatches filter={debouncedFilter} onSelect={onSelect} />}
 
-      <SimpleTreeView
-        expandedItems={effectiveExpanded}
-        onExpandedItemsChange={(_event, ids) => setExpanded(ids)}
-        selectedItems={selectedId}
-        onSelectedItemsChange={(_event, id) => {
-          // Pseudo rows (loading, empty, load-more) carry a "#" suffix and are not selectable nodes.
-          if (id !== null && !id.includes("#")) {
-            onSelect(id);
-          }
-        }}
-        aria-label="Catalog tree"
-      >
-        {/* Databases */}
-        <TreeItem
-          itemId={encodeNodeId({ type: "databasesRoot" })}
-          label={<NodeLabel icon={<StorageOutlinedIcon fontSize="small" />} text="Databases" count={totalDbObjects} />}
-        >
-          {filteredDatabases.length === 0 && (
-            <TreeItem itemId="dbs#empty" disabled label={<NodeLabel text="No database objects in the catalog yet" />} />
-          )}
-          {filteredDatabases.map((database) => {
-            const databaseId = encodeNodeId({ type: "database", database: database.database });
-            return (
-              <TreeItem key={databaseId} itemId={databaseId}
-                label={<NodeLabel icon={<StorageOutlinedIcon fontSize="small" />} text={database.database ?? UNRESOLVED_LABEL} count={database.objectCount} />}>
-                {database.schemas.map((schema) => {
-                  const schemaId = encodeNodeId({ type: "schema", database: database.database, schema: schema.schema });
-                  return (
-                    <TreeItem key={schemaId} itemId={schemaId}
-                      label={<NodeLabel icon={<SchemaOutlinedIcon fontSize="small" />} text={schema.schema ?? UNRESOLVED_LABEL} count={schema.objectCount} />}>
-                      {schema.kinds.map((kindRow) => {
-                        const kindNode: CatalogNode = { type: "kind", database: database.database, schema: schema.schema, kind: kindRow.kind };
-                        const kindId = encodeNodeId(kindNode);
-                        const meta = metaForKind(kindRow.kind);
-                        return (
-                          <TreeItem key={kindId} itemId={kindId} label={<NodeLabel icon={meta.icon} text={meta.plural} count={kindRow.objectCount} />}>
-                            {expandedSet.has(kindId)
-                              ? (
-                                <PagedObjectLeaves
-                                  parentId={kindId}
-                                  queryKey={["catalog-objects", database.database, schema.schema, kindRow.kind]}
-                                  fetchPage={(page) => lineageApi.objects({
-                                    database: database.database ?? undefined,
-                                    schema: schema.schema ?? undefined,
-                                    kind: kindRow.kind,
-                                    page,
-                                    pageSize: LEAF_PAGE_SIZE,
-                                  })}
-                                />
-                              )
-                              : <TreeItem itemId={`${kindId}#placeholder`} disabled label={<NodeLabel text="…" />} />}
-                          </TreeItem>
-                        );
-                      })}
-                    </TreeItem>
-                  );
-                })}
-              </TreeItem>
-            );
-          })}
-        </TreeItem>
+      <div role="tree" aria-label="Catalog tree" tabIndex={0} onFocus={onTreeFocus} className="outline-none">
+        <TreeContext.Provider value={treeState}>
+          {/* Databases */}
+          <TreeNode
+            id={encodeNodeId({ type: "databasesRoot" })}
+            label={<NodeLabel icon={<Database className="size-4" />} text="Databases" count={totalDbObjects} />}
+          >
+            {filteredDatabases.length === 0 && (
+              <TreeNode id="dbs#empty" disabled label={<NodeLabel text="No database objects in the catalog yet" />} />
+            )}
+            {filteredDatabases.map((database) => {
+              const databaseId = encodeNodeId({ type: "database", database: database.database });
+              return (
+                <TreeNode key={databaseId} id={databaseId}
+                  label={<NodeLabel icon={<Database className="size-4" />} text={database.database ?? UNRESOLVED_LABEL} count={database.objectCount} />}>
+                  {database.schemas.map((schema) => {
+                    const schemaId = encodeNodeId({ type: "schema", database: database.database, schema: schema.schema });
+                    return (
+                      <TreeNode key={schemaId} id={schemaId}
+                        label={<NodeLabel icon={<BookOpen className="size-4" />} text={schema.schema ?? UNRESOLVED_LABEL} count={schema.objectCount} />}>
+                        {schema.kinds.map((kindRow) => {
+                          const kindNode: CatalogNode = { type: "kind", database: database.database, schema: schema.schema, kind: kindRow.kind };
+                          const kindId = encodeNodeId(kindNode);
+                          const meta = metaForKind(kindRow.kind);
+                          return (
+                            <TreeNode key={kindId} id={kindId} label={<NodeLabel icon={meta.icon} text={meta.plural} count={kindRow.objectCount} />}>
+                              <PagedObjectLeaves
+                                parentId={kindId}
+                                queryKey={["catalog-objects", database.database, schema.schema, kindRow.kind]}
+                                fetchPage={(page) => lineageApi.objects({
+                                  database: database.database ?? undefined,
+                                  schema: schema.schema ?? undefined,
+                                  kind: kindRow.kind,
+                                  page,
+                                  pageSize: LEAF_PAGE_SIZE,
+                                })}
+                              />
+                            </TreeNode>
+                          );
+                        })}
+                      </TreeNode>
+                    );
+                  })}
+                </TreeNode>
+              );
+            })}
+          </TreeNode>
 
-        {/* Sources (file origins, grouped by provider: Azure / Amazon S3 / Google Cloud / SFTP / ... / Local) */}
-        <TreeItem
-          itemId={encodeNodeId({ type: "sourcesRoot" })}
-          label={<NodeLabel icon={<CloudOutlinedIcon fontSize="small" />} text="Sources" count={totalFiles} />}
-        >
-          {fileProviders.length === 0 && (
-            <TreeItem itemId="sources#empty" disabled label={<NodeLabel text="No file sources in the catalog yet" />} />
-          )}
-          {fileProviders.map((group) => <ProviderNode key={encodeNodeId({ type: "provider", provider: group.kind })} group={group} />)}
-        </TreeItem>
+          {/* Sources (file origins, grouped by provider: Azure / Amazon S3 / Google Cloud / SFTP / ... / Local) */}
+          <TreeNode
+            id={encodeNodeId({ type: "sourcesRoot" })}
+            label={<NodeLabel icon={<Cloud className="size-4" />} text="Sources" count={totalFiles} />}
+          >
+            {fileProviders.length === 0 && (
+              <TreeNode id="sources#empty" disabled label={<NodeLabel text="No file sources in the catalog yet" />} />
+            )}
+            {fileProviders.map((group) => <ProviderNode key={encodeNodeId({ type: "provider", provider: group.kind })} group={group} />)}
+          </TreeNode>
 
-        {/* Flows (repo > repository folder > batch > flow) */}
-        <TreeItem
-          itemId={encodeNodeId({ type: "flowsRoot" })}
-          label={<NodeLabel icon={<AccountTreeIcon fontSize="small" />} text="Flows" count={totalFlows} />}
-        >
-          {flowsByRepo.size === 0 && (
-            <TreeItem itemId="flows#empty" disabled label={<NodeLabel text="No flows in the catalog yet" />} />
-          )}
-          {repoList.map((repo) => {
-            const root = flowsByRepo.get(repo.id);
-            if (root === undefined) {
-              return null;
-            }
-            const repoId = encodeNodeId({ type: "repo", repoId: repo.id });
-            return (
-              <TreeItem key={repoId} itemId={repoId}
-                label={<NodeLabel icon={<SourceOutlinedIcon fontSize="small" />} text={repo.name} count={root.count} />}>
-                {renderFlowFolder(repo.id, "", root)}
-              </TreeItem>
-            );
-          })}
-        </TreeItem>
-      </SimpleTreeView>
-    </Stack>
+          {/* Flows (repo > repository folder > batch > flow) */}
+          <TreeNode
+            id={encodeNodeId({ type: "flowsRoot" })}
+            label={<NodeLabel icon={<Network className="size-4" />} text="Flows" count={totalFlows} />}
+          >
+            {flowsByRepo.size === 0 && (
+              <TreeNode id="flows#empty" disabled label={<NodeLabel text="No flows in the catalog yet" />} />
+            )}
+            {repoList.map((repo) => {
+              const root = flowsByRepo.get(repo.id);
+              if (root === undefined) {
+                return null;
+              }
+              const repoId = encodeNodeId({ type: "repo", repoId: repo.id });
+              return (
+                <TreeNode key={repoId} id={repoId}
+                  label={<NodeLabel icon={<FolderGit2 className="size-4" />} text={repo.name} count={root.count} />}>
+                  {renderFlowFolder(repo.id, "", root)}
+                </TreeNode>
+              );
+            })}
+          </TreeNode>
+        </TreeContext.Provider>
+      </div>
+    </div>
   );
 }

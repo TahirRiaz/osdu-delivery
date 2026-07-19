@@ -1,7 +1,4 @@
 import type { ReactNode } from "react";
-import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
 
 interface PageHeaderProps {
   title: ReactNode;
@@ -12,34 +9,22 @@ interface PageHeaderProps {
 }
 
 /**
- * The one page title block. An h5 title at the theme's own weight (no per-page override), an optional
- * subtitle in muted body text, and a right-aligned actions slot via a single space-between idiom. Every
- * list page renders this as its first section so titles, their weight, and action alignment match everywhere.
- * Vertical spacing comes from the enclosing Page, not from this component.
+ * The one page title block (DESIGN.md 7.1): an 18px semibold title, an optional muted subtitle, and a
+ * right-aligned actions slot. Every list page renders this as its first section so titles and action
+ * alignment match everywhere. Vertical spacing comes from the enclosing Page, not from this component.
  */
 export function PageHeader({ title, subtitle, actions }: PageHeaderProps) {
   return (
-    <Stack
-      direction="row"
-      spacing={2}
-      alignItems={subtitle ? "flex-start" : "center"}
-      justifyContent="space-between"
-      flexWrap="wrap"
-      useFlexGap
-    >
-      <Box sx={{ minWidth: 0 }}>
-        <Typography variant="h5">{title}</Typography>
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0">
+        <h1 className="text-lg font-semibold leading-7">{title}</h1>
         {subtitle !== undefined && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            {subtitle}
-          </Typography>
+          <div className="mt-0.5 text-[13px] text-muted-foreground">{subtitle}</div>
         )}
-      </Box>
+      </div>
       {actions !== undefined && (
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          {actions}
-        </Stack>
+        <div className="flex flex-wrap items-center gap-2">{actions}</div>
       )}
-    </Stack>
+    </div>
   );
 }

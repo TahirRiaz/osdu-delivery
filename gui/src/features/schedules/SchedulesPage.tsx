@@ -1,36 +1,24 @@
 import { useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Autocomplete from "@mui/material/Autocomplete";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import FormControl from "@mui/material/FormControl";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import FormLabel from "@mui/material/FormLabel";
-import IconButton from "@mui/material/IconButton";
-import Link from "@mui/material/Link";
-import Radio from "@mui/material/Radio";
-import RadioGroup from "@mui/material/RadioGroup";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
-import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
-import DeleteIcon from "@mui/icons-material/Delete";
-import PauseIcon from "@mui/icons-material/Pause";
-import PlayArrowIcon from "@mui/icons-material/PlayArrow";
-import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
-import TimelineIcon from "@mui/icons-material/Timeline";
+import { toast } from "sonner";
+import { ChartGantt, CirclePlay, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
 import type { Schedule } from "../../api/types";
+import { ComboBoxField } from "../../components/ComboBoxField";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
+import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
@@ -38,8 +26,14 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { ScheduleStateBadge } from "../../components/StatusBadge";
 import { RunScheduleDialog } from "./RunScheduleDialog";
 
-function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
-  const { enqueueSnackbar } = useSnackbar();
+/** The toast line for a failed mutation (DESIGN.md 8.1): the API's own message when it is one. */
+function errorMessage(error: unknown): string {
+  return isApiError(error) ? error.detail ?? error.title : String(error);
+}
+
+/** The create-schedule form as a right-side sheet (DESIGN.md 7.4); the old dialog's testid stays on the
+ * sheet content so e2e keeps passing. */
+function CreateScheduleSheet({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient();
   const [repoId, setRepoId] = useState<string | null>(null);
   // Membership is the only selector: a schedule runs the flows that joined it, in lineage wave order.
@@ -64,11 +58,12 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
 
   const create = useMutation({
     mutationFn: scheduleApi.create,
-    onSuccess: () => {
-      enqueueSnackbar("Schedule created.", { variant: "success" });
+    onSuccess: (_created, request) => {
+      toast.success(`Schedule "${request.name ?? request.members[0]}" created`);
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       onClose();
     },
+    onError: (error) => toast.error(errorMessage(error)),
   });
 
   const repoOptions = useMemo(() => repos.data?.items ?? [], [repos.data]);
@@ -93,137 +88,196 @@ function CreateScheduleDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog open onClose={create.isPending ? undefined : onClose} fullWidth maxWidth="sm" data-testid="create-schedule-dialog">
-      <DialogTitle>Create schedule</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          {create.isError && isApiError(create.error) && <CorrelationError error={create.error} />}
-          {create.isError && !isApiError(create.error) && (
-            <Typography color="error">{String(create.error)}</Typography>
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        if (!next && !create.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full gap-0 sm:max-w-xl" data-testid="create-schedule-dialog">
+        <SheetHeader className="border-b">
+          <SheetTitle>Create schedule</SheetTitle>
+          <SheetDescription>
+            Flows join by name; one fire runs the whole member set as a wave-ordered group.
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
+          {create.isError && (
+            isApiError(create.error)
+              ? <CorrelationError error={create.error} />
+              : <p className="text-[13px] text-destructive">{String(create.error)}</p>
           )}
 
-          <Autocomplete
+          <ComboBoxField
+            label="Repo"
             options={repoOptions}
-            getOptionLabel={(repo) => repo.name}
-            value={repoOptions.find((r) => r.id === repoId) ?? null}
-            onChange={(_, repo) => {
-              setRepoId(repo?.id ?? null);
+            optionValue={(repo) => repo.id}
+            optionLabel={(repo) => repo.name}
+            value={repoId}
+            onChange={(value) => {
+              setRepoId(value);
               setMembers([]);
             }}
             loading={repos.isLoading}
-            renderInput={(params) => (
-              <TextField {...params} label="Repo" inputProps={{ ...params.inputProps, "data-testid": "schedule-repo" }} />
-            )}
-          />
-          <Autocomplete
-            multiple
-            options={flowOptions}
-            value={members}
-            onChange={(_, value) => setMembers(value)}
-            disabled={repoId === null}
-            loading={pipelines.isLoading}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Flows this schedule runs"
-                helperText="One fire enqueues every flow here as a single wave-ordered group, so a flow never runs before what it depends on."
-                inputProps={{ ...params.inputProps, "data-testid": "schedule-members" }}
-              />
-            )}
+            placeholder={repos.isLoading ? "Loading repos..." : "Select a repo"}
+            loadingMessage="Loading repos..."
+            emptyMessage="No repo matches."
+            testId="schedule-repo"
           />
 
-          <TextField
-            label="Name (optional)"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            helperText="What flows would join with 'schedule: <name>'. Defaults to the first flow's name."
-            inputProps={{ "data-testid": "schedule-name" }}
-          />
+          <div className="flex flex-col gap-1.5">
+            <ComboBoxField
+              label="Flows this schedule runs"
+              multiple
+              options={flowOptions}
+              optionValue={(flow) => flow}
+              renderOption={(flow) => <span className="font-mono text-[12px]">{flow}</span>}
+              values={members}
+              onToggle={(flow) =>
+                setMembers((prev) => (prev.includes(flow) ? prev.filter((f) => f !== flow) : [...prev, flow]))}
+              disabled={repoId === null}
+              loading={pipelines.isLoading}
+              placeholder={members.length === 0
+                ? repoId === null ? "Pick a repo first" : "Select flows"
+                : `${members.length} ${members.length === 1 ? "flow" : "flows"} selected`}
+              loadingMessage="Loading flows..."
+              emptyMessage="No flow matches."
+              testId="schedule-flow"
+            />
+            {members.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {members.map((member) => (
+                  <Badge key={member} variant="secondary" className="gap-1 font-mono">
+                    {member}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${member}`}
+                      onClick={() => setMembers((prev) => prev.filter((f) => f !== member))}
+                      className="rounded-full hover:text-destructive"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              One fire enqueues every flow here as a single wave-ordered group, so a flow never runs before what it
+              depends on.
+            </p>
+          </div>
 
-          <FormControl>
-            <FormLabel>Trigger</FormLabel>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="schedule-name">Name (optional)</Label>
+            <Input
+              id="schedule-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="h-8"
+              data-testid="schedule-name"
+            />
+            <p className="text-xs text-muted-foreground">
+              What flows would join with 'schedule: &lt;name&gt;'. Defaults to the first flow's name.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Trigger</Label>
             <RadioGroup
-              row
               value={triggerKind}
-              onChange={(e) => setTriggerKind(e.target.value === "interval" ? "interval" : "cron")}
+              onValueChange={(value) => setTriggerKind(value === "interval" ? "interval" : "cron")}
+              className="flex items-center gap-4"
               data-testid="schedule-trigger-kind"
             >
-              <FormControlLabel
-                value="cron"
-                control={<Radio data-testid="schedule-trigger-cron" />}
-                label="Cron"
-              />
-              <FormControlLabel
-                value="interval"
-                control={<Radio data-testid="schedule-trigger-interval" />}
-                label="Interval"
-              />
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <RadioGroupItem value="cron" data-testid="schedule-trigger-cron" />
+                Cron
+              </Label>
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <RadioGroupItem value="interval" data-testid="schedule-trigger-interval" />
+                Interval
+              </Label>
             </RadioGroup>
-          </FormControl>
+          </div>
 
           {triggerKind === "cron" ? (
-            <TextField
-              label="Cron expression"
-              placeholder="0 8 * * *"
-              value={cron}
-              onChange={(e) => setCron(e.target.value)}
-              inputProps={{ "data-testid": "schedule-cron" }}
-            />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="schedule-cron">Cron expression</Label>
+              <Input
+                id="schedule-cron"
+                placeholder="0 8 * * *"
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                className="h-8 font-mono"
+                data-testid="schedule-cron"
+              />
+            </div>
           ) : (
-            <TextField
-              label="Interval (seconds)"
-              type="number"
-              value={intervalText}
-              onChange={(e) => setIntervalText(e.target.value)}
-              error={intervalText.trim() !== "" && !intervalValid}
-              helperText="A positive whole number of seconds between fires."
-              inputProps={{ min: 1, "data-testid": "schedule-interval" }}
-            />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="schedule-interval">Interval (seconds)</Label>
+              <Input
+                id="schedule-interval"
+                type="number"
+                min={1}
+                value={intervalText}
+                onChange={(e) => setIntervalText(e.target.value)}
+                aria-invalid={intervalText.trim() !== "" && !intervalValid}
+                className="h-8 font-mono"
+                data-testid="schedule-interval"
+              />
+              <p
+                className={cn(
+                  "text-xs",
+                  intervalText.trim() !== "" && !intervalValid ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                A positive whole number of seconds between fires.
+              </p>
+            </div>
           )}
 
-          <TextField
-            label="Timezone"
-            value={timezone}
-            onChange={(e) => setTimezone(e.target.value)}
-            helperText="IANA timezone the cron expression is evaluated in."
-            inputProps={{ "data-testid": "schedule-timezone" }}
-          />
-          <FormControlLabel
-            control={(
-              <Switch
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                data-testid="schedule-enabled"
-              />
-            )}
-            label="Enabled"
-          />
-          <FormControlLabel
-            control={(
-              <Switch
-                checked={catchup}
-                onChange={(e) => setCatchup(e.target.checked)}
-                data-testid="schedule-catchup"
-              />
-            )}
-            label="Catch up missed occurrences"
-          />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={create.isPending} data-testid="create-schedule-cancel">Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!canSubmit} data-testid="create-schedule-submit">
-          Create
-        </Button>
-      </DialogActions>
-    </Dialog>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="schedule-timezone">Timezone</Label>
+            <Input
+              id="schedule-timezone"
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              className="h-8 font-mono"
+              data-testid="schedule-timezone"
+            />
+            <p className="text-xs text-muted-foreground">IANA timezone the cron expression is evaluated in.</p>
+          </div>
+
+          <Label className="flex items-center gap-2 text-[13px] font-normal">
+            <Switch checked={enabled} onCheckedChange={setEnabled} data-testid="schedule-enabled" />
+            Enabled
+          </Label>
+          <Label className="flex items-center gap-2 text-[13px] font-normal">
+            <Switch checked={catchup} onCheckedChange={setCatchup} data-testid="schedule-catchup" />
+            Catch up missed occurrences
+          </Label>
+        </div>
+
+        <SheetFooter className="flex-row justify-end border-t">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={create.isPending} data-testid="create-schedule-cancel">
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={!canSubmit} data-testid="create-schedule-submit">
+            {create.isPending && <Loader2 className="animate-spin" />}
+            Create
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
 /** All schedules: state at a glance, pause/resume/delete inline, and creation of API-sourced schedules. */
 export default function SchedulesPage() {
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Schedule | null>(null);
@@ -231,27 +285,24 @@ export default function SchedulesPage() {
   // the waves it will run and presses Start.
   const [runTarget, setRunTarget] = useState<Schedule | null>(null);
 
-  const showError = (error: unknown) =>
-    enqueueSnackbar(error instanceof Error ? error.message : String(error), { variant: "error" });
-
   const pauseResume = useMutation({
     mutationFn: (row: Schedule) => (row.paused ? scheduleApi.resume(row.id) : scheduleApi.pause(row.id)),
     onSuccess: (updated) => {
-      enqueueSnackbar(updated.paused ? "Schedule paused." : "Schedule resumed.", { variant: "success" });
+      toast.success(updated.paused ? `Schedule "${updated.name}" paused` : `Schedule "${updated.name}" resumed`);
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
     },
-    onError: showError,
+    onError: (error) => toast.error(errorMessage(error)),
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => scheduleApi.remove(id),
-    onSuccess: () => {
-      enqueueSnackbar("Schedule deleted.", { variant: "success" });
+    mutationFn: (row: Schedule) => scheduleApi.remove(row.id),
+    onSuccess: (_result, row) => {
+      toast.success(`Schedule "${row.name}" deleted`);
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       setDeleteTarget(null);
     },
     onError: (error) => {
-      showError(error);
+      toast.error(errorMessage(error));
       setDeleteTarget(null);
     },
   });
@@ -261,39 +312,51 @@ export default function SchedulesPage() {
       id: "name",
       header: "Schedule",
       render: (row) => (
-        <Link
-          component={RouterLink}
+        <RouterLink
           to={`/schedules/${row.id}`}
-          fontWeight={600}
-          underline="hover"
+          className="font-mono text-[12px] font-medium text-primary hover:underline"
           data-testid="schedule-name-link"
         >
           {row.name}
-        </Link>
+        </RouterLink>
       ),
     },
     {
       id: "members",
       header: "Runs",
       render: (row) => (row.memberPipelineIds.length === 1 ? (
-        <Tooltip title="One flow joined this schedule, so a fire enqueues a single run.">
-          <Typography variant="body2" color="text.secondary">1 flow</Typography>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {/* A single-member schedule links straight to its flow's pipeline detail. */}
+            <RouterLink
+              to={`/pipelines/${row.memberPipelineIds[0]}`}
+              onClick={(event) => event.stopPropagation()}
+              className="text-[13px] text-primary hover:underline"
+              data-testid="schedule-flow-link"
+            >
+              1 flow
+            </RouterLink>
+          </TooltipTrigger>
+          <TooltipContent>One flow joined this schedule; open its pipeline detail.</TooltipContent>
         </Tooltip>
       ) : (
-        <Tooltip
-          title={
-            row.memberPipelineIds.length === 0
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex">
+              <Badge
+                variant="outline"
+                className={row.memberPipelineIds.length === 0 ? "text-warning" : "text-primary"}
+                data-testid="schedule-members-chip"
+              >
+                {row.memberPipelineIds.length} flows
+              </Badge>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            {row.memberPipelineIds.length === 0
               ? "No flow joins this schedule, so a fire runs nothing. Join one with 'schedule: <name>'."
-              : "The flows that joined this schedule. One fire enqueues them all as a single wave-ordered group."
-          }
-        >
-          <Chip
-            size="small"
-            color={row.memberPipelineIds.length === 0 ? "warning" : "primary"}
-            variant="outlined"
-            label={`${row.memberPipelineIds.length} flows`}
-            data-testid="schedule-members-chip"
-          />
+              : "The flows that joined this schedule. One fire enqueues them all as a single wave-ordered group."}
+          </TooltipContent>
         </Tooltip>
       )),
     },
@@ -302,10 +365,10 @@ export default function SchedulesPage() {
       header: "Trigger",
       render: (row) => {
         if (row.cron !== null) {
-          return `cron: ${row.cron}`;
+          return <Mono>cron: {row.cron}</Mono>;
         }
 
-        return row.intervalSeconds !== null ? `every ${row.intervalSeconds}s` : "-";
+        return row.intervalSeconds !== null ? <Mono>every {row.intervalSeconds}s</Mono> : "-";
       },
     },
     { id: "timezone", header: "Timezone", render: (row) => row.timezone },
@@ -313,17 +376,22 @@ export default function SchedulesPage() {
       id: "state",
       header: "State",
       render: (row) => (
-        <Stack direction="row" spacing={0.5} alignItems="center">
+        <div className="flex items-center gap-1">
           <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
           {row.catchup && (
-            <Tooltip title="Missed occurrences are backfilled (one per tick), not skipped.">
-              <Chip size="small" variant="outlined" label="catchup" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Badge variant="outline">catchup</Badge>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Missed occurrences are backfilled (one per tick), not skipped.</TooltipContent>
             </Tooltip>
           )}
-        </Stack>
+        </div>
       ),
     },
-    { id: "source", header: "Source", render: (row) => <Chip size="small" label={row.source} variant="outlined" /> },
+    { id: "source", header: "Source", render: (row) => <Badge variant="outline">{row.source}</Badge> },
     { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} /> },
     { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} /> },
     {
@@ -334,7 +402,8 @@ export default function SchedulesPage() {
         if (row.lastGroupId !== null) {
           return (
             <Button
-              size="small"
+              variant="ghost"
+              size="xs"
               onClick={(e) => {
                 e.stopPropagation();
                 navigate(`/runs/groups/${row.lastGroupId}`);
@@ -348,7 +417,8 @@ export default function SchedulesPage() {
 
         return row.lastRunId !== null ? (
           <Button
-            size="small"
+            variant="ghost"
+            size="xs"
             onClick={(e) => {
               e.stopPropagation();
               navigate(`/runs/${row.lastRunId}`);
@@ -364,73 +434,88 @@ export default function SchedulesPage() {
       id: "actions",
       header: "Actions",
       align: "right",
-      render: (row) => (
-        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-          <Tooltip title="Run now (preview the waves, then start)">
-            <span>
-              <IconButton
-                size="small"
-                color="primary"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setRunTarget(row);
-                }}
-                data-testid="schedule-run-now"
-              >
-                <PlayCircleOutlineIcon fontSize="small" />
-              </IconButton>
-            </span>
-          </Tooltip>
-          {row.paused ? (
-            <Tooltip title="Resume schedule">
-              <span>
-                <IconButton
-                  size="small"
-                  disabled={pauseResume.isPending}
+      render: (row) => {
+        const pausePending = pauseResume.isPending && pauseResume.variables?.id === row.id;
+        return (
+          <div className="flex items-center justify-end gap-0.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Run now"
+                  className="text-primary hover:text-primary"
                   onClick={(e) => {
                     e.stopPropagation();
-                    pauseResume.mutate(row);
+                    setRunTarget(row);
                   }}
-                  data-testid="schedule-resume"
+                  data-testid="schedule-run-now"
                 >
-                  <PlayArrowIcon fontSize="small" />
-                </IconButton>
-              </span>
+                  <CirclePlay />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Run now (preview the waves, then start)</TooltipContent>
             </Tooltip>
-          ) : (
-            <Tooltip title="Pause schedule">
-              <span>
-                <IconButton
-                  size="small"
-                  disabled={pauseResume.isPending}
+            {row.paused ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Resume schedule"
+                    disabled={pauseResume.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      pauseResume.mutate(row);
+                    }}
+                    data-testid="schedule-resume"
+                  >
+                    {pausePending ? <Loader2 className="animate-spin" /> : <Play />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Resume schedule</TooltipContent>
+              </Tooltip>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Pause schedule"
+                    disabled={pauseResume.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      pauseResume.mutate(row);
+                    }}
+                    data-testid="schedule-pause"
+                  >
+                    {pausePending ? <Loader2 className="animate-spin" /> : <Pause />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Pause schedule</TooltipContent>
+              </Tooltip>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Delete schedule"
+                  disabled={remove.isPending}
                   onClick={(e) => {
                     e.stopPropagation();
-                    pauseResume.mutate(row);
+                    setDeleteTarget(row);
                   }}
-                  data-testid="schedule-pause"
+                  data-testid="schedule-delete"
                 >
-                  <PauseIcon fontSize="small" />
-                </IconButton>
-              </span>
+                  <Trash2 />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Delete schedule</TooltipContent>
             </Tooltip>
-          )}
-          <Tooltip title="Delete schedule">
-            <span>
-              <IconButton
-                size="small"
-                disabled={remove.isPending}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeleteTarget(row);
-                }}
-                data-testid="schedule-delete"
-              >
-                <DeleteIcon fontSize="small" />
-              </IconButton>
-            </span>
-          </Tooltip>
-        </Stack>
-      ),
+          </div>
+        );
+      },
     },
   ];
 
@@ -440,16 +525,14 @@ export default function SchedulesPage() {
         title="Schedules"
         actions={(
           <>
-            <Button
-              component={RouterLink}
-              to="/schedules/timeline"
-              variant="outlined"
-              startIcon={<TimelineIcon />}
-              data-testid="open-schedule-timeline"
-            >
-              Timeline
+            <Button variant="outline" size="sm" asChild data-testid="open-schedule-timeline">
+              <RouterLink to="/schedules/timeline">
+                <ChartGantt />
+                Timeline
+              </RouterLink>
             </Button>
-            <Button variant="contained" onClick={() => setCreateOpen(true)} data-testid="open-create-schedule">
+            <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="open-create-schedule">
+              <Plus />
               Create schedule
             </Button>
           </>
@@ -465,7 +548,7 @@ export default function SchedulesPage() {
         emptyMessage="No schedules exist yet."
       />
 
-      {createOpen && <CreateScheduleDialog onClose={() => setCreateOpen(false)} />}
+      {createOpen && <CreateScheduleSheet onClose={() => setCreateOpen(false)} />}
 
       {runTarget && <RunScheduleDialog schedule={runTarget} onClose={() => setRunTarget(null)} />}
 
@@ -478,7 +561,7 @@ export default function SchedulesPage() {
         busy={remove.isPending}
         onConfirm={() => {
           if (deleteTarget !== null) {
-            remove.mutate(deleteTarget.id);
+            remove.mutate(deleteTarget);
           }
         }}
         onClose={() => setDeleteTarget(null)}

@@ -1,22 +1,17 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import LinearProgress from "@mui/material/LinearProgress";
-import Link from "@mui/material/Link";
-import Paper from "@mui/material/Paper";
-import Stack from "@mui/material/Stack";
-import Tab from "@mui/material/Tab";
-import Tabs from "@mui/material/Tabs";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import SearchIcon from "@mui/icons-material/Search";
+import { Search } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { searchApi } from "../../api/endpoints";
 import { isApiError } from "../../api/client";
 import type {
-  AllSearchResult, ColumnHit, DefinitionHit, FileHit, FlowHit, ObjectHit, SearchCategory,
+  ColumnHit, DefinitionHit, FileHit, FlowHit, ObjectHit, SearchCategory,
 } from "../../api/types";
 import { LineageJumpButton, type LineageJumpTarget } from "../../components/LineageJumpButton";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -74,33 +69,30 @@ const fileTarget = (row: FileHit): LineageJumpTarget => ({
 const TABS = ["All", "Objects", "Columns", "Definitions", "Files", "Flows"] as const;
 type TabIndex = 0 | 1 | 2 | 3 | 4 | 5;
 
+/** An object/column/flow/file name cell: data wears mono (DESIGN.md section 4), the hit name emphasized. */
+function NameCell({ children }: { children: ReactNode }) {
+  return <span className="font-mono text-[12px] font-medium">{children}</span>;
+}
+
 const objectColumns: Column<ObjectHit>[] = [
-  {
-    id: "name",
-    header: "Name",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
-  },
-  { id: "kind", header: "Kind", render: (row) => <Chip label={row.kind} size="small" /> },
-  { id: "schema", header: "Schema", render: (row) => row.schema ?? "-" },
-  { id: "database", header: "Database", render: (row) => row.database ?? "-" },
-  { id: "serverRef", header: "Server", render: (row) => row.serverRef },
+  { id: "name", header: "Name", render: (row) => <NameCell>{row.name}</NameCell> },
+  { id: "kind", header: "Kind", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "schema", header: "Schema", render: (row) => <Mono>{row.schema ?? "-"}</Mono> },
+  { id: "database", header: "Database", render: (row) => <Mono>{row.database ?? "-"}</Mono> },
+  { id: "serverRef", header: "Server", render: (row) => <Mono>{row.serverRef}</Mono> },
 ];
 
 const columnColumns: Column<ColumnHit>[] = [
-  {
-    id: "columnName",
-    header: "Column",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.columnName}</Typography>,
-  },
-  { id: "dataType", header: "Data type", render: (row) => row.dataType ?? "-" },
+  { id: "columnName", header: "Column", render: (row) => <NameCell>{row.columnName}</NameCell> },
+  { id: "dataType", header: "Data type", render: (row) => <Mono>{row.dataType ?? "-"}</Mono> },
   {
     id: "nullable",
     header: "Nullable",
     render: (row) => (
-      <Chip label={row.nullable ? "null" : "not null"} size="small" variant={row.nullable ? "outlined" : "filled"} />
+      <Badge variant={row.nullable ? "outline" : "secondary"}>{row.nullable ? "null" : "not null"}</Badge>
     ),
   },
-  { id: "objectName", header: "Object", render: (row) => row.objectName },
+  { id: "objectName", header: "Object", render: (row) => <Mono>{row.objectName}</Mono> },
   {
     id: "objectKey",
     header: "Object key",
@@ -109,52 +101,54 @@ const columnColumns: Column<ColumnHit>[] = [
 ];
 
 const definitionColumns: Column<DefinitionHit>[] = [
-  {
-    id: "name",
-    header: "Name",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
-  },
-  { id: "kind", header: "Kind", render: (row) => <Chip label={row.kind} size="small" /> },
-  {
-    id: "source",
-    header: "Matched",
-    render: (row) => <Chip label={row.source} size="small" variant="outlined" />,
-  },
+  { id: "name", header: "Name", render: (row) => <NameCell>{row.name}</NameCell> },
+  { id: "kind", header: "Kind", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "source", header: "Matched", render: (row) => <Badge variant="outline">{row.source}</Badge> },
   {
     id: "snippet",
     header: "Snippet",
-    render: (row) => <Mono sx={{ whiteSpace: "pre-wrap" }}>{row.snippet}</Mono>,
+    render: (row) => <Mono className="whitespace-pre-wrap">{row.snippet}</Mono>,
   },
 ];
 
 const fileColumns: Column<FileHit>[] = [
-  {
-    id: "name",
-    header: "File",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
-  },
+  { id: "name", header: "File", render: (row) => <NameCell>{row.name}</NameCell> },
   {
     id: "flowName",
     header: "Flow",
     // Direct file -> pipeline navigation: the flow name links to the pipeline that ingested the file.
     render: (row) => (
       <Link
-        component={RouterLink}
         to={`/pipelines/${row.pipelineId}`}
         onClick={(event) => event.stopPropagation()}
-        underline="hover"
+        className="text-primary hover:underline"
       >
         {row.flowName}
       </Link>
     ),
   },
-  { id: "rows", header: "Rows", render: (row) => row.rows.toLocaleString() },
-  { id: "columns", header: "Columns", render: (row) => row.columns.toLocaleString() },
-  { id: "sizeBytes", header: "Size", render: (row) => formatBytes(row.sizeBytes) },
+  {
+    id: "rows",
+    header: "Rows",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.rows.toLocaleString()}</span>,
+  },
+  {
+    id: "columns",
+    header: "Columns",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.columns.toLocaleString()}</span>,
+  },
+  {
+    id: "sizeBytes",
+    header: "Size",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{formatBytes(row.sizeBytes)}</span>,
+  },
   {
     id: "runUtc",
     header: "Run",
-    render: (row) => (row.runUtc ? parseUtc(row.runUtc).toLocaleString() : "-"),
+    render: (row) => <Mono>{row.runUtc ? parseUtc(row.runUtc).toLocaleString() : "-"}</Mono>,
   },
   {
     id: "path",
@@ -164,27 +158,19 @@ const fileColumns: Column<FileHit>[] = [
 ];
 
 const flowColumns: Column<FlowHit>[] = [
-  {
-    id: "name",
-    header: "Flow",
-    render: (row) => <Typography variant="body2" fontWeight={600}>{row.name}</Typography>,
-  },
-  { id: "kind", header: "Kind", render: (row) => <Chip label={row.kind} size="small" /> },
-  {
-    id: "matchedIn",
-    header: "Matched",
-    render: (row) => <Chip label={row.matchedIn} size="small" variant="outlined" />,
-  },
+  { id: "name", header: "Flow", render: (row) => <NameCell>{row.name}</NameCell> },
+  { id: "kind", header: "Kind", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "matchedIn", header: "Matched", render: (row) => <Badge variant="outline">{row.matchedIn}</Badge> },
   {
     id: "snippet",
     header: "Path / snippet",
-    render: (row) => <Mono sx={{ whiteSpace: "pre-wrap" }}>{row.snippet}</Mono>,
+    render: (row) => <Mono className="whitespace-pre-wrap">{row.snippet}</Mono>,
   },
 ];
 
 /**
  * Global search over the whole catalog: objects and columns by name, code (module bodies and emitted DDL),
- * processed files by name or path, and flow YAML by name, path, or body text. The app-bar search box lands here
+ * processed files by name or path, and flow YAML by name, path, or body text. The title-bar search box lands here
  * with ?q=; the All tab shows a grouped preview across every surface and each dedicated tab pages one surface.
  */
 export default function SearchPage() {
@@ -194,7 +180,7 @@ export default function SearchPage() {
   const [term, setTerm] = useState(q);
   const [tab, setTab] = useState<TabIndex>(0);
 
-  // The app-bar search navigates here while this page is already mounted: mirror the new term into the input.
+  // The title-bar search navigates here while this page is already mounted: mirror the new term into the input.
   useEffect(() => {
     setTerm(q);
   }, [q]);
@@ -213,30 +199,43 @@ export default function SearchPage() {
     <Page data-testid="page-search">
       <PageHeader title="Search" />
 
-      <Box component="form" onSubmit={submit}>
-        <Stack direction="row" spacing={2}>
-          <TextField
-            label="Search term"
-            size="small"
-            value={term}
-            onChange={(event) => setTerm(event.target.value)}
-            inputProps={{ "data-testid": "search-input" }}
-            sx={{ flexGrow: 1, maxWidth: 480 }}
-          />
-          <Button type="submit" variant="contained" startIcon={<SearchIcon />} data-testid="search-submit">
-            Search
-          </Button>
-        </Stack>
-      </Box>
+      <form onSubmit={submit} className="flex items-center gap-2">
+        <Input
+          value={term}
+          onChange={(event) => setTerm(event.target.value)}
+          placeholder="Search term"
+          aria-label="Search term"
+          data-testid="search-input"
+          className="h-8 max-w-[480px] flex-1"
+        />
+        <Button type="submit" size="sm" data-testid="search-submit">
+          <Search />
+          Search
+        </Button>
+      </form>
 
-      <Tabs value={tab} onChange={(_, next: TabIndex) => setTab(next)} data-testid="search-tabs">
-        {TABS.map((label) => (
-          <Tab key={label} label={label} data-testid={`search-tab-${label.toLowerCase()}`} />
-        ))}
+      <Tabs
+        value={String(tab)}
+        onValueChange={(value) => setTab(Number(value) as TabIndex)}
+        data-testid="search-tabs"
+      >
+        <TabsList>
+          {TABS.map((label, index) => (
+            <TabsTrigger
+              key={label}
+              value={String(index)}
+              data-testid={`search-tab-${label.toLowerCase()}`}
+              className="px-3 text-[13px]"
+            >
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
       </Tabs>
 
       {q === "" && (
         <EmptyState
+          icon={<Search />}
           title="Type a term to search objects, columns, code, processed files, and flows"
           data-testid="search-hint"
         />
@@ -330,16 +329,23 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
     queryFn: () => searchApi.all(q),
   });
 
-  if (query.isLoading) {
-    return <LinearProgress data-testid="search-all-loading" />;
-  }
   if (query.isError) {
     return isApiError(query.error)
       ? <CorrelationError error={query.error} />
-      : <Typography color="error">{String(query.error)}</Typography>;
+      : <p className="text-[13px] text-destructive">{String(query.error)}</p>;
   }
 
-  const data = query.data as AllSearchResult;
+  const data = query.data;
+  if (data === undefined) {
+    return (
+      <div className="flex flex-col gap-4" data-testid="search-all-loading">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={`search-all-skeleton-${i}`} className="h-28 rounded-lg" />
+        ))}
+      </div>
+    );
+  }
+
   const totalHits = data.objects.total + data.columns.total + data.definitions.total
     + data.files.total + data.flows.total;
 
@@ -348,7 +354,7 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
   }
 
   return (
-    <Stack spacing={2} data-testid="search-all">
+    <div className="flex flex-col gap-4" data-testid="search-all">
       <CategorySection<ObjectHit>
         title="Objects" tab={1} category={data.objects} onSelectTab={onSelectTab}
         rowKey={(row) => row.key} onRowClick={(row) => openLineage(row.name)}
@@ -386,7 +392,7 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
         primary={(row) => row.name}
         secondary={(row) => `${row.matchedIn}: ${row.snippet}`}
       />
-    </Stack>
+    </div>
   );
 }
 
@@ -413,39 +419,40 @@ function CategorySection<T>({
 
   const remaining = category.total - category.items.length;
   return (
-    <Paper variant="outlined" sx={{ p: 2 }} data-testid={`search-all-${title.toLowerCase()}`}>
-      <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1 }}>
-        <Typography variant="subtitle1" fontWeight={700}>{title}</Typography>
-        <Chip label={category.total.toLocaleString()} size="small" />
-        <Box sx={{ flexGrow: 1 }} />
-        <Link component="button" type="button" variant="body2" onClick={() => onSelectTab(tab)}>
+    <Card className="gap-0 rounded-lg p-4" data-testid={`search-all-${title.toLowerCase()}`}>
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-[13px] font-semibold">{title}</h2>
+        <Badge variant="secondary" className="font-mono text-[11px] tabular-nums">
+          {category.total.toLocaleString()}
+        </Badge>
+        <button
+          type="button"
+          onClick={() => onSelectTab(tab)}
+          className="ml-auto text-[13px] text-primary hover:underline"
+        >
           See all
-        </Link>
-      </Stack>
-      <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
+        </button>
+      </div>
+      <div className="mt-2 divide-y divide-border">
         {category.items.map((row) => {
           const jump = jumpTarget?.(row) ?? null;
           return (
-            <Box key={rowKey(row)} sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Box
+            <div key={rowKey(row)} className="flex items-center gap-2">
+              <div
                 onClick={() => onRowClick(row)}
-                sx={{ flexGrow: 1, minWidth: 0, py: 0.75, cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }}
+                className="min-w-0 flex-1 cursor-pointer py-1.5 transition-colors hover:bg-accent/50"
               >
-                <Typography variant="body2" fontWeight={600}>{primary(row)}</Typography>
-                <Mono sx={{ display: "block", color: "text.secondary", whiteSpace: "pre-wrap" }}>
-                  {secondary(row)}
-                </Mono>
-              </Box>
+                <div className="truncate font-mono text-[12px] font-medium">{primary(row)}</div>
+                <Mono className="block whitespace-pre-wrap text-muted-foreground">{secondary(row)}</Mono>
+              </div>
               {jump !== null && <LineageJumpButton target={jump} />}
-            </Box>
+            </div>
           );
         })}
-      </Stack>
+      </div>
       {remaining > 0 && (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
-          {`and ${remaining.toLocaleString()} more`}
-        </Typography>
+        <div className="mt-2 text-xs text-muted-foreground">{`and ${remaining.toLocaleString()} more`}</div>
       )}
-    </Paper>
+    </Card>
   );
 }

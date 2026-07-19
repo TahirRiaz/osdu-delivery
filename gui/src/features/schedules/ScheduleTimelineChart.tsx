@@ -1,11 +1,56 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Box from "@mui/material/Box";
-import Paper from "@mui/material/Paper";
-import Typography from "@mui/material/Typography";
-import { alpha, useTheme } from "@mui/material/styles";
 import type { RunStatus } from "../../api/types";
+import { brandToken } from "../../theme/branding";
+import { useThemeMode } from "../../theme/ThemeModeContext";
 import { formatDurationSeconds } from "../../lib/time";
 import type { RunBar, TimelineRow } from "./timeline";
+
+/** The status tones the timeline draws with (DESIGN.md 3.2): status colors are reserved for run states, and
+ * cancelled/skipped/none read as muted. One mapping shared by the chart and the page's legend. */
+export type StatusTone = "success" | "destructive" | "info" | "warning" | "muted";
+
+export function statusTone(status: RunStatus | null): StatusTone {
+  switch (status) {
+    case "succeeded":
+      return "success";
+    case "failed":
+      return "destructive";
+    case "running":
+      return "info";
+    case "queued":
+      return "warning";
+    default:
+      return "muted";
+  }
+}
+
+/** The design tokens the SVG draws with, read off the document via getComputedStyle (the SVG attributes need
+ * resolved color strings). Cached per theme mode; a flip re-reads them. Never hex literals. */
+interface ChartPalette {
+  success: string;
+  destructive: string;
+  info: string;
+  warning: string;
+  muted: string;
+  primary: string;
+  border: string;
+  foreground: string;
+  card: string;
+}
+
+function readPalette(): ChartPalette {
+  return {
+    success: brandToken("--success"),
+    destructive: brandToken("--destructive"),
+    info: brandToken("--info"),
+    warning: brandToken("--warning"),
+    muted: brandToken("--muted-foreground"),
+    primary: brandToken("--primary"),
+    border: brandToken("--border"),
+    foreground: brandToken("--foreground"),
+    card: brandToken("--card"),
+  };
+}
 
 interface ScheduleTimelineChartProps {
   rows: TimelineRow[];
@@ -109,7 +154,11 @@ function makeTicks(startMs: number, endMs: number): Tick[] {
  * drag its body to pan and its edges to zoom (the focus chart also takes scroll-to-zoom and drag-to-pan). */
 export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, ScheduleTimelineChartProps>(
   function ScheduleTimelineChart({ rows, windowStartMs, windowEndMs, nowMs, onZoomChange }, ref) {
-  const theme = useTheme();
+  const { mode } = useThemeMode();
+  // Token values change when the `dark` class flips on <html>; `mode` keys the cache so a theme switch
+  // re-reads them (getComputedStyle has no reactivity of its own).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const palette = useMemo(readPalette, [mode]);
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const navRef = useRef<SVGSVGElement>(null);
@@ -121,23 +170,8 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
   const navDragRef = useRef<{ mode: NavMode; startX: number; viewStart: number; viewEnd: number } | null>(null);
 
   const statusColor = useCallback(
-    (status: RunStatus | null): string => {
-      switch (status) {
-        case "succeeded":
-          return theme.palette.success.main;
-        case "failed":
-          return theme.palette.error.main;
-        case "running":
-          return theme.palette.primary.main;
-        case "queued":
-          return theme.palette.info.main;
-        case "cancelled":
-          return theme.palette.warning.main;
-        default:
-          return theme.palette.text.disabled;
-      }
-    },
-    [theme],
+    (status: RunStatus | null): string => palette[statusTone(status)],
+    [palette],
   );
 
   // A new fetched window (range change or refetch) resets the viewport to fully zoomed out.
@@ -365,9 +399,9 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
   };
 
   return (
-    <Box ref={containerRef} sx={{ position: "relative", width: "100%" }} data-testid="schedule-timeline-chart">
+    <div ref={containerRef} className="relative w-full" data-testid="schedule-timeline-chart">
       {/* Focus chart: only the lanes scroll, so the navigator below stays put. */}
-      <Box sx={{ maxHeight: FOCUS_MAX_H, overflowY: "auto" }}>
+      <div className="overflow-y-auto" style={{ maxHeight: FOCUS_MAX_H }}>
         <svg
           ref={svgRef}
           width={width}
@@ -390,14 +424,14 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
                   y1={AXIS_H}
                   x2={x}
                   y2={focusHeight}
-                  stroke={theme.palette.divider}
+                  stroke={palette.border}
                   strokeWidth={1}
                   strokeOpacity={tick.emphasized ? 0.9 : 0.45}
                 />
                 <text
                   x={x + 4}
                   y={AXIS_H - 10}
-                  fill={theme.palette.text.secondary}
+                  fill={palette.muted}
                   fontSize={11}
                   fontWeight={tick.emphasized ? 600 : 400}
                 >
@@ -423,7 +457,8 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
                 y={0}
                 width={x1 - x0}
                 height={AXIS_H}
-                fill={hoverDay === day ? alpha(theme.palette.primary.main, 0.1) : "transparent"}
+                fill={hoverDay === day ? palette.primary : "transparent"}
+                fillOpacity={hoverDay === day ? 0.1 : 0}
                 style={{ cursor: "zoom-in" }}
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseEnter={() => setHoverDay(day)}
@@ -441,13 +476,13 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
             return (
               <g key={row.scheduleId}>
                 {index % 2 === 1 && (
-                  <rect x={0} y={laneY} width={width} height={LANE_H} fill={alpha(theme.palette.text.primary, 0.03)} />
+                  <rect x={0} y={laneY} width={width} height={LANE_H} fill={palette.foreground} fillOpacity={0.03} />
                 )}
                 <circle cx={16} cy={centerY} r={4} fill={statusColor(row.lastStatus)} />
                 <text
                   x={30}
                   y={centerY + 4}
-                  fill={row.enabled && !row.paused ? theme.palette.text.primary : theme.palette.text.disabled}
+                  fill={row.enabled && !row.paused ? palette.foreground : palette.muted}
                   fontSize={12}
                   fontWeight={500}
                 >
@@ -460,7 +495,7 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
                     cy={centerY}
                     r={4}
                     fill="none"
-                    stroke={theme.palette.primary.main}
+                    stroke={palette.primary}
                     strokeWidth={1.5}
                     strokeDasharray="2 1.5"
                   >
@@ -485,7 +520,7 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
                       height={BAR_H}
                       rx={3}
                       fill={statusColor(bar.status)}
-                      stroke={theme.palette.background.paper}
+                      stroke={palette.card}
                       strokeWidth={0.75}
                       style={{ cursor: "pointer" }}
                       onMouseEnter={showHover(bar)}
@@ -505,17 +540,17 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
                 y1={AXIS_H - 2}
                 x2={nowX}
                 y2={focusHeight}
-                stroke={theme.palette.warning.main}
+                stroke={palette.primary}
                 strokeWidth={1.5}
                 strokeDasharray="4 3"
               />
-              <text x={nowX + 4} y={AXIS_H + 10} fill={theme.palette.warning.main} fontSize={10} fontWeight={600}>
+              <text x={nowX + 4} y={AXIS_H + 10} fill={palette.primary} fontSize={10} fontWeight={600}>
                 now
               </text>
             </g>
           )}
         </svg>
-      </Box>
+      </div>
 
       {/* Navigator brush over the whole fetched window. */}
       <svg
@@ -529,10 +564,10 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
         onPointerUp={endNavDrag}
         onPointerCancel={endNavDrag}
       >
-        <text x={8} y={NAV_LANE_TOP - 6} fill={theme.palette.text.disabled} fontSize={10} fontWeight={600}>
+        <text x={8} y={NAV_LANE_TOP - 6} fill={palette.muted} fontSize={10} fontWeight={600}>
           OVERVIEW
         </text>
-        <text x={8} y={NAV_LANE_BOTTOM} fill={theme.palette.text.disabled} fontSize={10}>
+        <text x={8} y={NAV_LANE_BOTTOM} fill={palette.muted} fontSize={10}>
           drag to pan · edges to zoom
         </text>
 
@@ -542,7 +577,8 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
           y={NAV_LANE_TOP}
           width={Math.max(0, width - LABEL_W)}
           height={NAV_LANE_BOTTOM - NAV_LANE_TOP}
-          fill={alpha(theme.palette.text.primary, 0.04)}
+          fill={palette.foreground}
+          fillOpacity={0.04}
           rx={3}
         />
 
@@ -566,8 +602,9 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
           y={NAV_LANE_TOP}
           width={Math.max(2, selRight - selLeft)}
           height={NAV_LANE_BOTTOM - NAV_LANE_TOP}
-          fill={alpha(theme.palette.primary.main, 0.16)}
-          stroke={theme.palette.primary.main}
+          fill={palette.primary}
+          fillOpacity={0.16}
+          stroke={palette.primary}
           strokeWidth={1.5}
           rx={2}
           style={{ cursor: "grab" }}
@@ -580,36 +617,32 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
             width={6}
             height={NAV_LANE_BOTTOM - NAV_LANE_TOP + 2}
             rx={2}
-            fill={theme.palette.primary.main}
+            fill={palette.primary}
             style={{ cursor: "ew-resize" }}
           />
         ))}
       </svg>
 
       {hover !== null && (
-        <Paper
-          elevation={6}
-          sx={{
-            position: "absolute",
+        <div
+          className="pointer-events-none absolute z-10 max-w-60 rounded-md border bg-popover px-3 py-2 text-popover-foreground shadow-md"
+          style={{
             left: Math.min(hover.x + 12, Math.max(0, width - 220)),
             top: hover.y + 12,
-            px: 1.5,
-            py: 1,
-            pointerEvents: "none",
-            zIndex: 3,
-            maxWidth: 240,
           }}
         >
-          <Typography variant="subtitle2" noWrap>{hover.bar.flowName}</Typography>
-          <Typography variant="caption" color="text.secondary" display="block">
+          <div className="truncate font-mono text-[12px] font-medium">{hover.bar.flowName}</div>
+          <div className="text-xs text-muted-foreground">
             {hover.bar.status}
-            {hover.bar.durationSeconds !== null && ` · ${formatDurationSeconds(hover.bar.durationSeconds)}`}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block">
+            {hover.bar.durationSeconds !== null && (
+              <span className="font-mono"> · {formatDurationSeconds(hover.bar.durationSeconds)}</span>
+            )}
+          </div>
+          <div className="font-mono text-xs text-muted-foreground">
             {dateTimeLabel.format(new Date(hover.bar.startMs))}
-          </Typography>
-        </Paper>
+          </div>
+        </div>
       )}
-    </Box>
+    </div>
   );
 });

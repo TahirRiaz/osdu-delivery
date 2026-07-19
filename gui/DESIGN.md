@@ -1,0 +1,262 @@
+# SQLFlow GUI Design Book
+
+The binding reference for every screen in the SQLFlow GUI. Any page, component, or change that does not
+follow this book is wrong, even if it works. When a rule here conflicts with older code, the book wins and
+the code gets ported.
+
+## 1. Product stance
+
+SQLFlow's GUI is a **workbench, not a website**. The model is VS Code: a dense, keyboard-friendly,
+panel-based tool an operator keeps open all day. Every design choice follows from that stance:
+
+- **Density over airiness.** Operators scan tables of runs, flows, and objects. Compact rows, small
+  controls, 13px base type. Whitespace is spent on grouping, not on padding.
+- **Feedback for everything.** No action is silent. Every mutation acknowledges (pending state, then a
+  toast); every long process shows live progress; every completion notifies. See section 8.
+- **Panels over popups.** Popup dialogs are reserved for two narrow cases (section 7.4). Everything else
+  lives in the page, a side sheet, or the bottom panel.
+- **Data wears mono.** Identifiers, counts, timestamps, SQL, and paths render in the mono face. Prose and
+  labels render in the sans face.
+- **Dark first.** Both modes ship and are equally polished, but design decisions are made on the dark
+  theme first; it is the workbench default.
+
+## 2. Identity
+
+- Product name: **SQLFlow** (logo in `public/brand/`).
+- Brand anchors: deep navy `#283e56` (`--brand-navy`), navy-deep `#1b2c40`, warm cream `#fdf3e7`.
+- The navy lives in the chrome (activity bar, title bar); the blue accent carries interaction; the cream
+  appears only in the logo mark. No other decorative color.
+
+## 3. Color system
+
+All colors are CSS custom properties defined in `src/index.css`. Components never use raw hex values;
+they use the semantic Tailwind utilities (`bg-background`, `text-muted-foreground`, `border-border`,
+`bg-primary`, ...). Dark mode is keyed on the `dark` class on `<html>`.
+
+### 3.1 Semantic surfaces and text
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `background` | `#f6f8fb` | `#111a28` | editor area behind pages |
+| `card` | `#ffffff` | `#16202f` | cards, tables, elevated surfaces |
+| `popover` | `#ffffff` | `#16202f` | menus, popovers, palettes |
+| `foreground` | `#1d2733` | `#dce6f2` | primary text |
+| `muted-foreground` | `#5b6b7f` | `#8b9db3` | secondary text, table headers |
+| `border` | `#dfe5ee` | `#223146` | hairlines everywhere |
+| `input` | `#ccd6e3` | `#2a3b53` | form control borders |
+| `primary` | `#2f6fce` | `#4d9dff` | actions, links, selection, focus ring |
+| `secondary` | `#e8edf4` | `#1c2839` | secondary buttons, quiet chips |
+| `muted` | `#edf1f6` | `#1a2536` | subtle fills, skeletons, hover washes |
+| `accent` | `#e4ecf6` | `#1d2c40` | hover/selected rows and menu items |
+| `destructive` | `#d1242f` | `#e5484d` | destructive actions only |
+
+### 3.2 Status colors (reserved)
+
+Run/entity states only. Never used as chart series, never decorative. Always paired with an icon or
+label; color never carries meaning alone.
+
+| Token | Light | Dark | States |
+|---|---|---|---|
+| `success` | `#1a7f37` | `#3fb950` | succeeded, online, active, enabled |
+| `warning` | `#9a6700` | `#d29922` | queued, degraded, paused, rate-limited |
+| `info` | `#0969da` | `#58a6ff` | running, syncing, informational |
+| `destructive` | `#d1242f` | `#e5484d` | failed, offline, error |
+| `muted-foreground` | | | cancelled, skipped, disabled, unknown |
+
+### 3.3 Workbench chrome
+
+| Token | Light | Dark |
+|---|---|---|
+| `activity-bar` | `#283e56` (brand navy, both modes' chrome anchor) | `#0c1420` |
+| `side-bar` | `#eef2f7` | `#0f1826` |
+| `tab-bar` | `#eef2f7` | `#0c1420` |
+| `tab-active` | `#ffffff` | `#111a28` |
+| `panel` | `#ffffff` | `#0f1826` |
+| `status-bar` | `#2f6fce` (brand blue, both modes) | `#2f6fce` |
+
+### 3.4 Chart palette (validated)
+
+Categorical series use `--chart-1` ... `--chart-8`, assigned in **fixed slot order, never cycled, never
+re-assigned when a filter changes the series count**. This exact order passed the dataviz validator's
+six checks on SQLFlow's card surfaces (light `#ffffff`, dark `#16202f`) in July 2026; do not re-order or
+substitute steps without re-running the validator.
+
+| Slot | Light | Dark |
+|---|---|---|
+| 1 blue | `#2a78d6` | `#3987e5` |
+| 2 green | `#008300` | `#008300` |
+| 3 magenta | `#e87ba4` | `#d55181` |
+| 4 yellow | `#eda100` | `#c98500` |
+| 5 aqua | `#1baf7a` | `#199e70` |
+| 6 orange | `#eb6834` | `#d95926` |
+| 7 violet | `#4a3aa7` | `#9085e9` |
+| 8 red | `#e34948` | `#e66767` |
+
+Relief rule: in light mode, slots 3, 4, and 5 sit below 3:1 against white, so any chart using them ships
+visible direct labels or an adjacent table view. Chart rules beyond color: one axis per chart (never
+dual-axis); a legend whenever there are 2+ series; hover tooltips on every plot; text in text tokens,
+never in series colors; status colors never appear as series.
+
+## 4. Typography
+
+- Sans: `Inter Variable` (UI text, labels, prose). Mono: `JetBrains Mono Variable` (data).
+- Base size **13px** (set on `body`). Scale: 11px (`text-[11px]`) chrome captions and uppercase group
+  headers, 12px (`text-xs`) secondary/table meta, 13px body and controls, 14px (`text-sm`) emphasized
+  body, 16px (`text-base`) section titles, 18px (`text-lg`) page titles, 24px (`text-2xl`) KPI values.
+- Page titles `font-semibold`; section titles `font-medium`; never `font-bold` in body content.
+- Mono applies to: ids, hashes, row counts, durations, timestamps, schema/object/flow names, file paths,
+  SQL, YAML, connection strings. Aligned numeric columns also get `tabular-nums`.
+- Uppercase (`uppercase tracking-wider text-[11px] font-medium text-muted-foreground`) is reserved for
+  chrome group headers (side bar sections, panel titles), never for data or buttons.
+
+## 5. Spacing, density, and shape
+
+- 4px grid. Standard gaps: 4/8/12/16/24. Page padding: `p-4 md:p-6`; content measure capped at 1600px.
+- Control height **32px** (`h-8`, button `size="sm"`, inputs `className="h-8"`) for toolbar controls,
+  filters, and forms; 24px (`size="xs"`) for compact in-row actions. Never the 36px defaults.
+- Table rows 32px; header row 32px with `text-xs font-medium text-muted-foreground` uppercase-free.
+- Radius: `--radius` 6px. Cards/popovers `rounded-lg`, controls `rounded-md`, badges `rounded-sm` or
+  full. Nothing larger; the workbench look is tight, not bubbly.
+- Shadows are near-absent: popovers/menus get the shadcn default; cards get borders, not shadows.
+
+## 6. The workbench layout
+
+Fixed viewport frame, no page scroll; only the editor area and panel scroll internally.
+
+```
++------------------------------------------------------------------+
+| Title bar (36px): brand | global search (center) | theme, account|
++---+--------------------------------------------------------------+
+| A | Side bar (resizable | Tab strip (35px)                       |
+| c | 200-320px):         +----------------------------------------+
+| t | grouped nav,        | Editor: the routed page                |
+| B | collapsible         |   (scrolls internally)                 |
+| a | sections            +----------------------------------------+
+| r |                     | Bottom panel (resizable, closable)     |
++---+---------------------+----------------------------------------+
+| Status bar (22px, brand blue)                                    |
++------------------------------------------------------------------+
+```
+
+- **Title bar** (`h-9`, `bg-activity-bar`): logo + product name left; centered global search box
+  (max-w-xl, testid `global-search`, Enter navigates to `/search?q=`); right side theme toggle (testid
+  `theme-toggle`) and account menu (testids `account-menu-button`, `account-subject`, `account-tokens`,
+  `account-notifications`, `account-logout`). On mobile a hamburger opens the nav sheet.
+- **Activity bar** (`w-12`): one icon per nav group, Settings gear pinned at the bottom. Active group
+  shows a 2px left indicator + full-intensity icon. Click: reveal the group in the side bar; click on
+  the active group toggles the side bar. Tooltips on the right.
+- **Side bar** (resizable 12-35%, persisted): all nav groups as collapsible sections (uppercase 11px
+  headers), items 28px tall with 16px lucide icons, nav testids preserved (`nav-runs`, ...). Selection
+  follows the longest-prefix rule; selected item gets `bg-sidebar-accent` plus a 2px accent inset.
+- **Tab strip** (`h-[35px]`, `bg-tab-bar`): one tab per visited route; active tab wears `bg-tab-active`,
+  a 1px top accent line, and its close button always visible; inactive tabs reveal close on hover.
+  Middle-click closes. Tabs persist per browser session. Detail pages set real titles via
+  `useTabTitle(...)` once data loads.
+- **Editor**: the routed page inside a scroll container with the measure cap. Pages never add their own
+  outer padding.
+- **Bottom panel** (resizable 15-70%, closable): live surfaces opened by features through `usePanel()`
+  (e.g. a run's streaming trace). Header: uppercase 11px title + close. One content at a time.
+- **Status bar** (`h-[22px]`, `bg-status-bar`, white text, 11px): left segments show live workload
+  (running/queued run counts, click-through to filtered Runs) and the rate-limit pause (testid
+  `rate-limit-banner`); right segments show the signed-in subject and role. Segments are flat text +
+  16px icons with hover wash; no borders.
+- **Command palette** (Ctrl+K, also Ctrl+Shift+P): cmdk dialog listing every nav destination grouped as
+  in the side bar, plus a catalog-search action. Fuzzy filter, Enter navigates.
+
+## 7. Components
+
+Shared components live in `src/components/` (app-level) and `src/components/ui/` (shadcn primitives,
+never hand-edited except where this book says so). MUI, emotion, and notistack are forbidden imports.
+
+### 7.1 Page scaffold
+
+`Page` + `PageHeader`: testid `page-<name>` preserved; header carries title (18px semibold), optional
+description (13px muted), and right-aligned toolbar actions (small buttons). Below the header, optional
+`FilterBar`. No breadcrumbs in v1 except detail pages: parent link + entity name.
+
+### 7.2 Tables
+
+`DataTable` (presentational) and `PagedTable` (server paging) keep their existing prop contracts and
+testids (`table-row`, `paged-table`, `group-header-row`, ...). Spec: card surface with border; 32px
+rows; hairline row separators; hover `bg-accent/50` on clickable rows; two-level tree grouping with
+chevrons (existing behavior); skeleton rows while loading; `EmptyState` inside when empty; numeric
+columns right-aligned mono tabular; status columns render `StatusBadge`.
+
+### 7.3 StatusBadge
+
+One component maps every domain status (run, node, schedule, user, sync) to {icon, label, status
+color}: succeeded/online/active = success, failed/error/offline = destructive, running/syncing = info
+with a spinning indicator, queued/paused = warning, cancelled/skipped/disabled = muted. Badge form:
+`rounded-full` pill, 11px label, tinted background (`bg-<status>/12`), solid text color, 12px icon.
+Testid `status-badge` preserved.
+
+### 7.4 Dialogs, sheets, and the panel
+
+- **AlertDialog** (small modal): only for destructive confirmation (`ConfirmDialog`, testids preserved)
+  and for single-field prompts that gate an immediate action. Nothing else is modal.
+- **Sheet** (right side, 480-640px): create/edit forms (trigger run, create schedule, create user,
+  register source, spawn workers). Sheets are the replacement for every MUI form dialog. Existing
+  `*-dialog` testids stay on the sheet content so e2e keeps passing.
+- **Bottom panel**: live process output (streaming run trace, sync progress). Never modal.
+- **Popover/DropdownMenu**: pickers, row action menus (`user-actions`, ...).
+
+### 7.5 Forms
+
+react-hook-form + zod (already in place) with shadcn `Input`, `Select`, `Checkbox`, `Switch`,
+`Textarea`, `Label`. Field errors inline under the control (12px destructive). Submit buttons show a
+pending spinner and disable while the mutation is in flight. Every form field keeps its testid.
+
+### 7.6 Code and data views
+
+`CodeView` renders Monaco with the workbench theme (dark: `vs-dark` on `--card`; light: `vs`), 12px
+JetBrains Mono, no shadows, border hairline. YAML/SQL always in `CodeView`, never in a `<pre>`.
+
+### 7.7 KPI tiles and charts
+
+`KpiCard`: card with 11px muted uppercase label, 24px semibold value (mono when numeric), optional
+delta with icon + success/destructive text, optional sparkline in slot-1 blue. Charts follow section
+3.4 and the dataviz skill's rules (form first, hover tooltips, legends for 2+ series, one axis).
+
+## 8. Feedback rules (non-negotiable)
+
+The old GUI's central failure was silence. These rules bind every feature:
+
+1. **Every mutation acknowledges.** Button enters pending (spinner, disabled) while in flight; on
+   success a sonner toast states what happened ("Run 4f2a queued", "Schedule paused"); on failure a
+   destructive toast states what failed and why (the API error message), and the page surface shows
+   `CorrelationError` where recovery context helps.
+2. **Every long process shows liveness.** Anything that outlives the click (runs, syncs, discovery,
+   key detection) gets: a live status surface (polling or SSE, via the existing cadence helpers), a
+   progress affordance (spinner + counts, or determinate bar when totals are known), and a terminal
+   notification (toast on success and on failure) even if the user navigated away. The status bar's
+   workload segment reflects running work at all times.
+3. **Every data surface has three states.** Loading = skeletons (never spinners-in-space); empty =
+   `EmptyState` with an explanation and, where sensible, the next action; error = `CorrelationError`
+   with the correlation id. No blank rectangles, ever.
+4. **Route transitions** show the slim top progress bar (lazy chunks), never a blank screen.
+5. **Toasts** (bottom-right, max 3): success auto-dismiss 5s; errors stay until dismissed; never toast
+   what the user is already looking at live (no "loaded 50 rows" noise).
+
+## 9. Motion
+
+120ms ease-out for hovers and reveals, 150-200ms for sheets/panels sliding, no bounce, no scale-up
+entrances. `tw-animate-css` utilities only. Anything animating layout must be interruptible.
+
+## 10. Accessibility
+
+Focus visible everywhere (`outline-ring/50` base is set globally); all icon-only buttons carry
+`aria-label` + tooltip; keyboard: palette Ctrl+K, tab strip and side bar fully tabbable; contrast:
+text >= 4.5:1, chrome text >= 3:1 (the token tables above were chosen for this); status never encoded
+by color alone (7.3); tables get real `<table>` semantics (the ui/table primitives).
+
+## 11. Port checklist (apply to every feature page)
+
+- [ ] No `@mui/*`, `@emotion/*`, or `notistack` imports remain in the file.
+- [ ] Colors only via semantic utilities; no hex, no `--sf-*` legacy tokens.
+- [ ] Every `data-testid` present before the port is present after it.
+- [ ] Page scaffold: `Page`/`PageHeader`, page testid, actions as small buttons.
+- [ ] Tables through `DataTable`/`PagedTable`; statuses through `StatusBadge`; data in mono.
+- [ ] Forms: sheet-based (7.4), pending states, inline errors, success/failure toasts (8.1).
+- [ ] Long processes: live surface + terminal toast (8.2). Three data states everywhere (8.3).
+- [ ] Detail pages call `useTabTitle` with the entity name.
+- [ ] Both themes checked; `tsc -b` and `vite build` clean; e2e for the feature passes.

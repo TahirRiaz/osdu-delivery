@@ -1,27 +1,23 @@
 import { useMemo, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Card from "@mui/material/Card";
-import CardContent from "@mui/material/CardContent";
-import Skeleton from "@mui/material/Skeleton";
-import Stack from "@mui/material/Stack";
-import ToggleButton from "@mui/material/ToggleButton";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import Typography from "@mui/material/Typography";
-import { alpha, useTheme } from "@mui/material/styles";
-import TableRowsIcon from "@mui/icons-material/TableRows";
+import { Rows3 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { runApi, scheduleApi } from "../../api/endpoints";
 import type { RunStatus, RunSummary } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
+import { FilterBar } from "../../components/FilterBar";
+import { KpiCard } from "../../components/KpiCard";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { pollingInterval } from "../../hooks/usePolling";
 import { formatDurationSeconds } from "../../lib/time";
-import { ScheduleTimelineChart, type ScheduleTimelineHandle } from "./ScheduleTimelineChart";
+import { ScheduleTimelineChart, statusTone, type ScheduleTimelineHandle, type StatusTone } from "./ScheduleTimelineChart";
 import { buildRows, computeStats, DEFAULT_RANGE_KEY, RANGE_PRESETS, rangeByKey } from "./timeline";
 
 const DAY_MS = 86_400_000;
@@ -41,21 +37,6 @@ async function fetchRunsInWindow(fromIso: string, toIso: string): Promise<RunSum
   return out;
 }
 
-function InsightCell({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
-  return (
-    <Card variant="outlined">
-      <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
-        <Typography variant="h6" sx={{ color: valueColor, lineHeight: 1.2 }} data-testid="timeline-insight-value">
-          {value}
-        </Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          {label}
-        </Typography>
-      </CardContent>
-    </Card>
-  );
-}
-
 const LEGEND: { status: RunStatus; label: string }[] = [
   { status: "succeeded", label: "succeeded" },
   { status: "failed", label: "failed" },
@@ -65,31 +46,23 @@ const LEGEND: { status: RunStatus; label: string }[] = [
   { status: "skipped", label: "skipped" },
 ];
 
+/** The legend swatch class for each status tone: the semantic utilities behind the same DESIGN.md 3.2 mapping
+ * the chart reads via tokens, so the legend and the bars can never disagree. */
+const TONE_SWATCH: Record<StatusTone, string> = {
+  success: "bg-success",
+  destructive: "bg-destructive",
+  info: "bg-info",
+  warning: "bg-warning",
+  muted: "bg-muted-foreground",
+};
+
 /** The Schedules timeline: a day-by-day Gantt of when each schedule's flow actually ran, with the estate's
  * cadence rolled up into an insight strip (busiest hour, quietest free window, success rate). */
 export default function ScheduleTimelinePage() {
-  const theme = useTheme();
   const [rangeKey, setRangeKey] = useState<string>(DEFAULT_RANGE_KEY);
   const [zoomed, setZoomed] = useState(false);
   const chartRef = useRef<ScheduleTimelineHandle>(null);
   const range = rangeByKey(rangeKey);
-
-  const statusColor = (status: RunStatus): string => {
-    switch (status) {
-      case "succeeded":
-        return theme.palette.success.main;
-      case "failed":
-        return theme.palette.error.main;
-      case "running":
-        return theme.palette.primary.main;
-      case "queued":
-        return theme.palette.info.main;
-      case "cancelled":
-        return theme.palette.warning.main;
-      default:
-        return theme.palette.text.disabled;
-    }
-  };
 
   const schedulesQuery = useQuery({
     queryKey: ["schedule-timeline", "schedules"],
@@ -121,57 +94,20 @@ export default function ScheduleTimelinePage() {
   const successColor = stats?.successRate == null
     ? undefined
     : stats.successRate >= 90
-      ? theme.palette.success.main
+      ? "success" as const
       : stats.successRate >= 50
-        ? theme.palette.warning.main
-        : theme.palette.error.main;
-
-  const rangeControl = (
-    <Stack direction="row" spacing={1} alignItems="center">
-      {zoomed && (
-        <Button size="small" variant="outlined" onClick={() => chartRef.current?.reset()} data-testid="timeline-reset-zoom">
-          Reset zoom
-        </Button>
-      )}
-      <ToggleButtonGroup
-        exclusive
-        size="small"
-        value={rangeKey}
-        onChange={(_, next) => {
-          if (next !== null) {
-            setRangeKey(next);
-          }
-        }}
-        data-testid="timeline-range"
-      >
-        {RANGE_PRESETS.map((preset) => (
-          <ToggleButton key={preset.key} value={preset.key} sx={{ textTransform: "none" }}>
-            {preset.key}
-          </ToggleButton>
-        ))}
-      </ToggleButtonGroup>
-      <Button
-        component={RouterLink}
-        to="/schedules"
-        size="small"
-        variant="text"
-        startIcon={<TableRowsIcon />}
-        data-testid="timeline-to-table"
-      >
-        Table
-      </Button>
-    </Stack>
-  );
+        ? "warning" as const
+        : "error" as const;
 
   const renderBody = () => {
     if (schedulesQuery.isError) {
       return isApiError(schedulesQuery.error)
         ? <CorrelationError error={schedulesQuery.error} />
-        : <Typography color="error">{String(schedulesQuery.error)}</Typography>;
+        : <p className="text-[13px] text-destructive">{String(schedulesQuery.error)}</p>;
     }
 
     if (schedules === undefined) {
-      return <Skeleton variant="rounded" height={420} />;
+      return <Skeleton className="h-[420px] w-full rounded-lg" />;
     }
 
     if (schedules.length === 0) {
@@ -179,7 +115,11 @@ export default function ScheduleTimelinePage() {
         <EmptyState
           title="No schedules yet"
           description="Create a schedule and its runs appear here, day by day."
-          action={<Button component={RouterLink} to="/schedules" variant="contained">Go to schedules</Button>}
+          action={(
+            <Button size="sm" asChild>
+              <RouterLink to="/schedules">Go to schedules</RouterLink>
+            </Button>
+          )}
           data-testid="timeline-empty-schedules"
         />
       );
@@ -188,11 +128,11 @@ export default function ScheduleTimelinePage() {
     if (runsQuery.isError) {
       return isApiError(runsQuery.error)
         ? <CorrelationError error={runsQuery.error} />
-        : <Typography color="error">{String(runsQuery.error)}</Typography>;
+        : <p className="text-[13px] text-destructive">{String(runsQuery.error)}</p>;
     }
 
     if (runsQuery.data === undefined) {
-      return <Skeleton variant="rounded" height={420} />;
+      return <Skeleton className="h-[420px] w-full rounded-lg" />;
     }
 
     if (stats !== null && stats.runCount === 0) {
@@ -201,7 +141,7 @@ export default function ScheduleTimelinePage() {
           title={`No runs in the ${range.label.toLowerCase()}`}
           description="Nothing fired in this window. Widen the range, or trigger a run to see it land on the timeline."
           action={rangeKey !== "30d" ? (
-            <Button variant="outlined" onClick={() => setRangeKey("30d")}>Show last 30 days</Button>
+            <Button variant="outline" size="sm" onClick={() => setRangeKey("30d")}>Show last 30 days</Button>
           ) : undefined}
           data-testid="timeline-empty-runs"
         />
@@ -225,68 +165,81 @@ export default function ScheduleTimelinePage() {
       <PageHeader
         title="Schedule timeline"
         subtitle="When each schedule's flow actually ran, across the selected window."
-        actions={rangeControl}
+        actions={(
+          <Button variant="outline" size="sm" asChild data-testid="timeline-to-table">
+            <RouterLink to="/schedules">
+              <Rows3 />
+              Table
+            </RouterLink>
+          </Button>
+        )}
       />
 
-      {stats !== null && runsQuery.data !== undefined && (
-        <Box
-          sx={{
-            display: "grid",
-            gap: 2,
-            gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+      <FilterBar>
+        {zoomed && (
+          <Button variant="outline" size="sm" onClick={() => chartRef.current?.reset()} data-testid="timeline-reset-zoom">
+            Reset zoom
+          </Button>
+        )}
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={rangeKey}
+          onValueChange={(next) => {
+            if (next !== "") {
+              setRangeKey(next);
+            }
           }}
+          aria-label="History range"
+          data-testid="timeline-range"
         >
-          <InsightCell label="Schedules" value={`${stats.activeScheduleCount}/${stats.scheduleCount}`} />
-          <InsightCell label="Runs" value={String(stats.runCount)} />
-          <InsightCell
+          {RANGE_PRESETS.map((preset) => (
+            <ToggleGroupItem key={preset.key} value={preset.key} className="h-8 px-2.5 text-xs" aria-label={preset.label}>
+              {preset.key}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </FilterBar>
+
+      {stats !== null && runsQuery.data !== undefined && (
+        <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+          <KpiCard label="Schedules" value={`${stats.activeScheduleCount}/${stats.scheduleCount}`} testId="timeline-insight" />
+          <KpiCard label="Runs" value={String(stats.runCount)} testId="timeline-insight" />
+          <KpiCard
             label="Success"
             value={stats.successRate == null ? "-" : `${stats.successRate}%`}
-            valueColor={successColor}
+            color={successColor}
+            testId="timeline-insight"
           />
-          <InsightCell
+          <KpiCard
             label="Avg duration"
             value={stats.avgDurationSeconds == null ? "-" : formatDurationSeconds(stats.avgDurationSeconds)}
+            testId="timeline-insight"
           />
-          <InsightCell label="Busiest hour" value={stats.busiestHour ?? "-"} />
-          <InsightCell label="Best window" value={stats.bestWindow ?? "-"} />
-        </Box>
+          <KpiCard label="Busiest hour" value={stats.busiestHour ?? "-"} testId="timeline-insight" />
+          <KpiCard label="Best window" value={stats.bestWindow ?? "-"} testId="timeline-insight" />
+        </div>
       )}
 
-      <Card variant="outlined">
-        <CardContent>{renderBody()}</CardContent>
-      </Card>
+      <div className="rounded-lg border bg-card p-4">{renderBody()}</div>
 
       {schedules !== undefined && schedules.length > 0 && stats !== null && stats.runCount > 0 && (
-        <Stack
-          direction="row"
-          spacing={2}
-          alignItems="center"
-          flexWrap="wrap"
-          useFlexGap
-          sx={{ px: 0.5, color: "text.secondary" }}
-        >
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-xs text-muted-foreground">
           {LEGEND.map((entry) => (
-            <Stack key={entry.status} direction="row" spacing={0.75} alignItems="center">
-              <Box sx={{ width: 12, height: 12, borderRadius: 0.5, bgcolor: statusColor(entry.status) }} />
-              <Typography variant="caption">{entry.label}</Typography>
-            </Stack>
+            <span key={entry.status} className="flex items-center gap-1.5">
+              <span className={cn("size-3 rounded-[3px]", TONE_SWATCH[statusTone(entry.status)])} />
+              {entry.label}
+            </span>
           ))}
-          <Stack direction="row" spacing={0.75} alignItems="center">
-            <Box
-              sx={{
-                width: 12,
-                height: 12,
-                borderRadius: "50%",
-                border: `1.5px dashed ${theme.palette.primary.main}`,
-                bgcolor: alpha(theme.palette.primary.main, 0.08),
-              }}
-            />
-            <Typography variant="caption">next fire</Typography>
-          </Stack>
-          <Typography variant="caption" sx={{ ml: "auto" }}>
+          <span className="flex items-center gap-1.5">
+            <span className="size-3 rounded-full border-[1.5px] border-dashed border-primary bg-primary/10" />
+            next fire
+          </span>
+          <span className="ml-auto">
             Click a day to drill in · double-click the chart to zoom · scroll to zoom · drag to pan
-          </Typography>
-        </Stack>
+          </span>
+        </div>
       )}
     </Page>
   );

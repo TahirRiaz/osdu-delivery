@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSnackbar } from "notistack";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
-import Tooltip from "@mui/material/Tooltip";
-import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import { toast } from "sonner";
+import { RotateCcw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { nodeApi } from "../../api/endpoints";
 import type { Node } from "../../api/types";
@@ -12,31 +12,37 @@ import { useAuth } from "../../auth/AuthContext";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 /** Restarts one node: a confirmation, then a request the worker honors on its next heartbeat (drain, then exit) so
- *  the orchestrator recreates it. A pending request shows as a chip instead of the button; the control is only
+ *  the orchestrator recreates it. A pending request shows as a badge instead of the button; the control is only
  *  offered to operators. */
 export function NodeRestartButton({ node }: { node: Node }) {
   const { hasScope } = useAuth();
-  const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const restart = useMutation({
     mutationFn: () => nodeApi.restart(node.name),
     onSuccess: () => {
-      enqueueSnackbar(`Restart requested for '${node.name}'.`, { variant: "success" });
+      toast.success(`Restart requested for '${node.name}'.`);
       setConfirmOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["nodes", "list"] });
     },
     onError: (error) => {
-      enqueueSnackbar(isApiError(error) ? error.title : String(error), { variant: "error" });
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
       setConfirmOpen(false);
     },
   });
 
   if (node.restartRequestedUtc !== null) {
     return (
-      <Tooltip title="The node will drain its in-flight work and restart on its next heartbeat.">
-        <Chip size="small" color="warning" variant="outlined" label="Restart pending" data-testid="node-restart-pending" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge variant="outline" className="border-warning/50 text-warning" data-testid="node-restart-pending">
+            Restart pending
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          The node will drain its in-flight work and restart on its next heartbeat.
+        </TooltipContent>
       </Tooltip>
     );
   }
@@ -48,14 +54,14 @@ export function NodeRestartButton({ node }: { node: Node }) {
   return (
     <>
       <Button
-        size="small"
-        variant="outlined"
-        color="warning"
-        startIcon={<RestartAltIcon />}
+        variant="outline"
+        size="xs"
+        className="text-warning"
         disabled={!node.online || restart.isPending}
         onClick={() => setConfirmOpen(true)}
         data-testid="node-restart-button"
       >
+        <RotateCcw />
         Restart
       </Button>
       <ConfirmDialog
