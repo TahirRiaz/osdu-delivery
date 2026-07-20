@@ -12,7 +12,7 @@ namespace SqlFlow.ControlPlane.Api;
 public sealed record ScheduleDto(
     Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
-    Guid? LastGroupId, DateTime CreatedUtc, DateTime UpdatedUtc);
+    Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc);
 
 /// <summary>The body to create an ad-hoc API schedule: the member flows it runs, exactly one of cron /
 /// intervalSeconds, and optionally a name (defaulting to the first member's flow name). Membership is what a fire
@@ -313,5 +313,10 @@ public static class ScheduleEndpoints
         db.ScheduleMembers.Where(m => m.ScheduleId == s.Id).Select(m => m.PipelineId).ToList(),
         s.Cron, s.IntervalSeconds, s.Timezone,
         s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.LastGroupId,
+        // Whether the last scoped fire's group is still executing, so the list can surface a live re-entry point to it
+        // (a member still queued or running). A single-member fire has no group, so this is always false there.
+        s.LastGroupId != null && db.Runs.Any(r =>
+            r.GroupId == s.LastGroupId
+            && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running)),
         s.CreatedUtc, s.UpdatedUtc);
 }

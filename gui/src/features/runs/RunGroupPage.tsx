@@ -21,6 +21,7 @@ import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useRunDock } from "./RunDockContext";
 import { pollingInterval } from "../../hooks/usePolling";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { formatDurationSeconds } from "../../lib/time";
@@ -130,6 +131,7 @@ export default function RunGroupPage() {
 function RunGroupContent({ groupId }: { groupId: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { track } = useRunDock();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const query = useQuery({
@@ -177,6 +179,7 @@ function RunGroupContent({ groupId }: { groupId: string }) {
     onSuccess: (accepted) => {
       toast.success(`Re-run enqueued: ${accepted.memberCount ?? 0} member(s).`);
       if (accepted.groupId) {
+        track(accepted.groupId);
         navigate(`/runs/groups/${accepted.groupId}`);
       }
     },

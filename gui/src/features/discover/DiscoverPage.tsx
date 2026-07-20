@@ -20,6 +20,18 @@ import { CorrelationError } from "../../components/CorrelationError";
 import { isApiError } from "../../api/client";
 import { sourceApi } from "../../api/endpoints";
 import type { DiscoveredColumn, DiscoveredPath, SourceDiscoverResult } from "../../api/types";
+import { usePanel } from "../../layout/workbench/PanelContext";
+import { ActivityTracePanel } from "../activity/ActivityTracePanel";
+
+/** The activity-trace kind a source discovery writes under (mirrors ActivityKinds.SourceDiscover server-side). */
+const DISCOVER_KIND = "source-discover";
+
+/** The last path segment of a location, for a compact panel title (falls back to the whole location). */
+function locationLabel(location: string): string {
+  const cleaned = location.split(/[?#]/)[0].replace(/[/\\]+$/, "");
+  const segment = cleaned.split(/[/\\]/).pop();
+  return segment && segment.length > 0 ? segment : location;
+}
 
 // Radix Select items cannot carry an empty value, so "auto" stands in for "let the server detect".
 const AUTO_FORMAT = "auto";
@@ -92,9 +104,11 @@ export default function DiscoverPage() {
   const [maxRecords, setMaxRecords] = useState("");
   const [maxDepth, setMaxDepth] = useState("");
   const [defaultType, setDefaultType] = useState("varchar(255)");
+  const panel = usePanel();
+  const [traceNonce, setTraceNonce] = useState(0);
 
   const discover = useMutation({
-    mutationFn: (): Promise<SourceDiscoverResult> =>
+    mutationFn: (subject: string): Promise<SourceDiscoverResult> =>
       sourceApi.discover({
         location: location.trim(),
         format: format === AUTO_FORMAT ? null : format,
@@ -105,6 +119,7 @@ export default function DiscoverPage() {
         maxRecords: parseCount(maxRecords) ?? null,
         maxDepth: parseCount(maxDepth) ?? null,
         defaultColumnType: defaultType.trim() || null,
+        traceSubject: subject,
       }),
     // Discovery outlives the click (a folder scan can sample many files), so it ends with a terminal
     // toast either way (DESIGN.md 8.2); the liveness surface below the form covers the in-between.
@@ -170,9 +185,23 @@ export default function DiscoverPage() {
   };
 
   const submit = () => {
-    if (canDiscover) {
-      discover.mutate();
+    if (!canDiscover) {
+      return;
     }
+
+    // The location is the trace subject, so repeat scans of the same source keep a bounded scrollback and a fresh
+    // nonce restarts the stream from the top. Open the bottom trace panel first, then run the scan: both address the
+    // same (kind, subject), so the panel tails each phase (format, delimiter, schema) and shows where a scan fails.
+    // Cap to the server's SubjectKey column bound (256) so the panel keys on the exact value the request traces under.
+    const subject = location.trim().slice(0, 256);
+    const nextNonce = traceNonce + 1;
+    setTraceNonce(nextNonce);
+    panel.open({
+      id: `discover-trace:${subject}`,
+      title: `Discover · ${locationLabel(subject)}`,
+      node: <ActivityTracePanel kind={DISCOVER_KIND} subject={subject} nonce={nextNonce} />,
+    });
+    discover.mutate(subject);
   };
 
   return (

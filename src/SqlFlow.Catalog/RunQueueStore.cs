@@ -11,10 +11,12 @@ namespace SqlFlow.Catalog;
 /// pool routes it to eligible nodes, and an optional commit SHA pins it to an exact git version the node
 /// materializes. A null <see cref="CommitSha"/> is not "unpinned" but "default": enqueueing pins the run to the
 /// repo's last synced commit when one is known (see <see cref="RunQueueStore.EnqueueAsync"/>), so any node in the
-/// fleet can execute it. <see cref="Parameters"/> carries the per-run substitution parameters (the built-in
-/// backfill: full load, window, file pattern), validated at the trust boundary and recorded on the run row so
-/// every backfill is auditable. Bundled into one request so the optional references can never be passed in the
-/// wrong order.</summary>
+/// fleet can execute it. Enqueueing also snapshots the pipeline's exact YAML into the content-addressed
+/// <see cref="CatalogFlowVersion"/> store and stamps the run with its hash, so the executing node loads the
+/// document from the catalog instead of cloning the repo; the commit pin remains the audit trail and the
+/// fallback. <see cref="Parameters"/> carries the per-run substitution parameters (the built-in backfill: full
+/// load, window, file pattern), validated at the trust boundary and recorded on the run row so every backfill is
+/// auditable. Bundled into one request so the optional references can never be passed in the wrong order.</summary>
 public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
     RunParameters? Parameters = null);
@@ -118,8 +120,15 @@ public static class RunQueueStore
     /// still travels through git (workers materialize the commit once and cache it). Only when no synced commit is
     /// resolvable (the repo was synced from a local path with no remote, or has no managed source) does the run
     /// stay unpinned and fall back to the executing node's locally synced copy.
+    /// </para>
+    /// <para>
+    /// Content snapshot: alongside the pin, the pipeline's current YAML is snapshotted into the content-addressed
+    /// <see cref="CatalogFlowVersion"/> store and the run is stamped with its hash, so the executing node reads
+    /// the document from the catalog and needs no git access at all for the common case. A missing pipeline row,
+    /// empty stored YAML, or a flow that embeds a literal credential (whose stored YAML is the redacted form, not
+    /// the committed bytes) is not snapshotted: the run keeps the git materialization path above.
     /// </para></summary>
-    public static Task<Guid> EnqueueAsync(
+    public static async Task<Guid> EnqueueAsync(
         CatalogDbContext catalog, RunEnqueueRequest request, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -130,7 +139,13 @@ public static class RunQueueStore
         parameters.Validate();
 
         var runId = Guid.CreateVersion7();
-        return CatalogTransaction.InSerializableAsync(catalog, async () =>
+        var pipelineId = CatalogIdentity.Pipeline(request.RepoId, request.FlowName);
+        // Stage the executable YAML into the content-addressed store before the run transaction (its own idempotent
+        // save; see EnsureFlowVersionAsync), so the run only has to carry the hash and the node fetches the document
+        // from the catalog instead of cloning the repo.
+        var flowVersionHash = await EnsureFlowVersionAsync(catalog, pipelineId, nowUtc, ct).ConfigureAwait(false);
+
+        return await CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
             var commitSha = string.IsNullOrWhiteSpace(request.CommitSha)
                 ? await ResolveSyncedShaAsync(catalog, request.RepoId, ct).ConfigureAwait(false)
@@ -139,12 +154,13 @@ public static class RunQueueStore
             catalog.Runs.Add(new CatalogRun
             {
                 RunId = runId,
-                PipelineId = CatalogIdentity.Pipeline(request.RepoId, request.FlowName),
+                PipelineId = pipelineId,
                 RepoId = request.RepoId,
                 FlowName = request.FlowName,
                 FlowKind = string.IsNullOrWhiteSpace(request.FlowKind) ? "unknown" : request.FlowKind,
                 TargetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim(),
                 CommitSha = commitSha,
+                FlowVersionHash = flowVersionHash,
                 FullLoad = parameters.FullLoad,
                 BackfillFrom = parameters.BackfillFrom,
                 BackfillTo = parameters.BackfillTo,
@@ -168,7 +184,7 @@ public static class RunQueueStore
     /// consistent version) and carries default run parameters (backfill is single-flow only). Returns the group id
     /// and the member run ids in wave order. Members are validated non-empty by the caller (an empty scope is a
     /// request error, not something to enqueue).</summary>
-    public static Task<RunGroupEnqueueResult> EnqueueGroupAsync(
+    public static async Task<RunGroupEnqueueResult> EnqueueGroupAsync(
         CatalogDbContext catalog, RunGroupEnqueueRequest request, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -182,7 +198,22 @@ public static class RunQueueStore
 
         var groupId = Guid.CreateVersion7();
         var targetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim();
-        return CatalogTransaction.InSerializableAsync(catalog, async () =>
+
+        // Stage every member's executable YAML into the content-addressed store before the run transaction, so the
+        // serializable transaction only inserts run rows. Distinct pipelines are staged once; members that share
+        // content (a group fanning out one version) reuse the row EnsureFlowVersionAsync committed for the first.
+        var flowVersionByPipeline = new Dictionary<Guid, string?>();
+        foreach (var member in request.Members)
+        {
+            var pipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName);
+            if (!flowVersionByPipeline.ContainsKey(pipelineId))
+            {
+                flowVersionByPipeline[pipelineId] =
+                    await EnsureFlowVersionAsync(catalog, pipelineId, nowUtc, ct).ConfigureAwait(false);
+            }
+        }
+
+        return await CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
             var commitSha = string.IsNullOrWhiteSpace(request.CommitSha)
                 ? await ResolveSyncedShaAsync(catalog, request.RepoId, ct).ConfigureAwait(false)
@@ -204,15 +235,17 @@ public static class RunQueueStore
             {
                 var runId = Guid.CreateVersion7();
                 runIds.Add(runId);
+                var pipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName);
                 catalog.Runs.Add(new CatalogRun
                 {
                     RunId = runId,
-                    PipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName),
+                    PipelineId = pipelineId,
                     RepoId = request.RepoId,
                     FlowName = member.FlowName,
                     FlowKind = string.IsNullOrWhiteSpace(member.FlowKind) ? "unknown" : member.FlowKind,
                     TargetPool = targetPool,
                     CommitSha = commitSha,
+                    FlowVersionHash = flowVersionByPipeline[pipelineId],
                     GroupId = groupId,
                     // A negative (uncomputed) wave collapses to 0 so an un-analyzed set runs as one parallel wave.
                     GroupWave = member.Wave < 0 ? 0 : member.Wave,
@@ -247,6 +280,67 @@ public static class RunQueueStore
                 select source.LastSyncedSha)
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return string.IsNullOrWhiteSpace(sha) ? null : sha.Trim();
+    }
+
+    /// <summary>
+    /// Snapshots the pipeline's current YAML into the content-addressed <see cref="CatalogFlowVersion"/> store and
+    /// returns its hash, staging the version row when this content has not been seen before (same hash = same bytes,
+    /// so a hundred runs at one commit share one row). Returns null, leaving the run on the git materialization
+    /// path, when no trustworthy snapshot exists: the pipeline row is missing (the flow left the catalog between
+    /// resolution and enqueue), its stored YAML is empty, or the YAML carries an embedded literal credential. In
+    /// that last case the stored text is the redacted form, not the committed bytes, so executing it would silently
+    /// run a different document; such a flow (already loudly warned by the sync) keeps cloning git until it is fixed
+    /// to use ${...} references.
+    /// <para>
+    /// Deliberately staged in its own short save, OUTSIDE the caller's serializable run transaction: the version
+    /// store is append-only immutable content, so committing it independently is correct, and it keeps the
+    /// content-addressed table off the serializable transaction's lock footprint (two concurrent enqueues of the
+    /// same brand-new version would otherwise take conflicting range locks and deadlock). A concurrent staging of
+    /// the identical version races benignly: the loser catches the duplicate-key and treats the existing row, whose
+    /// bytes are identical, as the staged one. An orphaned version row (its run transaction later fails) is
+    /// harmless and reused by the next enqueue of that content.
+    /// </para>
+    /// </summary>
+    private static async Task<string?> EnsureFlowVersionAsync(
+        CatalogDbContext catalog, Guid pipelineId, DateTime nowUtc, CancellationToken ct)
+    {
+        var pipeline = await catalog.Pipelines.AsNoTracking()
+            .Where(p => p.Id == pipelineId)
+            .Select(p => new { p.ContentHash, p.Yaml })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (pipeline is null
+            || string.IsNullOrWhiteSpace(pipeline.ContentHash)
+            || string.IsNullOrWhiteSpace(pipeline.Yaml)
+            || SecretHygiene.LooksLikeEmbeddedSecret(pipeline.Yaml))
+        {
+            return null;
+        }
+
+        var exists = await catalog.FlowVersions.AsNoTracking()
+            .AnyAsync(v => v.ContentHash == pipeline.ContentHash, ct).ConfigureAwait(false);
+        if (!exists)
+        {
+            catalog.FlowVersions.Add(new CatalogFlowVersion
+            {
+                ContentHash = pipeline.ContentHash,
+                Yaml = pipeline.Yaml,
+                FirstSeenUtc = nowUtc,
+            });
+            try
+            {
+                await catalog.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+            catch (DbUpdateException)
+            {
+                // A concurrent enqueue staged this identical (content-addressed) version first; the row exists with
+                // the same bytes, which is exactly the goal. Detach the failed add so the context stays clean for
+                // the run transaction that follows.
+                var entry = catalog.Entry(catalog.FlowVersions.Local.First(v => v.ContentHash == pipeline.ContentHash));
+                entry.State = EntityState.Detached;
+            }
+        }
+
+        return pipeline.ContentHash;
     }
 
     /// <summary>Atomically claims the oldest queued run this node is eligible for, flipping it to <c>running</c> and

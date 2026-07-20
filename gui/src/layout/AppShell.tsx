@@ -1,6 +1,8 @@
 import { useCallback, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { RunDock } from "../features/runs/RunDock";
+import { RunDockProvider } from "../features/runs/RunDockContext";
 import { groupForPath, type NavGroup } from "./nav";
 import { ActivityBar } from "./workbench/ActivityBar";
 import { CommandPalette } from "./workbench/CommandPalette";
@@ -101,6 +103,7 @@ function WorkbenchFrame() {
       </div>
       <StatusBar />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      <RunDock />
     </div>
   );
 }
@@ -110,7 +113,9 @@ export default function AppShell() {
   return (
     <TabsProvider>
       <PanelProvider>
-        <WorkbenchFrame />
+        <RunDockProvider>
+          <WorkbenchFrame />
+        </RunDockProvider>
       </PanelProvider>
     </TabsProvider>
   );

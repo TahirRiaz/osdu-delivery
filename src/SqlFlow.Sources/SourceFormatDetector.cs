@@ -49,6 +49,27 @@ public static class SourceFormatDetector
     }
 
     /// <summary>
+    /// Detects the delimiter of a CSV head sample once the format is already known to be delimited text (a format the
+    /// caller pinned explicitly, or resolved from a <c>.csv</c> extension, where the content detector never ran).
+    /// Returns the reader delimiter option (null means the default comma) and the human-readable evidence. This is
+    /// what stops a semicolon/tab/pipe file from being read as a single comma-delimited column: the delimiter is
+    /// profiled from the data itself, not assumed from the extension.
+    /// </summary>
+    public static (string? Option, string Evidence) DetectCsvDelimiter(ReadOnlySpan<byte> head)
+    {
+        var (text, _) = DecodeHead(head);
+        var (delimiter, option, consistency, count) = ProfileDelimited(text);
+        if (count == 0)
+        {
+            return (null, "no delimiter found in the sample; reading as a single column");
+        }
+
+        var name = delimiter == '\t' ? "tab" : $"'{delimiter}'";
+        return (option,
+            $"delimiter detected: {name} ({count} field(s), {(int)(consistency * 100)}% consistent across sampled lines)");
+    }
+
+    /// <summary>
     /// Detects the format of a head sample. Magic bytes win outright; failing that, the text shape (XML declaration,
     /// JSON braces, delimited-text profiling) decides; failing that, the file-name extension is the low-confidence
     /// fallback. Returns <see cref="SourceFormatDetection.Type"/> null only when nothing recognizable was found.

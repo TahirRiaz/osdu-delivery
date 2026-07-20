@@ -378,6 +378,19 @@ export default function SchedulesPage() {
       render: (row) => (
         <div className="flex items-center gap-1">
           <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
+          {row.lastGroupActive && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Badge className="gap-1 border-transparent bg-info/12 text-info" data-testid="schedule-running">
+                    <Loader2 className="size-3 animate-spin" />
+                    running
+                  </Badge>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>A fire of this schedule is executing now. Open "view running" to watch or cancel it.</TooltipContent>
+            </Tooltip>
+          )}
           {row.catchup && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -400,17 +413,22 @@ export default function SchedulesPage() {
       render: (row) => {
         // A scoped fire is a set, so its "last run" is the whole group, not one member.
         if (row.lastGroupId !== null) {
+          // While that group is still executing, this is the durable way back to the live run board (the pre-flight
+          // sheet is ephemeral; closing it or switching tabs must not strand the run), so it reads as an active link.
           return (
             <Button
-              variant="ghost"
+              variant={row.lastGroupActive ? "outline" : "ghost"}
               size="xs"
+              className={row.lastGroupActive ? "border-info/40 text-info hover:text-info" : undefined}
               onClick={(e) => {
                 e.stopPropagation();
                 navigate(`/runs/groups/${row.lastGroupId}`);
               }}
               data-testid="schedule-last-group"
             >
-              view set
+              {row.lastGroupActive
+                ? <><Loader2 className="animate-spin" />view running</>
+                : "view set"}
             </Button>
           );
         }

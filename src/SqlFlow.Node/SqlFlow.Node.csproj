@@ -14,6 +14,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SqlFlow.ControlPlane.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
     <ProjectReference Include="..\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
     <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />

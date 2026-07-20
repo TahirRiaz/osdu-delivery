@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  Ban,
   ChevronDown,
   CircleCheck,
   CircleMinus,
@@ -27,11 +28,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
-import { scheduleApi } from "../../api/endpoints";
+import { runApi, scheduleApi } from "../../api/endpoints";
 import type { RunStatus, RunSummary, Schedule, SchedulePlanMember } from "../../api/types";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
 import { RelativeTime } from "../../components/RelativeTime";
 import { seriesColor } from "../../theme/branding";
+import { useRunDock } from "../runs/RunDockContext";
 import { useRunGroupStream } from "../runs/useRunGroupStream";
 
 /** The status a plan member shows on the board: the live run status once a fire is underway, or "pending" before
@@ -125,9 +128,11 @@ export interface RunScheduleDialogProps {
 export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { track } = useRunDock();
 
   const [groupId, setGroupId] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   // An empty set means "all batches"; any members carrying a selected batch tag are what the fire (and this board)
   // narrows to. Multiple batches can be selected to run several at once.
   const [selectedBatches, setSelectedBatches] = useState<string[]>([]);
@@ -154,7 +159,9 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       if (accepted.groupId !== null) {
-        // A multi-flow fire streams live in this board; keep the sheet open and switch to the running phase.
+        // A multi-flow fire streams live in this board; keep the sheet open and switch to the running phase. Also
+        // hand the group to the run tray, so closing the sheet or switching tabs never strands the running fire.
+        track(accepted.groupId);
         setGroupId(accepted.groupId);
         return;
       }
@@ -166,6 +173,20 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
     },
     onError: (error) => {
       toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
+    },
+  });
+
+  // Cancelling the running group: the same unit-cancel the full run group view uses (dequeues the queued members and
+  // aborts any running member's in-flight statement). The board keeps streaming, so the rows settle to cancelled live.
+  const cancel = useMutation({
+    mutationFn: () => runApi.cancelGroup(groupId!),
+    onSuccess: () => {
+      toast.success("Cancel requested for this run.");
+      setConfirmCancelOpen(false);
+    },
+    onError: (error) => {
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
+      setConfirmCancelOpen(false);
     },
   });
 
@@ -293,6 +314,30 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                     )}
                 </p>
               </div>
+
+              {/* A prior fire of this schedule is still executing (the last group has queued/running members). Rather
+                  than fire a second overlapping run, point the operator at the live board for the run already going. */}
+              {phase === "preview" && schedule.lastGroupActive && schedule.lastGroupId !== null && (
+                <Alert data-testid="run-schedule-already-running">
+                  <Loader2 className="animate-spin text-info" />
+                  <AlertDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span>A fire of this schedule is still running.</span>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0 text-info"
+                      onClick={() => {
+                        onClose();
+                        navigate(`/runs/groups/${schedule.lastGroupId}`);
+                      }}
+                      data-testid="run-schedule-view-running"
+                    >
+                      View the running set
+                      <ExternalLink className="size-3.5" />
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
 
               {(!schedule.enabled || schedule.paused) && phase === "preview" && (
                 <Alert data-testid="run-schedule-inactive-note">
@@ -523,6 +568,19 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                 </TooltipTrigger>
                 <TooltipContent>Open the full run group view</TooltipContent>
               </Tooltip>
+              {!ended && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => setConfirmCancelOpen(true)}
+                  disabled={cancel.isPending}
+                  data-testid="run-schedule-cancel-run"
+                >
+                  {cancel.isPending ? <Loader2 className="animate-spin" /> : <Ban />}
+                  Cancel run
+                </Button>
+              )}
               <Button
                 variant={ended ? "default" : "outline"}
                 size="sm"
@@ -535,6 +593,17 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
           )}
         </SheetFooter>
       </SheetContent>
+
+      <ConfirmDialog
+        open={confirmCancelOpen}
+        title="Cancel this run"
+        message="Cancel the running fire? Queued flows are dequeued and any running flow aborts its in-flight statement. Flows that already finished are unaffected."
+        confirmLabel="Cancel run"
+        danger
+        busy={cancel.isPending}
+        onConfirm={() => cancel.mutate()}
+        onClose={() => setConfirmCancelOpen(false)}
+      />
     </Sheet>
   );
 }

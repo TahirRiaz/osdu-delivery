@@ -212,6 +212,13 @@ public class CatalogRun
     /// local copy of. Null runs the flow from the node's locally synced repo path (the default).</summary>
     public string? CommitSha { get; set; }
 
+    /// <summary>The content hash of the exact YAML this run executes, snapshotted from the pipeline row at enqueue
+    /// time into <see cref="CatalogFlowVersion"/>. This is the primary delivery path: the executing node loads the
+    /// YAML from the catalog by this hash instead of cloning the repo, so a schedule fanning out a whole batch
+    /// never storms the git remote. Null when no snapshot could be taken at enqueue (the pipeline row was missing
+    /// or empty); the node then falls back to git materialization via <see cref="CommitSha"/>.</summary>
+    public string? FlowVersionHash { get; set; }
+
     /// <summary>Per-run substitution: ignore the watermark and read everything the definition selects (the
     /// built-in backfill's force-full). Recorded on the run, so every backfill is auditable from the history.</summary>
     public bool FullLoad { get; set; }
@@ -329,6 +336,30 @@ public class CatalogRunGroup
     public string? CommitSha { get; set; }
 
     public DateTime EnqueuedUtc { get; set; }
+}
+
+/// <summary>
+/// One executable YAML version, content-addressed by its hash: the exact document text a run executes, snapshotted
+/// from the pipeline row when the run is enqueued. This is how flow content reaches a compute node: the enqueue
+/// stamps <see cref="CatalogRun.FlowVersionHash"/> and inserts this row if the version is new, and the node loads
+/// the YAML from here instead of materializing the repo from its git remote, so a schedule fanning out a whole
+/// batch costs zero clones. Rows are immutable (same hash = same bytes) and deduplicated: a hundred runs at one
+/// commit share one row. The text is the same secret-redacted form the pipeline row stores; redaction is a no-op
+/// for compliant (reference-only) flows, and a flow that embeds a literal credential is never snapshotted (the
+/// enqueue leaves the hash null and the node keeps the git path for it).
+/// </summary>
+public class CatalogFlowVersion
+{
+    /// <summary>SHA-256 (hex) of <see cref="Yaml"/>: the content address, and the value runs reference through
+    /// <see cref="CatalogRun.FlowVersionHash"/>.</summary>
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>The full YAML document text this version executes (secret-redacted, like the pipeline row's copy;
+    /// identical to the committed bytes for reference-only flows).</summary>
+    public string Yaml { get; set; } = string.Empty;
+
+    /// <summary>When this version was first snapshotted (the first enqueue that referenced it).</summary>
+    public DateTime FirstSeenUtc { get; set; }
 }
 
 /// <summary>

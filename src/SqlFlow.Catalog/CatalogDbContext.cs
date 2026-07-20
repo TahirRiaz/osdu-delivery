@@ -24,6 +24,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRunGroup> RunGroups => Set<CatalogRunGroup>();
 
+    public DbSet<CatalogFlowVersion> FlowVersions => Set<CatalogFlowVersion>();
+
     public DbSet<CatalogObject> Objects => Set<CatalogObject>();
 
     public DbSet<CatalogLineageEdge> LineageEdges => Set<CatalogLineageEdge>();
@@ -123,6 +125,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.ClaimedByNode).HasMaxLength(256);
             entity.Property(r => r.TargetPool).HasMaxLength(128);
             entity.Property(r => r.CommitSha).HasMaxLength(64);
+            entity.Property(r => r.FlowVersionHash).HasMaxLength(64);
             entity.Property(r => r.FilePattern).HasMaxLength(200);
             entity.Property(r => r.Host).HasMaxLength(256);
             entity.Property(r => r.IncrementalMode).HasMaxLength(16);
@@ -158,6 +161,16 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(g => g.CommitSha).HasMaxLength(64);
             // A repo's run groups, newest first, for the group board.
             entity.HasIndex(g => new { g.RepoId, g.EnqueuedUtc });
+        });
+
+        modelBuilder.Entity<CatalogFlowVersion>(entity =>
+        {
+            entity.ToTable("FlowVersion");
+            // Content-addressed: the hash IS the identity (same hash = same bytes), assigned by code, never by
+            // the database. Yaml stays nvarchar(max): a flow document has no useful length bound.
+            entity.HasKey(v => v.ContentHash);
+            entity.Property(v => v.ContentHash).HasMaxLength(64).ValueGeneratedNever();
+            entity.Property(v => v.Yaml).IsRequired();
         });
 
         modelBuilder.Entity<CatalogObject>(entity =>

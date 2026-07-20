@@ -48,8 +48,11 @@ public sealed class SourceDiscoveryService
     }
 
     /// <summary>Discovers the source at <paramref name="request"/> and returns its structure plus generated YAML.
-    /// Throws <see cref="SqlFlowException"/> for a caller-fixable problem (bad location, unknown format, empty selection).</summary>
-    public async Task<SourceDiscoveryResult> DiscoverAsync(SourceDiscoveryRequest request, CancellationToken ct = default)
+    /// When <paramref name="progress"/> is supplied, each phase (format, delimiter, schema, sampling) is reported so a
+    /// caller can stream the operation live. Throws <see cref="SqlFlowException"/> for a caller-fixable problem (bad
+    /// location, unknown format, empty selection).</summary>
+    public async Task<SourceDiscoveryResult> DiscoverAsync(
+        SourceDiscoveryRequest request, IDiscoveryProgress? progress = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         var location = request.Location?.Trim() ?? string.Empty;
@@ -58,10 +61,16 @@ public sealed class SourceDiscoveryService
             throw new SqlFlowException("A discover requires a non-blank location (a file, folder, or URI).");
         }
 
+        await ReportAsync(progress, "start", $"Discovering source at '{location}'.", ct).ConfigureAwait(false);
+
         var store = _fileStores.FirstOrDefault(s => s.CanHandle(location))
             ?? throw new SqlFlowException($"No file store handles location '{location}'.");
 
-        var (type, confidence, evidence, csvDelimiter) = await ResolveFormatAsync(store, location, request, ct).ConfigureAwait(false);
+        await ReportAsync(progress, "format", "Detecting the source format.", ct).ConfigureAwait(false);
+        var (type, confidence, evidence, csvDelimiter, delimiterResolved) =
+            await ResolveFormatAsync(store, location, request, progress, ct).ConfigureAwait(false);
+        await ReportAsync(progress, "format",
+            $"Format: {type} ({confidence}). {string.Join("; ", evidence)}", ct).ConfigureAwait(false);
 
         var (specType, options) = FlattenSourceSpec.BuildBase(location, type, request.Pattern, request.Recursive, request.RootPath);
         if (csvDelimiter is not null && specType == "csv")
@@ -73,43 +82,54 @@ public sealed class SourceDiscoveryService
 
         var introspector = FlattenSourceSpec.IntrospectorFor(_readers, specType);
         return introspector is not null
-            ? await FlattenAsync(introspector, spec, request, confidence, evidence, ct).ConfigureAwait(false)
-            : await ColumnarAsync(spec, store, request, confidence, evidence, ct).ConfigureAwait(false);
+            ? await FlattenAsync(introspector, spec, request, confidence, evidence, progress, ct).ConfigureAwait(false)
+            : await ColumnarAsync(spec, store, request, confidence, evidence, delimiterResolved, progress, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Resolves the source type in priority order: explicit format, then the location's own extension, then
-    /// a listed representative file's extension, then content sniffing of that file's head.</summary>
-    private static async Task<(string Type, string Confidence, List<string> Evidence, string? CsvDelimiter)> ResolveFormatAsync(
-        IFileStore store, string location, SourceDiscoveryRequest request, CancellationToken ct)
+    /// <summary>Forwards one progress phase to the sink when one is supplied; a no-op otherwise.</summary>
+    private static Task ReportAsync(IDiscoveryProgress? progress, string step, string message, CancellationToken ct)
+        => progress?.ReportAsync(step, message, ct) ?? Task.CompletedTask;
+
+    /// <summary>
+    /// Resolves the source type in priority order: explicit format, then the location's own extension, then a listed
+    /// representative file's extension, then content sniffing of that file's head. <c>DelimiterResolved</c> is true
+    /// only when the delimiter is already settled (an explicit TSV, or a content sniff that profiled the bytes); for a
+    /// CSV resolved from an explicit format or a file extension it is false, so the columnar reader sniffs the actual
+    /// sample and a semicolon/tab/pipe file is not read as a single comma column.
+    /// </summary>
+    private static async Task<(string Type, string Confidence, List<string> Evidence, string? CsvDelimiter, bool DelimiterResolved)> ResolveFormatAsync(
+        IFileStore store, string location, SourceDiscoveryRequest request, IDiscoveryProgress? progress, CancellationToken ct)
     {
         // An explicit "tsv" is comma-CSV's tab-delimited sibling: same reader, a pinned delimiter.
         var explicitFormat = request.Format?.Trim().ToLowerInvariant();
         if (explicitFormat == "tsv")
         {
-            return ("csv", "explicit", ["format specified explicitly: TSV (tab-delimited)"], "\t");
+            return ("csv", "explicit", ["format specified explicitly: TSV (tab-delimited)"], "\t", true);
         }
 
         if (!string.IsNullOrWhiteSpace(explicitFormat))
         {
             var (pinnedType, _) = FlattenSourceSpec.BuildBase(location, explicitFormat, request.Pattern, request.Recursive, null);
-            return (pinnedType, "explicit", [$"format specified explicitly: {pinnedType}"], null);
+            // An explicitly-chosen CSV still needs its delimiter sniffed from the data, so leave it unresolved.
+            return (pinnedType, "explicit", [$"format specified explicitly: {pinnedType}"], null, false);
         }
 
         // The location's own last segment often names the format (a single file, or a URI ending in .json).
         var fromLocation = SourceFormatDetector.TypeFromExtension(FlattenSourceSpec.UriLastSegment(location));
         if (fromLocation is not null)
         {
-            return (fromLocation, "extension", [$"file extension of the location ({fromLocation})"], null);
+            return (fromLocation, "extension", [$"file extension of the location ({fromLocation})"], null, false);
         }
 
         // Otherwise list a representative file and try its extension, then sniff its bytes.
+        await ReportAsync(progress, "scan", "Listing a representative file under the location.", ct).ConfigureAwait(false);
         var sample = await FirstFileAsync(store, location, request.Pattern ?? "*", request.Recursive, ct).ConfigureAwait(false)
             ?? throw new SqlFlowException(EmptySelectionMessage(location, request.Pattern));
 
         var fromSample = SourceFormatDetector.TypeFromExtension(sample.Name);
         if (fromSample is not null)
         {
-            return (fromSample, "extension", [$"file extension of '{sample.Name}' ({fromSample})"], null);
+            return (fromSample, "extension", [$"file extension of '{sample.Name}' ({fromSample})"], null, false);
         }
 
         var head = await ReadHeadAsync(store, sample, SourceFormatDetector.HeadSampleBytes, ct).ConfigureAwait(false);
@@ -124,16 +144,20 @@ public sealed class SourceDiscoveryService
 
         var evidence = new List<string> { $"content-detected from '{sample.Name}'" };
         evidence.AddRange(detection.Evidence);
-        return (detection.Type, detection.Confidence, evidence, detection.CsvDelimiter);
+        return (detection.Type, detection.Confidence, evidence, detection.CsvDelimiter, true);
     }
 
     private static async Task<SourceDiscoveryResult> FlattenAsync(
         IFlattenIntrospector introspector, SourceSpec spec, SourceDiscoveryRequest request,
-        string confidence, List<string> evidence, CancellationToken ct)
+        string confidence, List<string> evidence, IDiscoveryProgress? progress, CancellationToken ct)
     {
+        await ReportAsync(progress, "introspect", "Sampling records and discovering the path structure.", ct).ConfigureAwait(false);
         var introspection = await introspector
             .IntrospectAsync(spec, request.MaxFiles, request.MaxRecords, request.MaxDepth, ct).ConfigureAwait(false);
         var inventory = introspection.Inventory;
+        await ReportAsync(progress, "introspect",
+            $"Scanned {inventory.FilesScanned} file(s), {inventory.RecordsScanned} record(s); found {inventory.Paths.Count} path(s).",
+            ct).ConfigureAwait(false);
 
         var columnType = ResolveColumnType(request);
         var maxType = FlattenFlowYaml.MaxVariant(columnType);
@@ -150,7 +174,7 @@ public sealed class SourceDiscoveryService
 
     private async Task<SourceDiscoveryResult> ColumnarAsync(
         SourceSpec spec, IFileStore store, SourceDiscoveryRequest request,
-        string confidence, List<string> evidence, CancellationToken ct)
+        string confidence, List<string> evidence, bool delimiterResolved, IDiscoveryProgress? progress, CancellationToken ct)
     {
         var reader = _readers.FirstOrDefault(r => r.CanHandle(spec.Type))
             ?? throw new SqlFlowException(
@@ -159,8 +183,29 @@ public sealed class SourceDiscoveryService
         // Read the schema from one representative file (bounded), not the whole folder: a raw landing folder's files
         // share a schema, and a real run unions and NULL-fills any drift at load time anyway.
         var effectivePattern = request.Pattern ?? FlattenSourceSpec.DefaultPatternFor(spec.Type);
+        await ReportAsync(progress, "scan", $"Selecting a representative file matching '{effectivePattern}'.", ct).ConfigureAwait(false);
         var sample = await FirstFileAsync(store, spec.Location!, effectivePattern, request.Recursive, ct).ConfigureAwait(false)
             ?? throw new SqlFlowException(EmptySelectionMessage(spec.Location!, effectivePattern));
+
+        // Sniff the delimiter from the actual sample when the format was pinned or resolved from a .csv extension (the
+        // content detector never ran), so a semicolon/tab/pipe file is not read as one comma-delimited column. The
+        // sniffed delimiter is folded into both the schema probe and the generated YAML's source.options.
+        if (spec.Type == "csv" && !delimiterResolved && !spec.Options.ContainsKey("delimiter"))
+        {
+            await ReportAsync(progress, "delimiter", $"Sniffing the CSV delimiter from '{sample.Name}'.", ct).ConfigureAwait(false);
+            var head = await ReadHeadAsync(store, sample, SourceFormatDetector.HeadSampleBytes, ct).ConfigureAwait(false);
+            var (option, note) = SourceFormatDetector.DetectCsvDelimiter(head);
+            evidence.Add(note);
+            await ReportAsync(progress, "delimiter", note, ct).ConfigureAwait(false);
+            if (option is not null)
+            {
+                var withDelimiter = new Dictionary<string, string?>(spec.Options, StringComparer.OrdinalIgnoreCase)
+                {
+                    ["delimiter"] = option,
+                };
+                spec = spec with { Options = withDelimiter };
+            }
+        }
 
         // Probe the sample with provenance/key columns off so the reported columns are the source's own, not the
         // generated _DW columns; the rendered YAML keeps the provenance defaults a real ingestion uses.
@@ -170,6 +215,7 @@ public sealed class SourceDiscoveryService
             probeOptions[key] = "false";
         }
 
+        await ReportAsync(progress, "schema", $"Reading the column schema from '{sample.Name}'.", ct).ConfigureAwait(false);
         var probeSpec = spec with { Location = sample.Path, Options = probeOptions };
         IReadOnlyList<SourceColumn> sourceColumns;
         try
@@ -180,6 +226,8 @@ public sealed class SourceDiscoveryService
         {
             await reader.CompleteAsync(probeSpec, ct).ConfigureAwait(false);
         }
+
+        await ReportAsync(progress, "schema", $"Discovered {sourceColumns.Count} column(s).", ct).ConfigureAwait(false);
 
         var columnType = ResolveColumnType(request);
         var columns = sourceColumns

@@ -629,6 +629,7 @@ public sealed partial class RunWorker
                         r.PipelineId,
                         r.FlowName,
                         r.CommitSha,
+                        r.FlowVersionHash,
                         r.FullLoad,
                         r.BackfillFrom,
                         r.BackfillTo,
@@ -662,7 +663,22 @@ public sealed partial class RunWorker
             }
 
             string flowRoot;
-            if (!string.IsNullOrWhiteSpace(run.CommitSha))
+            // Snapshot-first: the enqueue stamped the run with the content hash of the exact YAML to execute and
+            // staged that version in the catalog, so the node writes it into its local version cache and runs it
+            // with no git access at all. This is what keeps a schedule fanning out a whole batch from storming the
+            // git remote with clones (the failure mode: the remote answers a burst of authenticated fetches with
+            // throttling, which libgit2 surfaces as "too many redirects or authentication replays"). The git
+            // materialization below remains the fallback for a run that carries no snapshot (enqueued before the
+            // snapshot model, or its flow embeds a literal credential), a pruned version row, and a document that
+            // needs the surrounding repo tree (a relative local source/target/repository path).
+            var snapshotRoot = !string.IsNullOrWhiteSpace(run.FlowVersionHash)
+                ? await TryStageSnapshotAsync(scope, catalog, runId, run.FlowVersionHash, relativePath, ct).ConfigureAwait(false)
+                : null;
+            if (snapshotRoot is not null)
+            {
+                flowRoot = snapshotRoot;
+            }
+            else if (!string.IsNullOrWhiteSpace(run.CommitSha))
             {
                 // SHA-pinned: run the exact committed version, materialized from the repo's remote (reproducible,
                 // and works even on a node with no locally synced copy of this flow).
@@ -823,6 +839,113 @@ public sealed partial class RunWorker
         }
     }
 
+    // The staged-YAML version cache: one immutable directory per content hash, under the same per-user node cache
+    // the git materializer writes its checkouts to. The "yaml" namespace can never collide with a repo directory
+    // (those are keyed by a 16-char remote-URL hash). Stability matters: runs of the same version share the
+    // directory, so the run history written next to the flow file accumulates across runs exactly as it does in a
+    // per-commit git checkout.
+    private static readonly string SnapshotCacheRoot =
+        Path.Combine(Path.GetTempPath(), "sqlflow", "node-cache", "yaml");
+
+    /// <summary>
+    /// Stages the run's snapshotted YAML version from the catalog into the local version cache and returns the
+    /// directory to execute from (the flow file lands at its repo-relative path beneath it, so the run-history
+    /// anchor matches a git checkout's layout). Returns null, sending the caller to the git materialization path,
+    /// when the version row no longer exists, the document cannot execute from a bare snapshot (it references
+    /// sibling repo files through a relative local path), the stored text does not parse (the git path reproduces
+    /// the same load error the run would have reported before snapshots), or the cache directory cannot be
+    /// written (logged; the git path is the still-correct degradation).
+    /// </summary>
+    private async Task<string?> TryStageSnapshotAsync(
+        IServiceProvider scope, CatalogDbContext catalog, Guid runId, string contentHash, string relativePath,
+        CancellationToken ct)
+    {
+        var yaml = await catalog.FlowVersions.AsNoTracking()
+            .Where(v => v.ContentHash == contentHash)
+            .Select(v => v.Yaml)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(yaml))
+        {
+            return null; // the version row is gone; the commit pin still identifies the exact content in git
+        }
+
+        var versionRoot = Path.Combine(SnapshotCacheRoot, contentHash);
+        var flowFile = Path.GetFullPath(Path.Combine(versionRoot, relativePath));
+
+        // One probing parse decides executability from a bare snapshot; the run itself still loads through the
+        // same DocumentLoader.Load path as every other execution mode (CLI file, git checkout).
+        try
+        {
+            var documents = scope.GetRequiredService<YamlDocumentLoader>();
+            if (RequiresRepoTree(documents.Parse(yaml, flowFile)))
+            {
+                return null;
+            }
+        }
+        catch (SqlFlowException)
+        {
+            return null;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(flowFile)!);
+            if (!File.Exists(flowFile))
+            {
+                // Content-addressed, so concurrent runs of the same version race benignly (identical bytes):
+                // publish with a private temp write + move, so a torn write is never observed and a move that
+                // loses the race just means a sibling run staged it first.
+                var temp = flowFile + ".staging-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    await File.WriteAllTextAsync(temp, yaml, ct).ConfigureAwait(false);
+                    File.Move(temp, flowFile);
+                }
+                catch (IOException) when (File.Exists(flowFile))
+                {
+                    // A concurrent run published this version between the existence check and the move.
+                }
+                finally
+                {
+                    if (File.Exists(temp))
+                    {
+                        File.Delete(temp);
+                    }
+                }
+            }
+
+            LogSnapshotStaged(runId, contentHash);
+            return versionRoot;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The local cache is unwritable (disk pressure, permissions): degrade to the git path, which needs no
+            // pre-staged file, and say why so the slower clone is explainable from the log.
+            LogSnapshotStageFailed(runId, contentHash, SecretHygiene.RedactedMessage(ex));
+            return null;
+        }
+    }
+
+    /// <summary>True when the document cannot execute from a bare single-file snapshot because it addresses
+    /// sibling files in the repo tree: a relative local source location (a file flow reading committed sample
+    /// data), a relative export target path, or a relative source-control working directory. These resolve
+    /// against the flow file's own directory, which only a full git materialization populates. Cloud URIs
+    /// (<c>scheme://</c>) and absolute local paths resolve identically under either root and stay snapshot-safe.
+    /// Internal for the test suite; only the staging path above calls it in production.</summary>
+    internal static bool RequiresRepoTree(FlowDocument document)
+        => document switch
+        {
+            FileFlowDocument doc => IsLocalRelative(doc.Flow.Source.Location),
+            ExportFlowDocument doc => IsLocalRelative(doc.Document.Flow.TrgPath),
+            SourceControlFlowDocument doc => IsLocalRelative(doc.Document.Flow.Repository.WorkingDirectory),
+            _ => false,
+        };
+
+    private static bool IsLocalRelative(string? path)
+        => !string.IsNullOrWhiteSpace(path)
+           && !path.Contains("://", StringComparison.Ordinal)
+           && !Path.IsPathRooted(path);
+
     /// <summary>
     /// Resolves the next durable table downstream of this flow in the lineage chain, for downstream-anchored
     /// watermarking (incremental.watermarkFromDownstream). It walks the persisted lineage the sync already
@@ -923,6 +1046,12 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: materialized repo '{Repo}' at commit {CommitSha}.")]
     private partial void LogMaterialized(Guid runId, string repo, string commitSha);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: staged flow version {ContentHash} from the catalog snapshot (no git access needed).")]
+    private partial void LogSnapshotStaged(Guid runId, string contentHash);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId}: could not stage flow version {ContentHash} into the local cache ({Error}); falling back to git materialization.")]
+    private partial void LogSnapshotStageFailed(Guid runId, string contentHash, string error);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: substitution parameters applied: {Parameters}.")]
     private partial void LogParameters(Guid runId, string parameters);

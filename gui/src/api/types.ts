@@ -444,6 +444,9 @@ export interface Schedule {
   /** The run group the last fire enqueued, when the schedule has more than one member; null for a single-member
    * schedule (which enqueues one run) or one that has never fired. */
   lastGroupId: string | null;
+  /** True while that last group is still executing (a member is queued or running), so the list can offer a live
+   * re-entry point back to the running set. Always false for a single-member schedule, which has no group. */
+  lastGroupActive: boolean;
   createdUtc: string;
   updatedUtc: string;
 }
@@ -622,6 +625,9 @@ export interface SourceDiscoverRequest {
   maxDepth?: number | null;
   /** schema.defaultColumnType for the generated flow; omitted uses SQLFlow's varchar(255) default. */
   defaultColumnType?: string | null;
+  /** Stream the scan's phases into the activity trace under this subject (the GUI's bottom panel tails it); the
+   * location is used as the subject so repeat scans of the same source keep a bounded scrollback. Omitted runs headless. */
+  traceSubject?: string | null;
 }
 
 /** One discovered path: its address, what it points at, the column it becomes, and its per-record presence. */

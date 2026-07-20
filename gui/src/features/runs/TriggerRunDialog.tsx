@@ -17,6 +17,7 @@ import { pipelineApi, repoApi, runApi } from "../../api/endpoints";
 import type { RunParameterDescriptor, RunScope } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
+import { useRunDock } from "./RunDockContext";
 
 /** Prior-run values used to prefill the form on Re-run (ISO strings for the window; they are trimmed to the
  * minute for the datetime-local inputs). Absent fields default to empty/off. */
@@ -79,6 +80,7 @@ export function TriggerRunDialog({
 }: TriggerRunDialogProps) {
   const navigate = useNavigate();
   const idPrefix = useId();
+  const { track } = useRunDock();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(repoId ?? null);
   const [selectedFlow, setSelectedFlow] = useState<string | null>(flowName ?? null);
   const [selectedScope, setSelectedScope] = useState<RunScope>(scope ?? "flow");
@@ -167,6 +169,8 @@ export function TriggerRunDialog({
     onSuccess: (accepted) => {
       onClose();
       if (accepted.groupId) {
+        // Watch the group in the run tray so it stays reachable after this dialog closes and across a tab change.
+        track(accepted.groupId);
         const target = selectedScope === "batch"
           ? `batch ${(batchLocked ? batch : preview.data?.anchor) ?? effectiveFlow ?? ""}`
           : `${effectiveFlow ?? ""} + descendants`;

@@ -129,4 +129,8 @@ public static class ActivityKinds
 {
     /// <summary>A managed git repository sync (clone + catalog reconcile). Subject: the repo source id.</summary>
     public const string RepoSync = "repo-sync";
+
+    /// <summary>A source discovery scan (format detection, delimiter sniff, schema read, YAML generation). Subject:
+    /// the scanned location, so repeat discoveries of the same source keep a short bounded scrollback.</summary>
+    public const string SourceDiscover = "source-discover";
 }
