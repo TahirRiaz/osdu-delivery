@@ -93,6 +93,16 @@ public sealed class RepoSourceTests
             await using var db = CatalogDatabase.Create(cs);
             Assert.True(await db.Pipelines.AsNoTracking().AnyAsync(p => p.RepoId == syncedRepoId && p.Name == flowName),
                 "the synced flow did not appear as a pipeline in the catalog.");
+
+            // The sync traced its progress into the activity log: an ordered set of lines ending in a terminal
+            // "succeeded" event, which is what the GUI's bottom trace panel streams.
+            var trace = await db.ActivityEvents.AsNoTracking()
+                .Where(e => e.Kind == "repo-sync" && e.SubjectKey == sourceId.ToString())
+                .OrderBy(e => e.Id).ToListAsync();
+            Assert.NotEmpty(trace);
+            Assert.Contains(trace, e => e.Step == "clone");
+            Assert.True(trace[^1].Terminal);
+            Assert.Equal("succeeded", trace[^1].Status);
         }
         finally
         {
@@ -103,6 +113,7 @@ public sealed class RepoSourceTests
                 await db.Pipelines.Where(p => p.RepoId == syncedRepoId).ExecuteDeleteAsync();
                 await db.Repos.Where(r => r.Id == syncedRepoId).ExecuteDeleteAsync();
                 await db.RepoSources.Where(s => s.Id == sourceId).ExecuteDeleteAsync();
+                await db.ActivityEvents.Where(e => e.SubjectKey == sourceId.ToString()).ExecuteDeleteAsync();
             }
 
             DeleteDir(gitDir);

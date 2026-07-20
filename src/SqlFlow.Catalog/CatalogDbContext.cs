@@ -58,6 +58,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRepoSource> RepoSources => Set<CatalogRepoSource>();
 
+    public DbSet<CatalogActivityEvent> ActivityEvents => Set<CatalogActivityEvent>();
+
     public DbSet<CatalogUser> Users => Set<CatalogUser>();
 
     public DbSet<CatalogRole> Roles => Set<CatalogRole>();
@@ -393,6 +395,21 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(s => s.Name).IsUnique();
             // The sync loop scans for enabled sources whose next sync is due.
             entity.HasIndex(s => s.NextSyncUtc);
+        });
+
+        modelBuilder.Entity<CatalogActivityEvent>(entity =>
+        {
+            entity.ToTable("ActivityEvent");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.SubjectKey).HasMaxLength(256).IsRequired();
+            entity.Property(e => e.Level).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.Step).HasMaxLength(64);
+            entity.Property(e => e.Status).HasMaxLength(16);
+            // Message is nvarchar(max): an activity line (a clone error, a lineage warning) has no useful bound.
+            entity.Property(e => e.Message).IsRequired();
+            // The trace stream tails one (kind, subject)'s events in id order; also the prune-old-activities scan.
+            entity.HasIndex(e => new { e.Kind, e.SubjectKey, e.Id });
         });
 
         modelBuilder.Entity<CatalogRole>(entity =>

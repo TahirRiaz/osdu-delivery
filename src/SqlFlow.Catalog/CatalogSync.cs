@@ -730,8 +730,20 @@ public sealed class CatalogSync
     /// <summary>Adds the immutable drill-down detail of one run (files, assertions, generated SQL, canonical
     /// events, surrogate keys, health-check metrics) projected from its run.json root. Shared by the full estate
     /// sync and the per-run write-back, so the detail projection is wired in exactly one place.</summary>
+    /// <param name="context">The catalog context the detail rows are added to.</param>
+    /// <param name="root">The run.json root element the detail is projected from.</param>
+    /// <param name="runId">The run the detail belongs to.</param>
+    /// <param name="repoId">The repo the run belongs to.</param>
+    /// <param name="existingMaxEventOrdinal">The highest event ordinal already present as a live-streamed row (the
+    /// node writes canonical events into the catalog as the run executes). Events at or below it are skipped so
+    /// only the missing tail is appended, leaving the live rows - and the stable ids the trace stream already
+    /// delivered - untouched. 0 for the CLI and full-sync paths, which have no live rows, so the whole event
+    /// timeline is inserted.</param>
+    /// <param name="existingMaxStatementOrdinal">The same for the generated-SQL stream: the highest statement
+    /// ordinal already present as a live-streamed row, so only the missing tail is appended.</param>
     internal static (int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics) AddRunDetail(
-        CatalogDbContext context, JsonElement root, Guid runId, Guid repoId)
+        CatalogDbContext context, JsonElement root, Guid runId, Guid repoId,
+        int existingMaxEventOrdinal = 0, int existingMaxStatementOrdinal = 0)
     {
         var files = 0;
         var assertions = 0;
@@ -754,12 +766,22 @@ public sealed class CatalogSync
 
         foreach (var statement in CatalogProjection.RunStatements(root, runId, repoId))
         {
+            if (statement.Ordinal <= existingMaxStatementOrdinal)
+            {
+                continue; // already written live under a stable id; do not re-issue it
+            }
+
             context.RunStatements.Add(statement);
             statements++;
         }
 
         foreach (var runEvent in CatalogProjection.RunEvents(root, runId, repoId))
         {
+            if (runEvent.Ordinal <= existingMaxEventOrdinal)
+            {
+                continue; // already written live under a stable id; do not re-issue it
+            }
+
             context.RunEvents.Add(runEvent);
             events++;
         }

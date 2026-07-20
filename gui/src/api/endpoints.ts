@@ -98,7 +98,10 @@ export interface RunListQuery extends PageQuery {
   status?: string;
   success?: boolean;
   flowName?: string;
+  /** Exact batch (source-system grouping) label; the board's batch dropdown supplies a real label. */
   batch?: string;
+  /** Keep only the runs of this schedule's member flows (the board's schedule dropdown), by membership. */
+  scheduleId?: string;
   /** Keep only this run group's members (the group view), returned in wave order. */
   groupId?: string;
   /** Keep only each pipeline's newest run (the batch status board); status filters apply to that latest run. */
@@ -152,6 +155,23 @@ export const runApi = {
   streamGroup: (groupId: string, onFrame: (frame: SseFrame) => void, signal: AbortSignal, onOpen?: () => void) =>
     streamSse(`/api/v1/runs/groups/${groupId}/stream`, undefined, onFrame, signal, onOpen),
   cancelGroup: (groupId: string) => post<RunTriggerAccepted>(`/api/v1/runs/groups/${groupId}/cancel`),
+};
+
+// ---- Activity trace (generic operation trace: repo sync, lineage, ...) ------------------------------------------
+
+export const activityApi = {
+  /** The live trace of one operation as SSE: `entry` frames per new log line for the given (kind, subject), then a
+   * single `end` frame once the newest line is terminal (or "idle" when the subject has no trace yet). The `afterId`
+   * cursor resumes a dropped connection without replaying lines the caller already holds. One stream serves every
+   * operation kind, so the bottom trace panel tails a sync, a lineage compute, and so on through the same call. */
+  streamTrace: (
+    kind: string,
+    subject: string,
+    cursor: { afterId?: number },
+    onFrame: (frame: SseFrame) => void,
+    signal: AbortSignal,
+    onOpen?: () => void,
+  ) => streamSse("/api/v1/activities/stream", { kind, subject, ...cursor }, onFrame, signal, onOpen),
 };
 
 // ---- Schedules ---------------------------------------------------------------------------------------------------------------

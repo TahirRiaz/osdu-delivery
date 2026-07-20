@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleAlert, Copy, HeartPulse, Info, ListChecks, Loader2, Radio, RotateCcw } from "lucide-react";
+import { CircleAlert, HeartPulse, Info, ListChecks, Loader2, RotateCcw, Terminal } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,16 +11,14 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import type {
-  RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey, RunTraceEntry,
+  RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey,
 } from "../../api/types";
 import { isApiError } from "../../api/client";
 import { pipelineApi, runApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable } from "../../components/DataTable";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
 import { Mono } from "../../components/Mono";
@@ -30,11 +28,12 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
+import { usePanel } from "../../layout/workbench/PanelContext";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds, parseUtc } from "../../lib/time";
+import { RunTracePanel } from "./RunTracePanel";
 import { TriggerRunDialog } from "./TriggerRunDialog";
-import { useRunTraceStream } from "./useRunTraceStream";
 
 /** A compact UTC stamp for a backfill window bound (the API sends UTC timestamps). */
 function fmtBound(value: string): string {
@@ -66,19 +65,6 @@ function YesNo({ value }: { value: boolean }) {
     : <Badge variant="outline" className="text-muted-foreground">no</Badge>;
 }
 
-/** The badge classes for a trace level: problems stand out, info is the normal case, engine detail is muted. */
-function traceLevelClass(level: RunTraceEntry["level"]): string {
-  if (level === "error") {
-    return "border-destructive/40 text-destructive";
-  }
-
-  if (level === "warning") {
-    return "border-warning/40 text-warning";
-  }
-
-  return level === "info" ? "border-info/40 text-info" : "text-muted-foreground";
-}
-
 /** A step name marked as failed: the error icon plus destructive text, so color never carries it alone. */
 function FailedStep({ step }: { step: string | null }) {
   return (
@@ -88,53 +74,6 @@ function FailedStep({ step }: { step: string | null }) {
     </span>
   );
 }
-
-/** The live/reconnecting pill next to a streaming surface. */
-function StreamStateBadge({ connected, "data-testid": testId }: { connected: boolean; "data-testid": string }) {
-  return (
-    <span
-      data-testid={testId}
-      className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
-        connected ? "bg-success/12 text-success" : "bg-warning/15 text-warning",
-      )}
-    >
-      {connected ? <Radio className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
-      {connected ? "live" : "reconnecting"}
-    </span>
-  );
-}
-
-/** A compact UTC clock stamp (HH:mm:ss.fff) for a trace entry; legacy statements without one show "-". */
-function fmtEventTime(value: string | null): string {
-  return value ? parseUtc(value).toISOString().slice(11, 23) : "-";
-}
-
-const traceColumns: Column<RunTraceEntry>[] = [
-  { id: "time", header: "Time", width: 120, render: (row) => <Mono>{fmtEventTime(row.timestampUtc)}</Mono> },
-  {
-    id: "level",
-    header: "Level",
-    width: 100,
-    // A statement entry is labelled "sql" (its level is always trace); event entries show their own level.
-    render: (row) => (row.kind === "statement"
-      ? <Badge variant="outline" className="text-muted-foreground">sql</Badge>
-      : <Badge variant="outline" className={traceLevelClass(row.level)}>{row.level}</Badge>),
-  },
-  {
-    id: "step",
-    header: "Step",
-    width: 220,
-    render: (row) => (row.error ? <FailedStep step={row.step} /> : row.step ?? "-"),
-  },
-  {
-    id: "detail",
-    header: "Event",
-    render: (row) => (row.kind === "statement"
-      ? <TruncatedText text={row.sql} mono maxWidth={640} />
-      : <TruncatedText text={row.message} maxWidth={640} />),
-  },
-];
 
 const statementColumns: Column<RunStatement>[] = [
   { id: "ordinal", header: "Ordinal", width: 90, render: (row) => row.ordinal },
@@ -207,10 +146,10 @@ export default function RunDetailPage() {
 function RunDetailContent({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [tab, setTab] = useState("trace");
+  const panel = usePanel();
+  const [tab, setTab] = useState("source");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [statement, setStatement] = useState<RunStatement | null>(null);
-  const [traceEntry, setTraceEntry] = useState<RunTraceEntry | null>(null);
 
   const query = useQuery({
     queryKey: ["runs", runId],
@@ -239,17 +178,14 @@ function RunDetailContent({ runId }: { runId: string }) {
   });
   const embeddedCheck = pipelineQuery.data ? embeddedHealthCheckName(pipelineQuery.data.definitionJson) : null;
 
-  // The live trace: while the run is queued or running, the Trace tab is fed by the SSE stream (entries
-  // arrive the moment the executing node persists them); once the run ends, the stream's end frame (or the
-  // header poll observing the terminal status, whichever lands first) refetches everything under this run so
-  // every tab shows the authoritative re-projected result without a manual reload.
+  // Once the run reaches a terminal status, refetch everything under it so every tab shows the authoritative
+  // re-projected result without a manual reload (the header poll observes the transition).
   const status = query.data?.status;
   const live = status === "queued" || status === "running";
   const refreshRun = useCallback(
     () => void queryClient.invalidateQueries({ queryKey: ["runs", runId] }),
     [queryClient, runId],
   );
-  const { entries: liveEntries, connected: streamConnected } = useRunTraceStream(runId, live, refreshRun);
   const wasLive = useRef(false);
   useEffect(() => {
     if (live) {
@@ -260,23 +196,26 @@ function RunDetailContent({ runId }: { runId: string }) {
     }
   }, [live, refreshRun]);
 
-  // "Copy trace" fetches the server-rendered plain-text trace (the same document the LLM-facing
-  // /trace/text endpoint serves) and puts it on the clipboard, so what is pasted into a ticket or a chat is
-  // always the complete, canonical rendering rather than whatever page the table happens to show.
-  const copyTrace = useMutation({
-    mutationFn: () => runApi.traceText(runId),
-    onSuccess: async (text) => {
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success("Trace copied to clipboard.");
-      } catch {
-        toast.error("The browser blocked clipboard access.");
-      }
-    },
-    onError: (error) => {
-      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
-    },
-  });
+  // The trace lives in the workbench bottom panel (the "trace window"), not an embedded tab: opening a run raises
+  // it there and it streams live while the run executes, exactly like the repository sync trace. Opened once per
+  // run, when the flow name is known so the panel is titled; the header's Trace button reopens it if closed.
+  const flowName = query.data?.flowName;
+  const openTrace = useCallback(() => {
+    panel.open({
+      id: `run-trace:${runId}`,
+      title: `Trace · ${flowName ?? runId}`,
+      node: <RunTracePanel runId={runId} />,
+    });
+  }, [panel, runId, flowName]);
+  const openedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (openedFor.current === runId || flowName === undefined) {
+      return;
+    }
+
+    openedFor.current = runId;
+    openTrace();
+  }, [runId, flowName, openTrace]);
 
   // Re-run opens the trigger sheet prefilled with this run's flow and the operator parameters it carried (full
   // load, backfill window, file pattern), so the run can be repeated as-is or adjusted before launching. The sheet
@@ -373,25 +312,33 @@ function RunDetailContent({ runId }: { runId: string }) {
             )}
           </>
         )}
-        actions={cancellable
-          ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => setConfirmOpen(true)}
-              disabled={cancelling || cancel.isPending}
-              data-testid="cancel-run"
-            >
-              {cancelling ? "Cancelling..." : "Cancel run"}
+        actions={(
+          <>
+            <Button variant="outline" size="sm" onClick={openTrace} data-testid="open-run-trace">
+              <Terminal />
+              Trace
             </Button>
-          )
-          : (run.repoId !== null && (
-            <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)} data-testid="rerun-run">
-              <RotateCcw />
-              Re-run
-            </Button>
-          ))}
+            {cancellable
+              ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => setConfirmOpen(true)}
+                  disabled={cancelling || cancel.isPending}
+                  data-testid="cancel-run"
+                >
+                  {cancelling ? "Cancelling..." : "Cancel run"}
+                </Button>
+              )
+              : (run.repoId !== null && (
+                <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)} data-testid="rerun-run">
+                  <RotateCcw />
+                  Re-run
+                </Button>
+              ))}
+          </>
+        )}
       >
         <DetailPair label="Run id"><Mono>{run.runId}</Mono></DetailPair>
         <DetailPair label="Repo">
@@ -533,7 +480,6 @@ function RunDetailContent({ runId }: { runId: string }) {
 
       <Tabs value={tab} onValueChange={setTab} className="gap-4">
         <TabsList variant="line" className="w-full justify-start overflow-x-auto" data-testid="run-tabs">
-          <TabsTrigger value="trace" className="flex-none" data-testid="tab-trace">Trace</TabsTrigger>
           <TabsTrigger value="source" className="flex-none" data-testid="tab-source">Source</TabsTrigger>
           <TabsTrigger value="files" className="flex-none" data-testid="tab-files">Files</TabsTrigger>
           <TabsTrigger value="statements" className="flex-none" data-testid="tab-statements">Statements</TabsTrigger>
@@ -542,59 +488,6 @@ function RunDetailContent({ runId }: { runId: string }) {
           <TabsTrigger value="health-metrics" className="flex-none" data-testid="tab-health-metrics">Health</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="trace" className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {live && (
-              <>
-                <StreamStateBadge connected={streamConnected} data-testid="trace-stream-state" />
-                <span className="text-[13px] text-muted-foreground">
-                  {streamConnected
-                    ? "Streaming the trace as the run executes."
-                    : "Connection lost; resuming the stream."}
-                </span>
-              </>
-            )}
-            <div className="grow" />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => copyTrace.mutate()}
-              disabled={copyTrace.isPending}
-              data-testid="copy-trace"
-            >
-              {copyTrace.isPending ? <Loader2 className="animate-spin" /> : <Copy />}
-              Copy trace
-            </Button>
-          </div>
-          {live
-            ? (
-              // Live mode: the SSE stream pushes each entry the moment the executing node persists it. No paging
-              // while streaming (a run's trace is bounded); the end frame swaps this for the paged view below.
-              <DataTable
-                columns={traceColumns}
-                rows={liveEntries}
-                rowKey={(row) => `${row.kind}-${row.id}`}
-                onRowClick={(row) => setTraceEntry(row)}
-                rowSx={(row) => (row.error ? failedRowStyle : undefined)}
-                emptyMessage={run.status === "queued"
-                  ? "The run is queued; the trace streams in once a node claims it."
-                  : "Waiting for the first trace entry."}
-                data-testid="trace-live-table"
-              />
-            )
-            : (
-              <PagedTable
-                queryKey={["runs", runId, "trace"]}
-                fetchPage={(page, pageSize) => runApi.trace(runId, { page, pageSize })}
-                columns={traceColumns}
-                rowKey={(row) => `${row.kind}-${row.id}`}
-                onRowClick={(row) => setTraceEntry(row)}
-                rowSx={(row) => (row.error ? failedRowStyle : undefined)}
-                emptyMessage="No trace was recorded for this run."
-                data-testid="trace-table"
-              />
-            )}
-        </TabsContent>
         <TabsContent value="source" className="flex flex-col gap-2">
           <p className="text-[13px] text-muted-foreground">
             The flow's YAML definition as registered in the catalog. This is the current source for this pipeline;
@@ -736,42 +629,6 @@ function RunDetailContent({ runId }: { runId: string }) {
           />
         </TabsContent>
       </Tabs>
-
-      <Sheet
-        open={traceEntry !== null}
-        onOpenChange={(next) => {
-          if (!next) {
-            setTraceEntry(null);
-          }
-        }}
-      >
-        {/* Focus stays outside Monaco so Escape reaches the sheet, not the editor. */}
-        <SheetContent className="w-full gap-0 sm:max-w-3xl" aria-describedby={undefined} data-testid="trace-entry-dialog" onOpenAutoFocus={(event) => event.preventDefault()}>
-          <SheetHeader>
-            <SheetTitle>
-              {traceEntry
-                ? (traceEntry.kind === "statement"
-                  ? `Statement ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`
-                  : `Event ${traceEntry.ordinal}${traceEntry.step ? `: ${traceEntry.step}` : ""}`)
-                : ""}
-            </SheetTitle>
-          </SheetHeader>
-          <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
-            {traceEntry?.error && (
-              <Alert variant="destructive" data-testid="trace-entry-error">
-                <CircleAlert />
-                <AlertDescription>{traceEntry.error}</AlertDescription>
-              </Alert>
-            )}
-            {traceEntry?.kind === "statement" && traceEntry.sql !== null && (
-              <CodeView value={traceEntry.sql} language="sql" data-testid="trace-entry-sql" />
-            )}
-            {traceEntry?.kind === "event" && traceEntry.message !== null && (
-              <CodeView value={traceEntry.message} language="plaintext" data-testid="trace-entry-message" />
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
 
       <Sheet
         open={statement !== null}

@@ -832,6 +832,58 @@ public class CatalogRepoSource
 }
 
 /// <summary>
+/// One entry of a control-plane <em>activity</em> trace: an append-only log row a long-running operation writes as
+/// it progresses, so the GUI can surface live insight into what is happening. It is the general-purpose twin of
+/// <see cref="CatalogRunEvent"/> (which is specific to a flow run): the same append-only-log-tailed-by-a-monotonic
+/// <see cref="Id"/> mechanism the run trace uses, but keyed by a free-form <see cref="Kind"/> (the operation type,
+/// e.g. <c>repo-sync</c>, <c>lineage</c>) and <see cref="SubjectKey"/> (the thing it acts on, e.g. a repo source
+/// id) rather than a run id, so any operation can stream a trace without inventing its own table and endpoint. A
+/// repository sync writes claimed / credentials / clone / checkout / reconcile / result / warnings / outcome; a
+/// lineage computation or any other operation writes its own phases the same way. The GUI's bottom trace panel
+/// tails these rows for one (kind, subject). Rows are kept for a handful of recent activities per subject and
+/// pruned as new ones begin.
+/// </summary>
+public class CatalogActivityEvent
+{
+    /// <summary>The append-only, monotonically increasing id the trace stream tails on (its cursor).</summary>
+    public long Id { get; set; }
+
+    /// <summary>One run of one operation (its correlation id): every event of a single sync attempt / lineage
+    /// computation shares it, so the panel can group and the pruning can keep only the newest few per subject.</summary>
+    public Guid ActivityId { get; set; }
+
+    /// <summary>The operation type, so one subject's unrelated activities do not intermix (e.g. <c>repo-sync</c>,
+    /// <c>lineage</c>). The (kind, subject) pair is what a panel streams.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The entity the activity acts on, as a string key (a repo source id, a repo id, a project key). Paired
+    /// with <see cref="Kind"/> it identifies the trace a panel follows.</summary>
+    public string SubjectKey { get; set; } = string.Empty;
+
+    /// <summary>1-based position within the activity (emission order).</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>When the event happened (UTC).</summary>
+    public DateTime TimestampUtc { get; set; }
+
+    /// <summary>The event's level: info, warning, or error (see RunEventLevels in SqlFlow.Core).</summary>
+    public string Level { get; set; } = string.Empty;
+
+    /// <summary>The phase the event belongs to (operation-defined, e.g. start, clone, sync, result, done); null for a
+    /// free-standing line.</summary>
+    public string? Step { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>True on the activity's final event, which carries the terminal <see cref="Status"/>. The trace stream
+    /// ends once the newest event for the (kind, subject) is terminal.</summary>
+    public bool Terminal { get; set; }
+
+    /// <summary>On the terminal event, the outcome ("succeeded" or "failed"); null on every other row.</summary>
+    public string? Status { get; set; }
+}
+
+/// <summary>
 /// One compute node in the fleet: a worker (the control-plane in-process worker, or a standalone <c>sqlflow
 /// worker</c>) that drains the run queue. A node upserts a heartbeat as it polls, so the control plane and GUI can
 /// see which nodes are alive and when each was last heard from. Identity is the node's name (its machine name), so

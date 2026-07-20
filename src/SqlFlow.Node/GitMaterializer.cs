@@ -68,30 +68,43 @@ public sealed class GitMaterializer
 
             ct.ThrowIfCancellationRequested();
 
+            // Build into a private staging directory and publish it atomically (see PublishAtomically). An
+            // interrupted clone therefore never leaves a half-written tree at the published path: at worst it
+            // orphans a staging directory, which the next run removes. This is what makes the reuse check above
+            // trustworthy, and it is why a killed run no longer wedges every later attempt on a corrupt .git.
+            var staging = StagingPath(workingDir);
             try
             {
-                // A partial or wrong-commit directory is rebuilt from scratch, so a previously interrupted
-                // materialization never leaves a half-checked-out tree behind.
-                DeleteDirectory(workingDir);
+                DeleteDirectory(staging);
+                Directory.CreateDirectory(staging);
 
-                Directory.CreateDirectory(workingDir);
                 var options = new CloneOptions { Checkout = false };
                 options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
-                Repository.Clone(remoteUrl, workingDir, options);
+                Repository.Clone(remoteUrl, staging, options);
 
-                using var repo = new Repository(workingDir);
-                var commit = repo.Lookup<Commit>(commitSha)
-                    ?? throw new SqlFlowNodeException($"commit '{commitSha}' was not found in '{remoteUrl}'.");
-                Commands.Checkout(repo, commit);
+                // The repository handle is released before publishing, so the rename is never blocked by an open
+                // handle into the staging tree.
+                using (var repo = new Repository(staging))
+                {
+                    var commit = repo.Lookup<Commit>(commitSha)
+                        ?? throw new SqlFlowNodeException($"commit '{commitSha}' was not found in '{remoteUrl}'.");
+                    Commands.Checkout(repo, commit);
+                }
+
+                PublishAtomically(staging, workingDir);
                 return workingDir;
             }
             catch (Exception ex) when (ex is LibGit2SharpException or IOException or UnauthorizedAccessException)
             {
-                // Leave nothing usable behind on failure, so the next attempt re-materializes cleanly. Wrap the
-                // cause (a clone error, or a filesystem error cleaning up a leftover checkout) with context so the
-                // run records what could not be materialized instead of a bare "Directory not empty" message.
-                TryDeleteDirectory(workingDir);
+                // Wrap the cause (a clone error, or a filesystem error) with context so the run records what could
+                // not be materialized instead of a bare "Directory not empty" / "objects/pack" message.
                 throw new SqlFlowNodeException($"could not materialize '{remoteUrl}' at '{commitSha}': {ex.Message}", ex);
+            }
+            finally
+            {
+                // If the clone was published, the staging directory was moved and this is a no-op; otherwise it
+                // removes the partial clone so nothing usable is left behind.
+                TryDeleteDirectory(staging);
             }
         }
     }
@@ -115,28 +128,65 @@ public sealed class GitMaterializer
         // serializes them. The key differs from any commit directory, so branch syncs and pinned runs never contend.
         lock (LockFor(workingDir))
         {
+            // A fresh checkout each sync keeps the logic simple and correct (no fetch/merge edge cases); the synced
+            // estate is small and the sync runs on an interval, so re-cloning the branch tip is an acceptable cost.
+            // The clone lands in a private staging directory and is published atomically, so an interrupted sync
+            // never leaves a partial tree at the branch path and a concurrent reader never sees a half-written one.
+            var staging = StagingPath(workingDir);
             try
             {
-                // A fresh checkout each sync keeps the logic simple and correct (no fetch/merge edge cases); the
-                // synced estate is small and the sync runs on an interval, so re-cloning the branch tip is an
-                // acceptable cost.
-                DeleteDirectory(workingDir);
+                DeleteDirectory(staging);
+                Directory.CreateDirectory(staging);
 
-                Directory.CreateDirectory(workingDir);
                 var options = new CloneOptions { BranchName = string.IsNullOrWhiteSpace(branch) ? null : branch };
                 options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
-                Repository.Clone(remoteUrl, workingDir, options);
+                Repository.Clone(remoteUrl, staging, options);
 
-                using var repo = new Repository(workingDir);
-                var sha = repo.Head.Tip?.Sha
-                    ?? throw new SqlFlowNodeException($"'{remoteUrl}' (branch '{branch}') has no commits to sync.");
+                string sha;
+                using (var repo = new Repository(staging))
+                {
+                    sha = repo.Head.Tip?.Sha
+                        ?? throw new SqlFlowNodeException($"'{remoteUrl}' (branch '{branch}') has no commits to sync.");
+                }
+
+                PublishAtomically(staging, workingDir);
                 return (workingDir, sha);
             }
             catch (Exception ex) when (ex is LibGit2SharpException or IOException or UnauthorizedAccessException)
             {
-                TryDeleteDirectory(workingDir);
                 throw new SqlFlowNodeException($"could not pull '{remoteUrl}' (branch '{branch}'): {ex.Message}", ex);
             }
+            finally
+            {
+                TryDeleteDirectory(staging);
+            }
+        }
+    }
+
+    /// <summary>A private, per-attempt staging directory that is a sibling of <paramref name="workingDir"/>, so the
+    /// publishing rename stays on the same volume (and is therefore atomic). The GUID keeps concurrent
+    /// materializations of different commits in the same repo from colliding on one staging path.</summary>
+    private static string StagingPath(string workingDir)
+        => Path.Combine(Path.GetDirectoryName(workingDir)!, ".staging-" + Guid.NewGuid().ToString("N"));
+
+    /// <summary>
+    /// Publishes a fully materialized <paramref name="staging"/> tree to its final cache path by renaming it into
+    /// place, which is atomic on the same volume. Whatever occupies the target first (a partial checkout an
+    /// interrupted run left behind, or a wrong/older tree) is removed, so the published path is only ever observed
+    /// as absent or as a complete checkout, never mid-write.
+    /// </summary>
+    private static void PublishAtomically(string staging, string finalDir)
+    {
+        DeleteDirectory(finalDir);
+        try
+        {
+            Directory.Move(staging, finalDir);
+        }
+        catch (IOException) when (Directory.Exists(finalDir))
+        {
+            // The target reappeared between the cleanup and the rename, which happens only when the cache is a
+            // volume shared across nodes and another node published this same commit first. Its checkout is
+            // identical content, so adopt it; the caller's finally-block discards this staging copy.
         }
     }
 
@@ -251,6 +301,12 @@ public sealed class GitMaterializer
         {
             try
             {
+                // Already gone (an earlier attempt's delete raced the filesystem, or it never existed): nothing to do.
+                if (!Directory.Exists(path))
+                {
+                    return true;
+                }
+
                 // A git working tree contains read-only objects under .git; clear the attribute before deleting.
                 foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
                 {

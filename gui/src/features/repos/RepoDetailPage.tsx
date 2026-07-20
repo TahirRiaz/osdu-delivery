@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Folder, Loader2, Network, Play, RefreshCw } from "lucide-react";
+import { ChevronDown, Folder, Loader2, Network, Play, RefreshCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -24,6 +25,7 @@ import { ActiveBadge } from "../../components/StatusBadge";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { projectOf } from "./project";
+import { useSyncTracePanel } from "./useSyncTracePanel";
 
 /** The most pipelines a single repo realistically holds; one page covers grouping them by project. */
 const REPO_PIPELINE_CAP = 500;
@@ -35,9 +37,10 @@ const SOURCE_LOOKUP_CAP = 200;
  * that contains a batch flow (flowType: batch) can be run as a unit: the batch executes its members in lineage
  * wave order, so "Run project" triggers that ordered run. */
 function PipelinesByProject({
-  repoId, onOpen, onRunBatch,
+  repoId, filter, onOpen, onRunBatch,
 }: {
   repoId: string;
+  filter: string;
   onOpen: (pipelineId: string) => void;
   onRunBatch: (flowName: string) => void;
 }) {
@@ -67,8 +70,29 @@ function PipelinesByProject({
     );
   }
 
+  // Free-text filter over the fields a user actually eyeballs to find a file: pipeline name, its path, its kind,
+  // and the project (folder) it groups under.
+  const needle = filter.trim().toLowerCase();
+  const matches = needle === ""
+    ? pipelines
+    : pipelines.filter((p) =>
+      p.name.toLowerCase().includes(needle)
+      || p.relativePath.toLowerCase().includes(needle)
+      || p.kind.toLowerCase().includes(needle)
+      || projectOf(p.relativePath).toLowerCase().includes(needle));
+
+  if (matches.length === 0) {
+    return (
+      <EmptyState
+        title="No matches"
+        description={`No pipeline matches "${filter.trim()}". Search by name, path, kind, or project.`}
+        data-testid="repo-no-matches"
+      />
+    );
+  }
+
   const byProject = new Map<string, PipelineSummary[]>();
-  for (const p of [...pipelines].sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const p of [...matches].sort((a, b) => a.name.localeCompare(b.name))) {
     const key = projectOf(p.relativePath);
     const group = byProject.get(key);
     if (group) {
@@ -86,7 +110,9 @@ function PipelinesByProject({
         // The project's batch flow (if any): the wave-ordered "run the whole project" entry point.
         const batch = rows.find((r) => r.kind === "batch" && r.active);
         return (
-          <Collapsible key={project} defaultOpen>
+          // Keying on the active-filter flag remounts the group when a search starts or clears, so a matching
+          // pipeline in a previously-collapsed project springs open rather than staying hidden.
+          <Collapsible key={`${project}:${needle === "" ? "all" : "filtered"}`} defaultOpen>
             <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="repo-project">
               {/* The trigger spans the row up to the action button, so a nested button never sits inside it. */}
               <div className="flex items-center gap-2 pr-2">
@@ -164,8 +190,10 @@ export default function RepoDetailPage() {
   const { repoId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const openSyncTrace = useSyncTracePanel();
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [runBatchFlow, setRunBatchFlow] = useState<string | null>(null);
+  const [pipelineFilter, setPipelineFilter] = useState("");
 
   const repoQuery = useQuery({
     queryKey: ["repos", "detail", repoId],
@@ -247,11 +275,19 @@ export default function RepoDetailPage() {
             source.lastError !== null ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span>
-                    <Badge variant="destructive" data-testid="repo-source-error">sync error</Badge>
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => openSyncTrace(source.id, repo.name)}
+                    className="cursor-pointer"
+                    data-testid="repo-source-error"
+                  >
+                    <Badge variant="destructive">sync error</Badge>
+                  </button>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-lg break-words">{source.lastError}</TooltipContent>
+                <TooltipContent className="max-w-lg break-words">
+                  {source.lastError}
+                  <span className="mt-1 block text-muted-foreground">Click to open the sync trace.</span>
+                </TooltipContent>
               </Tooltip>
             ) : (
               <Badge variant="outline" className="border-success/50 text-success">synced</Badge>
@@ -264,7 +300,10 @@ export default function RepoDetailPage() {
                   variant="outline"
                   size="sm"
                   disabled={!source.enabled || syncNow.isPending}
-                  onClick={() => syncNow.mutate(source.id)}
+                  onClick={() => {
+                    syncNow.mutate(source.id);
+                    openSyncTrace(source.id, repo.name);
+                  }}
                   data-testid="repo-sync-now"
                 >
                   {syncNow.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
@@ -329,9 +368,34 @@ export default function RepoDetailPage() {
       )}
 
       <div className="flex flex-col gap-3">
-        <h2 className="text-base font-medium">Projects</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-medium">Projects</h2>
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={pipelineFilter}
+              onChange={(e) => setPipelineFilter(e.target.value)}
+              placeholder="Search by name, path, kind, project"
+              aria-label="Search pipelines"
+              className="h-8 pl-8 pr-8 text-[13px]"
+              data-testid="repo-pipeline-search"
+            />
+            {pipelineFilter !== "" && (
+              <button
+                type="button"
+                onClick={() => setPipelineFilter("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                data-testid="repo-pipeline-search-clear"
+              >
+                <X className="size-4" />
+              </button>
+            )}
+          </div>
+        </div>
         <PipelinesByProject
           repoId={repoId}
+          filter={pipelineFilter}
           onOpen={(id) => navigate(`/pipelines/${id}`)}
           onRunBatch={(flowName) => setRunBatchFlow(flowName)}
         />

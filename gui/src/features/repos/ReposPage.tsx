@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { ChevronRight, Loader2, Pencil, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { TruncatedText } from "../../components/TruncatedText";
 import { RegisterSourceDialog } from "./RegisterSourceDialog";
+import { useSyncTracePanel } from "./useSyncTracePanel";
 
 // Repos and their git sources are two facets of one thing, joined by name: a source is the git registration that
 // drives auto-sync; a repo is what a sync produced (its pipelines and lineage). One list shows both so a source
@@ -60,7 +61,9 @@ function mergeByName(repos: Repo[], sources: RepoSource[]): MergedRow[] {
 export default function ReposPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const openSyncTrace = useSyncTracePanel();
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [editSource, setEditSource] = useState<RepoSource | null>(null);
 
   const reposQuery = useQuery({
     queryKey: ["repos", "list", FETCH_CAP],
@@ -126,11 +129,22 @@ export default function ReposPage() {
     return source.lastError !== null ? (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span>
-            <Badge variant="destructive" data-testid="source-error">error</Badge>
-          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openSyncTrace(source.id, source.name);
+            }}
+            className="cursor-pointer"
+            data-testid="source-error"
+          >
+            <Badge variant="destructive">error</Badge>
+          </button>
         </TooltipTrigger>
-        <TooltipContent className="max-w-lg break-words">{source.lastError}</TooltipContent>
+        <TooltipContent className="max-w-lg break-words">
+          {source.lastError}
+          <span className="mt-1 block text-muted-foreground">Click to open the sync trace.</span>
+        </TooltipContent>
       </Tooltip>
     ) : (
       <Badge variant="outline" className="border-success/50 text-success">ok</Badge>
@@ -171,23 +185,38 @@ export default function ReposPage() {
       render: (row) => (
         <span className="inline-flex items-center justify-end gap-1">
           {row.source !== undefined && (
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={!row.source.enabled || syncNow.isPending}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (row.source !== undefined) {
-                  syncNow.mutate(row.source.id);
-                }
-              }}
-              data-testid="source-sync-now"
-            >
-              {syncNow.isPending && syncNow.variables === row.source.id
-                ? <Loader2 className="animate-spin" />
-                : <RefreshCw />}
-              Sync now
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditSource(row.source ?? null);
+                }}
+                data-testid="source-edit"
+              >
+                <Pencil />
+                Edit
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={!row.source.enabled || syncNow.isPending}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (row.source !== undefined) {
+                    syncNow.mutate(row.source.id);
+                    openSyncTrace(row.source.id, row.source.name);
+                  }
+                }}
+                data-testid="source-sync-now"
+              >
+                {syncNow.isPending && syncNow.variables === row.source.id
+                  ? <Loader2 className="animate-spin" />
+                  : <RefreshCw />}
+                Sync now
+              </Button>
+            </>
           )}
           {row.repo !== undefined && <ChevronRight className="size-4 text-muted-foreground" />}
         </span>
@@ -234,6 +263,9 @@ export default function ReposPage() {
       )}
 
       {registerOpen && <RegisterSourceDialog onClose={() => setRegisterOpen(false)} />}
+      {editSource !== null && (
+        <RegisterSourceDialog source={editSource} onClose={() => setEditSource(null)} />
+      )}
     </Page>
   );
 }

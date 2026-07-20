@@ -88,7 +88,8 @@ public sealed class RunBatchReportApiTests
             Assert.Equal(CatalogPipeline.DefaultBatch, orphan.Batch);
             Assert.Equal(-1, orphan.Wave);
 
-            // The batch filter narrows the list to the labelled runs (substring match, like flowName).
+            // The batch filter narrows the list to the labelled runs (exact label match: the board's batch
+            // dropdown supplies a real label, so "trans" must not also drag in "trans_item").
             var filtered = await GetJsonAsync<PagedResult<RunSummaryDto>>(
                 client, token, $"/api/v1/runs?repoId={repoId}&batch={batchName}&pageSize=200");
             Assert.Equal(2, filtered.Total);

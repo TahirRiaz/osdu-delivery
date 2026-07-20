@@ -65,8 +65,12 @@ public sealed class CopyEngine
                 }
 
                 matched += items.Count;
+                // A multi-step copy lists one folder per step, so the messages differ only by the source location -
+                // and that location is a long, near-identical URL whose distinguishing tail is the first thing a
+                // truncated trace view drops. Lead with the step position so each step reads as distinct at a glance.
+                var stepLabel = multiStep ? $"step {i + 1}/{flow.Steps.Count}: " : string.Empty;
                 log.Log(RunLogLevel.Info, "copy.list",
-                    $"matched {items.Count} file(s) at '{step.Source.Location}'{DescribeWindow(window)}.");
+                    $"{stepLabel}matched {items.Count} file(s) at '{step.Source.Location}'{DescribeWindow(window)}.");
 
                 // One bulk listing of the target's existing content hashes, so an unchanged file is detected by an
                 // in-memory compare rather than a metadata round trip per file. Skipped entirely when the flow opts out

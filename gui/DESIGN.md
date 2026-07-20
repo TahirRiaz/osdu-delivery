@@ -172,14 +172,18 @@ never hand-edited except where this book says so). MUI, emotion, and notistack a
 
 `Page` + `PageHeader`: testid `page-<name>` preserved; header carries title (18px semibold), optional
 description (13px muted), and right-aligned toolbar actions (small buttons). Below the header, optional
-`FilterBar`. No breadcrumbs in v1 except detail pages: parent link + entity name.
+`FilterBar`. No breadcrumbs in v1 except detail pages: parent link + entity name. Filter controls are 32px
+(`h-8`): text `Input`s for free text, `Select` for a short fixed set, and `FilterCombobox` (a searchable
+popover, the empty string meaning "no filter") for a filter over many values like the Runs board's schedule
+and batch dropdowns, where a plain `Select` would not scroll usably.
 
 ### 7.2 Tables
 
 `DataTable` (presentational) and `PagedTable` (server paging) keep their existing prop contracts and
 testids (`table-row`, `paged-table`, `group-header-row`, ...). Spec: card surface with border; 32px
-rows; hairline row separators; hover `bg-accent/50` on clickable rows; two-level tree grouping with
-chevrons (existing behavior); skeleton rows while loading; `EmptyState` inside when empty; numeric
+rows; hairline row separators; hover `bg-accent/50` on clickable rows; multi-level tree grouping with
+chevrons (a `levels` list, each an independently expandable node level above the leaf rows, e.g. the Runs
+board's schedule -> batch -> step); skeleton rows while loading; `EmptyState` inside when empty; numeric
 columns right-aligned mono tabular; status columns render `StatusBadge`.
 
 ### 7.3 StatusBadge

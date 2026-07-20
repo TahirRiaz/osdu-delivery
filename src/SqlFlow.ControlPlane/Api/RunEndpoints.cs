@@ -153,7 +153,7 @@ public static class RunEndpoints
 
     private static async Task<Ok<PagedResult<RunSummaryDto>>> ListRunsAsync(
         CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? flowKind, string? status, bool? success,
-        string? flowName, string? batch, Guid? groupId, bool? latest, DateTime? from, DateTime? to,
+        string? flowName, string? batch, Guid? scheduleId, Guid? groupId, bool? latest, DateTime? from, DateTime? to,
         int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
@@ -192,6 +192,14 @@ public static class RunEndpoints
         if (groupId is { } gid)
         {
             query = query.Where(x => x.GroupId == gid);
+        }
+
+        // The runs of one schedule's flows: the run board's schedule filter, resolved through MEMBERSHIP (the same
+        // selector a fire uses) rather than a stamp on the run, so it covers a flow's manual and scheduled runs
+        // alike. A run survives when its pipeline joined this schedule.
+        if (scheduleId is { } sid)
+        {
+            query = query.Where(x => db.ScheduleMembers.Any(m => m.ScheduleId == sid && m.PipelineId == x.PipelineId));
         }
 
         if (!string.IsNullOrWhiteSpace(flowKind))
@@ -237,8 +245,11 @@ public static class RunEndpoints
         var joined = JoinPipelines(db, query);
         if (!string.IsNullOrWhiteSpace(batch))
         {
+            // Exact match: the board's batch filter is a dropdown of the estate's real batch labels, so a chosen
+            // "trans" must not also drag in "trans_item". The label is compared after the pipeline join, since a
+            // run whose pipeline left the catalog coalesces to the default batch there.
             var batchFilter = batch.Trim();
-            joined = joined.Where(x => x.Batch.Contains(batchFilter));
+            joined = joined.Where(x => x.Batch == batchFilter);
         }
 
         // The history inbox reads newest-first; the status board (latest=true) reads in report order, batch then
@@ -702,10 +713,12 @@ public static class RunEndpoints
         {
             while (!ct.IsCancellationRequested)
             {
-                // Status first, deltas second: when the completion transaction lands between the two reads, the
-                // delta can briefly include re-projected rows, which is harmless because the end event makes the
-                // client refetch the authoritative paged timeline anyway. Reading in the other order could end
-                // the stream while entries written just before completion were never sent.
+                // The live rows are an immutable, append-only log: the node writes each event/statement once under a
+                // monotonically increasing id and never rewrites them (completion only appends any missing tail). So
+                // this tail forwards each delta exactly once, keyed on the client's id cursor, and the client renders
+                // what it receives with no de-duplication. Read status first: a terminal run ends the stream here,
+                // and the client then loads the authoritative paged trace, which includes any final rows a tick did
+                // not reach before the run completed.
                 var status = await db.Runs.AsNoTracking()
                     .Where(r => r.RunId == runId).Select(r => r.Status)
                     .FirstOrDefaultAsync(ct).ConfigureAwait(false);

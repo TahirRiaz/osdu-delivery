@@ -16,10 +16,11 @@ namespace SqlFlow.Node;
 /// <remarks>
 /// Non-blocking by design: the engine's <see cref="Report"/> only enqueues, so a slow catalog never stalls the
 /// run; a single background writer drains the queue in order on the sink's own catalog context (a fresh DI scope,
-/// separate from the completion context, with its own connection). Best-effort by design: the artifact projection
-/// at completion is the authoritative record (it deletes these live rows and re-projects from <c>run.json</c>), so
-/// a live-write failure just stops the live feed and is logged, never surfaced to the run. Ordering is preserved,
-/// so the failure update for a statement always lands after that statement's insert.
+/// separate from the completion context, with its own connection). These rows are the durable, append-only trace:
+/// completion keeps them under their stable ids and only appends any tail the feed missed, so the trace stream
+/// delivers each statement exactly once. Best-effort by design: if a live write fails the feed stops and is logged
+/// (never surfaced to the run), and completion fills the gap from <c>run.json</c>. Ordering is preserved, so the
+/// failure update for a statement always lands after that statement's insert.
 /// </remarks>
 internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposable
 {
@@ -67,8 +68,8 @@ internal sealed class CatalogRunStatementSink : IRunStatementSink, IAsyncDisposa
     public async ValueTask DisposeAsync()
     {
         // Stop accepting reports and wait for every queued write to land before returning: the caller disposes the
-        // sink before the completion write-back, so the live rows are fully settled when the artifact projection
-        // deletes and re-projects them (no row can arrive after the delete).
+        // sink before the completion write-back, so the live rows are fully settled when it reconciles them against
+        // the artifact (no row can arrive after completion reads the highest live ordinal).
         _channel.Writer.TryComplete();
         try
         {

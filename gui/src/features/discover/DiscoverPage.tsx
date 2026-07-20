@@ -86,7 +86,7 @@ export default function DiscoverPage() {
   const [location, setLocation] = useState("");
   const [format, setFormat] = useState(AUTO_FORMAT);
   const [pattern, setPattern] = useState("");
-  const [recursive, setRecursive] = useState(false);
+  const [recursive, setRecursive] = useState(true);
   const [rootPath, setRootPath] = useState("");
   const [maxFiles, setMaxFiles] = useState("");
   const [maxRecords, setMaxRecords] = useState("");

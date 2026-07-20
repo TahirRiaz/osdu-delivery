@@ -295,6 +295,7 @@ v1.MapAuthEndpoints(options);
 v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapCatalogEndpoints()
     .MapRunEndpoints()
+    .MapActivityEndpoints()
     .MapLineageEndpoints()
     .MapSearchEndpoints()
     .MapScheduleReadEndpoints()

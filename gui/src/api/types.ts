@@ -286,6 +286,25 @@ export interface RunTraceEntry {
   elapsedMs: number | null;
 }
 
+/** One entry of a control-plane activity trace (a repository sync, a lineage computation, ...): the append-only,
+ * id-cursored log the bottom trace panel tails for one (kind, subject), the general-purpose twin of a run's trace.
+ * `terminal` marks the activity's final line and `status` its outcome ("succeeded"/"failed"); every other line
+ * leaves `status` null. */
+export interface ActivityEvent {
+  id: number;
+  activityId: string;
+  kind: string;
+  subjectKey: string;
+  /** 1-based position within the activity (emission order). */
+  ordinal: number;
+  timestampUtc: string;
+  level: "trace" | "debug" | "info" | "warning" | "error";
+  step: string | null;
+  message: string | null;
+  terminal: boolean;
+  status: string | null;
+}
+
 export interface RunSurrogateKey {
   id: number;
   runId: string;

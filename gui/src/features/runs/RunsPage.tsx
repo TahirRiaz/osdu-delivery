@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,8 +9,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { RunStatus, RunSummary } from "../../api/types";
-import { runApi } from "../../api/endpoints";
+import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
 import { FilterBar } from "../../components/FilterBar";
+import { FilterCombobox, type FilterOption } from "../../components/FilterCombobox";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -114,48 +116,118 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
   );
 }
 
-// The batch-report layout carried over from classic SQLFlow: each pipeline's LAST run clusters under its batch,
-// then under the lineage step, so the grouped view answers "what failed, what needs fixing" at a glance. Full
-// run history lives in the flat view and on the pipeline detail page. The "Run batch" action launches the whole
-// data source (every flow in the batch, in dependency order) as one run group.
-function makeBatchGrouping(onRunBatch: (repoId: string | null, batch: string) => void): TableGrouping<RunSummary> {
+/** The bucket a run whose pipeline joined no schedule reports under, sorted last after every named schedule. */
+const UNSCHEDULED = "Unscheduled";
+
+/** The schedule name each pipeline belongs to, keyed by pipeline id: a run inherits it through its pipeline. */
+type ScheduleByPipeline = Map<string, string>;
+
+const compare = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
+
+// The batch-report layout carried over from classic SQLFlow, now anchored on the SCHEDULE that runs the source:
+// each pipeline's LAST run clusters under its schedule, then under its batch, then under the lineage step, so the
+// grouped view answers "for this source's cadence, what failed and what needs fixing" at a glance. Within a
+// schedule the batches read in cascade (dependency) order, by the earliest wave any of a batch's flows runs at,
+// so a source's copy -> detail flow reads top to bottom and a stray legacy batch cannot wedge itself between two
+// live ones by an alphabetical accident. Full run history lives in the flat view and on the pipeline detail page.
+// The "Run batch" action launches the whole batch (every flow in it, in dependency order) as one run group.
+function makeScheduleGrouping(
+  scheduleByPipeline: ScheduleByPipeline,
+  onRunBatch: (repoId: string | null, batch: string) => void,
+): TableGrouping<RunSummary> {
+  const scheduleOf = (row: RunSummary) => scheduleByPipeline.get(row.pipelineId) ?? UNSCHEDULED;
+  // A schedule+batch identity for the cascade-rank map; the NUL delimiter cannot occur in a name, so no pair of
+  // distinct (schedule, batch) values collides on it.
+  const cascadeKey = (row: RunSummary) => `${scheduleOf(row)}\u0000${row.batch}`;
+
   return {
-    groupKey: (row) => row.batch,
-    renderGroupHeader: (rows) => (
-      // grow makes this row fill the header (it is a content-sized flex item inside the node row's cell), so
-      // the button's ml-auto really pushes it to the right edge instead of leaving it mid-row where it would
-      // swallow clicks meant to collapse the group.
-      <div className="flex grow flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="batch-group-header">
-        <span className="text-[13px] font-semibold">Batch: {rows[0].batch}</span>
-        <GroupStatsInline rows={rows} />
-        <Button
-          variant="outline"
-          size="xs"
-          className="ml-auto"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRunBatch(rows[0].repoId, rows[0].batch);
-          }}
-          data-testid="run-batch"
-        >
-          <Play />
-          Run batch
-        </Button>
-      </div>
-    ),
-    subKey: (row) => row.wave,
-    renderSubHeader: (rows) => (
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="step-group-header">
-        <span className="text-[13px] font-medium">Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}</span>
-        <GroupStatsInline rows={rows} />
-      </div>
-    ),
+    // Sort the page into schedule -> batch(cascade) -> step(wave) -> flow order so the contiguous clustering
+    // below reconstructs exactly that tree. The batch's cascade rank is the earliest wave any of its flows runs
+    // at (a wave of -1, "lineage not computed", sorts last); named schedules order by name, the Unscheduled
+    // bucket last.
+    transform: (rows) => {
+      const cascadeRank = new Map<string, number>();
+      for (const row of rows) {
+        const wave = row.wave >= 0 ? row.wave : Number.MAX_SAFE_INTEGER;
+        const current = cascadeRank.get(cascadeKey(row));
+        if (current === undefined || wave < current) {
+          cascadeRank.set(cascadeKey(row), wave);
+        }
+      }
+
+      const scheduleRank = (row: RunSummary) => {
+        const name = scheduleOf(row);
+        return name === UNSCHEDULED ? "\uffff" : name.toLowerCase();
+      };
+
+      return [...rows].sort((a, b) =>
+        compare(scheduleRank(a), scheduleRank(b))
+        || compare(cascadeRank.get(cascadeKey(a))!, cascadeRank.get(cascadeKey(b))!)
+        || compare(a.batch, b.batch)
+        || compare(a.wave, b.wave)
+        || compare(a.flowName, b.flowName));
+    },
+    // Every level starts collapsed: the board opens as a list of schedules with their rollup (count, failures),
+    // and an operator drills in a level at a time (schedule -> batch -> step -> runs), opening only the node they
+    // care about rather than having one click cascade a whole source open.
+    levels: [
+      {
+        key: scheduleOf,
+        defaultCollapsed: true,
+        renderHeader: (rows) => (
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="schedule-group-header">
+            <span className="text-[13px] font-semibold">
+              {scheduleOf(rows[0]) === UNSCHEDULED ? UNSCHEDULED : `Schedule: ${scheduleOf(rows[0])}`}
+            </span>
+            <GroupStatsInline rows={rows} />
+          </div>
+        ),
+      },
+      {
+        key: (row) => row.batch,
+        defaultCollapsed: true,
+        renderHeader: (rows) => (
+          // grow makes this row fill the header (it is a content-sized flex item inside the node row's cell), so
+          // the button's ml-auto really pushes it to the right edge instead of leaving it mid-row where it would
+          // swallow clicks meant to collapse the group.
+          <div className="flex grow flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="batch-group-header">
+            <span className="text-[13px] font-medium">Batch: {rows[0].batch}</span>
+            <GroupStatsInline rows={rows} />
+            <Button
+              variant="outline"
+              size="xs"
+              className="ml-auto"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRunBatch(rows[0].repoId, rows[0].batch);
+              }}
+              data-testid="run-batch"
+            >
+              <Play />
+              Run batch
+            </Button>
+          </div>
+        ),
+      },
+      {
+        key: (row) => String(row.wave),
+        defaultCollapsed: true,
+        renderHeader: (rows) => (
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="step-group-header">
+            <span className="text-[13px] font-medium">Step: {rows[0].wave >= 0 ? rows[0].wave : "?"}</span>
+            <GroupStatsInline rows={rows} />
+          </div>
+        ),
+      },
+    ],
   };
 }
 
-/** The run inbox: live-polled list with status/flow/kind/batch filters and the entry point for triggering runs.
- * Grouped by batch (the default) it is a status board: each pipeline's latest run under its batch and lineage
- * step, like the classic batch report. Toggled flat it is the full run history. */
+/** The run inbox: live-polled list with status/flow/schedule/batch/kind filters and the entry point for
+ * triggering runs. It defaults to the "Last run" scope grouped by schedule: each flow's newest run under the
+ * schedule that runs the source, then its batch (in cascade order) and lineage step, every level collapsed so an
+ * operator drills into one source at a time to see what its last execution did. The "All" scope opens the full
+ * run history; the group switch flattens the tree to the plain inbox. */
 export default function RunsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -169,19 +241,74 @@ export default function RunsPage() {
   const [kind, setKind] = useState("all");
   const [flowNameInput, setFlowNameInput] = useState("");
   const [flowName, setFlowName] = useState("");
-  const [batchInput, setBatchInput] = useState("");
   const [batch, setBatch] = useState("");
-  const [groupByBatch, setGroupByBatch] = useState(true);
+  const [scheduleId, setScheduleId] = useState("");
+  const [grouped, setGrouped] = useState(true);
+  // "last" (the default) shows each flow's newest run: the outcome of the most recent execution, "what happened
+  // last" per schedule. "all" opens the full run history. Independent of grouping, which is only the tree shape.
+  const [view, setView] = useState<"last" | "all">("last");
 
   useEffect(() => {
     const handle = window.setTimeout(() => setFlowName(flowNameInput.trim()), 400);
     return () => window.clearTimeout(handle);
   }, [flowNameInput]);
 
-  useEffect(() => {
-    const handle = window.setTimeout(() => setBatch(batchInput.trim()), 400);
-    return () => window.clearTimeout(handle);
-  }, [batchInput]);
+  // Schedules and batches are the estate's source list, not its flow list, so both are small, change rarely, and
+  // load once for the whole board: they populate the schedule/batch filter dropdowns AND the grouping's
+  // run-to-schedule map. A big page covers every repo in one request.
+  const schedulesQuery = useQuery({
+    queryKey: ["schedules", "for-runs-board"],
+    queryFn: () => scheduleApi.list({ pageSize: 500 }),
+    staleTime: 60_000,
+  });
+
+  const batchesQuery = useQuery({
+    queryKey: ["pipelines", "batches", "for-runs-board"],
+    queryFn: () => pipelineApi.batches(),
+    staleTime: 60_000,
+  });
+
+  // The schedule dropdown's options: one per schedule, valued by id (so two like-named schedules in different
+  // repos stay distinct), hinted with how many flows a fire runs. Ordered by name, as the server returns them.
+  const scheduleOptions = useMemo<FilterOption[]>(
+    () => (schedulesQuery.data?.items ?? []).map((schedule) => ({
+      value: schedule.id,
+      label: schedule.name,
+      hint: `${schedule.memberPipelineIds.length} ${schedule.memberPipelineIds.length === 1 ? "flow" : "flows"}`,
+    })),
+    [schedulesQuery.data],
+  );
+
+  // The batch dropdown's options: the estate's distinct batch labels (the same label in several repos is one
+  // option, since the runs filter matches on the label), hinted with the total flow count, sorted by label.
+  const batchOptions = useMemo<FilterOption[]>(() => {
+    const flowsByBatch = new Map<string, number>();
+    for (const row of batchesQuery.data ?? []) {
+      flowsByBatch.set(row.batch, (flowsByBatch.get(row.batch) ?? 0) + row.flowCount);
+    }
+
+    return [...flowsByBatch.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([label, flows]) => ({ value: label, label, hint: `${flows} ${flows === 1 ? "flow" : "flows"}` }));
+  }, [batchesQuery.data]);
+
+  const scheduleByPipeline = useMemo<ScheduleByPipeline>(() => {
+    const map: ScheduleByPipeline = new Map();
+    for (const schedule of schedulesQuery.data?.items ?? []) {
+      for (const pipelineId of schedule.memberPipelineIds) {
+        if (!map.has(pipelineId)) {
+          map.set(pipelineId, schedule.name);
+        }
+      }
+    }
+
+    return map;
+  }, [schedulesQuery.data]);
+
+  const grouping = useMemo(
+    () => makeScheduleGrouping(scheduleByPipeline, (repoId, batchName) => setBatchRun({ repoId, batch: batchName })),
+    [scheduleByPipeline],
+  );
 
   return (
     <Page data-testid="page-runs">
@@ -196,35 +323,29 @@ export default function RunsPage() {
       />
 
       <FilterBar>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          value={status ?? ""}
-          onValueChange={(value) => setStatus(value === "" ? null : (value as RunStatus))}
-          aria-label="Filter by status"
-        >
-          {statuses.map((s) => (
-            <ToggleGroupItem key={s} value={s} data-testid={`filter-status-${s}`} className="h-8 px-2.5 text-xs">
-              {s}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-        <Input
-          value={flowNameInput}
-          onChange={(e) => setFlowNameInput(e.target.value)}
-          placeholder="Flow name"
-          aria-label="Flow name"
-          data-testid="filter-flow-name"
-          className="h-8 w-44"
+        {/* Filters read left to right from the source hierarchy (schedule -> batch -> kind -> flow name), through
+            the run's state and history scope (status, last/all), to the display toggle (group). */}
+        <FilterCombobox
+          options={scheduleOptions}
+          value={scheduleId}
+          onChange={setScheduleId}
+          placeholder="Schedule"
+          searchPlaceholder="Search schedules"
+          emptyText="No schedules found."
+          ariaLabel="Filter by schedule"
+          testId="filter-schedule"
+          className="w-48"
         />
-        <Input
-          value={batchInput}
-          onChange={(e) => setBatchInput(e.target.value)}
+        <FilterCombobox
+          options={batchOptions}
+          value={batch}
+          onChange={setBatch}
           placeholder="Batch"
-          aria-label="Batch"
-          data-testid="filter-batch"
-          className="h-8 w-36"
+          searchPlaceholder="Search batches"
+          emptyText="No batches found."
+          ariaLabel="Filter by batch"
+          testId="filter-batch"
+          className="w-40"
         />
         <Select value={kind} onValueChange={setKind}>
           <SelectTrigger size="sm" className="h-8 w-28" aria-label="Kind" data-testid="filter-kind">
@@ -236,36 +357,72 @@ export default function RunsPage() {
             ))}
           </SelectContent>
         </Select>
+        <Input
+          value={flowNameInput}
+          onChange={(e) => setFlowNameInput(e.target.value)}
+          placeholder="Flow name"
+          aria-label="Flow name"
+          data-testid="filter-flow-name"
+          className="h-8 w-44"
+        />
+        <Select
+          value={status ?? "all"}
+          onValueChange={(value) => setStatus(value === "all" ? null : (value as RunStatus))}
+        >
+          <SelectTrigger size="sm" className="h-8 w-32" aria-label="Status" data-testid="filter-status">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">all statuses</SelectItem>
+            {statuses.map((s) => (
+              <SelectItem key={s} value={s}>{s}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={view}
+          onValueChange={(value) => value && setView(value as "last" | "all")}
+          aria-label="Run history scope"
+        >
+          <ToggleGroupItem value="last" data-testid="filter-view-last" className="h-8 px-2.5 text-xs">
+            Last
+          </ToggleGroupItem>
+          <ToggleGroupItem value="all" data-testid="filter-view-all" className="h-8 px-2.5 text-xs">
+            All
+          </ToggleGroupItem>
+        </ToggleGroup>
         <Label className="flex items-center gap-2 text-[13px] font-normal">
           <Switch
-            checked={groupByBatch}
-            onCheckedChange={setGroupByBatch}
+            checked={grouped}
+            onCheckedChange={setGrouped}
             data-testid="group-by-batch"
           />
-          Group by batch
+          Group by schedule
         </Label>
       </FilterBar>
 
       <PagedTable
-        queryKey={["runs", "list", status, flowName, kind, batch, groupByBatch]}
+        queryKey={["runs", "list", status, flowName, kind, batch, scheduleId, view, grouped]}
         fetchPage={(page, pageSize) =>
           runApi.list({
             status: status ?? undefined,
             flowName: flowName === "" ? undefined : flowName,
             flowKind: kind === "all" ? undefined : kind,
             batch: batch === "" ? undefined : batch,
-            latest: groupByBatch || undefined,
+            scheduleId: scheduleId === "" ? undefined : scheduleId,
+            latest: view === "last" || undefined,
             page,
             pageSize,
           })}
-        columns={groupByBatch ? baseColumns : flatColumns}
+        columns={grouped ? baseColumns : flatColumns}
         rowKey={(row) => row.runId}
         onRowClick={(row) => navigate(`/runs/${row.runId}`)}
         pollMs={5000}
         emptyMessage="No runs match the current filters."
-        grouping={groupByBatch
-          ? makeBatchGrouping((repoId, batch) => setBatchRun({ repoId, batch }))
-          : undefined}
+        grouping={grouped ? grouping : undefined}
         data-testid="runs-table"
       />
 

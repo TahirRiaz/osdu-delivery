@@ -19,10 +19,12 @@ namespace SqlFlow.Node;
 /// The exact twin of <see cref="CatalogRunStatementSink"/>, for the event stream. Non-blocking by design: the
 /// engine's <see cref="Publish"/> only enqueues, so a slow catalog never stalls the run; a single background
 /// writer drains the queue in order on the sink's own catalog context (a fresh DI scope, separate from the
-/// completion context, with its own connection). Best-effort by design: the artifact projection at completion is
-/// the authoritative record (it deletes these live rows and re-projects from the run.json <c>events</c> array),
-/// so a live-write failure just stops the live feed and is logged, never surfaced to the run. Ordinals are
-/// assigned in publication order by the single reader.
+/// completion context, with its own connection). These rows are the durable, append-only event log: completion
+/// keeps them under their stable ids and only appends any tail the feed missed, so the trace stream delivers
+/// each event exactly once. Best-effort by design: if a live write fails the feed stops and is logged (never
+/// surfaced to the run), and completion fills the gap from the run.json <c>events</c> array. Ordinals are
+/// assigned in publication order by the single reader, matching the artifact projection's ordinals so the tail
+/// append aligns.
 /// </remarks>
 internal sealed class CatalogRunEventSink : IFlowEventSink, IAsyncDisposable
 {
@@ -62,8 +64,8 @@ internal sealed class CatalogRunEventSink : IFlowEventSink, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         // Stop accepting events and wait for every queued write to land before returning: the caller disposes the
-        // sink before the completion write-back, so the live rows are fully settled when the artifact projection
-        // deletes and re-projects them (no row can arrive after the delete).
+        // sink before the completion write-back, so the live rows are fully settled when it reconciles them against
+        // the artifact (no row can arrive after completion reads the highest live ordinal).
         _channel.Writer.TryComplete();
         try
         {

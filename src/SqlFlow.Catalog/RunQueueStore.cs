@@ -350,17 +350,21 @@ public static class RunQueueStore
                             catalog.Runs.Add(target);
                         }
 
-                        // The node may have streamed this run's statements and canonical events into the catalog
-                        // live as it executed. Those rows are a real-time preview; run.json is the authoritative
-                        // final record (it carries the full order, the failure marker, and the events array), so
-                        // clear any live rows before re-projecting from the artifact. A no-op for CLI runs and any
-                        // run with no live feed, and atomic with the rest of the completion inside this
-                        // serializable transaction.
-                        await catalog.RunStatements.Where(s => s.RunId == runId)
-                            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
-                        await catalog.RunEvents.Where(e => e.RunId == runId)
-                            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
-                        CatalogSync.AddRunDetail(catalog, document.RootElement, runId, repoId);
+                        // The node streamed this run's statements and canonical events into the catalog live as it
+                        // executed: each is an immutable, append-only row the trace stream already delivered under a
+                        // stable id. Do NOT delete and re-project them - that would re-issue every row under a fresh
+                        // id, and the live tail (which forwards rows past the client's id cursor) would re-stream the
+                        // whole trace. Instead append only the tail the live feed did not write: nothing in the
+                        // normal case (the feed captured everything), or the gap after the point a best-effort feed
+                        // broke, taken from the authoritative run.json. CLI and full-sync runs have no live rows, so
+                        // the whole detail is inserted. Atomic with the rest of the completion in this serializable
+                        // transaction.
+                        var maxEventOrdinal = await catalog.RunEvents.Where(e => e.RunId == runId)
+                            .Select(e => (int?)e.Ordinal).MaxAsync(ct).ConfigureAwait(false) ?? 0;
+                        var maxStatementOrdinal = await catalog.RunStatements.Where(s => s.RunId == runId)
+                            .Select(s => (int?)s.Ordinal).MaxAsync(ct).ConfigureAwait(false) ?? 0;
+                        CatalogSync.AddRunDetail(
+                            catalog, document.RootElement, runId, repoId, maxEventOrdinal, maxStatementOrdinal);
                         // A failed group member strands its dependents: skip them in the same transaction so the
                         // completion and its consequences commit together (a no-op for a standalone or succeeded run).
                         if (!projected.Success)

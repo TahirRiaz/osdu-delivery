@@ -31,10 +31,11 @@ export interface LiveRunTrace {
 
 /**
  * Subscribes to a run's live trace stream while `live` is true: entries accumulate in timeline order as the
- * executing node persists them, a dropped connection reconnects after two seconds resuming from per-stream id
- * cursors (no replay, no gaps), and duplicates are dropped by identity. When the server sends the terminal
- * `end` frame, `onEnded` fires exactly once so the page can refetch the authoritative at-rest timeline. The
- * subscription closes when `live` turns false or the component unmounts.
+ * executing node persists them, and a dropped connection reconnects after two seconds resuming from per-stream
+ * id cursors (no replay, no gaps). The server's tail is an append-only log keyed by a stable id, so every entry
+ * arrives exactly once and there is no client-side de-duplication; the entries are only sorted for a stable
+ * timeline. When the server sends the terminal `end` frame, `onEnded` fires exactly once so the page can refetch
+ * the authoritative at-rest timeline. The subscription closes when `live` turns false or the component unmounts.
  */
 export function useRunTraceStream(runId: string, live: boolean, onEnded: () => void): LiveRunTrace {
   const [entries, setEntries] = useState<RunTraceEntry[]>([]);
@@ -51,7 +52,6 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
     let disposed = false;
     const controller = new AbortController();
     const cursors = { afterEventId: 0, afterStatementId: 0 };
-    const seen = new Set<string>();
     setEntries([]);
 
     const run = async () => {
@@ -61,17 +61,15 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
           await runApi.streamTrace(runId, cursors, (frame) => {
             if (frame.event === "entry") {
               const entry = JSON.parse(frame.data) as RunTraceEntry;
+              // The tail never re-sends a row and the cursors resume past what we hold, so append unconditionally;
+              // the sort only keeps the two interleaved streams in timeline order.
               if (entry.kind === "event") {
                 cursors.afterEventId = Math.max(cursors.afterEventId, entry.id);
               } else {
                 cursors.afterStatementId = Math.max(cursors.afterStatementId, entry.id);
               }
 
-              const key = `${entry.kind}-${entry.id}`;
-              if (!seen.has(key)) {
-                seen.add(key);
-                setEntries((previous) => [...previous, entry].sort(compareEntries));
-              }
+              setEntries((previous) => [...previous, entry].sort(compareEntries));
             } else if (frame.event === "end") {
               ended = true;
             }

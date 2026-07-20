@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { repoSourceApi } from "../../api/endpoints";
-import type { DiscoveredFlow } from "../../api/types";
+import type { DiscoveredFlow, RepoSource } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 
@@ -21,20 +21,23 @@ import { CorrelationError } from "../../components/CorrelationError";
 const REFERENCE_RE = /^\$\{[a-zA-Z]+:[^}]+\}$/;
 
 /**
- * Registers a git repo as a tracked source, with an optional preview-first scan: discover the repo's flows, preview
- * each, and choose which to import. The credential is a ${...} reference (created in the vault), never a raw token.
- * Registering persists the source and its selection; the SYNC (managed on the interval, or "Sync now") is what
- * actually imports the selected flows into the catalog, which is what the scheduler then executes.
+ * Registers a git repo as a tracked source, or edits an existing one (pass `source`), with an optional preview-first
+ * scan: discover the repo's flows, preview each, and choose which to import. The credential is a ${...} reference
+ * (created in the vault), never a raw token. Registering persists the source and its selection; the SYNC (managed on
+ * the interval, or "Sync now") is what actually imports the selected flows into the catalog, which the scheduler then
+ * executes. Because the server upserts by name, editing reuses the same register call with the source's name; the
+ * name is therefore locked in edit mode (changing it would create a second source instead of updating this one).
  */
-export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
+export function RegisterSourceDialog({ source, onClose }: { source?: RepoSource; onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [name, setName] = useState("");
-  const [remoteUrl, setRemoteUrl] = useState("");
-  const [branch, setBranch] = useState("main");
-  const [intervalText, setIntervalText] = useState("300");
-  const [enabled, setEnabled] = useState(true);
-  const [credentialUsername, setCredentialUsername] = useState("");
-  const [credentialReference, setCredentialReference] = useState("");
+  const isEdit = source !== undefined;
+  const [name, setName] = useState(source?.name ?? "");
+  const [remoteUrl, setRemoteUrl] = useState(source?.remoteUrl ?? "");
+  const [branch, setBranch] = useState(source?.branch ?? "main");
+  const [intervalText, setIntervalText] = useState(source ? String(source.syncIntervalSeconds) : "300");
+  const [enabled, setEnabled] = useState(source?.enabled ?? true);
+  const [credentialUsername, setCredentialUsername] = useState(source?.credentialUsername ?? "");
+  const [credentialReference, setCredentialReference] = useState(source?.credentialReference ?? "");
   const [discovered, setDiscovered] = useState<DiscoveredFlow[] | null>(null);
   const [included, setIncluded] = useState<ReadonlySet<string>>(new Set());
   const [previewPath, setPreviewPath] = useState<string | null>(null);
@@ -69,7 +72,11 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
   const register = useMutation({
     mutationFn: repoSourceApi.register,
     onSuccess: () => {
-      toast.success("Repo source registered. The next sync imports the selected flows into the catalog.");
+      toast.success(
+        isEdit
+          ? "Repo source updated. Use \"Sync now\" to pull with the new settings."
+          : "Repo source registered. The next sync imports the selected flows into the catalog.",
+      );
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
       void queryClient.invalidateQueries({ queryKey: ["repo-sources"] });
       onClose();
@@ -78,11 +85,15 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
       toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
-  // Never discovered: send null so the sync imports every flow (backward compatible). Otherwise send the unchecked
-  // files as the exclusion, which the sync honors (an excluded flow never becomes a catalog pipeline).
+  // Not (re-)discovered in this dialog: keep the source's existing exclusion when editing (sending null would wipe it
+  // and re-import every flow), or send null for a new source so the sync imports everything. Otherwise send the
+  // unchecked files as the exclusion, which the sync honors (an excluded flow never becomes a catalog pipeline).
   const excludedFlowPaths = useMemo(
-    () => (discovered === null ? null : discovered.filter((f) => !included.has(f.relativePath)).map((f) => f.relativePath)),
-    [discovered, included],
+    () =>
+      discovered === null
+        ? source?.excludedFlowPaths ?? null
+        : discovered.filter((f) => !included.has(f.relativePath)).map((f) => f.relativePath),
+    [discovered, included, source],
   );
 
   const canDiscover = remoteUrl.trim() !== "" && referenceValid && !discover.isPending;
@@ -124,9 +135,11 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
     >
       <SheetContent className="w-full gap-0 sm:max-w-xl" data-testid="register-source-dialog">
         <SheetHeader>
-          <SheetTitle>Register source</SheetTitle>
+          <SheetTitle>{isEdit ? "Edit source" : "Register source"}</SheetTitle>
           <SheetDescription>
-            Track a git repo so its flows sync into the catalog on an interval.
+            {isEdit
+              ? "Update this tracked source's settings and credentials, then sync to apply them."
+              : "Track a git repo so its flows sync into the catalog on an interval."}
           </SheetDescription>
         </SheetHeader>
 
@@ -143,10 +156,16 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
                 id="source-name"
                 className="h-8"
                 required
+                disabled={isEdit}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 data-testid="source-name"
               />
+              {isEdit && (
+                <p className="text-xs text-muted-foreground">
+                  The name identifies the source and cannot be changed here.
+                </p>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -345,7 +364,7 @@ export function RegisterSourceDialog({ onClose }: { onClose: () => void }) {
           </Button>
           <Button size="sm" onClick={submit} disabled={!canSubmit} data-testid="register-source-submit">
             {register.isPending && <Loader2 className="animate-spin" />}
-            Register
+            {isEdit ? "Save" : "Register"}
           </Button>
         </SheetFooter>
       </SheetContent>

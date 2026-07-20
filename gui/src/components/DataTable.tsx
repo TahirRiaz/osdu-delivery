@@ -14,20 +14,29 @@ export interface Column<T> {
   width?: number | string;
 }
 
+/** One nesting level of a {@link TableGrouping}: CONTIGUOUS rows sharing this level's key nest under one
+ * expandable node. */
+export interface GroupLevel<T> {
+  key: (row: T) => string;
+  /** Node content for one cluster at this level; receives every row of the cluster (for aggregates). */
+  renderHeader: (rows: T[]) => ReactNode;
+  /** Whether this level's nodes start collapsed (a busy top level a user drills into) rather than expanded.
+   * A user's expand/collapse still overrides it per node, and that override survives data refreshes. */
+  defaultCollapsed?: boolean;
+}
+
 /**
- * Tree grouping over the rows given: CONTIGUOUS rows sharing the same group key nest under one expandable
- * tree node (so a time-ordered list reconstructs each joint execution without re-sorting), and an optional
- * sub key nests a second, independently expandable level beneath it; rows within a group are stably sorted by
- * the sub key (ascending). Each level renders as a tree row: indented one step past its parent, with its own
- * expander, leaf rows deepest, mirroring the batch report's batch -> step -> run hierarchy.
+ * Tree grouping over the rows given: an ordered list of nesting LEVELS above the leaf rows. At each level,
+ * CONTIGUOUS rows sharing that level's key nest under one expandable node, indented one step past its parent;
+ * leaf (data) rows sit deepest. Contiguity is the whole contract: rows must already be in display order, so a
+ * time-ordered or server-ordered list reconstructs its hierarchy without the table re-sorting it. `transform`
+ * runs once over the full row set before grouping, the hook a page uses to sort its rows into that display
+ * order (schedule -> batch -> step, say) and to derive per-row grouping the raw rows do not carry. The levels
+ * mirror the batch report's batch -> step -> run hierarchy, with any number of levels.
  */
 export interface TableGrouping<T> {
-  groupKey: (row: T) => string;
-  /** Node content for one group; receives every row of the group (for aggregates). */
-  renderGroupHeader: (rows: T[]) => ReactNode;
-  subKey?: (row: T) => number | string;
-  /** Node content for one sub-group; required when subKey is set. */
-  renderSubHeader?: (rows: T[]) => ReactNode;
+  levels: GroupLevel<T>[];
+  transform?: (rows: T[]) => T[];
 }
 
 interface DataTableProps<T> {
@@ -69,15 +78,6 @@ function clusterContiguous<T>(rows: T[], key: (row: T) => string): Cluster<T>[] 
   return clusters;
 }
 
-/** Stable-sorts a cluster's rows by the sub key (ascending) and splits them into one cluster per distinct key. */
-function subClusters<T>(rows: T[], subKey: (row: T) => number | string): Cluster<T>[] {
-  const sorted = rows
-    .map((row, index) => ({ row, index, key: subKey(row) }))
-    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index))
-    .map((entry) => entry.row);
-  return clusterContiguous(sorted, (row) => String(subKey(row)));
-}
-
 /** One indentation step per tree depth, in pixels; a leaf sits one step past the deepest node. */
 const TREE_INDENT = 28;
 
@@ -87,7 +87,7 @@ const alignClass = (align: Column<never>["align"]) =>
 /**
  * The presentational table shell every list renders through (DESIGN.md 7.2): the bordered card surface,
  * the muted header row, loading skeletons, the shared empty state, optional row-click affordance, and
- * optional tree grouping (up to two independently expandable node levels above the leaf rows). PagedTable
+ * optional tree grouping (any number of independently expandable node levels above the leaf rows). PagedTable
  * wraps this with server-side paging and a query; pages holding their own already-fetched rows render it
  * directly, so there is one table code path instead of several hand-rolled shells.
  */
@@ -95,12 +95,14 @@ export function DataTable<T>({
   columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer,
   skeletonRows = 5, "data-testid": testId,
 }: DataTableProps<T>) {
-  // Collapsed node ids: node key + first row key, so the state survives refreshes of the same data (a
-  // genuinely new node gets a new id and starts expanded). Both tree levels share this one set.
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  // Node ids the user has FLIPPED from their level's default (expanded or collapsed), keyed by the path of
+  // cluster keys from the root, so the state survives refreshes of the same data (a genuinely new node gets a
+  // new id and takes its level default, and a flip outlives a new row landing under the node). Every tree level
+  // shares this one set; a node's effective collapse is its level default XOR its membership here.
+  const [flipped, setFlipped] = useState<ReadonlySet<string>>(new Set());
 
   const toggleNode = (nodeId: string) => {
-    setCollapsed((current) => {
+    setFlipped((current) => {
       const next = new Set(current);
       if (next.has(nodeId)) {
         next.delete(nodeId);
@@ -141,8 +143,10 @@ export function DataTable<T>({
     );
   };
 
-  // An interior tree node (batch or step): an expandable row whose first cell carries the depth indent, the
-  // expander chevron, and the node's summary; the summary spans the remaining columns so aggregates read across.
+  // An interior tree node (schedule, batch or step): an expandable row whose first cell carries the depth
+  // indent, the expander chevron, and the node's summary; the summary spans the remaining columns so
+  // aggregates read across. The row testid is generic by depth (`group-header-row` at the root,
+  // `subgroup-header-row` for every nested level); a level's own semantic testid lives on its rendered header.
   const nodeRow = (
     nodeId: string, depth: number, isCollapsed: boolean, nodeTestId: string, content: ReactNode,
   ) => (
@@ -166,32 +170,29 @@ export function DataTable<T>({
     </TableRow>
   );
 
-  const groupedBody = (items: T[], group: TableGrouping<T>) =>
-    clusterContiguous(items, group.groupKey).map((cluster) => {
-      const clusterId = `${cluster.key}::${String(rowKey(cluster.rows[0]))}`;
-      const isCollapsed = collapsed.has(clusterId);
-      const hasSub = group.subKey !== undefined;
+  // One tree level: cluster the (already display-ordered) rows by this level's key, render each cluster's node
+  // row, then recurse into the deeper levels or, at the deepest, emit the leaf rows. `parentId` threads the
+  // ancestor keys so every node's collapse id is its full root-to-node path.
+  const renderLevel = (
+    items: T[], levels: GroupLevel<T>[], depth: number, parentId: string,
+  ): ReactNode =>
+    clusterContiguous(items, levels[0].key).map((cluster) => {
+      const nodeId = parentId === "" ? cluster.key : `${parentId}::${cluster.key}`;
+      const isCollapsed = Boolean(levels[0].defaultCollapsed) !== flipped.has(nodeId);
+      const deeper = levels.slice(1);
+      const testId = depth === 0 ? "group-header-row" : "subgroup-header-row";
       return (
-        <Fragment key={clusterId}>
-          {nodeRow(clusterId, 0, isCollapsed, "group-header-row", group.renderGroupHeader(cluster.rows))}
-          {!isCollapsed && (hasSub
-            ? subClusters(cluster.rows, group.subKey!).map((sub) => {
-              const subId = `${clusterId}::${sub.key}`;
-              const subCollapsed = collapsed.has(subId);
-              return (
-                <Fragment key={subId}>
-                  {nodeRow(
-                    subId, 1, subCollapsed, "subgroup-header-row",
-                    group.renderSubHeader?.(sub.rows) ?? sub.key,
-                  )}
-                  {!subCollapsed && sub.rows.map((row) => dataRow(row, 2))}
-                </Fragment>
-              );
-            })
-            : cluster.rows.map((row) => dataRow(row, 1)))}
+        <Fragment key={nodeId}>
+          {nodeRow(nodeId, depth, isCollapsed, testId, levels[0].renderHeader(cluster.rows))}
+          {!isCollapsed && (deeper.length > 0
+            ? renderLevel(cluster.rows, deeper, depth + 1, nodeId)
+            : cluster.rows.map((row) => dataRow(row, depth + 1)))}
         </Fragment>
       );
     });
+
+  const groupedBody = (items: T[], group: TableGrouping<T>) =>
+    renderLevel(group.transform ? group.transform(items) : items, group.levels, 0, "");
 
   return (
     <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={testId}>

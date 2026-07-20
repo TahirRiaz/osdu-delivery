@@ -116,16 +116,29 @@ public sealed partial class RepoSyncService : BackgroundService
             return;
         }
 
+        // Trace this attempt into the activity log the GUI's bottom panel tails, so an operator watches the sync
+        // happen (clone, checkout, reconcile, result, warnings) instead of seeing only a terminal badge. The trace
+        // shares this scope's catalog context and detaches its own rows, so it never disturbs the sync's writes;
+        // its subject is the source id, keyed by the well-known repo-sync kind.
+        var trace = await ActivityTrace.BeginAsync(
+            catalog, ActivityKinds.RepoSync, source.Id.ToString(), _clock, ct).ConfigureAwait(false);
+
         try
         {
+            await trace.InfoAsync("start", $"Sync started for '{source.Name}' (branch {source.Branch}).", ct).ConfigureAwait(false);
+
             // Resolve the source's git credential from its stored ${...} reference (Key Vault / env); the secret
             // value is never stored in the catalog, only fetched here for the clone. A source with no reference
             // falls back to the host environment (public remotes, single-credential deployments).
+            await trace.InfoAsync("credentials", "Resolving git credentials.", ct).ConfigureAwait(false);
             var resolver = scope.ServiceProvider.GetRequiredService<ISecretResolver>();
             var credentials = await GitMaterializer
                 .ResolveCredentialsAsync(resolver, source.CredentialReference, source.CredentialUsername, ct)
                 .ConfigureAwait(false);
+
+            await trace.InfoAsync("clone", $"Cloning {source.RemoteUrl} (branch {source.Branch}).", ct).ConfigureAwait(false);
             var (workingDir, sha) = _materializer.MaterializeBranch(source.RemoteUrl, source.Branch, credentials, ct);
+            await trace.InfoAsync("clone", $"Checked out {sha}.", ct).ConfigureAwait(false);
 
             // The preview-first selection: only the flows the source includes are projected as pipelines (an
             // excluded flow never becomes a catalog pipeline, so the scheduler never picks it up).
@@ -135,12 +148,15 @@ public sealed partial class RepoSyncService : BackgroundService
             // managed sync mirrors the git estate; the connected/derived tier is a separate, opt-in concern. A
             // manual "sync now" carries a force-lineage request on the source, so this sync recomputes the whole
             // graph (and the offline object-body/column enrichment) even when the commit is unchanged.
-            await new CatalogSync()
+            await trace.InfoAsync("sync", "Reconciling catalog from the estate (pipelines, lineage, schedules, runs).", ct).ConfigureAwait(false);
+            var result = await new CatalogSync()
                 .SyncAsync(catalog, workingDir, source.Name, source.RemoteUrl, _clock.GetUtcNow().UtcDateTime,
                     excludedFlowPaths: excludedFlowPaths, forceLineage: source.ForceLineageOnNextSync, ct: ct)
                 .ConfigureAwait(false);
 
+            await EmitResultAsync(trace, result, ct).ConfigureAwait(false);
             await RepoSourceStore.RecordSuccessAsync(catalog, source.Id, sha, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            await trace.CompleteAsync(ActivityStatuses.Succeeded, $"Sync complete at {sha}.", ct).ConfigureAwait(false);
             LogSynced(source.Name, sha);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -152,6 +168,50 @@ public sealed partial class RepoSyncService : BackgroundService
             var redacted = SecretHygiene.RedactedMessage(ex);
             LogSyncError(source.Name, redacted);
             await RecordFailureAsync(catalog, source.Id, redacted).ConfigureAwait(false);
+            await CompleteTraceFailureAsync(trace, redacted).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Expands the sync result into a concise activity line plus one warning line per warning, so the panel
+    /// shows what the reconcile did and surfaces every warning the sync collected.</summary>
+    private static async Task EmitResultAsync(ActivityTrace trace, CatalogSyncResult result, CancellationToken ct)
+    {
+        await trace.InfoAsync(
+            "result",
+            $"Pipelines: {result.PipelinesAdded} added, {result.PipelinesUpdated} updated, "
+                + $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, "
+                + $"{result.PipelinesDeleted} removed.",
+            ct).ConfigureAwait(false);
+
+        if (result.RunsAdded > 0)
+        {
+            await trace.InfoAsync("result", $"Run history: {result.RunsAdded} run(s) recorded.", ct).ConfigureAwait(false);
+        }
+
+        await trace.InfoAsync(
+            "result",
+            $"Lineage: {result.ObjectsUpserted} objects, {result.LineageEdges} edges, {result.Waves} waves"
+                + (result.LineageConnected ? " (connected)." : "."),
+            ct).ConfigureAwait(false);
+
+        foreach (var warning in result.Warnings)
+        {
+            await trace.WarnAsync("warning", warning, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Best-effort terminal "failed" trace line, on its own short deadline so a cancelled or unhealthy
+    /// request context cannot leave the panel hanging without a terminal event (mirrors <see cref="RecordFailureAsync"/>).</summary>
+    private async Task CompleteTraceFailureAsync(ActivityTrace trace, string error)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await trace.CompleteAsync(ActivityStatuses.Failed, $"Sync failed: {error}", cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogScanError(SecretHygiene.RedactedMessage(ex));
         }
     }
 

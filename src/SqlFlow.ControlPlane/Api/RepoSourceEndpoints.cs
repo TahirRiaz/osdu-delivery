@@ -121,6 +121,12 @@ public static class RepoSourceEndpoints
                 detail: $"No enabled repo source '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 
+        // Post a non-terminal "queued" line to the activity trace so the panel a client opens on this click latches
+        // onto a live trace right away: the background sync worker (which claims the source on its next tick) then
+        // appends the real clone/reconcile/result trace, and the stream stays open until that attempt is terminal.
+        var trace = await ActivityTrace.BeginAsync(db, ActivityKinds.RepoSync, id.ToString(), clock, ct).ConfigureAwait(false);
+        await trace.InfoAsync("queued", "Sync requested; waiting for a worker to pick it up.", ct).ConfigureAwait(false);
+
         var row = await db.RepoSources.AsNoTracking().Where(s => s.Id == id).FirstAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(ToDto(row));
     }
