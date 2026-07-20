@@ -246,13 +246,18 @@ public sealed class SourceDiscoveryService
     private static string ResolveColumnType(SourceDiscoveryRequest request)
         => string.IsNullOrWhiteSpace(request.DefaultColumnType) ? FlattenFlowYaml.DefaultColumnType : request.DefaultColumnType.Trim();
 
-    /// <summary>The first file (name-ordered) under a location matching the pattern, or null when nothing matches.</summary>
+    /// <summary>The representative file (name-ordered) under a location matching the pattern, or null when nothing
+    /// matches. Prefers the first non-empty file: a zero-byte entry is an ADLS Gen2 directory marker (which the broad
+    /// "*" auto-detect pattern matches, unlike a "*.csv" pattern) or an empty file, and neither can inform format
+    /// detection or a schema read. Falls back to name order only when every match is empty, so the empty-selection
+    /// path still reports accurately.</summary>
     private static async Task<FileRef?> FirstFileAsync(
         IFileStore store, string location, string pattern, bool recursive, CancellationToken ct)
     {
         var files = await store
             .ListAsync(location, new FileDiscovery { Pattern = pattern, Recursive = recursive }, ct).ConfigureAwait(false);
-        return files.OrderBy(f => f.Name, StringComparer.Ordinal).FirstOrDefault();
+        var ordered = files.OrderBy(f => f.Name, StringComparer.Ordinal).ToList();
+        return ordered.FirstOrDefault(f => f.Size > 0) ?? ordered.FirstOrDefault();
     }
 
     private static async Task<byte[]> ReadHeadAsync(IFileStore store, FileRef file, int max, CancellationToken ct)

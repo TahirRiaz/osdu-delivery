@@ -13,14 +13,17 @@ export function PanelHost() {
 
   return (
     <section className="flex h-full flex-col bg-panel" aria-label={content.title}>
-      <header className="flex h-8 shrink-0 items-center justify-between border-b border-border px-3">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+      {/* The window titlebar: a distinct accent surface with a primary accent strip, so the panel reads as its own
+          surface rather than blending into the page/editor behind it. */}
+      <header className="flex h-8 shrink-0 items-center justify-between border-b border-border bg-accent px-3 shadow-sm">
+        <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-accent-foreground">
+          <span aria-hidden className="h-3 w-0.5 rounded-full bg-primary" />
           {content.title}
         </span>
         <button
           onClick={close}
           aria-label="Close panel"
-          className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="rounded-sm p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
         >
           <X className="size-3.5" />
         </button>

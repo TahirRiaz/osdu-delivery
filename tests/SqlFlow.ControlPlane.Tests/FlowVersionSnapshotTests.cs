@@ -93,6 +93,66 @@ public sealed class FlowVersionSnapshotTests
     }
 
     [SkippableFact]
+    public async Task Enqueue_PinnedToANonSyncedCommit_TakesNoSnapshot_SoTheGitPathRunsTheExactCommit()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var name = UniqueName();
+        var yaml = FlowYaml(name);
+        var hash = CatalogProjection.Hash(yaml);
+        // A different commit than the repo's last synced one: the catalog snapshot holds the SYNCED bytes, not
+        // this commit's, so stamping it would silently run the wrong version. The run must stay on the git path.
+        const string otherSha = "abcabcabcabcabcabcabcabcabcabcabcabcabca";
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var repoId = await SeedRepoAsync(db, name);
+            await SeedPipelineAsync(db, repoId, "flow-a", yaml, hash);
+
+            var runId = await RunQueueStore.EnqueueAsync(
+                db, new RunEnqueueRequest(repoId, "flow-a", "ing", CommitSha: otherSha), DateTime.UtcNow);
+
+            var run = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == runId);
+            Assert.Equal(otherSha, run.CommitSha);
+            Assert.Null(run.FlowVersionHash);
+        }
+        finally
+        {
+            await CleanupAsync(cs, name, hash);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Enqueue_PinnedToTheSyncedCommit_StillSnapshots()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var name = UniqueName();
+        var yaml = FlowYaml(name);
+        var hash = CatalogProjection.Hash(yaml);
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var repoId = await SeedRepoAsync(db, name);
+            await SeedPipelineAsync(db, repoId, "flow-a", yaml, hash);
+
+            // An explicit pin that equals the synced commit is the same content as the snapshot, so the DB path stands.
+            var runId = await RunQueueStore.EnqueueAsync(
+                db, new RunEnqueueRequest(repoId, "flow-a", "ing", CommitSha: SyncedSha), DateTime.UtcNow);
+
+            var run = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == runId);
+            Assert.Equal(SyncedSha, run.CommitSha);
+            Assert.Equal(hash, run.FlowVersionHash);
+        }
+        finally
+        {
+            await CleanupAsync(cs, name, hash);
+        }
+    }
+
+    [SkippableFact]
     public async Task Enqueue_WithoutAPipelineRow_TakesNoSnapshot()
     {
         var cs = CatalogTestDb.Require();

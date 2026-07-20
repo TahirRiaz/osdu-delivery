@@ -140,17 +140,21 @@ public static class RunQueueStore
 
         var runId = Guid.CreateVersion7();
         var pipelineId = CatalogIdentity.Pipeline(request.RepoId, request.FlowName);
-        // Stage the executable YAML into the content-addressed store before the run transaction (its own idempotent
-        // save; see EnsureFlowVersionAsync), so the run only has to carry the hash and the node fetches the document
-        // from the catalog instead of cloning the repo.
-        var flowVersionHash = await EnsureFlowVersionAsync(catalog, pipelineId, nowUtc, ct).ConfigureAwait(false);
 
-        return await CatalogTransaction.InSerializableAsync(catalog, async () =>
+        // Resolve the commit this run executes and whether the catalog snapshot is a faithful copy of it. The
+        // snapshot in CatalogFlowVersion holds the CURRENTLY SYNCED version (what CatalogPipeline.Yaml reflects),
+        // so it may only serve a run that executes that same commit: an empty (default) pin, or an explicit pin
+        // equal to the synced commit. A pin to any OTHER commit must run those exact bytes, which the catalog does
+        // not hold, so it is left unstamped and takes the git materialization path, preserving commit-pin
+        // reproducibility.
+        var (commitSha, snapshotMatchesCommit) =
+            await ResolveCommitForSnapshotAsync(catalog, request.RepoId, request.CommitSha, ct).ConfigureAwait(false);
+        var flowVersionHash = snapshotMatchesCommit
+            ? await EnsureFlowVersionAsync(catalog, pipelineId, nowUtc, ct).ConfigureAwait(false)
+            : null;
+
+        return await CatalogTransaction.InSerializableAsync(catalog, () =>
         {
-            var commitSha = string.IsNullOrWhiteSpace(request.CommitSha)
-                ? await ResolveSyncedShaAsync(catalog, request.RepoId, ct).ConfigureAwait(false)
-                : request.CommitSha.Trim();
-
             catalog.Runs.Add(new CatalogRun
             {
                 RunId = runId,
@@ -173,7 +177,7 @@ public static class RunQueueStore
                 WrittenUtc = nowUtc,
                 Success = false,
             });
-            return runId;
+            return Task.FromResult(runId);
         }, ct);
     }
 
@@ -199,26 +203,29 @@ public static class RunQueueStore
         var groupId = Guid.CreateVersion7();
         var targetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim();
 
-        // Stage every member's executable YAML into the content-addressed store before the run transaction, so the
-        // serializable transaction only inserts run rows. Distinct pipelines are staged once; members that share
-        // content (a group fanning out one version) reuse the row EnsureFlowVersionAsync committed for the first.
+        // Resolve the shared commit and whether the catalog snapshot faithfully copies it (see the single-run
+        // enqueue). Only when it does is each member's YAML staged into the content-addressed store before the run
+        // transaction, so the serializable transaction only inserts run rows. Distinct pipelines are staged once;
+        // members that share content (a group fanning out one version) reuse the row the first EnsureFlowVersionAsync
+        // committed. A pin to a non-synced commit leaves every member unstamped, on the git materialization path.
+        var (commitSha, snapshotMatchesCommit) =
+            await ResolveCommitForSnapshotAsync(catalog, request.RepoId, request.CommitSha, ct).ConfigureAwait(false);
         var flowVersionByPipeline = new Dictionary<Guid, string?>();
-        foreach (var member in request.Members)
+        if (snapshotMatchesCommit)
         {
-            var pipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName);
-            if (!flowVersionByPipeline.ContainsKey(pipelineId))
+            foreach (var member in request.Members)
             {
-                flowVersionByPipeline[pipelineId] =
-                    await EnsureFlowVersionAsync(catalog, pipelineId, nowUtc, ct).ConfigureAwait(false);
+                var pipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName);
+                if (!flowVersionByPipeline.ContainsKey(pipelineId))
+                {
+                    flowVersionByPipeline[pipelineId] =
+                        await EnsureFlowVersionAsync(catalog, pipelineId, nowUtc, ct).ConfigureAwait(false);
+                }
             }
         }
 
-        return await CatalogTransaction.InSerializableAsync(catalog, async () =>
+        return await CatalogTransaction.InSerializableAsync(catalog, () =>
         {
-            var commitSha = string.IsNullOrWhiteSpace(request.CommitSha)
-                ? await ResolveSyncedShaAsync(catalog, request.RepoId, ct).ConfigureAwait(false)
-                : request.CommitSha.Trim();
-
             catalog.RunGroups.Add(new CatalogRunGroup
             {
                 GroupId = groupId,
@@ -245,7 +252,7 @@ public static class RunQueueStore
                     FlowKind = string.IsNullOrWhiteSpace(member.FlowKind) ? "unknown" : member.FlowKind,
                     TargetPool = targetPool,
                     CommitSha = commitSha,
-                    FlowVersionHash = flowVersionByPipeline[pipelineId],
+                    FlowVersionHash = flowVersionByPipeline.GetValueOrDefault(pipelineId),
                     GroupId = groupId,
                     // A negative (uncomputed) wave collapses to 0 so an un-analyzed set runs as one parallel wave.
                     GroupWave = member.Wave < 0 ? 0 : member.Wave,
@@ -256,7 +263,7 @@ public static class RunQueueStore
                 });
             }
 
-            return new RunGroupEnqueueResult(groupId, runIds);
+            return Task.FromResult(new RunGroupEnqueueResult(groupId, runIds));
         }, ct);
     }
 
@@ -280,6 +287,25 @@ public static class RunQueueStore
                 select source.LastSyncedSha)
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return string.IsNullOrWhiteSpace(sha) ? null : sha.Trim();
+    }
+
+    /// <summary>
+    /// Resolves the commit a run executes from its request, and whether the catalog's YAML snapshot faithfully
+    /// copies that commit. An explicit <paramref name="requestedSha"/> is honored verbatim; an empty one defaults to
+    /// the repo's last synced commit (see <see cref="ResolveSyncedShaAsync"/>). The snapshot in
+    /// <see cref="CatalogFlowVersion"/> only ever holds the currently synced version, so it matches the run when the
+    /// run executes that synced commit: an empty pin, or an explicit pin equal to the synced SHA. A pin to any other
+    /// commit does not match, and its run must materialize those exact bytes from git rather than run the snapshot.
+    /// </summary>
+    private static async Task<(string? CommitSha, bool SnapshotMatchesCommit)> ResolveCommitForSnapshotAsync(
+        CatalogDbContext catalog, Guid repoId, string? requestedSha, CancellationToken ct)
+    {
+        var syncedSha = await ResolveSyncedShaAsync(catalog, repoId, ct).ConfigureAwait(false);
+        var explicitSha = string.IsNullOrWhiteSpace(requestedSha) ? null : requestedSha.Trim();
+        var commitSha = explicitSha ?? syncedSha;
+        var snapshotMatchesCommit = explicitSha is null
+            || string.Equals(explicitSha, syncedSha, StringComparison.OrdinalIgnoreCase);
+        return (commitSha, snapshotMatchesCommit);
     }
 
     /// <summary>

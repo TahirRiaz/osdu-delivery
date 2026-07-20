@@ -17,7 +17,7 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
-import { RunStatusBadge } from "../../components/StatusBadge";
+import { RunStatusBadge, rollupStatus } from "../../components/StatusBadge";
 import { formatDurationSeconds } from "../../lib/time";
 import { TriggerRunDialog } from "./TriggerRunDialog";
 
@@ -100,6 +100,9 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
   const stats = groupStats(rows);
   return (
     <>
+      {/* The group's headline status: worst-wins across its runs, so a collapsed group reads green only when
+          everything under it succeeded. This is the at-a-glance indicator on every level's header. */}
+      <RunStatusBadge status={rollupStatus(rows.map((row) => row.status))} testId="group-rollup-status" />
       <span className="text-[13px] text-muted-foreground">
         started <RelativeTime value={stats.earliest} />
       </span>
@@ -242,7 +245,9 @@ export default function RunsPage() {
   const [flowNameInput, setFlowNameInput] = useState("");
   const [flowName, setFlowName] = useState("");
   const [batch, setBatch] = useState("");
-  const [scheduleId, setScheduleId] = useState("");
+  // The schedule name on the Schedules board deep-links here as /runs?scheduleId=<id>, so a click lands on that
+  // schedule's runs with the filter already applied.
+  const [scheduleId, setScheduleId] = useState(() => searchParams.get("scheduleId") ?? "");
   const [grouped, setGrouped] = useState(true);
   // "last" (the default) shows each flow's newest run: the outcome of the most recent execution, "what happened
   // last" per schedule. "all" opens the full run history. Independent of grouping, which is only the tree shape.

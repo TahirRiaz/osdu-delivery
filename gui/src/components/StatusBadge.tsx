@@ -57,23 +57,50 @@ function Pill({
 }
 
 /** One mapping from run status to tone/affordance, used everywhere a run status renders. */
-export function RunStatusBadge({ status }: { status: RunStatus | string }) {
+export function RunStatusBadge({ status, testId = "status-badge" }: { status: RunStatus | string; testId?: string }) {
   switch (status) {
     case "queued":
-      return <Pill tone="warning" label="queued" icon={Clock3} testId="status-badge" />;
+      return <Pill tone="warning" label="queued" icon={Clock3} testId={testId} />;
     case "running":
-      return <Pill tone="info" label="running" icon={Loader2} spin testId="status-badge" />;
+      return <Pill tone="info" label="running" icon={Loader2} spin testId={testId} />;
     case "succeeded":
-      return <Pill tone="success" label="succeeded" icon={CircleCheck} testId="status-badge" />;
+      return <Pill tone="success" label="succeeded" icon={CircleCheck} testId={testId} />;
     case "failed":
-      return <Pill tone="destructive" label="failed" icon={CircleX} testId="status-badge" />;
+      return <Pill tone="destructive" label="failed" icon={CircleX} testId={testId} />;
     case "cancelled":
-      return <Pill tone="muted" label="cancelled" icon={Ban} testId="status-badge" />;
+      return <Pill tone="muted" label="cancelled" icon={Ban} testId={testId} />;
     case "skipped":
-      return <Pill tone="muted" label="skipped" icon={SkipForward} testId="status-badge" />;
+      return <Pill tone="muted" label="skipped" icon={SkipForward} testId={testId} />;
     default:
-      return <Pill tone="muted" label={status} icon={CircleMinus} testId="status-badge" />;
+      return <Pill tone="muted" label={status} icon={CircleMinus} testId={testId} />;
   }
+}
+
+/**
+ * Worst-wins rollup of a group's run statuses into one headline status, so a collapsed group can show green at a
+ * glance only when nothing failed and nothing is still pending. Precedence, most to least alarming:
+ * failed > running > queued > succeeded > cancelled > skipped. A group with only benign trailing states
+ * (skipped/cancelled) alongside successes still rolls up green, since nothing needs attention.
+ */
+export function rollupStatus(statuses: readonly (RunStatus | string)[]): RunStatus {
+  const has = (s: RunStatus) => statuses.includes(s);
+  if (has("failed")) {
+    return "failed";
+  }
+
+  if (has("running")) {
+    return "running";
+  }
+
+  if (has("queued")) {
+    return "queued";
+  }
+
+  if (has("succeeded")) {
+    return "succeeded";
+  }
+
+  return has("cancelled") ? "cancelled" : "skipped";
 }
 
 export function OnlineBadge({ online }: { online: boolean }) {

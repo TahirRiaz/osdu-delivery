@@ -313,7 +313,7 @@ export default function SchedulesPage() {
       header: "Schedule",
       render: (row) => (
         <RouterLink
-          to={`/schedules/${row.id}`}
+          to={`/runs?scheduleId=${row.id}`}
           className="font-mono text-[12px] font-medium text-primary hover:underline"
           data-testid="schedule-name-link"
         >
