@@ -47,6 +47,9 @@ public sealed class CsvLoadIntegrationTests : IDisposable
             Assert.Equal(FlowStatus.Success, result.Status);
             Assert.True(await IntegrationDb.TableExistsAsync(cs, table));
             Assert.Equal(3, result.RowsLoaded);
+            // The file load is insert-only (SqlBulkCopy), so every loaded row is reported as an insert; this is
+            // what the run's inserted count in the catalog/GUI projects from.
+            Assert.Equal(3, result.RowsInserted);
             Assert.Equal(3, await IntegrationDb.RowCountAsync(cs, table));
             Assert.True(await IntegrationDb.ColumnExistsAsync(cs, table, "OrderId"));
             Assert.True(await IntegrationDb.ColumnExistsAsync(cs, table, "FileName_DW"));

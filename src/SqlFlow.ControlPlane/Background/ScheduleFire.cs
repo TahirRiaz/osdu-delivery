@@ -1,4 +1,5 @@
 using SqlFlow.Catalog;
+using SqlFlow.Core.Runs;
 
 namespace SqlFlow.ControlPlane.Background;
 
@@ -53,7 +54,8 @@ public static class ScheduleFire
     /// </summary>
     public static async Task<FireResult> EnqueueAsync(
         CatalogDbContext catalog, IRunDispatcher dispatcher, CatalogSchedule schedule,
-        DateTime nowUtc, CancellationToken ct, IReadOnlyCollection<string>? batchFilter = null)
+        DateTime nowUtc, CancellationToken ct, IReadOnlyCollection<string>? batchFilter = null,
+        RunParameters? backfillWindow = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(dispatcher);
@@ -68,13 +70,24 @@ public static class ScheduleFire
             return new FireResult(Outcome.ScopeEmpty, Guid.Empty, null, 0);
         }
 
+        // A backfill window makes the whole fire reprocess the source for that range: the root fetch flows (the
+        // integration copy/acquire/sftp and any root file ingestion) take the window and force-re-land their files;
+        // the silver (relational ingestion) flows take MIN-from-source so the re-landed rows are re-pulled; every
+        // intermediate flow runs at defaults and picks up what the roots re-land. See BuildBackfillParameters.
+        var memberParameters = backfillWindow is null
+            ? null
+            : BuildBackfillParameters(expansion.Members, backfillWindow);
+
         // A single member is a single run: enqueuing a one-member group would add a group's bookkeeping and its
         // claim gate for nothing.
         if (expansion.Members.Count == 1)
         {
             var member = expansion.Members[0];
+            var parameters = memberParameters?.GetValueOrDefault(member.FlowName) ?? RunParameters.None;
             var runId = await dispatcher.EnqueueAsync(
-                catalog, new RunEnqueueRequest(schedule.RepoId, member.FlowName, member.FlowKind), ct).ConfigureAwait(false);
+                catalog,
+                new RunEnqueueRequest(schedule.RepoId, member.FlowName, member.FlowKind, Parameters: parameters),
+                ct).ConfigureAwait(false);
             await ScheduleStore.SetLastRunAsync(catalog, schedule.Id, runId, nowUtc, ct).ConfigureAwait(false);
             return new FireResult(Outcome.Enqueued, runId, null, 1);
         }
@@ -83,11 +96,57 @@ public static class ScheduleFire
         // every lower wave is terminal), so waves run in sequence while the members of a wave run concurrently.
         var result = await dispatcher.EnqueueGroupAsync(
             catalog,
-            new RunGroupEnqueueRequest(schedule.RepoId, RunGroupModes.Batch, expansion.Anchor, expansion.Members),
+            new RunGroupEnqueueRequest(
+                schedule.RepoId, RunGroupModes.Batch, expansion.Anchor, expansion.Members,
+                MemberParameters: memberParameters),
             ct).ConfigureAwait(false);
 
         var firstRunId = result.RunIds.Count > 0 ? result.RunIds[0] : Guid.Empty;
         await ScheduleStore.SetLastGroupAsync(catalog, schedule.Id, result.GroupId, firstRunId, nowUtc, ct).ConfigureAwait(false);
         return new FireResult(Outcome.EnqueuedGroup, firstRunId, result.GroupId, expansion.Members.Count);
+    }
+
+    /// <summary>The flow kinds a schedule backfill acts on, matching the three layers of an ingest source: the
+    /// integration flows that fetch from an external system (copy, acquire, sftp) and the file flows that ingest the
+    /// fetched files into the database. The silver (relational ingestion) layer is handled separately, by
+    /// reprocessing from the source minimum. Every other kind (stored procedure, export, health check, inventory)
+    /// is not part of a backfill and runs at defaults.</summary>
+    private static readonly HashSet<string> IntegrationKinds =
+        new(StringComparer.OrdinalIgnoreCase) { "cpy", "acq", "sftp", "file" };
+
+    /// <summary>
+    /// Routes a schedule fire's members to their backfill parameters. Unlike a node run there is no single anchor, so
+    /// the routing keys off each member's ROLE in the fired set:
+    /// <list type="bullet">
+    /// <item>A ROOT integration or file flow (an external-source reader with nothing upstream of it in the set)
+    /// takes the window and force-re-lands its files, so the requested slice re-enters the pipeline.</item>
+    /// <item>A relational ingestion (silver) flow takes MIN-from-source, so the re-landed rows are re-pulled even
+    /// though they carry old business dates the target's high-water mark would otherwise filter out.</item>
+    /// <item>An intermediate file flow (one reading a root copy's output, whose freshly re-landed files it cannot
+    /// re-select by a past modified-date window) runs at defaults and picks them up through its own incremental.</item>
+    /// </list>
+    /// "Root" is the minimum wave of the fired set: an external-source reader has nothing feeding it, so it sits in
+    /// wave 0. A member left out of the returned map runs with default parameters.
+    /// </summary>
+    private static Dictionary<string, RunParameters> BuildBackfillParameters(
+        IReadOnlyList<RunScopeMember> members, RunParameters window)
+    {
+        var reprocess = new RunParameters { ReprocessFromSourceMin = true };
+        var rootWave = members.Min(m => m.Wave);
+        var map = new Dictionary<string, RunParameters>(StringComparer.Ordinal);
+        foreach (var member in members)
+        {
+            if (member.Wave == rootWave && IntegrationKinds.Contains(member.FlowKind))
+            {
+                map[member.FlowName] = window;
+            }
+            else if (string.Equals(member.FlowKind, "ing", StringComparison.OrdinalIgnoreCase))
+            {
+                map[member.FlowName] = reprocess;
+            }
+            // Otherwise the member is left out of the map, so it runs with default parameters.
+        }
+
+        return map;
     }
 }

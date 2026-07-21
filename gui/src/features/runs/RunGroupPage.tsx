@@ -15,6 +15,7 @@ import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable } from "../../components/DataTable";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
+import { IdChip } from "../../components/IdChip";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
@@ -277,17 +278,21 @@ function RunGroupContent({ groupId }: { groupId: string }) {
               Re-run
             </Button>
           )}
+        meta={(
+          <>
+            <IdChip label="group" value={group.groupId} testId="group-id" copyTestId="copy-group-id" />
+            {group.commitSha && (
+              <IdChip label="commit" value={group.commitSha} display={group.commitSha.slice(0, 7)} testId="group-commit" copyTestId="copy-group-commit" />
+            )}
+          </>
+        )}
       >
-        <DetailPair label="Group id"><Mono>{group.groupId}</Mono></DetailPair>
         <DetailPair label="Mode">{modeLabel}</DetailPair>
         <DetailPair label="Anchor"><Mono>{group.anchor}</Mono></DetailPair>
         <DetailPair label="Members">
           <span className="font-mono tabular-nums">{group.memberCount}</span>
         </DetailPair>
-        <DetailPair label="Enqueued"><RelativeTime value={group.enqueuedUtc} /></DetailPair>
-        <DetailPair label="Commit">
-          {group.commitSha ? <Mono>{group.commitSha.slice(0, 12)}</Mono> : "-"}
-        </DetailPair>
+        <DetailPair label="Enqueued"><RelativeTime value={group.enqueuedUtc} absolute /></DetailPair>
       </DetailHeaderCard>
 
       {active

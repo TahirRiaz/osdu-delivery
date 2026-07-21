@@ -13,6 +13,7 @@ import { isApiError } from "../../api/client";
 import { datasourceApi } from "../../api/endpoints";
 import type { ConnectionTestResult, Datasource } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { Mono } from "../../components/Mono";
@@ -97,7 +98,7 @@ export default function DatasourcesPage() {
     {
       id: "reference",
       header: "Reference",
-      render: (row) => <Mono className="font-semibold">{row.reference}</Mono>,
+      render: (row) => <ConnectionRef value={row.reference} copyTestId="copy-datasource-ref" />,
     },
     {
       id: "kind",

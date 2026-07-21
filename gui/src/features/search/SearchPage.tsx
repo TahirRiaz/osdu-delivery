@@ -14,6 +14,7 @@ import type {
   ColumnHit, DefinitionHit, FileHit, FlowHit, ObjectHit, SearchCategory,
 } from "../../api/types";
 import { LineageJumpButton, type LineageJumpTarget } from "../../components/LineageJumpButton";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";
@@ -79,7 +80,7 @@ const objectColumns: Column<ObjectHit>[] = [
   { id: "kind", header: "Kind", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
   { id: "schema", header: "Schema", render: (row) => <Mono>{row.schema ?? "-"}</Mono> },
   { id: "database", header: "Database", render: (row) => <Mono>{row.database ?? "-"}</Mono> },
-  { id: "serverRef", header: "Server", render: (row) => <Mono>{row.serverRef}</Mono> },
+  { id: "serverRef", header: "Server", render: (row) => <ConnectionRef value={row.serverRef} /> },
 ];
 
 const columnColumns: Column<ColumnHit>[] = [

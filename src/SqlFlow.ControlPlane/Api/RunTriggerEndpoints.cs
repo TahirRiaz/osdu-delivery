@@ -247,10 +247,11 @@ public static class RunTriggerEndpoints
                 {
                     memberParameters[member.FlowName] = window;
                 }
-                else if (!KindHonorsBackfillWindow(member.FlowKind))
+                else if (string.Equals(member.FlowKind, "ing", StringComparison.OrdinalIgnoreCase))
                 {
-                    // A relational descendant (ingestion): re-pull from the source minimum. A file/copy descendant is
-                    // left at defaults, so it catches the re-landed files through its normal incremental.
+                    // Only a relational (silver) descendant re-pulls from the source minimum; that override affects
+                    // no other kind. A file/copy descendant is left at defaults (it catches the re-landed files
+                    // through its own incremental), and a kind with no backfill role (sp, hc, exp, ...) runs as defined.
                     memberParameters[member.FlowName] = reprocess;
                 }
             }
@@ -272,16 +273,6 @@ public static class RunTriggerEndpoints
 
     private static bool IsPlausibleCommitSha(string sha)
         => sha.Length is >= 4 and <= 64 && sha.All(char.IsAsciiHexDigit);
-
-    /// <summary>Whether a flow of this kind honors a backfill window (a copy/file/export flow). In a node backfill a
-    /// descendant of such a kind is left at default parameters (it re-reads the files an upstream flow re-lands through
-    /// its own normal incremental), whereas a relational descendant, which does not honor a window, is routed to the
-    /// MIN-from-source reprocess instead. The date-column argument is passed false so a relational ingestion counts as
-    /// not honoring a window and reprocesses. This reads the same applicability table the GUI renders and a single
-    /// flow honors, so the three can never disagree.</summary>
-    private static bool KindHonorsBackfillWindow(string? flowKind)
-        => RunParameterApplicability.For(flowKind, hasIncrementalDateColumn: false)
-            .Any(descriptor => descriptor.Key == "backfillWindow");
 
     private static async Task<Results<Ok<RunGroupAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> CancelGroupAsync(
         Guid groupId, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)

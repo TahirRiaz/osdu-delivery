@@ -8,6 +8,7 @@ import { isApiError } from "../../api/client";
 import { lineageApi, pipelineApi, repoApi } from "../../api/endpoints";
 import type { FlowDependency } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { DetailPair } from "../../components/DetailPair";
@@ -124,10 +125,10 @@ export function FlowDetailsPanel({ repoId, pipelineId }: { repoId: string; pipel
             <DetailPair label="Lifecycle">{flow.lifecycle}</DetailPair>
             <DetailPair label="Execution mode">{flow.executionMode}</DetailPair>
             <DetailPair label="Active">{flow.active ? "yes" : "no"}</DetailPair>
-            <DetailPair label="Source server">{flow.sourceServer === null ? "-" : <Mono>{flow.sourceServer}</Mono>}</DetailPair>
-            <DetailPair label="Target server">{flow.targetServer === null ? "-" : <Mono>{flow.targetServer}</Mono>}</DetailPair>
-            <DetailPair label="First seen"><RelativeTime value={flow.firstSeenUtc} /></DetailPair>
-            <DetailPair label="Last seen"><RelativeTime value={flow.lastSeenUtc} /></DetailPair>
+            <DetailPair label="Source server"><ConnectionRef value={flow.sourceServer} copyTestId="copy-flow-source" /></DetailPair>
+            <DetailPair label="Target server"><ConnectionRef value={flow.targetServer} copyTestId="copy-flow-target" /></DetailPair>
+            <DetailPair label="First seen"><RelativeTime value={flow.firstSeenUtc} absolute /></DetailPair>
+            <DetailPair label="Last seen"><RelativeTime value={flow.lastSeenUtc} absolute /></DetailPair>
           </div>
         </TabsContent>
 

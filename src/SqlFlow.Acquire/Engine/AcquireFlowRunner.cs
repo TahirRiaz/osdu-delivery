@@ -31,17 +31,21 @@ public sealed class AcquireFlowRunner
         events.Log(RunLogLevel.Info, "run.start",
             $"acquire '{flow.Name}' (flow {flow.FlowId}, transport {flow.Source.Transport}) -> {flow.Landing.Target}");
 
-        // The typed per-run contract maps onto the acquisition's native knobs: a backfill window re-windows every
-        // date-window iteration, and a full load ignores the stored watermark (the flow re-fetches from its
-        // declared bounds / seed). A file pattern has no acquisition meaning and is surfaced by the executor.
+        // The typed per-run contract maps onto the acquisition's native knobs. A reprocess (a full load OR a backfill
+        // window) ignores the stored watermark so the flow re-fetches from its declared bounds / the window: without
+        // this, a flow whose incremental is a bind-variable watermark (not a date window) would stay capped at the
+        // last fetched point and a backfill window could never reach historical data. A backfill window then also
+        // re-windows every date-window iteration (below). A file pattern has no acquisition meaning.
         var parameters = options.Parameters;
-        var fullLoad = parameters.FullLoad;
-        var priorWatermark = flow.Incremental is not null && !fullLoad
+        var priorWatermark = flow.Incremental is not null && !parameters.ReprocessFiles
             ? AcquireWatermarkHistory.LastWatermark(anchorDirectory, flow.Name)
             : null;
-        if (fullLoad && flow.Incremental is not null)
+        if (parameters.ReprocessFiles && flow.Incremental is not null)
         {
-            events.Log(RunLogLevel.Info, "params", "full load requested: the stored watermark is ignored for this run.");
+            events.Log(RunLogLevel.Info, "params",
+                parameters.FullLoad
+                    ? "full load requested: the stored watermark is ignored for this run."
+                    : "backfill window requested: the stored watermark is ignored so the window can reach historical data.");
         }
 
         var overrides = new AcquireRunOverrides

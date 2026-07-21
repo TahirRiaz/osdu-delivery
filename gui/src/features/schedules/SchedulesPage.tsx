@@ -405,8 +405,8 @@ export default function SchedulesPage() {
       ),
     },
     { id: "source", header: "Source", render: (row) => <Badge variant="outline">{row.source}</Badge> },
-    { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} /> },
-    { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} /> },
+    { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} absolute /> },
+    { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} absolute /> },
     {
       id: "lastRun",
       header: "Last run",

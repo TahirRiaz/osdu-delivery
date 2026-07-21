@@ -194,10 +194,20 @@ export const scheduleApi = {
   // Fire the schedule now. Optional batches narrow the fire to members carrying those batch: tags ("run the
   // nightly, but only the small and medium tables"); repeated as ?batch=a&batch=b. An empty/omitted list runs
   // every member. A filter can only ever select a subset of the schedule's own members.
-  runNow: (id: string, batches?: string[]) => {
-    const query = batches && batches.length > 0
-      ? `?${batches.map((b) => `batch=${encodeURIComponent(b)}`).join("&")}`
-      : "";
+  // An optional from/to window turns the fire into a backfill: the schedule re-processes the source for that date
+  // range (its integration roots re-land the slice, its silver flows re-pull from the source minimum).
+  runNow: (id: string, batches?: string[], from?: string | null, to?: string | null) => {
+    const params = new URLSearchParams();
+    for (const b of batches ?? []) {
+      params.append("batch", b);
+    }
+    if (from) {
+      params.set("from", from);
+    }
+    if (to) {
+      params.set("to", to);
+    }
+    const query = params.toString() === "" ? "" : `?${params.toString()}`;
     return post<ScheduleRunAccepted>(`/api/v1/schedules/${id}/run${query}`);
   },
   pause: (id: string) => post<Schedule>(`/api/v1/schedules/${id}/pause`),

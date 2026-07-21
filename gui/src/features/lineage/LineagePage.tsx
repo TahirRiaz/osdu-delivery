@@ -19,6 +19,7 @@ import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
 import type { LineageObject, LineageObjectColumn } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailPair } from "../../components/DetailPair";
 import { FilterBar } from "../../components/FilterBar";
@@ -50,7 +51,7 @@ const objectTableColumns: Column<LineageObject>[] = [
   },
   { id: "level", header: "Level", render: (row) => row.level ?? "-", width: 72 },
   { id: "kind", header: "Kind", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
-  { id: "serverRef", header: "Server", render: (row) => <Mono>{row.serverRef}</Mono> },
+  { id: "serverRef", header: "Server", render: (row) => <ConnectionRef value={row.serverRef} /> },
   { id: "lastSeen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
 ];
 
@@ -113,12 +114,12 @@ function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3">
-        <DetailPair label="Server"><Mono>{data.serverRef}</Mono></DetailPair>
+        <DetailPair label="Server"><ConnectionRef value={data.serverRef} copyTestId="copy-lineage-server" /></DetailPair>
         <DetailPair label="Database"><Mono>{data.database ?? "-"}</Mono></DetailPair>
         <DetailPair label="Schema"><Mono>{data.schema ?? "-"}</Mono></DetailPair>
         <DetailPair label="Level">{data.level ?? "-"}</DetailPair>
-        <DetailPair label="First seen"><RelativeTime value={data.firstSeenUtc} /></DetailPair>
-        <DetailPair label="Last seen"><RelativeTime value={data.lastSeenUtc} /></DetailPair>
+        <DetailPair label="First seen"><RelativeTime value={data.firstSeenUtc} absolute /></DetailPair>
+        <DetailPair label="Last seen"><RelativeTime value={data.lastSeenUtc} absolute /></DetailPair>
       </div>
 
       {data.definition !== null && (

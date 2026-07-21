@@ -10,6 +10,7 @@ import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
 import type { LineageObjectColumn, ObjectRelationship } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { DetailPair } from "../../components/DetailPair";
@@ -290,7 +291,7 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
 
         <TabsContent value="overview">
           <div className="grid grid-cols-2 gap-3">
-            <DetailPair label="Server"><Mono>{object.serverRef}</Mono></DetailPair>
+            <DetailPair label="Server"><ConnectionRef value={object.serverRef} copyTestId="copy-object-server" /></DetailPair>
             <DetailPair label="Database">{object.database === null ? "-" : <Mono>{object.database}</Mono>}</DetailPair>
             <DetailPair label="Schema">{object.schema === null ? "-" : <Mono>{object.schema}</Mono>}</DetailPair>
             <DetailPair label="Level">{object.level ?? "-"}</DetailPair>
@@ -316,8 +317,8 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
                 </span>
               )}
             </DetailPair>
-            <DetailPair label="First seen"><RelativeTime value={object.firstSeenUtc} /></DetailPair>
-            <DetailPair label="Last seen"><RelativeTime value={object.lastSeenUtc} /></DetailPair>
+            <DetailPair label="First seen"><RelativeTime value={object.firstSeenUtc} absolute /></DetailPair>
+            <DetailPair label="Last seen"><RelativeTime value={object.lastSeenUtc} absolute /></DetailPair>
           </div>
         </TabsContent>
 

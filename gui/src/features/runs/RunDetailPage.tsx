@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CircleAlert, HeartPulse, Info, ListChecks, Loader2, RotateCcw, Terminal } from "lucide-react";
@@ -10,7 +10,6 @@ import { Card } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
   RunAssertion, RunFile, RunHealthCheckMetric, RunStatement, RunSurrogateKey,
 } from "../../api/types";
@@ -21,6 +20,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
+import { IdChip } from "../../components/IdChip";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
@@ -57,6 +57,15 @@ function IncrementalModeBadge({ mode }: { mode: string }) {
   }
 
   return <Badge variant="secondary">{mode}</Badge>;
+}
+
+/** A row counter: grouped for readability, a real zero kept distinct from an unrecorded value (muted dash). */
+function RowCount({ value }: { value: number | null }) {
+  if (value == null) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  return <span className="font-mono tabular-nums">{value.toLocaleString("en-US")}</span>;
 }
 
 function YesNo({ value }: { value: boolean }) {
@@ -339,70 +348,43 @@ function RunDetailContent({ runId }: { runId: string }) {
               ))}
           </>
         )}
-      >
-        <DetailPair label="Run id"><Mono>{run.runId}</Mono></DetailPair>
-        <DetailPair label="Repo">
-          {run.repoId
-            ? (
-              <Link
-                to={`/repos/${run.repoId}`}
-                className="font-mono text-[12px] text-primary hover:underline"
-                data-testid="run-repo-link"
-              >
-                {run.repoId}
-              </Link>
-            )
-            : "-"}
-        </DetailPair>
-        <DetailPair label="Pipeline">
-          <Link
-            to={`/pipelines/${run.pipelineId}`}
-            className="font-mono text-[12px] text-primary hover:underline"
-            data-testid="run-pipeline-link"
-          >
-            {run.pipelineId}
-          </Link>
-        </DetailPair>
-        {run.groupId && (
-          <DetailPair label="Run group">
-            <Link
-              to={`/runs/groups/${run.groupId}`}
-              className="font-mono text-[12px] text-primary hover:underline"
-              data-testid="run-group-link"
-            >
-              {run.groupId}
-            </Link>
-          </DetailPair>
+        meta={(
+          <>
+            <IdChip label="run" value={run.runId} testId="run-id" copyTestId="copy-run-id" />
+            {run.repoId && (
+              <IdChip label="repo" value={run.repoId} to={`/repos/${run.repoId}`} testId="run-repo-link" copyTestId="copy-run-repo" />
+            )}
+            <IdChip label="pipeline" value={run.pipelineId} to={`/pipelines/${run.pipelineId}`} testId="run-pipeline-link" copyTestId="copy-run-pipeline" />
+            {run.groupId && (
+              <IdChip label="group" value={run.groupId} to={`/runs/groups/${run.groupId}`} testId="run-group-link" copyTestId="copy-run-group" />
+            )}
+            {run.commitSha && (
+              <IdChip label="commit" value={run.commitSha} display={run.commitSha.slice(0, 7)} testId="run-commit" copyTestId="copy-run-commit" />
+            )}
+          </>
         )}
-        <DetailPair label="Batch">{run.batch}</DetailPair>
-        <DetailPair label="Step">
-          <span className="font-mono tabular-nums">{run.wave >= 0 ? run.wave : "-"}</span>
-        </DetailPair>
-        <DetailPair label="Enqueued"><RelativeTime value={run.enqueuedUtc} /></DetailPair>
-        <DetailPair label="Started"><RelativeTime value={run.startUtc} /></DetailPair>
-        <DetailPair label="Ended"><RelativeTime value={run.endUtc} /></DetailPair>
+      >
+        <DetailPair label="Enqueued"><RelativeTime value={run.enqueuedUtc} absolute /></DetailPair>
+        <DetailPair label="Started"><RelativeTime value={run.startUtc} absolute /></DetailPair>
+        <DetailPair label="Ended"><RelativeTime value={run.endUtc} absolute /></DetailPair>
         <DetailPair label="Duration">
           <span className="font-mono tabular-nums">
             {run.durationSeconds != null ? formatDurationSeconds(run.durationSeconds) : "-"}
           </span>
         </DetailPair>
-        <DetailPair label="Claimed by node">{run.claimedByNode ?? "-"}</DetailPair>
-        <DetailPair label="Host">{run.host ?? "-"}</DetailPair>
-        <DetailPair label="Target pool">{run.targetPool ?? "-"}</DetailPair>
-        <DetailPair label="Commit">
-          {run.commitSha ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="font-mono text-[12px]">{run.commitSha.slice(0, 12)}</span>
-              </TooltipTrigger>
-              <TooltipContent className="font-mono text-[11px]">{run.commitSha}</TooltipContent>
-            </Tooltip>
-          ) : "-"}
+        <DetailPair label="Rows loaded"><RowCount value={run.rowsLoaded} /></DetailPair>
+        <DetailPair label="Rows inserted"><RowCount value={run.rowsInserted} /></DetailPair>
+        <DetailPair label="Rows updated"><RowCount value={run.rowsUpdated} /></DetailPair>
+        <DetailPair label="Rows deleted"><RowCount value={run.rowsDeleted} /></DetailPair>
+        <DetailPair label="Step">
+          <span className="font-mono tabular-nums">{run.wave >= 0 ? run.wave : "-"}</span>
         </DetailPair>
-        <DetailPair label="Rows loaded"><span className="font-mono tabular-nums">{run.rowsLoaded ?? "-"}</span></DetailPair>
-        <DetailPair label="Rows inserted"><span className="font-mono tabular-nums">{run.rowsInserted ?? "-"}</span></DetailPair>
-        <DetailPair label="Rows updated"><span className="font-mono tabular-nums">{run.rowsUpdated ?? "-"}</span></DetailPair>
-        <DetailPair label="Rows deleted"><span className="font-mono tabular-nums">{run.rowsDeleted ?? "-"}</span></DetailPair>
+        <DetailPair label="Target pool">{run.targetPool ?? "-"}</DetailPair>
+        <DetailPair label="Node"><span className="break-all font-mono text-[12px]">{run.claimedByNode ?? "-"}</span></DetailPair>
+        {/* Host repeats the node name on a single-container node; surface it only when it actually adds a value. */}
+        {run.host && run.host !== run.claimedByNode && (
+          <DetailPair label="Host"><span className="break-all font-mono text-[12px]">{run.host}</span></DetailPair>
+        )}
       </DetailHeaderCard>
 
       {run.status === "failed" && run.error !== null && (

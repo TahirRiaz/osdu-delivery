@@ -362,8 +362,8 @@ export default function RepoDetailPage() {
               ? "-"
               : `${source.credentialReference}${source.credentialUsername ? ` (${source.credentialUsername})` : ""}`}
           </DetailPair>
-          <DetailPair label="First seen"><RelativeTime value={repo.firstSeenUtc} /></DetailPair>
-          <DetailPair label="Last sync"><RelativeTime value={repo.lastSyncUtc} /></DetailPair>
+          <DetailPair label="First seen"><RelativeTime value={repo.firstSeenUtc} absolute /></DetailPair>
+          <DetailPair label="Last sync"><RelativeTime value={repo.lastSyncUtc} absolute /></DetailPair>
         </DetailHeaderCard>
       )}
 

@@ -11,6 +11,7 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { ActiveBadge } from "../../components/StatusBadge";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { TruncatedText } from "../../components/TruncatedText";
 
 const kinds = ["file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
@@ -46,8 +47,8 @@ const columns: Column<PipelineSummary>[] = [
     ),
   },
   { id: "active", header: "Active", render: (row) => <ActiveBadge active={row.active} /> },
-  { id: "sourceServer", header: "Source", render: (row) => row.sourceServer ?? "-" },
-  { id: "targetServer", header: "Target", render: (row) => row.targetServer ?? "-" },
+  { id: "sourceServer", header: "Source", render: (row) => <ConnectionRef value={row.sourceServer} /> },
+  { id: "targetServer", header: "Target", render: (row) => <ConnectionRef value={row.targetServer} /> },
   { id: "relativePath", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={360} /> },
 ];
 

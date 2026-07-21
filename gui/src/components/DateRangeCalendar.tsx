@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   addMonths, eachDayOfInterval, endOfMonth, endOfWeek, format, isAfter, isBefore,
   isSameDay, isSameMonth, parse, startOfMonth, startOfWeek, subMonths,
@@ -58,11 +58,9 @@ interface MonthGridProps {
 
 /** One month's 6x7 grid, painting the connected range fill and the two rounded endpoints. */
 function MonthGrid({ month, start, end, hovered, onPick, onHover }: MonthGridProps) {
-  const days = useMemo(() => {
-    const gridStart = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
-    const gridEnd = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
-    return eachDayOfInterval({ start: gridStart, end: gridEnd });
-  }, [month]);
+  const gridStart = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
+  const gridEnd = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
+  const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
   // While an end is being chosen, the hovered day previews the closing edge so the fill tracks the cursor.
   const effectiveEnd = end ?? (start !== null && hovered !== null && !isBefore(hovered, start) ? hovered : null);
@@ -122,7 +120,7 @@ export interface DateRangeCalendarProps {
   to: string;
   onChange: (from: string, to: string) => void;
   disabled?: boolean;
-  /** data-testid stem; the trigger, both time inputs, and Clear derive their ids from it. */
+  /** data-testid stem; the trigger, both time inputs, Clear, and Apply derive their ids from it. */
   testId?: string;
 }
 
@@ -130,43 +128,84 @@ export interface DateRangeCalendarProps {
  * A single-window range picker (two months side by side, click a start then an end, the days between marked)
  * over the same "yyyy-MM-ddThh:mm" datetime-local contract the two plain inputs used, so the surrounding form
  * and its submit path are unchanged. Per-edge time inputs keep the backfill window's hours selectable.
+ *
+ * The selection is staged locally: clicking days and editing the times only touch a draft, and nothing is
+ * committed to the form (`onChange`) until Apply. So a stray click in the calendar cannot silently alter the
+ * committed window, and the run/schedule is only ever launched by its own explicit trigger afterwards. Cancel
+ * (or closing the popover) discards the draft; the committed value shown on the trigger is untouched.
  */
 export function DateRangeCalendar({ from, to, onChange, disabled, testId }: DateRangeCalendarProps) {
-  const parsedFrom = parseValue(from, DEFAULT_FROM_TIME);
-  const parsedTo = parseValue(to, DEFAULT_TO_TIME);
   const [open, setOpen] = useState(false);
+  // The staged selection while the popover is open; seeded from the committed value each time it opens.
+  const [draftFrom, setDraftFrom] = useState("");
+  const [draftTo, setDraftTo] = useState("");
   const [hovered, setHovered] = useState<Date | null>(null);
-  const [viewMonth, setViewMonth] = useState(() => startOfMonth(parsedFrom.date ?? new Date()));
+  const [viewMonth, setViewMonth] = useState(() => startOfMonth(new Date()));
+
+  const committedFrom = parseValue(from, DEFAULT_FROM_TIME);
+  const committedTo = parseValue(to, DEFAULT_TO_TIME);
+  const draftParsedFrom = parseValue(draftFrom, DEFAULT_FROM_TIME);
+  const draftParsedTo = parseValue(draftTo, DEFAULT_TO_TIME);
+
+  const openChange = (next: boolean) => {
+    if (disabled) {
+      return;
+    }
+    if (next) {
+      // Seed the draft from the committed value and open the view on the start month (or today when unset).
+      setDraftFrom(from);
+      setDraftTo(to);
+      setHovered(null);
+      setViewMonth(startOfMonth(committedFrom.date ?? new Date()));
+    }
+    setOpen(next);
+  };
 
   const pick = (day: Date) => {
-    const choosingStart = parsedFrom.date === null || parsedTo.date !== null || isBefore(day, parsedFrom.date);
+    const choosingStart = draftParsedFrom.date === null || draftParsedTo.date !== null
+      || isBefore(day, draftParsedFrom.date);
     if (choosingStart) {
       // Start a fresh range: set the from edge (keeping its chosen time) and clear the to edge.
-      onChange(buildValue(day, parsedFrom.time), "");
+      setDraftFrom(buildValue(day, draftParsedFrom.time));
+      setDraftTo("");
     } else {
-      onChange(from, buildValue(day, parsedTo.time));
+      setDraftTo(buildValue(day, draftParsedTo.time));
     }
   };
 
   const setFromTime = (time: string) => {
-    if (parsedFrom.date !== null && time !== "") {
-      onChange(buildValue(parsedFrom.date, time), to);
+    if (draftParsedFrom.date !== null && time !== "") {
+      setDraftFrom(buildValue(draftParsedFrom.date, time));
     }
   };
   const setToTime = (time: string) => {
-    if (parsedTo.date !== null && time !== "") {
-      onChange(from, buildValue(parsedTo.date, time));
+    if (draftParsedTo.date !== null && time !== "") {
+      setDraftTo(buildValue(draftParsedTo.date, time));
     }
   };
 
-  const summary = parsedFrom.date === null
+  const apply = () => {
+    onChange(draftFrom, draftTo);
+    setOpen(false);
+  };
+  const clearDraft = () => {
+    setDraftFrom("");
+    setDraftTo("");
+    setHovered(null);
+  };
+
+  // Half a range (a start with no end) cannot be applied: the form only accepts a full window or an empty one.
+  const draftIncomplete = draftParsedFrom.date !== null && draftParsedTo.date === null;
+  const draftDirty = draftFrom !== from || draftTo !== to;
+
+  const summary = committedFrom.date === null
     ? "Select a date range"
-    : parsedTo.date === null
-      ? `${describe(parsedFrom)}  →  ...`
-      : `${describe(parsedFrom)}  →  ${describe(parsedTo)}`;
+    : committedTo.date === null
+      ? describe(committedFrom)
+      : `${describe(committedFrom)}  →  ${describe(committedTo)}`;
 
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+    <Popover open={open} onOpenChange={openChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -176,7 +215,7 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
             "flex h-8 w-full items-center gap-2 rounded-md border border-input bg-transparent px-3 text-[13px]",
             "shadow-xs outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
             "disabled:cursor-not-allowed disabled:opacity-50",
-            parsedFrom.date === null && "text-muted-foreground",
+            committedFrom.date === null && "text-muted-foreground",
           )}
         >
           <CalendarRange className="size-4 shrink-0 text-muted-foreground" />
@@ -192,6 +231,9 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
           >
             <ChevronLeft className="size-4" />
           </Button>
+          <span className="text-[11px] text-muted-foreground">
+            Click a start, then an end. Nothing is applied until you confirm.
+          </span>
           <Button
             type="button" variant="ghost" size="icon" className="size-7"
             onClick={() => setViewMonth((m) => addMonths(m, 1))}
@@ -203,12 +245,12 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
         <div className="flex gap-4">
           <MonthGrid
             month={viewMonth}
-            start={parsedFrom.date} end={parsedTo.date} hovered={hovered}
+            start={draftParsedFrom.date} end={draftParsedTo.date} hovered={hovered}
             onPick={pick} onHover={setHovered}
           />
           <MonthGrid
             month={addMonths(viewMonth, 1)}
-            start={parsedFrom.date} end={parsedTo.date} hovered={hovered}
+            start={draftParsedFrom.date} end={draftParsedTo.date} hovered={hovered}
             onPick={pick} onHover={setHovered}
           />
         </div>
@@ -216,28 +258,45 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
           <div className="flex flex-1 flex-col gap-1">
             <Label className="text-xs font-normal text-muted-foreground">From time</Label>
             <Input
-              type="time" className="h-8" value={parsedFrom.time}
+              type="time" className="h-8" value={draftParsedFrom.time}
               onChange={(e) => setFromTime(e.target.value)}
-              disabled={parsedFrom.date === null}
+              disabled={draftParsedFrom.date === null}
               data-testid={testId ? `${testId}-from-time` : undefined}
             />
           </div>
           <div className="flex flex-1 flex-col gap-1">
             <Label className="text-xs font-normal text-muted-foreground">To time</Label>
             <Input
-              type="time" className="h-8" value={parsedTo.time}
+              type="time" className="h-8" value={draftParsedTo.time}
               onChange={(e) => setToTime(e.target.value)}
-              disabled={parsedTo.date === null}
+              disabled={draftParsedTo.date === null}
               data-testid={testId ? `${testId}-to-time` : undefined}
             />
           </div>
+        </div>
+        <div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
           <Button
             type="button" variant="ghost" size="sm" className="h-8"
-            onClick={() => { onChange("", ""); setHovered(null); }}
-            disabled={parsedFrom.date === null}
+            onClick={clearDraft}
+            disabled={draftParsedFrom.date === null}
             data-testid={testId ? `${testId}-clear` : undefined}
           >
             Clear
+          </Button>
+          <span className="grow" />
+          <Button
+            type="button" variant="ghost" size="sm" className="h-8"
+            onClick={() => setOpen(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button" size="sm" className="h-8"
+            onClick={apply}
+            disabled={draftIncomplete || !draftDirty}
+            data-testid={testId ? `${testId}-apply` : undefined}
+          >
+            Apply
           </Button>
         </div>
       </PopoverContent>

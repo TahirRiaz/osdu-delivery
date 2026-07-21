@@ -91,6 +91,12 @@ public sealed record FlowResult
     public FlowStatus Status { get; init; } = FlowStatus.Success;
     public long RowsLoaded { get; init; }
 
+    /// <summary>Rows inserted into the target. The file path loads with <c>SqlBulkCopy</c>, which is insert-only
+    /// (there is no keyed upsert on this path), so every loaded row is an insert and this equals
+    /// <see cref="RowsLoaded"/>. Surfaced so the run's insert count is projected into the catalog and shown in the
+    /// GUI alongside the relational runner's counts; updated/deleted do not apply to a file load and stay absent.</summary>
+    public long RowsInserted { get; init; }
+
     /// <summary>The schema-diff DDL the run applied (create table / add columns). An in-process summary field
     /// (the CLI's "N DDL statement(s)" line); it is a strict subset of <see cref="SqlTrace"/>, so it is kept out
     /// of the run.json artifact to avoid the completion projection counting the same schema statements twice

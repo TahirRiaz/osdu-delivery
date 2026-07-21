@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -8,6 +8,8 @@ interface CopyButtonProps {
   /** The text to copy, or a producer for it when building the text eagerly on every render would be wasteful. */
   text: string | (() => string);
   testId: string;
+  /** Render as a bare icon (no visible label) for inline use next to an id; the label moves to a tooltip. */
+  iconOnly?: boolean;
 }
 
 /**
@@ -15,7 +17,7 @@ interface CopyButtonProps {
  * restrictive browser policy), so a failure surfaces as feedback on the button instead of silently doing
  * nothing.
  */
-export function CopyButton({ label, text, testId }: CopyButtonProps) {
+export function CopyButton({ label, text, testId, iconOnly = false }: CopyButtonProps) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -25,7 +27,10 @@ export function CopyButton({ label, text, testId }: CopyButtonProps) {
     }
   }, []);
 
-  const copy = async () => {
+  const copy = async (event: MouseEvent<HTMLButtonElement>) => {
+    // The button often sits inside a clickable row; a copy must not also trigger the row's navigation.
+    event.stopPropagation();
+
     try {
       await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
       setState("copied");
@@ -40,11 +45,41 @@ export function CopyButton({ label, text, testId }: CopyButtonProps) {
     timer.current = setTimeout(() => setState("idle"), 1800);
   };
 
+  // The compact form: an icon-only ghost button that sits flush against an id, with its label and any
+  // clipboard failure carried by the tooltip instead of a visible caption.
+  if (iconOnly) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={(event) => void copy(event)}
+            data-testid={testId}
+            aria-label={label}
+            className={
+              state === "copied"
+                ? "text-success hover:text-success"
+                : state === "failed"
+                  ? "text-destructive hover:text-destructive"
+                  : "text-muted-foreground"
+            }
+          >
+            {state === "copied" ? <Check /> : <Copy />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {state === "copied" ? "Copied" : state === "failed" ? "The browser denied clipboard access." : label}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
   const button = (
     <Button
       variant="ghost"
       size="sm"
-      onClick={() => void copy()}
+      onClick={(event) => void copy(event)}
       data-testid={testId}
       className={state === "failed" ? "text-destructive hover:text-destructive" : undefined}
     >

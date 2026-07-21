@@ -302,6 +302,9 @@ public sealed class FlowRunner
                 FlowName = flow.Name,
                 Status = FlowStatus.Success,
                 RowsLoaded = rows,
+                // The file load is a straight SqlBulkCopy (no upsert on this path), so every loaded row is an
+                // insert; report it as such so the run's inserted count is projected and shown in the GUI.
+                RowsInserted = rows,
                 DdlExecuted = plan.DdlStatements,
                 SqlTrace = trace,
                 ProcessedFiles = read.ProcessedFiles,

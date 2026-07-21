@@ -46,6 +46,47 @@ public sealed class EngineTests
     }
 
     [Fact]
+    public async Task Backfill_reprocess_relands_an_unchanged_payload()
+    {
+        // The API backfill: an acquire flow re-fetches and RE-LANDS its payloads even when byte-identical, so the
+        // landed file's timestamp is bumped and the downstream file-ingestion and silver flows re-read it. A normal
+        // re-run keeps skip-unchanged (an idempotent poll writes nothing); a reprocess run disables it.
+        const string payload = """[{"id":1,"name":"a"}]""";
+        var handler = new StubHttpHandler().Json("/orders", _ => payload);
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Auth = new AcquireAuth { Type = AcquireAuthType.Bearer, SecretRef = "${test:token}" },
+            Request = new AcquireRequest { Path = "/orders" },
+        };
+        var engine = TestEngine.Create(handler, new FakeSecrets(("token", "SECRET123")), new FixedClock(Now), out var dir);
+        var flow = new AcquireFlow
+        {
+            Name = "Test_Flow",
+            Source = source,
+            Landing = new AcquireLanding
+            {
+                Target = dir, PathTemplate = "orders", Overwrite = true, SkipUnchanged = true,
+            },
+        };
+
+        // First fetch lands the file.
+        Assert.True((await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None)).Success);
+        var file = TestEngine.LandedFiles(dir).Single();
+        var landed = File.GetLastWriteTimeUtc(file);
+
+        // A normal re-run of the identical payload does not rewrite it: the timestamp is unchanged.
+        Assert.True((await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None)).Success);
+        Assert.Equal(landed, File.GetLastWriteTimeUtc(file));
+
+        // A reprocess (ReprocessFiles) re-lands the identical payload, bumping its timestamp.
+        Assert.True((await engine.RunAsync(
+            flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None,
+            new AcquireRunOverrides { ReprocessFiles = true })).Success);
+        Assert.True(File.GetLastWriteTimeUtc(file) > landed);
+    }
+
+    [Fact]
     public async Task Bearer_auth_lands_raw_json_verbatim()
     {
         const string payload = """[{"id":1,"name":"a"}]""";

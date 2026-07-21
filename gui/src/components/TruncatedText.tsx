@@ -1,5 +1,6 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { CopyButton } from "./CopyButton";
 
 interface TruncatedTextProps {
   /** The full value: clipped with an ellipsis and shown in full on hover. */
@@ -14,6 +15,10 @@ interface TruncatedTextProps {
   mono?: boolean;
   /** Shown when `text` is null/empty (matches the tables' "-" placeholder). */
   placeholder?: string;
+  /** Append an icon copy button that yields the full value, for the long strings a reader needs verbatim
+   * (paths, URLs) but only ever sees clipped on screen. */
+  copy?: boolean;
+  copyTestId?: string;
 }
 
 /**
@@ -22,12 +27,14 @@ interface TruncatedTextProps {
  * one canonical way to render potentially long free-text values (paths, URLs, object keys, SQL, errors) in a
  * table cell or detail row, so a long value can never blow out the surrounding layout.
  */
-export function TruncatedText({ text, maxWidth = 360, mono = false, placeholder = "-" }: TruncatedTextProps) {
+export function TruncatedText({
+  text, maxWidth = 360, mono = false, placeholder = "-", copy = false, copyTestId,
+}: TruncatedTextProps) {
   if (text === null || text === undefined || text === "") {
     return <>{placeholder}</>;
   }
 
-  return (
+  const clipped = (
     <Tooltip delayDuration={400}>
       <TooltipTrigger asChild>
         <span
@@ -45,5 +52,17 @@ export function TruncatedText({ text, maxWidth = 360, mono = false, placeholder 
         {text}
       </TooltipContent>
     </Tooltip>
+  );
+
+  if (!copy) {
+    return clipped;
+  }
+
+  // The copy button never clips, so the clipped value flexes and the icon keeps its place at the end.
+  return (
+    <span className="inline-flex max-w-full items-center gap-1 align-bottom">
+      {clipped}
+      <CopyButton iconOnly label="Copy" text={text} testId={copyTestId ?? "copy-value"} />
+    </span>
   );
 }

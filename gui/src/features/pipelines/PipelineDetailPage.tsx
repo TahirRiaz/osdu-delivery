@@ -14,9 +14,11 @@ import { isApiError } from "../../api/client";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
 import type { PipelineColumn, PipelineFile, RunSummary, Schedule } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
+import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable } from "../../components/DataTable";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
+import { IdChip } from "../../components/IdChip";
 import { DetailPair } from "../../components/DetailPair";
 import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";
@@ -427,16 +429,25 @@ export default function PipelineDetailPage() {
             </Button>
           </>
         )}
+        meta={(
+          <>
+            <IdChip
+              label="repo"
+              value={detail.repoId}
+              to={`/repos/${detail.repoId}`}
+              testId="pipeline-repo-link"
+              copyTestId="copy-pipeline-repo"
+            />
+            <IdChip
+              label="hash"
+              value={detail.contentHash}
+              display={detail.contentHash.slice(0, 10)}
+              testId="pipeline-content-hash"
+              copyTestId="copy-pipeline-hash"
+            />
+          </>
+        )}
       >
-        <DetailPair label="Repo">
-          <RouterLink
-            to={`/repos/${detail.repoId}`}
-            className="text-primary hover:underline"
-            data-testid="pipeline-repo-link"
-          >
-            {detail.repoId}
-          </RouterLink>
-        </DetailPair>
         <DetailPair label="Project">
           <RouterLink
             to={`/repos/${detail.repoId}`}
@@ -448,19 +459,13 @@ export default function PipelineDetailPage() {
         </DetailPair>
         <DetailPair label="Batch">{detail.batch ?? "-"}</DetailPair>
         <DetailPair label="Wave">{detail.wave === -1 ? "-" : String(detail.wave)}</DetailPair>
-        <DetailPair label="Source server">{detail.sourceServer ?? "-"}</DetailPair>
-        <DetailPair label="Target server">{detail.targetServer ?? "-"}</DetailPair>
-        <DetailPair label="Path"><Mono>{detail.relativePath}</Mono></DetailPair>
-        <DetailPair label="Content hash">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="font-mono text-[12px]">{detail.contentHash.slice(0, 12)}</span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-lg break-all">{detail.contentHash}</TooltipContent>
-          </Tooltip>
+        <DetailPair label="Source server"><ConnectionRef value={detail.sourceServer} copyTestId="copy-pipeline-source" /></DetailPair>
+        <DetailPair label="Target server"><ConnectionRef value={detail.targetServer} copyTestId="copy-pipeline-target" /></DetailPair>
+        <DetailPair label="Path">
+          <TruncatedText text={detail.relativePath} mono maxWidth={240} copy copyTestId="copy-pipeline-path" />
         </DetailPair>
-        <DetailPair label="First seen"><RelativeTime value={detail.firstSeenUtc} /></DetailPair>
-        <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} /></DetailPair>
+        <DetailPair label="First seen"><RelativeTime value={detail.firstSeenUtc} absolute /></DetailPair>
+        <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} absolute /></DetailPair>
       </DetailHeaderCard>
 
       <Tabs defaultValue="yaml">

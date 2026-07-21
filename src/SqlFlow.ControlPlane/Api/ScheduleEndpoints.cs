@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Background;
+using SqlFlow.Core.Runs;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -223,12 +224,31 @@ public static class ScheduleEndpoints
     /// Answers 202 with the run (and group) reference, 404 for an unknown schedule, and 409 when nothing is runnable.
     /// </summary>
     private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
-        Guid id, string[]? batch, CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
+        Guid id, string[]? batch, DateTime? from, DateTime? to,
+        CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
     {
         var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
         if (schedule is null)
         {
             return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        // The optional from/to window turns the fire into a backfill: the schedule re-processes the source for that
+        // date range (its integration roots re-land the slice, its silver flows re-pull from the source minimum). It
+        // is validated here, at the trust boundary, exactly as a single-flow trigger's window is.
+        RunParameters? backfillWindow = null;
+        if (from is not null || to is not null)
+        {
+            backfillWindow = new RunParameters { BackfillFrom = from, BackfillTo = to };
+            try
+            {
+                backfillWindow.Validate();
+            }
+            catch (SqlFlow.Core.SqlFlowException ex)
+            {
+                return TypedResults.Problem(
+                    detail: ex.Message, statusCode: StatusCodes.Status400BadRequest, title: "Invalid run parameters");
+            }
         }
 
         var filter = batch is null
@@ -237,7 +257,7 @@ public static class ScheduleEndpoints
                 .Distinct(StringComparer.Ordinal).ToList();
         var now = clock.GetUtcNow().UtcDateTime;
         var fire = await ScheduleFire
-            .EnqueueAsync(db, dispatcher, schedule, now, ct, filter).ConfigureAwait(false);
+            .EnqueueAsync(db, dispatcher, schedule, now, ct, filter, backfillWindow).ConfigureAwait(false);
         if (!fire.Queued)
         {
             var detail = filter is not { Count: > 0 }

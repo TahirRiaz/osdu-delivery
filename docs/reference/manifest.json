@@ -1367,7 +1367,6 @@
         "azure blob",
         "adls"
       ],
-      "yamlPath": "(root, flowType: cpy)",
       "related": [
         "flow-overview",
         "flow-sftp"
@@ -1377,31 +1376,8 @@
         "src/SqlFlow.Copy/CopyEngine.cs",
         "src/SqlFlow.Copy/LocalCopyEndpoint.cs",
         "src/SqlFlow.Copy/AzureBlobCopyEndpoint.cs",
-        "src/SqlFlow.Yaml/YamlCopyFlowLoader.cs"
-      ]
-    },
-    {
-      "id": "flow-sftp",
-      "path": "flow/sftp.md",
-      "title": "SFTP flow (flowType: sftp): download from / upload to an SFTP server",
-      "type": "flow-reference",
-      "summary": "flowType: sftp downloads files from an SFTP server into the data lake / local, or uploads the other way, byte-for-byte.",
-      "keywords": [
-        "sftp",
-        "download",
-        "upload",
-        "vendor drop",
-        "private key"
-      ],
-      "yamlPath": "(root, flowType: sftp)",
-      "related": [
-        "flow-overview",
-        "flow-cpy"
-      ],
-      "sourceRefs": [
-        "src/SqlFlow.Core/Sftp/SftpFlow.cs",
-        "src/SqlFlow.Sftp/SftpEngine.cs",
-        "src/SqlFlow.Yaml/YamlSftpFlowLoader.cs"
+        "src/SqlFlow.Yaml/YamlCopyFlowLoader.cs",
+        "samples/copy/baatbooking-storage-to-lake.flow.yaml"
       ]
     },
     {
@@ -1842,7 +1818,17 @@
         "timezone",
         "enabled",
         "scheduler service",
-        "paused"
+        "paused",
+        "schedules.yaml",
+        "shared schedule",
+        "schedule reference",
+        "schedule macro",
+        "scope",
+        "batch schedule",
+        "node schedule",
+        "wave order",
+        "when does a source update",
+        "schedule plan"
       ],
       "yamlPath": "schedule",
       "related": [
@@ -1853,6 +1839,8 @@
       ],
       "sourceRefs": [
         "src/SqlFlow.Yaml/YamlDocumentLoader.cs",
+        "src/SqlFlow.Yaml/YamlScheduleLibraryLoader.cs",
+        "src/SqlFlow.Lineage/Collection/FlowSetCollector.cs",
         "src/SqlFlow.Core/ScheduleSpec.cs",
         "src/SqlFlow.Catalog/ScheduleClock.cs",
         "src/SqlFlow.Catalog/ScheduleStore.cs",
@@ -1958,6 +1946,30 @@
         "src/SqlFlow.Core/Secrets/SecretResolver.cs",
         "samples/invoke/trigger-refresh.flow.yaml",
         "tests/SqlFlow.Core.Tests/AzureServicePrincipalResolverTests.cs"
+      ]
+    },
+    {
+      "id": "flow-sftp",
+      "path": "flow/sftp.md",
+      "title": "SFTP flow (flowType: sftp): download from / upload to an SFTP server",
+      "type": "flow-reference",
+      "summary": "flowType: sftp downloads files from an SFTP server into the data lake / local, or uploads the other way, byte-for-byte.",
+      "keywords": [
+        "sftp",
+        "download",
+        "upload",
+        "vendor drop",
+        "private key"
+      ],
+      "related": [
+        "flow-overview",
+        "flow-cpy"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Sftp/SftpFlow.cs",
+        "src/SqlFlow.Sftp/SftpEngine.cs",
+        "src/SqlFlow.Yaml/YamlSftpFlowLoader.cs",
+        "samples/sftp/citybike-nets-download.flow.yaml"
       ]
     },
     {
@@ -2394,6 +2406,43 @@
         "deploy/bicep/mcp.bicep",
         "deploy/bicep/ai-foundry.bicep",
         "deploy/slack/manifest.yaml"
+      ]
+    },
+    {
+      "id": "guide-source-backfill",
+      "path": "guides/source-backfill.md",
+      "title": "Backfilling a whole source (integration, file ingestion, silver)",
+      "type": "guide",
+      "summary": "Reprocess a whole ingest source for a date range: integration re-lands files, file ingestion re-reads them, silver re-pulls from the source minimum.",
+      "keywords": [
+        "backfill",
+        "reprocess",
+        "whole source",
+        "schedule backfill",
+        "force re-land",
+        "min from source",
+        "reprocessFromSourceMin",
+        "flow + descendants",
+        "integration",
+        "silver"
+      ],
+      "related": [
+        "guide-incremental-and-backfill",
+        "flow-incremental",
+        "concept-control-plane"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Runs/RunParameters.cs",
+        "src/SqlFlow.Core/Runs/RunParameterApplicability.cs",
+        "src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Api/ScheduleEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Background/ScheduleFire.cs",
+        "src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs",
+        "src/SqlFlow.Copy/CopyEngine.cs",
+        "src/SqlFlow.Acquire/Engine/AcquireFlowRunner.cs",
+        "src/SqlFlow.Acquire/Engine/LandingPipeline.cs",
+        "src/SqlFlow.Sftp/SftpEngine.cs",
+        "src/SqlFlow.Execution/DocumentExecutor.cs"
       ]
     },
     {
