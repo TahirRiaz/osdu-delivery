@@ -14,7 +14,7 @@ import type {
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
-  RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry,
+  RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
   SourceDiscoverRequest, SourceDiscoverResult,
@@ -402,4 +402,17 @@ export const notificationApi = {
   deleteSubscription: (id: string) => del<void>(`/api/v1/me/notifications/subscriptions/${id}`),
   testSubscription: (id: string) => post<NotificationTestSend>(`/api/v1/me/notifications/subscriptions/${id}/test`),
   listDeliveries: (take = 50) => get<NotificationDelivery[]>("/api/v1/me/notifications/deliveries", { take }),
+};
+
+// ---- Maintenance (run-trace storage retention) ------------------------------------------------------------------
+
+export const maintenanceApi = {
+  traceStorage: () => get<RunTraceStorage>("/api/v1/maintenance/trace-storage"),
+  /** Set how many days to keep superseded SQL statements, or null to keep forever (age-based pruning off). */
+  setStatementRetention: (retentionDays: number | null) =>
+    put<RunTraceRetention>("/api/v1/maintenance/statement-retention", { retentionDays } satisfies RunTraceRetentionUpdate),
+  /** Delete all generated SQL statements now and return how many rows were deleted; run events are never touched. */
+  purgeStatements: () => post<RunStatementPurgeResult>("/api/v1/maintenance/statements/purge"),
+  /** Delete all run events now and return how many rows were deleted; the deliberate escape hatch (events are never auto-pruned). */
+  purgeEvents: () => post<RunEventPurgeResult>("/api/v1/maintenance/events/purge"),
 };

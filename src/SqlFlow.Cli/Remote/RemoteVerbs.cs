@@ -964,6 +964,11 @@ internal static partial class RemoteVerbs
             Console.WriteLine($"  backfill:    {(run.FullLoad ? "full load; " : string.Empty)}window {FormatUtc(run.BackfillFrom)} -> {FormatUtc(run.BackfillTo)}{(run.FilePattern is null ? string.Empty : $"; pattern {run.FilePattern}")}");
         }
 
+        if (run.ReprocessFromSourceMin)
+        {
+            Console.WriteLine("  backfill:    reprocess from source min (reads MIN from source instead of MAX from target)");
+        }
+
         if (run.IncrementalMode is not null)
         {
             Console.WriteLine($"  incremental: {run.IncrementalMode}{(run.IncrementalWatermark is null ? string.Empty : $", watermark {run.IncrementalWatermark} ({run.IncrementalWatermarkSource})")}{(run.IncrementalFilter is null ? string.Empty : $", filter {run.IncrementalFilter}")}");

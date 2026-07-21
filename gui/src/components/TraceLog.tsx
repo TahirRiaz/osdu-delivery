@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, CircleAlert, Copy, Eraser, Loader2, Radio } from "lucide-react";
+import { Check, CheckCircle2, CircleAlert, Copy, Eraser, Loader2, Radio } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { prettyPrintSql } from "@/lib/sql";
 import { parseUtc } from "../lib/time";
 
 /** One line of a trace, in the terminal-log shape both the run trace and the activity (sync/lineage/...) trace
@@ -86,6 +88,153 @@ function HeaderButton({
       <Icon className="size-3 shrink-0" />
       {label}
     </button>
+  );
+}
+
+/** Flatten any run of whitespace (incl. newlines) to single spaces, for the single-line row preview of a SQL/multi
+ * -line message. The untouched original is what the hover card and the copy button carry. */
+function collapse(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/** The plain-text a single line copies: its message, then its SQL (formatted the way the card shows it), then its
+ * error. Computed on demand so the pretty-print cost is paid only when the button is clicked, not per row. */
+function lineText(line: TraceLine): string {
+  const parts = [line.message.trimEnd()];
+  if (line.sql) {
+    parts.push(prettyPrintSql(line.sql).trimEnd());
+  }
+  if (line.error) {
+    parts.push(`!! ${line.error}`);
+  }
+  return parts.filter((p) => p.length > 0).join("\n\n");
+}
+
+/** A small copy-to-clipboard button that flips to a check for a beat, used inside a line's hover card. `getText` is
+ * called on click so any formatting work happens only when the user actually copies. */
+function CopyLineButton({ getText }: { getText: () => string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+    }
+  }, []);
+
+  const doCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(getText());
+      setCopied(true);
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard denied (permissions/insecure context): leave the button idle rather than surface a toast here.
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={doCopy}
+      className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      {copied ? <Check className="size-3 shrink-0 text-success" /> : <Copy className="size-3 shrink-0" />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+/** The pretty-printed SQL block inside a line's hover card. Kept as its own component so the (best-effort) format
+ * runs only when a card actually opens, since Radix mounts the card content lazily, never per row up front. */
+function SqlBlock({ sql, className }: { sql: string; className?: string }) {
+  const pretty = useMemo(() => prettyPrintSql(sql), [sql]);
+  return (
+    <pre
+      className={cn(
+        "overflow-x-auto whitespace-pre rounded-sm bg-muted/40 px-2 py-1 text-muted-foreground",
+        className,
+      )}
+    >
+      {pretty}
+    </pre>
+  );
+}
+
+/**
+ * One trace line as a table row: a timestamp column and a tag column that both size to their content (the tag is
+ * never clipped), then a single event column that takes the remaining width and holds the message with an inline,
+ * dimmed one-line SQL/error preview. Only the event column clips (never wraps, never widens the panel), and the
+ * whole event is a hover trigger for a rich card showing the message and the SQL pretty-printed, plus any error,
+ * with a copy button, so nothing is lost to the truncation.
+ */
+function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) {
+  const level = levelClass(line.level);
+  // A statement row carries no message (its SQL is the event), so the message is only shown when present, and
+  // leading margins are only added between parts that actually render.
+  const hasMsg = line.message.trim().length > 0;
+
+  const event = (
+    <HoverCard openDelay={120} closeDelay={80}>
+      <HoverCardTrigger asChild>
+        <div
+          tabIndex={0}
+          className="block cursor-default truncate rounded-sm outline-none hover:bg-muted/40 focus-visible:bg-muted/40"
+        >
+          {hasMsg ? <span className={level}>{line.message}</span> : null}
+          {line.sql ? (
+            <span className={cn(hasMsg && "ml-2", "text-muted-foreground/80")}>{collapse(line.sql)}</span>
+          ) : null}
+          {line.error ? (
+            <span className={cn((hasMsg || line.sql) && "ml-2", "text-destructive")}>!! {collapse(line.error)}</span>
+          ) : null}
+        </div>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" side="top" className="w-[min(90vw,760px)] overflow-hidden p-0">
+        <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+          <span className="truncate">
+            <span className="tabular-nums">{fmtTime(line.timestampUtc)}</span>
+            <span className="mx-1.5">·</span>
+            <span className="uppercase">{line.tag}</span>
+          </span>
+          <CopyLineButton getText={() => lineText(line)} />
+        </div>
+        <div className="max-h-[50vh] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
+          {hasMsg ? <p className={cn("whitespace-pre-wrap break-words", level)}>{line.message}</p> : null}
+          {line.sql ? <SqlBlock sql={line.sql} className={cn(hasMsg && "mt-2")} /> : null}
+          {line.error ? (
+            <div
+              className={cn("whitespace-pre-wrap break-words text-destructive", (hasMsg || line.sql) && "mt-2")}
+            >
+              !! {line.error}
+            </div>
+          ) : null}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+
+  return (
+    <>
+      {separated ? (
+        <tr aria-hidden>
+          <td colSpan={3} className="p-0">
+            <div className="my-1 border-t border-dashed border-border/60" />
+          </td>
+        </tr>
+      ) : null}
+      <tr className="align-top">
+        <td className="whitespace-nowrap pr-3 align-top text-muted-foreground tabular-nums">
+          {fmtTime(line.timestampUtc)}
+        </td>
+        <td className="whitespace-nowrap pr-3 align-top uppercase text-muted-foreground">
+          {line.tag}
+        </td>
+        <td className="w-full max-w-0 p-0 align-top">{event}</td>
+      </tr>
+    </>
   );
 }
 
@@ -175,29 +324,14 @@ export function TraceLog({
         {visible.length === 0 ? (
           <p className="text-muted-foreground">{ended ? emptyEnded : emptyLive}</p>
         ) : (
-          visible.map((line, i) => {
-            const newGroup = i > 0 && line.groupKey !== undefined && visible[i - 1].groupKey !== line.groupKey;
-            return (
-              <div key={line.key}>
-                {newGroup && <div className="my-1 border-t border-dashed border-border/60" />}
-                <div className="flex gap-2 whitespace-pre-wrap break-words">
-                  <span className="shrink-0 text-muted-foreground tabular-nums">{fmtTime(line.timestampUtc)}</span>
-                  <span className="w-[88px] shrink-0 truncate uppercase text-muted-foreground" title={line.tag}>
-                    {line.tag}
-                  </span>
-                  <span className={cn("min-w-0 flex-1", levelClass(line.level))}>{line.message}</span>
-                </div>
-                {line.sql ? (
-                  <pre className="mt-0.5 ml-[calc(88px+1rem)] overflow-x-auto whitespace-pre rounded-sm bg-muted/40 px-2 py-1 text-muted-foreground">
-                    {line.sql.trimEnd()}
-                  </pre>
-                ) : null}
-                {line.error ? (
-                  <div className="ml-[calc(88px+1rem)] text-destructive">!! {line.error}</div>
-                ) : null}
-              </div>
-            );
-          })
+          <table className="w-full border-collapse">
+            <tbody>
+              {visible.map((line, i) => {
+                const newGroup = i > 0 && line.groupKey !== undefined && visible[i - 1].groupKey !== line.groupKey;
+                return <TraceRow key={line.key} line={line} separated={newGroup} />;
+              })}
+            </tbody>
+          </table>
         )}
       </div>
     </div>

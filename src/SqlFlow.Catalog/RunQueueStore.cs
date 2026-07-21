@@ -23,11 +23,17 @@ public sealed record RunEnqueueRequest(
 
 /// <summary>What to enqueue as one multi-flow run group (a Node or Batch execution): the resolved, ordered member
 /// flows (with their waves) plus the shared routing. Every member is enqueued under one <see cref="RunGroupModes"/>
-/// header and gated by wave, so a dependency never runs before what it depends on. Members always run with default
-/// run parameters: the built-in backfill is a single-flow concept, so it is never applied across a whole set.</summary>
+/// header and gated by wave, so a dependency never runs before what it depends on.
+/// <para>A node backfill carries per-member parameters through <paramref name="MemberParameters"/> (keyed by flow
+/// name): the caller decides, per member, whether it takes the backfill window (the anchor and every window-honoring
+/// descendant, so each layer re-reads the same historical slice) or <see cref="RunParameters.ReprocessFromSourceMin"/>
+/// (a relational descendant, so the back-dated rows an upstream flow re-lands are re-pulled instead of stopping below
+/// the target's high-water mark). A member absent from the map runs with default parameters, so an ordinary group (or
+/// a schedule fire) passes no map and every member runs as defined.</para></summary>
 public sealed record RunGroupEnqueueRequest(
     Guid RepoId, string Mode, string Anchor, IReadOnlyList<RunScopeMember> Members,
-    string? TargetPool = null, string? CommitSha = null);
+    string? TargetPool = null, string? CommitSha = null,
+    IReadOnlyDictionary<string, RunParameters>? MemberParameters = null);
 
 /// <summary>The outcome of enqueuing a group: the new group id and the ids of every member run, in wave order.</summary>
 public sealed record RunGroupEnqueueResult(Guid GroupId, IReadOnlyList<Guid> RunIds);
@@ -170,6 +176,7 @@ public static class RunQueueStore
                 BackfillTo = parameters.BackfillTo,
                 FilePattern = string.IsNullOrWhiteSpace(parameters.FilePattern) ? null : parameters.FilePattern.Trim(),
                 AssertionsOnly = parameters.AssertionsOnly,
+                ReprocessFromSourceMin = parameters.ReprocessFromSourceMin,
                 Status = RunStatuses.Queued,
                 EnqueuedUtc = nowUtc,
                 // Until the run finishes there is no artifact; seed WrittenUtc with the enqueue time so the run
@@ -202,6 +209,20 @@ public static class RunQueueStore
 
         var groupId = Guid.CreateVersion7();
         var targetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim();
+
+        // Per-member parameters for a node backfill (the caller routed each member to the window or to
+        // reprocess-from-source-min); a member absent from the map runs with defaults. Each is validated here, at the
+        // enqueue trust boundary, exactly as a single run's parameters are. An ordinary node run or a schedule fire
+        // passes no map, so every member resolves to default parameters.
+        RunParameters MemberParameters(RunScopeMember member)
+            => request.MemberParameters?.GetValueOrDefault(member.FlowName) ?? RunParameters.None;
+        if (request.MemberParameters is not null)
+        {
+            foreach (var member in request.Members)
+            {
+                MemberParameters(member).Validate();
+            }
+        }
 
         // Resolve the shared commit and whether the catalog snapshot faithfully copies it (see the single-run
         // enqueue). Only when it does is each member's YAML staged into the content-addressed store before the run
@@ -243,6 +264,7 @@ public static class RunQueueStore
                 var runId = Guid.CreateVersion7();
                 runIds.Add(runId);
                 var pipelineId = CatalogIdentity.Pipeline(request.RepoId, member.FlowName);
+                var memberParameters = MemberParameters(member);
                 catalog.Runs.Add(new CatalogRun
                 {
                     RunId = runId,
@@ -256,6 +278,12 @@ public static class RunQueueStore
                     GroupId = groupId,
                     // A negative (uncomputed) wave collapses to 0 so an un-analyzed set runs as one parallel wave.
                     GroupWave = member.Wave < 0 ? 0 : member.Wave,
+                    FullLoad = memberParameters.FullLoad,
+                    BackfillFrom = memberParameters.BackfillFrom,
+                    BackfillTo = memberParameters.BackfillTo,
+                    FilePattern = string.IsNullOrWhiteSpace(memberParameters.FilePattern) ? null : memberParameters.FilePattern.Trim(),
+                    AssertionsOnly = memberParameters.AssertionsOnly,
+                    ReprocessFromSourceMin = memberParameters.ReprocessFromSourceMin,
                     Status = RunStatuses.Queued,
                     EnqueuedUtc = nowUtc,
                     WrittenUtc = nowUtc,

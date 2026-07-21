@@ -42,6 +42,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogRunEvent> RunEvents => Set<CatalogRunEvent>();
 
+    public DbSet<CatalogMaintenanceSetting> MaintenanceSettings => Set<CatalogMaintenanceSetting>();
+
     public DbSet<CatalogRunSurrogateKey> RunSurrogateKeys => Set<CatalogRunSurrogateKey>();
 
     public DbSet<CatalogRunHealthCheckMetric> RunHealthCheckMetrics => Set<CatalogRunHealthCheckMetric>();
@@ -146,6 +148,11 @@ public sealed class CatalogDbContext : DbContext
             // The latest-run board resolves each pipeline's newest run (top-1 per pipeline by WrittenUtc, then
             // RunId): this composite serves that as a per-pipeline seek in exactly the query's order.
             entity.HasIndex(r => new { r.PipelineId, r.WrittenUtc, r.RunId }).IsDescending(false, true, true);
+            // The run-trace prune identifies its candidates as terminal-but-not-failed runs older than the retention
+            // window: WHERE Status IN ('succeeded','cancelled','skipped') AND WrittenUtc < @cutoff. This composite
+            // makes that a seek and carries PipelineId so the "is there a newer run for this pipeline" check that
+            // decides the candidate is not the latest is covered without a lookup back to the base row.
+            entity.HasIndex(r => new { r.Status, r.WrittenUtc }).IncludeProperties(r => r.PipelineId);
             // The group-gating claim subquery asks "does this group have an unfinished member in a lower wave":
             // WHERE GroupId = @g AND GroupWave < @w AND Status IN ('queued','running'). This composite makes that
             // a seek, and also serves the group-detail board (a group's members by wave) and the groupId filter.
@@ -285,6 +292,15 @@ public sealed class CatalogDbContext : DbContext
             // length bound.
             entity.Property(e => e.Message).IsRequired();
             entity.HasIndex(e => e.RunId);
+        });
+
+        modelBuilder.Entity<CatalogMaintenanceSetting>(entity =>
+        {
+            entity.ToTable("MaintenanceSetting");
+            entity.HasKey(s => s.Id);
+            // A single operator-set row; the id is the fixed singleton key (1), never database-generated.
+            entity.Property(s => s.Id).ValueGeneratedNever();
+            entity.Property(s => s.UpdatedBy).HasMaxLength(256);
         });
 
         modelBuilder.Entity<CatalogRunSurrogateKey>(entity =>

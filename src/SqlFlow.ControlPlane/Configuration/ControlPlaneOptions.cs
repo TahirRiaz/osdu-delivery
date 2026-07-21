@@ -36,6 +36,8 @@ public sealed class ControlPlaneOptions
 
     public NotificationOptions Notifications { get; set; } = new();
 
+    public RunTraceRetentionOptions RunTrace { get; set; } = new();
+
     /// <summary>Validates the options, throwing a clear startup error for any missing or unsafe required value.
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
     public void Validate()
@@ -117,6 +119,7 @@ public sealed class ControlPlaneOptions
         Bootstrap.Validate();
         Proxy.Validate();
         Notifications.Validate();
+        RunTrace.Validate();
     }
 }
 
@@ -353,6 +356,34 @@ public sealed class ReaperOptions
     /// default keeps a day of history for debugging a recent failure while clearing the long-dead clutter; 0 disables
     /// the prune (rows then linger until deleted by hand).</summary>
     public int NodeRetentionHours { get; set; } = 24;
+}
+
+/// <summary>
+/// Housekeeping for the per-run SQL trace. Every run persists its generated statements (the RunStatement table, a
+/// full SQL blob per statement) and its events (RunEvent); across a busy estate these two tables grow without
+/// bound and are almost never read once a run is old and succeeded. This prunes that detail on a cadence, keeping
+/// only what stays useful: each pipeline's most recent run, every failed run (so the offending SQL is always there
+/// to debug), any run still in flight, and anything still inside the grace window. The run header row itself (its
+/// stats and its error message) is never touched, so the history and every failure reason stay complete and only
+/// the heavy, unread detail is reclaimed. The manual GUI trigger runs the exact same prune on demand.
+/// </summary>
+public sealed class RunTraceRetentionOptions
+{
+    /// <summary>Turns the automatic pruning sweep off. Off means the two trace tables grow unbounded until someone
+    /// triggers the manual cleanup, which still works. On by default. Note the sweep also does nothing while no
+    /// retention period is set (that setting is operator-tunable from the GUI and defaults to "keep forever").</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>How often the automatic prune sweep runs (when enabled and a retention period is set).</summary>
+    public int PollSeconds { get; set; } = 3600;
+
+    public void Validate()
+    {
+        if (PollSeconds < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:RunTrace:PollSeconds must be positive.");
+        }
+    }
 }
 
 /// <summary>

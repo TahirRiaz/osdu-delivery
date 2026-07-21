@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core.Identity;
+using SqlFlow.Core.Runs;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -48,6 +49,67 @@ public sealed class RunGroupQueueTests
             Assert.All(runs, r => Assert.Equal(RunStatuses.Queued, r.Status));
             Assert.Equal(0, runs[0].GroupWave);
             Assert.Equal(1, runs[1].GroupWave);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task EnqueueGroup_NodeBackfill_WindowsAnchor_AndReprocessesDescendants()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            // A three-layer chain like copy -> file -> ing: the window stays on the anchor, the relational ing
+            // descendant reprocesses from source min, and the file descendant runs at defaults (it catches the
+            // re-landed files through its own normal incremental). This mirrors what TriggerGroupAsync builds.
+            string anchor = $"a_{suffix}", fileChild = $"b_{suffix}", ingChild = $"c_{suffix}";
+            var members = new List<RunScopeMember>
+            {
+                new(anchor, "cpy", 0, CatalogPipeline.DefaultBatch),
+                new(fileChild, "file", 1, CatalogPipeline.DefaultBatch),
+                new(ingChild, "ing", 2, CatalogPipeline.DefaultBatch),
+            };
+            var from = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var to = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
+            var memberParameters = new Dictionary<string, RunParameters>(StringComparer.Ordinal)
+            {
+                [anchor] = new RunParameters { BackfillFrom = from, BackfillTo = to },
+                [ingChild] = new RunParameters { ReprocessFromSourceMin = true },
+                // fileChild is intentionally absent: a window-honoring descendant runs at defaults.
+            };
+            var result = await RunQueueStore.EnqueueGroupAsync(
+                db,
+                new RunGroupEnqueueRequest(
+                    repoId, RunGroupModes.Node, anchor, members, MemberParameters: memberParameters),
+                DateTime.UtcNow);
+
+            var runs = await db.Runs.AsNoTracking()
+                .Where(r => r.GroupId == result.GroupId).ToListAsync();
+            var anchorRun = Assert.Single(runs, r => r.FlowName == anchor);
+            var fileRun = Assert.Single(runs, r => r.FlowName == fileChild);
+            var ingRun = Assert.Single(runs, r => r.FlowName == ingChild);
+
+            // The anchor carries the window (it selects the files to re-land at the source).
+            Assert.Equal(from, anchorRun.BackfillFrom);
+            Assert.Equal(to, anchorRun.BackfillTo);
+            Assert.False(anchorRun.ReprocessFromSourceMin);
+
+            // The file descendant runs at defaults: no window (it cannot re-enforce a modified-date window), no reprocess.
+            Assert.Null(fileRun.BackfillFrom);
+            Assert.Null(fileRun.BackfillTo);
+            Assert.False(fileRun.ReprocessFromSourceMin);
+
+            // The relational descendant carries MIN-from-source and no window, so it re-pulls the back-dated rows.
+            Assert.True(ingRun.ReprocessFromSourceMin);
+            Assert.Null(ingRun.BackfillFrom);
+            Assert.Null(ingRun.BackfillTo);
         }
         finally
         {

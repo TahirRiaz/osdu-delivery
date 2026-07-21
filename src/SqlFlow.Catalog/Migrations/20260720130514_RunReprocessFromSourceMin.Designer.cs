@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SqlFlow.Catalog;
 
@@ -11,9 +12,11 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    partial class CatalogDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260720130514_RunReprocessFromSourceMin")]
+    partial class RunReprocessFromSourceMin
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -309,26 +312,6 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("RepoId");
 
                     b.ToTable("LineageEdge", "catalog");
-                });
-
-            modelBuilder.Entity("SqlFlow.Catalog.CatalogMaintenanceSetting", b =>
-                {
-                    b.Property<int>("Id")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("RunTraceRetentionDays")
-                        .HasColumnType("int");
-
-                    b.Property<string>("UpdatedBy")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<DateTime>("UpdatedUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("MaintenanceSetting", "catalog");
                 });
 
             modelBuilder.Entity("SqlFlow.Catalog.CatalogNode", b =>
@@ -1181,10 +1164,6 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("WrittenUtc");
 
                     b.HasIndex("Status", "EnqueuedUtc");
-
-                    b.HasIndex("Status", "WrittenUtc");
-
-                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Status", "WrittenUtc"), new[] { "PipelineId" });
 
                     b.HasIndex("GroupId", "GroupWave", "Status");
 

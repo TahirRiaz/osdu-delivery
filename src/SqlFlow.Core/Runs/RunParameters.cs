@@ -46,10 +46,23 @@ public sealed record RunParameters
     /// only; every other kind refuses the run rather than loading data the caller did not ask for.</summary>
     public bool AssertionsOnly { get; init; }
 
+    /// <summary>Read MIN from the SOURCE instead of MAX from the TARGET for this run, so back-dated rows already
+    /// sitting in the source (from an upstream backfill) are re-pulled rather than filtered out below the target's
+    /// high-water mark. This is the run-time form of a flow's declared <c>fetchMinValuesFromSource</c>: when a group
+    /// run backfills an anchor with a window, its downstream members carry this so the back-dated data flows through
+    /// instead of stopping at staging. Relational ingestion only; a non-incremental or file/copy flow ignores it.</summary>
+    public bool ReprocessFromSourceMin { get; init; }
+
     /// <summary>True when nothing is overridden: the run behaves exactly as its definition says.</summary>
     public bool IsDefault
         => !FullLoad && BackfillFrom is null && BackfillTo is null && string.IsNullOrWhiteSpace(FilePattern)
-           && !AssertionsOnly;
+           && !AssertionsOnly && !ReprocessFromSourceMin;
+
+    /// <summary>True when this run is an explicit file reprocess (a full load, or a backfill window). The file-fetch
+    /// engines (copy, acquire, sftp) read this to DISABLE their unchanged-file skip for the run, so every selected
+    /// file re-lands with a fresh timestamp instead of being deduplicated away, which is what lets the downstream
+    /// incremental flows pick it up again. A plain run keeps deduplication (an idempotent re-run transfers nothing).</summary>
+    public bool ReprocessFiles => FullLoad || BackfillFrom is not null;
 
     /// <summary>Validates the combination, throwing <see cref="SqlFlowException"/> with a caller-safe message.
     /// Called at every trust boundary (API trigger, CLI flags) so a run can never be queued with parameters no
@@ -91,6 +104,14 @@ public sealed record RunParameters
                 throw new SqlFlowException("filePattern must not contain control characters.");
             }
         }
+
+        if (ReprocessFromSourceMin && (FullLoad || BackfillFrom is not null || BackfillTo is not null || AssertionsOnly))
+        {
+            throw new SqlFlowException(
+                "reprocessFromSourceMin is a distinct incremental strategy and cannot be combined with fullLoad, a " +
+                "backfill window, or assertionsOnly: a backfill's anchor carries the window, its descendants carry " +
+                "this flag, never both on one flow.");
+        }
     }
 
     /// <summary>A one-line human description for run logs ("full load", "window 2023-01-01 .. 2023-02-01").</summary>
@@ -101,7 +122,7 @@ public sealed record RunParameters
             return "none";
         }
 
-        var parts = new List<string>(4);
+        var parts = new List<string>(5);
         if (AssertionsOnly)
         {
             parts.Add("assertions only");
@@ -122,6 +143,11 @@ public sealed record RunParameters
         if (!string.IsNullOrWhiteSpace(FilePattern))
         {
             parts.Add($"files '{FilePattern}'");
+        }
+
+        if (ReprocessFromSourceMin)
+        {
+            parts.Add("reprocess from source min");
         }
 
         return string.Join(", ", parts);

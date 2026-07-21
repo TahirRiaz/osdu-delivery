@@ -19,7 +19,9 @@ function toLine(entry: RunTraceEntry): TraceLine {
     tag: entry.step ?? entry.kind,
     // A statement row's level is always "trace"; event rows carry their own level.
     level: isStatement ? "trace" : entry.level,
-    message: isStatement ? (entry.error ? "statement failed" : "statement") : entry.message ?? "",
+    // A statement row is its SQL (shown as the event); no redundant "statement" label. A failure is carried by
+    // the error field, so it still stands out. Event rows carry their own message.
+    message: isStatement ? "" : entry.message ?? "",
     sql: entry.sql,
     error: entry.error,
   };

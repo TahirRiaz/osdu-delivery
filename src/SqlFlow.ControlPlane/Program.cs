@@ -86,6 +86,19 @@ builder.Services.AddHostedService<SchedulerService>();
 // because a node heartbeats on a cadence independent of its draining (a busy node is never mistaken for a dead one).
 builder.Services.AddHostedService<OrphanRunReaper>();
 
+// ---- Run-trace retention: the two heaviest per-run tables (RunStatement, the full SQL of every generated
+// statement, and RunEvent) grow without bound and are almost never read once a run is old and green. This service
+// prunes them on a cadence to each pipeline's latest run + every failed run + anything still recent, keeping the
+// run header (its stats and error message) intact. The delete runs on the service's own loop and connection, never
+// on the request thread or inside a pipeline run. Hosted on every replica like the orphan reaper (its batched
+// delete is idempotent under concurrency); the retention is read fresh each sweep, so a null retention keeps traces
+// forever. The Maintenance page's "clean up now" runs the same prune synchronously via the endpoint so it can
+// report the outcome. Disabled here turns the automatic sweep off while the manual trigger keeps working.
+if (options.RunTrace.Enabled)
+{
+    builder.Services.AddHostedService<RunTraceReaper>();
+}
+
 // ---- Managed sync: keeps the shadow catalog current from git. A background service pulls each registered repo
 // source's branch tip on its interval and runs the same catalog sync the CLI's `db sync` runs.
 builder.Services.AddHostedService<RepoSyncService>();
@@ -307,7 +320,8 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own)
     // and their own notification opt-ins.
     .MapMeEndpoints()
-    .MapNotificationEndpoints();
+    .MapNotificationEndpoints()
+    .MapMaintenanceEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.

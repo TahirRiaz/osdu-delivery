@@ -175,13 +175,25 @@ public sealed class IncrementalWindowResolver
                 var op = ">";
                 watermarkSource = $"{probeLabel} MAX {SchemaQualified(probeObject)}";
 
-                if (flow.Incremental.FetchMinValuesFromSource)
+                // The flow's declared fetchMinValuesFromSource, OR a per-run override (a group backfill sets this on
+                // the anchor's descendants so back-dated rows already in the source are re-pulled instead of being
+                // filtered out below the target's high-water mark).
+                if (flow.Incremental.FetchMinValuesFromSource || parameters.ReprocessFromSourceMin)
                 {
                     var (minMarks, minSql) = await ProbeMinAsync(flow, source, marks, sourceDialect, ct).ConfigureAwait(false);
                     minProbeSql = minSql;
-                    if (SourceMinIsLess(minMarks, maxMarks))
+                    // The DECLARED fetchMinValuesFromSource widens only when the source genuinely holds older data
+                    // than the target (the legacy optimization): a plain re-run does not re-read everything. But an
+                    // EXPLICIT run override (an operator backfill) always reads from the source minimum, because the
+                    // operator asked to reprocess: it must not silently fall back to the target's high-water mark just
+                    // because an upstream flow re-landed the slice with fresh values. Both still require the source to
+                    // actually hold a value (an empty source has no minimum to bound by).
+                    var useSourceMin = parameters.ReprocessFromSourceMin
+                        ? minMarks.Any(m => m.Value is not null)
+                        : SourceMinIsLess(minMarks, maxMarks);
+                    if (useSourceMin)
                     {
-                        // Reprocess history: widen the window back to the source minimum.
+                        // Reprocess: bound the read at the source minimum (inclusive) instead of the target maximum.
                         effective = minMarks;
                         op = ">=";
                         watermarkSource = $"source MIN {sourceDialect.QualifyObject(flow.Source.Table)}";

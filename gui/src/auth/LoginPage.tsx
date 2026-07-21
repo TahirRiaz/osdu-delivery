@@ -31,6 +31,55 @@ function MicrosoftMark() {
 }
 
 /**
+ * The branded left column, shown only on wide screens: the white SQLFlow lockup and a short line about
+ * what the product is, over a navy field carrying concentric arcs that echo the logo mark. Purely
+ * decorative, so it is hidden from assistive tech and never rendered on the narrow, form-only layout.
+ */
+function BrandPanel() {
+  return (
+    <div
+      className="relative hidden overflow-hidden lg:flex lg:w-[46%] lg:max-w-xl lg:flex-col lg:justify-between lg:p-12"
+      style={{ background: "linear-gradient(155deg, var(--brand-navy) 0%, var(--brand-navy-deep) 100%)" }}
+      aria-hidden="true"
+    >
+      {/* Concentric arcs echoing the logo mark, bleeding off the bottom-right corner. */}
+      <svg
+        className="pointer-events-none absolute -bottom-24 -right-24 h-[32rem] w-[32rem]"
+        viewBox="0 0 200 200"
+        fill="none"
+      >
+        {[30, 55, 80, 105].map((r, i) => (
+          <circle
+            key={r}
+            cx="100"
+            cy="100"
+            r={r}
+            stroke="var(--brand-cream)"
+            strokeWidth="1.5"
+            strokeOpacity={0.16 - i * 0.03}
+          />
+        ))}
+      </svg>
+
+      <div className="relative flex items-center gap-3">
+        <img src="/brand/logo-white.png" alt="" className="h-8 w-auto object-contain" />
+      </div>
+
+      <div className="relative max-w-sm">
+        <h2 className="text-2xl font-semibold leading-snug text-white">
+          Move data with confidence.
+        </h2>
+        <p className="mt-3 text-sm leading-relaxed text-white/60">
+          Orchestrate ingestion, transformation, and lineage across your estate from a single control plane.
+        </p>
+      </div>
+
+      <p className="relative text-xs text-white/40">SQLFlow control plane</p>
+    </div>
+  );
+}
+
+/**
  * The sign-in page, the one surface that renders outside the workbench shell: a centered card on the
  * editor background with the SQLFlow lockup above it. Username/password for regular SQLFlow users,
  * "Sign in with Microsoft" when the control plane has Entra enabled, and the break-glass bootstrap
@@ -86,19 +135,25 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-background p-4">
-      {/* The lockup above the card: the colored mark works on both the light and the dark background. */}
-      <div className="flex items-center gap-2.5">
-        <img src="/brand/logo-icon.png" alt="" className="size-9 rounded-md object-contain" />
-        <span className="text-lg font-semibold">SQLFlow</span>
-      </div>
+    <div className="flex min-h-screen bg-background">
+      <BrandPanel />
 
-      <Card className="w-full max-w-sm gap-0 rounded-lg p-6" data-testid="login-card">
-        <div className="flex flex-col gap-4">
-          <div>
-            <h1 className="text-base font-medium">Sign in</h1>
-            <p className="mt-0.5 text-[13px] text-muted-foreground">Use your SQLFlow account to continue.</p>
-          </div>
+      <div className="flex flex-1 items-center justify-center p-6">
+        <Card
+          className="w-full max-w-sm gap-0 rounded-xl border-border/70 p-7 shadow-lg shadow-black/5"
+          data-testid="login-card"
+        >
+          <div className="flex flex-col gap-5">
+            {/* The lockup sits with the form on narrow screens, where the brand panel is hidden. */}
+            <div className="flex items-center gap-2.5 lg:hidden">
+              <img src="/brand/logo-icon.png" alt="" className="size-8 rounded-md object-contain" />
+              <span className="text-base font-semibold">SQLFlow</span>
+            </div>
+
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">Welcome back</h1>
+              <p className="mt-1 text-[13px] text-muted-foreground">Sign in to your SQLFlow account to continue.</p>
+            </div>
 
           {sessionEndedReason && (
             <Alert data-testid="session-ended-notice">
@@ -234,8 +289,9 @@ export default function LoginPage() {
               </CollapsibleContent>
             </Collapsible>
           )}
-        </div>
-      </Card>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

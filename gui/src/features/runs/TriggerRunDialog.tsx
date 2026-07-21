@@ -1,9 +1,10 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Info, Loader2, TriangleAlert } from "lucide-react";
+import { CalendarClock, Info, Loader2, Play, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,10 +14,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isApiError } from "../../api/client";
-import { pipelineApi, repoApi, runApi } from "../../api/endpoints";
+import { pipelineApi, repoApi, runApi, scheduleApi } from "../../api/endpoints";
 import type { RunParameterDescriptor, RunScope } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DateRangeCalendar } from "../../components/DateRangeCalendar";
 import { useRunDock } from "./RunDockContext";
 
 /** Prior-run values used to prefill the form on Re-run (ISO strings for the window; they are trimmed to the
@@ -53,6 +55,23 @@ const SCOPE_LABELS: Record<RunScope, string> = {
   node: "This flow + descendants",
   batch: "Whole batch",
 };
+
+/** The scopes a free-choice trigger offers. "Whole batch" is not a run scope in V3 (the server runs a whole source
+ * through its schedule, not a batch trigger), so it is surfaced as the related-schedule section below instead. */
+const OFFERED_SCOPES: RunScope[] = ["flow", "node"];
+
+/** A one-line cadence for a related schedule ("cron 0 2 * * *", "every 3600s", or "manual"). */
+function describeCadence(cron: string | null, intervalSeconds: number | null): string {
+  if (cron !== null && cron.trim() !== "") {
+    return `cron ${cron}`;
+  }
+
+  if (intervalSeconds !== null) {
+    return `every ${intervalSeconds}s`;
+  }
+
+  return "manual";
+}
 
 /** An ISO instant (or datetime-local string) trimmed to the "yyyy-MM-ddThh:mm" a datetime-local input expects. */
 function toLocalInput(value: string | null | undefined): string {
@@ -125,6 +144,12 @@ export function TriggerRunDialog({
   });
 
   const isGroup = selectedScope !== "flow";
+  // Both "This flow" and "This flow + descendants" honor a backfill window: a single flow bounds its own read; a
+  // node run bounds its ANCHOR (the parent) and its descendants switch to MIN-from-source so the back-dated rows the
+  // anchor lands are picked up downstream instead of stopping at staging. "Whole batch" (only ever set by a
+  // batch-locked launch) carries no per-run parameters and is surfaced through its schedule instead.
+  const paramsScope: "flow" | "node" | "none" =
+    selectedScope === "flow" ? "flow" : selectedScope === "node" ? "node" : "none";
 
   // The selected flow's pipeline id: given directly by the launching context, or resolved from the repo's pipeline
   // list for a free-choice launch. Drives the applicable-parameters lookup.
@@ -135,10 +160,43 @@ export function TriggerRunDialog({
   const flowParameters = useQuery({
     queryKey: ["pipeline-parameters", effectiveFlowId],
     queryFn: () => pipelineApi.parameters(effectiveFlowId!),
-    enabled: open && !isGroup && Boolean(effectiveFlowId),
+    enabled: open && paramsScope !== "none" && Boolean(effectiveFlowId),
   });
   const applicable = useMemo(() => flowParameters.data?.parameters ?? [], [flowParameters.data]);
   const paramKeys = useMemo(() => new Set(applicable.map((p) => p.key)), [applicable]);
+  // A node run exposes only the backfill window; full load, file pattern, and assertions-only are single-flow
+  // concepts (a group always runs its members otherwise as defined).
+  const renderable = useMemo(
+    () => (paramsScope === "node" ? applicable.filter((p) => p.key === "backfillWindow") : applicable),
+    [applicable, paramsScope],
+  );
+
+  // The schedule(s) this flow is a member of: firing one runs the whole source in dependency order (the V3
+  // "whole batch"). Membership is the selector, so this asks the API by pipeline id.
+  const schedules = useQuery({
+    queryKey: ["flow-schedules", effectiveRepoId, effectiveFlowId],
+    queryFn: () => scheduleApi.list({ repoId: effectiveRepoId!, pipelineId: effectiveFlowId!, page: 1, pageSize: 50 }),
+    enabled: open && Boolean(effectiveRepoId) && Boolean(effectiveFlowId),
+  });
+  const relatedSchedules = schedules.data?.items ?? [];
+
+  const runSchedule = useMutation({
+    mutationFn: (scheduleId: string) => scheduleApi.runNow(scheduleId),
+    onSuccess: (accepted) => {
+      onClose();
+      if (accepted.groupId) {
+        track(accepted.groupId);
+        toast.success(`Schedule fired (${accepted.memberCount} ${accepted.memberCount === 1 ? "flow" : "flows"}).`);
+        navigate(`/runs/groups/${accepted.groupId}`);
+      } else {
+        toast.success("Schedule fired.");
+        navigate(`/runs/${accepted.runId}`);
+      }
+    },
+    onError: (error) => {
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
+    },
+  });
 
   // "Still resolving" and "could not resolve" are each distinct from "this flow honors no parameters". Collapsing
   // them would tell an operator a flow runs as defined while its lookup is in flight or failed, hiding the very
@@ -202,7 +260,7 @@ export function TriggerRunDialog({
 
   // Client-side mirror of RunParameters.Validate (single-flow only), so obvious mistakes are caught before the round
   // trip (the server validates authoritatively and its ProblemDetails still renders if anything slips through).
-  const windowError = isGroup
+  const windowError = paramsScope === "none"
     ? null
     : assertionsOnly && (fullLoad || hasWindow || hasPattern)
       ? "Assertions-only cannot be combined with full load, a window, or a file pattern."
@@ -218,8 +276,10 @@ export function TriggerRunDialog({
   const canSubmit = Boolean(effectiveRepoId) && hasTarget && windowError === null && groupReady && !trigger.isPending;
 
   const submit = () => {
-    const single = !isGroup;
-    const applies = (key: string) => single && paramKeys.has(key);
+    // A single flow sends every parameter its kind honors; a node run sends only the backfill window (the server
+    // applies it to the anchor and switches the descendants to MIN-from-source); a batch-locked launch sends none.
+    const applies = (key: string) =>
+      paramsScope !== "none" && paramKeys.has(key) && (paramsScope === "flow" || key === "backfillWindow");
     trigger.mutate({
       repoId: effectiveRepoId!,
       flowName: batchLocked ? "" : (effectiveFlow ?? "").trim(),
@@ -262,36 +322,16 @@ export function TriggerRunDialog({
         return (
           <div key={desc.key} className="flex flex-col gap-1.5">
             <span className="text-[13px] font-medium">{desc.label}</span>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <div className="flex flex-1 flex-col gap-1">
-                <Label htmlFor={`${idPrefix}-backfill-from`} className="text-xs font-normal text-muted-foreground">
-                  From
-                </Label>
-                <Input
-                  id={`${idPrefix}-backfill-from`}
-                  type="datetime-local"
-                  className="h-8"
-                  value={backfillFrom}
-                  onChange={(event) => setBackfillFrom(event.target.value)}
-                  disabled={fullLoad || assertionsOnly}
-                  data-testid="trigger-backfill-from"
-                />
-              </div>
-              <div className="flex flex-1 flex-col gap-1">
-                <Label htmlFor={`${idPrefix}-backfill-to`} className="text-xs font-normal text-muted-foreground">
-                  To
-                </Label>
-                <Input
-                  id={`${idPrefix}-backfill-to`}
-                  type="datetime-local"
-                  className="h-8"
-                  value={backfillTo}
-                  onChange={(event) => setBackfillTo(event.target.value)}
-                  disabled={fullLoad || assertionsOnly}
-                  data-testid="trigger-backfill-to"
-                />
-              </div>
-            </div>
+            <DateRangeCalendar
+              from={backfillFrom}
+              to={backfillTo}
+              onChange={(from, to) => {
+                setBackfillFrom(from);
+                setBackfillTo(to);
+              }}
+              disabled={fullLoad || assertionsOnly}
+              testId="trigger-backfill"
+            />
             <p className="text-xs text-muted-foreground">{desc.help}</p>
           </div>
         );
@@ -316,7 +356,8 @@ export function TriggerRunDialog({
     }
   };
 
-  const showParameters = !isGroup && Boolean(effectiveFlow);
+  const showParameters = paramsScope !== "none" && Boolean(effectiveFlow)
+    && (paramsScope === "flow" || renderable.length > 0 || resolvingParameters);
 
   return (
     <Sheet
@@ -399,7 +440,7 @@ export function TriggerRunDialog({
                 }}
                 data-testid="trigger-scope"
               >
-                {(Object.keys(SCOPE_LABELS) as RunScope[]).map((s) => (
+                {OFFERED_SCOPES.map((s) => (
                   <ToggleGroupItem key={s} value={s} data-testid={`trigger-scope-${s}`} className="h-8 px-2.5 text-xs">
                     {SCOPE_LABELS[s]}
                   </ToggleGroupItem>
@@ -466,7 +507,7 @@ export function TriggerRunDialog({
                     Could not load this flow's run parameters. Triggering now would run it with its defined defaults.
                   </AlertDescription>
                 </Alert>
-              ) : applicable.length === 0 ? (
+              ) : renderable.length === 0 ? (
                 <p className="mt-2 text-[13px] text-muted-foreground">
                   This flow runs as defined; it has no adjustable run parameters.
                 </p>
@@ -475,7 +516,13 @@ export function TriggerRunDialog({
                   <p className="text-xs text-muted-foreground">
                     One-off overrides applied to this run only. The flow definition in git is unchanged.
                   </p>
-                  {applicable.map(renderParameter)}
+                  {renderable.map(renderParameter)}
+                  {paramsScope === "node" && (
+                    <p className="text-xs text-muted-foreground" data-testid="trigger-node-backfill-note">
+                      The parent applies this window; its descendants read from the source minimum for this run, so the
+                      back-dated rows are picked up instead of stopping at staging.
+                    </p>
+                  )}
                   {windowError !== null && (
                     <p className="text-xs font-medium text-destructive" data-testid="trigger-backfill-error">
                       {windowError}
@@ -483,6 +530,56 @@ export function TriggerRunDialog({
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {relatedSchedules.length > 0 && (
+            <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="trigger-schedules">
+              <h3 className="flex items-center gap-2 text-[13px] font-medium">
+                <CalendarClock className="size-4 text-muted-foreground" />
+                Runs as part of
+              </h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Executing a schedule fires its whole member set in dependency order (the V3 "whole batch"), without
+                moving the next scheduled fire.
+              </p>
+              <div className="mt-2 flex flex-col gap-2">
+                {relatedSchedules.map((schedule) => (
+                  <div
+                    key={schedule.id}
+                    className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5"
+                    data-testid={`trigger-schedule-${schedule.id}`}
+                  >
+                    <div className="min-w-0 grow">
+                      <div className="truncate font-mono text-[12px] font-medium">{schedule.name}</div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                        <Badge variant="outline" className="font-mono text-[11px]">
+                          {describeCadence(schedule.cron, schedule.intervalSeconds)}
+                        </Badge>
+                        {schedule.paused && (
+                          <Badge className="border-transparent bg-warning/15 text-warning">paused</Badge>
+                        )}
+                        {!schedule.enabled && (
+                          <Badge variant="outline" className="text-muted-foreground">disabled</Badge>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 shrink-0"
+                      onClick={() => runSchedule.mutate(schedule.id)}
+                      disabled={runSchedule.isPending}
+                      data-testid={`trigger-schedule-run-${schedule.id}`}
+                    >
+                      {runSchedule.isPending && runSchedule.variables === schedule.id
+                        ? <Loader2 className="animate-spin" />
+                        : <Play />}
+                      Execute schedule
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

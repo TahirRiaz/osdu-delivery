@@ -50,6 +50,17 @@ public sealed class CopyEngine
             // and written counts aggregate across every step, so one pipeline that copies a whole source system
             // reports as a single run.
             var multiStep = flow.Steps.Count > 1;
+            // A backfill (an operational window or a full load) is an explicit "reprocess these files" request, so the
+            // unchanged-detection is disabled for the run: every selected file is re-copied and overwritten even when
+            // its checksum is identical, re-landing it with a fresh timestamp so the downstream incremental flows pick
+            // it up again. A normal run keeps deduplication (an idempotent re-run transfers nothing).
+            var forceReland = runParams.ReprocessFiles;
+            if (forceReland)
+            {
+                log.Log(RunLogLevel.Info, "copy.backfill",
+                    "backfill run: unchanged-detection disabled, so every file in the window re-lands (overwritten even if unchanged).");
+            }
+
             for (var i = 0; i < flow.Steps.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -75,7 +86,7 @@ public sealed class CopyEngine
                 // One bulk listing of the target's existing content hashes, so an unchanged file is detected by an
                 // in-memory compare rather than a metadata round trip per file. Skipped entirely when the flow opts out
                 // of unchanged-detection (options.skipUnchanged: false), so its listing/hashing cost is not paid.
-                var targetIndex = flow.Options.SkipUnchanged && flow.Options.Overwrite
+                var targetIndex = flow.Options.SkipUnchanged && flow.Options.Overwrite && !forceReland
                     ? await target.TargetHashIndexAsync(step.Target, ct).ConfigureAwait(false)
                     : EmptyIndex;
 

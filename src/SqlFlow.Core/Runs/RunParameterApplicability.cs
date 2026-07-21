@@ -79,6 +79,18 @@ public static class RunParameterApplicability
                 return ing;
             case "exp":
                 return [BackfillWindow("Export rows whose date falls within this range instead of the flow's default window.")];
+            case "acq":
+                return
+                [
+                    FullLoad with { Help = "Ignore the stored watermark and re-fetch from the flow's declared bounds or seed." },
+                    BackfillWindow("Re-window every date-window iteration to this range, re-fetching that historical slice."),
+                ];
+            case "sftp":
+                return
+                [
+                    FullLoad with { Help = "Transfer every matched file, ignoring the modifiedWithinDays window." },
+                    BackfillWindow("Transfer files whose modified date falls within this range, overriding modifiedWithinDays."),
+                ];
             default:
                 return [];
         }

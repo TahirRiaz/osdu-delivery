@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SqlFlow.Catalog;
 
@@ -11,9 +12,11 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    partial class CatalogDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260721090956_AddMaintenanceSetting")]
+    partial class AddMaintenanceSetting
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1181,10 +1184,6 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("WrittenUtc");
 
                     b.HasIndex("Status", "EnqueuedUtc");
-
-                    b.HasIndex("Status", "WrittenUtc");
-
-                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Status", "WrittenUtc"), new[] { "PipelineId" });
 
                     b.HasIndex("GroupId", "GroupWave", "Status");
 

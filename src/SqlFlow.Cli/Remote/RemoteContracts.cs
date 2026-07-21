@@ -91,6 +91,7 @@ internal sealed record RunDetailDto(
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, string? Error, string? Host,
     bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern, bool AssertionsOnly,
+    bool ReprocessFromSourceMin,
     string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
     string? DataSetConvention,
     int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);

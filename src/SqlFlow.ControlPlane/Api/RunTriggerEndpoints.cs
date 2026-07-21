@@ -217,11 +217,51 @@ public static class RunTriggerEndpoints
                 title: "Not found");
         }
 
+        // A node backfill scopes the WINDOW to the anchor only (the flow the operator picked): a from/to window is a
+        // modified-date selection at the source, which cannot be re-enforced downstream (re-copying a file stamps it
+        // with today's timestamp, never a past one), so the anchor is the single place it applies. Its descendants
+        // then just reprocess whatever the anchor re-lands: a relational descendant takes MIN-from-source (its rows
+        // carry old business dates that MAX-from-target would filter out), while a file/copy descendant takes default
+        // parameters and picks up the freshly re-landed files through its own normal incremental (their fresh
+        // timestamps beat its watermark). A member left out of the map runs with defaults. The window is validated
+        // here, at the trust boundary. A batch/schedule fire never reaches here (it runs its members as defined).
+        Dictionary<string, RunParameters>? memberParameters = null;
+        if (scope == RunScope.Node && (request.BackfillFrom is not null || request.BackfillTo is not null))
+        {
+            var window = new RunParameters { BackfillFrom = request.BackfillFrom, BackfillTo = request.BackfillTo };
+            try
+            {
+                window.Validate();
+            }
+            catch (SqlFlowException ex)
+            {
+                return TypedResults.Problem(
+                    detail: ex.Message, statusCode: StatusCodes.Status400BadRequest, title: "Invalid run parameters");
+            }
+
+            var reprocess = new RunParameters { ReprocessFromSourceMin = true };
+            memberParameters = new Dictionary<string, RunParameters>(StringComparer.Ordinal);
+            foreach (var member in expansion.Members)
+            {
+                if (string.Equals(member.FlowName, expansion.Anchor, StringComparison.Ordinal))
+                {
+                    memberParameters[member.FlowName] = window;
+                }
+                else if (!KindHonorsBackfillWindow(member.FlowKind))
+                {
+                    // A relational descendant (ingestion): re-pull from the source minimum. A file/copy descendant is
+                    // left at defaults, so it catches the re-landed files through its normal incremental.
+                    memberParameters[member.FlowName] = reprocess;
+                }
+            }
+        }
+
         var mode = scope == RunScope.Node ? RunGroupModes.Node : RunGroupModes.Batch;
         var result = await dispatcher.EnqueueGroupAsync(
             db,
             new RunGroupEnqueueRequest(
-                request.RepoId, mode, expansion.Anchor, expansion.Members, request.Pool, request.CommitSha),
+                request.RepoId, mode, expansion.Anchor, expansion.Members, request.Pool, request.CommitSha,
+                memberParameters),
             ct).ConfigureAwait(false);
 
         // 202 with the group location: GET /api/v1/runs/groups/{groupId} reflects the whole set as it executes.
@@ -232,6 +272,16 @@ public static class RunTriggerEndpoints
 
     private static bool IsPlausibleCommitSha(string sha)
         => sha.Length is >= 4 and <= 64 && sha.All(char.IsAsciiHexDigit);
+
+    /// <summary>Whether a flow of this kind honors a backfill window (a copy/file/export flow). In a node backfill a
+    /// descendant of such a kind is left at default parameters (it re-reads the files an upstream flow re-lands through
+    /// its own normal incremental), whereas a relational descendant, which does not honor a window, is routed to the
+    /// MIN-from-source reprocess instead. The date-column argument is passed false so a relational ingestion counts as
+    /// not honoring a window and reprocesses. This reads the same applicability table the GUI renders and a single
+    /// flow honors, so the three can never disagree.</summary>
+    private static bool KindHonorsBackfillWindow(string? flowKind)
+        => RunParameterApplicability.For(flowKind, hasIncrementalDateColumn: false)
+            .Any(descriptor => descriptor.Key == "backfillWindow");
 
     private static async Task<Results<Ok<RunGroupAccepted>, Accepted<RunGroupAccepted>, ProblemHttpResult>> CancelGroupAsync(
         Guid groupId, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)

@@ -23,10 +23,13 @@ public sealed class LandingPipeline
     private readonly string _runId;
     private readonly IRunEventSink _log;
     private readonly bool _dryRun;
+    private readonly bool _forceReland;
     private readonly HashSet<string> _writtenPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<LandedFile> _files = [];
 
-    public LandingPipeline(AcquireLanding config, IRawLandingStore store, string resolvedBase, Guid runId, IRunEventSink log, bool dryRun = false)
+    public LandingPipeline(
+        AcquireLanding config, IRawLandingStore store, string resolvedBase, Guid runId, IRunEventSink log,
+        bool dryRun = false, bool forceReland = false)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(store);
@@ -37,7 +40,14 @@ public sealed class LandingPipeline
         _runId = runId.ToString("N");
         _log = log;
         _dryRun = dryRun;
+        // A backfill run re-lands every re-fetched file even when byte-identical, so its timestamp is bumped and the
+        // downstream incremental flows re-read it. A normal run keeps the flow's own skip-unchanged behavior.
+        _forceReland = forceReland;
     }
+
+    /// <summary>The effective unchanged-file skip: the flow's declared behavior, unless this run is an explicit
+    /// reprocess (a backfill), which forces every re-fetched file to be re-written.</summary>
+    private bool SkipUnchanged => _config.SkipUnchanged && !_forceReland;
 
     public string ResolvedBase => _base;
     public int FilesWritten { get; private set; }
@@ -85,7 +95,7 @@ public sealed class LandingPipeline
         var wrote = true;
         if (!_dryRun)
         {
-            wrote = await _store.PutAsync(location, payload, _config.Overwrite, _config.SkipUnchanged, ct).ConfigureAwait(false);
+            wrote = await _store.PutAsync(location, payload, _config.Overwrite, SkipUnchanged, ct).ConfigureAwait(false);
         }
 
         FilesWritten++;
@@ -110,7 +120,7 @@ public sealed class LandingPipeline
         {
             var sidecar = _store.Combine(_base, $"{relative}.headers.json");
             var json = JsonSerializer.SerializeToUtf8Bytes(HeaderRedaction.Redact(item.Headers));
-            await _store.PutAsync(sidecar, json, overwrite: true, skipUnchanged: _config.SkipUnchanged, ct: ct).ConfigureAwait(false);
+            await _store.PutAsync(sidecar, json, overwrite: true, skipUnchanged: SkipUnchanged, ct: ct).ConfigureAwait(false);
         }
 
         return landed;

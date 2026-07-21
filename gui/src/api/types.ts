@@ -1323,3 +1323,40 @@ export interface NotificationDelivery {
 export interface NotificationTestSend {
   deliveryId: string;
 }
+
+// ---- Maintenance (run-trace storage retention) ------------------------------------------------------------------
+
+/** How much per-run trace is stored, split by kind, and how many SQL-statement rows a cleanup would reclaim. SQL
+ * statements are the generated SQL (heavy, near-identical every run, so purgeable); events are the run's execution
+ * log (rows affected + timing), kept for history/analytics and never purged. "Prunable" counts statements of older,
+ * superseded successful runs (each pipeline's latest run and every failed run are kept, as is anything newer than
+ * the retention window). */
+export interface RunTraceStorage {
+  totalStatements: number;
+  totalEvents: number;
+  prunableStatements: number;
+  /** How many runs' statements would be removed. */
+  prunableRuns: number;
+  /** The SQL-statement retention window (days); null means keep forever (age-based pruning off). */
+  retentionDays: number | null;
+}
+
+/** A change to the SQL-statement retention: days to keep, or null to keep forever (age-based pruning off). */
+export interface RunTraceRetentionUpdate {
+  retentionDays: number | null;
+}
+
+/** The stored SQL-statement retention after an update; null means keep forever. */
+export interface RunTraceRetention {
+  retentionDays: number | null;
+}
+
+/** The outcome of a manual SQL-statement purge: how many statement rows were deleted. */
+export interface RunStatementPurgeResult {
+  statementsDeleted: number;
+}
+
+/** The outcome of a manual run-event purge: how many event rows were deleted. */
+export interface RunEventPurgeResult {
+  eventsDeleted: number;
+}

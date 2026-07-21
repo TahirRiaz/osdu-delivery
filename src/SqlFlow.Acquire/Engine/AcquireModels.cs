@@ -26,6 +26,11 @@ public sealed record AcquireRunOverrides
 
     /// <summary>Backfill window high bound (exclusive): replaces every date-window iteration's <c>to</c> this run.</summary>
     public DateTimeOffset? WindowTo { get; init; }
+
+    /// <summary>This run is an explicit reprocess (a full load or backfill window), so the landing pipeline disables
+    /// its unchanged-file skip: a re-fetched byte-identical payload is re-written with a fresh timestamp rather than
+    /// left untouched, so the downstream incremental flows pick it up again.</summary>
+    public bool ReprocessFiles { get; init; }
 }
 
 /// <summary>One fetched payload handed by a transport to the landing pipeline. <see cref="RecordCount"/> is -1 when

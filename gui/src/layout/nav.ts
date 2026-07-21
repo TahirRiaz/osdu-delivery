@@ -104,6 +104,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: "Access tokens", to: "/settings/tokens", icon: KeySquare, testId: "nav-settings-tokens" },
       { label: "Notifications", to: "/settings/notifications", icon: Bell, testId: "nav-settings-notifications" },
+      { label: "Maintenance", to: "/settings/maintenance", icon: Wrench, testId: "nav-settings-maintenance" },
     ],
   },
 ];

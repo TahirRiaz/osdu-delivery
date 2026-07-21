@@ -48,6 +48,9 @@ public sealed class AcquireFlowRunner
         {
             WindowFrom = parameters.BackfillFrom is { } from ? new DateTimeOffset(DateTime.SpecifyKind(from, DateTimeKind.Utc)) : null,
             WindowTo = parameters.BackfillTo is { } to ? new DateTimeOffset(DateTime.SpecifyKind(to, DateTimeKind.Utc)) : null,
+            // A backfill re-lands every re-fetched file (fresh timestamp) rather than skipping byte-identical payloads,
+            // so the downstream incremental flows pick them up again.
+            ReprocessFiles = parameters.ReprocessFiles,
         };
 
         var runId = options.RunId ?? Guid.NewGuid();

@@ -30,7 +30,7 @@ public sealed class SftpFlowRunner
         events.Log(RunLogLevel.Info, "run.start", $"sftp '{flow.Name}' ({flow.Direction}) {where}");
 
         var runId = options.RunId ?? Guid.NewGuid();
-        var result = await _engine.RunAsync(flow, runId, events, ct).ConfigureAwait(false);
+        var result = await _engine.RunAsync(flow, runId, events, ct, options.Parameters).ConfigureAwait(false);
 
         var skippedNote = result.FilesSkipped > 0 ? $", {result.FilesSkipped} unchanged" : string.Empty;
         events.Log(RunLogLevel.Info, "run.end", result.Success

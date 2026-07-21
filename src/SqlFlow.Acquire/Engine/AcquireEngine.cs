@@ -81,7 +81,7 @@ public sealed class AcquireEngine
             }
 
             resolvedBase = await _secrets.ResolveAsync(TemplateEngine.Render(flow.Landing.Target, baseVars), ct).ConfigureAwait(false);
-            pipeline = new LandingPipeline(flow.Landing, _landing, resolvedBase, runId, log, run.DryRun);
+            pipeline = new LandingPipeline(flow.Landing, _landing, resolvedBase, runId, log, run.DryRun, run.ReprocessFiles);
 
             client = _httpClientFactory(flow.Source.Reliability);
             var dataHttp = HttpExecutorFor(client, flow.Source.Reliability, flow.Source.Reliability.UrlAllowlist);

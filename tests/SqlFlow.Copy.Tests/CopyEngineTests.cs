@@ -167,6 +167,36 @@ public sealed class CopyEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Copy_BackfillWindow_RewritesUnchangedFile()
+    {
+        // A backfill is an explicit "reprocess these files" request, so unchanged-detection is disabled for the run:
+        // an identical file in the window is re-copied (overwritten), not skipped, re-landing it with a fresh
+        // timestamp so the downstream incremental flows pick it up again.
+        var mem = new MemoryEndpoint();
+        mem.Store["mem://src/detail.json"] = Encoding.UTF8.GetBytes("{\"o\":1}");
+        var engine = new CopyEngine([mem], TimeProvider.System);
+        var flow = new CopyFlow
+        {
+            Name = "T",
+            // Deduplication is ON by default; the backfill window is what suppresses it for this run.
+            Steps = [new CopyStep
+            {
+                Source = new CopyEndpoint { Location = "mem://src" },
+                Target = new CopyEndpoint { Location = "mem://dst" },
+            }],
+        };
+        var backfill = new RunParameters { BackfillFrom = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
+
+        await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default, backfill);
+        var second = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, default, backfill);
+
+        // Rewritten on the second run despite identical content: the backfill re-lands the file rather than skipping it.
+        Assert.Equal(1, second.FilesWritten);
+        Assert.Equal(0, second.FilesSkipped);
+        Assert.Equal(2, mem.Writes);
+    }
+
+    [Fact]
     public async Task Copy_MetadataHashDiffers_DownloadsAndRewrites()
     {
         var mem = new MemoryEndpoint();

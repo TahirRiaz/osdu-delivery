@@ -1,4 +1,5 @@
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Runs;
 using Xunit;
 
 namespace SqlFlow.Tests.Integration;
@@ -316,6 +317,90 @@ public sealed class IncrementalWindowIntegrationTests
         {
             await IntegrationDb.DropTableAsync(cs, bad);
             await Cleanup(cs, src, pre, flowId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ReprocessFromSourceMin_RunOverride_WidensToSourceMin_AndRepullsBackDatedRows()
+    {
+        // The run-time form of fetchMinValuesFromSource, which a group backfill sets on the anchor's descendants: a
+        // back-dated row landed in the source (Id below the target's MAX) would be filtered out by the normal
+        // MAX-from-target watermark. The override probes MIN over the source instead, widens the window back to that
+        // minimum (op flips to >=), and re-pulls the back-dated row so the backfill flows through instead of
+        // stopping below the high-water mark.
+        const int flowId = 22;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc9_Src";
+        const string trg = "_SfInc9_Trg";
+        await Reset(cs, src, trg, flowId, "[Id] int NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (3,'c'),(4,'d'),(5,'e');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var flow = Flow(flowId, src, trg, new IncrementalPolicy { Columns = ["Id"] });
+
+            // Establish the target watermark: MAX(trg.Id) = 5.
+            Assert.True((await runner.RunAsync(flow)).Success);
+            Assert.Equal(3, await IntegrationDb.RowCountAsync(cs, trg));
+
+            // A back-dated row lands in the source below the target's MAX (Id 1 < 5). The normal watermark would
+            // filter it out ([Id] > 5 selects nothing); the override re-pulls it.
+            await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (1,'a');");
+
+            var reprocess = await runner.RunAsync(
+                flow, new IngestionRunOptions { Parameters = new RunParameters { ReprocessFromSourceMin = true } });
+            Assert.True(reprocess.Success, reprocess.Error);
+            Assert.Equal(" AND [Id] >= 1", reprocess.SourceWhere);
+            Assert.NotNull(reprocess.Incremental);
+            Assert.StartsWith("source MIN", reprocess.Incremental!.WatermarkSource);
+            // The back-dated row is now in the target (4 rows: the original 3,4,5 plus the re-pulled 1).
+            Assert.Equal(4, await IntegrationDb.RowCountAsync(cs, trg));
+        }
+        finally
+        {
+            await Cleanup(cs, src, trg, flowId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ReprocessFromSourceMin_RunOverride_UsesSourceMin_EvenWhenNotBelowTarget()
+    {
+        // An explicit operator backfill must bound at the source minimum unconditionally, even when the source holds
+        // nothing older than the target's high-water mark (the case a force-re-land upstream produces: staging is all
+        // "fresh"). The DECLARED fetchMinValuesFromSource would keep the target MAX here as an optimization; the run
+        // override does not, because the operator asked to reprocess and must see the source-min bound, not a silent
+        // fall-back to the target.
+        const int flowId = 23;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc10_Src";
+        const string trg = "_SfInc10_Trg";
+        await Reset(cs, src, trg, flowId, "[Id] int NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (1,'a'),(2,'b'),(3,'c');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var flow = Flow(flowId, src, trg, new IncrementalPolicy { Columns = ["Id"] });
+
+            // Establish the target watermark: MAX(trg.Id) = 3.
+            Assert.True((await runner.RunAsync(flow)).Success);
+
+            // The source now holds ONLY rows at or above the target's MAX (Id 3..5): source MIN (3) is not below
+            // target MAX (3), so the legacy guard would fall back to target MAX. The override still bounds at MIN.
+            await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (4,'d'),(5,'e');");
+            await IntegrationDb.ExecuteAsync(cs, $"DELETE FROM [dbo].[{src}] WHERE [Id] < 3;");
+
+            var reprocess = await runner.RunAsync(
+                flow, new IngestionRunOptions { Parameters = new RunParameters { ReprocessFromSourceMin = true } });
+            Assert.True(reprocess.Success, reprocess.Error);
+            Assert.Equal(" AND [Id] >= 3", reprocess.SourceWhere);
+            Assert.NotNull(reprocess.Incremental);
+            Assert.StartsWith("source MIN", reprocess.Incremental!.WatermarkSource);
+        }
+        finally
+        {
+            await Cleanup(cs, src, trg, flowId);
         }
     }
 

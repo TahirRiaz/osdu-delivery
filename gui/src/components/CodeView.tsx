@@ -3,10 +3,10 @@ import Editor, { type Monaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { Copy, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
-import { format as formatSql } from "sql-formatter";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { prettyPrintSql } from "@/lib/sql";
 import { useThemeMode } from "../theme/ThemeModeContext";
 import "../lib/monacoSetup";
 import { markFlowModel, refreshDiagnostics, registerSqlflowYamlProviders } from "../lib/lsp/sqlflowLsp";
@@ -82,25 +82,6 @@ function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
       "editor.lineHighlightBorder": "#00000000",
     },
   });
-}
-
-/**
- * Pretty-prints captured T-SQL for display. The control plane executes against SQL Server, so captured
- * statements are Transact-SQL and are stored as single-line blobs (UPDATE/MERGE with long HASHBYTES/CONCAT
- * expressions). Formatting is best-effort: any input the parser rejects is returned unchanged so the viewer
- * always shows the real SQL rather than an error.
- */
-function prettyPrintSql(sql: string): string {
-  try {
-    return formatSql(sql, {
-      language: "transactsql",
-      keywordCase: "upper",
-      tabWidth: 2,
-      linesBetweenQueries: 1,
-    });
-  } catch {
-    return sql;
-  }
 }
 
 /**

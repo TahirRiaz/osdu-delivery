@@ -149,4 +149,30 @@ public sealed class RunParametersTests
         Assert.Contains("window 2023-01-01 06:00:00 .. 2023-02-01 00:00:00", description, StringComparison.Ordinal);
         Assert.Contains("files 'orders*.csv'", description, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void ReprocessFromSourceMin_IsNotDefault_AndDescribes()
+    {
+        var parameters = new RunParameters { ReprocessFromSourceMin = true };
+        parameters.Validate(); // a descendant's reprocess flag on its own is a legitimate run
+        Assert.False(parameters.IsDefault);
+        Assert.Equal("reprocess from source min", parameters.Describe());
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]  // with full load
+    [InlineData(false, true, false)]  // with a window bound
+    [InlineData(false, false, true)]  // with assertions-only
+    public void ReprocessFromSourceMin_CombinedWithAnotherOverride_IsRejected(bool full, bool from, bool assertions)
+    {
+        var parameters = new RunParameters
+        {
+            ReprocessFromSourceMin = true,
+            FullLoad = full,
+            BackfillFrom = from ? new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) : null,
+            AssertionsOnly = assertions,
+        };
+        var error = Assert.Throws<SqlFlowException>(parameters.Validate);
+        Assert.Contains("reprocessFromSourceMin", error.Message, StringComparison.Ordinal);
+    }
 }

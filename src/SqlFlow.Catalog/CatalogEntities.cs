@@ -239,6 +239,12 @@ public class CatalogRun
     /// assertions-only execution is distinguishable from a load in the history.</summary>
     public bool AssertionsOnly { get; set; }
 
+    /// <summary>Per-run substitution: read MIN from the source instead of MAX from the target, so back-dated rows
+    /// left in the source by an upstream backfill are re-pulled rather than filtered out below the target's
+    /// high-water mark. Set on a group backfill's downstream members. Recorded on the run so the reprocess is
+    /// auditable from the history.</summary>
+    public bool ReprocessFromSourceMin { get; set; }
+
     /// <summary>The run group this run belongs to when it was enqueued as one member of a multi-flow execution
     /// (a Node run: a flow and its descendants; or a Batch run: a whole data source), or null for a standalone
     /// single-flow run. Members of a group share this id and are ordered by <see cref="GroupWave"/>: the queue
@@ -647,6 +653,27 @@ public class CatalogRunEvent
 
     /// <summary>Elapsed milliseconds attached to the event (a stage summary), when the emitter measured one.</summary>
     public double? ElapsedMs { get; set; }
+}
+
+/// <summary>Operator-tunable maintenance settings, held as a single row (<see cref="Id"/> is always 1) so the GUI's
+/// Maintenance page can change them without a redeploy. Today it carries only the run-trace retention.</summary>
+public class CatalogMaintenanceSetting
+{
+    /// <summary>The fixed singleton key (always 1); one row governs the whole estate.</summary>
+    public int Id { get; set; }
+
+    /// <summary>How many days a superseded successful run keeps its SQL trace (<see cref="CatalogRunStatement"/> /
+    /// <see cref="CatalogRunEvent"/>) before it is pruned; null keeps every trace forever (age-based pruning off,
+    /// the default until an operator sets a value). Each pipeline's latest run and every failed run are kept
+    /// regardless of this, so the current state and every failure reason always survive.</summary>
+    public int? RunTraceRetentionDays { get; set; }
+
+    /// <summary>When the settings were last changed (UTC).</summary>
+    public DateTime UpdatedUtc { get; set; }
+
+    /// <summary>Who last changed the settings (the caller's username), for a light audit trail; null before any
+    /// edit.</summary>
+    public string? UpdatedBy { get; set; }
 }
 
 /// <summary>One surrogate-key generation outcome of a run (ingestion flows): the IDENTITY-backed lookup-table

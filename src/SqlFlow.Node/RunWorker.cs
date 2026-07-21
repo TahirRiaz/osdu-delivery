@@ -635,6 +635,7 @@ public sealed partial class RunWorker
                         r.BackfillTo,
                         r.FilePattern,
                         r.AssertionsOnly,
+                        r.ReprocessFromSourceMin,
                         RepoName = repo != null ? repo.Name : null,
                         RepoRemoteUrl = repo != null ? repo.RemoteUrl : null,
                         RepoRootPath = repo != null ? repo.RootPath : null,
@@ -736,6 +737,7 @@ public sealed partial class RunWorker
                 BackfillTo = run.BackfillTo,
                 FilePattern = run.FilePattern,
                 AssertionsOnly = run.AssertionsOnly,
+                ReprocessFromSourceMin = run.ReprocessFromSourceMin,
             };
             if (!parameters.IsDefault)
             {

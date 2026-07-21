@@ -38,10 +38,23 @@ public sealed class SftpEngine
         _time = time;
     }
 
-    public async Task<SftpRunResult> RunAsync(SftpFlow flow, Guid runId, IRunEventSink log, CancellationToken ct)
+    public async Task<SftpRunResult> RunAsync(
+        SftpFlow flow, Guid runId, IRunEventSink log, CancellationToken ct, RunParameters? parameters = null)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(log);
+        var runParams = parameters ?? RunParameters.None;
+        // A backfill (a from/to window, or a full load) reprocesses files: it selects by the modified date the
+        // operator asked for (or everything, for a full load) instead of the rolling modifiedWithinDays window, and
+        // disables the unchanged-file skip so every selected file re-transfers with a fresh timestamp, which is what
+        // lets the downstream incremental flows pick it up again. A normal run keeps deduplication.
+        var reprocess = runParams.ReprocessFiles;
+        if (reprocess)
+        {
+            log.Log(RunLogLevel.Info, "sftp.backfill",
+                "backfill run: unchanged-detection disabled, so every selected file re-transfers (overwritten even if unchanged).");
+        }
+
         var sw = Stopwatch.StartNew();
         var files = new List<SftpFileResult>();
         var matched = 0;
@@ -54,11 +67,11 @@ public sealed class SftpEngine
             foreach (var step in flow.Steps)
             {
                 ct.ThrowIfCancellationRequested();
-                var cutoff = step.ModifiedWithinDays > 0 ? _time.GetUtcNow().AddDays(-step.ModifiedWithinDays) : (DateTimeOffset?)null;
+                var (from, to) = ModifiedWindow(step, runParams);
 
                 if (flow.Direction == SftpDirection.Download)
                 {
-                    var remote = ListRemote(client, step, cutoff);
+                    var remote = ListRemote(client, step, from, to);
                     matched += remote.Count;
                     log.Log(RunLogLevel.Info, "sftp.list", $"matched {remote.Count} remote file(s) under '{step.RemotePath}'.");
                     foreach (var (full, relative, _) in remote)
@@ -68,7 +81,7 @@ public sealed class SftpEngine
                         client.DownloadFile(full, buffer);
                         var rel = flow.PreserveStructure ? relative : relative[(relative.LastIndexOf('/') + 1)..];
                         var (location, wrote, hash) = await WriteLakeAsync(
-                            step.Local, rel, buffer.ToArray(), flow.Overwrite, flow.SkipUnchanged, ct).ConfigureAwait(false);
+                            step.Local, rel, buffer.ToArray(), flow.Overwrite, flow.SkipUnchanged && !reprocess, ct).ConfigureAwait(false);
                         if (wrote)
                         {
                             files.Add(new SftpFileResult(location, buffer.Length, hash));
@@ -83,7 +96,7 @@ public sealed class SftpEngine
                 }
                 else
                 {
-                    var local = await ListLakeAsync(step.Local, step.Pattern, step.Recursive, cutoff, ct).ConfigureAwait(false);
+                    var local = await ListLakeAsync(step.Local, step.Pattern, step.Recursive, from, to, ct).ConfigureAwait(false);
                     matched += local.Count;
                     log.Log(RunLogLevel.Info, "sftp.list", $"matched {local.Count} local file(s) at '{step.Local}'.");
                     foreach (var (absolute, relative, _) in local)
@@ -134,7 +147,34 @@ public sealed class SftpEngine
 
     // ---- SFTP side ----------------------------------------------------------------------------------------------
 
-    private static List<(string Full, string Relative, long Size)> ListRemote(SftpClient client, SftpStep step, DateTimeOffset? cutoff)
+    /// <summary>The effective modified-date window for a step: a backfill from/to window (the operator's reprocess
+    /// bounds), or an unbounded window for a full load, otherwise the step's rolling <c>modifiedWithinDays</c> lower
+    /// bound against the engine clock. Mirrors the copy engine's <c>ResolveWindow</c>.</summary>
+    private (DateTimeOffset? From, DateTimeOffset? To) ModifiedWindow(SftpStep step, RunParameters parameters)
+    {
+        if (parameters.BackfillFrom is { } bf)
+        {
+            var to = parameters.BackfillTo is { } bt
+                ? new DateTimeOffset(DateTime.SpecifyKind(bt, DateTimeKind.Utc))
+                : (DateTimeOffset?)null;
+            return (new DateTimeOffset(DateTime.SpecifyKind(bf, DateTimeKind.Utc)), to);
+        }
+
+        if (parameters.FullLoad)
+        {
+            return (null, null);
+        }
+
+        return (step.ModifiedWithinDays > 0 ? _time.GetUtcNow().AddDays(-step.ModifiedWithinDays) : null, null);
+    }
+
+    /// <summary>Whether a file's modified timestamp falls in the window (lower bound inclusive, upper bound inclusive
+    /// to match the file-date semantics of a backfill). An absent bound does not constrain that side.</summary>
+    private static bool WithinWindow(DateTimeOffset modified, DateTimeOffset? from, DateTimeOffset? to)
+        => (from is not { } f || modified >= f) && (to is not { } t || modified <= t);
+
+    private static List<(string Full, string Relative, long Size)> ListRemote(
+        SftpClient client, SftpStep step, DateTimeOffset? from, DateTimeOffset? to)
     {
         var root = step.RemotePath;
         var found = new List<(string, string, long)>();
@@ -164,7 +204,7 @@ public sealed class SftpEngine
                     continue;
                 }
 
-                if (cutoff is { } c && new DateTimeOffset(entry.LastWriteTimeUtc, TimeSpan.Zero) < c)
+                if (!WithinWindow(new DateTimeOffset(entry.LastWriteTimeUtc, TimeSpan.Zero), from, to))
                 {
                     continue;
                 }
@@ -311,7 +351,7 @@ public sealed class SftpEngine
     }
 
     private async Task<List<(string Absolute, string Relative, long Size)>> ListLakeAsync(
-        string root, string pattern, bool recursive, DateTimeOffset? cutoff, CancellationToken ct)
+        string root, string pattern, bool recursive, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct)
     {
         var found = new List<(string, string, long)>();
         if (AzureBlobLocation.IsAzureStorageUri(root))
@@ -329,7 +369,7 @@ public sealed class SftpEngine
                     continue;
                 }
 
-                if (cutoff is { } c && blob.Properties.LastModified is { } m && m < c)
+                if (blob.Properties.LastModified is { } m && !WithinWindow(m, from, to))
                 {
                     continue;
                 }
@@ -350,7 +390,7 @@ public sealed class SftpEngine
                 continue;
             }
 
-            if (cutoff is { } c && new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero) < c)
+            if (!WithinWindow(new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero), from, to))
             {
                 continue;
             }
