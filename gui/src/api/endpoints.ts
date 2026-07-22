@@ -13,7 +13,7 @@ import type {
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
-  PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
+  PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
@@ -55,6 +55,9 @@ export const repoApi = {
   // Re-sync a CLI/local-path repo from its recorded root path (connected: reads the live database for the derived
   // lineage tier). Refused server-side for a git-source-managed repo, which syncs via its source instead.
   syncLocal: (id: string) => post<RepoSyncResult>(`/api/v1/repos/${id}/sync`),
+  // Delete a repo and everything attributed to it (pipelines, runs, lineage, schedules), plus any managed git source
+  // registered under the same name so the background sync cannot recreate it. Irreversible; returns the counts removed.
+  delete: (id: string) => del<RepoDeletionResult>(`/api/v1/repos/${id}`),
 };
 
 export interface PipelineListQuery extends PageQuery {
@@ -281,6 +284,9 @@ export const repoSourceApi = {
   syncNow: (id: string) => post<RepoSource>(`/api/v1/repos/sources/${id}/sync`),
   // Preview-first scan: list a repo's flows without importing (nothing reaches the catalog until a sync).
   discover: (request: DiscoverRepoRequest) => post<DiscoveredFlow[]>("/api/v1/repos/discover", request),
+  // Remove a source-only registration (one registered but not yet synced, so no repo exists to delete through).
+  // Once a sync has produced the repo, deleting the repo removes the source instead.
+  remove: (id: string) => del<void>(`/api/v1/repos/sources/${id}`),
 };
 
 // ---- Source discovery (JSON/XML flatten formula) -------------------------------------------------------------------------------

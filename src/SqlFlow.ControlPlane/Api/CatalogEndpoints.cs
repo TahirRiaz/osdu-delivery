@@ -50,8 +50,24 @@ public static class CatalogEndpoints
 
         var repos = group.MapGroup("/repos").WithTags("Repositories");
         repos.MapPost("/{id:guid}/sync", SyncRepoAsync).WithName("SyncRepository");
+        repos.MapDelete("/{id:guid}", DeleteRepoAsync).WithName("DeleteRepository");
 
         return group;
+    }
+
+    /// <summary>
+    /// Deletes a repo and everything attributed to it: its pipelines, run history (and the runs' drill-down detail),
+    /// run groups, lineage (edges, object relationships, flow dependencies), schedules, and transform columns, plus
+    /// any managed git source registered under the same name (dropped so the background sync cannot recreate the
+    /// repo). Irreversible, so it is an explicit operator action rather than a side effect of a sync. Global objects
+    /// the repo only contributed to are left in place (they can be shared by other repos). Returns the counts removed,
+    /// or 404 when no repo has the given id.
+    /// </summary>
+    private static async Task<Results<Ok<RepoDeletionResult>, ProblemHttpResult>> DeleteRepoAsync(
+        Guid id, CatalogDbContext db, CancellationToken ct)
+    {
+        var result = await RepoStore.DeleteAsync(db, id, ct).ConfigureAwait(false);
+        return result is null ? NotFound("repository", id) : TypedResults.Ok(result);
     }
 
     /// <summary>

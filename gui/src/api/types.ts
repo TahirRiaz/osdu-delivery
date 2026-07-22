@@ -92,6 +92,17 @@ export interface RepoSyncResult {
   warnings: string[];
 }
 
+/** What a repo deletion removed: the counts of the repo-scoped rows purged, and whether a managed git source
+ * registered under the same name was dropped too (so the repo cannot resurrect on the next background sync). */
+export interface RepoDeletionResult {
+  pipelines: number;
+  runs: number;
+  runGroups: number;
+  schedules: number;
+  lineageEdges: number;
+  sourceRemoved: boolean;
+}
+
 export interface PipelineSummary {
   id: string;
   repoId: string;

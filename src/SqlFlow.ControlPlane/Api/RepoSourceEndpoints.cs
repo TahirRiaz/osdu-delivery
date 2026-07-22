@@ -66,6 +66,7 @@ public static class RepoSourceEndpoints
         ArgumentNullException.ThrowIfNull(group);
         group.MapPost("/repos/sources", RegisterSourceAsync).WithTags("RepoSources").WithName("RegisterRepoSource");
         group.MapPost("/repos/sources/{id:guid}/sync", SyncNowAsync).WithTags("RepoSources").WithName("SyncRepoSourceNow");
+        group.MapDelete("/repos/sources/{id:guid}", DeleteSourceAsync).WithTags("RepoSources").WithName("DeleteRepoSource");
         // Preview-first scan: clone a remote and list its flows without importing (nothing reaches the catalog until
         // a sync). Under "operate" because it clones a remote using the deployment's git credential.
         group.MapPost("/repos/discover", DiscoverRepoAsync).WithTags("RepoSources").WithName("DiscoverRepoFlows");
@@ -129,6 +130,21 @@ public static class RepoSourceEndpoints
 
         var row = await db.RepoSources.AsNoTracking().Where(s => s.Id == id).FirstAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(ToDto(row));
+    }
+
+    /// <summary>
+    /// Deletes a tracked git source. This is the removal for a source-only row (one registered but not yet synced, so
+    /// no repo has been produced): once a sync has created the repo, deleting the repo (<c>DELETE /repos/{id}</c>) is
+    /// what removes the source, so the two facets are never left half-deleted. Returns 404 when no source has the id.
+    /// </summary>
+    private static async Task<Results<Ok, ProblemHttpResult>> DeleteSourceAsync(
+        Guid id, CatalogDbContext db, CancellationToken ct)
+    {
+        var removed = await RepoSourceStore.DeleteAsync(db, id, ct).ConfigureAwait(false);
+        return removed
+            ? TypedResults.Ok()
+            : TypedResults.Problem(
+                detail: $"No repo source '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
     }
 
     private static async Task<Results<Ok<List<DiscoveredFlowDto>>, ProblemHttpResult>> DiscoverRepoAsync(

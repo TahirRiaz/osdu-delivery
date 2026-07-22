@@ -131,6 +131,31 @@ public static class RepoSourceStore
         return set;
     }
 
+    /// <summary>Deletes a tracked source and its sync activity trace (keyed by the source id). Used to remove a
+    /// source-only row (one registered but not yet synced, so no repo exists to delete through <see cref="RepoStore"/>
+    /// yet); once a repo has been produced, deleting the repo removes its source the same way. Returns false when no
+    /// source has the given id.</summary>
+    public static Task<bool> DeleteAsync(CatalogDbContext catalog, Guid id, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        return CatalogTransaction.InSerializableAsync(catalog, async () =>
+        {
+            var exists = await catalog.RepoSources.AsNoTracking()
+                .AnyAsync(s => s.Id == id, ct).ConfigureAwait(false);
+            if (!exists)
+            {
+                return false;
+            }
+
+            await catalog.ActivityEvents
+                .Where(e => e.Kind == ActivityKinds.RepoSync && e.SubjectKey == id.ToString())
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.RepoSources.Where(s => s.Id == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            return true;
+        }, ct);
+    }
+
     /// <summary>The enabled sources whose next sync has arrived, oldest-due first.</summary>
     public static async Task<IReadOnlyList<CatalogRepoSource>> ListDueAsync(
         CatalogDbContext catalog, DateTime nowUtc, int max, CancellationToken ct = default)

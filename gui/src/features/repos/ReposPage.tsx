@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { ChevronRight, Loader2, Pencil, RefreshCw } from "lucide-react";
+import { ChevronRight, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { CopyButton } from "../../components/CopyButton";
 import { RegisterSourceDialog } from "./RegisterSourceDialog";
+import { RepoDeleteDialog } from "./RepoDeleteDialog";
 import { useSyncTracePanel } from "./useSyncTracePanel";
 
 // Repos and their git sources are two facets of one thing, joined by name: a source is the git registration that
@@ -76,6 +77,8 @@ export default function ReposPage() {
   const openSyncTrace = useSyncTracePanel();
   const [registerOpen, setRegisterOpen] = useState(false);
   const [editSource, setEditSource] = useState<RepoSource | null>(null);
+  const [attachRepo, setAttachRepo] = useState<Repo | null>(null);
+  const [deleteRow, setDeleteRow] = useState<MergedRow | null>(null);
 
   const reposQuery = useQuery({
     queryKey: ["repos", "list", FETCH_CAP],
@@ -217,40 +220,56 @@ export default function ReposPage() {
       align: "right",
       render: (row) => (
         <span className="inline-flex items-center justify-end gap-1">
+          {/* Edit a git source in place, or (for a manual repo with no source) attach one so it becomes managed. */}
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (row.source !== undefined) {
+                setEditSource(row.source);
+              } else if (row.repo !== undefined) {
+                setAttachRepo(row.repo);
+              }
+            }}
+            data-testid="source-edit"
+          >
+            <Pencil />
+            Edit
+          </Button>
           {row.source !== undefined && (
-            <>
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditSource(row.source ?? null);
-                }}
-                data-testid="source-edit"
-              >
-                <Pencil />
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={!row.source.enabled || syncNow.isPending}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (row.source !== undefined) {
-                    syncNow.mutate(row.source.id);
-                    openSyncTrace(row.source.id, row.source.name);
-                  }
-                }}
-                data-testid="source-sync-now"
-              >
-                {syncNow.isPending && syncNow.variables === row.source.id
-                  ? <Loader2 className="animate-spin" />
-                  : <RefreshCw />}
-                Sync now
-              </Button>
-            </>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!row.source.enabled || syncNow.isPending}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (row.source !== undefined) {
+                  syncNow.mutate(row.source.id);
+                  openSyncTrace(row.source.id, row.source.name);
+                }
+              }}
+              data-testid="source-sync-now"
+            >
+              {syncNow.isPending && syncNow.variables === row.source.id
+                ? <Loader2 className="animate-spin" />
+                : <RefreshCw />}
+              Sync now
+            </Button>
           )}
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={(e) => {
+              e.stopPropagation();
+              setDeleteRow(row);
+            }}
+            data-testid="repo-delete-open"
+          >
+            <Trash2 />
+            Delete
+          </Button>
           {row.repo !== undefined && <ChevronRight className="size-4 text-muted-foreground" />}
         </span>
       ),
@@ -298,6 +317,17 @@ export default function ReposPage() {
       {registerOpen && <RegisterSourceDialog onClose={() => setRegisterOpen(false)} />}
       {editSource !== null && (
         <RegisterSourceDialog source={editSource} onClose={() => setEditSource(null)} />
+      )}
+      {attachRepo !== null && (
+        <RegisterSourceDialog presetName={attachRepo.name} onClose={() => setAttachRepo(null)} />
+      )}
+      {deleteRow !== null && (
+        <RepoDeleteDialog
+          name={deleteRow.name}
+          repo={deleteRow.repo}
+          source={deleteRow.source}
+          onClose={() => setDeleteRow(null)}
+        />
       )}
     </Page>
   );

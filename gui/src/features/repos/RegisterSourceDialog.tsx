@@ -27,11 +27,24 @@ const REFERENCE_RE = /^\$\{[a-zA-Z]+:[^}]+\}$/;
  * the interval, or "Sync now") is what actually imports the selected flows into the catalog, which the scheduler then
  * executes. Because the server upserts by name, editing reuses the same register call with the source's name; the
  * name is therefore locked in edit mode (changing it would create a second source instead of updating this one).
+ *
+ * Passing `presetName` (without a `source`) opens the dialog to ATTACH a git source to an existing manual repo: the
+ * name is fixed to that repo's name and locked, so the registered source merges onto the repo (they are joined by
+ * name) and the repo becomes managed on its next sync. This is the same register call, so there is one code path.
  */
-export function RegisterSourceDialog({ source, onClose }: { source?: RepoSource; onClose: () => void }) {
+export function RegisterSourceDialog({
+  source, presetName, onClose,
+}: {
+  source?: RepoSource;
+  presetName?: string;
+  onClose: () => void;
+}) {
   const queryClient = useQueryClient();
   const isEdit = source !== undefined;
-  const [name, setName] = useState(source?.name ?? "");
+  // The name is fixed both when editing an existing source and when attaching to a manual repo: in either case a
+  // different name would create a second, unrelated source instead of updating/merging onto this one.
+  const nameLocked = isEdit || presetName !== undefined;
+  const [name, setName] = useState(source?.name ?? presetName ?? "");
   const [remoteUrl, setRemoteUrl] = useState(source?.remoteUrl ?? "");
   const [branch, setBranch] = useState(source?.branch ?? "main");
   const [intervalText, setIntervalText] = useState(source ? String(source.syncIntervalSeconds) : "300");
@@ -135,11 +148,15 @@ export function RegisterSourceDialog({ source, onClose }: { source?: RepoSource;
     >
       <SheetContent className="w-full gap-0 sm:max-w-xl" data-testid="register-source-dialog">
         <SheetHeader>
-          <SheetTitle>{isEdit ? "Edit source" : "Register source"}</SheetTitle>
+          <SheetTitle>
+            {isEdit ? "Edit source" : presetName !== undefined ? `Attach a git source to '${presetName}'` : "Register source"}
+          </SheetTitle>
           <SheetDescription>
             {isEdit
               ? "Update this tracked source's settings and credentials, then sync to apply them."
-              : "Track a git repo so its flows sync into the catalog on an interval."}
+              : presetName !== undefined
+                ? "Give this manual repo a git remote so its flows sync automatically. On the next sync it becomes a managed repo."
+                : "Track a git repo so its flows sync into the catalog on an interval."}
           </SheetDescription>
         </SheetHeader>
 
@@ -156,14 +173,16 @@ export function RegisterSourceDialog({ source, onClose }: { source?: RepoSource;
                 id="source-name"
                 className="h-8"
                 required
-                disabled={isEdit}
+                disabled={nameLocked}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 data-testid="source-name"
               />
-              {isEdit && (
+              {nameLocked && (
                 <p className="text-xs text-muted-foreground">
-                  The name identifies the source and cannot be changed here.
+                  {isEdit
+                    ? "The name identifies the source and cannot be changed here."
+                    : "The name is fixed to the repo so the source attaches to it."}
                 </p>
               )}
             </div>
@@ -364,7 +383,7 @@ export function RegisterSourceDialog({ source, onClose }: { source?: RepoSource;
           </Button>
           <Button size="sm" onClick={submit} disabled={!canSubmit} data-testid="register-source-submit">
             {register.isPending && <Loader2 className="animate-spin" />}
-            {isEdit ? "Save" : "Register"}
+            {isEdit ? "Save" : presetName !== undefined ? "Attach" : "Register"}
           </Button>
         </SheetFooter>
       </SheetContent>
