@@ -234,7 +234,7 @@ public sealed class S3CopyEndpoint : ICopyEndpoint
 
     /// <summary>The object's MD5 bytes when the ETag is a plain 32-hex MD5 (a single-part upload); null for a multipart
     /// ETag (the <c>&lt;hex&gt;-&lt;n&gt;</c> form), which is not an MD5, so the engine reads and hashes instead.</summary>
-    private static byte[]? Md5FromETag(string? etag)
+    internal static byte[]? Md5FromETag(string? etag)
     {
         if (string.IsNullOrEmpty(etag))
         {
@@ -270,7 +270,7 @@ public sealed class S3CopyEndpoint : ICopyEndpoint
     }
 
     /// <summary>A parsed <c>s3://bucket/prefix</c> location.</summary>
-    private readonly record struct S3Location(string Bucket, string Prefix)
+    internal readonly record struct S3Location(string Bucket, string Prefix)
     {
         public static S3Location Parse(string location)
         {

@@ -15,4 +15,8 @@
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlFlow.Copy.Tests" />
+  </ItemGroup>
+
 </Project>

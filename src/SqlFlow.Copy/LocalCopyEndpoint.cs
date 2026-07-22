@@ -6,8 +6,8 @@ using SqlFlow.Core.Copy;
 namespace SqlFlow.Copy;
 
 /// <summary>
-/// The local (and UNC) filesystem endpoint. A location is handled here when it is neither an Azure storage URI nor an
-/// <c>sftp://</c> URL: a plain path, a <c>file://</c> URI, or a Windows/UNC path. Listing honors the glob, the
+/// The local (and UNC) filesystem endpoint. A location is handled here when it is not an Azure storage URI, an
+/// <c>s3://</c> URI, or an <c>sftp://</c> URL: a plain path, a <c>file://</c> URI, or a Windows/UNC path. Listing honors the glob, the
 /// recursion flag, and the engine-resolved modified window; writes create the target directory tree and, when
 /// overwrite is off, fail rather than clobber an existing file. The engine skips an unchanged file by comparing
 /// content hashes (<see cref="TargetContentHashAsync"/>) before it transfers anything, so an unchanged file's
@@ -16,8 +16,41 @@ namespace SqlFlow.Copy;
 public sealed class LocalCopyEndpoint : ICopyEndpoint
 {
     public bool CanHandle(string location)
-        => !AzureBlobCopyEndpoint.IsAzure(location)
-           && !location.StartsWith("sftp://", StringComparison.OrdinalIgnoreCase);
+    {
+        // Positive detection instead of excluding each cloud scheme by name: a location carrying a non-file URI scheme
+        // (s3://, abfss://, wasbs://, https://, sftp://, gs://, ...) belongs to another endpoint, so a new scheme can
+        // never be silently swallowed as a local path (the bug where s3:// was read as a CWD-relative folder). Anything
+        // with no scheme (a bare path, a Windows drive path, a UNC path) or the file:// scheme is local.
+        var scheme = UriScheme(location);
+        return scheme is null || scheme.Equals("file", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The URI scheme of a location (<c>s3</c>, <c>abfss</c>, <c>file</c>, ...), or null when it is a plain
+    /// path. A Windows drive path (<c>C:\...</c>) has a <c>:</c> but no <c>://</c>, so it is correctly seen as schemeless.</summary>
+    private static string? UriScheme(string location)
+    {
+        var sep = location.IndexOf("://", StringComparison.Ordinal);
+        if (sep <= 0)
+        {
+            return null;
+        }
+
+        var scheme = location[..sep];
+        if (!char.IsLetter(scheme[0]))
+        {
+            return null;
+        }
+
+        foreach (var c in scheme)
+        {
+            if (!char.IsLetterOrDigit(c) && c is not ('+' or '-' or '.'))
+            {
+                return null;
+            }
+        }
+
+        return scheme;
+    }
 
     public async IAsyncEnumerable<CopyItem> ListAsync(
         CopyEndpoint endpoint, CopyModifiedWindow window, [EnumeratorCancellation] CancellationToken ct)
