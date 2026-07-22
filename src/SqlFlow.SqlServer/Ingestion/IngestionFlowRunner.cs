@@ -865,6 +865,23 @@ public sealed class IngestionFlowRunner
         "varbinary", "binary", "rowversion", "timestamp", "sql_variant",
     };
 
+    // SqlFlow-generated columns that do NOT carry the reserved "_DW" suffix. The suffix is the engine's own
+    // marker for a system column (IngestionSchemaBuilder sorts every "_DW" column last), so it identifies the
+    // provenance, audit, hash, and SCD2 columns by name; FileLineNumber is the sole generated column that
+    // predates the convention and lacks the suffix, so it is named explicitly.
+    private static readonly IReadOnlySet<string> NonSuffixedSystemColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "FileLineNumber",
+    };
+
+    // A column SqlFlow itself materialises (file provenance such as FileName_DW / FileDate_DW / RowNumber_DW,
+    // the audit stamps, the surrogate-key hashes HashKey_DW / ConcatKey_DW, and the SCD2 period columns) rather
+    // than one carried from the source. Such columns are never source data and must not feed the change
+    // checksum, mirroring the legacy engine's IgnoreChecksumColumns list.
+    private static bool IsSqlFlowSystemColumn(string columnName)
+        => columnName.EndsWith("_DW", StringComparison.OrdinalIgnoreCase)
+           || NonSuffixedSystemColumns.Contains(columnName);
+
     // The key-match pass (legacy MatchKeysInSrcTrg, re-engineered): the comparison runs in SQL on the target
     // (an anti-join against the landed source key set), not in a client-side stream, so it cannot misalign.
     private async Task<long> RunMatchKeysAsync(
@@ -1113,7 +1130,13 @@ public sealed class IngestionFlowRunner
 
         foreach (var column in stagingColumns)
         {
-            if (NonChecksumTypes.Contains(column.DataType.BaseType))
+            // SqlFlow-generated columns (file provenance, audit stamps, the surrogate-key hashes, and the SCD2
+            // period columns) are rewritten on every load - a fresh FileName_DW, FileDate_DW, RowNumber_DW, and
+            // so on - so hashing them would make every matched row look changed and force a no-op UPDATE each
+            // run, needlessly dirtying pages and bloating differential and transaction-log backups. Exclude
+            // them, and any column whose type cannot be concatenated into the checksum, exactly as the legacy
+            // engine's IgnoreChecksumColumns / InvalidChecksumDataTypes rules did.
+            if (IsSqlFlowSystemColumn(column.Name) || NonChecksumTypes.Contains(column.DataType.BaseType))
             {
                 excludeFromChecksum.Add(column.Name);
             }
