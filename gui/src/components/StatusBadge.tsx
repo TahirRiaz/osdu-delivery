@@ -12,6 +12,7 @@ import {
   WifiOff,
   type LucideIcon,
 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { RunStatus } from "../api/types";
 
@@ -56,24 +57,51 @@ function Pill({
   );
 }
 
-/** One mapping from run status to tone/affordance, used everywhere a run status renders. */
-export function RunStatusBadge({ status, testId = "status-badge" }: { status: RunStatus | string; testId?: string }) {
+/** The tone and icon a run status renders with; the label doubles as the tooltip text and the accessible name. */
+function runStatusVisual(status: RunStatus | string): { tone: Tone; label: string; icon: LucideIcon; spin?: boolean } {
   switch (status) {
     case "queued":
-      return <Pill tone="warning" label="queued" icon={Clock3} testId={testId} />;
+      return { tone: "warning", label: "queued", icon: Clock3 };
     case "running":
-      return <Pill tone="info" label="running" icon={Loader2} spin testId={testId} />;
+      return { tone: "info", label: "running", icon: Loader2, spin: true };
     case "succeeded":
-      return <Pill tone="success" label="succeeded" icon={CircleCheck} testId={testId} />;
+      return { tone: "success", label: "succeeded", icon: CircleCheck };
     case "failed":
-      return <Pill tone="destructive" label="failed" icon={CircleX} testId={testId} />;
+      return { tone: "destructive", label: "failed", icon: CircleX };
     case "cancelled":
-      return <Pill tone="muted" label="cancelled" icon={Ban} testId={testId} />;
+      return { tone: "muted", label: "cancelled", icon: Ban };
     case "skipped":
-      return <Pill tone="muted" label="skipped" icon={SkipForward} testId={testId} />;
+      return { tone: "muted", label: "skipped", icon: SkipForward };
     default:
-      return <Pill tone="muted" label={status} icon={CircleMinus} testId={testId} />;
+      return { tone: "muted", label: status, icon: CircleMinus };
   }
+}
+
+/**
+ * One mapping from run status to tone/affordance, used everywhere a run status renders. The status text is
+ * redundant next to the icon on a dense run board, so the badge shows only the tinted status icon and surfaces
+ * the word on hover (a tooltip) and to assistive tech (a visually hidden label). Icon shape plus tone still
+ * carry the state without color alone (DESIGN.md 7.3), and the hidden label keeps the word queryable in tests.
+ */
+export function RunStatusBadge({ status, testId = "status-badge" }: { status: RunStatus | string; testId?: string }) {
+  const { tone, label, icon: Icon, spin } = runStatusVisual(status);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          data-testid={testId}
+          className={cn(
+            "inline-flex size-5 shrink-0 items-center justify-center rounded-full",
+            toneClasses[tone],
+          )}
+        >
+          <Icon className={cn("size-3 shrink-0", spin && "animate-spin")} />
+          <span className="sr-only">{label}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 /**

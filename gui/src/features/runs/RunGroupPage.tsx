@@ -60,19 +60,20 @@ const memberColumns: Column<RunSummary>[] = [
     header: "Last action",
     render: (row) => <TruncatedText text={row.lastAction} maxWidth={420} />,
   },
-  {
-    id: "rowsLoaded",
-    header: "Rows loaded",
-    align: "right",
-    render: (row) => <span className="font-mono tabular-nums">{row.rowsLoaded ?? "-"}</span>,
-  },
-  { id: "pool", header: "Pool", render: (row) => row.targetPool ?? "-" },
-  {
-    id: "commit",
-    header: "Commit",
-    render: (row) => <Mono>{row.commitSha?.slice(0, 10) ?? "-"}</Mono>,
-  },
+  // The data-impact columns (files read, rows loaded / inserted / updated) tick live as each member lands its
+  // data. Pool and commit are omitted: pool is per-run plumbing, and the group's commit is one value shown once
+  // in the header rather than repeated on every member row.
+  { id: "files", header: "Files", align: "right", render: (row) => numCell(row.fileCount) },
+  { id: "loaded", header: "Loaded", align: "right", render: (row) => numCell(row.rowsLoaded) },
+  { id: "inserted", header: "Inserted", align: "right", render: (row) => numCell(row.rowsInserted) },
+  { id: "updated", header: "Updated", align: "right", render: (row) => numCell(row.rowsUpdated) },
 ];
+
+/** A right-aligned numeric cell: the value with thousands separators, or "-" when it is null/zero (a member that
+ * touched no rows, or a non-file flow with no file count). */
+function numCell(value: number | null | undefined) {
+  return <span className="font-mono tabular-nums">{value ? value.toLocaleString() : "-"}</span>;
+}
 
 /** A run group's member-count pills, one per non-zero lifecycle state, in the reserved status tones
  * (DESIGN.md 3.2); the state name in the label keeps color from carrying the meaning alone. */

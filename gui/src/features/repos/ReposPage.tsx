@@ -15,7 +15,7 @@ import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
-import { TruncatedText } from "../../components/TruncatedText";
+import { CopyButton } from "../../components/CopyButton";
 import { RegisterSourceDialog } from "./RegisterSourceDialog";
 import { useSyncTracePanel } from "./useSyncTracePanel";
 
@@ -30,6 +30,18 @@ interface MergedRow {
   name: string;
   repo?: Repo;
   source?: RepoSource;
+}
+
+// A remote URL (https://bitbucket.org/org/repo.git) is too long for the grid: it stretches the column and
+// pushes everything else off-screen. The host alone (bitbucket.org) is enough to read at a glance; the full URL
+// stays reachable through the tooltip and the copy button. Falls back to the raw string for values that don't
+// parse as a URL (for example scp-style git remotes).
+function remoteHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 function mergeByName(repos: Repo[], sources: RepoSource[]): MergedRow[] {
@@ -167,7 +179,28 @@ export default function ReposPage() {
     {
       id: "remoteUrl",
       header: "Remote URL",
-      render: (row) => <TruncatedText text={row.source?.remoteUrl ?? row.repo?.remoteUrl} mono maxWidth={360} />,
+      render: (row) => {
+        const url = row.source?.remoteUrl ?? row.repo?.remoteUrl;
+        if (url === null || url === undefined || url === "") {
+          return "-";
+        }
+
+        return (
+          <span className="inline-flex items-center gap-1">
+            <Tooltip delayDuration={400}>
+              <TooltipTrigger asChild>
+                <span className="cursor-default font-mono text-[12px] text-muted-foreground">
+                  {remoteHost(url)}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" align="start" className="max-w-lg break-all">
+                {url}
+              </TooltipContent>
+            </Tooltip>
+            <CopyButton iconOnly label="Copy URL" text={url} testId="copy-remote-url" />
+          </span>
+        );
+      },
     },
     { id: "branch", header: "Branch", render: (row) => row.source?.branch ?? "-" },
     { id: "sync", header: "Sync", render: (row) => renderSync(row.source) },

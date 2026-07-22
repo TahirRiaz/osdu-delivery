@@ -12,7 +12,6 @@ import type { RunStatus, RunSummary } from "../../api/types";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
 import { FilterBar } from "../../components/FilterBar";
 import { FilterCombobox, type FilterOption } from "../../components/FilterCombobox";
-import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
@@ -24,43 +23,57 @@ import { TriggerRunDialog } from "./TriggerRunDialog";
 const statuses: RunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled", "skipped"];
 const kinds = ["all", "file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
+/** A right-aligned numeric cell: the value with thousands separators, or "-" when it is null/zero (a flow that
+ * touched no rows, or a non-file flow with no file count). */
+function numCell(value: number | null | undefined) {
+  return <span className="font-mono tabular-nums">{value ? value.toLocaleString() : "-"}</span>;
+}
+
+// The identity columns lead every layout; the data-impact columns (files read, rows loaded / inserted / updated)
+// trail it. Pool and commit are omitted here on purpose: they are per-run plumbing details that live on the run
+// detail page, not signal an operator scans a run board for.
+const statusColumn: Column<RunSummary> = {
+  id: "status",
+  header: "Status",
+  render: (row) => <RunStatusBadge status={row.status} />,
+};
+const flowColumn: Column<RunSummary> = {
+  id: "flow",
+  header: "Flow",
+  render: (row) => <span className="font-mono text-[12px] font-medium">{row.flowName}</span>,
+};
+const kindColumn: Column<RunSummary> = { id: "kind", header: "Kind", render: (row) => row.flowKind };
+const enqueuedColumn: Column<RunSummary> = {
+  id: "enqueued",
+  header: "Enqueued",
+  render: (row) => <RelativeTime value={row.enqueuedUtc ?? row.writtenUtc} />,
+};
+const durationColumn: Column<RunSummary> = {
+  id: "duration",
+  header: "Duration",
+  render: (row) => (row.durationSeconds != null ? formatDurationSeconds(row.durationSeconds) : "-"),
+};
+const impactColumns: Column<RunSummary>[] = [
+  { id: "files", header: "Files", align: "right", render: (row) => numCell(row.fileCount) },
+  { id: "loaded", header: "Loaded", align: "right", render: (row) => numCell(row.rowsLoaded) },
+  { id: "inserted", header: "Inserted", align: "right", render: (row) => numCell(row.rowsInserted) },
+  { id: "updated", header: "Updated", align: "right", render: (row) => numCell(row.rowsUpdated) },
+];
+
 const baseColumns: Column<RunSummary>[] = [
-  { id: "status", header: "Status", render: (row) => <RunStatusBadge status={row.status} /> },
-  {
-    id: "flow",
-    header: "Flow",
-    render: (row) => <span className="font-mono text-[12px] font-medium">{row.flowName}</span>,
-  },
-  { id: "kind", header: "Kind", render: (row) => row.flowKind },
-  {
-    id: "enqueued",
-    header: "Enqueued",
-    render: (row) => <RelativeTime value={row.enqueuedUtc ?? row.writtenUtc} />,
-  },
-  {
-    id: "duration",
-    header: "Duration",
-    render: (row) => (row.durationSeconds != null ? formatDurationSeconds(row.durationSeconds) : "-"),
-  },
-  {
-    id: "rowsLoaded",
-    header: "Rows loaded",
-    align: "right",
-    render: (row) => <span className="font-mono tabular-nums">{row.rowsLoaded ?? "-"}</span>,
-  },
-  { id: "pool", header: "Pool", render: (row) => row.targetPool ?? "-" },
-  {
-    id: "commit",
-    header: "Commit",
-    render: (row) => <Mono>{row.commitSha?.slice(0, 10) ?? "-"}</Mono>,
-  },
+  statusColumn,
+  flowColumn,
+  kindColumn,
+  enqueuedColumn,
+  durationColumn,
+  ...impactColumns,
 ];
 
 // In the flat (ungrouped) view batch and step become ordinary columns; grouped, they live in the header rows.
 const flatColumns: Column<RunSummary>[] = [
-  baseColumns[0],
-  baseColumns[1],
-  baseColumns[2],
+  statusColumn,
+  flowColumn,
+  kindColumn,
   { id: "batch", header: "Batch", render: (row) => row.batch },
   {
     id: "step",
@@ -68,15 +81,23 @@ const flatColumns: Column<RunSummary>[] = [
     align: "right",
     render: (row) => <span className="font-mono tabular-nums">{row.wave >= 0 ? row.wave : "-"}</span>,
   },
-  ...baseColumns.slice(3),
+  enqueuedColumn,
+  durationColumn,
+  ...impactColumns,
 ];
 
-/** Aggregates one group's rows for its header line: when it started, total duration, and how many failed. */
+/** Aggregates one group's rows for its header line: when it started, total duration, how many failed, and the
+ * group's combined data impact (files read and rows loaded / inserted / updated) so a collapsed schedule or batch
+ * shows how much data its last run moved without being expanded. */
 function groupStats(rows: RunSummary[]) {
   let durationTotal = 0;
   let hasDuration = false;
   let earliest: string | null = null;
   let failed = 0;
+  let files = 0;
+  let loaded = 0;
+  let inserted = 0;
+  let updated = 0;
   for (const row of rows) {
     if (row.durationSeconds != null) {
       durationTotal += row.durationSeconds;
@@ -91,13 +112,24 @@ function groupStats(rows: RunSummary[]) {
     if (row.status === "failed") {
       failed += 1;
     }
+
+    files += row.fileCount;
+    loaded += row.rowsLoaded ?? 0;
+    inserted += row.rowsInserted ?? 0;
+    updated += row.rowsUpdated ?? 0;
   }
 
-  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed };
+  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed, files, loaded, inserted, updated };
 }
 
 function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
   const stats = groupStats(rows);
+  const impact: { label: string; value: number }[] = [
+    { label: "files", value: stats.files },
+    { label: "loaded", value: stats.loaded },
+    { label: "inserted", value: stats.inserted },
+    { label: "updated", value: stats.updated },
+  ];
   return (
     <>
       {/* The group's headline status: worst-wins across its runs, so a collapsed group reads green only when
@@ -112,6 +144,13 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
         </span>
       )}
       <span className="text-[13px] text-muted-foreground">({rows.length})</span>
+      {/* Only non-zero impact metrics show, so a group that loaded nothing stays uncluttered while one that moved
+          data reports its totals inline (e.g. "120 files", "45,678 loaded"). */}
+      {impact.filter((metric) => metric.value > 0).map((metric) => (
+        <span key={metric.label} className="text-[13px] tabular-nums text-muted-foreground">
+          {metric.value.toLocaleString()} {metric.label}
+        </span>
+      ))}
       {stats.failed > 0 && (
         <span className="text-[13px] font-medium text-destructive">{stats.failed} failed</span>
       )}
