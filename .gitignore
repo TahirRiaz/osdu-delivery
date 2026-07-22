@@ -62,3 +62,6 @@ gui/e2e-artifacts/
 
 ## Acquisition engine runtime-landed raw files
 _landing/
+
+# Clean build contexts produced by deploy-prod.ps1 (git-archive extracts)
+.deploy-ctx/

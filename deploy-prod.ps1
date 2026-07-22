@@ -1,12 +1,20 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    SQLFlow V3 prod-v2 container deploy: build images in ACR, point the container
-    apps at the new tag, wait for the new control-plane revision, show its startup log.
+    SQLFlow V3 prod-v2 container deploy: build images in ACR (fast + parallel),
+    point the container apps at the new tag, wait for the new control-plane
+    revision, show its startup log.
 
 .DESCRIPTION
     The image tag is the current commit's short SHA (what the apps actually run).
-    Keep this script at the repo root: build contexts are resolved relative to it.
+    Keep this script at the repo root.
+
+    Builds from a `git archive` of TRACKED files only, extracted into .deploy-ctx.
+    This matters: `az acr build .` uploads the whole working tree and does NOT honor
+    .dockerignore on the client side, so it ships gigabytes of bin/obj/target/
+    node_modules every build (2.9 GiB here, ~20 min upload x N apps). The archive
+    context is tracked files only (tens of MB), and the three builds run in parallel,
+    turning an hour into a few minutes.
 
     NOT handled here: the pipeline YAML in the separate dwh-pipelines-prod repo.
     When flow YAML changes, push it after this finishes:
@@ -21,11 +29,7 @@
 
 .EXAMPLE
     .\deploy-prod.ps1 control-plane worker
-    Only those apps (e.g. an engine-only change).
-
-.EXAMPLE
-    .\deploy-prod.ps1 gui
-    GUI only. Known apps: control-plane worker gui mcp slack-bot
+    Only those apps (e.g. an engine-only change). Known: control-plane worker gui mcp slack-bot
 #>
 [CmdletBinding()]
 param(
@@ -35,21 +39,20 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-# Operate from the repo root (this script's directory).
 Set-Location -LiteralPath $PSScriptRoot
 
 $Rg  = 'datawarehouse-west-rg-prod-v2'
 $Acr = 'sqlflowv3acrprod'
 $Sub = '83731164-2cea-4291-b78d-7e2e69eea8a6'
 
-# app -> Dockerfile + build context.
+# app -> Dockerfile (as named at the repo root). 'gui' is special-cased below because
+# its build context is the gui/ subtree, where the Dockerfile sits at the context root.
 $Config = [ordered]@{
-    'control-plane' = @{ Dockerfile = 'Dockerfile';          Context = '.'   }
-    'worker'        = @{ Dockerfile = 'Dockerfile.worker';   Context = '.'   }
-    'gui'           = @{ Dockerfile = 'gui/Dockerfile';      Context = 'gui' }
-    'mcp'           = @{ Dockerfile = 'Dockerfile.mcp';      Context = '.'   }
-    'slack-bot'     = @{ Dockerfile = 'Dockerfile.slackbot'; Context = '.'   }
+    'control-plane' = @{ Dockerfile = 'Dockerfile'          }
+    'worker'        = @{ Dockerfile = 'Dockerfile.worker'   }
+    'gui'           = @{ Dockerfile = 'gui/Dockerfile'      }
+    'mcp'           = @{ Dockerfile = 'Dockerfile.mcp'      }
+    'slack-bot'     = @{ Dockerfile = 'Dockerfile.slackbot' }
 }
 
 if (-not $Apps -or $Apps.Count -eq 0) {
@@ -63,18 +66,17 @@ foreach ($a in $Apps) {
 
 # `az acr build` prints a check-mark glyph the cp1252 console cannot encode and then
 # dies with a UnicodeEncodeError AFTER the server build already succeeded. Forcing
-# UTF-8 on the CLI's Python keeps its output and exit code honest. The server-side
-# verify below is still the source of truth.
+# UTF-8 keeps its output and exit code honest. The server-side verify is still the truth.
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 
-# Image tag = current commit short SHA.
+# Image tag = current commit short SHA. The archive is of HEAD, so uncommitted work is
+# excluded on purpose (the tag names a commit).
 $Tag = (git rev-parse --short HEAD).Trim()
-if (-not $Tag) { throw 'Could not read git HEAD. Run this from the SQLFlowV3 repo.' }
+if (-not $Tag) { throw 'Could not read git HEAD. Run this from the SQLFlow V3 repo.' }
 
-# The image builds from the committed tree at $Tag; warn on uncommitted source.
 if (git status --porcelain -- src gui) {
-    Write-Warning "Uncommitted changes in src/ or gui/ - image $Tag will NOT include them."
+    Write-Warning "Uncommitted changes in src/ or gui/ - image $Tag is built from the committed tree and will NOT include them."
 }
 
 Write-Host ''
@@ -86,15 +88,6 @@ Write-Host ''
 
 az account set --subscription $Sub
 if ($LASTEXITCODE -ne 0) { throw 'az account set failed.' }
-
-function Build-App {
-    param([string] $App)
-    $c = $Config[$App]
-    Write-Host ''
-    Write-Host "--- Building sqlflow-v3-${App}:$Tag   ($($c.Dockerfile), context $($c.Context)) ---" -ForegroundColor Cyan
-    # Exit code intentionally not trusted here; Test-Image confirms server-side.
-    az acr build --registry $Acr --image "sqlflow-v3-${App}:$Tag" --file $c.Dockerfile $c.Context
-}
 
 function Test-Image {
     param([string] $App)
@@ -136,28 +129,68 @@ function Show-Log {
     param([string] $App)
     Write-Host ''
     Write-Host "=== $App startup log (bootstrap / sync / warnings / errors) ==="
-    # Note: only errors timestamped AFTER 'Bootstrap provisioning completed.' are real;
-    # the scheduler races the migrations at startup and prints a harmless early burst.
+    # Only issues timestamped AFTER 'Bootstrap provisioning completed.' are real; the scheduler
+    # races the migrations at startup and prints a harmless early burst.
     az containerapp logs show -n $App -g $Rg --tail 300 --type console |
         Select-String -SimpleMatch -Pattern 'Bootstrap', 'Synced', 'warn', 'error', 'exception'
 }
 
-# --- Build every requested app (server-side) ---
-foreach ($a in $Apps) { Build-App $a }
+# --- Build a clean, minimal context from tracked files only -------------------------
+$CtxRoot = Join-Path $PSScriptRoot '.deploy-ctx'
+$CtxRepo = Join-Path $CtxRoot 'repo'   # whole-repo context (backend Dockerfiles)
+$CtxGui  = Join-Path $CtxRoot 'gui'    # gui subtree context (gui/Dockerfile at its root)
+Remove-Item -Recurse -Force $CtxRoot -ErrorAction SilentlyContinue
 
-# --- Verify server-side that each tag landed; this gates the deploy ---
+$needRepo = @($Apps | Where-Object { $_ -ne 'gui' }).Count -gt 0
+$needGui  = $Apps -contains 'gui'
+
+Write-Host 'Preparing clean build context (tracked files only)...'
+if ($needRepo) {
+    New-Item -ItemType Directory -Force -Path $CtxRepo | Out-Null
+    # Write the archive to a file, then extract; do NOT pipe git|tar (PowerShell mangles binary streams).
+    git archive --format=tar.gz -o (Join-Path $CtxRoot 'repo.tar.gz') HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'git archive (repo) failed.' }
+    tar -xzf (Join-Path $CtxRoot 'repo.tar.gz') -C $CtxRepo
+}
+if ($needGui) {
+    New-Item -ItemType Directory -Force -Path $CtxGui | Out-Null
+    git archive --format=tar.gz -o (Join-Path $CtxRoot 'gui.tar.gz') 'HEAD:gui'
+    if ($LASTEXITCODE -ne 0) { throw 'git archive (gui) failed.' }
+    tar -xzf (Join-Path $CtxRoot 'gui.tar.gz') -C $CtxGui
+}
+
+# --- Build every requested app in parallel ------------------------------------------
+Write-Host "Building $($Apps.Count) image(s) in parallel at ${Tag}..." -ForegroundColor Cyan
+$jobs = foreach ($a in $Apps) {
+    if ($a -eq 'gui') { $df = 'Dockerfile'; $ctx = $CtxGui }
+    else              { $df = $Config[$a].Dockerfile; $ctx = $CtxRepo }
+    Start-Job -Name $a -ScriptBlock {
+        param($Acr, $App, $Tag, $Df, $Ctx)
+        $env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'
+        az acr build --registry $Acr --image "sqlflow-v3-${App}:$Tag" --file $Df $Ctx
+        "exit=$LASTEXITCODE"
+    } -ArgumentList $Acr, $a, $Tag, $df, $ctx
+}
+$jobs | Wait-Job | Out-Null
+foreach ($j in $jobs) {
+    $tail = (Receive-Job $j) | Select-Object -Last 1
+    Write-Host "   build $($j.Name): $($j.State) ($tail)"
+    Remove-Job $j
+}
+
+# --- Verify server-side that each tag landed; this gates the deploy ------------------
 Write-Host ''
 Write-Host "=== Verifying images on $Acr ===" -ForegroundColor Cyan
 $allOk = $true
 foreach ($a in $Apps) { if (-not (Test-Image $a)) { $allOk = $false } }
 if (-not $allOk) { throw 'One or more builds did not succeed - not deploying. See above.' }
 
-# --- Deploy ---
+# --- Deploy -------------------------------------------------------------------------
 Write-Host ''
 Write-Host '=== Deploying container apps ===' -ForegroundColor Cyan
 foreach ($a in $Apps) { Deploy-App $a }
 
-# --- Wait for the control-plane revision, then show its startup log ---
+# --- Wait for the control-plane revision, then show its startup log ------------------
 if ($Apps -contains 'control-plane') {
     Wait-Running 'sqlflow-v3-control-plane'
     Show-Log 'sqlflow-v3-control-plane'
