@@ -450,9 +450,14 @@ public sealed class FlowSetCollector
             }
 
             case AcquireFlowDocument doc:
-                // An acquisition fetches from a third party and lands raw files; its declared landing target chains
-                // to the downstream file flow that reads that location.
-                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Landing.Target, root));
+                // An acquisition fetches from a third party and lands raw files; each landing target chains to the
+                // downstream file flow that reads that location. A multi-item flow writes several landings from the
+                // one shared source, so it emits one Writes fact per item and fans out to several downstream loads.
+                foreach (var item in doc.Flow.EffectiveItems)
+                {
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, item.Landing.Target, root));
+                }
+
                 break;
 
             case CopyFlowDocument doc:

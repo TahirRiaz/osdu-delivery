@@ -21,7 +21,30 @@ public sealed record AcquireFlow
 
     public required AcquireSource Source { get; init; }
 
-    public required AcquireLanding Landing { get; init; }
+    /// <summary>
+    /// The single landing sink, used by a flow that fetches one stream into one raw location. Mutually exclusive with
+    /// <see cref="Items"/>: a flow declares either this or a non-empty <see cref="Items"/> list, never both. Null when
+    /// the flow is multi-item.
+    /// </summary>
+    public AcquireLanding? Landing { get; init; }
+
+    /// <summary>
+    /// Multiple landing sinks driven off the one shared <see cref="Source"/>. Each item overlays its own transport
+    /// <see cref="AcquireItem.Options"/> (e.g. a distinct S3 <c>prefix</c>) onto the source's options and lands into
+    /// its own <see cref="AcquireItem.Landing"/>. This folds what would otherwise be N near-identical single-landing
+    /// acq files (same bucket/credentials, different prefix and target) into one flow. Empty for a single-landing flow.
+    /// </summary>
+    public IReadOnlyList<AcquireItem> Items { get; init; } = [];
+
+    /// <summary>
+    /// The normalized landing units the engine runs: the explicit <see cref="Items"/> when present, otherwise the
+    /// single top-level <see cref="Landing"/> wrapped as one item with no option overlay. The loader guarantees one
+    /// of the two is set, so a single-landing flow and a multi-item flow drive the exact same engine loop.
+    /// </summary>
+    public IReadOnlyList<AcquireItem> EffectiveItems =>
+        Items.Count > 0
+            ? Items
+            : [new AcquireItem { Landing = Landing ?? throw new InvalidOperationException($"acquire flow '{Name}' has neither a 'landing' nor 'items'.") }];
 
     /// <summary>Incremental resume settings; null means the flow fetches its full declared window every run.</summary>
     public AcquireIncremental? Incremental { get; init; }
@@ -34,6 +57,23 @@ public sealed record AcquireFlow
     /// </summary>
     public IReadOnlyDictionary<string, string?> Params { get; init; }
         = new Dictionary<string, string?>(StringComparer.Ordinal);
+}
+
+/// <summary>
+/// One landing sink of a multi-item acquisition flow: a per-item overlay of transport options applied on top of the
+/// flow's shared <see cref="AcquireSource.Options"/> (typically just the S3 <c>prefix</c> / SFTP path that selects
+/// this item's objects), plus the raw location those objects land in. The shared source (bucket, credentials, region,
+/// modified-within window, iterations, reliability) is authored once on the flow; only what differs per item lives here.
+/// </summary>
+public sealed record AcquireItem
+{
+    /// <summary>Transport options overlaid onto <see cref="AcquireSource.Options"/> for this item (item keys win).
+    /// Empty for the wrapped single-landing case.</summary>
+    public IReadOnlyDictionary<string, string?> Options { get; init; }
+        = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Where this item's fetched payloads land.</summary>
+    public required AcquireLanding Landing { get; init; }
 }
 
 /// <summary>The transport a source speaks.</summary>

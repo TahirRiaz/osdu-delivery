@@ -169,8 +169,12 @@ internal static class Program
                         }
 
                         case AcquireFlowDocument doc:
-                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (acquire: {doc.Flow.Source.Transport} -> {doc.Flow.Landing.Target}).");
+                        {
+                            var acqItems = doc.Flow.EffectiveItems;
+                            var acqDest = acqItems.Count == 1 ? acqItems[0].Landing.Target : $"{acqItems.Count} landings";
+                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (acquire: {doc.Flow.Source.Transport} -> {acqDest}).");
                             return 0;
+                        }
 
                         case CopyFlowDocument doc:
                         {

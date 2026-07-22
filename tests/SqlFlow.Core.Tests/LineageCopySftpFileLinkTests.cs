@@ -60,6 +60,28 @@ public sealed class LineageCopySftpFileLinkTests : IDisposable
         return string.Join('\n', lines) + '\n';
     }
 
+    /// <summary>A single acq pipeline listing several S3 prefix-to-target landings (the multi-item form).</summary>
+    private static string AcquireItems(string name, params (string Prefix, string Target)[] items)
+    {
+        var lines = new List<string>
+        {
+            "flowType: acq",
+            $"name: {name}",
+            "source:",
+            "  transport: s3",
+            "  baseUrl: s3://bucket",
+            "landing:",
+            "  pathTemplate: \"history/{yyyy}/{filename}\"",
+            "items:",
+        };
+        foreach (var (prefix, target) in items)
+        {
+            lines.Add($"  - {{ prefix: {prefix}, target: {target} }}");
+        }
+
+        return string.Join('\n', lines) + '\n';
+    }
+
     private static string SftpDownload(string name, string local, string remotePath = "/outbound")
         => string.Join('\n',
             "flowType: sftp",
@@ -205,6 +227,28 @@ public sealed class LineageCopySftpFileLinkTests : IDisposable
         Assert.True(DependsOn(report, "bb-cpy", "load-sess"));
         Assert.True(WaveOf(report, "bb-cpy") < WaveOf(report, "load-detail"));
         Assert.True(WaveOf(report, "bb-cpy") < WaveOf(report, "load-sess"));
+    }
+
+    [Fact]
+    public void Acquire_MultiItemPipeline_EachLandingBindsToItsLoad()
+    {
+        // One acq flow lists two S3 datasets, each landing into its own folder. Lineage is computed per item, so each
+        // landing binds to its own downstream load and every load runs after the single acquire (wave 1). This is the
+        // multi-item acquire form that folds several single-landing acq files into one.
+        Write("00_acq.flow.yaml", AcquireItems("mob-acq",
+            ("export_orders", $"{Lake}/orders"),
+            ("export_payments", $"{Lake}/payments")));
+        Write("01_orders.flow.yaml", FileIngestion("load-orders", "json",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/baatbooking/history/orders/", srcFile: "*.json", table: "Orders"));
+        Write("01_payments.flow.yaml", FileIngestion("load-payments", "json",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/baatbooking/history/payments/", srcFile: "*.json", table: "Payments"));
+
+        var report = Build();
+
+        Assert.True(DependsOn(report, "mob-acq", "load-orders"));
+        Assert.True(DependsOn(report, "mob-acq", "load-payments"));
+        Assert.True(WaveOf(report, "mob-acq") < WaveOf(report, "load-orders"));
+        Assert.True(WaveOf(report, "mob-acq") < WaveOf(report, "load-payments"));
     }
 
     [Fact]

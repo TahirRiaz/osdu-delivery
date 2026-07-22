@@ -25,8 +25,12 @@ public sealed class SamplesTests
         var flow = loader.LoadFile(file);
 
         Assert.False(string.IsNullOrWhiteSpace(flow.Name));
-        Assert.False(string.IsNullOrWhiteSpace(flow.Landing.Target));
-        Assert.False(string.IsNullOrWhiteSpace(flow.Landing.PathTemplate));
+        Assert.NotEmpty(flow.EffectiveItems);
+        foreach (var item in flow.EffectiveItems)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(item.Landing.Target));
+            Assert.False(string.IsNullOrWhiteSpace(item.Landing.PathTemplate));
+        }
         if (flow.Source.Transport == AcquireTransport.Http)
         {
             Assert.NotNull(flow.Source.Request);

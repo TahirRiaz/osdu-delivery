@@ -54,7 +54,6 @@ public sealed class YamlAcquireFlowLoader
     {
         var name = YamlDocumentParts.RequireFlowName(y.Name, "an acq flow", source);
         var sourceYaml = y.Source ?? throw new FlowValidationException($"{source}: 'source' is required.");
-        var landingYaml = y.Landing ?? throw new FlowValidationException($"{source}: 'landing' is required.");
 
         var transport = ParseEnum(sourceYaml.Transport, AcquireTransport.Http, "source.transport", source);
         var acquireSource = new AcquireSource
@@ -74,16 +73,90 @@ public sealed class YamlAcquireFlowLoader
             throw new FlowValidationException($"{source}: an http source requires a 'source.request' block.");
         }
 
+        var (landing, items) = MapLandings(y.Landing, y.Items, source);
+
         return new AcquireFlow
         {
             Name = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
             Source = acquireSource,
-            Landing = MapLanding(landingYaml, source),
+            Landing = landing,
+            Items = items,
             Incremental = MapIncremental(y.Incremental, source),
             Params = MapParams(y.Params, source),
         };
     }
+
+    /// <summary>
+    /// Resolves the flow's landing shape. A flow declares either a single top-level <c>landing:</c> (with its own
+    /// target), or a non-empty <c>items:</c> list where the top-level <c>landing:</c> - if present - supplies only
+    /// shared defaults (pathTemplate/format/flags) that each item inherits and may override. Exactly one shape must be
+    /// present; the two are mutually exclusive so a flow never has an ambiguous single-plus-many landing.
+    /// </summary>
+    private static (AcquireLanding? Landing, IReadOnlyList<AcquireItem> Items) MapLandings(
+        AcquireLandingYaml? landingYaml, List<AcquireItemYaml>? itemsYaml, string source)
+    {
+        if (itemsYaml is { Count: > 0 })
+        {
+            if (!string.IsNullOrWhiteSpace(landingYaml?.Target))
+            {
+                throw new FlowValidationException(
+                    $"{source}: when 'items' is set, the top-level 'landing' provides shared defaults only and must not " +
+                    "set 'target' - each item declares its own target.");
+            }
+
+            var items = itemsYaml.Select(item => MapItem(item, landingYaml, source)).ToList();
+            return (null, items);
+        }
+
+        var single = landingYaml ?? throw new FlowValidationException(
+            $"{source}: a 'landing' (or a non-empty 'items' list) is required.");
+        return (MapLanding(single, source), []);
+    }
+
+    /// <summary>Builds one landing item: its transport-option overlay (the <c>prefix</c> shorthand plus any explicit
+    /// <c>options</c>) and its landing, whose unset fields fall back to the shared top-level defaults.</summary>
+    private static AcquireItem MapItem(AcquireItemYaml y, AcquireLandingYaml? defaults, string source)
+    {
+        var target = Require(y.Target, "items[].target", source);
+        var pathTemplate = FirstNonBlank(y.PathTemplate, defaults?.PathTemplate)
+            ?? throw new FlowValidationException(
+                $"{source}: item '{target}' needs a 'pathTemplate' (set it on the item or as a default under top-level 'landing').");
+
+        var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (y.Options is not null)
+        {
+            foreach (var (key, value) in y.Options)
+            {
+                options[key] = value;
+            }
+        }
+
+        // 'prefix:' is the friendly shorthand for the transport's prefix option; it wins over an explicit options entry.
+        if (!string.IsNullOrWhiteSpace(y.Prefix))
+        {
+            options["prefix"] = y.Prefix!.Trim();
+        }
+
+        var landing = new AcquireLanding
+        {
+            Target = target,
+            PathTemplate = pathTemplate,
+            Format = FirstNonBlank(y.Format, defaults?.Format) ?? "auto",
+            Compression = ParseEnum(FirstNonBlank(y.Compression, defaults?.Compression), AcquireCompression.None, "items[].compression", source),
+            Overwrite = y.Overwrite ?? defaults?.Overwrite ?? true,
+            PersistHeaders = y.PersistHeaders ?? defaults?.PersistHeaders ?? false,
+            SkipEmpty = y.SkipEmpty ?? defaults?.SkipEmpty ?? true,
+            SkipUnchanged = y.SkipUnchanged ?? defaults?.SkipUnchanged ?? true,
+        };
+
+        return new AcquireItem { Options = options, Landing = landing };
+    }
+
+    private static string? FirstNonBlank(string? primary, string? fallback)
+        => !string.IsNullOrWhiteSpace(primary) ? primary!.Trim()
+            : !string.IsNullOrWhiteSpace(fallback) ? fallback!.Trim()
+            : null;
 
     /// <summary>
     /// Declared runtime parameters: name to default value. An empty/whitespace default is normalized to null
@@ -334,8 +407,27 @@ internal sealed class AcquireDocumentYaml
     public string? Batch { get; set; }
     public AcquireSourceYaml? Source { get; set; }
     public AcquireLandingYaml? Landing { get; set; }
+    public List<AcquireItemYaml>? Items { get; set; }
     public AcquireIncrementalYaml? Incremental { get; set; }
     public Dictionary<string, string?>? Params { get; set; }
+}
+
+internal sealed class AcquireItemYaml
+{
+    /// <summary>Shorthand for the transport's <c>prefix</c> option (the S3 prefix / SFTP path selecting this item).</summary>
+    public string? Prefix { get; set; }
+
+    /// <summary>Additional transport options overlaid onto the shared source options for this item.</summary>
+    public Dictionary<string, string>? Options { get; set; }
+
+    public string? Target { get; set; }
+    public string? PathTemplate { get; set; }
+    public string? Format { get; set; }
+    public string? Compression { get; set; }
+    public bool? Overwrite { get; set; }
+    public bool? PersistHeaders { get; set; }
+    public bool? SkipEmpty { get; set; }
+    public bool? SkipUnchanged { get; set; }
 }
 
 internal sealed class AcquireSourceYaml
