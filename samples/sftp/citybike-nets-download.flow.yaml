@@ -11,7 +11,7 @@ server:
   username: Bysykkelen
   passwordRef: ${keyvault:dw-keyvault-prod/citybike-sftp-nets-password}
 remotePath: /outbound
-local: abfss://datalakev2@dwdatalakestorev2prod.dfs.core.windows.net/raw/citybike/sftp/nets
+local: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/citybike/sftp/nets
 pattern: "*.xml"
 recursive: true
 modifiedWithinDays: 3

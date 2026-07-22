@@ -34,6 +34,6 @@ source:
     urlAllowlist: ["*.nordicport.se"]
 
 landing:
-  target: abfss://datalakev2@dwdatalakestorev2prod.dfs.core.windows.net/raw/kolumbus/frida
+  target: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/kolumbus/frida
   pathTemplate: "history/{yyyy}/vehicles_{yyyyMMdd}_{page}"
   format: json

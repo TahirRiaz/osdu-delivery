@@ -44,6 +44,6 @@ source:
     urlAllowlist: ["*.citybike.cloud"]
 
 landing:
-  target: abfss://datalakev2@dwdatalakestorev2prod.dfs.core.windows.net/raw/citybike/api/alert
+  target: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/citybike/api/alert
   pathTemplate: "history/{window.from:yyyy}/alerts_{window.from:yyyyMMdd}_bike{bikeId}"
   format: json

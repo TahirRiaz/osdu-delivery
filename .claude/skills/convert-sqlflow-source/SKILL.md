@@ -25,15 +25,25 @@ If the user gives only a readable name, derive the batch code by querying the me
   `https://bitbucket.org/kolumbuscode/dwh-pipelines-prod.git`). This is where converted/migrated flows live
   and ship from. Each source is a top-level folder `C:\Projects\dwh-pipelines-prod\<ReadableName>\` holding its
   flow YAMLs plus a generated `.sqlflow\lineage\`. Generate flow files straight into this folder, commit there,
-  and push to Bitbucket (token + auth scheme in the `bitbucket-prod-repo-push` memory). The SQLFlowV3 repo's
-  `migration/` folder is the tooling/scratch area only, not a shipping location.
-- SQL Server (local targets + catalog): `localhost`, user `SQLFlow` (password in `B:\SQLFlowUpgradeV3\creds.txt` and `.sqlflow/env`).
+  and push to Bitbucket. **The push IS the catalog registration** - the control plane auto-syncs the whole repo
+  from Bitbucket (see step 6); never register a source any other way. The SQLFlowV3 repo's `migration/` folder is
+  the tooling/scratch area only, not a shipping location.
+- **PATs**: `C:\Projects\pat.txt` holds the GitHub + Bitbucket personal access tokens. The confirmed-working
+  Bitbucket push token is also in `.sqlflow/env` as `SQLFLOW_GIT_TOKEN` (username scheme `x-bitbucket-api-token-auth`);
+  see also the `bitbucket-prod-repo-push` memory. Push with the token embedded in the URL - the named `origin`
+  prompts for credentials and hangs.
+- SQL: **everything runs against the real Azure estate**, not localhost. Server
+  `tcp:dw-mi-sql-prod.public.6b122fbc620a.database.windows.net,3342`, user `SQLFlow` (connection strings +
+  password in `.sqlflow/env`). Targets: pre landing -> **`dw-pre-prod`** (schema `pre`); ods/arc ->
+  **`dw-dwh-prod`** (schema `arc`). Catalog: **`dw-sqlflow-prod`** (`SQLFLOW_CATALOG_DB` in `.sqlflow/env`).
 - Legacy source server: **`92.221.59.28`** (hosts the old SQLFlow control DB the migration reads from; NOT localhost).
-- Legacy metadata DB: **`dw-sqlflow-prod-last`** on `92.221.59.28` (the old SQLFlow control DB; read-only, never write to it).
-- Targets (local): pre landing -> **`dw-pre-prod`** (schema `pre`); ods/arc -> **`dw-dwh-prod`** (schema `arc`).
-- Official V3 catalog: **`dw-sqlflow-prodV3`** (`SQLFLOW_CATALOG_DB` in `.sqlflow/env`).
-- Data lake (source files): account `dwdatalakestorev2prod`, container `datalakev2`; storage URL base
-  `https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2`.
+- Legacy metadata DB: **`dw-sqlflow-prod-last`** on `92.221.59.28` (the old SQLFlow control DB; read-only, never
+  write to it). The generators read it via `sqlcmd` with the credentials they hardcode (`-U SQLFlow`).
+- Data lake (source files): account **`dwdatalakeprodv2`**, container `datalakev2`; storage URL base
+  `https://dwdatalakeprodv2.dfs.core.windows.net/datalakev2`. **Always use `dwdatalakeprodv2`.** This is the
+  account the copy (`_00_cpy`) flows land into, so the pre (`_01_csv`) read MUST resolve to the same account or
+  lineage breaks (the copy targets become dead-ends and the reader an orphan). The old `dwdatalakestorev2prod`
+  account is retired: never emit it, and replace it with `dwdatalakeprodv2` anywhere it still appears.
 - Reference prod DDL (for schema comparison): `B:\SQLFlowUpgradeV3\dw-dwh-prod\` and `...\dw-pre-prod\`.
 - Generators: `migration/_tools/Generate-PreFlow.ps1`, `migration/_tools/Generate-OdsFlow.ps1`. Both read the
   legacy metadata over the network and default `-Server` to the IP **`92.221.59.28`** (the metadata DB is NOT
@@ -84,7 +94,7 @@ Write straight into the official pipelines repo. `$OUT` is that source's folder 
 $OUT = 'C:\Projects\dwh-pipelines-prod\<ReadableName>'
 foreach ($id in <csv-flowids>) {
   ./migration/_tools/Generate-PreFlow.ps1 -FlowId $id -OutDir $OUT `
-     -StorageUrlBase 'https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2'
+     -StorageUrlBase 'https://dwdatalakeprodv2.dfs.core.windows.net/datalakev2'
 }
 foreach ($id in <ingestion-flowids>) {
   ./migration/_tools/Generate-OdsFlow.ps1 -FlowId $id -OutDir $OUT
@@ -113,31 +123,40 @@ materialize the prod object (renamed) over the same table and `diff` the `sys.co
 The expected result is an exact match (one known synonym: V3 emits `decimal(14,0)` where prod DDL says the
 equivalent `numeric(14,0)`).
 
-### 6. Register in the catalog
+### 6. Register in the catalog - ALWAYS via Bitbucket, never a local `db sync`
+
+**The catalog registration is the Bitbucket push, nothing else.** The control plane auto-syncs the WHOLE
+`dwh-pipelines-prod` repo from Bitbucket on every push (catalog repo `dwh-pipelines-prod`, folder-prefixed paths
+like `<ReadableName>/<table>_01_csv.yaml`) and that is what puts the flows in the catalog and computes lineage.
+
+**Do NOT run `sqlflow db sync "<folder>" --repo <ReadableName>`.** It registers the same flows a SECOND time under
+a different repo (the folder name) with root-relative paths that do not exist in the repo, so the GUI shows every
+flow twice and re-syncing never dedupes (each sync reconciles only its own repo). If a stray repo was already
+created this way, remove it by reconciling it against an empty path:
+`sqlflow db sync <empty-dir> --repo <name>` (reports its pipelines as "removed").
+
+Commit the new `<ReadableName>\` folder and push (commit as the human user, never attribute to Claude):
 
 ```bash
-dotnet run --project src/SqlFlow.Cli --no-build -- db sync "C:/Projects/dwh-pipelines-prod/<ReadableName>" --repo <ReadableName> --connect
+cd /c/Projects/dwh-pipelines-prod
+git add -A <ReadableName>/ && git commit -m "Add <ReadableName> pre + ods flows (ported from legacy FlowIDs ...)"
+TOK=$(grep -oE 'SQLFLOW_GIT_TOKEN=.*' /c/Projects/SQLFlowV3/.sqlflow/env | cut -d= -f2-)
+GIT_TERMINAL_PROMPT=0 git -c credential.helper= push \
+  "https://x-bitbucket-api-token-auth:${TOK}@bitbucket.org/kolumbuscode/dwh-pipelines-prod.git" main
 ```
 
-Use **`--connect`** so the derived tier reads each generated view's actual source from `sys.sql_modules`,
-parses the SQL, and links the transformation view to its parent table(s) with column-level lineage. The
-transformation view is created automatically by the engine and is NOT a YAML concept, so its lineage must come
-from the parsed SQL, not the flow definition. (Offline `db sync` without `--connect` will not show the
-view->table edge.) Run the flows first so the view exists before the connected sync reads it.
-
-Uses `SQLFLOW_CATALOG_DB` (`dw-sqlflow-prodV3`). Confirm with:
+The push triggers the control-plane sync. Confirm the flows landed (note the join on the `dwh-pipelines-prod`
+repo, `SQLFLOW_CATALOG_DB` = `dw-sqlflow-prod`):
 
 ```sql
-SELECT Name, Kind, Batch, Wave FROM catalog.Pipeline WHERE Batch = '<BATCH>' ORDER BY Wave, Name;
-SELECT [Database],[Schema],Name,Kind FROM catalog.Object ORDER BY 1,2,3;   -- lineage
+SELECT p.Name, p.Kind, p.Batch, p.Wave FROM catalog.Pipeline p
+  JOIN catalog.Repo r ON r.Id = p.RepoId
+ WHERE r.Name = 'dwh-pipelines-prod' AND p.Batch = '<BATCH>' ORDER BY p.Wave, p.Name;
 ```
 
-### 7. Ship: commit and push the pipelines repo
-
-The generated flows live in `C:\Projects\dwh-pipelines-prod`; commit the new `<ReadableName>\` folder there and
-push to Bitbucket. Use the token + `x-bitbucket-api-token-auth` scheme from the `bitbucket-prod-repo-push`
-memory (pushing via the named `origin` prompts for credentials and hangs). Commit as the human user, never
-attribute to Claude.
+The connected view->table column lineage (each generated `v_` view parsed from `sys.sql_modules`) requires the
+sync to read the created view from the DB, so **run the flows first** (step 4) so the view exists before the
+sync that should pick it up.
 
 ## Naming standard (do not deviate)
 
@@ -170,5 +189,5 @@ attribute to Claude.
 ## Definition of done for a source
 
 Every dataset in the batch has a `01_pre` + `02_ods` pair that: validates, loads data end to end
-(pre table -> typed `v_` view -> arc table), matches the prod schema column-for-column, and appears in
-`dw-sqlflow-prodV3` under its batch.
+(pre table -> typed `v_` view -> arc table), matches the prod schema column-for-column, and - after the
+Bitbucket push (step 6) - appears in the catalog (`dw-sqlflow-prod`) under repo `dwh-pipelines-prod` and its batch.

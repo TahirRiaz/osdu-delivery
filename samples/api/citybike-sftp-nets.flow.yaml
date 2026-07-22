@@ -15,6 +15,6 @@ source:
     modifiedWithinDays: "3"
 
 landing:
-  target: abfss://datalakev2@dwdatalakestorev2prod.dfs.core.windows.net/raw/citybike/sftp/nets
+  target: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/citybike/sftp/nets
   pathTemplate: "history/{yyyy}/{filename}"
   format: xml

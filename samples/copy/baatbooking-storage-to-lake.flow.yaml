@@ -14,7 +14,7 @@ source:
   modifiedWithinDays: 14
   # accountKeyRef: ${keyvault:sqlflow-v3-secrets/baatbooking-storage-key}
 target:
-  location: abfss://datalakev2@dwdatalakestorev2prod.dfs.core.windows.net/raw/baatbooking/history
+  location: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/baatbooking/history
 options:
   overwrite: true
   preserveStructure: true

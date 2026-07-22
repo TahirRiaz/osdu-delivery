@@ -2,7 +2,7 @@
 # Reads flw.PreIngestionCSV + flw.PreIngestionTransfrom for one CSV FlowID and emits the flow,
 # including the typed transformation view (transform.generateView) built from the column casts.
 #
-# Usage: pwsh Generate-PreFlow.ps1 -FlowId 545 -OutDir ../BB -StorageUrlBase "https://dwdatalakestorev2prod.dfs.core.windows.net/datalakev2"
+# Usage: pwsh Generate-PreFlow.ps1 -FlowId 545 -OutDir ../BB -StorageUrlBase "https://dwdatalakeprodv2.dfs.core.windows.net/datalakev2"
 param(
     [Parameter(Mandatory)] [int]    $FlowId,
     [Parameter(Mandatory)] [string] $OutDir,
