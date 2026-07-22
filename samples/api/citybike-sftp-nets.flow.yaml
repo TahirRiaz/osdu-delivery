@@ -1,6 +1,6 @@
 # Ports citybike-sftp-nets.ps1: an SFTP source. Lists the remote directory, keeps files modified in the last
 # 3 days, and lands each XML file verbatim (the downstream xml flow parses it).
-flowType: acq
+flowType: api
 name: Citybike_Nets_Settlement
 batch: citybike
 

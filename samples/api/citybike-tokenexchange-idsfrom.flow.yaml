@@ -1,7 +1,7 @@
 # Ports the citybike_alerts.ps1 pattern: a custom token exchange (a pre-formed urlencoded form body held whole
 # in Key Vault), then a two-phase fetch - discover bike ids from /api/Bikes and fetch alerts per bike over a
 # 3-day window. Lands raw JSON per bike.
-flowType: acq
+flowType: api
 name: Citybike_Alerts
 batch: citybike
 

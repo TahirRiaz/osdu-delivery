@@ -105,7 +105,7 @@ public static class FlowDocumentHeaders
                 // target is its declared output.
                 return
                 [
-                    new DocumentFlowHeader(doc.Flow.Name, "acq", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
+                    new DocumentFlowHeader(doc.Flow.Name, "api", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
                 ];
 
             case CopyFlowDocument doc:

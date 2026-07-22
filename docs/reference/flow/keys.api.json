@@ -1,7 +1,7 @@
 {
   "version": 1,
   "product": "SQLFlow V3 (DeltaForge)",
-  "flowType": "acq",
+  "flowType": "api",
   "generatedFrom": "source code: src/SqlFlow.Yaml/YamlAcquireFlowLoader.cs, src/SqlFlow.Core/Acquire/AcquireFlow.cs, and src/SqlFlow.Acquire (the engine)",
   "naming": "The loader builds its IDeserializer with CamelCaseNamingConvention and IgnoreUnmatchedProperties, so a C# PascalCase property binds to the camelCase YAML key. Dictionary keys (headers, query, bodyFields, params, options) bind verbatim. Enum-like values (transport, auth.type, bodyKind, pagination.strategy, iterate kind/granularity, landing.compression, incremental.source) are parsed case-insensitively with '-' and '_' stripped before matching (YamlAcquireFlowLoader.ParseEnum), so snake_case, kebab-case, and PascalCase spellings are all accepted.",
   "keyCount": 78,
@@ -49,15 +49,15 @@
       "type": "string (enum)",
       "required": false,
       "default": "http",
-      "enumValues": ["http", "sftp", "s3", "azuretable"],
-      "description": "The transport the source speaks. http covers REST, GraphQL, and SOAP-over-POST (auth/request/pagination apply); sftp lists and downloads remote files; s3 lists and downloads bucket objects; azuretable queries an Azure Storage Table. The non-HTTP transports carry their credentials and locators in source.options. Matching strips '-'/'_' and is case-insensitive, so azure_table and AzureTable also parse.",
+      "enumValues": ["http", "sftp", "azuretable"],
+      "description": "The transport the source speaks. http covers REST, GraphQL, and SOAP-over-POST (auth/request/pagination apply); sftp lists and downloads remote files; azuretable queries an Azure Storage Table. The non-HTTP transports carry their credentials and locators in source.options. Matching strips '-'/'_' and is case-insensitive, so azure_table and AzureTable also parse. (S3 object copy is a cpy flow, not an api transport.)",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireTransport)"
     },
     {
       "path": "source.baseUrl",
       "type": "string",
       "required": true,
-      "description": "The base endpoint, interpreted per transport: an http(s) origin (https://api.acme.com), an sftp://host[:port] URL, an s3://bucket URL, or the Azure Table account URL. For HTTP, request.path is joined under it (base treated as a directory).",
+      "description": "The base endpoint, interpreted per transport: an http(s) origin (https://api.acme.com), an sftp://host[:port] URL, or the Azure Table account URL. For HTTP, request.path is joined under it (base treated as a directory).",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs"
     },
     {

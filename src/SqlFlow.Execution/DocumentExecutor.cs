@@ -513,7 +513,7 @@ public sealed class DocumentExecutor : IDocumentRunner
 
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("acq", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(Artifact("api", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
             ["run.log"] = runLogger.Render(),
             ["trace.sql"] = string.Empty,
         }, _warningSink);
@@ -521,7 +521,7 @@ public sealed class DocumentExecutor : IDocumentRunner
         return new DocumentExecutionResult
         {
             FlowName = flowName,
-            FlowKind = "acq",
+            FlowKind = "api",
             Success = result.Success,
             Error = result.Error,
             RunId = result.RunId,

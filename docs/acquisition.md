@@ -1,7 +1,7 @@
-# Generic acquisition (flowType: acq)
+# Generic acquisition (flowType: api)
 
-One declarative engine that replaces the estate's Azure Automation runbooks. An `acq` flow fetches from a
-third-party system (an HTTP API, an SFTP server, an S3 bucket, or an Azure Storage Table) and lands the **raw**
+One declarative engine that replaces the estate's Azure Automation runbooks. An `api` flow fetches from a
+third-party system (an HTTP API, an SFTP server, or an Azure Storage Table) and lands the **raw**
 response payloads as files in the data lake, one file per page/iteration, preserving the
 original format byte-for-byte. It performs no CSV/flatten transform: the existing SQLFlow `json`/`csv`/`xml`
 file-flows ingest the landed files into SQL. Integrations are now version-controlled YAML managed centrally
@@ -13,11 +13,11 @@ The old runbooks fetched *and* reshaped to CSV *and* uploaded, in one opaque scr
 acquisition and lands raw. That keeps one code path (ingestion stays the mature file-flow path), makes a fetch
 replayable, and means a schema change downstream never requires touching the integration.
 
-    [acq flow] --raw JSON/XML/bin--> raw zone --existing json/csv/xml flow--> SQL
+    [api flow] --raw JSON/XML/bin--> raw zone --existing json/csv/xml flow--> SQL
 
 ## Run it
 
-    sqlflow run samples/acquire/jsonplaceholder-basic.flow.yaml     # live, no auth, lands to ./_landing
+    sqlflow run samples/api/jsonplaceholder-basic.flow.yaml     # live, no auth, lands to ./_landing
 
 Incremental resume, retries, rate limiting, run history, and scheduling all come from the shared engine.
 
@@ -68,7 +68,6 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | gzip on landing | `landing.compression: gzip` |
 | Incremental resume from lake state (Entur lastReportId) | `incremental` + keyset |
 | SFTP download, modified-within window (Citybike/Nets, Ferde) | `transport: sftp` |
-| AWS S3 object download (mobilapp) | `transport: s3` |
 | Azure Storage Table query (fjord1, apc) | `transport: azuretable` + OData `filter` |
 | Secrets from Key Vault, never inline | `${keyvault:vault/secret}` refs |
 | SSRF safety (block metadata/private IPs) | `reliability.urlAllowlist` + built-in IP guard |
@@ -81,7 +80,7 @@ lake-to-lake. The first two are platform observability; the copy is an ingestion
 
 ## Debugging
 
-The GUI's **Integrations** page lists every `acq` flow with its YAML definition (View code) and provides a
+The GUI's **Integrations** page lists every `api` flow with its YAML definition (View code) and provides a
 DeltaForge-style debugger: edit the YAML, run a safe **Test** invoke (fetch without landing), and inspect the
 request, the raw response, timing, the pagination steps, and where each page would land. Production runs go through
 the normal run/schedule path like any other pipeline.

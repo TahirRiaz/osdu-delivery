@@ -42,7 +42,7 @@ into the silver tables, not just re-read at one hop.
 
 The backfill is valid for the three roles of an ingest source:
 
-1. **Integration** flows that fetch from an external system: copy (`cpy`), API acquire (`acq`), and SFTP (`sftp`).
+1. **Integration** flows that fetch from an external system: copy (`cpy`), API acquire (`api`), and SFTP (`sftp`).
 2. **File ingestion** flows that load the fetched files into the database (`file`), landing them in the `pre` layer.
 3. **Silver** flows that load the `pre` layer into the durable tables (`ing`, a relational ingestion).
 
@@ -66,7 +66,7 @@ A whole-source backfill fixes both, per role, in one run.
 
 | Role | Kinds | What the backfill does |
 |---|---|---|
-| Integration | `cpy`, `acq`, `sftp` | Selects source files by **modified date** in the from/to window and **force re-lands** them: unchanged-detection is turned off, so every selected file is re-written with a **fresh timestamp**, even when byte-identical. Acquire additionally **ignores its stored watermark** so it re-fetches history rather than staying capped at the last point. |
+| Integration | `cpy`, `api`, `sftp` | Selects source files by **modified date** in the from/to window and **force re-lands** them: unchanged-detection is turned off, so every selected file is re-written with a **fresh timestamp**, even when byte-identical. Acquire additionally **ignores its stored watermark** so it re-fetches history rather than staying capped at the last point. |
 | File ingestion | `file` | A **root** file flow (one that reads external files directly) takes the window and reads the files whose date falls in it, with its watermark suppressed. An **intermediate** file flow (one that reads a root's re-landed output) runs at defaults: the re-landed files are the newest at its source, so its own normal incremental picks them up. |
 | Silver | `ing` | Reads `WHERE date_col >= MIN(source)` instead of `> MAX(target)`, so the back-dated rows the file layer just re-landed are re-pulled and upserted. |
 
@@ -167,7 +167,7 @@ run still shows `target MAX`, it was executed by a worker that does not yet have
 | Kind | Meaning | In a backfill |
 |---|---|---|
 | `cpy` | Copy files between locations | Window + force re-land |
-| `acq` | Acquire from an API | Window + force re-land + stored-watermark bypass |
+| `api` | Acquire from an API | Window + force re-land + stored-watermark bypass |
 | `sftp` | SFTP transfer | Modified-date window + force re-land |
 | `file` | Load files into the database | Root: window (file-date, watermark suppressed). Intermediate: default |
 | `ing` | Relational (silver) load | Min-from-source (unconditional for an explicit backfill) |
@@ -184,7 +184,7 @@ run still shows `target MAX`, it was executed by a worker that does not yet have
 - **File-date source.** A root `file` flow's window filters by the file's business date only when the flow declares a
   `fileDate` (path/name) spec; without one it filters the file's modified timestamp. This is a flow-definition choice,
   not a routing choice.
-- **Cursor-based API flows.** An `acq` flow whose incremental is a bind-variable cursor (not a date window) has its
+- **Cursor-based API flows.** An `api` flow whose incremental is a bind-variable cursor (not a date window) has its
   watermark bypassed by a backfill, so it re-fetches from its seed. A date window cannot bound a cursor fetch, so the
   effect is a full reprocess rather than a date-bounded one.
 

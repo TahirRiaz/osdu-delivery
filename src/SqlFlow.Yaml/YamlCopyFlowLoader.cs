@@ -122,6 +122,9 @@ public sealed class YamlCopyFlowLoader
             ConnectionStringRef = YamlDocumentParts.NullIfBlank(y.ConnectionStringRef),
             SasTokenRef = YamlDocumentParts.NullIfBlank(y.SasTokenRef),
             AccountKeyRef = YamlDocumentParts.NullIfBlank(y.AccountKeyRef),
+            AccessKeyRef = YamlDocumentParts.NullIfBlank(y.AccessKeyRef),
+            SecretKeyRef = YamlDocumentParts.NullIfBlank(y.SecretKeyRef),
+            Region = YamlDocumentParts.NullIfBlank(y.Region),
         };
 
     private static CopyOptions MapOptions(CopyOptionsYaml? y)
@@ -203,6 +206,9 @@ internal sealed class CopyEndpointYaml
     public string? ConnectionStringRef { get; set; }
     public string? SasTokenRef { get; set; }
     public string? AccountKeyRef { get; set; }
+    public string? AccessKeyRef { get; set; }
+    public string? SecretKeyRef { get; set; }
+    public string? Region { get; set; }
 }
 
 internal sealed class CopyOptionsYaml

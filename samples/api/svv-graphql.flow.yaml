@@ -1,6 +1,6 @@
 # Ports svv_Trafikkregistreringspunkt.ps1: a no-auth GraphQL POST. The query is a templated JSON body; the
 # raw GraphQL JSON response is landed as-is.
-flowType: acq
+flowType: api
 name: SVV_TrafficPoints
 batch: svv
 

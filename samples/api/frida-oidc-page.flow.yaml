@@ -1,6 +1,6 @@
 # Ports frida_vehicles.py: OAuth2 client-credentials with OIDC discovery (the token endpoint is resolved from
 # the .well-known document), plus page-number pagination.
-flowType: acq
+flowType: api
 name: Frida_Vehicles
 batch: frida
 

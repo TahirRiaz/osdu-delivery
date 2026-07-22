@@ -14,7 +14,7 @@ keywords:
 related:
   - flow-overview
   - flow-sftp
-  - flow-acq
+  - flow-api
 sourceRefs:
   - src/SqlFlow.Core/Copy/CopyFlow.cs
   - src/SqlFlow.Copy/CopyEngine.cs

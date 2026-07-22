@@ -192,7 +192,7 @@ impl Census {
             Some("hc") => HC,
             Some("scm") => SCM,
             Some("batch") => BATCH,
-            Some("acq") => ACQ,
+            Some("api") => API,
             Some("cpy") => CPY,
             Some("sftp") => SFTP,
             // Unknown flowType: fall back to the file flow so hover/completion
@@ -332,7 +332,7 @@ const INV: &str = include_str!("../../../docs/reference/flow/keys.inv.json");
 const HC: &str = include_str!("../../../docs/reference/flow/keys.hc.json");
 const SCM: &str = include_str!("../../../docs/reference/flow/keys.scm.json");
 const BATCH: &str = include_str!("../../../docs/reference/flow/keys.batch.json");
-const ACQ: &str = include_str!("../../../docs/reference/flow/keys.acq.json");
+const API: &str = include_str!("../../../docs/reference/flow/keys.api.json");
 const CPY: &str = include_str!("../../../docs/reference/flow/keys.cpy.json");
 const SFTP: &str = include_str!("../../../docs/reference/flow/keys.sftp.json");
 const SHARED: &str = include_str!("../../../docs/reference/flow/keys.shared.json");
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn flow_type_key_is_known_in_every_census() {
         // The discriminator lives only in keys.json but must resolve for all kinds.
-        for ft in [Some("ing"), Some("exp"), Some("batch"), Some("hc"), Some("acq"), None] {
+        for ft in [Some("ing"), Some("exp"), Some("batch"), Some("hc"), Some("api"), None] {
             let c = Census::for_flow_type(ft);
             assert!(
                 matches!(c.resolve(&ak(&["flowType"])), Resolution::Exact(_)),
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn acquisition_census_resolves_its_attributes() {
-        let c = Census::for_flow_type(Some("acq"));
+        let c = Census::for_flow_type(Some("api"));
         // A scalar leaf, a nested leaf, a list attribute, and an open-dict member.
         assert!(matches!(c.resolve(&ak(&["landing", "pathTemplate"])), Resolution::Exact(_)));
         assert!(matches!(c.resolve(&ak(&["source", "auth", "token", "tokenPath"])), Resolution::Exact(_)));

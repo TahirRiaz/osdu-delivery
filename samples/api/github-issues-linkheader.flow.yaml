@@ -1,6 +1,6 @@
 # Bearer auth + RFC 5988 Link-header pagination (the GitHub REST API), landed page-by-page.
 # Pattern reference: any "follow the next link until it's gone" API.
-flowType: acq
+flowType: api
 name: GitHub_Issues
 batch: github
 

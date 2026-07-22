@@ -45,9 +45,6 @@ public enum AcquireTransport
     /// <summary>SFTP file download.</summary>
     Sftp,
 
-    /// <summary>AWS S3 object download.</summary>
-    S3,
-
     /// <summary>Azure Storage Table entity query.</summary>
     AzureTable,
 }
@@ -64,7 +61,7 @@ public sealed record AcquireSource
 
     /// <summary>
     /// The base endpoint: an HTTP(S) origin (e.g. <c>https://api.acme.com</c>), an <c>sftp://host[:port]</c> URL,
-    /// an <c>s3://bucket</c> URL, or the Azure Table account URL. Interpreted per <see cref="Transport"/>.
+    /// or the Azure Table account URL. Interpreted per <see cref="Transport"/>. (S3 object copy is a <c>cpy</c> flow.)
     /// </summary>
     public required string BaseUrl { get; init; }
 
@@ -85,7 +82,7 @@ public sealed record AcquireSource
 
     public AcquireReliability Reliability { get; init; } = new();
 
-    /// <summary>Transport-specific options (SFTP/S3/Table credentials and locators, secret references included).</summary>
+    /// <summary>Transport-specific options (SFTP/Table credentials and locators, secret references included).</summary>
     public IReadOnlyDictionary<string, string?> Options { get; init; }
         = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 }

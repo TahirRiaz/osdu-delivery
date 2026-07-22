@@ -42,8 +42,8 @@ public sealed record IntegrationDebugResponse(
     IReadOnlyList<IntegrationDebugPageDto> Pages);
 
 /// <summary>
-/// The Integrations surface: the read side lists the estate's <c>flowType: acq</c> flows (HTTP APIs, SFTP drops,
-/// S3 buckets, storage tables), and the operate side runs a safe Test invoke - a dry run that fetches (honoring
+/// The Integrations surface: the read side lists the estate's <c>flowType: api</c> flows (HTTP APIs, SFTP drops,
+/// storage tables), and the operate side runs a safe Test invoke - a dry run that fetches (honoring
 /// auth, pagination, and iteration) but lands nothing, capturing every request/response for the debugger. The
 /// production Invoke goes through the normal run-trigger path, so there is one execution pathway; this endpoint is
 /// only the non-writing preview.
@@ -104,7 +104,7 @@ public static class IntegrationEndpoints
     private static async Task<Ok<IReadOnlyList<IntegrationDto>>> ListAsync(CatalogDbContext db, CancellationToken ct)
     {
         var flows = await db.Pipelines
-            .Where(p => p.Kind == "acq")
+            .Where(p => p.Kind == "api")
             .OrderBy(p => p.Name)
             .Select(p => new IntegrationDto(p.Id, p.Name, p.Batch, p.RelativePath, p.Active))
             .ToListAsync(ct).ConfigureAwait(false);

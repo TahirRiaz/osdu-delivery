@@ -66,7 +66,7 @@ public sealed record BatchFlowDocument : FlowDocument
     public required BatchDocument Document { get; init; }
 }
 
-/// <summary>A generic acquisition flow document (<c>flowType: acq</c>): fetch from a third-party system over any
+/// <summary>A generic acquisition flow document (<c>flowType: api</c>): fetch from a third-party system over any
 /// transport (HTTP, SFTP, S3, Azure Table) and land the raw payloads in the lake.</summary>
 public sealed record AcquireFlowDocument : FlowDocument
 {
@@ -315,7 +315,7 @@ public sealed class YamlDocumentLoader
             return new BatchFlowDocument { Document = _batchFlows.Parse(yaml, source), Schedule = schedule };
         }
 
-        if (string.Equals(flowType, "acq", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(flowType, "api", StringComparison.OrdinalIgnoreCase))
         {
             return new AcquireFlowDocument { Flow = _acquireFlows.Parse(yaml, source), Schedule = schedule };
         }
@@ -334,8 +334,8 @@ public sealed class YamlDocumentLoader
             $"{source}: unknown flowType '{flowType}'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a " +
             "file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML " +
             "health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, " +
-            "'acq' for a generic acquisition flow (HTTP API / SFTP / S3 / Azure Table), 'cpy' for a file-copy flow "
-            + "(storage/local/SFTP, with optional zip/unzip), or omit flowType for a file flow.");
+            "'api' for a generic acquisition flow (HTTP / SFTP / Azure Table), 'cpy' for a file-copy flow "
+            + "(local / Azure storage / S3, with optional zip/unzip), or omit flowType for a file flow.");
     }
 
     private static ScheduleSpec? MapSchedule(ScheduleYaml? schedule)

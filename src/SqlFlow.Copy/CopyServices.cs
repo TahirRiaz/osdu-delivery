@@ -20,6 +20,7 @@ public static class CopyServices
 
         services.AddSingleton<ICopyEndpoint, LocalCopyEndpoint>();
         services.AddSingleton<ICopyEndpoint, AzureBlobCopyEndpoint>();
+        services.AddSingleton<ICopyEndpoint, S3CopyEndpoint>();
 
         services.AddSingleton(sp => new CopyEngine(
             sp.GetServices<ICopyEndpoint>(),

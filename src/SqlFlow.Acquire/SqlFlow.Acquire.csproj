@@ -2,12 +2,11 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.Acquire</RootNamespace>
-    <Description>Generic third-party API acquisition engine (flowType: acq): auth, request templating, pagination, fan-out iteration, retry/rate-limit/SSRF guarding, and raw-format landing to the data lake across HTTP, SFTP, S3, and Azure Table transports.</Description>
+    <Description>Generic third-party API acquisition engine (flowType: api): auth, request templating, pagination, fan-out iteration, retry/rate-limit/SSRF guarding, and raw-format landing to the data lake across HTTP, SFTP, and Azure Table transports.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="SSH.NET" />
-    <PackageReference Include="AWSSDK.S3" />
     <PackageReference Include="Azure.Data.Tables" />
     <PackageReference Include="Azure.Storage.Blobs" />
     <PackageReference Include="Azure.Identity" />

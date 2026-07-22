@@ -112,7 +112,7 @@ public static class ScheduleFire
     /// reprocessing from the source minimum. Every other kind (stored procedure, export, health check, inventory)
     /// is not part of a backfill and runs at defaults.</summary>
     private static readonly HashSet<string> IntegrationKinds =
-        new(StringComparer.OrdinalIgnoreCase) { "cpy", "acq", "sftp", "file" };
+        new(StringComparer.OrdinalIgnoreCase) { "cpy", "api", "sftp", "file" };
 
     /// <summary>
     /// Routes a schedule fire's members to their backfill parameters. Unlike a node run there is no single anchor, so

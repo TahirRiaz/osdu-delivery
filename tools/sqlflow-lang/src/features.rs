@@ -104,7 +104,7 @@ pub struct SemanticToken {
     pub kind: SemanticTokenKind,
 }
 
-const KNOWN_FLOW_TYPES: &[&str] = &["ing", "exp", "sp", "inv", "hc", "scm", "batch", "acq"];
+const KNOWN_FLOW_TYPES: &[&str] = &["ing", "exp", "sp", "inv", "hc", "scm", "batch", "api"];
 
 // --- Rendering -------------------------------------------------------------
 

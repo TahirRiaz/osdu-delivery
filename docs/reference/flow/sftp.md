@@ -12,7 +12,7 @@ keywords:
 related:
   - flow-overview
   - flow-cpy
-  - flow-acq
+  - flow-api
 sourceRefs:
   - src/SqlFlow.Core/Sftp/SftpFlow.cs
   - src/SqlFlow.Sftp/SftpEngine.cs

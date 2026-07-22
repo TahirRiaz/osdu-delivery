@@ -4,7 +4,7 @@ using Xunit;
 
 namespace SqlFlow.Acquire.Tests;
 
-/// <summary>Parses every shipped <c>samples/acquire/*.flow.yaml</c> through the real loader, so a broken sample (or a
+/// <summary>Parses every shipped <c>samples/api/*.flow.yaml</c> through the real loader, so a broken sample (or a
 /// schema regression) fails the build. This is the executable proof that the runbook patterns port to YAML.</summary>
 public sealed class SamplesTests
 {
@@ -43,7 +43,6 @@ public sealed class SamplesTests
 
         Assert.Contains(AcquireTransport.Http, transports);
         Assert.Contains(AcquireTransport.Sftp, transports);
-        Assert.Contains(AcquireTransport.S3, transports);
         Assert.Contains(AcquireTransport.AzureTable, transports);
     }
 
@@ -52,7 +51,7 @@ public sealed class SamplesTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            var candidate = Path.Combine(dir.FullName, "samples", "acquire");
+            var candidate = Path.Combine(dir.FullName, "samples", "api");
             if (Directory.Exists(candidate))
             {
                 return candidate;

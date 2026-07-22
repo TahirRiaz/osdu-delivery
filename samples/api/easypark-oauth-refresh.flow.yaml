@@ -1,7 +1,7 @@
 # Ports the easypark.ps1 runbook: OAuth2 refresh-token exchange (idToken applied under a NON-standard
 # X-Authorization header), a day-by-day date window, and a static operator-id fan-out. Lands raw JSON per
 # (day, operator) so the downstream json flow types it. No CSV transform, exactly as required.
-flowType: acq
+flowType: api
 name: EasyPark_Parkings
 batch: easypark
 

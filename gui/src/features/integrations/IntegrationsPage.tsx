@@ -84,7 +84,7 @@ const integrationApi = {
     }),
 };
 
-const STARTER_YAML = `flowType: acq
+const STARTER_YAML = `flowType: api
 name: My_Integration
 source:
   transport: http

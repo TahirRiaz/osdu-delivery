@@ -7,7 +7,7 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace SqlFlow.Yaml;
 
 /// <summary>
-/// Loads a generic API-acquisition flow (flowType: acq) from YAML into a validated <see cref="AcquireFlow"/>.
+/// Loads a generic API-acquisition flow (flowType: api) from YAML into a validated <see cref="AcquireFlow"/>.
 /// YamlDotNet handles the grammar; this class maps the parsed document, normalizes the discriminated enums
 /// (transport / auth type / body kind / pagination strategy / iteration kind), and enforces the cross-field
 /// requirements (an HTTP source needs a request, an idsFrom iteration needs an id request and path, and so on).
@@ -52,7 +52,7 @@ public sealed class YamlAcquireFlowLoader
 
     private static AcquireFlow Map(AcquireDocumentYaml y, string source)
     {
-        var name = YamlDocumentParts.RequireFlowName(y.Name, "an acq flow", source);
+        var name = YamlDocumentParts.RequireFlowName(y.Name, "an api flow", source);
         var sourceYaml = y.Source ?? throw new FlowValidationException($"{source}: 'source' is required.");
         var landingYaml = y.Landing ?? throw new FlowValidationException($"{source}: 'landing' is required.");
 

@@ -112,7 +112,7 @@ public sealed class ParamsTests
     {
         var loader = new SqlFlow.Yaml.YamlAcquireFlowLoader();
         var flow = loader.Parse("""
-            flowType: acq
+            flowType: api
             name: P
             params:
               region: rogaland

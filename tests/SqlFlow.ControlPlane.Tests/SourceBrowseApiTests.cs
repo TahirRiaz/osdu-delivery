@@ -130,7 +130,7 @@ public sealed class SourceBrowseApiTests
             await using (var db = CatalogDatabase.Create(cs))
             {
                 db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, FirstSeenUtc = now, LastSyncUtc = now });
-                db.Pipelines.Add(SeedPipeline(producerId, repoId, producer, "acq", now));
+                db.Pipelines.Add(SeedPipeline(producerId, repoId, producer, "api", now));
                 db.Pipelines.Add(SeedPipeline(consumerId, repoId, consumer, "ing", now));
                 db.Objects.Add(SeedFile(fileKey, fileName, now));
                 db.Objects.Add(new CatalogObject

@@ -94,6 +94,17 @@ public sealed record CopyEndpoint
     /// <summary>Optional secret reference to a storage account key authenticating an Azure endpoint (the shape the
     /// legacy runbooks used). Prefer managed identity where the drop zone allows it.</summary>
     public string? AccountKeyRef { get; init; }
+
+    /// <summary>Secret reference to the AWS access key id authenticating an <c>s3://</c> endpoint. Required for S3
+    /// (it has no ambient identity), paired with <see cref="SecretKeyRef"/>; ignored by the other schemes.</summary>
+    public string? AccessKeyRef { get; init; }
+
+    /// <summary>Secret reference to the AWS secret access key authenticating an <c>s3://</c> endpoint.</summary>
+    public string? SecretKeyRef { get; init; }
+
+    /// <summary>The AWS region of an <c>s3://</c> endpoint (e.g. <c>eu-west-1</c>). Defaults to <c>eu-west-1</c> when
+    /// unset; ignored by the other schemes.</summary>
+    public string? Region { get; init; }
 }
 
 /// <summary>Copy behavior shared across operations.</summary>

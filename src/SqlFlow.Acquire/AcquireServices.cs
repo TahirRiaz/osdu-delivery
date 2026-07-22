@@ -7,9 +7,9 @@ using SqlFlow.Acquire.Runtime;
 namespace SqlFlow.Acquire;
 
 /// <summary>
-/// Registers the generic API-acquisition engine (flowType: acq) into the SqlFlow engine container: the raw landing
-/// stores (local + Azure, behind a composite selector), the four transports (HTTP / SFTP / S3 / Azure Table), the
-/// auth resolver, the engine, and the flow runner. Assumes the host has already registered <c>ISecretResolver</c>
+/// Registers the generic API-acquisition engine (flowType: api) into the SqlFlow engine container: the raw landing
+/// stores (local + Azure, behind a composite selector), the transports (HTTP / SFTP / Azure Table), the auth
+/// resolver, the engine, and the flow runner. Assumes the host has already registered <c>ISecretResolver</c>
 /// and <c>IAzureCredentialFactory</c> (the shared secret/credential chain) - the engine wiring does.
 /// </summary>
 public static class AcquireServices
@@ -26,7 +26,6 @@ public static class AcquireServices
 
         services.AddSingleton<IAcquireTransport, HttpTransport>();
         services.AddSingleton<IAcquireTransport, SftpTransport>();
-        services.AddSingleton<IAcquireTransport, S3Transport>();
         services.AddSingleton<IAcquireTransport, AzureTableTransport>();
 
         services.AddSingleton<AuthResolver>();

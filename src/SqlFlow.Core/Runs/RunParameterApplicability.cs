@@ -79,7 +79,7 @@ public static class RunParameterApplicability
                 return ing;
             case "exp":
                 return [BackfillWindow("Export rows whose date falls within this range instead of the flow's default window.")];
-            case "acq":
+            case "api":
                 return
                 [
                     FullLoad with { Help = "Ignore the stored watermark and re-fetch from the flow's declared bounds or seed." },

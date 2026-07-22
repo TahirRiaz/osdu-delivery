@@ -1,6 +1,6 @@
 # Ports fjord1.ps1: an Azure Storage Table query with a day-by-day window. The matched entities are landed as a
 # single raw JSON array per day (the downstream json flow explodes the embedded Payload field).
-flowType: acq
+flowType: api
 name: Fjord1_Apc
 batch: fjord1
 
