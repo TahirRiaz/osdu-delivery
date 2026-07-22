@@ -319,6 +319,64 @@ public sealed class LineageCollectorTests : IDisposable
     }
 
     [Fact]
+    public void RunArtifacts_CreatedView_AttributesBodyReadsToTheViewModule()
+    {
+        // The run built a transform view; the observed tier must attribute what the view's SELECT reads to the
+        // view AS A MODULE (flow-less, viaModule = the view), re-extracted from the actually-executed DDL, so the
+        // graph draws the view to its parent table with observed provenance and no live catalog.
+        // The engine's TransformViewBuilder emits a two-part view/table name (CREATE VIEW cannot database-qualify
+        // its own name), so the trace carries exactly that; the database is completed later by identity unification.
+        Write("load-orders.flow.yaml", IngestionYaml);
+        WriteRunArtifact("load-orders", """
+            {
+              "sqlTrace": [
+                { "sequence": 1, "step": "transform.view", "sql": "CREATE OR ALTER VIEW [dbo].[v_Orders] AS SELECT [Id], CAST([Total] AS decimal(9,2)) AS [Total] FROM [dbo].[Orders];" }
+              ]
+            }
+            """, new DateTime(2026, 6, 11, 6, 0, 0, DateTimeKind.Utc));
+        File.SetLastWriteTimeUtc(Path.Combine(_root, "load-orders.flow.yaml"), new DateTime(2026, 6, 1));
+
+        var declared = new FlowSetCollector().Collect(_root);
+        var observed = RunArtifactCollector.Collect(_root, declared.Flows);
+
+        var viewKey = NodeKey.For("${env:SQLFLOW_CONN_DWH}", null, "dbo", "v_Orders");
+        var tableKey = NodeKey.For("${env:SQLFLOW_CONN_DWH}", null, "dbo", "Orders");
+
+        // The module edge is flow-less, observed tier, carries the run id, and reads the parent table.
+        Assert.Contains(observed.Facts, f =>
+            f.Flow is null && f.ViaModuleKey == viewKey && f.Relation == LineageRelation.Reads
+            && NodeKey.For(f.ServerRef, f.Database, f.Schema, f.Name) == tableKey
+            && f.Tier == LineageTier.Observed && f.RunId is not null);
+
+        // The view reading itself is a self-fact and is filtered.
+        Assert.DoesNotContain(observed.Facts, f =>
+            f.ViaModuleKey == viewKey && NodeKey.For(f.ServerRef, f.Database, f.Schema, f.Name) == viewKey);
+    }
+
+    [Fact]
+    public void RunArtifacts_CreatedThenDroppedView_ContributesNoModuleFacts()
+    {
+        // A view the same run created and then dropped is transient: no module edge should survive, matching the
+        // main extraction's created-then-dropped hygiene.
+        Write("load-orders.flow.yaml", IngestionYaml);
+        WriteRunArtifact("load-orders", """
+            {
+              "sqlTrace": [
+                { "sequence": 1, "step": "transform.view", "sql": "CREATE OR ALTER VIEW [dbo].[v_Tmp] AS SELECT [Id] FROM [dbo].[Orders];" },
+                { "sequence": 2, "step": "transform.drop", "sql": "DROP VIEW [dbo].[v_Tmp];" }
+              ]
+            }
+            """, new DateTime(2026, 6, 11, 6, 0, 0, DateTimeKind.Utc));
+        File.SetLastWriteTimeUtc(Path.Combine(_root, "load-orders.flow.yaml"), new DateTime(2026, 6, 1));
+
+        var declared = new FlowSetCollector().Collect(_root);
+        var observed = RunArtifactCollector.Collect(_root, declared.Flows);
+
+        var viewKey = NodeKey.For("${env:SQLFLOW_CONN_DWH}", null, "dbo", "v_Tmp");
+        Assert.DoesNotContain(observed.Facts, f => f.ViaModuleKey == viewKey);
+    }
+
+    [Fact]
     public void RunArtifacts_DocumentNewerThanRun_WarnsStale()
     {
         Write("load-orders.flow.yaml", IngestionYaml);

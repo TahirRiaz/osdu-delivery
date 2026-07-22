@@ -157,5 +157,56 @@ public static class RunArtifactCollector
         // data-model observations of the observed tier, attributed to the flow side as the script unit.
         ScriptFactBuilder.AppendModelObservations(
             result, deps, serverRef, LineageTier.Observed, $"{flow.Node.Name}/{side}");
+
+        // Each module the run CREATED (a transform view, or a proc/function/trigger a hook defines) gets its own
+        // body lineage attributed to itself as a module, from the actually-executed DDL.
+        ExtractCreatedModules(result, serverRef, deps, flow.Node.Name, side, runId, writtenUtc);
+    }
+
+    /// <summary>
+    /// Attributes each module the run created its own body lineage: the observed-tier twin of how
+    /// <see cref="CatalogCollector"/> harvests a live module from <c>sys.sql_modules</c>. The combined trace
+    /// script joins every statement (to dissolve the engine's transient staging through local deps), so its reads
+    /// are attributed to the FLOW and cannot be scoped to one module. Re-extracting each created module's own
+    /// captured DDL in isolation recovers that scope, and its body reads/writes are emitted as MODULE-attributed
+    /// facts (<c>flow: null</c>, <c>viaModule</c>: the module) stamped with the run's id and time. This is what
+    /// draws a run-built view to the parent table its <c>SELECT</c> reads, from the DDL the run actually executed,
+    /// with observed provenance and no live catalog. A module the same run created and then dropped is transient
+    /// staging and contributes nothing, matching the main extraction's hygiene; the view's own script and columns
+    /// are already emitted as an object artifact by the combined pass, so only the module facts are added here.
+    /// </summary>
+    private static void ExtractCreatedModules(
+        CollectionResult result, string serverRef, Extraction.ScriptDependencies deps, string flowName, string side,
+        Guid? runId, DateTime? writtenUtc)
+    {
+        foreach (var created in deps.CreatedObjects.Values)
+        {
+            if (created.Kind is not (LineageNodeKind.View or LineageNodeKind.Procedure
+                    or LineageNodeKind.Function or LineageNodeKind.Trigger)
+                || string.IsNullOrWhiteSpace(created.Ddl)
+                || deps.CreatedThenDropped.Contains(created.Table.Key))
+            {
+                continue;
+            }
+
+            var moduleKey = NodeKey.For(serverRef, created.Table.Database, created.Table.Schema, created.Table.Name);
+            var moduleDeps = TSqlLineageExtractor.Extract(
+                created.Ddl,
+                $"{flowName}/{side} module {created.Table.Schema}.{created.Table.Name}",
+                defaultDatabase: created.Table.Database);
+            result.Warnings.AddRange(moduleDeps.Warnings);
+
+            // The module's own CREATE points at itself; self-facts carry nothing (the same filter the live
+            // harvest applies). A one-part body reference completes to the module's own database.
+            foreach (var fact in ScriptFactBuilder.Facts(
+                         moduleDeps, flow: null, viaModuleKey: moduleKey, serverRef, LineageTier.Observed,
+                         minimumParts: 1, runId, writtenUtc, side))
+            {
+                if (NodeKey.For(serverRef, fact.Database ?? created.Table.Database, fact.Schema, fact.Name) != moduleKey)
+                {
+                    result.Facts.Add(fact with { Database = fact.Database ?? created.Table.Database });
+                }
+            }
+        }
     }
 }

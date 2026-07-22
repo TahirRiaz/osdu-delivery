@@ -79,6 +79,19 @@ SELECT FlowID, srcDBSchTbl, trgDBSchTbl FROM flw.Ingestion WHERE Batch = '<BATCH
 (Other pre-ingestion kinds exist too: `flw.PreIngestionADO/JSN/PRQ/XLS/XML`. This skill covers CSV; extend
 the same way for others.)
 
+### 1b. Crosscheck the acquisition script against the file names the pre flows read (MANDATORY)
+
+When the source has an upstream acquisition script (Automation runbook, Azure Function, ADF pipeline) being
+ported alongside the pre/ods flows, verify the match BEFORE porting anything: the file names/paths the script
+WRITES must match the `srcFile`/`srcPath` patterns the batch's pre flows READ (from `flw.PreIngestionCSV` etc.).
+**If they do not match, you have the wrong script; stop and find the right producer.** A name overlap is not
+proof (example from this estate: `mobilapp.ps1` writes `export_*` files for the MobilApp feeds, while
+Billettapp's pre reads `billettapp*.csv` produced by the `Billettapp` function in `dw-function-prod`; porting
+mobilapp.ps1 as billettapp's acquisition shipped a copy flow that matched 0 files). Producers live in more
+places than the runbook folder: check Azure Automation runbooks, function apps (`dw-function-prod`,
+`dw-function-py-prod`), and Data Factory pipelines, and confirm the producer's schedule lines up with the
+files' actual landing timestamps in the lake.
+
 ### 2. Ensure target schemas exist
 
 ```sql
@@ -157,6 +170,19 @@ SELECT p.Name, p.Kind, p.Batch, p.Wave FROM catalog.Pipeline p
 The connected view->table column lineage (each generated `v_` view parsed from `sys.sql_modules`) requires the
 sync to read the created view from the DB, so **run the flows first** (step 4) so the view exists before the
 sync that should pick it up.
+
+## Raw format in the lake (do not convert to CSV)
+
+**When porting an acquisition, land the upstream's native/raw format in the lake (JSON stays JSON), never a
+CSV re-encoding.** The legacy scripts' CSV flattening historically lost detail the DWH could benefit from
+(dropped fields, truncated precision, culture-mangled values), which is exactly why V3 acquisitions land raw.
+The mapping back to the legacy column names happens downstream, not in the acquisition: the pre flow's typed
+view (`generateView`) reproduces the old column names and types over the raw landing, and the ods flow merges
+that view into the arc table, so `arc.<Table>` keeps the production shape consumers expect. When the raw
+format's value tokens differ from the legacy CSV's (JSON invariant decimals, ISO-8601 dates with offsets),
+adapt the typed-view expressions to parse them correctly and TEST the expressions against the real server;
+legacy culture-specific `TRY_PARSE ... USING 'nn-NO'` exprs typically return NULL or garbage on JSON tokens
+while the output column types must stay identical to prod.
 
 ## Naming standard (do not deviate)
 

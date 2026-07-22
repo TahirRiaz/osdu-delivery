@@ -223,12 +223,14 @@ public static class FileSelection
 
     /// <summary>Whether the producer's folder is the consumer's watched folder or a folder beneath it (segment
     /// aware, so <c>raw/orders</c> does not spuriously match <c>raw/orders2</c>). An empty consumer folder watches
-    /// everything. Locations carrying an unresolved <c>${...}</c> reference are compared verbatim, so identical or
-    /// nested references still align while genuinely different ones do not.</summary>
+    /// everything. Azure Storage folders are folded to their scheme- and host-independent identity first, so an
+    /// <c>abfss://</c> drop aligns under an <c>https://</c> watched folder naming the same container path; a
+    /// non-Azure location (a local path, another cloud URL, or an unresolved <c>${...}</c> reference) is compared
+    /// verbatim, so identical or nested references still align while genuinely different ones do not.</summary>
     private static bool PathAligned(string producerDir, string consumerDir)
     {
-        var p = TrimTrailingSlash(producerDir);
-        var c = TrimTrailingSlash(consumerDir);
+        var p = TrimTrailingSlash(Canonicalize(producerDir));
+        var c = TrimTrailingSlash(Canonicalize(consumerDir));
         if (c.Length == 0)
         {
             return true;
@@ -236,6 +238,21 @@ public static class FileSelection
 
         return string.Equals(p, c, StringComparison.OrdinalIgnoreCase)
             || p.StartsWith(c + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Folds an Azure Storage folder to the same canonical identity lineage nodes use, so the URI shape a
+    /// drop was written in and the shape it is read back in align on one path. A non-Azure location (or an
+    /// Azure-scheme URI too malformed to parse) is returned unchanged for a verbatim comparison.</summary>
+    private static string Canonicalize(string dir)
+    {
+        try
+        {
+            return AzureBlobLocation.CanonicalIdentity(dir) ?? dir;
+        }
+        catch (SqlFlowException)
+        {
+            return dir;
+        }
     }
 
     private static string Combine(string dir, string pattern)

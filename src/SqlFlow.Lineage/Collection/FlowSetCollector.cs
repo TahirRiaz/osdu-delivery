@@ -310,6 +310,9 @@ public sealed class FlowSetCollector
                     result.Facts.Add(ObjectFact(
                         name, LineageRelation.Writes, target,
                         flow.Target.Table with { Name = $"v_{flow.Target.Table.Name}" }, LineageNodeKind.View));
+                    CollectGeneratedViewModule(
+                        result, target, flow.Target.Table.Database, flow.Target.Table.Schema,
+                        flow.Target.Table.Name, flow.Transform);
                 }
 
                 ExtractHook(result, name, target, flow.Process.PreProcessOnTarget, $"{file}: preProcess", flow.Target.Table.Database);
@@ -429,6 +432,8 @@ public sealed class FlowSetCollector
                         Tier = LineageTier.Declared,
                         KindHint = LineageNodeKind.View,
                     });
+                    CollectGeneratedViewModule(
+                        result, target, database: null, flow.Target.Schema, flow.Target.Table, flow.Inference);
                 }
 
                 break;
@@ -450,45 +455,45 @@ public sealed class FlowSetCollector
             }
 
             case AcquireFlowDocument doc:
-                // An acquisition fetches from a third party and lands raw files; its declared landing target chains
-                // to the downstream file flow that reads that location.
-                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, doc.Flow.Landing.Target, root));
+                // An acquisition fetches from a third party and lands raw files under its landing target. It is
+                // ALWAYS a file producer: the declared drop is derived with engine parity from target + pathTemplate
+                // + the extension the landing appends, so reconciliation binds it to the file ingestion(s) watching
+                // the landing folder (or a parent of it) and the graph chains acquire -> file -> landing table ->
+                // view -> downstream, ordering the waves. An unconsumed drop still records its own node.
+                producers.Add(new FileProducer(headers[0].Name, [AcquireDrop(doc.Flow.Landing)]));
                 break;
 
             case CopyFlowDocument doc:
             {
                 // A copy performs one or more steps; lineage is computed from those steps. Each step reads its source
-                // (a file node chaining the upstream drop zone) and writes its target (the file node the downstream
-                // ingestion reads), so one pipeline copying a whole source system connects every landed folder to its
-                // load. An explicit outputs: block overrides the per-step targets: the copy becomes a file producer
-                // whose declared drops fan out to every matching ingestion (for a step whose consumable folder differs
-                // from its physical target).
+                // (a file node chaining the upstream drop zone) and lands its target folder, which the downstream
+                // ingestion reads. The copy is ALWAYS a file producer: an explicit outputs: block declares its drops,
+                // otherwise each step's physical target is the drop. Reconciliation then binds every drop to the
+                // ingestion(s) that read it - including a load watching the parent folder recursively while the copy
+                // lands into per-dataset subfolders - and a drop nothing consumes still records its own node, so a
+                // copy read by an exact-folder load or by nothing keeps its previous graph.
                 foreach (var step in doc.Flow.Steps)
                 {
                     result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, step.Source.Location, root));
                 }
 
-                if (doc.Flow.Outputs.Count > 0)
-                {
-                    producers.Add(new FileProducer(headers[0].Name, doc.Flow.Outputs));
-                }
-                else
-                {
-                    foreach (var step in doc.Flow.Steps)
-                    {
-                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, step.Target.Location, root));
-                    }
-                }
+                producers.Add(new FileProducer(
+                    headers[0].Name,
+                    doc.Flow.Outputs.Count > 0
+                        ? doc.Flow.Outputs
+                        : doc.Flow.Steps.Select(step => new FileOutput { Location = step.Target.Location }).ToList()));
 
                 break;
             }
 
             case SftpFlowDocument doc:
             {
-                // Lineage is computed from the flow's steps. Download reads each step's server path and writes each
-                // step's lake target; upload reverses it. An explicit outputs: block overrides the per-step download
-                // targets - the download becomes a file producer whose declared drops fan out to every matching
-                // ingestion (for a step whose consumable folder differs from its physical target).
+                // Lineage is computed from the flow's steps. Download reads each step's server path and lands each
+                // step's lake target, which the downstream ingestion reads; upload reverses it. A download is ALWAYS a
+                // file producer (an explicit outputs: block declares its drops, otherwise each step's local target is
+                // the drop), so reconciliation binds every drop to the ingestion(s) that read it - including a load
+                // watching the parent folder while the download lands into subfolders - and an unconsumed drop still
+                // records its own node.
                 var host = $"sftp://{doc.Flow.Server.Host}:{doc.Flow.Server.Port}";
                 if (doc.Flow.Direction == Core.Sftp.SftpDirection.Download)
                 {
@@ -497,17 +502,11 @@ public sealed class FlowSetCollector
                         result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, host + step.RemotePath, root));
                     }
 
-                    if (doc.Flow.Outputs.Count > 0)
-                    {
-                        producers.Add(new FileProducer(headers[0].Name, doc.Flow.Outputs));
-                    }
-                    else
-                    {
-                        foreach (var step in doc.Flow.Steps)
-                        {
-                            result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, step.Local, root));
-                        }
-                    }
+                    producers.Add(new FileProducer(
+                        headers[0].Name,
+                        doc.Flow.Outputs.Count > 0
+                            ? doc.Flow.Outputs
+                            : doc.Flow.Steps.Select(step => new FileOutput { Location = step.Local }).ToList()));
                 }
                 else
                 {
@@ -560,6 +559,53 @@ public sealed class FlowSetCollector
             Tier = LineageTier.Declared,
             KindHint = kind,
         };
+
+    /// <summary>Declared-tier module lineage of a generated transform view, driven by the view's SQL. The DDL the
+    /// engine executes is synthesized offline through the same code path the run uses (the authored transform
+    /// columns resolved by <see cref="Core.Engine.ColumnTransformResolver"/> into
+    /// <see cref="Core.Engine.TransformViewBuilder"/>; run-time inference only adds casts and pass-throughs of the
+    /// same table's columns, which reference no further objects), and the same extractor and fact mapping the
+    /// derived tier applies to <c>sys.sql_modules</c> attributes what the body reads to the view as a module
+    /// (flow: null). This attaches <c>v_&lt;Table&gt;</c> to every parent table the SQL references, the FROM table
+    /// and any table an authored expression names, without a live connection; a downstream flow reading the view
+    /// inherits those dependencies through module expansion. The module key may lack its database (a file flow does
+    /// not know its target catalog); the graph builder completes it with the same identity resolution the facts
+    /// get. A schema-less target is skipped: the engine itself cannot build a view there, so there is no SQL to
+    /// attribute.</summary>
+    private static void CollectGeneratedViewModule(
+        CollectionResult result, string serverRef, string? database, string? schema, string table,
+        Core.Model.TypeInferencePolicy policy)
+    {
+        if (string.IsNullOrWhiteSpace(schema))
+        {
+            return;
+        }
+
+        var viewName = $"v_{table}";
+        var projection = Core.Engine.ColumnTransformResolver.Resolve(
+            policy.Columns.Where(c => !c.Virtual).Select(c => c.Name).ToList(), policy);
+        var ddl = Core.Engine.TransformViewBuilder.Build(schema, viewName, schema, table, projection);
+
+        var moduleKey = NodeKey.For(serverRef, database, schema, viewName);
+        var label = $"{serverRef}:{(database is null ? string.Empty : database + ".")}{schema}.{viewName}";
+        var deps = TSqlLineageExtractor.Extract(ddl, label, defaultDatabase: database);
+        result.Warnings.AddRange(deps.Warnings);
+
+        foreach (var fact in ScriptFactBuilder.Facts(
+                     deps, flow: null, viaModuleKey: moduleKey, serverRef, LineageTier.Declared, minimumParts: 1))
+        {
+            // The view's own CREATE statement points at itself; self-facts carry nothing.
+            if (NodeKey.For(serverRef, fact.Database ?? database, fact.Schema, fact.Name) != moduleKey)
+            {
+                result.Facts.Add(fact with { Database = fact.Database ?? database });
+            }
+        }
+
+        // The synthesized DDL is the view's declared script artifact (a live or observed definition outranks it in
+        // the fold), and its joins are data-model observations attributed to the module as the script unit.
+        result.ObjectArtifacts.AddRange(ScriptFactBuilder.ObjectArtifacts(deps, serverRef, LineageTier.Declared, minimumParts: 1));
+        ScriptFactBuilder.AppendModelObservations(result, deps, serverRef, LineageTier.Declared, moduleKey);
+    }
 
     private static LineageFact FileFact(string flow, LineageRelation relation, string location, string root)
         => new()
@@ -641,6 +687,63 @@ public sealed class FlowSetCollector
                 }
             }
         }
+    }
+
+    /// <summary>The file drop an acquisition's landing declares, in producer form. Engine parity with the landing
+    /// pipeline: a payload lands at target/pathTemplate + '.' + extension, where the extension is the declared
+    /// format ('auto' derives it from the response, so any extension can land) and a gzipped landing appends '.gz'.
+    /// A template token ({window.from:yyyy}, {page}, ...) renders per item, so the drop folder keeps only the
+    /// template's leading static folder segments (a tokened segment and everything under it land wherever the token
+    /// renders, and the matcher already treats a drop beneath the watched folder as contained), and the file segment
+    /// becomes a glob with each token as a wildcard.</summary>
+    private static FileOutput AcquireDrop(Core.Acquire.AcquireLanding landing)
+    {
+        var segments = landing.PathTemplate.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var stem = segments.Length > 0 ? CollapseTemplateTokens(segments[^1]) : string.Empty;
+        var staticFolders = segments.Length > 1
+            ? segments[..^1].TakeWhile(s => !s.Contains('{', StringComparison.Ordinal)).ToArray()
+            : [];
+
+        var extension = string.Equals(landing.Format, "auto", StringComparison.OrdinalIgnoreCase)
+            ? "*"
+            : landing.Format.TrimStart('.').ToLowerInvariant();
+        var suffix = landing.Compression == Core.Acquire.AcquireCompression.Gzip ? ".gz" : string.Empty;
+
+        return new FileOutput
+        {
+            Location = staticFolders.Length > 0
+                ? $"{landing.Target.TrimEnd('/')}/{string.Join('/', staticFolders)}"
+                : landing.Target,
+            SrcFile = $"{(stem.Length > 0 ? stem : "*")}.{extension}{suffix}",
+        };
+    }
+
+    /// <summary>Replaces every <c>{...}</c> template token with a <c>*</c> wildcard, folding adjacent tokens into
+    /// one; text outside tokens is kept verbatim (an unmatched closing brace is literal).</summary>
+    private static string CollapseTemplateTokens(string value)
+    {
+        var builder = new System.Text.StringBuilder(value.Length);
+        var depth = 0;
+        foreach (var c in value)
+        {
+            if (c == '{')
+            {
+                if (depth++ == 0 && (builder.Length == 0 || builder[^1] != '*'))
+                {
+                    builder.Append('*');
+                }
+            }
+            else if (c == '}' && depth > 0)
+            {
+                depth--;
+            }
+            else if (depth == 0)
+            {
+                builder.Append(c);
+            }
+        }
+
+        return builder.ToString();
     }
 
     private static string? Option(IReadOnlyDictionary<string, string?> options, string key)

@@ -37,6 +37,18 @@ This applies whether the unit is minutes, hours, days, weeks, sprints, or vague 
 - Local dev intentionally sets `ApplyMigrations=false` (`.sqlflow/env`) so a laptop never migrates the shared Azure catalog; the pending migration ships with the next deploy. Do not flip that flag to make a local run work against the shared estate.
 - The tell-tale of a forgotten migration: the model snapshot differs from the last migration, tests fail with "Invalid column name", or the control plane logs pending-migration warnings. If you touched the entities and `git status` shows no new file under `src/SqlFlow.Catalog/Migrations/`, the work is not done.
 
+## Never Change a Flow's Source or Destination
+
+**NEVER CHANGE A FLOW'S SOURCE OR DESTINATION. NOT THE SOURCE LOCATION, NOT THE TARGET LOCATION, NOT THE STORAGE ACCOUNT, NOT THE BUCKET, NOT THE PATH, NOT THE CREDENTIALS. NOT IN PIPELINE YAML, NOT IN THE CATALOG. NEVER, UNLESS THE USER EXPLICITLY ASKS FOR THAT EXACT CHANGE.**
+
+The declared endpoints of a flow ARE the design. We are upgrading to a new production environment: sources and targets are chosen deliberately as part of that migration, and what looks like a "dead" or "wrong" endpoint from the outside can be intentional, staged, or awaiting an upstream cutover. Repointing a flow at a different store because a run matched zero files is exactly the kind of unilateral rewiring that corrupts the migration plan.
+
+When a flow finds no files or seems to read from the wrong place:
+
+- Diagnose and report: what the flow declares, what actually exists at that endpoint, and where the data really is.
+- Propose the endpoint change as an option and STOP. The user decides whether the flow moves, the upstream moves, or the finding changes the plan.
+- Fixing anything else about the flow (options, patterns, schedule, comments) is fine when asked; the source and target locations are untouchable without an explicit instruction naming them.
+
 ## Single Code Path Principle
 
 **Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path already handles it. Extend or modify the existing path rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.

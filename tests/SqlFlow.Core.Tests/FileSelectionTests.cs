@@ -106,6 +106,18 @@ public sealed class FileSelectionTests
             Consumer("abfss://raw@acct.dfs.core.windows.net/orders")));
 
     [Fact]
+    public void Feeds_AzureSubfolder_UnderParentWatch_AcrossUriShapes()   // abfss drop beneath an https-watched folder
+        => Assert.True(FileSelection.Feeds(
+            Producer("abfss://datalakev2@acct.dfs.core.windows.net/raw/src/history/orders"),
+            Consumer("https://acct.dfs.core.windows.net/datalakev2/raw/src/history/", glob: "*.csv")));
+
+    [Fact]
+    public void Feeds_AzureSiblingContainerPath_AcrossUriShapes_DoesNotLink()   // history2 must not match history
+        => Assert.False(FileSelection.Feeds(
+            Producer("abfss://datalakev2@acct.dfs.core.windows.net/raw/src/history2/orders"),
+            Consumer("https://acct.dfs.core.windows.net/datalakev2/raw/src/history/", glob: "*.csv")));
+
+    [Fact]
     public void Feeds_UnresolvedReference_ComparedVerbatim()
     {
         Assert.True(FileSelection.Feeds(

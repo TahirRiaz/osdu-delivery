@@ -28,9 +28,12 @@ public static class LineageGraphBuilder
 
         var warnings = new List<string>(collected.Warnings);
 
-        // ---- Server identity aliases (proven at connect time) apply before anything else. -------------
+        // ---- Server identity aliases (proven at connect time) apply before anything else. The map is
+        // snapshotted because ApplyServerAliases replaces 'collected' with a copy that no longer carries it,
+        // and module-key resolution below still needs the original aliasing. -----------------------------
+        var serverAliases = collected.ServerAliases;
         string Server(string serverRef)
-            => collected.ServerAliases.TryGetValue(serverRef, out var canonical) ? canonical : serverRef;
+            => serverAliases.TryGetValue(serverRef, out var canonical) ? canonical : serverRef;
 
         if (collected.ServerAliases.Count > 0)
         {
@@ -80,6 +83,21 @@ public static class LineageGraphBuilder
         // its dependency edge silently vanishes.
         var aliasMap = BuildIdentityAliases(collectedFacts, collected.CatalogObjects, warnings);
 
+        // The folded projections of the raw-cased server maps, for module-key resolution: a module key's parts
+        // are already case-folded by NodeKey, so its server segment can never hit the original-cased alias and
+        // default-database dictionaries directly.
+        var foldedServerAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (alias, canonical) in serverAliases)
+        {
+            foldedServerAliases.TryAdd(alias.ToLowerInvariant(), canonical);
+        }
+
+        var foldedDefaultDatabases = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (reference, database) in collected.ServerDefaultDatabases)
+        {
+            foldedDefaultDatabases.TryAdd(reference.ToLowerInvariant(), database);
+        }
+
         var facts = collectedFacts
             .Select(f =>
             {
@@ -94,7 +112,13 @@ public static class LineageGraphBuilder
                 }
 
                 var resolved = ResolveSynonyms(f.ServerRef, f.Database, f.Schema, f.Name);
-                return f with { ServerRef = resolved.ServerRef, Database = resolved.Database, Schema = resolved.Schema, Name = resolved.Name };
+                f = f with { ServerRef = resolved.ServerRef, Database = resolved.Database, Schema = resolved.Schema, Name = resolved.Name };
+
+                // A module key is itself a node key, and a declared-tier one can be partial (a generated view's
+                // file flow does not know its target database). It gets the same aliasing, completion, and synonym
+                // follow the facts get, so module-attributed edges and module inheritance land on the view node's
+                // final key.
+                return f.ViaModuleKey is { } moduleKey ? f with { ViaModuleKey = ResolveModuleKey(moduleKey) } : f;
             })
             .ToList();
 
@@ -221,6 +245,39 @@ public static class LineageGraphBuilder
             }
 
             return ResolveSynonyms(serverRef, database, schema, name);
+        }
+
+        // A module key resolved as a whole: split into its four parts (empty segments are absent parts), aliased
+        // and completed like any fact identity, and re-keyed. Unlike a fact, the key's parts are already
+        // case-folded by NodeKey, so the server segment goes through the folded projections declared above the
+        // facts pass; the identity-alias and synonym maps already key on folded node keys and need none. A string
+        // that is not a node key passes through.
+        string ResolveModuleKey(string key)
+        {
+            var parts = key.Split('|');
+            if (parts.Length != 4)
+            {
+                return key;
+            }
+
+            var serverRef = foldedServerAliases.TryGetValue(parts[0], out var canonical) ? canonical : parts[0];
+            var database = parts[1].Length > 0 ? parts[1] : null;
+            var schema = parts[2].Length > 0 ? parts[2] : null;
+            var name = parts[3];
+
+            if (database is null && foldedDefaultDatabases.TryGetValue(serverRef.ToLowerInvariant(), out var defaultDatabase))
+            {
+                database = defaultDatabase;
+            }
+
+            if (aliasMap.TryGetValue(NodeKey.For(serverRef, database, schema, name), out var unified))
+            {
+                database = unified.Database ?? database;
+                schema = unified.Schema ?? schema;
+            }
+
+            var resolved = ResolveSynonyms(serverRef, database, schema, name);
+            return NodeKey.For(resolved.ServerRef, resolved.Database, resolved.Schema, resolved.Name);
         }
 
         // ---- Object artifacts: fold the highest-tier script and column dictionary onto each node, so a

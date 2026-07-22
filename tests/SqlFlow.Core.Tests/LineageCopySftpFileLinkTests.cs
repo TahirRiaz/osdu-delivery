@@ -208,6 +208,28 @@ public sealed class LineageCopySftpFileLinkTests : IDisposable
     }
 
     [Fact]
+    public void Copy_SubfolderDrops_BindToParentFolderLoad()
+    {
+        // The converted-source shape (billettapp): one copy lands each dataset into its own subfolder under history/,
+        // while a single load reads the parent folder recursively (searchSubDirectories). No drop folder equals the
+        // watched folder - each is beneath it - so this binds only when folder containment is honored across the
+        // abfss/https URI shapes. The load must run after the copy.
+        Write("00_cpy.flow.yaml", CopyItems("src-cpy",
+            ("abfss://export@vendor.dfs.core.windows.net/appinstances", $"{Lake}/appinstances"),
+            ("abfss://export@vendor.dfs.core.windows.net/orders", $"{Lake}/orders")));
+        Write("01_csv.flow.yaml", FileIngestion("src-load", "csv",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/baatbooking/history/", srcFile: "src*.csv"));
+
+        var report = Build();
+
+        Assert.True(DependsOn(report, "src-cpy", "src-load"));
+        Assert.True(WaveOf(report, "src-cpy") < WaveOf(report, "src-load"));
+        // Both meet on the single parent-folder node the load watches; the per-dataset drops collapse onto it.
+        Assert.Contains(report.Edges, e => e.Flow == "src-cpy" && e.Relation == LineageRelation.Writes
+            && report.Objects.Any(o => o.Key == e.ObjectKey && o.Name == "az://acct/datalakev2/raw/baatbooking/history"));
+    }
+
+    [Fact]
     public void Copy_DeclaredOutputs_FanOutToEachConsumer_ByFolder()
     {
         // One copy declares two distinct output folders; each binds to the ingestion that reads it, and not the other.
