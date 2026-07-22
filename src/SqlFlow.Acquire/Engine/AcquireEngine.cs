@@ -67,7 +67,7 @@ public sealed class AcquireEngine
         var success = true;
         string? error = null;
         string? resolvedBase = null;
-        var pipelines = new List<LandingPipeline>();
+        LandingPipeline? pipeline = null;
         HttpClient? client = null;
         try
         {
@@ -80,6 +80,9 @@ public sealed class AcquireEngine
                 baseVars.WithString(bindVar, before);
             }
 
+            resolvedBase = await _secrets.ResolveAsync(TemplateEngine.Render(flow.Landing.Target, baseVars), ct).ConfigureAwait(false);
+            pipeline = new LandingPipeline(flow.Landing, _landing, resolvedBase, runId, log, run.DryRun, run.ReprocessFiles);
+
             client = _httpClientFactory(flow.Source.Reliability);
             var dataHttp = HttpExecutorFor(client, flow.Source.Reliability, flow.Source.Reliability.UrlAllowlist);
             // Token and OIDC-discovery calls may target a host outside the data allowlist; they are trusted
@@ -89,45 +92,29 @@ public sealed class AcquireEngine
             var refreshPerIteration = flow.Source.Auth.Token?.RefreshPerIteration == true;
             var discoveryAuth = await _auth.ResolveAsync(flow.Source.Auth, authHttp, baseVars, ct).ConfigureAwait(false);
 
-            // One shared source (bucket/credentials/auth/iterations) feeds one or more landing items. A single-landing
-            // flow yields exactly one item, so both shapes drive the identical loop. Each item overlays its own
-            // transport options (e.g. the S3 prefix) and lands into its own pipeline; the counters aggregate across all.
-            foreach (var item in flow.EffectiveItems)
+            var contexts = await ExpandAsync(flow.Source, baseVars, flow.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
+            foreach (var vars in contexts)
             {
                 ct.ThrowIfCancellationRequested();
-                var itemSource = item.Options.Count == 0
-                    ? flow.Source
-                    : flow.Source with { Options = MergeOptions(flow.Source.Options, item.Options) };
-
-                var itemBase = await _secrets.ResolveAsync(TemplateEngine.Render(item.Landing.Target, baseVars), ct).ConfigureAwait(false);
-                resolvedBase ??= itemBase;
-                var pipeline = new LandingPipeline(item.Landing, _landing, itemBase, runId, log, run.DryRun, run.ReprocessFiles);
-                pipelines.Add(pipeline);
-
-                var contexts = await ExpandAsync(itemSource, baseVars, flow.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
-                foreach (var vars in contexts)
+                var iterationAuth = refreshPerIteration ? await _auth.ResolveAsync(flow.Source.Auth, authHttp, vars, ct).ConfigureAwait(false) : discoveryAuth;
+                var fetch = new AcquireFetch
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var iterationAuth = refreshPerIteration ? await _auth.ResolveAsync(flow.Source.Auth, authHttp, vars, ct).ConfigureAwait(false) : discoveryAuth;
-                    var fetch = new AcquireFetch
-                    {
-                        Source = itemSource,
-                        Vars = vars,
-                        Auth = iterationAuth,
-                        Landing = pipeline,
-                        Watermark = watermark,
-                        Log = log,
-                        Secrets = _secrets,
-                        Http = transport is HttpTransport ? dataHttp : null,
-                        Iteration = iterations,
-                        Probe = run.Probe,
-                        MaxPagesOverride = run.MaxPagesOverride,
-                    };
+                    Source = flow.Source,
+                    Vars = vars,
+                    Auth = iterationAuth,
+                    Landing = pipeline,
+                    Watermark = watermark,
+                    Log = log,
+                    Secrets = _secrets,
+                    Http = transport is HttpTransport ? dataHttp : null,
+                    Iteration = iterations,
+                    Probe = run.Probe,
+                    MaxPagesOverride = run.MaxPagesOverride,
+                };
 
-                    await transport.FetchAsync(fetch, ct).ConfigureAwait(false);
-                    pages += fetch.Pages;
-                    iterations++;
-                }
+                await transport.FetchAsync(fetch, ct).ConfigureAwait(false);
+                pages += fetch.Pages;
+                iterations++;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -153,33 +140,19 @@ public sealed class AcquireEngine
             DurationSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3),
             Iterations = iterations,
             PagesFetched = pages,
-            FilesWritten = pipelines.Sum(p => p.FilesWritten),
-            Skipped = pipelines.Sum(p => p.Skipped),
-            BytesWritten = pipelines.Sum(p => p.BytesWritten),
+            FilesWritten = pipeline?.FilesWritten ?? 0,
+            Skipped = pipeline?.Skipped ?? 0,
+            BytesWritten = pipeline?.BytesWritten ?? 0,
             LandedBase = resolvedBase,
             WatermarkBefore = watermark.Before,
             WatermarkAfter = success ? watermark.Current : watermark.Before,
-            Files = pipelines.SelectMany(p => p.Files).ToList(),
+            Files = pipeline?.Files ?? [],
         };
     }
 
     private IAcquireTransport SelectTransport(AcquireTransport transport)
         => _transports.FirstOrDefault(t => t.CanHandle(transport))
            ?? throw new SqlFlowException($"No transport is registered for '{transport}'.");
-
-    /// <summary>Overlays an item's transport options onto the shared source options (item keys win), so a per-item
-    /// prefix/path selects that item's objects while the bucket, credentials, and window stay authored once.</summary>
-    private static IReadOnlyDictionary<string, string?> MergeOptions(
-        IReadOnlyDictionary<string, string?> baseOptions, IReadOnlyDictionary<string, string?> overlay)
-    {
-        var merged = new Dictionary<string, string?>(baseOptions, StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, value) in overlay)
-        {
-            merged[key] = value;
-        }
-
-        return merged;
-    }
 
     /// <summary>
     /// Binds the flow's declared parameters into the run's template context: the declared default first, overlaid
