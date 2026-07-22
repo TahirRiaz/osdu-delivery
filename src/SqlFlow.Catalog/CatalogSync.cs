@@ -1209,6 +1209,17 @@ public sealed class CatalogSync
             var nodesToRefresh = withColumns
                 .Where(o => TierRank((o.ColumnsTier ?? Core.Lineage.LineageTier.Observed).ToString())
                             >= (existingRankByKey.TryGetValue(o.Key, out var rank) ? rank : -1))
+                // One object can be surfaced by more than one flow in a single report: a generated view is
+                // DECLARED by its pre flow (transform.generateView) and READ as the source of its ods flow, so
+                // report.Objects holds two nodes with the same key, each numbering columns from ordinal 1.
+                // Staging both would violate the (ObjectKey, Ordinal) unique index and abort the ENTIRE repo
+                // sync over one object. Keep a single column set per key: the most authoritative tier, then the
+                // richest declaration.
+                .GroupBy(o => o.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g
+                    .OrderByDescending(o => TierRank((o.ColumnsTier ?? Core.Lineage.LineageTier.Observed).ToString()))
+                    .ThenByDescending(o => o.Columns.Count)
+                    .First())
                 .ToList();
             var refreshedKeys = nodesToRefresh.Select(o => o.Key).Distinct().ToList();
             if (refreshedKeys.Count > 0)
@@ -1242,6 +1253,32 @@ public sealed class CatalogSync
         // T-SQL the engine ran. Additive to the tier-supplied columns above; a live (Derived) set is never
         // downgraded.
         columns += await ApplyObservedObjectScriptsAsync(context, repoId, report, touchedObjects, nowUtc, ct).ConfigureAwait(false);
+
+        // Final safety net for the data dictionary: the column set for one object is staged from more than one
+        // path (the report's tier-supplied columns above and the observed-script enrichment), and those paths
+        // delete-by-key against the DATABASE, not against each other's still-pending inserts. If two of them
+        // stage the same (ObjectKey, Ordinal), the unique index throws at SaveChanges and rolls back the WHOLE
+        // repo sync - every pipeline, run, and edge - over a single object. Collapse any duplicate staged column
+        // to the most authoritative tier so one object can never abort the sync. This runs on the change tracker
+        // just before the pass commits, so it catches collisions regardless of which path produced them.
+        var stagedDuplicates = context.ChangeTracker.Entries<CatalogObjectColumn>()
+            .Where(e => e.State == EntityState.Added)
+            .Select(e => e.Entity)
+            .GroupBy(c => (Key: c.ObjectKey.ToLowerInvariant(), c.Ordinal))
+            .Where(g => g.Count() > 1)
+            .ToList();
+        foreach (var group in stagedDuplicates)
+        {
+            var keep = group.OrderByDescending(c => TierRank(c.Tier)).First();
+            foreach (var drop in group)
+            {
+                if (!ReferenceEquals(drop, keep))
+                {
+                    context.Entry(drop).State = EntityState.Detached;
+                    columns--;
+                }
+            }
+        }
 
         // Edges are this repo's view of the graph: replace them wholesale so a removed flow's edges do not linger.
         await context.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
