@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
+import { readLocalStorageState, useLocalStorageState, useUrlSeed } from "@/hooks/useLocalStorageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -275,22 +276,26 @@ export default function RunsPage() {
   const [searchParams] = useSearchParams();
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [batchRun, setBatchRun] = useState<{ repoId: string | null; batch: string } | null>(null);
-  // The status bar's workload segments deep-link here as /runs?status=running|queued.
-  const [status, setStatus] = useState<RunStatus | null>(() => {
-    const fromUrl = searchParams.get("status");
-    return statuses.includes(fromUrl as RunStatus) ? (fromUrl as RunStatus) : null;
-  });
-  const [kind, setKind] = useState("all");
-  const [flowNameInput, setFlowNameInput] = useState("");
-  const [flowName, setFlowName] = useState("");
-  const [batch, setBatch] = useState("");
+  const [status, setStatus] = useLocalStorageState<RunStatus | null>("sqlflow.filters.runs.status", null);
+  const [kind, setKind] = useLocalStorageState("sqlflow.filters.runs.kind", "all");
+  const [flowNameInput, setFlowNameInput] = useLocalStorageState("sqlflow.filters.runs.flowName", "");
+  // Seed the debounced value from the same remembered text so the first query runs filtered, with no flash.
+  const [flowName, setFlowName] = useState(() =>
+    readLocalStorageState("sqlflow.filters.runs.flowName", "").trim());
+  const [batch, setBatch] = useLocalStorageState("sqlflow.filters.runs.batch", "");
   // The schedule name on the Schedules board deep-links here as /runs?scheduleId=<id>, so a click lands on that
-  // schedule's runs with the filter already applied.
+  // schedule's runs with the filter already applied. This is a transient deep-link context, not remembered.
   const [scheduleId, setScheduleId] = useState(() => searchParams.get("scheduleId") ?? "");
-  const [grouped, setGrouped] = useState(true);
+  const [grouped, setGrouped] = useLocalStorageState("sqlflow.filters.runs.grouped", true);
   // "last" (the default) shows each flow's newest run: the outcome of the most recent execution, "what happened
   // last" per schedule. "all" opens the full run history. Independent of grouping, which is only the tree shape.
-  const [view, setView] = useState<"last" | "all">("last");
+  const [view, setView] = useLocalStorageState<"last" | "all">("sqlflow.filters.runs.view", "last");
+
+  // The status bar's workload segments deep-link here as /runs?status=running|queued, overriding the remembered
+  // filter (ignoring an unrecognised value).
+  useUrlSeed(searchParams.get("status"), (value) => {
+    if (statuses.includes(value as RunStatus)) setStatus(value as RunStatus);
+  });
 
   useEffect(() => {
     const handle = window.setTimeout(() => setFlowName(flowNameInput.trim()), 400);

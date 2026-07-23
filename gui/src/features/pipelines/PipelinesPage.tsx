@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { readLocalStorageState, useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,7 +13,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { ActiveBadge } from "../../components/StatusBadge";
 import { ConnectionRef } from "../../components/ConnectionRef";
-import { TruncatedText } from "../../components/TruncatedText";
+import { PathRef } from "../../components/PathRef";
 
 const kinds = ["file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
 
@@ -49,19 +50,21 @@ const columns: Column<PipelineSummary>[] = [
   { id: "active", header: "Active", render: (row) => <ActiveBadge active={row.active} /> },
   { id: "sourceServer", header: "Source", render: (row) => <ConnectionRef value={row.sourceServer} /> },
   { id: "targetServer", header: "Target", render: (row) => <ConnectionRef value={row.targetServer} /> },
-  { id: "relativePath", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={360} /> },
+  { id: "relativePath", header: "Path", render: (row) => <PathRef path={row.relativePath} /> },
 ];
 
 /** All pipelines across repos, with server-side filtering on repo, project (root folder), kind, active flag,
  * and name. */
 export default function PipelinesPage() {
   const navigate = useNavigate();
-  const [repoFilter, setRepoFilter] = useState("");
-  const [projectFilter, setProjectFilter] = useState("");
-  const [kindFilter, setKindFilter] = useState("");
-  const [activeFilter, setActiveFilter] = useState("");
-  const [nameInput, setNameInput] = useState("");
-  const [nameFilter, setNameFilter] = useState("");
+  const [repoFilter, setRepoFilter] = useLocalStorageState("sqlflow.filters.pipelines.repo", "");
+  const [projectFilter, setProjectFilter] = useLocalStorageState("sqlflow.filters.pipelines.project", "");
+  const [kindFilter, setKindFilter] = useLocalStorageState("sqlflow.filters.pipelines.kind", "");
+  const [activeFilter, setActiveFilter] = useLocalStorageState("sqlflow.filters.pipelines.active", "");
+  const [nameInput, setNameInput] = useLocalStorageState("sqlflow.filters.pipelines.name", "");
+  // Seed the debounced value from the same remembered text so the first query runs filtered, with no flash.
+  const [nameFilter, setNameFilter] = useState(() =>
+    readLocalStorageState("sqlflow.filters.pipelines.name", "").trim());
 
   // The name filter debounces keystrokes so each pause, not each character, costs an API call.
   useEffect(() => {

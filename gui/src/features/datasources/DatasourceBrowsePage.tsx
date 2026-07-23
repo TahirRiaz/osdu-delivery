@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import type {
   DatasourceDatabase, DatasourceObject, DatasourceObjectPage, DatasourceSchema,
 } from "../../api/types";
@@ -68,8 +69,8 @@ export default function DatasourceBrowsePage() {
   const [schema, setSchema] = useState<string | null>(null);
   const [nameLike, setNameLike] = useState("");
   const [appliedNameLike, setAppliedNameLike] = useState("");
-  const [includeViews, setIncludeViews] = useState(true);
-  const [includeSystem, setIncludeSystem] = useState(false);
+  const [includeViews, setIncludeViews] = useLocalStorageState("sqlflow.filters.datasourceBrowse.includeViews", true);
+  const [includeSystem, setIncludeSystem] = useLocalStorageState("sqlflow.filters.datasourceBrowse.includeSystem", false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   const [selected, setSelected] = useState<DatasourceObject | null>(null);

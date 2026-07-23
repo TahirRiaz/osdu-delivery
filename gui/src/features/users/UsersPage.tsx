@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { readLocalStorageState, useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { toast } from "sonner";
 import { Loader2, MoreVertical, UserPlus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -322,11 +323,13 @@ function CreateUserSheet({ roles, onClose }: { roles: Role[]; onClose: () => voi
 /** User administration: list/filter accounts, create local users, and manage role, password, and active state. */
 export default function UsersPage() {
   const queryClient = useQueryClient();
-  const [usernameInput, setUsernameInput] = useState("");
-  const [usernameFilter, setUsernameFilter] = useState("");
-  const [roleFilter, setRoleFilter] = useState("");
-  const [providerFilter, setProviderFilter] = useState("");
-  const [activeFilter, setActiveFilter] = useState("");
+  const [usernameInput, setUsernameInput] = useLocalStorageState("sqlflow.filters.users.username", "");
+  // Seed the debounced value from the same remembered text so the first query runs filtered, with no flash.
+  const [usernameFilter, setUsernameFilter] = useState(() =>
+    readLocalStorageState("sqlflow.filters.users.username", "").trim());
+  const [roleFilter, setRoleFilter] = useLocalStorageState("sqlflow.filters.users.role", "");
+  const [providerFilter, setProviderFilter] = useLocalStorageState("sqlflow.filters.users.provider", "");
+  const [activeFilter, setActiveFilter] = useLocalStorageState("sqlflow.filters.users.active", "");
   const [createOpen, setCreateOpen] = useState(false);
   const [roleDialogUser, setRoleDialogUser] = useState<User | null>(null);
   const [passwordDialogUser, setPasswordDialogUser] = useState<User | null>(null);

@@ -1,9 +1,11 @@
 import { useState } from "react";
 import {
-  addMonths, eachDayOfInterval, endOfMonth, endOfWeek, format, isAfter, isBefore,
-  isSameDay, isSameMonth, parse, startOfMonth, startOfWeek, subMonths,
+  addMonths, addYears, eachDayOfInterval, endOfMonth, endOfWeek, format, isAfter, isBefore,
+  isSameDay, isSameMonth, parse, startOfMonth, startOfWeek, subMonths, subYears,
 } from "date-fns";
-import { CalendarRange, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  CalendarRange, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,6 +49,49 @@ const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const DEFAULT_FROM_TIME = "00:00";
 const DEFAULT_TO_TIME = "23:59";
 
+interface MonthNavProps {
+  month: Date;
+  onChange: (next: Date) => void;
+}
+
+/** One calendar's own header: year jump (double chevron), month step (single chevron), and its title. Each
+ * calendar navigates on its own so choosing the start never drags the other month off the end date. */
+function MonthNav({ month, onChange }: MonthNavProps) {
+  return (
+    <div className="mb-1.5 flex items-center justify-between">
+      <div className="flex items-center">
+        <Button
+          type="button" variant="ghost" size="icon" className="size-7"
+          onClick={() => onChange(subYears(month, 1))} aria-label="Previous year"
+        >
+          <ChevronsLeft className="size-4" />
+        </Button>
+        <Button
+          type="button" variant="ghost" size="icon" className="size-7"
+          onClick={() => onChange(subMonths(month, 1))} aria-label="Previous month"
+        >
+          <ChevronLeft className="size-4" />
+        </Button>
+      </div>
+      <span className="text-[13px] font-medium">{format(month, "MMMM yyyy")}</span>
+      <div className="flex items-center">
+        <Button
+          type="button" variant="ghost" size="icon" className="size-7"
+          onClick={() => onChange(addMonths(month, 1))} aria-label="Next month"
+        >
+          <ChevronRight className="size-4" />
+        </Button>
+        <Button
+          type="button" variant="ghost" size="icon" className="size-7"
+          onClick={() => onChange(addYears(month, 1))} aria-label="Next year"
+        >
+          <ChevronsRight className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 interface MonthGridProps {
   month: Date;
   start: Date | null;
@@ -66,8 +111,7 @@ function MonthGrid({ month, start, end, hovered, onPick, onHover }: MonthGridPro
   const effectiveEnd = end ?? (start !== null && hovered !== null && !isBefore(hovered, start) ? hovered : null);
 
   return (
-    <div className="w-[15.5rem]">
-      <div className="mb-1.5 text-center text-[13px] font-medium">{format(month, "MMMM yyyy")}</div>
+    <div className="w-full">
       <div className="grid grid-cols-7">
         {WEEKDAYS.map((label) => (
           <div key={label} className="pb-1 text-center text-[11px] font-normal text-muted-foreground">{label}</div>
@@ -140,7 +184,9 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
   const [draftFrom, setDraftFrom] = useState("");
   const [draftTo, setDraftTo] = useState("");
   const [hovered, setHovered] = useState<Date | null>(null);
-  const [viewMonth, setViewMonth] = useState(() => startOfMonth(new Date()));
+  // The two calendars navigate independently, so each keeps its own view month.
+  const [viewLeft, setViewLeft] = useState(() => startOfMonth(new Date()));
+  const [viewRight, setViewRight] = useState(() => addMonths(startOfMonth(new Date()), 1));
 
   const committedFrom = parseValue(from, DEFAULT_FROM_TIME);
   const committedTo = parseValue(to, DEFAULT_TO_TIME);
@@ -152,11 +198,15 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
       return;
     }
     if (next) {
-      // Seed the draft from the committed value and open the view on the start month (or today when unset).
+      // Seed the draft from the committed value and open the left calendar on the start month (or today),
+      // the right on the end month when it sits later, otherwise the month after the start.
       setDraftFrom(from);
       setDraftTo(to);
       setHovered(null);
-      setViewMonth(startOfMonth(committedFrom.date ?? new Date()));
+      const startMonth = startOfMonth(committedFrom.date ?? new Date());
+      const endMonth = committedTo.date === null ? null : startOfMonth(committedTo.date);
+      setViewLeft(startMonth);
+      setViewRight(endMonth !== null && isAfter(endMonth, startMonth) ? endMonth : addMonths(startMonth, 1));
     }
     setOpen(next);
   };
@@ -223,36 +273,26 @@ export function DateRangeCalendar({ from, to, onChange, disabled, testId }: Date
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-3" align="start" onMouseLeave={() => setHovered(null)}>
-        <div className="mb-2 flex items-center justify-between">
-          <Button
-            type="button" variant="ghost" size="icon" className="size-7"
-            onClick={() => setViewMonth((m) => subMonths(m, 1))}
-            aria-label="Previous month"
-          >
-            <ChevronLeft className="size-4" />
-          </Button>
-          <span className="text-[11px] text-muted-foreground">
-            Click a start, then an end. Nothing is applied until you confirm.
-          </span>
-          <Button
-            type="button" variant="ghost" size="icon" className="size-7"
-            onClick={() => setViewMonth((m) => addMonths(m, 1))}
-            aria-label="Next month"
-          >
-            <ChevronRight className="size-4" />
-          </Button>
+        <div className="mb-2 text-center text-[11px] text-muted-foreground">
+          Click a start, then an end. Nothing is applied until you confirm.
         </div>
         <div className="flex gap-4">
-          <MonthGrid
-            month={viewMonth}
-            start={draftParsedFrom.date} end={draftParsedTo.date} hovered={hovered}
-            onPick={pick} onHover={setHovered}
-          />
-          <MonthGrid
-            month={addMonths(viewMonth, 1)}
-            start={draftParsedFrom.date} end={draftParsedTo.date} hovered={hovered}
-            onPick={pick} onHover={setHovered}
-          />
+          <div className="w-[15.5rem]">
+            <MonthNav month={viewLeft} onChange={setViewLeft} />
+            <MonthGrid
+              month={viewLeft}
+              start={draftParsedFrom.date} end={draftParsedTo.date} hovered={hovered}
+              onPick={pick} onHover={setHovered}
+            />
+          </div>
+          <div className="w-[15.5rem]">
+            <MonthNav month={viewRight} onChange={setViewRight} />
+            <MonthGrid
+              month={viewRight}
+              start={draftParsedFrom.date} end={draftParsedTo.date} hovered={hovered}
+              onPick={pick} onHover={setHovered}
+            />
+          </div>
         </div>
         <div className="mt-3 flex items-end gap-3 border-t border-border pt-3">
           <div className="flex flex-1 flex-col gap-1">

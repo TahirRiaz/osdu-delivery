@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Network, X } from "lucide-react";
+import { useLocalStorageState, useUrlSeed } from "@/hooks/useLocalStorageState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -150,10 +151,12 @@ function ObjectDrawerContent({ objectKey }: { objectKey: string }) {
 export default function LineagePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [name, setName] = useState(searchParams.get("name") ?? "");
-  const [kind, setKind] = useState("all");
-  const [serverRef, setServerRef] = useState("");
+  const [name, setName] = useLocalStorageState("sqlflow.filters.lineage.name", "");
+  const [kind, setKind] = useLocalStorageState("sqlflow.filters.lineage.kind", "all");
+  const [serverRef, setServerRef] = useLocalStorageState("sqlflow.filters.lineage.serverRef", "");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // A ?name= deep link (from the search page) overrides and updates the remembered filter.
+  useUrlSeed(searchParams.get("name"), setName);
 
   const debouncedName = useDebounced(name, 400);
   const debouncedServerRef = useDebounced(serverRef, 400);

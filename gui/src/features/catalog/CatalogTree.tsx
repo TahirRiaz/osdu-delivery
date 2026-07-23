@@ -34,6 +34,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { lineageApi, pipelineApi, repoApi } from "../../api/endpoints";
 import type { FileNode, FileOriginKind, LineageObject, PagedResult, PipelineSummary, Repo, SchemaKindCount } from "../../api/types";
@@ -662,7 +663,7 @@ export interface CatalogTreeProps {
  */
 export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTreeProps) {
   const [expanded, setExpanded] = useState<string[]>(initialExpanded);
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useLocalStorageState("sqlflow.filters.catalog.tree", "");
   const debouncedFilter = useDebounced(filter.trim(), 350);
   const needle = lower(debouncedFilter);
 
