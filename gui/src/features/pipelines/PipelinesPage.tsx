@@ -15,7 +15,8 @@ import { ActiveBadge } from "../../components/StatusBadge";
 import { ConnectionRef } from "../../components/ConnectionRef";
 import { PathRef } from "../../components/PathRef";
 
-const kinds = ["file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
+/** Every flow kind the loader recognises, acquisition-first then transform/utility (see YamlDocumentLoader). */
+const kinds = ["file", "ing", "api", "cpy", "sftp", "exp", "sp", "inv", "hc", "scm", "batch"];
 
 /** The radix Select cannot carry an empty-string item value, so "all" stands in for the unfiltered choice. */
 const ALL = "all";

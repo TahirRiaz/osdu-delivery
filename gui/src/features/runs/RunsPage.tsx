@@ -22,7 +22,7 @@ import { formatDurationSeconds } from "../../lib/time";
 import { TriggerRunDialog } from "./TriggerRunDialog";
 
 const statuses: RunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled", "skipped"];
-const kinds = ["all", "file", "ing", "exp", "sp", "inv", "hc", "scm", "batch"];
+const kinds = ["all", "file", "ing", "api", "cpy", "sftp", "exp", "sp", "inv", "hc", "scm", "batch"];
 
 /** A right-aligned numeric cell: the value with thousands separators, or "-" when it is null/zero (a flow that
  * touched no rows, or a non-file flow with no file count). */
