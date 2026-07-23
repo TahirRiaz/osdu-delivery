@@ -4,7 +4,8 @@
   "flowType": "api",
   "generatedFrom": "source code: src/SqlFlow.Yaml/YamlAcquireFlowLoader.cs, src/SqlFlow.Core/Acquire/AcquireFlow.cs, and src/SqlFlow.Acquire (the engine)",
   "naming": "The loader builds its IDeserializer with CamelCaseNamingConvention and IgnoreUnmatchedProperties, so a C# PascalCase property binds to the camelCase YAML key. Dictionary keys (headers, query, bodyFields, params, options) bind verbatim. Enum-like values (transport, auth.type, bodyKind, pagination.strategy, iterate kind/granularity, landing.compression, incremental.source) are parsed case-insensitively with '-' and '_' stripped before matching (YamlAcquireFlowLoader.ParseEnum), so snake_case, kebab-case, and PascalCase spellings are all accepted.",
-  "keyCount": 78,
+  "forms": "An api flow declares either ONE endpoint (the single form: source.request + a top-level landing) or SEVERAL endpoints (the multi-item form: an items[] list, each entry carrying its own request/pagination/iterate/landing over the shared source connection envelope). Exactly one form is allowed. In the multi-item form, source holds only the shared envelope (transport/baseUrl/auth/reliability/options): putting request/pagination/iterate on source, or a top-level landing, alongside items is a validation error, as is combining items with incremental (the run watermark is one value per run, so multi-item flows express incrementality through each item's date-window iterate). One multi-item flow is one pipeline row that lands each item to its own raw path, so a single acquisition can feed several downstream file/pre flows and lineage stays intact.",
+  "keyCount": 100,
   "keys": [
     {
       "path": "name",
@@ -41,8 +42,8 @@
       "path": "source",
       "type": "object",
       "required": true,
-      "description": "The source side of the acquisition: which transport, where, how to authenticate, what to request, how to paginate, how to fan out, and the reliability envelope.",
-      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireSource)"
+      "description": "The source side of the acquisition: which transport, where, how to authenticate, what to request, how to paginate, how to fan out, and the reliability envelope. In the single-endpoint form this holds everything including request/pagination/iterate. In the multi-item form (items[] present) it holds ONLY the shared connection envelope (transport/baseUrl/auth/reliability/options), and each item carries its own request/pagination/iterate/landing; see 'forms' above.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireSource); shared envelope exposed as AcquireFlow.Source = Items[0].Source"
     },
     {
       "path": "source.transport",
@@ -653,10 +654,58 @@
       "definedIn": "src/SqlFlow.Acquire/Engine/SftpTransport.cs, S3Transport.cs, AzureTableTransport.cs"
     },
     {
-      "path": "landing",
+      "path": "items",
+      "type": "list",
+      "required": false,
+      "default": "absent (the single-endpoint form: source.request + a top-level landing)",
+      "description": "The multi-endpoint form: one entry per endpoint, each with its own request/pagination/iterate/landing over the shared source connection envelope (mirrors a cpy flow's steps). One flow fetches every listed endpoint and lands each to its own raw path. Mutually exclusive with a top-level landing, with request/pagination/iterate on source, and with incremental; see 'forms' above.",
+      "validation": "YamlAcquireFlowLoader.MapItems: items + top-level landing, items + source.request/pagination/iterate, and items + incremental each fail loading; every item requires a landing and (for http) a request.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireFlow.Items, AcquireItem)"
+    },
+    {
+      "path": "items[].name",
+      "type": "string",
+      "required": false,
+      "default": "the landing's leaf folder",
+      "description": "An optional stable label for the endpoint (e.g. bikes, alert), surfaced in run logs. Distinct across the flow's items.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireItem.Name)"
+    },
+    {
+      "path": "items[].request",
       "type": "object",
       "required": true,
-      "description": "How fetched payloads are written to the raw zone. The payload is landed VERBATIM (raw bytes, original format): no CSV conversion, no flattening; downstream json/csv/xml file flows ingest the landed files into SQL.",
+      "appliesWhen": "required for the http transport",
+      "description": "This endpoint's HTTP request template. Same shape and fields as source.request (method/path/headers/query/bodyKind/body/bodyFields/contentType).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireRequest)"
+    },
+    {
+      "path": "items[].pagination",
+      "type": "object",
+      "required": false,
+      "default": "strategy: none",
+      "description": "This endpoint's pagination. Same shape and fields as source.pagination.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquirePagination)"
+    },
+    {
+      "path": "items[].iterate",
+      "type": "list",
+      "required": false,
+      "default": "[] (a single request pipeline)",
+      "description": "This endpoint's fan-out iterations. Same shape and fields as source.iterate (date_window/list/ids_from).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireIteration)"
+    },
+    {
+      "path": "items[].landing",
+      "type": "object",
+      "required": true,
+      "description": "Where this endpoint's raw payloads land. Same shape and fields as the top-level landing (target/pathTemplate/format/compression/overwrite/persistHeaders/skipEmpty/skipUnchanged). Each item's landing target is the raw path a downstream file/pre flow reads, so it is the lineage join point for that endpoint.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireLanding)"
+    },
+    {
+      "path": "landing",
+      "type": "object",
+      "required": "single-endpoint form only (required there; replaced by items[].landing in the multi-item form)",
+      "description": "How fetched payloads are written to the raw zone. The payload is landed VERBATIM (raw bytes, original format): no CSV conversion, no flattening; downstream json/csv/xml file flows ingest the landed files into SQL. In the multi-item form this is declared per item under items[].landing instead.",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireLanding); pipeline in src/SqlFlow.Acquire/Engine/LandingPipeline.cs"
     },
     {
@@ -727,7 +776,7 @@
       "type": "object",
       "required": false,
       "default": "absent (the flow fetches its full declared window every run)",
-      "description": "Incremental resume: the watermark is read from the flow's own run history (.sqlflow/runs, successful runs only, so a failed run never advances the mark) and advanced to the max observed this run. A full-load run (--full) ignores the stored watermark.",
+      "description": "Incremental resume (single-endpoint form only): the watermark is read from the flow's own run history (.sqlflow/runs, successful runs only, so a failed run never advances the mark) and advanced to the max observed this run. A full-load run (--full) ignores the stored watermark. Not valid with items[] (one watermark per run cannot serve several endpoints); a multi-item flow expresses incrementality through each item's date-window iterate.",
       "definedIn": "src/SqlFlow.Acquire/Engine/AcquireWatermarkHistory.cs, WatermarkState.cs"
     },
     {

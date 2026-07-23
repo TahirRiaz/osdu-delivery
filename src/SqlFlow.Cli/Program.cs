@@ -169,7 +169,9 @@ internal static class Program
                         }
 
                         case AcquireFlowDocument doc:
-                            Console.WriteLine($"OK  '{doc.Flow.Name}' is valid (api: {doc.Flow.Source.Transport} -> {doc.Flow.Landing.Target}).");
+                            Console.WriteLine(doc.Flow.Items.Count == 1
+                                ? $"OK  '{doc.Flow.Name}' is valid (api: {doc.Flow.Source.Transport} -> {doc.Flow.Items[0].Landing.Target})."
+                                : $"OK  '{doc.Flow.Name}' is valid (api: {doc.Flow.Source.Transport}, {doc.Flow.Items.Count} items).");
                             return 0;
 
                         case CopyFlowDocument doc:

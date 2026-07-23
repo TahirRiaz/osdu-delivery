@@ -97,7 +97,7 @@ public static class IntegrationEndpoints
             flow.Name,
             flow.Batch,
             flow.Source.Transport.ToString().ToLowerInvariant(),
-            flow.Source.Iterations.Any(i => i.Kind == Core.Acquire.AcquireIterationKind.DateWindow),
+            flow.Items.Any(item => item.Source.Iterations.Any(i => i.Kind == Core.Acquire.AcquireIterationKind.DateWindow)),
             parameters));
     }
 

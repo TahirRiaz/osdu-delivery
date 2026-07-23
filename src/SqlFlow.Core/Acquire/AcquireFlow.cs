@@ -19,11 +19,25 @@ public sealed record AcquireFlow
     /// <summary>The batch (source system) grouping label under which this flow's runs report.</summary>
     public string? Batch { get; init; }
 
-    public required AcquireSource Source { get; init; }
+    /// <summary>
+    /// The endpoints this flow acquires, in declaration order. One flow fetches as many endpoint+landing pairs as it
+    /// declares (the multi-item <c>items:</c> form, mirroring a <c>cpy</c> flow's steps): the single-endpoint case is a
+    /// one-element list built from the top-level <c>source</c>/<c>landing</c>. Always at least one. Every item shares the
+    /// flow's connection envelope (transport, base URL, auth, reliability) via <see cref="Source"/>; each item carries its
+    /// own request, pagination, fan-out, and landing.
+    /// </summary>
+    public required IReadOnlyList<AcquireItem> Items { get; init; }
 
-    public required AcquireLanding Landing { get; init; }
+    /// <summary>
+    /// The shared connection envelope, identical across every item (transport, base URL, auth, reliability, transport
+    /// options). Exposed off the first item because the engine resolves the HTTP client and authentication once per run,
+    /// not once per item. Never varies per item.
+    /// </summary>
+    public AcquireSource Source => Items[0].Source;
 
-    /// <summary>Incremental resume settings; null means the flow fetches its full declared window every run.</summary>
+    /// <summary>Incremental resume settings; null means the flow fetches its full declared window every run. Valid only on
+    /// the single-item form: the run watermark is one value per run, so a multi-endpoint flow expresses incrementality
+    /// through its items' date-window fan-out instead.</summary>
     public AcquireIncremental? Incremental { get; init; }
 
     /// <summary>
@@ -34,6 +48,23 @@ public sealed record AcquireFlow
     /// </summary>
     public IReadOnlyDictionary<string, string?> Params { get; init; }
         = new Dictionary<string, string?>(StringComparer.Ordinal);
+}
+
+/// <summary>
+/// One endpoint an acquisition flow fetches: a <see cref="Source"/> (the connection envelope plus this endpoint's request,
+/// pagination, and fan-out) paired with the <see cref="Landing"/> its raw payloads are written to. A single-endpoint flow
+/// has one item; a multi-endpoint flow has one per <c>items:</c> entry, each landing to its own raw-zone location so the
+/// downstream file/pre flow that reads that location binds to it in lineage.
+/// </summary>
+public sealed record AcquireItem
+{
+    /// <summary>An optional stable label for this endpoint (e.g. <c>bikes</c>, <c>alert</c>), surfaced in run logs. When
+    /// omitted it defaults to the landing's leaf folder. Distinct across a flow's items.</summary>
+    public string? Name { get; init; }
+
+    public required AcquireSource Source { get; init; }
+
+    public required AcquireLanding Landing { get; init; }
 }
 
 /// <summary>The transport a source speaks.</summary>

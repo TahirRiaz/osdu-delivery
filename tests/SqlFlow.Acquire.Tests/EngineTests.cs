@@ -16,8 +16,11 @@ public sealed class EngineTests
         => new()
         {
             Name = "Test_Flow",
-            Source = source,
-            Landing = new AcquireLanding { Target = landingDir, PathTemplate = pathTemplate },
+            Items = [new AcquireItem
+            {
+                Source = source,
+                Landing = new AcquireLanding { Target = landingDir, PathTemplate = pathTemplate },
+            }],
             Incremental = incremental,
         };
 
@@ -63,11 +66,14 @@ public sealed class EngineTests
         var flow = new AcquireFlow
         {
             Name = "Test_Flow",
-            Source = source,
-            Landing = new AcquireLanding
+            Items = [new AcquireItem
             {
-                Target = dir, PathTemplate = "orders", Overwrite = true, SkipUnchanged = true,
-            },
+                Source = source,
+                Landing = new AcquireLanding
+                {
+                    Target = dir, PathTemplate = "orders", Overwrite = true, SkipUnchanged = true,
+                },
+            }],
         };
 
         // First fetch lands the file.
@@ -105,6 +111,40 @@ public sealed class EngineTests
         Assert.Equal(payload, await File.ReadAllTextAsync(files[0]));
         Assert.EndsWith(".json", files[0], StringComparison.Ordinal);
         Assert.Equal("Bearer SECRET123", h.Requests[0].Headers["Authorization"]);
+    }
+
+    [Fact]
+    public async Task Multi_item_flow_fetches_every_endpoint_and_aggregates_one_result()
+    {
+        // One flow, two endpoints over the shared envelope: each item fetches its own path and lands to its own
+        // folder, and the run result sums the per-item counters (mirroring a cpy flow's multi-step aggregate).
+        var handler = new StubHttpHandler()
+            .Json("/bikes", _ => """[{"BikeId":1}]""")
+            .Json("/alert", _ => """[{"AlertId":9}]""");
+        var engine = TestEngine.Create(handler, new FakeSecrets(), new FixedClock(Now), out var dir);
+        AcquireItem Item(string name, string path) => new()
+        {
+            Name = name,
+            Source = new AcquireSource { BaseUrl = BaseUrl, Request = new AcquireRequest { Path = path } },
+            Landing = new AcquireLanding { Target = Path.Combine(dir, name), PathTemplate = name },
+        };
+        var flow = new AcquireFlow
+        {
+            Name = "Multi_Flow",
+            Items = [Item("bikes", "/bikes"), Item("alert", "/alert")],
+        };
+
+        var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Iterations);
+        Assert.Equal(2, result.FilesWritten);
+        Assert.Equal(2, result.Files.Count);
+        Assert.Contains(handler.Requests, r => r.Uri.AbsolutePath == "/bikes");
+        Assert.Contains(handler.Requests, r => r.Uri.AbsolutePath == "/alert");
+        var landed = TestEngine.LandedFiles(dir);
+        Assert.Contains(landed, f => f.Contains("bikes", StringComparison.Ordinal) && f.EndsWith(".json", StringComparison.Ordinal));
+        Assert.Contains(landed, f => f.Contains("alert", StringComparison.Ordinal) && f.EndsWith(".json", StringComparison.Ordinal));
     }
 
     [Fact]

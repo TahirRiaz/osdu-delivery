@@ -456,11 +456,12 @@ public sealed class FlowSetCollector
 
             case AcquireFlowDocument doc:
                 // An acquisition fetches from a third party and lands raw files under its landing target. It is
-                // ALWAYS a file producer: the declared drop is derived with engine parity from target + pathTemplate
-                // + the extension the landing appends, so reconciliation binds it to the file ingestion(s) watching
-                // the landing folder (or a parent of it) and the graph chains acquire -> file -> landing table ->
-                // view -> downstream, ordering the waves. An unconsumed drop still records its own node.
-                producers.Add(new FileProducer(headers[0].Name, [AcquireDrop(doc.Flow.Landing)]));
+                // ALWAYS a file producer: one declared drop per item, each derived with engine parity from that item's
+                // target + pathTemplate + the extension the landing appends, so reconciliation binds each drop to the
+                // file ingestion(s) watching that landing folder (or a parent of it) and the graph chains
+                // acquire -> file -> landing table -> view -> downstream, ordering the waves. A multi-endpoint flow
+                // thus feeds several downstream pre flows from one pipeline. An unconsumed drop still records its own node.
+                producers.Add(new FileProducer(headers[0].Name, doc.Flow.Items.Select(item => AcquireDrop(item.Landing)).ToList()));
                 break;
 
             case CopyFlowDocument doc:

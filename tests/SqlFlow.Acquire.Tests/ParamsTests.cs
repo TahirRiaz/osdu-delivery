@@ -14,16 +14,19 @@ public sealed class ParamsTests
         => new()
         {
             Name = "Params_Flow",
-            Source = new AcquireSource
+            Items = [new AcquireItem
             {
-                BaseUrl = "https://api.test.local",
-                Request = new AcquireRequest
+                Source = new AcquireSource
                 {
-                    Path = "/report",
-                    Query = new Dictionary<string, string> { ["region"] = "{region}" },
+                    BaseUrl = "https://api.test.local",
+                    Request = new AcquireRequest
+                    {
+                        Path = "/report",
+                        Query = new Dictionary<string, string> { ["region"] = "{region}" },
+                    },
                 },
-            },
-            Landing = new AcquireLanding { Target = landingDir, PathTemplate = "report_{region}" },
+                Landing = new AcquireLanding { Target = landingDir, PathTemplate = "report_{region}" },
+            }],
             Params = declaredParams,
         };
 
@@ -81,17 +84,20 @@ public sealed class ParamsTests
         var flow = new AcquireFlow
         {
             Name = "Backfill_Flow",
-            Source = new AcquireSource
+            Items = [new AcquireItem
             {
-                BaseUrl = "https://api.test.local",
-                Request = new AcquireRequest
+                Source = new AcquireSource
                 {
-                    Path = "/trips",
-                    Query = new Dictionary<string, string> { ["d"] = "{window.from:yyyy-MM-dd}" },
+                    BaseUrl = "https://api.test.local",
+                    Request = new AcquireRequest
+                    {
+                        Path = "/trips",
+                        Query = new Dictionary<string, string> { ["d"] = "{window.from:yyyy-MM-dd}" },
+                    },
+                    Iterations = [new AcquireIteration { Kind = AcquireIterationKind.DateWindow, From = "now-1d", To = "now" }],
                 },
-                Iterations = [new AcquireIteration { Kind = AcquireIterationKind.DateWindow, From = "now-1d", To = "now" }],
-            },
-            Landing = new AcquireLanding { Target = dir, PathTemplate = "t_{window.from:yyyyMMdd}" },
+                Landing = new AcquireLanding { Target = dir, PathTemplate = "t_{window.from:yyyyMMdd}" },
+            }],
         };
 
         var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None,

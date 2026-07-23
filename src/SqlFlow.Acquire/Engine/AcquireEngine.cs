@@ -67,11 +67,15 @@ public sealed class AcquireEngine
         var success = true;
         string? error = null;
         string? resolvedBase = null;
-        LandingPipeline? pipeline = null;
+        // One landing pipeline per item; a multi-endpoint flow accumulates its counters across all of them into one result.
+        var pipelines = new List<LandingPipeline>(flow.Items.Count);
         HttpClient? client = null;
         try
         {
-            var transport = SelectTransport(flow.Source.Transport);
+            // The connection envelope (transport, auth, reliability) is shared across every item, so the HTTP client and
+            // authentication are resolved once per run, not once per item; only the request/fan-out/landing vary per item.
+            var envelope = flow.Source;
+            var transport = SelectTransport(envelope.Transport);
 
             var baseVars = new TemplateContext(now).WithDate("now", now);
             BindParams(flow, run.Params, baseVars, log);
@@ -80,41 +84,47 @@ public sealed class AcquireEngine
                 baseVars.WithString(bindVar, before);
             }
 
-            resolvedBase = await _secrets.ResolveAsync(TemplateEngine.Render(flow.Landing.Target, baseVars), ct).ConfigureAwait(false);
-            pipeline = new LandingPipeline(flow.Landing, _landing, resolvedBase, runId, log, run.DryRun, run.ReprocessFiles);
-
-            client = _httpClientFactory(flow.Source.Reliability);
-            var dataHttp = HttpExecutorFor(client, flow.Source.Reliability, flow.Source.Reliability.UrlAllowlist);
+            client = _httpClientFactory(envelope.Reliability);
+            var dataHttp = HttpExecutorFor(client, envelope.Reliability, envelope.Reliability.UrlAllowlist);
             // Token and OIDC-discovery calls may target a host outside the data allowlist; they are trusted
             // config, so the auth executor keeps the SSRF IP guard but not the host allowlist.
-            var authHttp = HttpExecutorFor(client, flow.Source.Reliability, []);
+            var authHttp = HttpExecutorFor(client, envelope.Reliability, []);
 
-            var refreshPerIteration = flow.Source.Auth.Token?.RefreshPerIteration == true;
-            var discoveryAuth = await _auth.ResolveAsync(flow.Source.Auth, authHttp, baseVars, ct).ConfigureAwait(false);
+            var refreshPerIteration = envelope.Auth.Token?.RefreshPerIteration == true;
+            var discoveryAuth = await _auth.ResolveAsync(envelope.Auth, authHttp, baseVars, ct).ConfigureAwait(false);
 
-            var contexts = await ExpandAsync(flow.Source, baseVars, flow.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
-            foreach (var vars in contexts)
+            foreach (var item in flow.Items)
             {
                 ct.ThrowIfCancellationRequested();
-                var iterationAuth = refreshPerIteration ? await _auth.ResolveAsync(flow.Source.Auth, authHttp, vars, ct).ConfigureAwait(false) : discoveryAuth;
-                var fetch = new AcquireFetch
-                {
-                    Source = flow.Source,
-                    Vars = vars,
-                    Auth = iterationAuth,
-                    Landing = pipeline,
-                    Watermark = watermark,
-                    Log = log,
-                    Secrets = _secrets,
-                    Http = transport is HttpTransport ? dataHttp : null,
-                    Iteration = iterations,
-                    Probe = run.Probe,
-                    MaxPagesOverride = run.MaxPagesOverride,
-                };
+                var itemBase = await _secrets.ResolveAsync(TemplateEngine.Render(item.Landing.Target, baseVars), ct).ConfigureAwait(false);
+                resolvedBase ??= itemBase;
+                var pipeline = new LandingPipeline(item.Landing, _landing, itemBase, runId, log, run.DryRun, run.ReprocessFiles);
+                pipelines.Add(pipeline);
 
-                await transport.FetchAsync(fetch, ct).ConfigureAwait(false);
-                pages += fetch.Pages;
-                iterations++;
+                var contexts = await ExpandAsync(item.Source, baseVars, item.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
+                foreach (var vars in contexts)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var iterationAuth = refreshPerIteration ? await _auth.ResolveAsync(envelope.Auth, authHttp, vars, ct).ConfigureAwait(false) : discoveryAuth;
+                    var fetch = new AcquireFetch
+                    {
+                        Source = item.Source,
+                        Vars = vars,
+                        Auth = iterationAuth,
+                        Landing = pipeline,
+                        Watermark = watermark,
+                        Log = log,
+                        Secrets = _secrets,
+                        Http = transport is HttpTransport ? dataHttp : null,
+                        Iteration = iterations,
+                        Probe = run.Probe,
+                        MaxPagesOverride = run.MaxPagesOverride,
+                    };
+
+                    await transport.FetchAsync(fetch, ct).ConfigureAwait(false);
+                    pages += fetch.Pages;
+                    iterations++;
+                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -140,13 +150,13 @@ public sealed class AcquireEngine
             DurationSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3),
             Iterations = iterations,
             PagesFetched = pages,
-            FilesWritten = pipeline?.FilesWritten ?? 0,
-            Skipped = pipeline?.Skipped ?? 0,
-            BytesWritten = pipeline?.BytesWritten ?? 0,
+            FilesWritten = pipelines.Sum(p => p.FilesWritten),
+            Skipped = pipelines.Sum(p => p.Skipped),
+            BytesWritten = pipelines.Sum(p => p.BytesWritten),
             LandedBase = resolvedBase,
             WatermarkBefore = watermark.Before,
             WatermarkAfter = success ? watermark.Current : watermark.Before,
-            Files = pipeline?.Files ?? [],
+            Files = pipelines.SelectMany(p => p.Files).ToList(),
         };
     }
 

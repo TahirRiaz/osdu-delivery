@@ -25,11 +25,15 @@ public sealed class SamplesTests
         var flow = loader.LoadFile(file);
 
         Assert.False(string.IsNullOrWhiteSpace(flow.Name));
-        Assert.False(string.IsNullOrWhiteSpace(flow.Landing.Target));
-        Assert.False(string.IsNullOrWhiteSpace(flow.Landing.PathTemplate));
-        if (flow.Source.Transport == AcquireTransport.Http)
+        Assert.NotEmpty(flow.Items);
+        foreach (var item in flow.Items)
         {
-            Assert.NotNull(flow.Source.Request);
+            Assert.False(string.IsNullOrWhiteSpace(item.Landing.Target));
+            Assert.False(string.IsNullOrWhiteSpace(item.Landing.PathTemplate));
+            if (item.Source.Transport == AcquireTransport.Http)
+            {
+                Assert.NotNull(item.Source.Request);
+            }
         }
     }
 

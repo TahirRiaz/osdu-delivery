@@ -160,4 +160,51 @@ public sealed class LineageAcquireFileLinkTests : IDisposable
 
         Assert.False(DependsOn(report, "vendor_00_api", "other_01_jsn"));
     }
+
+    // A multi-item api flow (the citybike shape): ONE pipeline that lands two endpoints to two different lake paths.
+    // Each item's drop must reconcile independently to the pre flow watching its own path, so the single acquisition
+    // flow feeds both downstream loads and both file nodes exist. This is the multi-item lineage guarantee.
+    private static string AcquireMultiItem(string name)
+        => string.Join('\n',
+            "flowType: api",
+            $"name: {name}",
+            "source:",
+            "  baseUrl: https://api.kolumbus.citybike.cloud",
+            "items:",
+            "  - name: bikes",
+            "    request: { path: /api/Bikes }",
+            "    landing:",
+            "      target: abfss://datalakev2@acct.dfs.core.windows.net/raw/citybike/api/bikes",
+            "      pathTemplate: \"history/{yyyy}/{MM}/citybike_bikes_{yyyyMMdd}\"",
+            "      format: json",
+            "  - name: alert",
+            "    request: { path: /api/alert }",
+            "    landing:",
+            "      target: abfss://datalakev2@acct.dfs.core.windows.net/raw/citybike/api/alert",
+            "      pathTemplate: \"history/{yyyy}/{MM}/citybike_alerts_{yyyyMMdd}\"",
+            "      format: json") + '\n';
+
+    [Fact]
+    public void Acquire_MultiItem_EachItemBindsToItsOwnIngestion()
+    {
+        Write("00_api.yaml", AcquireMultiItem("citybike_00_api"));
+        Write("bikes_01_jsn.yaml", FileIngestion("citybike_bikes_01_jsn", "json",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/citybike/api/bikes/history/", srcFile: "citybike_bikes*.json", table: "Bysykkel_Bikes"));
+        Write("alert_01_jsn.yaml", FileIngestion("citybike_alert_01_jsn", "json",
+            "https://acct.dfs.core.windows.net/datalakev2/raw/citybike/api/alert/history/", srcFile: "citybike_alerts*.json", table: "Bysykkel_Alert"));
+
+        var report = Build();
+
+        // The one flow feeds both downstream loads.
+        Assert.True(DependsOn(report, "citybike_00_api", "citybike_bikes_01_jsn"));
+        Assert.True(DependsOn(report, "citybike_00_api", "citybike_alert_01_jsn"));
+
+        // Two distinct landing nodes, each written by the single acquisition flow and read by the matching pre flow.
+        var bikes = Assert.Single(report.Objects, o => o.Kind == LineageNodeKind.File && o.Name == "az://acct/datalakev2/raw/citybike/api/bikes/history");
+        var alert = Assert.Single(report.Objects, o => o.Kind == LineageNodeKind.File && o.Name == "az://acct/datalakev2/raw/citybike/api/alert/history");
+        Assert.Contains(report.Edges, e => e.Flow == "citybike_00_api" && e.Relation == LineageRelation.Writes && e.ObjectKey == bikes.Key);
+        Assert.Contains(report.Edges, e => e.Flow == "citybike_00_api" && e.Relation == LineageRelation.Writes && e.ObjectKey == alert.Key);
+        Assert.Contains(report.Edges, e => e.Flow == "citybike_bikes_01_jsn" && e.Relation == LineageRelation.Reads && e.ObjectKey == bikes.Key);
+        Assert.Contains(report.Edges, e => e.Flow == "citybike_alert_01_jsn" && e.Relation == LineageRelation.Reads && e.ObjectKey == alert.Key);
+    }
 }

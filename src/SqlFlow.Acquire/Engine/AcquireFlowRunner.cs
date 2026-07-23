@@ -29,7 +29,9 @@ public sealed class AcquireFlowRunner
         var events = options.Events ?? NullRunEventSink.Instance;
 
         events.Log(RunLogLevel.Info, "run.start",
-            $"acquire '{flow.Name}' (flow {flow.FlowId}, transport {flow.Source.Transport}) -> {flow.Landing.Target}");
+            flow.Items.Count == 1
+                ? $"acquire '{flow.Name}' (flow {flow.FlowId}, transport {flow.Source.Transport}) -> {flow.Items[0].Landing.Target}"
+                : $"acquire '{flow.Name}' (flow {flow.FlowId}, transport {flow.Source.Transport}) -> {flow.Items.Count} items");
 
         // The typed per-run contract maps onto the acquisition's native knobs. A reprocess (a full load OR a backfill
         // window) ignores the stored watermark so the flow re-fetches from its declared bounds / the window: without

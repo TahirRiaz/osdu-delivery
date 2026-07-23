@@ -54,35 +54,104 @@ public sealed class YamlAcquireFlowLoader
     {
         var name = YamlDocumentParts.RequireFlowName(y.Name, "an api flow", source);
         var sourceYaml = y.Source ?? throw new FlowValidationException($"{source}: 'source' is required.");
-        var landingYaml = y.Landing ?? throw new FlowValidationException($"{source}: 'landing' is required.");
-
-        var transport = ParseEnum(sourceYaml.Transport, AcquireTransport.Http, "source.transport", source);
-        var acquireSource = new AcquireSource
-        {
-            Transport = transport,
-            BaseUrl = Require(sourceYaml.BaseUrl, "source.baseUrl", source),
-            Auth = MapAuth(sourceYaml.Auth, source),
-            Request = MapRequest(sourceYaml.Request, source),
-            Pagination = MapPagination(sourceYaml.Pagination, source),
-            Iterations = (sourceYaml.Iterate ?? []).Select(i => MapIteration(i, source)).ToList(),
-            Reliability = MapReliability(sourceYaml.Reliability),
-            Options = MapOptions(sourceYaml.Options),
-        };
-
-        if (transport == AcquireTransport.Http && acquireSource.Request is null)
-        {
-            throw new FlowValidationException($"{source}: an http source requires a 'source.request' block.");
-        }
 
         return new AcquireFlow
         {
             Name = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
-            Source = acquireSource,
-            Landing = MapLanding(landingYaml, source),
+            Items = MapItems(y, sourceYaml, source),
             Incremental = MapIncremental(y.Incremental, source),
             Params = MapParams(y.Params, source),
         };
+    }
+
+    /// <summary>Builds the flow's endpoints from either the singular top-level <c>source.request</c>/<c>landing</c> (one
+    /// item, the simple case) or the plural <c>items:</c> list (one item per entry, each with its own request and landing
+    /// over the shared <c>source</c> connection envelope). Exactly one form is allowed: mixing the top-level landing with
+    /// items, or putting a per-endpoint request/pagination/iterate on the shared source in the multi-item form, fails at
+    /// parse rather than silently landing to the wrong place.</summary>
+    private static IReadOnlyList<AcquireItem> MapItems(AcquireDocumentYaml y, AcquireSourceYaml sourceYaml, string source)
+    {
+        var transport = ParseEnum(sourceYaml.Transport, AcquireTransport.Http, "source.transport", source);
+        var baseUrl = Require(sourceYaml.BaseUrl, "source.baseUrl", source);
+
+        if (y.Items is { Count: > 0 })
+        {
+            if (y.Landing is not null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: a multi-item api flow declares each landing under 'items[].landing'; remove the top-level 'landing'.");
+            }
+
+            if (sourceYaml.Request is not null || sourceYaml.Pagination is not null || sourceYaml.Iterate is { Count: > 0 })
+            {
+                throw new FlowValidationException(
+                    $"{source}: in a multi-item api flow, 'request'/'pagination'/'iterate' belong under each 'items[]' entry, not the shared 'source'.");
+            }
+
+            if (y.Incremental is not null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'incremental' is only valid on a single-endpoint api flow (the run watermark is one value per run). " +
+                    "Express a multi-item flow's incrementality through each item's date-window 'iterate'.");
+            }
+
+            var auth = MapAuth(sourceYaml.Auth, source);
+            var reliability = MapReliability(sourceYaml.Reliability);
+            var options = MapOptions(sourceYaml.Options);
+
+            var items = new List<AcquireItem>(y.Items.Count);
+            for (var i = 0; i < y.Items.Count; i++)
+            {
+                var item = y.Items[i] ?? throw new FlowValidationException($"{source}: 'items[{i}]' must be a map.");
+                var landingYaml = item.Landing ?? throw new FlowValidationException($"{source}: 'items[{i}].landing' is required.");
+                var itemSource = new AcquireSource
+                {
+                    Transport = transport,
+                    BaseUrl = baseUrl,
+                    Auth = auth,
+                    Request = MapRequest(item.Request, source),
+                    Pagination = MapPagination(item.Pagination, source),
+                    Iterations = (item.Iterate ?? []).Select(it => MapIteration(it, source)).ToList(),
+                    Reliability = reliability,
+                    Options = options,
+                };
+
+                if (transport == AcquireTransport.Http && itemSource.Request is null)
+                {
+                    throw new FlowValidationException($"{source}: an http item requires an 'items[{i}].request' block.");
+                }
+
+                items.Add(new AcquireItem
+                {
+                    Name = YamlDocumentParts.NullIfBlank(item.Name),
+                    Source = itemSource,
+                    Landing = MapLanding(landingYaml, source),
+                });
+            }
+
+            return items;
+        }
+
+        var topLanding = y.Landing ?? throw new FlowValidationException($"{source}: 'landing' is required.");
+        var singleSource = new AcquireSource
+        {
+            Transport = transport,
+            BaseUrl = baseUrl,
+            Auth = MapAuth(sourceYaml.Auth, source),
+            Request = MapRequest(sourceYaml.Request, source),
+            Pagination = MapPagination(sourceYaml.Pagination, source),
+            Iterations = (sourceYaml.Iterate ?? []).Select(it => MapIteration(it, source)).ToList(),
+            Reliability = MapReliability(sourceYaml.Reliability),
+            Options = MapOptions(sourceYaml.Options),
+        };
+
+        if (transport == AcquireTransport.Http && singleSource.Request is null)
+        {
+            throw new FlowValidationException($"{source}: an http source requires a 'source.request' block.");
+        }
+
+        return [new AcquireItem { Name = null, Source = singleSource, Landing = MapLanding(topLanding, source) }];
     }
 
     /// <summary>
@@ -334,8 +403,22 @@ internal sealed class AcquireDocumentYaml
     public string? Batch { get; set; }
     public AcquireSourceYaml? Source { get; set; }
     public AcquireLandingYaml? Landing { get; set; }
+
+    /// <summary>Several endpoints in one flow: one entry per request+landing pair, over the shared top-level
+    /// <c>source</c> envelope. The alternative to the single top-level <c>source.request</c>/<c>landing</c>.</summary>
+    public List<AcquireItemYaml>? Items { get; set; }
+
     public AcquireIncrementalYaml? Incremental { get; set; }
     public Dictionary<string, string?>? Params { get; set; }
+}
+
+internal sealed class AcquireItemYaml
+{
+    public string? Name { get; set; }
+    public AcquireRequestYaml? Request { get; set; }
+    public AcquirePaginationYaml? Pagination { get; set; }
+    public List<AcquireIterationYaml>? Iterate { get; set; }
+    public AcquireLandingYaml? Landing { get; set; }
 }
 
 internal sealed class AcquireSourceYaml

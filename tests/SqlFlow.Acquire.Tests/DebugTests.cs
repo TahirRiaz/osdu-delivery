@@ -20,13 +20,16 @@ public sealed class DebugTests
         var flow = new AcquireFlow
         {
             Name = "Debug_Flow",
-            Source = new AcquireSource
+            Items = [new AcquireItem
             {
-                BaseUrl = "https://api.test.local",
-                Request = new AcquireRequest { Path = "/items" },
-                Pagination = new AcquirePagination { Strategy = AcquirePaginationStrategy.Page },
-            },
-            Landing = new AcquireLanding { Target = dir, PathTemplate = "data/{page}" },
+                Source = new AcquireSource
+                {
+                    BaseUrl = "https://api.test.local",
+                    Request = new AcquireRequest { Path = "/items" },
+                    Pagination = new AcquirePagination { Strategy = AcquirePaginationStrategy.Page },
+                },
+                Landing = new AcquireLanding { Target = dir, PathTemplate = "data/{page}" },
+            }],
         };
 
         var probe = new CollectingProbe();

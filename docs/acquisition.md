@@ -15,6 +15,44 @@ replayable, and means a schema change downstream never requires touching the int
 
     [api flow] --raw JSON/XML/bin--> raw zone --existing json/csv/xml flow--> SQL
 
+## One flow, many endpoints (`items:`)
+
+A source system is rarely one endpoint. Citybike, for example, was **11 separate runbooks** all hitting
+`api.kolumbus.citybike.cloud` under one token: bikes, alerts, inventory, issue reports, repair orders, and so on.
+Rather than 11 flow files, one `api` flow declares a shared connection envelope under `source` (transport, base
+URL, auth, reliability) and an **`items:`** list, one entry per endpoint, each with its own `request`,
+`pagination`, `iterate`, and `landing`. This mirrors how a `cpy` copy flow declares multiple `items:`.
+
+```yaml
+flowType: api
+name: citybike_00_api
+batch: Citybike
+source:                       # shared envelope: applied to every item
+  baseUrl: https://api.kolumbus.citybike.cloud
+  auth:
+    type: token_exchange
+    token: { url: https://api.kolumbus.citybike.cloud/api/token, rawBody: "${keyvault:sqlflow-v3-secrets/citybike-token}", tokenPath: access_token }
+  reliability: { rateLimitRps: 8, urlAllowlist: ["*.citybike.cloud"] }
+items:
+  - name: bikes
+    request: { path: /api/Bikes }
+    landing: { target: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/citybike/api/bikes, pathTemplate: "history/{yyyy}/{MM}/citybike_bikes_{yyyyMMdd}", format: json }
+  - name: inventory
+    request: { path: /api/Inventory }
+    landing: { target: abfss://datalakev2@dwdatalakeprodv2.dfs.core.windows.net/raw/citybike/api/inventory, pathTemplate: "history/{yyyy}/citybike_inventory_{yyyyMMdd}", format: json }
+```
+
+The engine resolves the HTTP client and the token **once per run**, then fetches every item in order,
+accumulating one run result. Each item lands to its own raw path, so a downstream file/pre flow that reads that
+path binds to it: **one acquisition pipeline feeds several downstream loads and lineage stays intact** (one
+pipeline node, one landing node per item, one dependency per consumer).
+
+Exactly one form is allowed. In the `items:` form, `source` holds only the shared envelope: putting a
+`request`/`pagination`/`iterate` on `source`, or a top-level `landing`, alongside `items` is a validation error.
+`incremental:` (a single per-run watermark) is single-endpoint only; a multi-item flow expresses incrementality
+through each item's date-window `iterate`. A single-endpoint flow keeps the flat `source.request` + top-level
+`landing` shape unchanged.
+
 ## Run it
 
     sqlflow run samples/api/jsonplaceholder-basic.flow.yaml     # live, no auth, lands to ./_landing
@@ -55,6 +93,7 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | Monthly window (svv_index) | `granularity: month` |
 | Static list fan-out (operatorIds, routes, lines) | `iterate: list` + `values` |
 | Ids from a prior call (bikes -> alerts/sessions) | `iterate: ids_from` + `idRequest` + `idPath` |
+| Many endpoints of one system consolidated (Citybike's 11 runbooks) | `items:` list, one entry per endpoint over the shared `source` |
 | Batched-id chunking, max N per request (svv 50 ids) | `ids_from` + `batchSize` + `batchSeparator` |
 | Retry with backoff (shiplog, norled, questback) | `reliability.retry` |
 | Honor Retry-After, retry 408/425/429/5xx | built in (`retry.honorRetryAfter`) |
