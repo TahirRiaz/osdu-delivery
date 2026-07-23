@@ -1957,6 +1957,7 @@ internal static class Program
         Console.WriteLine($"Plan for '{plan.Flow.Name}' -> {plan.Flow.Target.QualifiedName}");
         Console.WriteLine(plan.Actual is null ? "  target : does not exist (will create)" : "  target : exists");
         Console.WriteLine($"  columns to add : {plan.Delta.ColumnsToAdd.Count}");
+        Console.WriteLine($"  columns to widen : {plan.Delta.ColumnsToAlter.Count}");
         Console.WriteLine($"  load mode      : {plan.Flow.Load.Mode}");
 
         if (plan.DdlStatements.Count == 0)

@@ -10,6 +10,7 @@ using SqlFlow.DuckDb;
 using SqlFlow.Providers;
 using SqlFlow.Sources;
 using SqlFlow.SqlServer;
+using SqlFlow.SqlServer.Schema;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Execution;
@@ -51,6 +52,7 @@ public static class SqlFlowEngineServices
         services.AddSingleton<SourceDiscoveryService>();
         services.AddSingleton<ISqlTypeMapper, SqlServerTypeMapper>();
         services.AddSingleton<ISchemaProvider, SqlServerSchemaProvider>();
+        services.AddSingleton<IColumnTypeReconciler, SqlServerColumnTypeReconciler>();
         services.AddSingleton<IDdlGenerator, SqlServerDdlGenerator>();
         services.AddSingleton<IBulkLoader, SqlBulkLoader>();
         services.AddSingleton<IIndexManager, SqlServerIndexManager>();

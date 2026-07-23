@@ -63,6 +63,35 @@ public sealed class SqlServerDdlGeneratorTests
     }
 
     [Fact]
+    public void Generate_WidenColumn_EmitsAlterColumnKeepingNullability()
+    {
+        var delta = new SchemaDelta
+        {
+            ColumnsToAlter = [new ColumnDefinition { Name = "Remarks", SqlType = "varchar(4000)", IsNullable = true }],
+        };
+
+        var sql = Generator.Generate(Target, delta);
+
+        Assert.Equal("ALTER TABLE [dbo].[Orders] ALTER COLUMN [Remarks] varchar(4000) NULL;", Assert.Single(sql));
+    }
+
+    [Fact]
+    public void Generate_AddAndWiden_EmitsAddsThenAlters()
+    {
+        var delta = new SchemaDelta
+        {
+            ColumnsToAdd = [new ColumnDefinition { Name = "Notes", SqlType = "varchar(4000)", IsNullable = true }],
+            ColumnsToAlter = [new ColumnDefinition { Name = "Remarks", SqlType = "varchar(4000)", IsNullable = false }],
+        };
+
+        var sql = Generator.Generate(Target, delta);
+
+        Assert.Equal(2, sql.Count);
+        Assert.Equal("ALTER TABLE [dbo].[Orders] ADD [Notes] varchar(4000) NULL;", sql[0]);
+        Assert.Equal("ALTER TABLE [dbo].[Orders] ALTER COLUMN [Remarks] varchar(4000) NOT NULL;", sql[1]);
+    }
+
+    [Fact]
     public void Generate_NoChanges_EmitsNothing()
         => Assert.Empty(Generator.Generate(Target, new SchemaDelta()));
 }

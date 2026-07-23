@@ -39,5 +39,11 @@ public sealed record SchemaDelta
     public bool CreateTable { get; init; }
     public IReadOnlyList<ColumnDefinition> ColumnsToAdd { get; init; } = [];
 
-    public bool HasChanges => CreateTable || ColumnsToAdd.Count > 0;
+    /// <summary>Existing target columns that must widen to accept the incoming data, each carrying the
+    /// widened SQL type and the live column's nullability (widening never tightens NULL to NOT NULL). Empty
+    /// on a create (the table is built at the desired shape) and always empty under the Create/Strict
+    /// policies.</summary>
+    public IReadOnlyList<ColumnDefinition> ColumnsToAlter { get; init; } = [];
+
+    public bool HasChanges => CreateTable || ColumnsToAdd.Count > 0 || ColumnsToAlter.Count > 0;
 }

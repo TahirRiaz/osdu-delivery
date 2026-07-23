@@ -88,6 +88,7 @@ public sealed class IndexConsolidationTests
         [new FakeSource()],
         new FakeTypeMapper(),
         new FakeSchema(tableExists),
+        new FakeReconciler(),
         new FakeDdl(),
         new FakeLoader(),
         indexManager,
@@ -187,6 +188,11 @@ public sealed class IndexConsolidationTests
     {
         public ColumnDefinition Map(SourceColumn column, ColumnOverride? columnOverride, string defaultColumnType)
             => new() { Name = column.Name, SqlType = defaultColumnType, IsNullable = true };
+    }
+
+    private sealed class FakeReconciler : IColumnTypeReconciler
+    {
+        public string? WidenTo(string existingType, string desiredType) => null;
     }
 
     private sealed class FakeDdl : IDdlGenerator

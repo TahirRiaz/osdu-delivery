@@ -24,6 +24,7 @@ public sealed class FlowRunner
     private readonly IReadOnlyList<ISourceReader> _sources;
     private readonly ISqlTypeMapper _typeMapper;
     private readonly ISchemaProvider _schema;
+    private readonly IColumnTypeReconciler _typeReconciler;
     private readonly IDdlGenerator _ddl;
     private readonly IBulkLoader _loader;
     private readonly IIndexManager _indexManager;
@@ -39,6 +40,7 @@ public sealed class FlowRunner
         IEnumerable<ISourceReader> sources,
         ISqlTypeMapper typeMapper,
         ISchemaProvider schema,
+        IColumnTypeReconciler typeReconciler,
         IDdlGenerator ddl,
         IBulkLoader loader,
         IIndexManager indexManager,
@@ -54,6 +56,7 @@ public sealed class FlowRunner
         _sources = sources.ToList();
         _typeMapper = typeMapper;
         _schema = schema;
+        _typeReconciler = typeReconciler;
         _ddl = ddl;
         _loader = loader;
         _indexManager = indexManager;
@@ -701,12 +704,12 @@ public sealed class FlowRunner
             benign: ex => ex is NoSourceFilesException && flow.Incremental is { FullLoad: false }).ConfigureAwait(false);
         var desired = DesiredSchemaBuilder.Build(flow.Target, sourceColumns, flow.Schema, _typeMapper);
         var actual = await StageAsync("target.introspect", context, () => _schema.GetTableSchemaAsync(connectionString, flow.Target.Schema, flow.Target.Table, ct)).ConfigureAwait(false);
-        var delta = SchemaDiffer.Diff(desired, actual, flow.Schema.Evolve);
+        var delta = SchemaDiffer.Diff(desired, actual, flow.Schema.Evolve, _typeReconciler);
         var statements = _ddl.Generate(flow.Target, delta);
 
         _logger.LogInformation(
-            "Planned '{Flow}': {Action}; {Adds} column(s) to add; {Ddl} DDL statement(s).",
-            flow.Name, actual is null ? "create table" : "table exists", delta.ColumnsToAdd.Count, statements.Count);
+            "Planned '{Flow}': {Action}; {Adds} column(s) to add; {Widenings} column(s) to widen; {Ddl} DDL statement(s).",
+            flow.Name, actual is null ? "create table" : "table exists", delta.ColumnsToAdd.Count, delta.ColumnsToAlter.Count, statements.Count);
 
         return new FlowPlan
         {

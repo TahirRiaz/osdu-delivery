@@ -37,11 +37,26 @@ public sealed class SqlServerDdlGenerator : IDdlGenerator
         }
 
         // Columns added to an existing (potentially populated) table must be NULLable: there is no
-        // default value to backfill existing rows with.
-        return delta.ColumnsToAdd
-            .Select(c => $"ALTER TABLE {target.QualifiedName} ADD {Column(c, forNewTable: false)};")
-            .ToList();
+        // default value to backfill existing rows with. Widenings then grow existing columns to fit the
+        // incoming data (varchar(255) -> varchar(4000), int -> bigint, ...) so the bulk load never overflows
+        // a column that a narrower earlier run created; the ALTER carries the live column's nullability, so a
+        // widening never tightens a NULL column to NOT NULL.
+        var statements = new List<string>(delta.ColumnsToAdd.Count + delta.ColumnsToAlter.Count);
+        foreach (var add in delta.ColumnsToAdd)
+        {
+            statements.Add($"ALTER TABLE {target.QualifiedName} ADD {Column(add, forNewTable: false)};");
+        }
+
+        foreach (var alter in delta.ColumnsToAlter)
+        {
+            var nullability = alter.IsNullable ? "NULL" : "NOT NULL";
+            statements.Add($"ALTER TABLE {target.QualifiedName} ALTER COLUMN [{Escape(alter.Name)}] {alter.SqlType} {nullability};");
+        }
+
+        return statements;
     }
+
+    private static string Escape(string identifier) => identifier.Replace("]", "]]", StringComparison.Ordinal);
 
     /// <summary>An idempotent CREATE SCHEMA guarded by SCHEMA_ID, matching the pattern the ingestion runner
     /// and control-plane provisioning already use. CREATE SCHEMA must be the first (only) statement in its

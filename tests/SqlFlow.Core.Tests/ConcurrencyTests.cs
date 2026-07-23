@@ -71,6 +71,7 @@ public sealed class ConcurrencyTests
         [new FakeSource()],
         new FakeTypeMapper(),
         new FakeSchema(),
+        new FakeReconciler(),
         new FakeDdl(),
         new FakeLoader(),
         new FakeIndexManager(),
@@ -148,6 +149,11 @@ public sealed class ConcurrencyTests
     {
         public ColumnDefinition Map(SourceColumn column, ColumnOverride? columnOverride, string defaultColumnType)
             => new() { Name = column.Name, SqlType = defaultColumnType, IsNullable = true };
+    }
+
+    private sealed class FakeReconciler : IColumnTypeReconciler
+    {
+        public string? WidenTo(string existingType, string desiredType) => null;
     }
 
     private sealed class FakeDdl : IDdlGenerator

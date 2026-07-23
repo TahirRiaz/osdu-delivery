@@ -48,17 +48,17 @@ sourceRefs:
 
 Schema evolution keeps a live SQL Server target table in step with what a flow wants to load, without manual DDL. Two separate engines exist, one per flow family. Both introspect the live target and diff it against the desired schema; only the ingestion engine's generated DDL is idempotent and applies under the non-blocking app-lock model described later on this page, while the file-flow engine runs its `CREATE TABLE` / `ALTER TABLE ADD` statements directly inside one transaction:
 
-- **File flows** (csv, parquet, json, xml, xls) use a name-only diff: `SchemaDiffer` in src/SqlFlow.Core/Engine/SchemaDiffer.cs plus `SqlServerDdlGenerator`. Missing columns are added; type differences on existing columns are ignored (no `ALTER COLUMN` on this path).
+- **File flows** (csv, parquet, json, xml, xls) use `SchemaDiffer` in src/SqlFlow.Core/Engine/SchemaDiffer.cs plus `SqlServerDdlGenerator`. Missing columns are added, and existing columns are widened monotonically to fit the incoming data through `IColumnTypeReconciler` (the SQL Server implementation reuses the same `SqlDataType` + `SqlTypeResolution` the ingestion path uses), so a column a narrower earlier run created (for example `varchar(255)` when the flow now lands `varchar(4000)`) grows via `ALTER COLUMN` instead of overflowing the bulk load. An incompatible cross-family difference is left alone (never narrowed or force-changed).
 - **Ingestion flows** (`flowType: ing`, table to table) use the full structured engine: `SchemaEvolutionPlanner`, `SqlTypeResolution`, `ChangeFootprintClassifier`, and `EvolutionDdlGenerator` under src/SqlFlow.SqlServer/Schema/. Types are parsed into structured `SqlDataType` values and widened monotonically: the target only ever grows and is never narrowed, target-only columns are never dropped, and a nullable column is never tightened to `NOT NULL`.
 
 ## File flows: diff and generated DDL
 
-`DesiredSchemaBuilder.Build` (src/SqlFlow.Core/Engine/DesiredSchemaBuilder.cs) maps the inferred source columns through the type mapper, applying per-column `overrides` and the flow's `defaultColumnType`. `SchemaDiffer.Diff(desired, actual, evolve)` then returns a `SchemaDelta { CreateTable, ColumnsToAdd }`:
+`DesiredSchemaBuilder.Build` (src/SqlFlow.Core/Engine/DesiredSchemaBuilder.cs) maps the inferred source columns through the type mapper, applying per-column `overrides` and the flow's `defaultColumnType`. `SchemaDiffer.Diff(desired, actual, evolve, reconciler)` then returns a `SchemaDelta { CreateTable, ColumnsToAdd, ColumnsToAlter }`:
 
 - A missing target always yields `CreateTable = true` with the full desired column list, regardless of the `schema.evolve` mode.
-- For an existing target, missing columns are matched case-insensitively by name. The `evolve` mode (enum `SchemaEvolution` in src/SqlFlow.Core/Model/FlowDefinition.cs) decides what happens:
+- For an existing target, columns are matched case-insensitively by name. The `evolve` mode (enum `SchemaEvolution` in src/SqlFlow.Core/Model/FlowDefinition.cs) decides what happens:
   - `create`: never alter an existing table; the delta is empty.
-  - `widen` (default): add the missing columns.
+  - `widen` (default): add the missing columns and widen existing columns whose live type is too narrow for the desired one. Each widening `ALTER COLUMN` renders the merged type and keeps the live column's nullability, so it never tightens a `NULL` column to `NOT NULL`.
   - `strict`: fail with `SchemaDriftException` if the source has columns the target lacks.
 
 `SqlServerDdlGenerator` (src/SqlFlow.SqlServer/SqlServerDdlGenerator.cs) renders the delta:
@@ -74,6 +74,12 @@ Each added column is a separate statement, and columns added to an existing (pot
 
 ```sql
 ALTER TABLE [dbo].[Csv_FolderUnion] ADD [Region] varchar(255) NULL;
+```
+
+An existing column that must grow is widened in place, after the adds, keeping its current nullability:
+
+```sql
+ALTER TABLE [dbo].[Csv_FolderUnion] ALTER COLUMN [Remarks] varchar(4000) NULL;
 ```
 
 All file-flow DDL statements execute inside a single transaction via `SqlServerSchemaProvider.ExecuteDdlAsync`; any failure rolls back everything. Target introspection (`GetTableSchemaAsync`) reads `INFORMATION_SCHEMA.COLUMNS` ordered by `ORDINAL_POSITION` and renders char/binary lengths as `(n)` or `(MAX)` and decimal/numeric as `(precision, scale)`.

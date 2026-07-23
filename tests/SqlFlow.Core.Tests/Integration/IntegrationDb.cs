@@ -7,6 +7,7 @@ using SqlFlow.Core.Secrets;
 using SqlFlow.Core.State;
 using SqlFlow.Sources;
 using SqlFlow.SqlServer;
+using SqlFlow.SqlServer.Schema;
 using Xunit;
 
 namespace SqlFlow.Tests.Integration;
@@ -79,6 +80,7 @@ internal static class IntegrationDb
             ],
             new SqlServerTypeMapper(),
             new SqlServerSchemaProvider(),
+            new SqlServerColumnTypeReconciler(),
             new SqlServerDdlGenerator(),
             new SqlBulkLoader(),
             new SqlServerIndexManager(),
