@@ -78,13 +78,24 @@ function runStatusVisual(status: RunStatus | string): { tone: Tone; label: strin
 }
 
 /**
- * One mapping from run status to tone/affordance, used everywhere a run status renders. The status text is
- * redundant next to the icon on a dense run board, so the badge shows only the tinted status icon and surfaces
- * the word on hover (a tooltip) and to assistive tech (a visually hidden label). Icon shape plus tone still
- * carry the state without color alone (DESIGN.md 7.3), and the hidden label keeps the word queryable in tests.
+ * A status rendered as the tinted icon alone: the word is redundant next to the icon (and next to a column
+ * header that already names the state), so it moves to a hover tooltip and a visually hidden label. Icon shape
+ * plus tone still carry the state without color alone (DESIGN.md 7.3), and the hidden label keeps the word
+ * queryable in tests and available to assistive tech.
  */
-export function RunStatusBadge({ status, testId = "status-badge" }: { status: RunStatus | string; testId?: string }) {
-  const { tone, label, icon: Icon, spin } = runStatusVisual(status);
+function IconBadge({
+  tone,
+  label,
+  icon: Icon,
+  spin = false,
+  testId,
+}: {
+  tone: Tone;
+  label: string;
+  icon: LucideIcon;
+  spin?: boolean;
+  testId: string;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -102,6 +113,15 @@ export function RunStatusBadge({ status, testId = "status-badge" }: { status: Ru
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+/**
+ * One mapping from run status to tone/affordance, used everywhere a run status renders. Renders through
+ * {@link IconBadge}: only the tinted status icon, with the word on hover and for assistive tech.
+ */
+export function RunStatusBadge({ status, testId = "status-badge" }: { status: RunStatus | string; testId?: string }) {
+  const { tone, label, icon: Icon, spin } = runStatusVisual(status);
+  return <IconBadge tone={tone} label={label} icon={Icon} spin={spin} testId={testId} />;
 }
 
 /**
@@ -139,8 +159,8 @@ export function OnlineBadge({ online }: { online: boolean }) {
 
 export function ActiveBadge({ active }: { active: boolean }) {
   return active
-    ? <Pill tone="success" label="active" icon={CircleCheck} testId="active-badge" />
-    : <Pill tone="muted" label="inactive" icon={CircleMinus} testId="active-badge" />;
+    ? <IconBadge tone="success" label="active" icon={CircleCheck} testId="active-badge" />
+    : <IconBadge tone="muted" label="inactive" icon={CircleMinus} testId="active-badge" />;
 }
 
 export function ScheduleStateBadge({ enabled, paused }: { enabled: boolean; paused: boolean }) {
