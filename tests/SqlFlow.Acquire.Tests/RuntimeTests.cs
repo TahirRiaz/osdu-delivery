@@ -120,6 +120,81 @@ public sealed class RetryPolicyTests
     }
 }
 
+public sealed class HttpExecutorTests
+{
+    private static readonly TimeProvider Time = TimeProvider.System;
+
+    private static HttpExecutor Build(HttpMessageHandler handler) => new(
+        new HttpClient(handler),
+        new RetryPolicy(new AcquireRetry { MaxAttempts = 4, BaseDelayMs = 1, MaxDelayMs = 2 }, Time),
+        new RateLimiter(1000, Time),
+        new UrlGuard(["*.example.com"]),
+        maxResponseBytes: 1 << 20,
+        Time);
+
+    [Fact]
+    public async Task Retries_a_reset_while_streaming_the_response_body()
+    {
+        // First attempt: 200 OK whose body stream throws the exact reset that escaped the retry loop before this
+        // fix (it is raised during ReadCappedAsync, after SendAsync has already returned the headers). Second
+        // attempt: a clean body. The executor must retry and return the good bytes rather than surfacing the reset.
+        var handler = new ScriptedHandler(
+            _ => ResponseWithBodyStream(new ThrowingStream(new IOException(
+                "Unable to read data from the transport connection: An existing connection was forcibly closed by the remote host."))),
+            _ => ResponseWithBodyStream(new MemoryStream("ok"u8.ToArray())));
+
+        var result = await Build(handler).SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/x"));
+
+        Assert.Equal("ok", System.Text.Encoding.UTF8.GetString(result.Body));
+        Assert.Equal(2, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task Surfaces_a_persistent_body_reset_after_exhausting_retries()
+    {
+        var handler = new ScriptedHandler(_ => ResponseWithBodyStream(new ThrowingStream(new IOException(
+            "An existing connection was forcibly closed by the remote host."))));
+
+        var ex = await Assert.ThrowsAsync<SqlFlowException>(() =>
+            Build(handler).SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/x")));
+
+        Assert.Contains("reading the response", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(4, handler.Attempts); // MaxAttempts, then surface
+    }
+
+    private static HttpResponseMessage ResponseWithBodyStream(Stream body)
+        => new(HttpStatusCode.OK) { Content = new StreamContent(body) };
+
+    /// <summary>Replays a fixed script of responses, one per attempt (the last entry repeats), counting attempts.</summary>
+    private sealed class ScriptedHandler(params Func<int, HttpResponseMessage>[] script) : HttpMessageHandler
+    {
+        public int Attempts { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var index = Math.Min(Attempts, script.Length - 1);
+            Attempts++;
+            return Task.FromResult(script[index](Attempts));
+        }
+    }
+
+    /// <summary>A read-only stream that throws the given exception on first read, simulating a mid-body connection reset.</summary>
+    private sealed class ThrowingStream(Exception toThrow) : Stream
+    {
+        public override int Read(byte[] buffer, int offset, int count) => throw toThrow;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => throw toThrow;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+}
+
 public sealed class JsonPathReaderTests
 {
     [Fact]

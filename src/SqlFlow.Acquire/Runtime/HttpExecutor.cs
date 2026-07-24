@@ -126,6 +126,24 @@ public sealed class HttpExecutor
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
             }
+            catch (IOException ex) when (!ct.IsCancellationRequested)
+            {
+                // A connection reset or premature close WHILE STREAMING THE RESPONSE BODY. Because the send uses
+                // HttpCompletionOption.ResponseHeadersRead, the body is read (in ReadCappedAsync) after SendAsync has
+                // already returned, so a mid-body failure surfaces here as a raw IOException ("An existing connection
+                // was forcibly closed by the remote host", "The response ended prematurely") rather than as an
+                // HttpRequestException. Without this arm it would escape the retry loop and fail the whole run on a
+                // single dropped connection; treat it as the transient transport failure it is and retry the request
+                // from the factory. The response-size cap throws SqlFlowException (not IOException), so an oversized
+                // body is still permanent and never retried here.
+                var decision = _retry.Next(attempt, null, null);
+                if (!decision.ShouldRetry)
+                {
+                    throw new SqlFlowException($"HTTP transport failure reading the response from {request.RequestUri}: {ex.Message}", ex);
+                }
+
+                await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
+            }
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
                 // A per-request timeout (not caller cancellation): treat as a transient transport failure.

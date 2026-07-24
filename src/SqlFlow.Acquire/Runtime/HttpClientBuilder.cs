@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using SqlFlow.Core.Acquire;
 
@@ -21,6 +22,17 @@ public static class HttpClientBuilder
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             ConnectTimeout = TimeSpan.FromSeconds(Math.Min(reliability.TimeoutSeconds, 30)),
+            // HTTP/2 keep-alive pings: on a long, rate-limited fan-out (e.g. a per-item backfill spanning
+            // hours) a multiplexed connection can sit idle between requests, and an intermediary (NAT, load
+            // balancer, corporate proxy) silently reaps idle connections. Pinging keeps the connection
+            // provably alive so the next request reuses it instead of discovering a half-open socket the hard
+            // way (a reset mid-request). Applies to negotiated HTTP/2 only.
+            KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(15),
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
+            // HTTP/1.1 keep-alive: most REST endpoints negotiate 1.1, where the HTTP/2 pings above do not
+            // apply, so enable TCP-level keepalive probes on every connected socket for the same purpose.
+            ConnectCallback = KeepAliveConnectAsync,
         };
 
         if (!reliability.VerifyTls)
@@ -39,5 +51,33 @@ public static class HttpClientBuilder
         };
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
         return client;
+    }
+
+    /// <summary>
+    /// Opens each new pooled connection on a socket with TCP keepalive enabled, so an idle HTTP/1.1 connection on a
+    /// long-running flow is kept provably alive (and a genuinely dead one is detected by the OS) rather than being
+    /// silently dropped by an intermediary and surfacing as a reset on the next request. The handler's
+    /// <see cref="SocketsHttpHandler.ConnectTimeout"/> is honored through <paramref name="ct"/>, which the handler
+    /// signals when the connect deadline elapses. Keepalive tuning (30s idle before the first probe, 15s between
+    /// probes, up to 4 unanswered probes before the OS tears the connection down) is deliberately well inside the
+    /// two-minute pooled-connection lifetime, and is supported on both Windows and the Linux worker containers.
+    /// </summary>
+    private static async ValueTask<Stream> KeepAliveConnectAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30);
+        socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 15);
+        socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 4);
+        try
+        {
+            await socket.ConnectAsync(context.DnsEndPoint, ct).ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
     }
 }
