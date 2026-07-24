@@ -1,19 +1,16 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Folder, Loader2, Network, Play, RefreshCw, Search, X } from "lucide-react";
+import { Loader2, Network, Play, RefreshCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, repoSourceApi } from "../../api/endpoints";
-import type { PipelineSummary } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
@@ -21,10 +18,9 @@ import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { RelativeTime } from "../../components/RelativeTime";
-import { ActiveBadge } from "../../components/StatusBadge";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { groupByProject, pipelineMatches, ProjectGroup } from "../pipelines/ProjectGroup";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
-import { projectOf } from "./project";
 import { useSyncTracePanel } from "./useSyncTracePanel";
 
 /** The most pipelines a single repo realistically holds; one page covers grouping them by project. */
@@ -42,7 +38,7 @@ function PipelinesByProject({
   repoId: string;
   filter: string;
   onOpen: (pipelineId: string) => void;
-  onRunBatch: (flowName: string) => void;
+  onRunBatch: (repoId: string, flowName: string) => void;
 }) {
   const query = useQuery({
     queryKey: ["pipelines", "by-repo-grouped", repoId],
@@ -70,16 +66,8 @@ function PipelinesByProject({
     );
   }
 
-  // Free-text filter over the fields a user actually eyeballs to find a file: pipeline name, its path, its kind,
-  // and the project (folder) it groups under.
   const needle = filter.trim().toLowerCase();
-  const matches = needle === ""
-    ? pipelines
-    : pipelines.filter((p) =>
-      p.name.toLowerCase().includes(needle)
-      || p.relativePath.toLowerCase().includes(needle)
-      || p.kind.toLowerCase().includes(needle)
-      || projectOf(p.relativePath).toLowerCase().includes(needle));
+  const matches = needle === "" ? pipelines : pipelines.filter((p) => pipelineMatches(p, needle));
 
   if (matches.length === 0) {
     return (
@@ -91,96 +79,19 @@ function PipelinesByProject({
     );
   }
 
-  const byProject = new Map<string, PipelineSummary[]>();
-  for (const p of [...matches].sort((a, b) => a.name.localeCompare(b.name))) {
-    const key = projectOf(p.relativePath);
-    const group = byProject.get(key);
-    if (group) {
-      group.push(p);
-    } else {
-      byProject.set(key, [p]);
-    }
-  }
-  const projects = [...byProject.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-
   return (
     <div className="flex flex-col gap-2" data-testid="repo-projects">
-      {projects.map(([project, rows]) => {
-        const inactive = rows.filter((r) => !r.active).length;
-        // The project's batch flow (if any): the wave-ordered "run the whole project" entry point.
-        const batch = rows.find((r) => r.kind === "batch" && r.active);
-        return (
-          // Keying on the active-filter flag remounts the group when a search starts or clears, so a matching
-          // pipeline in a previously-collapsed project springs open rather than staying hidden.
-          <Collapsible key={`${project}:${needle === "" ? "all" : "filtered"}`} defaultOpen>
-            <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="repo-project">
-              {/* The trigger spans the row up to the action button, so a nested button never sits inside it. */}
-              <div className="flex items-center gap-2 pr-2">
-                <CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left hover:bg-accent/50">
-                  <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform duration-120 group-data-[state=closed]:-rotate-90" />
-                  <Folder className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate text-[13px] font-semibold">{project}</span>
-                  <Badge variant="outline">{rows.length} pipeline{rows.length === 1 ? "" : "s"}</Badge>
-                  {inactive > 0 && (
-                    <Badge variant="outline" className="border-warning/50 text-warning">
-                      {inactive} inactive
-                    </Badge>
-                  )}
-                </CollapsibleTrigger>
-                {batch !== undefined && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        className="shrink-0"
-                        onClick={() => onRunBatch(batch.name)}
-                        data-testid="run-project"
-                      >
-                        <Play />
-                        Run project
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {`Run this project's batch flow '${batch.name}' (members in wave order)`}
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-              <CollapsibleContent>
-                <Table>
-                  <TableBody>
-                    {rows.map((p) => (
-                      <TableRow
-                        key={p.id}
-                        className="cursor-pointer hover:bg-accent/50"
-                        onClick={() => onOpen(p.id)}
-                        data-testid="table-row"
-                      >
-                        <TableCell className="whitespace-nowrap px-3 py-1.5">
-                          <span className="font-mono text-[12px] font-medium">{p.name}</span>
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap px-3 py-1.5">
-                          <Badge variant="outline">{p.kind}</Badge>
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
-                          {p.wave === -1 ? "-" : `wave ${p.wave}`}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap px-3 py-1.5">
-                          <ActiveBadge active={p.active} />
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5">
-                          <span className="font-mono text-xs text-muted-foreground">{p.relativePath}</span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CollapsibleContent>
-            </Card>
-          </Collapsible>
-        );
-      })}
+      {groupByProject(matches).map(([project, rows]) => (
+        <ProjectGroup
+          key={project}
+          project={project}
+          rows={rows}
+          repoId={repoId}
+          filtered={needle !== ""}
+          onOpen={onOpen}
+          onRunBatch={onRunBatch}
+        />
+      ))}
     </div>
   );
 }
@@ -397,7 +308,7 @@ export default function RepoDetailPage() {
           repoId={repoId}
           filter={pipelineFilter}
           onOpen={(id) => navigate(`/pipelines/${id}`)}
-          onRunBatch={(flowName) => setRunBatchFlow(flowName)}
+          onRunBatch={(_repoId, flowName) => setRunBatchFlow(flowName)}
         />
       </div>
 

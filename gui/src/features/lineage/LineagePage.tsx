@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Network, X } from "lucide-react";
 import { useLocalStorageState, useUrlSeed } from "@/hooks/useLocalStorageState";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ import { CodeView } from "../../components/CodeView";
 import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailPair } from "../../components/DetailPair";
-import { FilterBar } from "../../components/FilterBar";
+import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -185,10 +186,10 @@ export default function LineagePage() {
           placeholder="Name"
           aria-label="Name"
           data-testid="filter-object-name"
-          className="h-8 w-56"
+          className={cn("h-8 w-56", name !== "" && activeFilterClass)}
         />
         <Select value={kind} onValueChange={setKind}>
-          <SelectTrigger size="sm" className="h-8 w-40" aria-label="Kind" data-testid="filter-object-kind">
+          <SelectTrigger size="sm" active={kind !== "all"} className="h-8 w-40" aria-label="Kind" data-testid="filter-object-kind">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -204,7 +205,7 @@ export default function LineagePage() {
           placeholder="Server ref"
           aria-label="Server ref"
           data-testid="filter-server-ref"
-          className="h-8 w-56"
+          className={cn("h-8 w-56", serverRef !== "" && activeFilterClass)}
         />
       </FilterBar>
 

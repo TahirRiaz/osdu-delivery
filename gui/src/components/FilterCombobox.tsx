@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { activeFilterClass } from "./FilterBar";
 
 /** One choice in a {@link FilterCombobox}: the `value` the filter emits, the `label` shown, and an optional
  * `hint` line (a count, a repo) shown under the label and included in the search text. */
@@ -57,7 +58,7 @@ export function FilterCombobox({
           aria-expanded={open}
           aria-label={ariaLabel}
           data-testid={testId}
-          className={cn("h-8 justify-between font-normal", className)}
+          className={cn("h-8 justify-between font-normal", value !== "" && activeFilterClass, className)}
         >
           {selected !== null
             ? <span className="truncate">{selected.label}</span>

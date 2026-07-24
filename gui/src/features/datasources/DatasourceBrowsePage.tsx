@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
+import { cn } from "@/lib/utils";
 import type {
   DatasourceDatabase, DatasourceObject, DatasourceObjectPage, DatasourceSchema,
 } from "../../api/types";
@@ -18,7 +19,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { DataTable, type Column } from "../../components/DataTable";
 import { EmptyState } from "../../components/EmptyState";
-import { FilterBar } from "../../components/FilterBar";
+import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -230,7 +231,7 @@ export default function DatasourceBrowsePage() {
           placeholder="Name filter"
           aria-label="Name filter"
           data-testid="browse-name-filter"
-          className="h-8 w-full sm:w-44"
+          className={cn("h-8 w-full sm:w-44", nameLike !== "" && activeFilterClass)}
         />
         <Label className="flex items-center gap-2 text-[13px] font-normal">
           <Switch

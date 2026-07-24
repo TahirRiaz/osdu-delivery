@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
 import { readLocalStorageState, useLocalStorageState, useUrlSeed } from "@/hooks/useLocalStorageState";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { RunStatus, RunSummary } from "../../api/types";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
-import { FilterBar } from "../../components/FilterBar";
+import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { FilterCombobox, type FilterOption } from "../../components/FilterCombobox";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -397,7 +398,7 @@ export default function RunsPage() {
           className="w-40"
         />
         <Select value={kind} onValueChange={setKind}>
-          <SelectTrigger size="sm" className="h-8 w-28" aria-label="Kind" data-testid="filter-kind">
+          <SelectTrigger size="sm" active={kind !== "all"} className="h-8 w-28" aria-label="Kind" data-testid="filter-kind">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -412,13 +413,13 @@ export default function RunsPage() {
           placeholder="Flow name"
           aria-label="Flow name"
           data-testid="filter-flow-name"
-          className="h-8 w-44"
+          className={cn("h-8 w-44", flowNameInput !== "" && activeFilterClass)}
         />
         <Select
           value={status ?? "all"}
           onValueChange={(value) => setStatus(value === "all" ? null : (value as RunStatus))}
         >
-          <SelectTrigger size="sm" className="h-8 w-32" aria-label="Status" data-testid="filter-status">
+          <SelectTrigger size="sm" active={status !== null} className="h-8 w-32" aria-label="Status" data-testid="filter-status">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

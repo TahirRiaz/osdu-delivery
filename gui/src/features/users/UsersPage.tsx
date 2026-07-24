@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { readLocalStorageState, useLocalStorageState } from "@/hooks/useLocalStorageState";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { Loader2, MoreVertical, UserPlus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +23,7 @@ import { userApi } from "../../api/endpoints";
 import type { Role, User } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
-import { FilterBar } from "../../components/FilterBar";
+import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
@@ -457,14 +458,14 @@ export default function UsersPage() {
           onChange={(e) => setUsernameInput(e.target.value)}
           placeholder="Filter by username"
           aria-label="Username"
-          className="h-8 w-56"
+          className={cn("h-8 w-56", usernameInput !== "" && activeFilterClass)}
           data-testid="filter-username"
         />
         <Select
           value={roleFilter === "" ? "all" : roleFilter}
           onValueChange={(value) => setRoleFilter(value === "all" ? "" : value)}
         >
-          <SelectTrigger size="sm" className="h-8 w-40" aria-label="Role" data-testid="filter-role">
+          <SelectTrigger size="sm" active={roleFilter !== ""} className="h-8 w-40" aria-label="Role" data-testid="filter-role">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -478,7 +479,7 @@ export default function UsersPage() {
           value={providerFilter === "" ? "all" : providerFilter}
           onValueChange={(value) => setProviderFilter(value === "all" ? "" : value)}
         >
-          <SelectTrigger size="sm" className="h-8 w-36" aria-label="Provider" data-testid="filter-provider">
+          <SelectTrigger size="sm" active={providerFilter !== ""} className="h-8 w-36" aria-label="Provider" data-testid="filter-provider">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -491,7 +492,7 @@ export default function UsersPage() {
           value={activeFilter === "" ? "all" : activeFilter}
           onValueChange={(value) => setActiveFilter(value === "all" ? "" : value)}
         >
-          <SelectTrigger size="sm" className="h-8 w-36" aria-label="Active" data-testid="filter-active">
+          <SelectTrigger size="sm" active={activeFilter !== ""} className="h-8 w-36" aria-label="Active" data-testid="filter-active">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

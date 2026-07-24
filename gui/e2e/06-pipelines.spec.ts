@@ -4,7 +4,7 @@ import { expect, test } from "./helpers";
 // triggering with the pipeline prefilled.
 
 test.describe.serial("pipelines", () => {
-  test("filters narrow the list and clear again", async ({ adminPage }) => {
+  test("search narrows the folder tree and clears again", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
 
@@ -13,29 +13,31 @@ test.describe.serial("pipelines", () => {
       .toBeVisible({ timeout: 15_000 });
 
     await adminPage.getByTestId("filter-name").fill("no-such-pipeline-name");
-    await expect(adminPage.getByTestId("empty-message")).toBeVisible({ timeout: 15_000 });
+    await expect(adminPage.getByTestId("pipelines-no-matches")).toBeVisible({ timeout: 15_000 });
     await adminPage.getByTestId("filter-name").fill("");
   });
 
-  test("the project filter offers a repo's root folders and scopes the list", async ({ adminPage }) => {
+  test("the repo filter scopes to one repo's project folders", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
 
-    // Scope to the fixture repo so the project options are deterministic: its one flow sits at the repo root.
+    // Scope to the fixture repo; a single-repo selection drops the repo level and lists its project folders directly.
     await adminPage.getByRole("combobox", { name: "Repo" }).click();
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
 
-    // The project dropdown now offers that repo's root folders; the fixture flow is at the root, so "(root)".
-    await adminPage.getByRole("combobox", { name: "Project" }).click();
-    await adminPage.getByRole("option", { name: "(root)" }).click();
-
-    // Filtering by that project keeps the root-level flow in the list.
+    // The fixture flow sits at the repo root, so it groups under the "(root)" project folder. The folders start
+    // collapsed, so open the "(root)" folder to reveal its flows.
+    const rootFolder = adminPage.getByTestId("repo-project").filter({ hasText: "(root)" });
+    await expect(rootFolder).toBeVisible({ timeout: 15_000 });
+    await rootFolder.getByText("(root)").click();
     await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
       .toBeVisible({ timeout: 15_000 });
   });
 
   test("pipeline detail shows YAML, definition, runs, and schedules tabs", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
+    // The folder tree starts collapsed; a search expands it and surfaces the flow row.
+    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
     await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
@@ -58,6 +60,8 @@ test.describe.serial("pipelines", () => {
 
   test("trigger from the pipeline detail is prefilled and lands on the run", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
+    // The folder tree starts collapsed; a search expands it and surfaces the flow row.
+    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
     await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
     await adminPage.getByTestId("open-trigger-run").click();
     await expect(adminPage.getByTestId("trigger-run-dialog")).toBeVisible();
