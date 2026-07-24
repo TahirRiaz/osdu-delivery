@@ -233,6 +233,33 @@ For Billettkontroll specifically: no producer, so add `_00_cpy` copy flows that 
 `dwdatalakeprodv2/raw/billettkontroll/pss/...`, plus the pre+ods flows; the ADF `SQLFlow_Billettkontroll`
 pipeline is only the old scheduler and is NOT reproduced (this batch stays unscheduled).
 
+### 1c. Static / manually-maintained tables (`man` schema) are transferred by hand, NOT ported as flows
+
+**Some upstream tables a batch depends on are static reference data, not pipeline outputs.** The clearest tell
+is the **`man` schema** (as in `man.Bysykkel_session_metadata`): `man` = manually maintained. These tables have
+no acquisition script, no runbook, no ADF Copy, and no pre/ods flow that produces them - they are hand-curated
+lookup/metadata tables that a human populated once and edits occasionally. A star-schema build will reference
+them (e.g. `Fact_BikesSession` joins `man.Bysykkel_session_metadata`, a `Dim_SessionMetadata` reads it), so the
+fact/dim cannot build until the table physically exists in the new estate.
+
+**Do NOT invent a flow for these.** There is nothing to acquire and nothing to transform, so a `cpy`/`api`/`pre`
+flow would be a fabricated producer for data that arrives by hand. The correct migration action is a **one-time
+manual table transfer from the OLD ODS/DWH database to the NEW one**, table-and-data as-is:
+
+- Copy both schema and rows verbatim from the old database (`dw-sqlflow-prod-last`/the legacy DWH on
+  `92.221.59.28`, or wherever the `man.*` table lives) into the same `man.<Table>` in the new estate
+  (`dw-dwh-prod`). Preserve the exact column names, types, and contents - this is reference data the downstream
+  star schema was built against, so it must match old production exactly (same fundamental principle as the arc
+  compat views).
+- This is an operator step (a SQL `INSERT ... SELECT` across a linked server, a `bcp`/`sqlcmd` export+import, or
+  an SSMS "Generate Scripts (schema + data)"), run once. It is not scheduled and not represented in YAML.
+- Record it as a migration prerequisite for the affected fact/dim (note which `man.*` tables were transferred),
+  then build the fact/dim flow once the table is present. Never leave the fact/dim pointed at a `man.*` table
+  that does not yet exist in the new estate.
+
+Same treatment applies to any other hand-curated lookup table a batch's EDW layer needs (unknown-member rows,
+category/mapping tables) that has no producer: transfer it once from old DWH to new DWH, do not synthesize a flow.
+
 ### 2. Ensure target schemas exist
 
 ```sql
