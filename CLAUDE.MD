@@ -82,3 +82,43 @@ When a flow finds no files or seems to read from the wrong place:
 - Inputs are validated at trust boundaries (user input, external API responses, file contents, FFI), and trusted internal calls are not over-validated (see the global "no defensive checks for impossible scenarios" rule).
 - Errors carry enough context to debug from a log line alone: which operation, which inputs (sanitised), which underlying cause.
 - The code compiles, the types are tight (no stray `any`/`unknown`/`Box<dyn Any>` to dodge a real signature), and any new public surface has the same level of polish as the surrounding code.
+## Convert Legacy Sources One At A Time (Controlled, Step By Step)
+
+**Porting legacy runbooks/sources into V3 is a CONTROLLED, ONE-SOURCE-AT-A-TIME process. Never fan out across many sources in parallel, and never spawn subagents to author a batch of sources at once.** That produces a scattered mess of half-verified files and lands nothing. Do exactly one source, end to end, before touching the next.
+
+**Each source is INDEPENDENT and unrelated.** Kolumbus ingests mobility data from many separate vendors: Citybike (bysykkel) is Kolumbus's own city bikes; Voi and Ryde are e-scooter operators; Getaround is car-share; EasyPark and Stavanger Parkering are parking; Fjord1 and Norled are ferries; Entur is national transit; Statens vegvesen (SVV) is roads/traffic; and so on. They share nothing, feed nothing into each other, and none of them are part of Citybike. Each has its own lake path (`raw/<source>/...`), its own catalog batch, its own folder, and its own DWH tables. Never merge, group, or imply a relationship between sources.
+
+**The controlled per-source loop (finish every step for a source before starting the next):**
+
+1. Read that ONE source's runbook(s). Confirm it is LIVE, not dead/retired/commented-out and not pointed at a test host. If it is dead or test-only, STOP and report it: do not ship an acquisition for it.
+2. Author the acquisition flow for that one source.
+3. Validate it.
+4. RUN it and LAND real data into the V3 lake. Landing data is the point; an authored YAML that never runs is not progress.
+5. Show the landed result (files/bytes/rows).
+6. Only then move to the next source, and get the go-ahead first.
+
+Do not batch, do not parallelize sources, do not report "authored N flows" as if that were done. "Done" for a source means its data landed and was shown.
+
+## Source Flow Naming And Batch Conventions (match the sibling folders exactly)
+
+When porting a source, the file names, flow `name:` fields, and `batch:` values MUST match the estate convention shown by the sibling folders (baatbooking, billettapp). Do not invent a variant.
+
+- **Folder** = the readable source name, e.g. `Citybike/`, `Baatbooking/`.
+- **File name and flow `name:`** = `<source>_<object>_<counter>_<flowtype>`, where `<source>` is the folder/source name lowercased (NOT the target table's prefix). Example: the `Citybike` folder holds `citybike_bikes_01_jsn`, `citybike_alert_02_ing`, and the acquisition `citybike_00_api`. The pipeline prefix ALWAYS matches its repo folder (like `billettapp_*`, `baatbooking_*`); it does NOT track the DWH table name (the Citybike tables are `Bysykkel_*`, but the flows are `citybike_*`). The `Bysykkel_*` names stay ONLY inside the flow bodies where they reference the real pre view / arc table.
+- **`batch:` = a per-object (per-dataset) grouping label, NOT the source name.** Each dataset's pre+ods pair shares `batch: <object>` (e.g. `citybike_bikes_01_jsn` and `citybike_bikes_02_ing` are both `batch: bikes`); the acquisition flow uses `batch:` = its flow type (`api`, or `copy` for a `cpy` flow). This mirrors baatbooking (`detail`, `sess`, `trans`, `trans_item`, `copy`). `batch` is only a grouping/filter label and has NO effect on scheduling.
+- **Scheduling** is by schedule membership, never by batch: define one schedule on the acquisition anchor (`schedule:` block, e.g. `citybike_daily`, daily `0 4 * * *` Europe/Oslo) and have every pre/ods flow join it with `schedule: <name>`. One fire runs the whole source wave-ordered (acquire -> pre -> ods).
+
+## FUNDAMENTAL PRINCIPLE: MATCH THE OLD PRODUCTION FORMAT EXACTLY
+
+**PORTING A SOURCE TO V3 MUST NOT CHANGE WHAT DOWNSTREAM CONSUMERS SEE. THE CONSUMER-FACING OUTPUT MUST MATCH THE OLD PRODUCTION TABLE EXACTLY: SAME TABLE NAME, SAME COLUMN SET, SAME COLUMN ORDER, SAME COLUMN NAMES, SAME TYPES (INCLUDING LENGTHS, AND decimal vs numeric). DOWNSTREAM USAGE MUST REMAIN INTACT. THIS IS NON-NEGOTIABLE.**
+
+The V3 ODS/arc table is built from the typed view, so its physical shape (column ORDER, and occasionally a type/length) will NOT match the hand-built old production table even when the column SET is identical: the framework appends the surrogate PK, the audit columns, and any declared-but-not-landed "legacy extra" columns, so their positions shift. A consumer doing `SELECT *` or positional access would break.
+
+So for EVERY ported ODS table, cross-match it column-for-column, IN ORDER, against the old production DDL (`B:\SQLFlowUpgradeV3\dw-dwh-prod\arc.<OldTable>.Table.sql`). When it is not an EXACT match:
+
+- Point the ods flow at a physical table named for the V3 SOURCE, matching the flow's source prefix (e.g. the Citybike source's physical tables are `arc.Citybike_<Object>`, not the old `arc.Bysykkel_<Object>`). Do NOT use an `_ods` suffix.
+- Create a VIEW with the OLD production table name (e.g. `arc.Bysykkel_<Object>`) over that physical table, projecting the EXACT old-production format: exact column order, names, and types (`CAST` every column to its old-prod type, listed in old-prod order). Downstream keeps querying the old name and sees the unchanged shape.
+- Only skip the compat view when the V3 table is already byte-for-byte identical to old production.
+- Creating the view is a one-time/manual DDL operation (no engine change; keep the `CREATE OR ALTER VIEW` statements in a `compat_views.sql` in the source folder for reproducibility). Do NOT bolt it onto the ods run.
+
+Never reshape or rename what downstream depends on; interpose a compatibility view under the old name instead.
