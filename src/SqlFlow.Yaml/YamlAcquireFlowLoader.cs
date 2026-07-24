@@ -310,6 +310,7 @@ public sealed class YamlAcquireFlowLoader
         {
             TimeoutSeconds = y.TimeoutSeconds ?? 100,
             RateLimitRps = y.RateLimitRps ?? 0,
+            Concurrency = Math.Max(1, y.Concurrency ?? 8),
             MaxResponseBytes = y.MaxResponseBytes ?? (500L * 1024 * 1024),
             VerifyTls = y.VerifyTls ?? true,
             UrlAllowlist = y.UrlAllowlist ?? [],
@@ -509,6 +510,7 @@ internal sealed class AcquireReliabilityYaml
 {
     public int? TimeoutSeconds { get; set; }
     public double? RateLimitRps { get; set; }
+    public int? Concurrency { get; set; }
     public long? MaxResponseBytes { get; set; }
     public bool? VerifyTls { get; set; }
     public List<string>? UrlAllowlist { get; set; }

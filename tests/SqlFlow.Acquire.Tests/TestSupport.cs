@@ -13,8 +13,21 @@ namespace SqlFlow.Acquire.Tests;
 internal sealed class StubHttpHandler : HttpMessageHandler
 {
     private readonly List<Func<HttpRequestMessage, string, HttpResponseMessage?>> _routes = [];
+    private readonly List<CapturedRequest> _requests = [];
+    // The engine now issues an item's fan-out concurrently, so several SendAsync calls capture at once; guard the
+    // list (and hand out a snapshot) so the harness matches the product's own thread-safe landing sink.
+    private readonly Lock _requestsLock = new();
 
-    public List<CapturedRequest> Requests { get; } = [];
+    public IReadOnlyList<CapturedRequest> Requests
+    {
+        get
+        {
+            lock (_requestsLock)
+            {
+                return _requests.ToList();
+            }
+        }
+    }
 
     public StubHttpHandler Route(Func<HttpRequestMessage, string, HttpResponseMessage?> responder)
     {
@@ -46,7 +59,11 @@ internal sealed class StubHttpHandler : HttpMessageHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        Requests.Add(new CapturedRequest(request.Method.Method, request.RequestUri!, body, request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase)));
+        var captured = new CapturedRequest(request.Method.Method, request.RequestUri!, body, request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase));
+        lock (_requestsLock)
+        {
+            _requests.Add(captured);
+        }
 
         foreach (var route in _routes)
         {

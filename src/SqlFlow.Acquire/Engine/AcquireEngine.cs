@@ -102,10 +102,18 @@ public sealed class AcquireEngine
                 pipelines.Add(pipeline);
 
                 var contexts = await ExpandAsync(item.Source, baseVars, item.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
-                foreach (var vars in contexts)
+
+                // One request pipeline per fan-out combination. The combinations are independent (each lands its own
+                // file through the shared, thread-safe rate limiter, landing sink, and watermark), so the item runs
+                // them with bounded concurrency instead of paying a full round-trip latency per file. Probing (the
+                // debugger's single-step Test invoke) always stays sequential so the stepped iteration is
+                // deterministic; the aggregate request rate is still bounded by the rate limiter either way.
+                async Task RunContextAsync(int i, CancellationToken token)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var iterationAuth = refreshPerIteration ? await _auth.ResolveAsync(envelope.Auth, authHttp, vars, ct).ConfigureAwait(false) : discoveryAuth;
+                    var vars = contexts[i];
+                    var iterationAuth = refreshPerIteration
+                        ? await _auth.ResolveAsync(envelope.Auth, authHttp, vars, token).ConfigureAwait(false)
+                        : discoveryAuth;
                     var fetch = new AcquireFetch
                     {
                         Source = item.Source,
@@ -116,14 +124,31 @@ public sealed class AcquireEngine
                         Log = log,
                         Secrets = _secrets,
                         Http = transport is HttpTransport ? dataHttp : null,
-                        Iteration = iterations,
+                        Iteration = i,
                         Probe = run.Probe,
                         MaxPagesOverride = run.MaxPagesOverride,
                     };
 
-                    await transport.FetchAsync(fetch, ct).ConfigureAwait(false);
-                    pages += fetch.Pages;
-                    iterations++;
+                    await transport.FetchAsync(fetch, token).ConfigureAwait(false);
+                    Interlocked.Add(ref pages, fetch.Pages);
+                    Interlocked.Increment(ref iterations);
+                }
+
+                var concurrency = run.Probe is null ? Math.Max(1, envelope.Reliability.Concurrency) : 1;
+                if (concurrency <= 1 || contexts.Count <= 1)
+                {
+                    for (var i = 0; i < contexts.Count; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        await RunContextAsync(i, ct).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    await Parallel.ForEachAsync(
+                        Enumerable.Range(0, contexts.Count),
+                        new ParallelOptions { MaxDegreeOfParallelism = concurrency, CancellationToken = ct },
+                        async (i, token) => await RunContextAsync(i, token).ConfigureAwait(false)).ConfigureAwait(false);
                 }
             }
         }
@@ -131,10 +156,13 @@ public sealed class AcquireEngine
         {
             // A failure surfaces as a failed (or partial) run: files landed before the failure are kept, the
             // counters reflect what completed, and the watermark is reported but not persisted (the history reader
-            // only advances from a successful run), so the next run re-fetches the un-landed remainder.
+            // only advances from a successful run), so the next run re-fetches the un-landed remainder. A concurrent
+            // fan-out surfaces its first fault wrapped in an AggregateException; unwrap it so the recorded cause is
+            // the underlying fetch error, not the generic "one or more errors occurred".
+            var cause = ex is AggregateException agg && agg.InnerExceptions.Count > 0 ? agg.InnerExceptions[0] : ex;
             success = false;
-            error = SecretHygiene.RedactedMessage(ex);
-            log.Log(RunLogLevel.Info, "acquire.error", ex.Message);
+            error = SecretHygiene.RedactedMessage(cause);
+            log.Log(RunLogLevel.Info, "acquire.error", cause.Message);
         }
         finally
         {

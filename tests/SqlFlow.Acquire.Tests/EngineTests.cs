@@ -334,6 +334,64 @@ public sealed class EngineTests
         Assert.Contains(h.Requests, r => r.Uri.AbsolutePath.EndsWith("/alert", StringComparison.Ordinal) && Query(r.Uri, "bikeId") == "b1");
     }
 
+    [Theory]
+    [InlineData(8)]   // the default: the fan-out lands concurrently through the shared, thread-safe sinks
+    [InlineData(1)]   // pinned sequential: the same set must land, exercising the non-parallel path
+    public async Task Fan_out_lands_every_file_at_any_concurrency(int concurrency)
+    {
+        // A wide per-id fan-out (25 bikes -> 25 files) run through one shared LandingPipeline. Under the concurrent
+        // default the lands race on the name-reservation set, the counters, and the manifest; every id must still
+        // land exactly once, with no lost request and no lost file. Pinning concurrency to 1 must produce the same
+        // set, so the two code paths agree.
+        var ids = Enumerable.Range(1, 25).Select(i => $"b{i}").ToList();
+        var bikesJson = "[" + string.Join(",", ids.Select(id => $"{{\"BikeId\":\"{id}\"}}")) + "]";
+        var handler = new StubHttpHandler()
+            .Json("/bikes", _ => bikesJson)
+            .Json("/alert", req => $"[{{\"bike\":\"{Query(req.RequestUri!, "bikeId")}\"}}]");
+        var engine = TestEngine.Create(handler, new FakeSecrets(("token", "SECRET123")), new FixedClock(Now), out var dir);
+        var flow = new AcquireFlow
+        {
+            Name = "Test_Flow",
+            Items =
+            [
+                new AcquireItem
+                {
+                    // AcquireFlow.Source (the shared envelope, where reliability/concurrency lives) is Items[0].Source.
+                    Source = new AcquireSource
+                    {
+                        BaseUrl = BaseUrl,
+                        Reliability = new AcquireReliability { Concurrency = concurrency },
+                        Request = new AcquireRequest { Path = "/alert", Query = new Dictionary<string, string> { ["bikeId"] = "{bikeId}" } },
+                        Iterations =
+                        [
+                            new AcquireIteration
+                            {
+                                Kind = AcquireIterationKind.IdsFrom,
+                                Variable = "bikeId",
+                                IdRequest = new AcquireRequest { Path = "/bikes" },
+                                IdPath = "$[*].BikeId",
+                            },
+                        ],
+                    },
+                    Landing = new AcquireLanding { Target = dir, PathTemplate = "data/{bikeId}" },
+                },
+            ],
+        };
+
+        var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(25, result.Iterations);
+        Assert.Equal(25, result.FilesWritten);
+        Assert.Equal(25, TestEngine.LandedFiles(dir).Count);
+        var landedIds = handler.Requests
+            .Where(r => r.Uri.AbsolutePath.EndsWith("/alert", StringComparison.Ordinal))
+            .Select(r => Query(r.Uri, "bikeId"))
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(ids.OrderBy(x => x, StringComparer.Ordinal), landedIds);
+    }
+
     [Fact]
     public async Task Token_exchange_auth_acquires_then_applies_bearer()
     {

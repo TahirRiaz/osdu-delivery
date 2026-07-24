@@ -13,6 +13,8 @@ namespace SqlFlow.Acquire.Engine;
 public sealed class WatermarkState
 {
     private readonly AcquireIncremental? _config;
+    // A concurrent fan-out observes pages from several fetches at once; guard the max-advance compare-and-set.
+    private readonly Lock _sync = new();
 
     public WatermarkState(AcquireIncremental? config, string? priorValue)
     {
@@ -39,9 +41,17 @@ public sealed class WatermarkState
         }
 
         var max = JsonPathReader.MaxColumn(page, column, recordsPath);
-        if (max is not null && (Current is null || string.CompareOrdinal(max, Current) > 0))
+        if (max is null)
         {
-            Current = max;
+            return;
+        }
+
+        lock (_sync)
+        {
+            if (Current is null || string.CompareOrdinal(max, Current) > 0)
+            {
+                Current = max;
+            }
         }
     }
 }

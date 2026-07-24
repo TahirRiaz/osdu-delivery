@@ -414,6 +414,13 @@ public sealed record AcquireReliability
     /// <summary>Outbound request rate cap (requests/second) via a token bucket. 0 or less means unlimited.</summary>
     public double RateLimitRps { get; init; }
 
+    /// <summary>Max in-flight fan-out fetches per item: the engine runs the item's date-window x id expansion (one
+    /// landed file per combination) this many at a time instead of strictly one after another. The rate limiter
+    /// still caps the aggregate request rate, so concurrency only lets a run saturate that cap rather than paying a
+    /// full round-trip latency per file; on a wide per-id fan-out (thousands of files) that is the difference
+    /// between latency-bound and rate-bound. 1 is strictly sequential. Clamped to at least 1; default 8.</summary>
+    public int Concurrency { get; init; } = 8;
+
     /// <summary>Hard cap on a single response held in memory before landing. Default 500 MB.</summary>
     public long MaxResponseBytes { get; init; } = 500L * 1024 * 1024;
 

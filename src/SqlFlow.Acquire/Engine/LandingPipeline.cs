@@ -26,6 +26,9 @@ public sealed class LandingPipeline
     private readonly bool _forceReland;
     private readonly HashSet<string> _writtenPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<LandedFile> _files = [];
+    // Guards the in-memory state (name reservation, counters, manifest) so an item's fan-out can land its files
+    // concurrently. The store I/O itself runs outside the lock: only the fast bookkeeping is serialized.
+    private readonly Lock _sync = new();
 
     public LandingPipeline(
         AcquireLanding config, IRawLandingStore store, string resolvedBase, Guid runId, IRunEventSink log,
@@ -67,7 +70,11 @@ public sealed class LandingPipeline
     {
         if (_config.SkipEmpty && (item.RecordCount == 0 || (item.RecordCount < 0 && item.Content.Length == 0)))
         {
-            Skipped++;
+            lock (_sync)
+            {
+                Skipped++;
+            }
+
             _log.Log(RunLogLevel.Info, "landing.skip", $"skipped empty payload '{item.Discriminator}'.");
             return null;
         }
@@ -80,14 +87,19 @@ public sealed class LandingPipeline
         var relative = TemplateEngine.Render(_config.PathTemplate, itemVars).Trim('/');
         var extension = Extension(item.ContentType);
         var suffix = _config.Compression == AcquireCompression.Gzip ? ".gz" : string.Empty;
-        var name = $"{relative}.{extension}{suffix}";
 
-        // Guarantee pages never collide: if this exact relative path was already written this run, disambiguate with
-        // the item discriminator (page index / object key) before the extension.
-        if (!_writtenPaths.Add(name))
+        // Reserve a collision-free name atomically: if this exact relative path was already written this run,
+        // disambiguate with the item discriminator (page index / object key) before the extension. Under a
+        // concurrent fan-out two lands could race for the same path, so the reservation is done under the lock.
+        string name;
+        lock (_sync)
         {
-            name = $"{relative}.{Sanitize(item.Discriminator)}.{extension}{suffix}";
-            _writtenPaths.Add(name);
+            name = $"{relative}.{extension}{suffix}";
+            if (!_writtenPaths.Add(name))
+            {
+                name = $"{relative}.{Sanitize(item.Discriminator)}.{extension}{suffix}";
+                _writtenPaths.Add(name);
+            }
         }
 
         var payload = _config.Compression == AcquireCompression.Gzip ? Gzip(item.Content) : item.Content;
@@ -98,10 +110,18 @@ public sealed class LandingPipeline
             wrote = await _store.PutAsync(location, payload, _config.Overwrite, SkipUnchanged, ct).ConfigureAwait(false);
         }
 
-        FilesWritten++;
-        BytesWritten += payload.Length;
         var landed = new LandedFile(location, payload.Length, item.ContentType, item.RecordCount);
-        _files.Add(landed);
+        lock (_sync)
+        {
+            FilesWritten++;
+            BytesWritten += payload.Length;
+            _files.Add(landed);
+            if (!_dryRun && !wrote)
+            {
+                Unchanged++;
+            }
+        }
+
         if (_dryRun)
         {
             _log.Log(RunLogLevel.Info, "landing.write", $"would land {payload.Length} bytes to '{location}'.");
@@ -112,7 +132,6 @@ public sealed class LandingPipeline
         }
         else
         {
-            Unchanged++;
             _log.Log(RunLogLevel.Info, "landing.unchanged", $"unchanged, not rewritten: '{location}'.");
         }
 
