@@ -283,6 +283,27 @@ is how the stale-metadata gap is caught. If the generated view's column count is
 table's, the generator under-produced from stale metadata: go back, add the missing columns from the arc DDL
 (step 1a), regenerate/patch the pre `01_csv.yaml`, and re-diff until the name+type sets are equal.
 
+### 5a. MATCH THE OLD PRODUCTION FORMAT EXACTLY (compat view over a renamed ODS table)
+
+**FUNDAMENTAL PRINCIPLE: PORTING A SOURCE MUST NOT CHANGE WHAT DOWNSTREAM CONSUMERS SEE. THE CONSUMER-FACING
+`arc.<Table>` MUST MATCH OLD PRODUCTION EXACTLY: SAME NAME, SAME COLUMN SET, SAME COLUMN ORDER, SAME NAMES, SAME
+TYPES (INCLUDING LENGTHS AND `decimal` vs `numeric`). DOWNSTREAM USAGE MUST REMAIN INTACT.**
+
+The V3 ODS/arc table is built from the typed view, so its physical column ORDER (and occasionally a type/length)
+will NOT match the hand-built old production table even when the column SET is identical: the merge appends the
+surrogate PK, the audit columns, and any declared-but-not-landed legacy-extra columns, so their positions shift.
+A consumer doing `SELECT *` or positional access breaks. So the count+names check above is NOT sufficient: diff
+the FULL ORDERED (name, type) list against `B:\SQLFlowUpgradeV3\dw-dwh-prod\arc.<Table>.Table.sql`.
+
+When the V3 arc table is not byte-for-byte identical to old production (it usually is not):
+
+- Point the ods flow at a DIFFERENTLY-NAMED physical table (`target.object` -> `arc.<Table>_ods`).
+- Create a VIEW with the OLD table name (`arc.<Table>`) that projects the physical `_ods` table into the EXACT
+  old-production format (exact column order, names, and types). Downstream keeps querying `arc.<Table>`.
+- Only skip the compat view when the V3 table already matches old production exactly.
+
+Never reshape or rename what downstream depends on; interpose a compatibility view instead.
+
 ### 6. Register in the catalog - ALWAYS via Bitbucket, never a local `db sync`
 
 **The catalog registration is the Bitbucket push, nothing else.** The control plane auto-syncs the WHOLE
