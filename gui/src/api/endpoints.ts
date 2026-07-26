@@ -335,7 +335,10 @@ export const lineageApi = {
   objectDetail: (key: string) => get<LineageObjectDetail>("/api/v1/lineage/objects/detail", { key }),
   // Everything known about one object in a single payload: identity, columns, and its lineage edges.
   dossier: (key: string) => get<ObjectDossier>("/api/v1/lineage/objects/dossier", { key }),
-  script: (key: string) => get<NodeScript>("/api/v1/lineage/script", { key }),
+  // The code behind a node: an object's SQL or a flow's YAML; view "object" resolves a flow key to the SQL of
+  // the database object it executes (an sp flow's procedure) instead of its YAML.
+  script: (key: string, view?: "object") =>
+    get<NodeScript>("/api/v1/lineage/script", view === undefined ? { key } : { key, view }),
   objectColumns: (key: string, query: PageQuery = {}) =>
     get<PagedResult<LineageObjectColumn>>("/api/v1/lineage/objects/columns", { key, ...query } as QueryParams),
   objectRepos: (key: string) => get<ObjectRepo[]>("/api/v1/lineage/objects/repos", { key }),

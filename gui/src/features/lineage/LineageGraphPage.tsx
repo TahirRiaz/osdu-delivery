@@ -1380,9 +1380,26 @@ export default function LineageGraphPage() {
               <Button size="xs" onClick={() => openNode(focus.id)} data-testid="graph-open-selected">
                 {graph.openTarget(focus.id).label}
               </Button>
-              <Button variant="ghost" size="xs" onClick={() => setScriptKey(focus.id)} data-testid="graph-view-script">
-                View script
-              </Button>
+              {(!flowKindById.has(focus.id) || flowKindById.get(focus.id) === "sp") && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setScriptTarget(flowKindById.has(focus.id) ? { key: focus.id, view: "object" } : { key: focus.id })}
+                  data-testid="graph-view-script"
+                >
+                  View script
+                </Button>
+              )}
+              {flowKindById.has(focus.id) && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setScriptTarget({ key: focus.id })}
+                  data-testid="graph-view-yaml"
+                >
+                  View YAML
+                </Button>
+              )}
               <Button variant="ghost" size="xs" onClick={() => focusNode(null)} data-testid="graph-clear-focus">
                 Clear
               </Button>
@@ -1658,16 +1675,28 @@ export default function LineageGraphPage() {
           />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-56">
-          <DropdownMenuItem
-            data-testid="node-menu-view-script"
-            onSelect={() => {
-              if (nodeMenu !== null) {
-                setScriptKey(nodeMenu.id);
-              }
-            }}
-          >
-            View script
-          </DropdownMenuItem>
+          {(nodeMenu === null || !flowKindById.has(nodeMenu.id) || flowKindById.get(nodeMenu.id) === "sp") && (
+            <DropdownMenuItem
+              data-testid="node-menu-view-script"
+              onSelect={() => {
+                if (nodeMenu !== null) {
+                  setScriptTarget(flowKindById.has(nodeMenu.id) ? { key: nodeMenu.id, view: "object" } : { key: nodeMenu.id });
+                }
+              }}
+            >
+              View script
+            </DropdownMenuItem>
+          )}
+          {nodeMenu !== null && flowKindById.has(nodeMenu.id) && (
+            <DropdownMenuItem
+              data-testid="node-menu-view-yaml"
+              onSelect={() => {
+                setScriptTarget({ key: nodeMenu.id });
+              }}
+            >
+              View YAML
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             onSelect={() => {
               if (nodeMenu !== null) {
@@ -1748,10 +1777,10 @@ export default function LineageGraphPage() {
       />
 
       <Sheet
-        open={scriptKey !== null}
+        open={scriptTarget !== null}
         onOpenChange={(open) => {
           if (!open) {
-            setScriptKey(null);
+            setScriptTarget(null);
           }
         }}
       >
@@ -1759,7 +1788,7 @@ export default function LineageGraphPage() {
         <SheetContent side="right" className="w-full gap-0 sm:max-w-[760px]" onOpenAutoFocus={(event) => event.preventDefault()}>
           <SheetHeader className="border-b border-border pr-10">
             <SheetTitle className="truncate font-mono text-sm">
-              {scriptQuery.data?.name ?? scriptKey ?? ""}
+              {scriptQuery.data?.name ?? scriptTarget?.key ?? ""}
             </SheetTitle>
             <SheetDescription className="sr-only">
               The captured script behind the selected lineage node.
