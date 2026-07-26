@@ -154,6 +154,11 @@ echo   API:      http://localhost:5000
 echo   Catalog:  the REAL Azure catalog. Your worker shares the estate's run queue.
 echo   Ctrl+C    stops the control plane. The GUI has its own window.
 echo.
+REM The managed git-to-catalog sync is claim-based on the SHARED catalog: a local instance that ran it would
+REM steal due syncs from the deployed control plane and execute them with this machine's filesystem,
+REM credentials, and code version. Dev instances therefore never participate; use the deployed estate's
+REM "sync now" (or the CLI's db sync against a local folder) instead.
+set "ControlPlane__ManagedSync__Enabled=false"
 dotnet run --project src\SqlFlow.ControlPlane --urls http://localhost:5000
 
 endlocal

@@ -108,21 +108,42 @@ public sealed record LineageProjectDto(Guid RepoId, string RepoName, string Proj
 /// <summary>One pipeline node in a project's cross-repo lineage closure. <c>IsSeed</c> marks a flow that belongs to
 /// the selected project itself (its base objects seed the graph); a non-seed flow was reached downstream, possibly
 /// in another repo, which is why <c>RepoId</c>/<c>RepoName</c> travel with every node. <c>Depth</c> is how many
-/// downstream hops from the seed the flow sits at, so a client can tint or lay out by distance.</summary>
+/// downstream hops from the seed the flow sits at, so a client can tint or lay out by distance.
+/// <c>LineageComplete</c> is false when the flow depends on a module (an executed procedure, a read view) whose
+/// body was never harvested, so its true reads/writes are unknown; <c>IncompleteReason</c> says which module and
+/// why, so the client renders "not derived yet" instead of presenting the gap as fact.</summary>
 public sealed record ProjectGraphPipelineDto(
     Guid Id, string Name, string Kind, int Wave, Guid RepoId, string RepoName, string RelativePath,
-    bool IsSeed, int Depth);
+    bool IsSeed, int Depth,
+    bool LineageComplete = true, string? IncompleteReason = null);
 
-/// <summary>A project's lineage as one cross-repo subgraph: the pipeline nodes in the downstream closure, the edges
-/// among them and the objects they move (reusing <see cref="EdgeDto"/>, whose <c>RepoId</c> records which repo
-/// attributed each fact), the object keys at the depth-capped frontier that still have un-included consumers (so a
-/// client can offer to expand them), and whether a node cap truncated the walk. The walk crosses repo boundaries
-/// freely via the global object keys: an object's origin repo is irrelevant to how data flows through it.</summary>
+/// <summary>One object node of the drawable project graph: its key (the node id), display name, resolved kind
+/// (<c>table</c>/<c>view</c>/<c>file</c>), where it lives (<c>database.schema</c>, null for a file), and whether
+/// it sits on the depth-capped frontier with un-included consumers (so the client can offer to expand it).</summary>
+public sealed record ProjectGraphObjectDto(string Key, string Name, string Kind, string? Location, bool Frontier);
+
+/// <summary>One resolved, drawable edge of the project graph. <c>Source</c>/<c>Target</c> are node ids (a
+/// pipeline id or an object key). <c>Label</c> is what the arrow says (<c>writes</c>/<c>creates</c>/<c>reads</c>/
+/// <c>view</c> in the flows view; the flow name in the objects view). <c>PipelineId</c> is the flow the edge is
+/// attributed to, for stable per-flow coloring; null for a DB-managed view's derivation edge, which no flow
+/// maintains.</summary>
+public sealed record ProjectGraphDrawEdgeDto(string Source, string Target, string Label, Guid? PipelineId);
+
+/// <summary>A project's lineage as one cross-repo subgraph. <c>Pipelines</c> and <c>Edges</c> are the underlying
+/// facts (reusing <see cref="EdgeDto"/>, whose <c>RepoId</c> records which repo attributed each fact);
+/// <c>Objects</c>, <c>FlowGraph</c>, and <c>ObjectGraph</c> are the DRAWABLE graph derived from those facts
+/// server-side, next to the data that knows the answers: nodes typed from the registry, view bodies wired to
+/// their base tables, procedures excluded as code dependencies. A client renders and lays out this graph
+/// verbatim; it never re-derives semantics from the facts. The walk crosses repo boundaries freely via the
+/// global object keys: an object's origin repo is irrelevant to how data flows through it.</summary>
 public sealed record ProjectGraphDto(
     IReadOnlyList<ProjectGraphPipelineDto> Pipelines,
     IReadOnlyList<EdgeDto> Edges,
     IReadOnlyList<string> Frontier,
-    bool Truncated);
+    bool Truncated,
+    IReadOnlyList<ProjectGraphObjectDto> Objects,
+    IReadOnlyList<ProjectGraphDrawEdgeDto> FlowGraph,
+    IReadOnlyList<ProjectGraphDrawEdgeDto> ObjectGraph);
 
 /// <summary>One (server, database, schema) grouping in the catalog with how many objects it holds: the schema
 /// hierarchy a caller browses to answer "what schemas exist" and "how big is each" before drilling into
@@ -1062,7 +1083,9 @@ public static class LineageEndpoints
         if (seedPipelineIds.Count == 0 && expandPipelineIds.Count == 0 && expandObjectKeys.Count == 0)
         {
             return TypedResults.Ok(new ProjectGraphDto(
-                Array.Empty<ProjectGraphPipelineDto>(), Array.Empty<EdgeDto>(), Array.Empty<string>(), false));
+                Array.Empty<ProjectGraphPipelineDto>(), Array.Empty<EdgeDto>(), Array.Empty<string>(), false,
+                Array.Empty<ProjectGraphObjectDto>(), Array.Empty<ProjectGraphDrawEdgeDto>(),
+                Array.Empty<ProjectGraphDrawEdgeDto>()));
         }
 
         // The whole estate's edges, once, minimally projected. This is the universal graph the walk runs over; it is
@@ -1220,19 +1243,73 @@ public static class LineageEndpoints
                 (p, r) => new { p.Id, p.Name, p.Kind, p.Wave, p.RepoId, RepoName = r.Name, p.RelativePath })
             .ToListAsync(ct).ConfigureAwait(false);
 
+        var locations = await LoadObjectLocationsAsync(db, includedObjects, ct).ConfigureAwait(false);
+
+        // ---- Lineage completeness, decided from the dataset itself. A flow that EXECUTES a module (Requires) or
+        // READS a view whose body was never harvested has unknown reads/writes: the graph would confidently draw
+        // it edgeless (or source-less) when the truth is "not derived yet". A module counts as harvested when any
+        // edge row cites it as a via-module OR the registry stored its definition (a harvested body that
+        // references no catalog object still proves the harvest ran). The reason travels to the client so the
+        // graph can say WHY instead of rendering incompleteness as fact.
+        var expandedModules = new HashSet<string>(
+            edgeRows.Where(e => e.ViaModule is not null).Select(e => e.ViaModule!), StringComparer.Ordinal);
+        var moduleCandidates = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in edgeRows)
+        {
+            if (e.PipelineId is { } pid && includedPipes.Contains(pid) && !expandedModules.Contains(e.ObjectKey)
+                && (e.Relation == "Requires"
+                    || (e.Relation == "Reads" && locations.TryGetValue(e.ObjectKey, out var l) && l.Kind == "View")))
+            {
+                moduleCandidates.Add(e.ObjectKey);
+            }
+        }
+
+        var harvestedDefinitions = new HashSet<string>(StringComparer.Ordinal);
+        if (moduleCandidates.Count > 0)
+        {
+            var candidateList = moduleCandidates.ToList();
+            var defined = await db.Objects.AsNoTracking()
+                .Where(o => candidateList.Contains(o.Key) && o.Definition != null)
+                .Select(o => o.Key)
+                .ToListAsync(ct).ConfigureAwait(false);
+            harvestedDefinitions.UnionWith(defined);
+        }
+
+        var incompleteReasons = new Dictionary<Guid, string>();
+        foreach (var e in edgeRows)
+        {
+            if (e.PipelineId is not { } pid || !includedPipes.Contains(pid) || incompleteReasons.ContainsKey(pid)
+                || !moduleCandidates.Contains(e.ObjectKey) || harvestedDefinitions.Contains(e.ObjectKey))
+            {
+                continue;
+            }
+
+            if (e.Relation == "Requires")
+            {
+                incompleteReasons[pid] =
+                    $"The body of '{e.ObjectName}' has not been harvested (connected lineage has not reached its server), so this flow's reads and writes are unknown.";
+            }
+            else if (e.Relation == "Reads")
+            {
+                incompleteReasons[pid] =
+                    $"The body of view '{e.ObjectName}' has not been harvested (connected lineage has not reached its server), so its source tables are unknown.";
+            }
+        }
+
         var pipelines = pipeRows
             .Select(p => new ProjectGraphPipelineDto(
                 p.Id, p.Name, p.Kind, p.Wave, p.RepoId, p.RepoName, p.RelativePath,
-                seedPipelineIds.Contains(p.Id), pipelineDepth[p.Id]))
+                seedPipelineIds.Contains(p.Id), pipelineDepth[p.Id],
+                !incompleteReasons.ContainsKey(p.Id), incompleteReasons.GetValueOrDefault(p.Id)))
             .OrderBy(p => p.Depth)
             .ThenBy(p => p.RepoName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(p => p.Name, StringComparer.Ordinal)
             .ToList();
-
-        var locations = await LoadObjectLocationsAsync(db, includedObjects, ct).ConfigureAwait(false);
-        var edges = edgeRows
+        var includedEdges = edgeRows
             .Where(e => includedObjects.Contains(e.ObjectKey)
                 && (e.PipelineId is null || includedPipes.Contains(e.PipelineId.Value)))
+            .ToList();
+        var edges = includedEdges
             .Select(e =>
             {
                 locations.TryGetValue(e.ObjectKey, out var loc);
@@ -1250,7 +1327,179 @@ public static class LineageEndpoints
             .OrderBy(key => key, StringComparer.Ordinal)
             .ToList();
 
-        return TypedResults.Ok(new ProjectGraphDto(pipelines, edges, openFrontier, truncated));
+        var (objects, flowGraph, objectGraph) = DeriveDrawableGraph(
+            includedEdges, includedObjects, includedPipes, locations,
+            pipeRows.ToDictionary(p => p.Id, p => p.Name), openFrontier);
+
+        return TypedResults.Ok(new ProjectGraphDto(
+            pipelines, edges, openFrontier, truncated, objects, flowGraph, objectGraph));
+    }
+
+    /// <summary>
+    /// Derives the DRAWABLE project graph from the included fact rows: the single, server-side interpretation
+    /// every renderer consumes verbatim (the GUI lays out and paints; it re-derives nothing). Rules: a flow's
+    /// <c>Writes</c>/<c>Creates</c> draw flow-to-object, its <c>Reads</c> object-to-flow; a module whose body
+    /// reads base objects is a VIEW when a flow maintains it (the generated transform view) or the registry
+    /// knows it as one (a DB-managed fact/dim or compatibility view), and its data path draws base-to-view, so
+    /// a view is never wired to the file its maintaining flow read; a <c>Requires</c> (an executed procedure)
+    /// is a code dependency, not data movement, and draws nothing. The objects view composes the same facts as
+    /// object-to-object movement per flow. Self-edges never draw; the first spelling of a duplicate wins.
+    /// </summary>
+    private static (List<ProjectGraphObjectDto> Objects, List<ProjectGraphDrawEdgeDto> FlowGraph, List<ProjectGraphDrawEdgeDto> ObjectGraph) DeriveDrawableGraph(
+        IReadOnlyList<EdgeRow> includedEdges,
+        IReadOnlyCollection<string> includedObjects,
+        IReadOnlyCollection<Guid> includedPipes,
+        IReadOnlyDictionary<string, (string? Database, string? Schema, string Name, string? Kind)> locations,
+        IReadOnlyDictionary<Guid, string> pipelineNameById,
+        IReadOnlyList<string> openFrontier)
+    {
+        var frontierSet = new HashSet<string>(openFrontier, StringComparer.Ordinal);
+        var nameByKey = new Dictionary<string, string>(StringComparer.Ordinal);
+        var writtenKeys = new HashSet<string>(StringComparer.Ordinal);
+        var writeOwner = new Dictionary<string, Guid>();
+        var moduleReads = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var byPipeline = new Dictionary<Guid, (List<EdgeRow> Reads, List<EdgeRow> Writes)>();
+        foreach (var e in includedEdges)
+        {
+            nameByKey.TryAdd(e.ObjectKey, e.ObjectName);
+            if (e.PipelineId is { } pid)
+            {
+                if (!byPipeline.TryGetValue(pid, out var group))
+                {
+                    group = (new List<EdgeRow>(), new List<EdgeRow>());
+                    byPipeline[pid] = group;
+                }
+
+                if (e.Relation == "Reads")
+                {
+                    group.Reads.Add(e);
+                }
+                else if (e.Relation is "Writes" or "Creates")
+                {
+                    group.Writes.Add(e);
+                    writtenKeys.Add(e.ObjectKey);
+                    writeOwner.TryAdd(e.ObjectKey, pid);
+                }
+            }
+            else if (e.ViaModule is not null && e.Relation == "Reads")
+            {
+                (moduleReads.TryGetValue(e.ViaModule, out var bases)
+                    ? bases : moduleReads[e.ViaModule] = new HashSet<string>(StringComparer.Ordinal)).Add(e.ObjectKey);
+            }
+        }
+
+        // A module with body reads is a view worth wiring when a flow maintains it OR the registry kind says
+        // View; an unwritten module with no known kind could be a procedure, which draws nothing.
+        var viewKeys = moduleReads.Keys
+            .Where(key => writtenKeys.Contains(key)
+                || (locations.TryGetValue(key, out var l) && string.Equals(l.Kind, "View", StringComparison.OrdinalIgnoreCase)))
+            .ToHashSet(StringComparer.Ordinal);
+
+        string KindOf(string key)
+        {
+            if (key.StartsWith("file|", StringComparison.Ordinal))
+            {
+                return "file";
+            }
+
+            if (locations.TryGetValue(key, out var l) && !string.IsNullOrEmpty(l.Kind)
+                && !string.Equals(l.Kind, "Unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                return l.Kind!.ToLowerInvariant();
+            }
+
+            return viewKeys.Contains(key) ? "view" : "table";
+        }
+
+        var objects = includedObjects
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .Select(key =>
+            {
+                locations.TryGetValue(key, out var loc);
+                var location = key.StartsWith("file|", StringComparison.Ordinal)
+                    ? null
+                    : string.Join(".", new[] { loc.Database, loc.Schema }.Where(part => !string.IsNullOrEmpty(part)));
+                return new ProjectGraphObjectDto(
+                    key,
+                    loc.Name ?? nameByKey.GetValueOrDefault(key, key),
+                    KindOf(key),
+                    string.IsNullOrEmpty(location) ? null : location,
+                    frontierSet.Contains(key));
+            })
+            .ToList();
+
+        // ---- Flows view: flow-to-object movement plus base-to-view derivation. ------------------------------
+        var flowGraph = new List<ProjectGraphDrawEdgeDto>();
+        var seenFlow = new HashSet<(string, string)>();
+        void AddFlowEdge(string source, string target, string label, Guid? pid)
+        {
+            if (source != target && seenFlow.Add((source, target)))
+            {
+                flowGraph.Add(new ProjectGraphDrawEdgeDto(source, target, label, pid));
+            }
+        }
+
+        // ---- Objects view: object-to-object movement per flow plus the same view derivation. ----------------
+        var objectGraph = new List<ProjectGraphDrawEdgeDto>();
+        var seenObject = new HashSet<(string, string, string)>();
+        void AddObjectEdge(string source, string target, string label, Guid? pid)
+        {
+            if (source != target && seenObject.Add((source, target, label)))
+            {
+                objectGraph.Add(new ProjectGraphDrawEdgeDto(source, target, label, pid));
+            }
+        }
+
+        foreach (var pid in includedPipes.OrderBy(id => id))
+        {
+            if (!byPipeline.TryGetValue(pid, out var group))
+            {
+                continue;
+            }
+
+            var flowName = pipelineNameById.GetValueOrDefault(pid, pid.ToString());
+            foreach (var write in group.Writes)
+            {
+                if (!viewKeys.Contains(write.ObjectKey))
+                {
+                    AddFlowEdge(pid.ToString(), write.ObjectKey, write.Relation == "Creates" ? "creates" : "writes", pid);
+                }
+            }
+
+            foreach (var read in group.Reads)
+            {
+                AddFlowEdge(read.ObjectKey, pid.ToString(), "reads", pid);
+                foreach (var write in group.Writes)
+                {
+                    if (!viewKeys.Contains(write.ObjectKey))
+                    {
+                        AddObjectEdge(read.ObjectKey, write.ObjectKey, flowName, pid);
+                    }
+                }
+            }
+        }
+
+        var includedSet = includedObjects as ISet<string> ?? new HashSet<string>(includedObjects, StringComparer.Ordinal);
+        foreach (var viewKey in viewKeys.OrderBy(key => key, StringComparer.Ordinal))
+        {
+            if (!includedSet.Contains(viewKey))
+            {
+                continue;
+            }
+
+            Guid? owner = writeOwner.TryGetValue(viewKey, out var pid) ? pid : null;
+            var label = owner is { } o ? pipelineNameById.GetValueOrDefault(o, "view") : "view";
+            foreach (var baseKey in moduleReads[viewKey].OrderBy(key => key, StringComparer.Ordinal))
+            {
+                if (includedSet.Contains(baseKey))
+                {
+                    AddFlowEdge(baseKey, viewKey, "view", owner);
+                    AddObjectEdge(baseKey, viewKey, label, owner);
+                }
+            }
+        }
+
+        return (objects, flowGraph, objectGraph);
     }
 
     /// <summary>The database/schema/name/kind for a set of object keys from the global registry, chunked so the

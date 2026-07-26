@@ -890,16 +890,46 @@ export interface ProjectGraphPipeline {
   relativePath: string;
   isSeed: boolean;
   depth: number;
+  /** False when the flow depends on a module (an executed procedure, a read view) whose body was never
+   * harvested, so its true reads/writes are unknown; `incompleteReason` says which module and why. The graph
+   * must render this as "not derived yet", never as an edgeless fact. */
+  lineageComplete?: boolean;
+  incompleteReason?: string | null;
 }
 
-/** A project's lineage as one cross-repo subgraph: the pipeline nodes in the downstream closure, the edges among
- * them and the objects they move, the object keys at the depth-capped frontier that still have un-included consumers
- * (so the client can offer to expand them), and whether a node cap truncated the walk. */
+/** One object node of the drawable project graph: key (the node id), display name, resolved kind
+ * (table/view/file), where it lives (database.schema, null for a file), and whether it sits on the depth-capped
+ * frontier with un-included consumers. */
+export interface ProjectGraphObject {
+  key: string;
+  name: string;
+  kind: string;
+  location: string | null;
+  frontier: boolean;
+}
+
+/** One resolved, drawable edge of the project graph. `source`/`target` are node ids (a pipeline id or an object
+ * key). `label` is what the arrow says (writes/creates/reads/view in the flows view; the flow name in the
+ * objects view). `pipelineId` colors the edge per flow; null for a DB-managed view's derivation edge. */
+export interface ProjectGraphDrawEdge {
+  source: string;
+  target: string;
+  label: string;
+  pipelineId: string | null;
+}
+
+/** A project's lineage as one cross-repo subgraph. `pipelines`/`edges` are the underlying facts; `objects`,
+ * `flowGraph`, and `objectGraph` are the DRAWABLE graph derived server-side (nodes typed from the registry,
+ * view bodies wired to base tables, procedures excluded). The client renders this verbatim: it lays out and
+ * paints, and never re-derives semantics from the facts. */
 export interface ProjectGraph {
   pipelines: ProjectGraphPipeline[];
   edges: LineageEdge[];
   frontier: string[];
   truncated: boolean;
+  objects: ProjectGraphObject[];
+  flowGraph: ProjectGraphDrawEdge[];
+  objectGraph: ProjectGraphDrawEdge[];
 }
 
 /** One repo whose lineage references an object: how many of its edges touch the object and whether a flow there

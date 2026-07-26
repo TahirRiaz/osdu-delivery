@@ -47,7 +47,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
-import type { LineageEdge, LineageProject, RunScope, WavePipeline } from "../../api/types";
+import type { LineageProject, RunScope, WavePipeline } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
@@ -734,7 +734,9 @@ export default function LineageGraphPage() {
   });
 
   const pipelines = projectGraph.data?.pipelines;
-  const objectEdgesData = projectGraph.data?.edges;
+  const graphObjects = projectGraph.data?.objects;
+  const flowGraphEdges = projectGraph.data?.flowGraph;
+  const objectGraphEdges = projectGraph.data?.objectGraph;
   const frontierSet = useMemo(() => new Set(projectGraph.data?.frontier ?? []), [projectGraph.data]);
 
   // Each flow node's kind, for the script actions: every flow offers its YAML, and an sp flow additionally
@@ -830,9 +832,12 @@ export default function LineageGraphPage() {
   // procedure that writes several tables therefore gets one node and one edge per table. A view is wired to its
   // base table (not the file the flow read), exactly as in the objects view.
   const flowsGraph = useMemo<BuiltGraph | null>(() => {
-    if (!pipelines || !objectEdgesData) {
+    if (!pipelines || !graphObjects || !flowGraphEdges) {
       return null;
     }
+
+    const objectsData = graphObjects;
+    const flowGraphData = flowGraphEdges;
 
     const names = new Map<string, string>();
     const flowColors = new Map<string, string>();
@@ -846,6 +851,7 @@ export default function LineageGraphPage() {
     const outline = cssColor("--muted-foreground", "#5b6b7f");
     const frontierAccent = cssColor("--chart-7", "#4a3aa7");
     const objectAccent = cssColor("--chart-2", "#008300");
+    const warnAccent = cssColor("--chart-4", "#b45309");
 
     // Stable per-pipeline accent color and repo across the whole closure first, keyed by the pipeline id (unique
     // across repos, unlike a flow name), so a pipeline keeps its color and repo whether or not the wave filter is
@@ -871,108 +877,65 @@ export default function LineageGraphPage() {
       }
       const color = flowColors.get(pipeline.id)!;
       const crossRepo = repoId !== "" && pipeline.repoId !== repoId;
-      const base = pipeline.wave >= 0 ? `${pipeline.kind}, wave ${pipeline.wave}` : pipeline.kind;
+      // Lineage the sync could not derive is rendered as such, never as an edgeless fact: the caption says
+      // "lineage not derived", the border warns, and the reason travels on the node title for hover.
+      const incomplete = pipeline.lineageComplete === false;
+      let base = pipeline.wave >= 0 ? `${pipeline.kind}, wave ${pipeline.wave}` : pipeline.kind;
+      if (crossRepo) {
+        base = `${base} · ${pipeline.repoName}`;
+      }
+      if (incomplete) {
+        base = `${base} · lineage not derived`;
+      }
       names.set(pipeline.id, pipeline.name);
       nodes.push({
         id: pipeline.id,
         position: { x: 0, y: 0 },
         data: {
-          label: <NodeLabel name={pipeline.name} caption={crossRepo ? `${base} · ${pipeline.repoName}` : base} />,
+          label: (
+            <span title={incomplete ? pipeline.incompleteReason ?? undefined : undefined}>
+              <NodeLabel name={pipeline.name} caption={base} />
+            </span>
+          ),
         },
-        style: crossRepo
-          ? {
-              width: NODE_WIDTH,
-              height: NODE_HEIGHT,
-              padding: 8,
-              borderRadius: 8,
-              border: "1px dashed",
-              borderColor: outline,
-              borderLeft: `5px solid ${color}`,
-            }
-          : {
-              width: NODE_WIDTH,
-              height: NODE_HEIGHT,
-              padding: 8,
-              borderRadius: 8,
-              borderLeft: `5px solid ${color}`,
-            },
+        style: {
+          width: NODE_WIDTH,
+          height: NODE_HEIGHT,
+          padding: 8,
+          borderRadius: 8,
+          ...(incomplete
+            ? { border: "2px dashed", borderColor: warnAccent }
+            : crossRepo
+              ? { border: "1px dashed", borderColor: outline }
+              : {}),
+          borderLeft: `5px solid ${color}`,
+        },
       });
     }
 
-    // Classify the object edges (as in the objects view): a flow's reads/writes are data movement; a
-    // module-derived read connects a VIEW to its base table; a `Requires` (a procedure a flow executes) is a
-    // code dependency, not data, so it is excluded here (only the procedure's data reads/writes show). Edges are
-    // grouped by their pipeline id (present on every flow fact), so a name shared across repos never collides.
-    const nameByKey = new Map<string, string>();
-    const locationByKey = new Map<string, string>();
-    const kindByKey = new Map<string, string>();
-    const writtenKeys = new Set<string>();
-    const writeOwner = new Map<string, string>();
-    const readersByObject = new Map<string, string[]>();
-    const moduleReads = new Map<string, Set<string>>();
-    const byPipeline = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
-    for (const edge of objectEdgesData) {
-      nameByKey.set(edge.objectKey, edge.objectName);
-      if (edge.objectDatabase !== null || edge.objectSchema !== null) {
-        locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
-      }
-      if (edge.objectKind && !kindByKey.has(edge.objectKey)) {
-        kindByKey.set(edge.objectKey, edge.objectKind);
-      }
-      if (edge.pipelineId) {
-        const group = byPipeline.get(edge.pipelineId)
-          ?? byPipeline.set(edge.pipelineId, { reads: [], writes: [] }).get(edge.pipelineId)!;
-        if (edge.relation === "Reads") {
-          group.reads.push(edge);
-          addAdjacency(readersByObject, edge.objectKey, edge.pipelineId);
-        } else if (edge.relation === "Writes" || edge.relation === "Creates") {
-          group.writes.push(edge);
-          writtenKeys.add(edge.objectKey);
-          if (!writeOwner.has(edge.objectKey)) {
-            writeOwner.set(edge.objectKey, edge.pipelineId);
-          }
-        }
-      } else if (edge.viaModule && edge.relation === "Reads") {
-        (moduleReads.get(edge.viaModule) ?? moduleReads.set(edge.viaModule, new Set()).get(edge.viaModule)!)
-          .add(edge.objectKey);
-      }
-    }
-    // A module with body reads is a view worth wiring when a pipeline maintains it (the generated transform
-    // view) OR the registry knows it as a View (a DB-managed view - a fact/dim or compatibility view no
-    // pipeline writes). Without the registry kind, an unwritten module could be a procedure, which is a code
-    // dependency and stays out of the data-flow drawing.
-    const viewKeys = new Set([...moduleReads.keys()]
-      .filter((key) => writtenKeys.has(key) || kindByKey.get(key) === "View"));
-
-    const objectKind = (key: string): string => {
-      const serverRef = key.includes("|") ? key.slice(0, key.indexOf("|")) : "";
-      if (serverRef === "file") {
-        return "file";
-      }
-      const known = kindByKey.get(key);
-      if (known && known !== "Unknown") {
-        return known.toLowerCase();
-      }
-      return viewKeys.has(key) ? "view" : "table";
-    };
+    // The drawable graph arrives from the server verbatim: nodes typed from the registry, views wired to their
+    // base tables, procedures excluded. The client's only judgment here is DISPLAY filtering under the wave
+    // selection; it re-derives no semantics from the underlying facts.
+    const objectByKey = new Map(objectsData.map((object) => [object.key, object]));
     const ensureObject = (key: string) => {
       if (names.has(key)) {
         return;
       }
+      const info = objectByKey.get(key);
       objectNodeIds.add(key);
-      names.set(key, nameByKey.get(key) ?? key);
+      names.set(key, info?.name ?? key);
       // The caption places the object: its kind plus where it lives (database.schema); a file has no location. A
       // frontier object (downstream was cut by the depth cap) says so, and a heavier border invites expanding it.
-      const location = locationByKey.get(key);
-      const isFrontier = frontierSet.has(key);
-      const base = location ? `${objectKind(key)} · ${location}` : objectKind(key);
+      const isFrontier = info?.frontier ?? false;
+      const kind = info?.kind ?? "table";
+      const base = info?.location ? `${kind} · ${info.location}` : kind;
       nodes.push({
         id: key,
         position: { x: 0, y: 0 },
         data: {
           label: (
             <NodeLabel
-              name={nameByKey.get(key) ?? key}
+              name={info?.name ?? key}
               caption={isFrontier ? `${base} · more downstream` : base}
             />
           ),
@@ -1009,48 +972,40 @@ export default function LineageGraphPage() {
       addAdjacency(incoming, target, source);
     };
 
-    // pipeline -> each table it writes (a view is skipped; it is wired to its base table below), and object ->
-    // pipeline it reads. Every physical table a flow produces is therefore its own node between producer and
-    // consumers, and the consumers can be flows from other repos.
-    for (const [pipelineId, group] of byPipeline) {
-      // Skip a pipeline not drawn (filtered out by the wave selection); its edges wait for that batch.
-      if (!names.has(pipelineId)) {
+    // Pass 1: edges attributed to a drawn pipeline (movement edges, and derivation edges of the view's
+    // maintaining flow). A wave-filtered-out pipeline holds its edges back for its own batch.
+    const deferred: typeof flowGraphData = [];
+    for (const edge of flowGraphData) {
+      if (edge.pipelineId === null || (edge.label === "view" && !names.has(edge.pipelineId))) {
+        deferred.push(edge);
         continue;
       }
-      const color = flowColors.get(pipelineId) ?? seriesColor(colorIndex++);
-      for (const write of group.writes) {
-        if (viewKeys.has(write.objectKey)) {
-          continue;
-        }
-        ensureObject(write.objectKey);
-        addEdge(pipelineId, write.objectKey, color, write.relation === "Creates" ? "creates" : "writes");
+      if (!names.has(edge.pipelineId)) {
+        continue;
       }
-      for (const read of group.reads) {
-        ensureObject(read.objectKey);
-        addEdge(read.objectKey, pipelineId, color, "reads");
+      const color = flowColors.get(edge.pipelineId) ?? seriesColor(colorIndex++);
+      if (edge.source !== edge.pipelineId) {
+        ensureObject(edge.source);
       }
+      if (edge.target !== edge.pipelineId) {
+        ensureObject(edge.target);
+      }
+      addEdge(edge.source, edge.target, color, edge.label);
     }
 
-    // A view node is wired to its PARENT TABLE (the module read): coloured like the flow that maintains it, or
-    // with the neutral object accent for a DB-managed view (a fact/dim or compatibility view no pipeline
-    // writes), whose wiring is what connects it into the chain instead of dangling as a root.
-    for (const viewKey of viewKeys) {
-      const producerId = writeOwner.get(viewKey);
-      // Under a wave filter, only keep views with a drawn neighbour: the maintaining pipeline for an owned
-      // view, any drawn reader for a DB-managed one.
-      if (selectedWave !== null) {
-        const producerDrawn = producerId !== undefined && names.has(producerId);
-        const readerDrawn = (readersByObject.get(viewKey) ?? []).some((id) => names.has(id));
-        if (!producerDrawn && !readerDrawn) {
-          continue;
-        }
+    // Pass 2: derivation edges no drawn flow owns (a DB-managed view, or an owned view whose maintainer the
+    // wave filter hid). They draw when they touch a node already placed, so the view chains into the visible
+    // graph instead of dangling, without dragging a whole hidden batch in.
+    for (const edge of deferred) {
+      if (!names.has(edge.source) && !names.has(edge.target)) {
+        continue;
       }
-      const color = producerId ? (flowColors.get(producerId) ?? seriesColor(colorIndex++)) : objectAccent;
-      ensureObject(viewKey);
-      for (const baseKey of moduleReads.get(viewKey) ?? []) {
-        ensureObject(baseKey);
-        addEdge(baseKey, viewKey, color, "view");
-      }
+      const color = edge.pipelineId !== null
+        ? (flowColors.get(edge.pipelineId) ?? seriesColor(colorIndex++))
+        : objectAccent;
+      ensureObject(edge.source);
+      ensureObject(edge.target);
+      addEdge(edge.source, edge.target, color, edge.label);
     }
 
     return {
@@ -1067,13 +1022,16 @@ export default function LineageGraphPage() {
         : { label: "Open pipeline", to: `/pipelines/${id}` }),
     };
     // The accent colors are theme-scoped custom properties; rebuilding on mode change keeps them in sync.
-  }, [pipelines, objectEdgesData, frontierSet, selectedWave, repoId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pipelines, graphObjects, flowGraphEdges, frontierSet, selectedWave, repoId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Objects view: tables/files as nodes, "flow moves data from A to B" as edges, colored per flow -------------
   const objectsGraph = useMemo<BuiltGraph | null>(() => {
-    if (graphView !== "objects" || !objectEdgesData) {
+    if (graphView !== "objects" || !graphObjects || !objectGraphEdges) {
       return null;
     }
+
+    const objectsData = graphObjects;
+    const objectGraphData = objectGraphEdges;
 
     const names = new Map<string, string>();
     const flowColors = new Map<string, string>();
@@ -1084,24 +1042,27 @@ export default function LineageGraphPage() {
     const seenEdges = new Set<string>();
     const frontierAccent = cssColor("--chart-7", "#4a3aa7");
 
-    const ensureNode = (key: string, name: string) => {
+    // The drawable object graph arrives from the server verbatim (data movement per flow, views wired to their
+    // base tables, procedures excluded); the client only paints it. Colors are stable per attributed pipeline;
+    // an unattributed view-derivation edge is neutral.
+    const objectByKey = new Map(objectsData.map((object) => [object.key, object]));
+    const ensureNode = (key: string) => {
       if (names.has(key)) {
         return;
       }
-      names.set(key, name);
-      const serverRef = key.includes("|") ? key.slice(0, key.indexOf("|")) : "";
-      // The caption places the object: database.schema when the registry knows it, else the server reference
-      // (a file just says "file"). A frontier object (downstream cut by the depth cap) says so and gets a heavier
-      // border, inviting the user to expand it.
-      const isFrontier = frontierSet.has(key);
-      const base = serverRef === "file"
-        ? "file"
-        : locationByKey.get(key) ?? truncate(serverRef, 30);
+      const info = objectByKey.get(key);
+      names.set(key, info?.name ?? key);
+      // The caption places the object: its kind plus where it lives (database.schema; a file just says "file").
+      // A frontier object (downstream cut by the depth cap) says so and gets a heavier border, inviting the
+      // user to expand it.
+      const isFrontier = info?.frontier ?? false;
+      const kind = info?.kind ?? "table";
+      const base = info?.location ? `${kind} · ${info.location}` : kind;
       nodes.push({
         id: key,
         position: { x: 0, y: 0 },
         data: {
-          label: <NodeLabel name={name} caption={isFrontier ? `${base} · more downstream` : base} />,
+          label: <NodeLabel name={info?.name ?? key} caption={isFrontier ? `${base} · more downstream` : base} />,
         },
         style: isFrontier
           ? { width: NODE_WIDTH, height: NODE_HEIGHT, padding: 8, borderRadius: 8, border: "2px solid", borderColor: frontierAccent }
@@ -1109,112 +1070,40 @@ export default function LineageGraphPage() {
       });
     };
 
-    // Classify every edge. A flow's own reads/writes drive the data movement (data goes from what a flow reads
-    // to the tables it writes). A module-derived read (no flow, carries a viaModule) is the module body reading
-    // a base object - for a VIEW this is exactly how it connects to its PARENT TABLE, which is the physical data
-    // path (file -> raw table -> view -> target), not file -> view. A `Requires` edge is a code/existence
-    // dependency (a procedure a flow executes), not data movement, so it is excluded.
-    const byFlow = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
-    const nameByKey = new Map<string, string>();
-    const locationByKey = new Map<string, string>(); // object -> "database.schema" from the global registry
-    const kindByKey = new Map<string, string>();    // object -> its catalog kind (Table, View, ...)
-    const writtenKeys = new Set<string>();          // objects a flow writes/creates (real data targets)
-    const writeOwner = new Map<string, string>();   // object -> the flow that produces it
-    const moduleReads = new Map<string, Set<string>>(); // module (view/proc) -> base objects its body reads
-
-    for (const edge of objectEdgesData) {
-      nameByKey.set(edge.objectKey, edge.objectName);
-      if (edge.objectDatabase !== null || edge.objectSchema !== null) {
-        locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
-      }
-      if (edge.objectKind && !kindByKey.has(edge.objectKey)) {
-        kindByKey.set(edge.objectKey, edge.objectKind);
-      }
-      if (edge.flow) {
-        let group = byFlow.get(edge.flow);
-        if (!group) {
-          group = { reads: [], writes: [] };
-          byFlow.set(edge.flow, group);
-        }
-        if (edge.relation === "Reads") {
-          group.reads.push(edge);
-        } else if (edge.relation === "Writes" || edge.relation === "Creates") {
-          group.writes.push(edge);
-          writtenKeys.add(edge.objectKey);
-          if (!writeOwner.has(edge.objectKey)) {
-            writeOwner.set(edge.objectKey, edge.flow);
-          }
-        }
-      } else if (edge.viaModule && edge.relation === "Reads") {
-        (moduleReads.get(edge.viaModule) ?? moduleReads.set(edge.viaModule, new Set()).get(edge.viaModule)!)
-          .add(edge.objectKey);
-      }
-    }
-
-    // A VIEW is a module (its body reads base objects) that a flow writes/creates (the generated transform
-    // view) OR that the registry knows as a View (a DB-managed fact/dim or compatibility view no flow writes).
-    // A PROCEDURE is a module a flow only requires, so it stays out of the data-flow view. A view's input is
-    // its base table, so it is NOT wired to whatever the producing flow read (the file); it is wired below.
-    const viewKeys = new Set([...moduleReads.keys()]
-      .filter((key) => writtenKeys.has(key) || kindByKey.get(key) === "View"));
-
     let colorIndex = 0;
-    const flowColor = (flow: string): string => {
-      let color = flowColors.get(flow);
+    const neutral = cssColor("--chart-2", "#008300");
+    const colorOf = (pipelineId: string | null): string => {
+      if (pipelineId === null) {
+        return neutral;
+      }
+      let color = flowColors.get(pipelineId);
       if (color === undefined) {
         color = seriesColor(colorIndex);
         colorIndex += 1;
-        flowColors.set(flow, color);
+        flowColors.set(pipelineId, color);
       }
       return color;
     };
 
-    const addEdge = (source: string, target: string, flow: string, color: string) => {
-      if (source === target) {
-        return;
-      }
-      const id = `${flow}|${source}|${target}`;
-      if (seenEdges.has(id)) {
-        return;
+    for (const edge of objectGraphData) {
+      const id = `${edge.label}|${edge.source}|${edge.target}`;
+      if (edge.source === edge.target || seenEdges.has(id)) {
+        continue;
       }
       seenEdges.add(id);
-      ensureNode(source, nameByKey.get(source) ?? source);
-      ensureNode(target, nameByKey.get(target) ?? target);
+      ensureNode(edge.source);
+      ensureNode(edge.target);
+      const color = colorOf(edge.pipelineId);
       edges.push({
         id,
-        source,
-        target,
-        label: truncate(flow, 40),
+        source: edge.source,
+        target: edge.target,
+        label: truncate(edge.label, 40),
         markerEnd: { type: MarkerType.ArrowClosed, color },
         style: { stroke: color, strokeWidth: 1.5 },
       });
-      addAdjacency(outgoing, source, target);
-      addAdjacency(incoming, target, source);
-    };
-
-    // 1. Data movement: each object a flow reads -> each real table it writes. A view target is skipped here;
-    //    its data comes from its base table (added in step 2), so it is never wired to the file the flow read.
-    for (const [flow, group] of byFlow) {
-      const color = flowColor(flow);
-      for (const read of group.reads) {
-        for (const write of group.writes) {
-          if (viewKeys.has(write.objectKey)) {
-            continue;
-          }
-          addEdge(read.objectKey, write.objectKey, flow, color);
-        }
-      }
-    }
-
-    // 2. View derivation: base table -> view. Attributed to the flow that maintains the view (same color as
-    //    its other work) when one exists; a DB-managed view (no writing flow) is wired with a plain "view"
-    //    label so it still connects to its parent table instead of dangling as a root.
-    for (const viewKey of viewKeys) {
-      const owner = writeOwner.get(viewKey) ?? "view";
-      const color = flowColor(owner);
-      for (const baseKey of moduleReads.get(viewKey) ?? []) {
-        addEdge(baseKey, viewKey, owner, color);
-      }
+      addAdjacency(outgoing, edge.source, edge.target);
+      addAdjacency(incoming, edge.target, edge.source);
     }
 
     return {
@@ -1231,7 +1120,7 @@ export default function LineageGraphPage() {
         to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}`,
       }),
     };
-  }, [graphView, objectEdgesData, frontierSet, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [graphView, graphObjects, objectGraphEdges, frontierSet, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const graph = graphView === "flows" ? flowsGraph : objectsGraph;
 
@@ -1287,6 +1176,11 @@ export default function LineageGraphPage() {
   const queryError = [projectsQuery, projectGraph].find((query) => query.isError)?.error;
   const loadingGraph = graphEnabled && projectGraph.isLoading;
   const hasContent = graph !== null && graph.nodes.length > 0;
+  // Flows whose module bodies the sync could not harvest: the graph is knowingly incomplete for them, and that
+  // is stated on the canvas instead of letting missing edges read as "this flow moves no data".
+  const incompletePipelines = useMemo(
+    () => (pipelines ?? []).filter((p) => p.lineageComplete === false),
+    [pipelines]);
   // A deep-link onto a node whose closure is still loading, or that came back empty (the node has no lineage, so it
   // is in no graph). Both are gated on a focus seed being what drives the graph (no project chosen).
   const resolvingFocus = focusSeed !== "" && projectGraph.isLoading;
@@ -1566,6 +1460,22 @@ export default function LineageGraphPage() {
           {isApiError(queryError)
             ? <CorrelationError error={queryError} />
             : <p className="text-[13px] text-destructive">{String(queryError)}</p>}
+        </div>
+      )}
+
+      {queryError === undefined && incompletePipelines.length > 0 && (
+        <div
+          className="absolute top-16 left-3 z-10 max-w-xl rounded-md border border-amber-600/50 bg-amber-500/10 px-3 py-2"
+          data-testid="graph-incomplete-lineage"
+        >
+          <p className="text-[13px] font-medium text-amber-700 dark:text-amber-400">
+            Lineage incomplete for {incompletePipelines.length} flow{incompletePipelines.length === 1 ? "" : "s"}
+          </p>
+          <p className="text-[12px] text-muted-foreground">
+            {incompletePipelines[0].incompleteReason}
+            {incompletePipelines.length > 1 && " (and similar for the others - hover a dashed node for its reason)"}
+            {" "}Run a connected sync once the control plane can reach the referenced servers.
+          </p>
         </div>
       )}
 

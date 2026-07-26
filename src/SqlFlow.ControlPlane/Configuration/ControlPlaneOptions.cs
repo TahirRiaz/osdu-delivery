@@ -463,6 +463,12 @@ public sealed class ProxyOptions
 /// repo sources due to sync (each source has its own interval); lower it only for tests that need a fast tick.</summary>
 public sealed class ManagedSyncOptions
 {
+    /// <summary>Whether this control-plane instance runs the managed sync loop at all. On by default (the
+    /// deployed control plane owns the git-to-catalog sync). Turn it off for a local dev instance sharing the
+    /// production catalog: the sync claim is queue-based, so a laptop that leaves this on will steal due syncs
+    /// from the deployed estate and run them with its own filesystem, credentials, and code version.</summary>
+    public bool Enabled { get; set; } = true;
+
     public int PollSeconds { get; set; } = 30;
 
     /// <summary>Whether the managed sync runs the connected (derived) lineage tier: it opens each referenced SQL

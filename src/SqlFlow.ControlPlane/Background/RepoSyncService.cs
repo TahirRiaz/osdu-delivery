@@ -26,6 +26,7 @@ public sealed partial class RepoSyncService : BackgroundService
     private readonly TimeProvider _clock;
     private readonly TimeSpan _pollInterval;
     private readonly bool _connectLineage;
+    private readonly bool _enabled;
     private readonly GitMaterializer _materializer = new();
     private readonly ILogger<RepoSyncService> _logger;
 
@@ -40,11 +41,21 @@ public sealed partial class RepoSyncService : BackgroundService
         _clock = clock;
         _pollInterval = TimeSpan.FromSeconds(Math.Max(1, options.Value.ManagedSync.PollSeconds));
         _connectLineage = options.Value.ManagedSync.ConnectLineage;
+        _enabled = options.Value.ManagedSync.Enabled;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_enabled)
+        {
+            // A disabled instance (a local dev control plane sharing the production catalog) must never claim a
+            // due sync: the claim is queue-based, so participating at all would steal syncs from the deployed
+            // estate and run them with this machine's filesystem, credentials, and code version.
+            LogSyncDisabled();
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -200,6 +211,19 @@ public sealed partial class RepoSyncService : BackgroundService
                 + (result.LineageConnected ? " (connected)." : "."),
             ct).ConfigureAwait(false);
 
+        // A derived-tier failure means the graph is knowingly incomplete (module bodies unread, so sp flows and
+        // view readers keep unknown reads/writes). That must be a first-class result line, not one warning among
+        // dozens: the operator watching the panel sees immediately that the connected pass did not cover the
+        // estate and which count of servers it missed.
+        var unreachable = result.Warnings.Count(w => w.Contains("derived lineage unavailable", StringComparison.OrdinalIgnoreCase));
+        if (unreachable > 0)
+        {
+            await trace.WarnAsync(
+                "result",
+                $"Derived lineage MISSING for {unreachable} server(s): module bodies were not harvested, so stored-procedure and view lineage is incomplete. See the per-server warnings below.",
+                ct).ConfigureAwait(false);
+        }
+
         foreach (var warning in result.Warnings)
         {
             await trace.WarnAsync("warning", warning, ct).ConfigureAwait(false);
@@ -242,4 +266,7 @@ public sealed partial class RepoSyncService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Managed-sync scan error: {Error}")]
     private partial void LogScanError(string error);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Managed sync is disabled on this instance (ControlPlane:ManagedSync:Enabled=false); it will not claim repo syncs.")]
+    private partial void LogSyncDisabled();
 }
