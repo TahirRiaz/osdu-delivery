@@ -311,4 +311,10 @@ public sealed record LineageReport
     /// <summary>Graph-scoped findings: multi-writer objects, stale observations, parse warnings, unhandled
     /// statement kinds. Never silently dropped.</summary>
     public required IReadOnlyList<string> Warnings { get; init; }
+
+    /// <summary>Server identities whose DERIVED collection was requested but failed (unreachable server,
+    /// unresolvable secret): this computation carries no module knowledge for them, so a consumer persisting
+    /// the report must keep previously-derived edges for these servers instead of wiping them with the
+    /// degraded pass. Empty when the derived tier was not requested or every server was reached.</summary>
+    public IReadOnlyList<string> DegradedDerivedServers { get; init; } = [];
 }

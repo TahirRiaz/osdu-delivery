@@ -31,6 +31,12 @@ public sealed record CatalogSyncResult
 
     public int ObjectColumns { get; init; }
     public int LineageEdges { get; init; }
+
+    /// <summary>Previously-derived edges this pass kept because it could not re-derive them (an offline
+    /// recompute, or a connected pass whose derive failed for their server): degraded passes preserve
+    /// knowledge, never wipe it.</summary>
+    public int LineageEdgesPreserved { get; init; }
+
     public int FlowDependencies { get; init; }
     public int Waves { get; init; }
     public int RunFilesAdded { get; init; }
@@ -145,7 +151,7 @@ public sealed class CatalogSync
     public async Task<CatalogSyncResult> SyncAsync(
         CatalogDbContext context, string estateDirectory, string repoName, string? repoRemoteUrl, DateTime nowUtc,
         bool includeDerived = false, ISecretResolver? secrets = null, IReadOnlySet<string>? excludedFlowPaths = null,
-        bool forceLineage = false, CancellationToken ct = default)
+        bool forceLineage = false, Func<string, CancellationToken, Task>? lineageProgress = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(estateDirectory);
@@ -202,7 +208,14 @@ public sealed class CatalogSync
                 {
                     // Reuses the flow set collected above, so the estate is never scanned or parsed a second time.
                     report = await LineageService.ComputeAsync(
-                        new LineageOptions { FlowDirectory = root, IncludeObserved = true, IncludeDerived = includeDerived, Secrets = secrets },
+                        new LineageOptions
+                        {
+                            FlowDirectory = root,
+                            IncludeObserved = true,
+                            IncludeDerived = includeDerived,
+                            Secrets = secrets,
+                            Progress = lineageProgress,
+                        },
                         collected, ct).ConfigureAwait(false);
                     foreach (var warning in report.Warnings)
                     {
@@ -230,7 +243,7 @@ public sealed class CatalogSync
                 var pipelineTally = await ApplyPipelinesAsync(context, repoId, nowUtc, pipelines, presentIds, schedules, excludedFlowPaths, ct).ConfigureAwait(false);
                 var runTally = await ApplyRunsAsync(context, repoId, runs, runsSkipped, runsFailed, ct).ConfigureAwait(false);
 
-                (int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected) lineage;
+                (int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected, int PreservedDerived) lineage;
                 if (report is not null)
                 {
                     lineage = await ApplyLineageAsync(context, repoId, report, includeDerived, nowUtc, ct).ConfigureAwait(false);
@@ -256,7 +269,7 @@ public sealed class CatalogSync
                     // else: no lineage input changed since the stored state (same content hashes, no additions or
                     // removals, no new runs, offline): the stored objects, edges, waves, and dependencies are
                     // already current, so the recompute is skipped and nothing lineage-related is written.
-                    lineage = (0, 0, 0, 0, 0, 0, false);
+                    lineage = (0, 0, 0, 0, 0, 0, false, 0);
                 }
 
                 return new CatalogSyncResult
@@ -279,6 +292,7 @@ public sealed class CatalogSync
                     ObjectsSuperseded = lineage.Superseded,
                     ObjectColumns = lineage.Columns,
                     LineageEdges = lineage.Edges,
+                    LineageEdgesPreserved = lineage.PreservedDerived,
                     FlowDependencies = lineage.FlowDeps,
                     Waves = lineage.Waves,
                     LineageConnected = lineage.Connected,
@@ -1115,7 +1129,7 @@ public sealed class CatalogSync
     /// dictionary, this repo's edges and flow dependencies, the execution waves, and the identity healing. Runs
     /// inside the sync's transaction and performs only database work; the report itself was computed before the
     /// transaction opened.</summary>
-    private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected)> ApplyLineageAsync(
+    private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected, int PreservedDerived)> ApplyLineageAsync(
         CatalogDbContext context, Guid repoId, LineageReport report, bool includeDerived, DateTime nowUtc, CancellationToken ct)
     {
         // Identity adoption, the offline half of identity healing: a database-less identity in this report
@@ -1280,14 +1294,66 @@ public sealed class CatalogSync
             }
         }
 
-        // Edges are this repo's view of the graph: replace them wholesale so a removed flow's edges do not linger.
+        // Edges are this repo's view of the graph: replace them wholesale so a removed flow's edges do not
+        // linger. EXCEPT the derived knowledge this pass could not re-derive: module-body lineage exists only
+        // when the connected tier reaches its server, and a recompute that ran offline (or whose connect failed
+        // for a server) must not wipe what an earlier connected pass learned - the same additive principle the
+        // object registry applies to definitions and columns. Offline recompute preserves every stored Derived
+        // edge; a connected pass preserves the Derived edges of exactly its degraded servers (keys are
+        // case-folded, so the server-reference prefix identifies them on either end of the fact).
+        var preserve = new List<CatalogLineageEdge>();
+        if (!includeDerived)
+        {
+            preserve = await context.LineageEdges.AsNoTracking()
+                .Where(e => e.RepoId == repoId && e.Tier == "Derived")
+                .ToListAsync(ct).ConfigureAwait(false);
+        }
+        else if (report.DegradedDerivedServers.Count > 0)
+        {
+            var prefixes = report.DegradedDerivedServers
+                .Select(s => s.ToLowerInvariant() + "|")
+                .ToList();
+            var storedDerived = await context.LineageEdges.AsNoTracking()
+                .Where(e => e.RepoId == repoId && e.Tier == "Derived")
+                .ToListAsync(ct).ConfigureAwait(false);
+            preserve = storedDerived
+                .Where(e => prefixes.Any(p => e.ObjectKey.StartsWith(p, StringComparison.Ordinal)
+                    || (e.ViaModule != null && e.ViaModule.StartsWith(p, StringComparison.Ordinal))))
+                .ToList();
+        }
+
         await context.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         var objectNames = report.Objects.ToDictionary(o => o.Key, o => o.Name, StringComparer.Ordinal);
         var edges = 0;
+        var freshIdentities = new HashSet<(string, string, string, string)>();
         foreach (var edge in report.Edges)
         {
             var name = objectNames.TryGetValue(edge.ObjectKey, out var n) ? n : edge.ObjectKey;
             context.LineageEdges.Add(CatalogProjection.Edge(edge, repoId, name));
+            freshIdentities.Add((edge.Flow ?? string.Empty, edge.ViaModule ?? string.Empty, edge.Relation.ToString(), edge.ObjectKey));
+            edges++;
+        }
+
+        var preservedEdges = 0;
+        foreach (var edge in preserve)
+        {
+            if (freshIdentities.Contains((edge.Flow ?? string.Empty, edge.ViaModule ?? string.Empty, edge.Relation, edge.ObjectKey)))
+            {
+                continue; // this pass re-derived the same fact; the fresh row carries it.
+            }
+
+            context.LineageEdges.Add(new CatalogLineageEdge
+            {
+                RepoId = repoId,
+                Flow = edge.Flow,
+                PipelineId = edge.PipelineId,
+                ViaModule = edge.ViaModule,
+                Relation = edge.Relation,
+                ObjectKey = edge.ObjectKey,
+                ObjectName = edge.ObjectName,
+                Tier = edge.Tier,
+            });
+            preservedEdges++;
             edges++;
         }
 
@@ -1450,7 +1516,7 @@ public sealed class CatalogSync
             dependencies++;
         }
 
-        return (report.Objects.Count, superseded, columns, edges, dependencies, report.ExecutionPlan.Waves.Count, includeDerived);
+        return (report.Objects.Count, superseded, columns, edges, dependencies, report.ExecutionPlan.Waves.Count, includeDerived, preservedEdges);
     }
 
     /// <summary>

@@ -20,6 +20,12 @@ public sealed record LineageOptions
 
     /// <summary>Secret resolution for connection references; environment variables when null.</summary>
     public ISecretResolver? Secrets { get; init; }
+
+    /// <summary>Under-the-hood progress, one human-readable line per step (tier begins, each server's connect /
+    /// harvest tally / failure), invoked as the computation runs. The managed sync streams these into the
+    /// activity trace the GUI panel tails; the CLI prints them. Callbacks may arrive concurrently (servers are
+    /// collected in parallel), so the sink must serialize itself. Null: silent.</summary>
+    public Func<string, CancellationToken, Task>? Progress { get; init; }
 }
 
 /// <summary>The report plus its raw pre-merge facts: what
@@ -75,18 +81,33 @@ public static class LineageService
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(collected);
 
+        var progress = options.Progress;
         var tiers = new List<LineageTier> { LineageTier.Declared };
+        if (progress is not null)
+        {
+            await progress($"declared tier: {collected.Flows.Count} flow(s), {collected.Facts.Count} fact(s) from the YAML estate.", ct).ConfigureAwait(false);
+        }
 
         if (options.IncludeObserved)
         {
+            var factsBefore = collected.Facts.Count;
             collected.Merge(RunArtifactCollector.Collect(options.FlowDirectory, collected.Flows));
             tiers.Add(LineageTier.Observed);
+            if (progress is not null)
+            {
+                await progress($"observed tier: {collected.Facts.Count - factsBefore} fact(s) from run artifacts.", ct).ConfigureAwait(false);
+            }
         }
 
         var resolver = WithoutDatabaseResolver.Build([], options.Secrets, SqlServerSourceProvider.CreateRegistry());
         if (options.IncludeDerived)
         {
-            collected.Merge(await new CatalogCollector(resolver).CollectAsync(collected.Servers, ct).ConfigureAwait(false));
+            if (progress is not null)
+            {
+                await progress("derived tier: connecting to the referenced servers to harvest object code.", ct).ConfigureAwait(false);
+            }
+
+            collected.Merge(await new CatalogCollector(resolver, progress).CollectAsync(collected.Servers, ct).ConfigureAwait(false));
             tiers.Add(LineageTier.Derived);
         }
 

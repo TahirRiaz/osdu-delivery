@@ -251,6 +251,12 @@ public sealed class CollectionResult
 
     public List<string> Warnings { get; } = [];
 
+    /// <summary>Server identities whose DERIVED collection was requested but failed (unreachable, unresolvable
+    /// secret): the connected pass produced no module facts for them, so a consumer persisting this result must
+    /// treat previously-derived knowledge for these servers as still authoritative rather than wiping it with
+    /// the degraded pass. Case-insensitive: server references are spelled by authors.</summary>
+    public HashSet<string> DegradedServers { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Folds another collector's result into this one.</summary>
     public void Merge(CollectionResult other)
     {
@@ -264,6 +270,7 @@ public sealed class CollectionResult
         ModelConstraints.AddRange(other.ModelConstraints);
         Synonyms.AddRange(other.Synonyms);
         Warnings.AddRange(other.Warnings);
+        DegradedServers.UnionWith(other.DegradedServers);
         foreach (var (key, value) in other.Servers)
         {
             Servers.TryAdd(key, value);

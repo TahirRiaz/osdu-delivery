@@ -962,6 +962,75 @@ public sealed class CatalogSyncIntegrationTests : IDisposable
         }
     }
 
+    [SkippableFact]
+    public async Task OfflineResync_PreservesPreviouslyDerivedEdges()
+    {
+        var cs = IntegrationDb.Require();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repo = "cat_keep_" + suffix;
+        var flowName = "cat_keep_orders_" + suffix;
+        var repoId = FlowIdentity.FromName(repo);
+        WriteFlow(flowName, "flows/keep.flow.yaml");
+        await CatalogDatabase.MigrateAsync(cs);
+
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+            }
+
+            // Simulate what an earlier CONNECTED pass learned from a module body: a derived edge attributing a
+            // procedure's write to the flow. An offline recompute cannot re-derive it (no server to read), so
+            // the sync must carry it forward instead of wiping it with the degraded pass.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.LineageEdges.Add(new CatalogLineageEdge
+                {
+                    RepoId = repoId,
+                    Flow = flowName,
+                    PipelineId = CatalogIdentity.Pipeline(repoId, flowName),
+                    ViaModule = "@dwh|dw|dbo|usp_build",
+                    Relation = "Writes",
+                    ObjectKey = "@dwh|dw|dbo|mart",
+                    ObjectName = "Mart",
+                    Tier = "Derived",
+                });
+                await db.SaveChangesAsync();
+            }
+
+            // Change the flow so the lineage gate recomputes (same content would skip the write entirely).
+            WriteFlow(flowName + "_sibling", "flows/keep2.flow.yaml");
+
+            CatalogSyncResult second;
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                second = await new CatalogSync().SyncAsync(db, _dir, repo, null, DateTime.UtcNow);
+            }
+
+            Assert.Equal(1, second.LineageEdgesPreserved);
+            await using (var verify = CatalogDatabase.Create(cs))
+            {
+                var kept = await verify.LineageEdges.SingleOrDefaultAsync(
+                    e => e.RepoId == repoId && e.Tier == "Derived" && e.ObjectKey == "@dwh|dw|dbo|mart");
+                Assert.NotNull(kept);
+                Assert.Equal(flowName, kept.Flow);
+                Assert.Equal("@dwh|dw|dbo|usp_build", kept.ViaModule);
+                // The declared tier still refreshed alongside the preserved knowledge.
+                Assert.True(await verify.LineageEdges.AnyAsync(e => e.RepoId == repoId && e.Tier == "Declared"));
+            }
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
+            await db.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
+            await db.PipelineColumns.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir))

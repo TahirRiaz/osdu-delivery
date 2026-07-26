@@ -953,9 +953,24 @@ internal static class Program
                     // existing catalog, or provision one with 'sqlflow db migrate --create'.
                     await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
                     await using var context = CatalogDatabase.Create(connectionString);
+                    // The same under-the-hood lines the managed sync streams into its trace (tier begins, each
+                    // server's connect / harvest tally / failure), printed as they happen. Server collection is
+                    // parallel, so console writes serialize through one lock.
+                    var progressLock = new object();
+                    Task PrintProgress(string message, CancellationToken _)
+                    {
+                        lock (progressLock)
+                        {
+                            Console.WriteLine($"     lineage: {message}");
+                        }
+
+                        return Task.CompletedTask;
+                    }
+
                     var result = await new CatalogSync().SyncAsync(
                         context, directory, repoName, repoUrl, DateTime.UtcNow,
-                        includeDerived: connect, secrets: provider.GetRequiredService<ISecretResolver>()).ConfigureAwait(false);
+                        includeDerived: connect, secrets: provider.GetRequiredService<ISecretResolver>(),
+                        lineageProgress: PrintProgress).ConfigureAwait(false);
                     Console.WriteLine(
                         $"OK   synced '{directory}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
                         $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; runs +{result.RunsAdded} added " +
@@ -964,6 +979,7 @@ internal static class Program
                         $"{result.RunsSkipped} known, {result.RunsFailed} unreadable; " +
                         $"lineage {result.ObjectsUpserted} objects, {result.ObjectColumns} columns, {result.LineageEdges} edges, " +
                         $"{result.Waves} waves, {result.FlowDependencies} dependencies" +
+                        $"{(result.LineageEdgesPreserved > 0 ? $", {result.LineageEdgesPreserved} previously-derived edge(s) preserved" : "")}" +
                         $"{(result.ObjectsSuperseded > 0 ? $", {result.ObjectsSuperseded} superseded keys healed" : "")}" +
                         $"{(result.LineageConnected ? " (connected)" : "")}.");
                     foreach (var warning in result.Warnings.Take(20))

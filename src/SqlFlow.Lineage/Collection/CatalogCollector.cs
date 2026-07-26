@@ -17,12 +17,17 @@ namespace SqlFlow.Lineage.Collection;
 public sealed class CatalogCollector
 {
     private readonly IConnectionResolver _resolver;
+    private readonly Func<string, CancellationToken, Task>? _progress;
 
-    public CatalogCollector(IConnectionResolver resolver)
+    public CatalogCollector(IConnectionResolver resolver, Func<string, CancellationToken, Task>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(resolver);
         _resolver = resolver;
+        _progress = progress;
     }
+
+    private Task ReportAsync(string message, CancellationToken ct)
+        => _progress is null ? Task.CompletedTask : _progress(message, ct);
 
     public async Task<CollectionResult> CollectAsync(
         IReadOnlyDictionary<string, (string RawReference, DataSourceKind Kind)> servers,
@@ -53,7 +58,10 @@ public sealed class CatalogCollector
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                merged.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({Core.Secrets.SecretHygiene.RedactedMessage(ex)}); the offline tiers still apply.");
+                var reason = Core.Secrets.SecretHygiene.RedactedMessage(ex);
+                merged.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({reason}); the offline tiers still apply.");
+                merged.DegradedServers.Add(serverRef);
+                await ReportAsync($"derived tier: server '{serverRef}' FAILED to resolve its connection ({reason}); previously-derived lineage for it is preserved.", ct).ConfigureAwait(false);
                 continue;
             }
 
@@ -88,11 +96,12 @@ public sealed class CatalogCollector
         return merged;
     }
 
-    private static async Task<CollectionResult> CollectServerAsync(string serverRef, string connectionString, CancellationToken ct)
+    private async Task<CollectionResult> CollectServerAsync(string serverRef, string connectionString, CancellationToken ct)
     {
         var result = new CollectionResult();
         try
         {
+            await ReportAsync($"derived tier: server '{serverRef}': connecting.", ct).ConfigureAwait(false);
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
 
@@ -107,10 +116,22 @@ public sealed class CatalogCollector
             await SynonymsAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
             await ModulesAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
             await TableScriptsAsync(result, connection, serverRef, database, ct).ConfigureAwait(false);
+
+            var modules = result.Facts
+                .Where(f => f.ViaModuleKey is not null)
+                .Select(f => f.ViaModuleKey!)
+                .Distinct(StringComparer.Ordinal)
+                .Count();
+            await ReportAsync(
+                $"derived tier: server '{serverRef}' (db '{database}'): {result.CatalogObjects.Count} object(s) inventoried, {modules} module bodies parsed.",
+                ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            result.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({Core.Secrets.SecretHygiene.RedactedMessage(ex)}); the offline tiers still apply.");
+            var reason = Core.Secrets.SecretHygiene.RedactedMessage(ex);
+            result.Warnings.Add($"server '{serverRef}': derived lineage unavailable ({reason}); the offline tiers still apply.");
+            result.DegradedServers.Add(serverRef);
+            await ReportAsync($"derived tier: server '{serverRef}' FAILED ({reason}); previously-derived lineage for it is preserved.", ct).ConfigureAwait(false);
         }
 
         return result;

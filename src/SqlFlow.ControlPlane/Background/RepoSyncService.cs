@@ -157,18 +157,41 @@ public sealed partial class RepoSyncService : BackgroundService
             // excluded flow never becomes a catalog pipeline, so the scheduler never picks it up).
             var excludedFlowPaths = RepoSourceStore.ParseExcludedPaths(source.ExcludedFlowPaths);
 
-            // The exact same catalog sync the CLI's `db sync` runs - one sync path. When ConnectLineage is on
-            // (the default), the connected/derived tier runs too: it opens the referenced SQL Servers with the
-            // source's resolved secrets and expands module bodies through the T-SQL parser, so a stored-procedure
-            // flow gains the reads/writes of the procedure it executes instead of landing as an edgeless root. A
-            // connect failure is non-fatal (the sync catches it, keeps the offline tiers, and records a warning).
-            // A manual "sync now" carries a force-lineage request on the source, so this sync recomputes the whole
-            // graph (and the offline object-body/column enrichment) even when the commit is unchanged.
-            await trace.InfoAsync("sync", "Reconciling catalog from the estate (pipelines, lineage, schedules, runs).", ct).ConfigureAwait(false);
+            // The exact same catalog sync the CLI's `db sync` runs - one sync path, as a TWO-STEP trace: step
+            // "sync" mirrors git (pipelines, schedules, runs); step "lineage" is the computation, streamed
+            // under-the-hood into this trace as it runs (tier begins, each server's connect / harvest tally /
+            // failure), so the panel shows exactly what the graph was built from - and what it could not reach.
+            // When ConnectLineage is on (the default), the connected/derived tier runs too: it opens the
+            // referenced SQL Servers with the source's resolved secrets and expands module bodies through the
+            // T-SQL parser, so a stored-procedure flow gains the reads/writes of the procedure it executes. A
+            // connect failure is non-fatal: the affected server's previously-derived lineage is preserved, the
+            // failure is a first-class line here, and the offline tiers still land. A manual "sync now" carries
+            // a force-lineage request on the source, so this sync recomputes the whole graph (and the offline
+            // object-body/column enrichment) even when the commit is unchanged.
+            await trace.InfoAsync("sync", "Step 1/2: reconciling catalog from the estate (pipelines, schedules, runs).", ct).ConfigureAwait(false);
+            await trace.InfoAsync("lineage", "Step 2/2: computing lineage (progress below as it runs).", ct).ConfigureAwait(false);
+
+            // The derived tier collects servers in parallel and reports from those tasks; the trace writes to
+            // one DbContext, so progress lines serialize through this gate.
+            var traceGate = new SemaphoreSlim(1, 1);
+            async Task ReportProgressAsync(string message, CancellationToken token)
+            {
+                await traceGate.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    await trace.InfoAsync("lineage", message, token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    traceGate.Release();
+                }
+            }
+
             var result = await new CatalogSync()
                 .SyncAsync(catalog, workingDir, source.Name, source.RemoteUrl, _clock.GetUtcNow().UtcDateTime,
                     includeDerived: _connectLineage, secrets: resolver,
-                    excludedFlowPaths: excludedFlowPaths, forceLineage: source.ForceLineageOnNextSync, ct: ct)
+                    excludedFlowPaths: excludedFlowPaths, forceLineage: source.ForceLineageOnNextSync,
+                    lineageProgress: ReportProgressAsync, ct: ct)
                 .ConfigureAwait(false);
 
             await EmitResultAsync(trace, result, ct).ConfigureAwait(false);
@@ -208,6 +231,9 @@ public sealed partial class RepoSyncService : BackgroundService
         await trace.InfoAsync(
             "result",
             $"Lineage: {result.ObjectsUpserted} objects, {result.LineageEdges} edges, {result.Waves} waves"
+                + (result.LineageEdgesPreserved > 0
+                    ? $" ({result.LineageEdgesPreserved} previously-derived edge(s) preserved from unreachable servers)"
+                    : string.Empty)
                 + (result.LineageConnected ? " (connected)." : "."),
             ct).ConfigureAwait(false);
 

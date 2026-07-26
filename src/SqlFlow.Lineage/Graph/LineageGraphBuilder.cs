@@ -527,6 +527,7 @@ public static class LineageGraphBuilder
             Cycles = cycles,
             DuplicateFlowNames = duplicateFlowNames,
             Warnings = warnings.Distinct(StringComparer.Ordinal).OrderBy(w => w, StringComparer.Ordinal).ToList(),
+            DegradedDerivedServers = collected.DegradedServers.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
         };
     }
 
