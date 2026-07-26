@@ -455,14 +455,35 @@ public sealed class FlowSetCollector
             }
 
             case AcquireFlowDocument doc:
-                // An acquisition fetches from a third party and lands raw files under its landing target. It is
-                // ALWAYS a file producer: one declared drop per item, each derived with engine parity from that item's
-                // target + pathTemplate + the extension the landing appends, so reconciliation binds each drop to the
-                // file ingestion(s) watching that landing folder (or a parent of it) and the graph chains
-                // acquire -> file -> landing table -> view -> downstream, ordering the waves. A multi-endpoint flow
-                // thus feeds several downstream pre flows from one pipeline. An unconsumed drop still records its own node.
+            {
+                // An acquisition fetches from a third party and lands raw files under its landing target. Its
+                // SOURCE side is the external endpoint itself: one node per item (the base URL plus the item's
+                // declared request path), read by the flow - mirroring how an sftp download reads its remote
+                // paths - so the acquisition carries its true inbound and the graph shows where the data
+                // actually originates instead of the flow floating as an output-only root.
+                var endpoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in doc.Flow.Items)
+                {
+                    var baseUrl = item.Source.BaseUrl.TrimEnd('/');
+                    var path = item.Source.Request?.Path;
+                    var endpoint = string.IsNullOrWhiteSpace(path)
+                        ? baseUrl
+                        : baseUrl + (path!.StartsWith('/') ? path : "/" + path);
+                    if (endpoints.Add(endpoint))
+                    {
+                        result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Reads, endpoint, root));
+                    }
+                }
+
+                // And it is ALWAYS a file producer: one declared drop per item, each derived with engine parity
+                // from that item's target + pathTemplate + the extension the landing appends, so reconciliation
+                // binds each drop to the file ingestion(s) watching that landing folder (or a parent of it) and
+                // the graph chains acquire -> file -> landing table -> view -> downstream, ordering the waves. A
+                // multi-endpoint flow thus feeds several downstream pre flows from one pipeline. An unconsumed
+                // drop still records its own node.
                 producers.Add(new FileProducer(headers[0].Name, doc.Flow.Items.Select(item => AcquireDrop(item.Landing)).ToList()));
                 break;
+            }
 
             case CopyFlowDocument doc:
             {

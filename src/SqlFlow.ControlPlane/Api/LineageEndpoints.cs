@@ -1399,7 +1399,16 @@ public static class LineageEndpoints
         {
             if (key.StartsWith("file|", StringComparison.Ordinal))
             {
-                return "file";
+                // A "file" node whose identity is a remote endpoint is the acquisition's external SOURCE, not a
+                // lake file: caption it by what it is so the graph reads "api -> flow -> file -> table".
+                var name = key[(key.LastIndexOf('|') + 1)..];
+                if (name.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "api";
+                }
+
+                return name.StartsWith("sftp://", StringComparison.OrdinalIgnoreCase) ? "sftp" : "file";
             }
 
             if (locations.TryGetValue(key, out var l) && !string.IsNullOrEmpty(l.Kind)

@@ -84,11 +84,14 @@ public sealed class LineageAcquireFileLinkTests : IDisposable
         var report = Build();
 
         Assert.True(DependsOn(report, "billettapp_00_api", "billettapp_trans_01_jsn"));
-        // Both sides meet on exactly one canonical node: the folder the ingestion watches.
-        var node = Assert.Single(report.Objects, o => o.Kind == LineageNodeKind.File);
+        // Both sides meet on exactly one canonical DROP node: the folder the ingestion watches. The
+        // acquisition's other file node is its external SOURCE endpoint, which it reads.
+        var node = Assert.Single(report.Objects, o => o.Kind == LineageNodeKind.File && o.Name.StartsWith("az://", StringComparison.Ordinal));
         Assert.Equal("az://acct/datalakev2/raw/billettapp/history", node.Name);
         Assert.Contains(report.Edges, e => e.Flow == "billettapp_00_api" && e.Relation == LineageRelation.Writes && e.ObjectKey == node.Key);
         Assert.Contains(report.Edges, e => e.Flow == "billettapp_trans_01_jsn" && e.Relation == LineageRelation.Reads && e.ObjectKey == node.Key);
+        var endpoint = Assert.Single(report.Objects, o => o.Kind == LineageNodeKind.File && o.Name.StartsWith("https://api.vendor.test", StringComparison.Ordinal));
+        Assert.Contains(report.Edges, e => e.Flow == "billettapp_00_api" && e.Relation == LineageRelation.Reads && e.ObjectKey == endpoint.Key);
     }
 
     [Fact]
