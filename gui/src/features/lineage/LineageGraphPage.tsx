@@ -184,12 +184,10 @@ function layeredLayout(nodes: FlowNode[], edges: FlowEdge[]): FlowNode[] {
   // levels are consecutive from 0 and every row reads top to bottom in dependency order.
   const layer = new Map<string, number>();
   const queue: string[] = [];
-  const sources: string[] = [];
   for (const id of ids) {
     if (layerInDegree.get(id) === 0) {
       layer.set(id, 0);
       queue.push(id);
-      sources.push(id);
     }
   }
   for (let head = 0; head < queue.length; head++) {
@@ -208,21 +206,22 @@ function layeredLayout(nodes: FlowNode[], edges: FlowEdge[]): FlowNode[] {
     }
   }
 
-  // Pull each source down to one row above its shallowest consumer. Longest-path layering pins every
-  // producer-less node to the top row, which strands a static input consumed deep in the graph (a manually
-  // maintained table read by a late transform) rows away from its only consumer, reading as a misplaced
-  // root. A true chain head has a consumer on the very next row, so its layer is unchanged; an isolated
-  // node has no consumers and stays on the top row.
-  for (const id of sources) {
+  // ALAP relaxation: slide every node down to one row above its EARLIEST consumer. Longest-path places each
+  // node as early as possible, which strands a slack chain (a manually maintained input, its loader, its dim
+  // table) at the top of the drawing even when its only consumers sit rows below. Walking the topological
+  // order in reverse (consumers finalized first) and only ever moving a node DOWN keeps every producer above
+  // its consumers while dense chains stay put; a sink or an isolated node has no successors and never moves.
+  for (let i = queue.length - 1; i >= 0; i--) {
+    const id = queue[i];
     const back = backTargets.get(id);
     let minChild = Number.POSITIVE_INFINITY;
     for (const child of uniqueOut.get(id)!) {
       if (!back?.has(child)) {
-        minChild = Math.min(minChild, layer.get(child) ?? 0);
+        minChild = Math.min(minChild, layer.get(child)!);
       }
     }
-    if (Number.isFinite(minChild)) {
-      layer.set(id, Math.max(layer.get(id)!, minChild - 1));
+    if (Number.isFinite(minChild) && minChild - 1 > layer.get(id)!) {
+      layer.set(id, minChild - 1);
     }
   }
 
