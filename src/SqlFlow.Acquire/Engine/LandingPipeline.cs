@@ -84,6 +84,18 @@ public sealed class LandingPipeline
             .WithString("item", item.Discriminator)
             .WithString("runId", _runId);
 
+        // Expose the response headers as {header.<name>} tokens (names lowercased) so a landing path can be keyed
+        // on a per-record header, e.g. history/{header.x-entur-report-id}.xlsx. This keeps a header-keyset feed's
+        // filenames stable across re-runs (same record id -> same file), which is what makes a resumed backfill
+        // idempotent rather than re-landing the same payload under a fresh page index.
+        if (item.Headers is { Count: > 0 })
+        {
+            foreach (var (headerName, headerValue) in item.Headers)
+            {
+                itemVars.WithString($"header.{headerName.ToLowerInvariant()}", headerValue);
+            }
+        }
+
         var relative = TemplateEngine.Render(_config.PathTemplate, itemVars).Trim('/');
         var extension = Extension(item.ContentType);
         var suffix = _config.Compression == AcquireCompression.Gzip ? ".gz" : string.Empty;

@@ -328,6 +328,16 @@ public sealed record AcquirePagination
     /// <summary>The JSON path (relative to each record) of the id advanced by keyset pagination.</summary>
     public string? KeysetIdPath { get; init; }
 
+    /// <summary>
+    /// Read the next keyset id from this RESPONSE HEADER instead of the JSON body. Some sequential "give me the
+    /// record after id X" feeds return one record per call whose body is a binary file (e.g. an XLSX report) and
+    /// carry the record's own id in a response header (e.g. <c>X-Entur-Report-Id</c>); there is no JSON to read the
+    /// next id from. When set, each page advances <see cref="KeysetParam"/> to this header's value and stops on the
+    /// terminal <see cref="StopOnStatus"/> or when the header is absent/unchanged. Numeric ids compare as integers,
+    /// so the run watermark (and thus the next run's resume point) is the max id seen, not the lexicographic max.
+    /// </summary>
+    public string? KeysetIdHeader { get; init; }
+
     /// <summary>An HTTP status that terminates keyset/page pagination without being an error (e.g. 202 "no more").</summary>
     public int? StopOnStatus { get; init; }
 

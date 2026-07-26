@@ -461,4 +461,55 @@ public sealed class EngineTests
         Assert.Equal(2, result.FilesWritten);   // pages with id 10/20 and id 30 land; the empty follow-up page ends the loop
         Assert.Equal("30", result.WatermarkAfter);
     }
+
+    [Fact]
+    public async Task Keyset_from_response_header_lands_binary_and_advances_numeric_watermark()
+    {
+        // A report-download feed: each "next after idAfter" call returns ONE binary report whose id rides a
+        // response header (no JSON body to read the id from), and a 202 signals "no more". The engine must advance
+        // the keyset from the header, land the raw bytes named by that header, stop on 202, and record the max id
+        // NUMERICALLY - ids 9 then 100 cross a digit boundary where a lexicographic max would wrongly keep "9".
+        var handler = new StubHttpHandler().Route((request, _) =>
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/reports/next", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var (status, id) = Query(request.RequestUri, "idAfter") switch
+            {
+                "" or "0" => (HttpStatusCode.OK, "9"),
+                "9" => (HttpStatusCode.OK, "100"),
+                _ => (HttpStatusCode.Accepted, ""),   // 202: no more reports
+            };
+            var response = new HttpResponseMessage(status);
+            if (status == HttpStatusCode.OK)
+            {
+                response.Content = new ByteArrayContent([0x50, 0x4B, 0x03, 0x04]);   // a stand-in binary (XLSX magic)
+                response.Headers.TryAddWithoutValidation("X-Report-Id", id);
+            }
+
+            return response;
+        });
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest { Path = "/reports/next" },
+            Pagination = new AcquirePagination
+            {
+                Strategy = AcquirePaginationStrategy.Keyset,
+                KeysetIdHeader = "X-Report-Id",
+                StopOnStatus = 202,
+            },
+        };
+        var incremental = new AcquireIncremental { Source = AcquireWatermarkSource.Response, Seed = "0" };
+
+        var (result, files, _) = await RunAsync(handler, source, "reports/{header.x-report-id}", incremental);
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.FilesWritten);
+        Assert.Equal("100", result.WatermarkAfter);                        // numeric max, not lexicographic ("9")
+        Assert.Contains(files, f => f.EndsWith("100.bin", StringComparison.Ordinal));   // filename keyed on the header
+        Assert.Contains(files, f => f.EndsWith("9.bin", StringComparison.Ordinal));
+    }
 }

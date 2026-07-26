@@ -67,7 +67,13 @@ public sealed class HttpTransport : IAcquireTransport
 
             EmitProbe(fetch, page, probeRequest, result, elapsed, recordCount, landed?.Location);
 
-            if (json is not null)
+            if (pagination.KeysetIdHeader is { } watermarkHeader)
+            {
+                // Body is a binary payload (no JSON to read): the record's id rides a response header, and the
+                // monotonic keyset id is itself the resume watermark.
+                fetch.Watermark.ObserveId(ReadHeader(result, watermarkHeader));
+            }
+            else if (json is not null)
             {
                 fetch.Watermark.Observe(json.RootElement, pagination.RecordsPath);
             }
@@ -149,16 +155,28 @@ public sealed class HttpTransport : IAcquireTransport
 
             case AcquirePaginationStrategy.Keyset:
             {
-                if (recordCount == 0 || json is null)
+                // Header-sourced keyset: the record's id is a response header (the body is a binary file, so there
+                // is no JSON to read). The empty-page/JSON guard below does not apply - a non-empty binary body is a
+                // real record - so termination rests on the stop-on-status sentinel (handled before landing) and on
+                // the header being absent or not advancing.
+                string? next;
+                if (pagination.KeysetIdHeader is { } headerName)
                 {
-                    return false;
+                    next = ReadHeader(result, headerName);
                 }
+                else
+                {
+                    if (recordCount == 0 || json is null)
+                    {
+                        return false;
+                    }
 
-                var next = pagination.CursorPath is { } cursorPath
-                    ? JsonPathReader.SelectValue(json.RootElement, cursorPath)
-                    : pagination.KeysetIdPath is { } idPath
-                        ? JsonPathReader.MaxColumn(json.RootElement, idPath, pagination.RecordsPath)
-                        : null;
+                    next = pagination.CursorPath is { } cursorPath
+                        ? JsonPathReader.SelectValue(json.RootElement, cursorPath)
+                        : pagination.KeysetIdPath is { } idPath
+                            ? JsonPathReader.MaxColumn(json.RootElement, idPath, pagination.RecordsPath)
+                            : null;
+                }
 
                 if (string.IsNullOrEmpty(next) || next == idAfter)
                 {
@@ -225,6 +243,20 @@ public sealed class HttpTransport : IAcquireTransport
             LandedTo = landedTo,
         });
         probeRequest.Dispose();
+    }
+
+    /// <summary>Reads a single response header (checking both the response and content header collections),
+    /// returning the first value, or null when the header is absent. Used to advance a header-sourced keyset.</summary>
+    private static string? ReadHeader(HttpFetchResult result, string headerName)
+    {
+        if (result.Headers.TryGetValues(headerName, out var values))
+        {
+            return values.FirstOrDefault();
+        }
+
+        return result.ContentHeaders is not null && result.ContentHeaders.TryGetValues(headerName, out var contentValues)
+            ? contentValues.FirstOrDefault()
+            : null;
     }
 
     private static Dictionary<string, string> HeaderMap(HttpFetchResult result)

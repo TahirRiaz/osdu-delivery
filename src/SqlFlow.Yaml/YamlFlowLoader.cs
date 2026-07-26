@@ -209,10 +209,10 @@ public sealed class YamlFlowLoader
                         $"{source}: transform.columns['{name}'] is virtual, so its 'expr' cannot use @ColName (there is no source column); reference other columns by name.");
                 }
             }
-            else if (expression is null && type is null)
+            else if (expression is null && type is null && !(c.ExcludeFromView ?? false))
             {
                 throw new FlowValidationException(
-                    $"{source}: transform.columns['{name}'] does nothing - declare an 'expr', a 'type' (to cast), or mark it 'virtual'.");
+                    $"{source}: transform.columns['{name}'] does nothing - declare an 'expr', a 'type' (to cast), mark it 'virtual', or set 'excludeFromView' to drop it.");
             }
 
             mapped.Add(new ColumnTransform

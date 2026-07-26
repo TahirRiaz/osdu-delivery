@@ -264,6 +264,7 @@ public sealed class YamlAcquireFlowLoader
             CursorPath = YamlDocumentParts.NullIfBlank(y.CursorPath),
             KeysetParam = y.KeysetParam ?? "idAfter",
             KeysetIdPath = YamlDocumentParts.NullIfBlank(y.KeysetIdPath),
+            KeysetIdHeader = YamlDocumentParts.NullIfBlank(y.KeysetIdHeader),
             StopOnStatus = y.StopOnStatus,
             RecordsPath = YamlDocumentParts.NullIfBlank(y.RecordsPath),
         };
@@ -486,6 +487,7 @@ internal sealed class AcquirePaginationYaml
     public string? CursorPath { get; set; }
     public string? KeysetParam { get; set; }
     public string? KeysetIdPath { get; set; }
+    public string? KeysetIdHeader { get; set; }
     public int? StopOnStatus { get; set; }
     public string? RecordsPath { get; set; }
 }
