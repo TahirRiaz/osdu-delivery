@@ -463,10 +463,13 @@ public sealed class ProxyOptions
 /// repo sources due to sync (each source has its own interval); lower it only for tests that need a fast tick.</summary>
 public sealed class ManagedSyncOptions
 {
-    /// <summary>Whether this control-plane instance runs the managed sync loop at all. On by default (the
-    /// deployed control plane owns the git-to-catalog sync). Turn it off for a local dev instance sharing the
-    /// production catalog: the sync claim is queue-based, so a laptop that leaves this on will steal due syncs
-    /// from the deployed estate and run them with its own filesystem, credentials, and code version.</summary>
+    /// <summary>Whether this instance may claim managed syncs at all. On by default, but claiming additionally
+    /// requires <see cref="WorkerOptions.Enabled"/>: the sync's lineage step reads object code from the
+    /// referenced data-plane servers, and the estate provisions those credentials on worker-role instances (the
+    /// same place pipelines execute), so an API-only replica never claims work it cannot complete. Turn this
+    /// off for a local dev instance sharing the production catalog: the claim is queue-based, so a laptop that
+    /// participates steals due syncs from the deployed estate and runs them with its own filesystem,
+    /// credentials, and code version.</summary>
     public bool Enabled { get; set; } = true;
 
     public int PollSeconds { get; set; } = 30;

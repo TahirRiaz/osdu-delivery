@@ -268,6 +268,9 @@ export function TraceLog({
   // replacement of the array (the live->at-rest swap) drops the watermark, showing everything again.
   const [hiddenUpTo, setHiddenUpTo] = useState<string | null>(null);
   const [copying, setCopying] = useState(false);
+  // Problems-only filter: one click isolates every warning/error line, so a buried failure (a lineage server
+  // the sync could not reach, a degraded tier) is caught without scrolling a hundred info lines.
+  const [problemsOnly, setProblemsOnly] = useState(false);
 
   const visible = useMemo(() => {
     if (hiddenUpTo === null) {
@@ -278,13 +281,23 @@ export function TraceLog({
     return cut === -1 ? lines : lines.slice(cut + 1);
   }, [lines, hiddenUpTo]);
 
+  const problems = useMemo(
+    () => visible.filter((l) => l.level === "warning" || l.level === "error" || l.error),
+    [visible],
+  );
+  const errorCount = useMemo(
+    () => problems.filter((l) => l.level === "error" || l.error).length,
+    [problems],
+  );
+  const shown = problemsOnly && problems.length > 0 ? problems : visible;
+
   // Follow the tail as lines arrive (and on connect), the way a terminal does.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [visible.length, ended]);
+  }, [shown.length, ended]);
 
   const doCopy = async () => {
     setCopying(true);
@@ -302,6 +315,22 @@ export function TraceLog({
           {visible.length} line{visible.length === 1 ? "" : "s"}
         </span>
         <div className="flex items-center gap-1">
+          {problems.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setProblemsOnly((v) => !v)}
+              data-testid="trace-problems"
+              aria-pressed={problemsOnly}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
+                errorCount > 0 ? "text-destructive" : "text-warning",
+                problemsOnly ? "bg-muted" : "hover:bg-muted",
+              )}
+            >
+              <CircleAlert className="size-3 shrink-0" />
+              {problems.length} problem{problems.length === 1 ? "" : "s"}
+            </button>
+          ) : null}
           <HeaderButton
             icon={copying ? Loader2 : Copy}
             label="Copy trace"
@@ -320,14 +349,53 @@ export function TraceLog({
         </div>
       </div>
 
+      {problems.length > 0 && !problemsOnly ? (
+        <button
+          type="button"
+          onClick={() => setProblemsOnly(true)}
+          data-testid="trace-problems-band"
+          className={cn(
+            "flex w-full shrink-0 items-center gap-2 border-b px-3 py-1 text-left text-[11px]",
+            errorCount > 0
+              ? "border-destructive/30 bg-destructive/8 text-destructive"
+              : "border-warning/30 bg-warning/8 text-warning",
+          )}
+        >
+          <CircleAlert className="size-3 shrink-0" />
+          <span className="truncate">
+            <span className="font-medium">
+              {errorCount > 0
+                ? `${errorCount} error${errorCount === 1 ? "" : "s"}, ${problems.length - errorCount} warning${problems.length - errorCount === 1 ? "" : "s"}`
+                : `${problems.length} warning${problems.length === 1 ? "" : "s"}`}
+            </span>
+            <span className="mx-1.5 text-muted-foreground">·</span>
+            <span className="text-foreground/80">{collapse(problems[0].error ?? problems[0].message)}</span>
+          </span>
+          <span className="ml-auto shrink-0 text-muted-foreground">show only problems</span>
+        </button>
+      ) : null}
+      {problemsOnly && problems.length > 0 ? (
+        <button
+          type="button"
+          onClick={() => setProblemsOnly(false)}
+          data-testid="trace-problems-all"
+          className="flex w-full shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          <CircleAlert className="size-3 shrink-0" />
+          <span>Showing only the {problems.length} problem line{problems.length === 1 ? "" : "s"}</span>
+          <span className="ml-auto shrink-0">show all lines</span>
+        </button>
+      ) : null}
+
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
-        {visible.length === 0 ? (
+        {shown.length === 0 ? (
           <p className="text-muted-foreground">{ended ? emptyEnded : emptyLive}</p>
         ) : (
           <table className="w-full border-collapse">
             <tbody>
-              {visible.map((line, i) => {
-                const newGroup = i > 0 && line.groupKey !== undefined && visible[i - 1].groupKey !== line.groupKey;
+              {shown.map((line, i) => {
+                const newGroup = !problemsOnly && i > 0 && line.groupKey !== undefined
+                  && shown[i - 1].groupKey !== line.groupKey;
                 return <TraceRow key={line.key} line={line} separated={newGroup} />;
               })}
             </tbody>

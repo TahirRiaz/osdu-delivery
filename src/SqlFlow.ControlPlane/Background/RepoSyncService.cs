@@ -41,7 +41,13 @@ public sealed partial class RepoSyncService : BackgroundService
         _clock = clock;
         _pollInterval = TimeSpan.FromSeconds(Math.Max(1, options.Value.ManagedSync.PollSeconds));
         _connectLineage = options.Value.ManagedSync.ConnectLineage;
-        _enabled = options.Value.ManagedSync.Enabled;
+        // The sync claim is queue-based, so ANY participating instance can win it - and the sync's lineage
+        // step needs data-plane reachability (it reads sys.sql_modules on the referenced servers), which the
+        // estate provisions on WORKER-role instances, the same place pipelines execute. An API-only replica
+        // must not claim work it cannot complete: it would win the claim and land a degraded graph while a
+        // fully-provisioned worker sat idle. ManagedSync.Enabled=false additionally opts an instance out
+        // entirely (a local dev control plane sharing the production catalog).
+        _enabled = options.Value.ManagedSync.Enabled && options.Value.Worker.Enabled;
         _logger = logger;
     }
 
@@ -49,9 +55,6 @@ public sealed partial class RepoSyncService : BackgroundService
     {
         if (!_enabled)
         {
-            // A disabled instance (a local dev control plane sharing the production catalog) must never claim a
-            // due sync: the claim is queue-based, so participating at all would steal syncs from the deployed
-            // estate and run them with this machine's filesystem, credentials, and code version.
             LogSyncDisabled();
             return;
         }
@@ -293,6 +296,6 @@ public sealed partial class RepoSyncService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "Managed-sync scan error: {Error}")]
     private partial void LogScanError(string error);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Managed sync is disabled on this instance (ControlPlane:ManagedSync:Enabled=false); it will not claim repo syncs.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Managed sync is not claimed by this instance (requires ControlPlane:ManagedSync:Enabled AND ControlPlane:Worker:Enabled): repo syncs run on worker-role instances, which hold the data-plane credentials the lineage step needs.")]
     private partial void LogSyncDisabled();
 }
