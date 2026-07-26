@@ -685,9 +685,11 @@ export default function LineageGraphPage() {
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [centerRequest, setCenterRequest] = useState<{ id: string; nonce: number; zoom?: number } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
-  // Right-click context menu on a node, and the node whose script is open in the sheet.
+  // Right-click context menu on a node, and the node whose script is open in the sheet. A flow node has two
+  // scripts: its authored YAML (the default) and, for an sp flow, the SQL of the procedure it executes
+  // (view "object"); an object node has only its SQL.
   const [nodeMenu, setNodeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const [scriptKey, setScriptKey] = useState<string | null>(null);
+  const [scriptTarget, setScriptTarget] = useState<{ key: string; view?: "object" } | null>(null);
   // A flow node's Run action opens the trigger dialog prefilled with that flow and the chosen scope.
   const [runDialog, setRunDialog] = useState<{ flowName: string; scope: RunScope } | null>(null);
 
@@ -695,9 +697,12 @@ export default function LineageGraphPage() {
   const accents = useMemo(() => readAccents(), [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scriptQuery = useQuery({
-    queryKey: ["lineage-node-script", scriptKey],
-    queryFn: () => lineageApi.script(scriptKey as string),
-    enabled: scriptKey !== null,
+    queryKey: ["lineage-node-script", scriptTarget?.key, scriptTarget?.view ?? ""],
+    queryFn: () => {
+      const target = scriptTarget as { key: string; view?: "object" };
+      return lineageApi.script(target.key, target.view);
+    },
+    enabled: scriptTarget !== null,
   });
 
   // Every (repo, project) pair, for the searchable scope picker. The graph is seeded from a project, not a repo.
@@ -731,6 +736,17 @@ export default function LineageGraphPage() {
   const pipelines = projectGraph.data?.pipelines;
   const objectEdgesData = projectGraph.data?.edges;
   const frontierSet = useMemo(() => new Set(projectGraph.data?.frontier ?? []), [projectGraph.data]);
+
+  // Each flow node's kind, for the script actions: every flow offers its YAML, and an sp flow additionally
+  // offers the SQL of the procedure it executes. Object keys never collide with pipeline ids (GUIDs), so this
+  // map also answers "is this node a flow".
+  const flowKindById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const pipeline of pipelines ?? []) {
+      map.set(pipeline.id, pipeline.kind);
+    }
+    return map;
+  }, [pipelines]);
 
   const setParam = useCallback((key: string, value: string) => {
     setSearchParams((previous) => {
@@ -889,8 +905,10 @@ export default function LineageGraphPage() {
     // grouped by their pipeline id (present on every flow fact), so a name shared across repos never collides.
     const nameByKey = new Map<string, string>();
     const locationByKey = new Map<string, string>();
+    const kindByKey = new Map<string, string>();
     const writtenKeys = new Set<string>();
     const writeOwner = new Map<string, string>();
+    const readersByObject = new Map<string, string[]>();
     const moduleReads = new Map<string, Set<string>>();
     const byPipeline = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
     for (const edge of objectEdgesData) {
@@ -898,11 +916,15 @@ export default function LineageGraphPage() {
       if (edge.objectDatabase !== null || edge.objectSchema !== null) {
         locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
       }
+      if (edge.objectKind && !kindByKey.has(edge.objectKey)) {
+        kindByKey.set(edge.objectKey, edge.objectKind);
+      }
       if (edge.pipelineId) {
         const group = byPipeline.get(edge.pipelineId)
           ?? byPipeline.set(edge.pipelineId, { reads: [], writes: [] }).get(edge.pipelineId)!;
         if (edge.relation === "Reads") {
           group.reads.push(edge);
+          addAdjacency(readersByObject, edge.objectKey, edge.pipelineId);
         } else if (edge.relation === "Writes" || edge.relation === "Creates") {
           group.writes.push(edge);
           writtenKeys.add(edge.objectKey);
@@ -915,12 +937,21 @@ export default function LineageGraphPage() {
           .add(edge.objectKey);
       }
     }
-    const viewKeys = new Set([...moduleReads.keys()].filter((key) => writtenKeys.has(key)));
+    // A module with body reads is a view worth wiring when a pipeline maintains it (the generated transform
+    // view) OR the registry knows it as a View (a DB-managed view - a fact/dim or compatibility view no
+    // pipeline writes). Without the registry kind, an unwritten module could be a procedure, which is a code
+    // dependency and stays out of the data-flow drawing.
+    const viewKeys = new Set([...moduleReads.keys()]
+      .filter((key) => writtenKeys.has(key) || kindByKey.get(key) === "View"));
 
     const objectKind = (key: string): string => {
       const serverRef = key.includes("|") ? key.slice(0, key.indexOf("|")) : "";
       if (serverRef === "file") {
         return "file";
+      }
+      const known = kindByKey.get(key);
+      if (known && known !== "Unknown") {
+        return known.toLowerCase();
       }
       return viewKeys.has(key) ? "view" : "table";
     };
@@ -1000,14 +1031,21 @@ export default function LineageGraphPage() {
       }
     }
 
-    // A view node is wired to its PARENT TABLE (the module read), coloured like the flow that maintains it.
+    // A view node is wired to its PARENT TABLE (the module read): coloured like the flow that maintains it, or
+    // with the neutral object accent for a DB-managed view (a fact/dim or compatibility view no pipeline
+    // writes), whose wiring is what connects it into the chain instead of dangling as a root.
     for (const viewKey of viewKeys) {
       const producerId = writeOwner.get(viewKey);
-      // Under a wave filter, only keep views maintained by a pipeline that is actually drawn in this batch.
-      if (selectedWave !== null && (producerId === undefined || !names.has(producerId))) {
-        continue;
+      // Under a wave filter, only keep views with a drawn neighbour: the maintaining pipeline for an owned
+      // view, any drawn reader for a DB-managed one.
+      if (selectedWave !== null) {
+        const producerDrawn = producerId !== undefined && names.has(producerId);
+        const readerDrawn = (readersByObject.get(viewKey) ?? []).some((id) => names.has(id));
+        if (!producerDrawn && !readerDrawn) {
+          continue;
+        }
       }
-      const color = producerId ? (flowColors.get(producerId) ?? seriesColor(colorIndex++)) : seriesColor(colorIndex++);
+      const color = producerId ? (flowColors.get(producerId) ?? seriesColor(colorIndex++)) : objectAccent;
       ensureObject(viewKey);
       for (const baseKey of moduleReads.get(viewKey) ?? []) {
         ensureObject(baseKey);
@@ -1079,6 +1117,7 @@ export default function LineageGraphPage() {
     const byFlow = new Map<string, { reads: LineageEdge[]; writes: LineageEdge[] }>();
     const nameByKey = new Map<string, string>();
     const locationByKey = new Map<string, string>(); // object -> "database.schema" from the global registry
+    const kindByKey = new Map<string, string>();    // object -> its catalog kind (Table, View, ...)
     const writtenKeys = new Set<string>();          // objects a flow writes/creates (real data targets)
     const writeOwner = new Map<string, string>();   // object -> the flow that produces it
     const moduleReads = new Map<string, Set<string>>(); // module (view/proc) -> base objects its body reads
@@ -1087,6 +1126,9 @@ export default function LineageGraphPage() {
       nameByKey.set(edge.objectKey, edge.objectName);
       if (edge.objectDatabase !== null || edge.objectSchema !== null) {
         locationByKey.set(edge.objectKey, [edge.objectDatabase, edge.objectSchema].filter(Boolean).join("."));
+      }
+      if (edge.objectKind && !kindByKey.has(edge.objectKey)) {
+        kindByKey.set(edge.objectKey, edge.objectKind);
       }
       if (edge.flow) {
         let group = byFlow.get(edge.flow);
@@ -1109,10 +1151,12 @@ export default function LineageGraphPage() {
       }
     }
 
-    // A VIEW is a module (its body reads base objects) that a flow also writes/creates; a PROCEDURE is a module
-    // a flow only requires (never writes), so it stays out of the data-flow view. A view's input is its base
-    // table, so it is NOT wired to whatever the producing flow read (the file); it is wired to its base below.
-    const viewKeys = new Set([...moduleReads.keys()].filter((key) => writtenKeys.has(key)));
+    // A VIEW is a module (its body reads base objects) that a flow writes/creates (the generated transform
+    // view) OR that the registry knows as a View (a DB-managed fact/dim or compatibility view no flow writes).
+    // A PROCEDURE is a module a flow only requires, so it stays out of the data-flow view. A view's input is
+    // its base table, so it is NOT wired to whatever the producing flow read (the file); it is wired below.
+    const viewKeys = new Set([...moduleReads.keys()]
+      .filter((key) => writtenKeys.has(key) || kindByKey.get(key) === "View"));
 
     let colorIndex = 0;
     const flowColor = (flow: string): string => {
@@ -1162,10 +1206,11 @@ export default function LineageGraphPage() {
       }
     }
 
-    // 2. View derivation: base table -> view, attributed to the flow that maintains the view (same color as its
-    //    other work). This is the edge that connects a view to its PARENT TABLE.
+    // 2. View derivation: base table -> view. Attributed to the flow that maintains the view (same color as
+    //    its other work) when one exists; a DB-managed view (no writing flow) is wired with a plain "view"
+    //    label so it still connects to its parent table instead of dangling as a root.
     for (const viewKey of viewKeys) {
-      const owner = writeOwner.get(viewKey) ?? "";
+      const owner = writeOwner.get(viewKey) ?? "view";
       const color = flowColor(owner);
       for (const baseKey of moduleReads.get(viewKey) ?? []) {
         addEdge(baseKey, viewKey, owner, color);

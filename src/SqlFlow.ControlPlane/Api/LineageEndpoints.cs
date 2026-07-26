@@ -61,11 +61,14 @@ public sealed record NodeScriptDto(
     string Key, string Kind, string Language, string? Script, string? Source, string? Name);
 
 /// <summary>One attributed lineage fact: a flow (or a module body) relating to an object. The object's
-/// database and schema are joined from the global object registry (proper-cased, unlike the normalized key)
-/// so a graph can label the object with where it lives; null for a file or a partially-resolved identity.</summary>
+/// database, schema, and kind are joined from the global object registry (proper-cased, unlike the normalized
+/// key) so a graph can label the object with where it lives and classify it (a DB-managed view has no writing
+/// pipeline, so its kind cannot be inferred from the edges alone); null for a file or a partially-resolved
+/// identity the registry does not know.</summary>
 public sealed record EdgeDto(
     long Id, Guid RepoId, string? Flow, Guid? PipelineId, string? ViaModule,
-    string Relation, string ObjectKey, string ObjectName, string? ObjectDatabase, string? ObjectSchema, string Tier);
+    string Relation, string ObjectKey, string ObjectName, string? ObjectDatabase, string? ObjectSchema, string Tier,
+    string? ObjectKind = null);
 
 /// <summary>Everything known about one object in a single payload: its identity and metadata, its columns, its
 /// generating script and module body, and the lineage edges that reference it. This is the "ask about this
@@ -438,10 +441,13 @@ public static class LineageEndpoints
     /// (table/view/procedure/function/trigger) is matched by its node <c>Key</c> and returns its module body
     /// (<c>Definition</c>) when it has one, else its generated script (a table's CREATE TABLE); a pipeline is
     /// matched by its flow name, or by its stable id when the key is a GUID, and returns its authored YAML. So a
-    /// single call serves every node kind the lineage graph draws.
+    /// single call serves every node kind the lineage graph draws. A pipeline key has one more facet:
+    /// <c>view=object</c> returns the SQL of the database object the flow executes instead of the YAML (an sp
+    /// flow's procedure, resolved through the flow's <c>Requires</c> lineage edge), so a client can offer both
+    /// "the flow definition" and "the code it runs" for the same node.
     /// </summary>
     private static async Task<Results<Ok<NodeScriptDto>, ProblemHttpResult>> GetNodeScriptAsync(
-        string key, CatalogDbContext db, CancellationToken ct)
+        string key, string? view, CatalogDbContext db, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(key))
         {
@@ -450,27 +456,57 @@ public static class LineageEndpoints
                 statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
-        // A database object: the module body is the authoritative source for a view/procedure/function/trigger;
-        // a table has no module body, so its generated CREATE TABLE script is returned instead.
-        var obj = await db.Objects.AsNoTracking().Where(o => o.Key == key)
-            .Select(o => new { o.Key, o.Kind, o.Name, o.Definition, o.Script, o.ScriptTier })
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (obj is not null)
+        // A database object's script in the endpoint's shape: the module body is the authoritative source for a
+        // view/procedure/function/trigger; a table has no module body, so its generated CREATE TABLE script is
+        // returned instead. Shared by the direct object-key path and the pipeline view=object path.
+        async Task<NodeScriptDto?> ObjectScriptAsync(string objectKey)
         {
-            var script = obj.Definition ?? obj.Script;
-            var source = obj.Definition is not null ? "Module" : obj.ScriptTier;
-            return TypedResults.Ok(new NodeScriptDto(obj.Key, obj.Kind, "sql", script, source, obj.Name));
+            var obj = await db.Objects.AsNoTracking().Where(o => o.Key == objectKey)
+                .Select(o => new { o.Key, o.Kind, o.Name, o.Definition, o.Script, o.ScriptTier })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            return obj is null
+                ? null
+                : new NodeScriptDto(
+                    obj.Key, obj.Kind, "sql", obj.Definition ?? obj.Script,
+                    obj.Definition is not null ? "Module" : obj.ScriptTier, obj.Name);
+        }
+
+        var direct = await ObjectScriptAsync(key).ConfigureAwait(false);
+        if (direct is not null)
+        {
+            return TypedResults.Ok(direct);
         }
 
         // A pipeline (flow) node: matched by its name, or by its stable id when the caller passed a GUID.
         var isId = Guid.TryParse(key, out var pipelineId);
         var pipe = await db.Pipelines.AsNoTracking()
             .Where(p => p.Name == key || (isId && p.Id == pipelineId))
-            .Select(p => new { p.Name, p.Kind, p.Yaml })
+            .Select(p => new { p.Id, p.Name, p.Kind, p.Yaml })
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (pipe is not null)
         {
-            return TypedResults.Ok(new NodeScriptDto(pipe.Name, "pipeline", "yaml", pipe.Yaml, "Authored", pipe.Name));
+            if (!string.Equals(view, "object", StringComparison.OrdinalIgnoreCase))
+            {
+                return TypedResults.Ok(new NodeScriptDto(pipe.Name, "pipeline", "yaml", pipe.Yaml, "Authored", pipe.Name));
+            }
+
+            // view=object: the code the flow runs rather than its YAML. The flow's `Requires` edge names the
+            // executed object (an sp flow declares exactly one, its procedure). When the object registry has no
+            // row yet (its server was never connected-synced) the response still identifies the object, with a
+            // null script, so the client can render its "no captured script" guidance instead of an error.
+            var required = await db.LineageEdges.AsNoTracking()
+                .Where(e => e.PipelineId == pipe.Id && e.Relation == "Requires")
+                .OrderBy(e => e.Id)
+                .Select(e => new { e.ObjectKey, e.ObjectName })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (required is null)
+            {
+                return NotFound("executed database object for flow", pipe.Name);
+            }
+
+            var executed = await ObjectScriptAsync(required.ObjectKey).ConfigureAwait(false)
+                ?? new NodeScriptDto(required.ObjectKey, "Procedure", "sql", null, null, required.ObjectName);
+            return TypedResults.Ok(executed);
         }
 
         return NotFound("script for node", key);
@@ -742,7 +778,7 @@ public static class LineageEndpoints
             .Take(MaxDossierRows)
             .Select(e => new EdgeDto(
                 e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName,
-                detail.Database, detail.Schema, e.Tier))
+                detail.Database, detail.Schema, e.Tier, detail.Kind))
             .ToListAsync(ct).ConfigureAwait(false);
 
         // The interpreted data model, both directions. Rows are repo-scoped (each repo's code exhibits its own
@@ -848,7 +884,8 @@ public static class LineageEndpoints
             .GroupJoin(db.Objects.AsNoTracking(), e => e.ObjectKey, o => o.Key, (e, objects) => new { e, objects })
             .SelectMany(x => x.objects.DefaultIfEmpty(), (x, o) => new EdgeDto(
                 x.e.Id, x.e.RepoId, x.e.Flow, x.e.PipelineId, x.e.ViaModule, x.e.Relation, x.e.ObjectKey,
-                x.e.ObjectName, o != null ? o.Database : null, o != null ? o.Schema : null, x.e.Tier))
+                x.e.ObjectName, o != null ? o.Database : null, o != null ? o.Schema : null, x.e.Tier,
+                o != null ? o.Kind : null))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<EdgeDto>(items, p, size, total));
     }
@@ -1201,7 +1238,7 @@ public static class LineageEndpoints
                 locations.TryGetValue(e.ObjectKey, out var loc);
                 return new EdgeDto(
                     e.Id, e.RepoId, e.Flow, e.PipelineId, e.ViaModule, e.Relation, e.ObjectKey, e.ObjectName,
-                    loc.Database, loc.Schema, e.Tier);
+                    loc.Database, loc.Schema, e.Tier, loc.Kind);
             })
             .ToList();
 
@@ -1216,13 +1253,13 @@ public static class LineageEndpoints
         return TypedResults.Ok(new ProjectGraphDto(pipelines, edges, openFrontier, truncated));
     }
 
-    /// <summary>The database/schema/name for a set of object keys from the global registry, chunked so the IN-list
-    /// never exceeds the provider's parameter limit. Keys the registry does not know (a race with identity healing)
-    /// are simply absent, and the caller falls back to nulls, exactly as the edges endpoint does.</summary>
-    private static async Task<Dictionary<string, (string? Database, string? Schema, string Name)>> LoadObjectLocationsAsync(
+    /// <summary>The database/schema/name/kind for a set of object keys from the global registry, chunked so the
+    /// IN-list never exceeds the provider's parameter limit. Keys the registry does not know (a race with identity
+    /// healing) are simply absent, and the caller falls back to nulls, exactly as the edges endpoint does.</summary>
+    private static async Task<Dictionary<string, (string? Database, string? Schema, string Name, string? Kind)>> LoadObjectLocationsAsync(
         CatalogDbContext db, IReadOnlyCollection<string> keys, CancellationToken ct)
     {
-        var result = new Dictionary<string, (string?, string?, string)>(StringComparer.Ordinal);
+        var result = new Dictionary<string, (string?, string?, string, string?)>(StringComparer.Ordinal);
         const int chunk = 1000;
         var all = keys.ToArray();
         for (var i = 0; i < all.Length; i += chunk)
@@ -1230,11 +1267,11 @@ public static class LineageEndpoints
             var slice = all.Skip(i).Take(chunk).ToList();
             var rows = await db.Objects.AsNoTracking()
                 .Where(o => slice.Contains(o.Key))
-                .Select(o => new { o.Key, o.Database, o.Schema, o.Name })
+                .Select(o => new { o.Key, o.Database, o.Schema, o.Name, o.Kind })
                 .ToListAsync(ct).ConfigureAwait(false);
             foreach (var row in rows)
             {
-                result[row.Key] = (row.Database, row.Schema, row.Name);
+                result[row.Key] = (row.Database, row.Schema, row.Name, row.Kind);
             }
         }
 

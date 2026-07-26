@@ -839,6 +839,9 @@ export interface LineageEdge {
   objectDatabase: string | null;
   objectSchema: string | null;
   tier: string;
+  /** The object's catalog kind (Table, View, Procedure, ...) from the global registry; null when the registry
+   * does not know the key. This is what classifies a DB-managed view (no writing pipeline) as a view. */
+  objectKind?: string | null;
 }
 
 /** Everything known about one object in a single payload: identity and metadata, columns (with the
