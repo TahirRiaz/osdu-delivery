@@ -369,12 +369,14 @@ public static class LineageGraphBuilder
                 relations.Add((fact.Relation, KeyOf(fact)));
             }
 
-            // A flow that EXECUTES a procedure is the parent of what that procedure does: attribute the proc's
-            // derived reads/writes/creates to the flow as flow-attributed derived edges (in addition to the
-            // module-attributed ones), so a table a stored-procedure flow builds traces back to the FLOW that
-            // runs it - not only to the procedure module. 'relations' here is still the flow's own facts, so the
-            // starting Requires references are the flow's direct proc executions.
-            foreach (var (relation, key, viaModule) in InheritedProcedureEdges(relations, moduleRelations))
+            // A flow that EXECUTES a procedure or READS a view is the parent of the data movement those modules
+            // perform: attribute the modules' derived reads/writes/creates to the flow as flow-attributed derived
+            // edges (in addition to the module-attributed ones), so a table a stored-procedure flow builds, and a
+            // base table a view-reading flow drains, both trace back to the FLOW - not only to the module. This
+            // is what keeps a chain drawn through a view hop (writer -> table -> view -> reader) connected for
+            // consumers that follow flow-attributed edges only. 'relations' here is still the flow's own facts,
+            // so the starting references are the flow's direct proc executions and view reads.
+            foreach (var (relation, key, viaModule) in InheritedModuleEdges(relations, moduleRelations))
             {
                 var identity = ((string?)flow.Node.Name, (string?)viaModule, relation, key, LineageTier.Derived);
                 if (!edges.ContainsKey(identity))
@@ -529,15 +531,17 @@ public static class LineageGraphBuilder
     }
 
     /// <summary>
-    /// The data relations a flow inherits by EXECUTING a procedure, for flow-attributed edge emission (distinct
-    /// from <see cref="InheritModuleRelations"/>, which folds every module reference into a flow's scheduling
-    /// relations). Starts only from the flow's own <c>Requires</c> references to a module (a proc execution), so
-    /// a flow that merely reads a view is unchanged; walks transitively through the modules that proc references
-    /// (a proc reading a view inherits the view's reads), depth-guarded; and yields each read/write/create with
-    /// the module it belongs to as provenance. The output tables of a stored-procedure flow therefore trace back
-    /// to the flow, which is what a data-flow view needs.
+    /// The data relations a flow inherits through the modules it EXECUTES or READS, for flow-attributed edge
+    /// emission (distinct from <see cref="InheritModuleRelations"/>, which folds the same expansion into a
+    /// flow's scheduling relations). Starts from the flow's own <c>Requires</c> references to a module (a proc
+    /// execution) AND its <c>Reads</c> of a module (a view): a flow reading a view moves the view's base
+    /// tables' data, so those reads must be attributed to the FLOW, or a graph consumer that only follows
+    /// flow-attributed edges (the GUI's project graph keys producers/consumers by pipeline) loses the chain at
+    /// every view hop and the reader renders as a root. Walks transitively through module-on-module references
+    /// (a view over a view, a proc reading a view), depth-guarded, and yields each read/write/create with the
+    /// module it belongs to as provenance.
     /// </summary>
-    private static IEnumerable<(LineageRelation Relation, string Key, string ViaModule)> InheritedProcedureEdges(
+    private static IEnumerable<(LineageRelation Relation, string Key, string ViaModule)> InheritedModuleEdges(
         IEnumerable<(LineageRelation Relation, string Key)> ownRelations,
         IReadOnlyDictionary<string, List<(LineageRelation Relation, string Key)>> moduleRelations)
     {
@@ -545,7 +549,7 @@ public static class LineageGraphBuilder
         var queue = new Queue<(string Key, int Depth)>();
         foreach (var (relation, key) in ownRelations)
         {
-            if (relation == LineageRelation.Requires && moduleRelations.ContainsKey(key))
+            if (relation is LineageRelation.Requires or LineageRelation.Reads && moduleRelations.ContainsKey(key))
             {
                 queue.Enqueue((key, 1));
             }

@@ -286,20 +286,28 @@ public sealed class LineageGraphTests
     }
 
     [Fact]
-    public void ProcedureExpansion_LeavesAViewReadingFlowUnattributed()
+    public void ModuleExpansion_GivesAViewReadingFlowTheViewsBaseReads()
     {
-        // A flow that merely READS a view (not Requires a proc) is NOT given the view's derived reads as its own
-        // edges: only procedure execution attributes a module's data relations to the flow.
+        // A flow that READS a view moves the view's base tables' data, so those reads are attributed to the FLOW
+        // (in addition to the module): a graph consumer that follows only flow-attributed edges (the GUI's
+        // project graph) keeps the chain writer -> table -> view -> reader connected instead of losing it at the
+        // view hop and rendering the reader as a root.
         var collected = Estate(
             ("loader", LineageRelation.Writes, "Orders"),
             ("reporter", LineageRelation.Reads, "vw_Orders"));
-        collected.Facts.Add(Fact(null, LineageRelation.Reads, "Orders",
-            viaModule: NodeKey.For("@dwh", "DW", "dbo", "vw_Orders"), tier: LineageTier.Derived));
+        var view = NodeKey.For("@dwh", "DW", "dbo", "vw_Orders");
+        collected.Facts.Add(Fact(null, LineageRelation.Reads, "Orders", viaModule: view, tier: LineageTier.Derived));
 
         var report = Build(collected);
 
         var ordersKey = NodeKey.For("@dwh", "DW", "dbo", "Orders");
-        Assert.DoesNotContain(report.Edges, e => e.Flow == "reporter" && e.ObjectKey == ordersKey);
+        Assert.Contains(report.Edges, e =>
+            e.Flow == "reporter" && e.Relation == LineageRelation.Reads && e.ObjectKey == ordersKey
+            && e.Tier == LineageTier.Derived && e.ViaModule == view);
+        // The module-attributed edge (no flow) still exists too: the two provenances coexist.
+        Assert.Contains(report.Edges, e => e.Flow is null && e.ViaModule == view && e.ObjectKey == ordersKey);
+        // And the flow order follows the chain through the view.
+        Assert.Equal([["loader"], ["reporter"]], Waves(report));
     }
 
     // ---- Identity, synonyms, determinism --------------------------------------------------------------------

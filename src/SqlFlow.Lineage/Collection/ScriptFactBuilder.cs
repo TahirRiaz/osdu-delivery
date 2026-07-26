@@ -8,12 +8,20 @@ namespace SqlFlow.Lineage.Collection;
 /// extractor (document hooks, run traces, harvested modules) so the relation semantics are identical
 /// everywhere. The relations themselves come from <see cref="ScriptDependencies.TypedRelations"/>, the
 /// exact DeltaForge lifecycle algorithm; this layer only applies graph hygiene: temp names and identities
-/// below the caller's part threshold stay out, and the engine's transient staging (created and THEN
-/// dropped by the same script) never reaches the graph: a drop-then-create rebuild, by contrast, keeps its
-/// full relations.
+/// below the caller's part threshold stay out, the engine's transient staging (created and THEN
+/// dropped by the same script) never reaches the graph (a drop-then-create rebuild, by contrast, keeps its
+/// full relations), and reads of the system catalogs (a hook consulting sys.indexes, a probe of
+/// INFORMATION_SCHEMA) stay out too: they are introspection, not data movement, and would render as
+/// producerless input objects in every graph view.
 /// </summary>
 public static class ScriptFactBuilder
 {
+    /// <summary>Whether the identity is a system-catalog object (the <c>sys</c> or
+    /// <c>INFORMATION_SCHEMA</c> schema): metadata introspection, never data lineage.</summary>
+    private static bool IsSystemCatalog(TableName table)
+        => string.Equals(table.Schema, "sys", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(table.Schema, "INFORMATION_SCHEMA", StringComparison.OrdinalIgnoreCase);
+
     public static IEnumerable<LineageFact> Facts(
         ScriptDependencies deps,
         string? flow,
@@ -30,7 +38,8 @@ public static class ScriptFactBuilder
 
         foreach (var (table, relation) in deps.TypedRelations())
         {
-            if (table.IsTemp || table.PartCount < minimumParts || deps.CreatedThenDropped.Contains(table.Key))
+            if (table.IsTemp || table.PartCount < minimumParts || deps.CreatedThenDropped.Contains(table.Key)
+                || IsSystemCatalog(table))
             {
                 continue;
             }
@@ -68,7 +77,7 @@ public static class ScriptFactBuilder
         ArgumentException.ThrowIfNullOrWhiteSpace(scriptId);
 
         bool Excluded(TableName table)
-            => table.IsTemp || deps.CreatedThenDropped.Contains(table.Key);
+            => table.IsTemp || deps.CreatedThenDropped.Contains(table.Key) || IsSystemCatalog(table);
 
         ModelObjectRef Ref(TableName table) => new()
         {

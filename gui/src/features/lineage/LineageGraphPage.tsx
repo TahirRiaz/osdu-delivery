@@ -184,10 +184,12 @@ function layeredLayout(nodes: FlowNode[], edges: FlowEdge[]): FlowNode[] {
   // levels are consecutive from 0 and every row reads top to bottom in dependency order.
   const layer = new Map<string, number>();
   const queue: string[] = [];
+  const sources: string[] = [];
   for (const id of ids) {
     if (layerInDegree.get(id) === 0) {
       layer.set(id, 0);
       queue.push(id);
+      sources.push(id);
     }
   }
   for (let head = 0; head < queue.length; head++) {
@@ -203,6 +205,24 @@ function layeredLayout(nodes: FlowNode[], edges: FlowEdge[]): FlowNode[] {
       if (rem === 0) {
         queue.push(child);
       }
+    }
+  }
+
+  // Pull each source down to one row above its shallowest consumer. Longest-path layering pins every
+  // producer-less node to the top row, which strands a static input consumed deep in the graph (a manually
+  // maintained table read by a late transform) rows away from its only consumer, reading as a misplaced
+  // root. A true chain head has a consumer on the very next row, so its layer is unchanged; an isolated
+  // node has no consumers and stays on the top row.
+  for (const id of sources) {
+    const back = backTargets.get(id);
+    let minChild = Number.POSITIVE_INFINITY;
+    for (const child of uniqueOut.get(id)!) {
+      if (!back?.has(child)) {
+        minChild = Math.min(minChild, layer.get(child) ?? 0);
+      }
+    }
+    if (Number.isFinite(minChild)) {
+      layer.set(id, Math.max(layer.get(id)!, minChild - 1));
     }
   }
 

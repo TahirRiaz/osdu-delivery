@@ -25,6 +25,7 @@ public sealed partial class RepoSyncService : BackgroundService
     private readonly IServiceProvider _services;
     private readonly TimeProvider _clock;
     private readonly TimeSpan _pollInterval;
+    private readonly bool _connectLineage;
     private readonly GitMaterializer _materializer = new();
     private readonly ILogger<RepoSyncService> _logger;
 
@@ -38,6 +39,7 @@ public sealed partial class RepoSyncService : BackgroundService
         _services = services;
         _clock = clock;
         _pollInterval = TimeSpan.FromSeconds(Math.Max(1, options.Value.ManagedSync.PollSeconds));
+        _connectLineage = options.Value.ManagedSync.ConnectLineage;
         _logger = logger;
     }
 
@@ -144,13 +146,17 @@ public sealed partial class RepoSyncService : BackgroundService
             // excluded flow never becomes a catalog pipeline, so the scheduler never picks it up).
             var excludedFlowPaths = RepoSourceStore.ParseExcludedPaths(source.ExcludedFlowPaths);
 
-            // The exact same catalog sync the CLI's `db sync` runs - one sync path. Offline (no derived tier): a
-            // managed sync mirrors the git estate; the connected/derived tier is a separate, opt-in concern. A
-            // manual "sync now" carries a force-lineage request on the source, so this sync recomputes the whole
+            // The exact same catalog sync the CLI's `db sync` runs - one sync path. When ConnectLineage is on
+            // (the default), the connected/derived tier runs too: it opens the referenced SQL Servers with the
+            // source's resolved secrets and expands module bodies through the T-SQL parser, so a stored-procedure
+            // flow gains the reads/writes of the procedure it executes instead of landing as an edgeless root. A
+            // connect failure is non-fatal (the sync catches it, keeps the offline tiers, and records a warning).
+            // A manual "sync now" carries a force-lineage request on the source, so this sync recomputes the whole
             // graph (and the offline object-body/column enrichment) even when the commit is unchanged.
             await trace.InfoAsync("sync", "Reconciling catalog from the estate (pipelines, lineage, schedules, runs).", ct).ConfigureAwait(false);
             var result = await new CatalogSync()
                 .SyncAsync(catalog, workingDir, source.Name, source.RemoteUrl, _clock.GetUtcNow().UtcDateTime,
+                    includeDerived: _connectLineage, secrets: resolver,
                     excludedFlowPaths: excludedFlowPaths, forceLineage: source.ForceLineageOnNextSync, ct: ct)
                 .ConfigureAwait(false);
 

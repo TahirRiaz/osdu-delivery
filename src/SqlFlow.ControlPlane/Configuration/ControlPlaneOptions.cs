@@ -464,6 +464,15 @@ public sealed class ProxyOptions
 public sealed class ManagedSyncOptions
 {
     public int PollSeconds { get; set; } = 30;
+
+    /// <summary>Whether the managed sync runs the connected (derived) lineage tier: it opens each referenced SQL
+    /// Server and expands module bodies (procedures, views) through the T-SQL parser, so a stored-procedure flow
+    /// gains the reads/writes of the procedure it executes instead of appearing as an edgeless root. On by
+    /// default so the estate's lineage is complete without an operator running <c>db sync --connect</c> by hand;
+    /// the connection uses the source's own resolved secrets, and a connect failure is non-fatal (the offline
+    /// tiers still land and the failure is recorded as a warning). Turn it off for a deployment whose control
+    /// plane cannot reach the data-plane SQL Servers, so those syncs stay purely offline.</summary>
+    public bool ConnectLineage { get; set; } = true;
 }
 
 /// <summary>
