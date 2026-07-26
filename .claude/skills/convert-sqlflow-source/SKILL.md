@@ -368,14 +368,21 @@ dotnet run --project src/SqlFlow.Cli -c Release --no-build -- run "<source>_00_a
   uniform `landing.skip ... empty payload` = nothing served for that period.
 - No nested `&` launches inside a background task (the child gets orphaned); one window = one tracked task.
 
-### 5.2 Discover and record each dataset's retention horizon
+### 5.2 AFTER the backfill: check what is missing, then note it in the acquisition YAML
 
-APIs frequently do NOT retain deep history, and retention differs per endpoint within one source. Citybike
-measured: `issue_report` served from 2021, `bikes_session` from 2023-05, `alert` only from 2023-07, snapshot
-endpoints (bikes/inventory/...) current-state only. Confirm horizons with the EVENT dates in arc after
-loading, not just file dates. Record the horizons + final coverage stats **as a comment block in the
-acquisition YAML** (see `Citybike/citybike_00_api.yaml` for the format: retention per dataset, arc rows vs old
-prod, where the missing remainder lives).
+The order is fixed: **first RUN the backfill to completion (every window, oldest to newest), THEN check what
+is missing, THEN write the note.** Do not pre-judge what the source will serve or write coverage claims from
+assumptions; the finished sweep is the evidence.
+
+1. Run all windows (5.1) until the sweep reaches the present.
+2. Check what is missing: per dataset, compare what landed/loaded against old prod. APIs frequently do NOT
+   retain deep history, and retention differs per endpoint within one source. Citybike measured:
+   `issue_report` served from 2021, `bikes_session` from 2023-05, `alert` only from 2023-07, snapshot
+   endpoints (bikes/inventory/...) current-state only. Confirm horizons with the EVENT dates in arc after
+   loading, not just file dates.
+3. Add a note about it **as a comment block in the acquisition YAML** (see `Citybike/citybike_00_api.yaml`
+   for the format): retention horizon per dataset, arc rows vs old prod, and where any missing remainder
+   lives. This note is part of the backfill deliverable, not optional documentation.
 
 ### 5.3 Archive history the source can no longer serve
 
