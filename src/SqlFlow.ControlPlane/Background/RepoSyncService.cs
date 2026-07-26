@@ -41,13 +41,13 @@ public sealed partial class RepoSyncService : BackgroundService
         _clock = clock;
         _pollInterval = TimeSpan.FromSeconds(Math.Max(1, options.Value.ManagedSync.PollSeconds));
         _connectLineage = options.Value.ManagedSync.ConnectLineage;
-        // The sync claim is queue-based, so ANY participating instance can win it - and the sync's lineage
-        // step needs data-plane reachability (it reads sys.sql_modules on the referenced servers), which the
-        // estate provisions on WORKER-role instances, the same place pipelines execute. An API-only replica
-        // must not claim work it cannot complete: it would win the claim and land a degraded graph while a
-        // fully-provisioned worker sat idle. ManagedSync.Enabled=false additionally opts an instance out
-        // entirely (a local dev control plane sharing the production catalog).
-        _enabled = options.Value.ManagedSync.Enabled && options.Value.Worker.Enabled;
+        // NOTE: the sync CANNOT be routed to the estate's compute workers - those containers run the CLI's
+        // 'sqlflow worker' drain loop (no sync service). The control-plane app owns the managed sync, so its
+        // environment must carry the data-plane connection references the lineage step resolves (the same
+        // ${env:...} names the flows use); a missing one degrades that server's derive to a preserved-knowledge
+        // warning. ManagedSync.Enabled=false opts an instance out entirely (a local dev control plane sharing
+        // the production catalog must never steal claims).
+        _enabled = options.Value.ManagedSync.Enabled;
         _logger = logger;
     }
 
@@ -296,6 +296,6 @@ public sealed partial class RepoSyncService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "Managed-sync scan error: {Error}")]
     private partial void LogScanError(string error);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Managed sync is not claimed by this instance (requires ControlPlane:ManagedSync:Enabled AND ControlPlane:Worker:Enabled): repo syncs run on worker-role instances, which hold the data-plane credentials the lineage step needs.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Managed sync is disabled on this instance (ControlPlane:ManagedSync:Enabled=false); it will not claim repo syncs.")]
     private partial void LogSyncDisabled();
 }
