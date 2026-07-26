@@ -18,8 +18,8 @@ out across sources; see CLAUDE.md). The phases:
 2. **Acquisition** - find or establish the producer (api flow, or cpy when no producer exists).
 3. **Author pre + ods** - generate/write the stage-1/stage-2 YAMLs to the estate conventions.
 4. **Validate & bounded test** - prove the path end to end on a small window.
-5. **Backfill** - land the FULL history in bounded windows; discover retention horizons; archive what the
-   source cannot serve.
+5. **Backfill** - land the FULL history in bounded windows; discover retention horizons; import what the source
+   can no longer serve as a deactivated STATIC dataset so new prod still reaches full coverage.
 6. **Verify & reconcile** - schema exactness (compat views) and row counts vs old prod, gaps documented.
 7. **Ship** - commit/push to Bitbucket (that IS the catalog registration).
 
@@ -384,20 +384,42 @@ assumptions; the finished sweep is the evidence.
    for the format): retention horizon per dataset, arc rows vs old prod, and where any missing remainder
    lives. This note is part of the backfill deliverable, not optional documentation.
 
-### 5.3 Archive history the source can no longer serve
+### 5.3 Import the API-unreachable history as a STATIC dataset (full coverage in new prod)
 
-For the years the API cannot serve, the data exists ONLY in the old lake (as the legacy captures). Before the
-old lake is decommissioned, preserve exactly the missing portion with a one-time **archive copy flow**
-(`<source>_archive_00_cpy.yaml`): old lake `raw/<source>/.../history/<year>` -> new lake
-`raw/<source>/archive/<dataset>/history/<year>`, one item per missing year folder.
+**There is ALWAYS old history the live source no longer serves (an API that only keeps a recent window, a feed
+whose template/endpoint changed). That data must not be left behind: it lives ONLY in the old lake as the legacy
+captures, and the new prod DWH must still reach full coverage. The standard treatment is a one-time, DEACTIVATED
+"static dataset" consolidation pipeline that copies those files into the new storage account and LOADS them into
+the same old-prod arc table, so `arc.<Table>` ends up with the full history (live era + static archive), not just
+what the API can still serve.** This is the general pattern for every source, not an Entur special case.
 
-- COLD archive: nothing reads `raw/<source>/archive/`; disabled schedule (`enabled: false`), run once by hand.
-- Copy only the genuinely-missing years; do not re-copy periods already loaded from the API.
-- `preserveStructure: false` per year-folder item (directory-marker blobs, Phase 2.3), safe because the files
-  are date-stamped and unique.
-- Verify the archived per-year file counts equal the old-lake counts.
-- Ask the user before building the archive if they have not already requested it: it only makes sense when the
-  old lake is actually being retired AND the old depth might be needed later.
+Three deactivated flows, run once by hand, then left in the repo as the documented consolidation:
+
+1. **Copy the static files into new storage** (`<source>_archive_00_cpy.yaml`): old lake
+   `raw/<source>/.../history/<year>` -> new lake `raw/<source>/archive/<dataset>/history/<year>`, one item per
+   missing year. `preserveStructure: false` per year item (directory-marker blobs, Phase 2.3; safe because files
+   are date-stamped and unique). Verify per-year counts equal the old lake. The static dataset now lives in the
+   storage account for good.
+2. **Pre-load the static files in their OLD format** (`<source>_<object>_archive_01_<csv|xls|...>.yaml`): read the
+   copied files with a pre flow matching the OLD delivered format (usually the legacy CSV, i.e. the flatten the
+   old runbook produced - already the arc column names), landing to its OWN `pre.<Table>_archive` table + typed
+   view `v_<Table>_archive`. Keep it separate from the live pre so the two formats never collide.
+3. **Merge the static rows into the SAME arc table** (`<source>_<object>_archive_02_ing.yaml`): keyed merge
+   `v_<Table>_archive` -> `arc.<Table>`, **windowed to the non-overlapping period** so the static import and the
+   live era do not double-count the boundary (e.g. `AND [<dateCol>] < '<cutover>'` where the live feed starts).
+   The window is essential: the two eras compute different row hashes for the same logical row (different raw
+   date/number formats), so an unwindowed overlap would duplicate rather than dedupe.
+
+- **All three carry a DISABLED schedule** (`enabled: false`): a manual, run-once consolidation, never scheduled
+  (there is no live producer for this history). Head the acquisition/pre with a comment block stating this is
+  STATIC ARCHIVE data, the window it covers, and that it is manual.
+- **Consolidate in a view ONLY when the archive cannot share the live arc table** (a genuinely different
+  schema/format the arc table can't represent). Then keep `arc.<Table>` as the live physical table, load the
+  static rows into `arc.<Table>_archive`, and expose a VIEW under the OLD dwh table name that `UNION ALL`s the two
+  in the old-prod column order/types. When both eras share the arc schema (the common case), skip the view and
+  merge straight into `arc.<Table>` - one physical table already IS full coverage.
+- Confirm full coverage after loading: `arc.<Table>` row count and event-date range should span BOTH eras and
+  reconcile against old prod (Phase 6.3).
 
 ### 5.4 Run the full pre + ods loads
 
