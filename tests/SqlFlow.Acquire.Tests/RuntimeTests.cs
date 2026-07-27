@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using SqlFlow.Acquire.Runtime;
 using SqlFlow.Core;
@@ -170,6 +171,42 @@ public sealed class HttpExecutorTests
 
         Assert.Contains("reading the response", ex.Message, StringComparison.Ordinal);
         Assert.Equal(4, handler.Attempts); // MaxAttempts, then surface
+    }
+
+    [Fact]
+    public async Task Transcodes_a_non_utf8_charset_body_to_utf8()
+    {
+        // The Shiplog feed serves application/json; charset=ISO-8859-1: 'ø' is the single byte 0xF8, which is
+        // invalid UTF-8. The executor must decode it per the declared charset and hand back valid UTF-8 so the
+        // landed file and the strict UTF-8 JSON reader see the correct character.
+        var latin1 = System.Text.Encoding.GetEncoding("ISO-8859-1");
+        var handler = new ScriptedHandler(_ =>
+        {
+            var content = new ByteArrayContent(latin1.GetBytes("{\"stop\":\"Hommersåk\"}"));
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "ISO-8859-1" };
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+        });
+
+        var result = await Build(handler).SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/x"));
+
+        Assert.Equal("{\"stop\":\"Hommersåk\"}", System.Text.Encoding.UTF8.GetString(result.Body));
+        Assert.Equal([0xC3, 0xA5], result.Body[^5..^3]); // 'å' is now the two-byte UTF-8 sequence, not 0xE5
+    }
+
+    [Fact]
+    public async Task Leaves_a_utf8_body_byte_for_byte()
+    {
+        var utf8 = "{\"stop\":\"Hommersåk\"}"u8.ToArray();
+        var handler = new ScriptedHandler(_ =>
+        {
+            var content = new ByteArrayContent(utf8);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+        });
+
+        var result = await Build(handler).SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/x"));
+
+        Assert.Equal(utf8, result.Body);
     }
 
     private static HttpResponseMessage ResponseWithBodyStream(Stream body)

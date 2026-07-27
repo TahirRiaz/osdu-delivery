@@ -52,6 +52,14 @@ public sealed record HttpFetchResult(
 /// </summary>
 public sealed class HttpExecutor
 {
+    static HttpExecutor()
+    {
+        // Some APIs serve text/JSON in a legacy single-byte code page (e.g. Fjord1's Shiplog feed returns
+        // application/json; charset=ISO-8859-1). Register the code-page provider so those charsets resolve
+        // and the body can be normalized to UTF-8 before landing (see NormalizeToUtf8).
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
     private readonly HttpClient _client;
     private readonly RetryPolicy _retry;
     private readonly RateLimiter _rateLimiter;
@@ -104,6 +112,7 @@ public sealed class HttpExecutor
                 if (response.IsSuccessStatusCode || (allowStatuses?.Contains(code) ?? false))
                 {
                     var body = await ReadCappedAsync(response, ct).ConfigureAwait(false);
+                    body = NormalizeToUtf8(body, response.Content.Headers);
                     return new HttpFetchResult(status, body, response.Headers, response.Content.Headers);
                 }
 
@@ -181,6 +190,69 @@ public sealed class HttpExecutor
         }
 
         return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Re-encodes a text/JSON/XML response body to UTF-8 when it declares a non-UTF-8 charset, so everything
+    /// downstream (the raw landing files and the UTF-8-only JSON/XML readers) sees valid UTF-8. The whole V3
+    /// pipeline is UTF-8; landing a legacy single-byte code page verbatim would either be rejected by the strict
+    /// UTF-8 JSON reader or silently mangle non-ASCII characters. Bodies with no declared charset, an explicit
+    /// UTF-8/ASCII charset, a non-text media type, or an unknown charset are returned unchanged (byte-for-byte),
+    /// so this is a no-op for the common case and never corrupts a payload it cannot confidently decode.
+    /// </summary>
+    internal static byte[] NormalizeToUtf8(byte[] body, HttpContentHeaders? contentHeaders)
+    {
+        if (body.Length == 0)
+        {
+            return body;
+        }
+
+        var charset = contentHeaders?.ContentType?.CharSet?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(charset)
+            || charset.Equals("utf-8", StringComparison.OrdinalIgnoreCase)
+            || charset.Equals("utf8", StringComparison.OrdinalIgnoreCase)
+            || charset.Equals("us-ascii", StringComparison.OrdinalIgnoreCase)
+            || charset.Equals("ascii", StringComparison.OrdinalIgnoreCase))
+        {
+            return body;
+        }
+
+        if (!IsTextLike(contentHeaders?.ContentType?.MediaType))
+        {
+            return body;
+        }
+
+        Encoding source;
+        try
+        {
+            source = Encoding.GetEncoding(charset);
+        }
+        catch (ArgumentException)
+        {
+            // An unrecognized charset: leave the bytes untouched rather than risk a wrong decode.
+            return body;
+        }
+
+        if (source.CodePage == Encoding.UTF8.CodePage)
+        {
+            return body;
+        }
+
+        return Encoding.UTF8.GetBytes(source.GetString(body));
+    }
+
+    /// <summary>True for payloads that are character data (so a charset transcode is meaningful and safe): a
+    /// missing media type, any <c>text/*</c>, or a structured type whose subtype is or ends in json/xml.</summary>
+    private static bool IsTextLike(string? mediaType)
+    {
+        if (string.IsNullOrEmpty(mediaType))
+        {
+            return true;
+        }
+
+        return mediaType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            || mediaType.Contains("json", StringComparison.OrdinalIgnoreCase)
+            || mediaType.Contains("xml", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<string> PreviewAsync(HttpResponseMessage response, CancellationToken ct)
