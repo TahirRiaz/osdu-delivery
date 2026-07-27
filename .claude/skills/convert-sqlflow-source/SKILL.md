@@ -60,6 +60,13 @@ If the user gives only a readable name, derive the batch code by querying the me
   the V3 pipeline reads/writes. The old `dwdatalakestorev2prod` account is being retired: it appears ONLY as
   the SOURCE side of one-time copy/archive flows (Phases 2 and 5), never as a live pipeline endpoint.
 - Reference prod DDL (for schema comparison): `B:\SQLFlowUpgradeV3\dw-dwh-prod\` and `...\dw-pre-prod\`.
+- **Real OLD prod DWH (live truth, READ ONLY)**: the User-scoped environment variable **`OldDwhConStr`**
+  (read it with `[Environment]::GetEnvironmentVariable('OldDwhConStr','User')`; it is NOT inherited by the
+  shell, so `$env:OldDwhConStr` is empty) holds the full connection string to the actual old production DWH:
+  server `dw-sql-server-prod.database.windows.net,1433`, database `dw-dwh-prod`, user `dw-kolumbus-admin`.
+  Use it when the `B:\` DDL drive is not mounted or the 92.221.59.28 restores are stale/missing a table
+  (they lag the real estate; e.g. `arc.Frida_Vehicles` exists only here). **Read operations ONLY**: schema
+  reads (`sys.columns`), row counts, reconciliation queries. Never write, never point a flow at it.
 - Generators: `migration/_tools/Generate-PreFlow.ps1`, `migration/_tools/Generate-OdsFlow.ps1`. Both read the
   legacy metadata over the network and default `-Server` to `92.221.59.28`. Pass `-Server` only to override.
 - Run the tooling from the SQLFlowV3 repo root `c:\Projects\SQLFlowV3`. Build the CLI first if needed. When
@@ -167,8 +174,26 @@ The `skey` (surrogate key) schema transfers the same way when the EDW layer depe
 
 ## Phase 2 - Establish the acquisition (stage 0)
 
-Goal: V3 must own how the files ARRIVE, not just how they are read. Find the real producer, port it as an
-`api` flow, or establish a `cpy` when no producer exists. Never guess the producer by name.
+Goal: V3 must own how the data ARRIVES, not just how it is read. The going-forward LIVE feed MUST come from the
+same EXTERNAL SOURCE INTERFACE the legacy producer read from (the API, SFTP, S3/object store, source database,
+etc.), re-established as a V3 `api` / `sftp` / external-`cpy` flow. Find the real producer, port its fetch, and
+reproduce whatever it did to the payload. Never guess the producer by name.
+
+**THE OLD STORAGE ACCOUNT IS A TARGET, NOT A SOURCE. NEVER mirror `dwdatalakestorev2prod` -> `dwdatalakeprodv2`
+as the live acquisition.** The old lake is where the legacy producer WROTE its output; copying from it leaves V3
+permanently dependent on the legacy runbook still running and on a storage account that is being retired. The
+moment legacy is turned off (the whole point of the migration) the mirror dries up and the source silently goes
+stale. Worse, mirroring a producer's output silently inherits transform logic V3 does NOT own (timezone
+conversion, array pivots, cross-endpoint joins, PII scrubbing the runbook performed), so "I copied the files" is
+NOT "the acquisition is done": that logic is lost the day the producer is retired. Copying a target and pretending
+the acquisition logic is handled is the single most damaging shortcut in a conversion.
+
+**A copy FROM the old storage account is legitimate for ONE thing only: data the external interface can no longer
+serve** (history the API/SFTP/S3 has aged out past its retention horizon, or a feed whose endpoint/template
+changed so the old captures are the only copy). That is the deactivated STATIC-ARCHIVE backfill of Phase 5.3, NOT
+the live feed. Everything the external interface CAN still serve must be acquired FROM that interface. If you
+find yourself reaching for an old-lake mirror as the steady-state feed, stop: you are re-pointing the source at a
+dying target instead of establishing the real acquisition.
 
 ### 2.1 Crosscheck the producer against what the pre flows READ (MANDATORY)
 
@@ -220,13 +245,28 @@ lineage connects acquire -> pre -> ods.
   rate self-corrects. Without concurrency a wide fan-out is latency-bound one file at a time.
 - Leave the flow UNSCHEDULED (or the schedule disabled) while the legacy batch still runs daily against the
   old lake; wiring the daily schedule is a cutover step, so the two never double-feed the estate.
+- **The engine lands the RAW payload and never redacts or projects it** (`LandingPipeline`: "It never transforms
+  the payload: the raw incoming format is preserved"). If the legacy producer SCRUBBED PII or dropped fields
+  before writing (rider names, addresses, phone, exact coordinates), landing the raw API response would PERSIST
+  that PII at rest in the lake and the pre table. Reproducing the scrub in the typed VIEW is NOT enough: the raw
+  landed file already holds it. Such a source needs the PII fields excluded AT LANDING (an acquire-engine
+  projection/redaction step). Close that gap at the acquisition; do NOT fall back to mirroring the old lake's
+  already-scrubbed output as the live feed (that is the forbidden "target as source" shortcut, and it hides the
+  fact that V3 never owned the scrub). Flag the missing capability and add it, rather than copying a target.
 
-### 2.3 No producer found: establish the acquisition as a one-time `cpy`
+### 2.3 No external interface at all: establish the acquisition as a one-time `cpy` from the old lake
 
-If the exhaustive search turns up no producer, the files still exist in the OLD lake (that is where the legacy
-pre read them). Build a `<table>_00_cpy.yaml` copy flow: source = old lake path, target = `dwdatalakeprodv2`
-at the SAME path the pre flow reads (so lineage connects). This is not "changing a flow's endpoint" - it
-establishes the missing acquisition, sanctioned for the no-producer case.
+This case is ONLY for a source with NO external interface to re-establish: manual/system exports (a person's
+Excel upload, a PSS-system dump) that only EVER existed as files in the old lake, with no API/SFTP/S3/database
+behind them to fetch from. Billettkontroll is the archetype: an exhaustive search found no producer of any kind,
+so the old-lake files ARE the source. Then build a `<table>_00_cpy.yaml` copy flow: source = old lake path,
+target = `dwdatalakeprodv2` at the SAME path the pre flow reads (so lineage connects). This is not "changing a
+flow's endpoint" - it establishes the missing acquisition, sanctioned for the genuinely no-interface case.
+
+**Do not reach for this just because an external fetch is inconvenient.** "No producer found" must mean you
+PROVED there is no external interface (2.1's exhaustive search came up empty), not that mirroring the old lake
+was easier. If a producer exists that calls an API/SFTP/S3/DB, the live feed comes from THAT interface (2.2 /
+2.4), and the old lake is only for aged-out history (5.3).
 
 - **Do NOT give such a batch a live recurring schedule** (there is no producer; a schedule would imply one).
 - **A copy flow has NO `mode:` field** (`mode: manual` is silently ignored). The estate's manual-only idiom is
@@ -242,12 +282,23 @@ schedule:
   structure preserved they get copied as files and 404/block nested writes. When the file names are globally
   unique, set `preserveStructure: false` and land flat.
 
-### 2.4 Same-format mirror (`cpy`) when the old lake already holds normalized output
+### 2.4 Non-API external interfaces: re-establish the fetch (SFTP / S3 / database), do not mirror the old lake
 
-When a legacy runbook still writes normalized files to the OLD lake on a schedule (e.g. Citybike's AWS
-Regnskap/Trips), mirror old lake -> new lake with a `cpy` (both Azure, ambient MI, no upstream credentials)
-instead of re-implementing the upstream fetch. Use `modifiedWithinDays: <n>` for the steady-state daily mirror
-and `0` for the one-time full backfill run.
+When the producer reads a NON-API external interface (an SFTP drop, an S3 / object-store export, a source
+database), the live feed is a V3 flow that reads THAT interface directly: a `cpy` whose SOURCE is the external
+store (e.g. `s3://...`, an `sftp://` path), an `sftp` acquisition, or a direct-from-source pre. Point it at the
+same external location the legacy producer read, land to the path the pre reads, and reproduce the producer's
+reshaping in the typed view (Phase 3.4). Use `modifiedWithinDays: <n>` for the steady-state daily window and `0`
+for the one-time full backfill.
+
+**Do NOT substitute a mirror of the old lake for this**, even when the runbook conveniently left a normalized
+copy on `dwdatalakestorev2prod`. Copying THAT is the forbidden "old storage account as source" shortcut (see the
+Phase 2 goal): it inherits the runbook's reshaping without owning it, and it dies when the runbook is retired.
+The ONLY slice that legitimately comes from the old lake is history the external interface no longer serves
+(retention horizon, or a format/endpoint change that makes the old captures the only copy), imported as the
+deactivated static archive of Phase 5.3. If re-establishing the external fetch needs a capability the engine
+lacks (say a landing-time field projection, or an auth mode), the correct move is to ADD it, not to fall back to
+mirroring a dying target.
 
 ---
 
@@ -392,6 +443,20 @@ captures, and the new prod DWH must still reach full coverage. The standard trea
 "static dataset" consolidation pipeline that copies those files into the new storage account and LOADS them into
 the same old-prod arc table, so `arc.<Table>` ends up with the full history (live era + static archive), not just
 what the API can still serve.** This is the general pattern for every source, not an Entur special case.
+
+**Copy from the OLD storage account ONLY for data the external interface (API, SFTP, S3, etc.) cannot serve.**
+The live acquisition is always the source of record for everything it CAN return; the archive exists solely to
+recover the remainder. Before building the archive, MEASURE that remainder against the live interface and let it
+justify the copy: the archive's net contribution to `arc.<Table>` must be exactly the interface-unreachable rows.
+Two shapes recur:
+- **Windowed/history feed** (the API keeps only a recent window): the remainder is every period older than the
+  retention horizon. Copy those older years only; do not re-copy files inside the window the API still serves.
+- **Current-state interface** (a register/snapshot API with no history endpoints, e.g. Frida vehicles): the API
+  returns only "now", so the remainder is the rows that have since LEFT the current state (a departed vehicle, a
+  closed account). The arc table is keyed current-state, so replaying the old snapshots contributes only those
+  departed rows (the current rows collapse to a no-op refresh). Confirm the delta explicitly - e.g. `arc` rows
+  NOT EXISTS in the live pre landing - and record the exact count/example in the coverage note, so the copy is
+  demonstrably scoped to API-missing data (Frida: live API 503, archive adds 1 departed vehicle, arc = 504).
 
 Three deactivated flows, run once by hand, then left in the repo as the documented consolidation:
 

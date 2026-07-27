@@ -53,6 +53,23 @@ Exactly one form is allowed. In the `items:` form, `source` holds only the share
 through each item's date-window `iterate`. A single-endpoint flow keeps the flat `source.request` + top-level
 `landing` shape unchanged.
 
+## Landing-time data protection
+
+When the upstream response carries fields the estate must not persist (rider names, addresses, phone numbers),
+declare `landing.protect` rules on the item: they scrub, pseudonymise, or generalise the matched fields INSIDE
+the landing sink, before any byte reaches the lake, and fail the run rather than land unprotected. Format-aware
+across json/jsonl/xml/csv; keyed transforms (hmac/tokenize/encrypt) take a `${...}` secret and a linkability
+`scope`. See `docs/reference/concepts/landing-data-protection.md` for the full rule model.
+
+    landing:
+      target: abfss://.../raw/hentmeg/api/requests
+      pathTemplate: "history/{window.from:yyyy}/hentmeg_{window.from:yyyyMMdd}"
+      format: json
+      protect:
+        - { path: "$.data[*].rider",                   action: remove }
+        - { path: "$.data[*].scheduledPickupAddress",  action: remove }
+        - { path: "$.data[*].phone", action: redact, mode: phone }
+
 ## Run it
 
     sqlflow run samples/api/jsonplaceholder-basic.flow.yaml     # live, no auth, lands to ./_landing
@@ -99,6 +116,7 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | Honor Retry-After, retry 408/425/429/5xx | built in (`retry.honorRetryAfter`) |
 | Rate limiting / request budget (svv batching) | `reliability.rateLimitRps` |
 | Per-request timeout (60/120/300s) | `reliability.timeoutSeconds` |
+| PII scrubbed before landing (hentmeg's GDPR blanking of rider/addresses) | `landing.protect` rules (remove/redact/mask/hash/hmac/tokenize/encrypt/generalize) |
 | Empty-data skip (easypark, voi) | `landing.skipEmpty` |
 | Unchanged-file skip (same fetch, no rewrite) | `landing.skipUnchanged` (default true) |
 | History path with year/month/day + id tokens | `landing.pathTemplate` |

@@ -497,6 +497,15 @@ public sealed record AcquireLanding
     /// Turn it off to write every fetched payload unconditionally, avoiding the per-file hash comparison. Has no effect
     /// when <see cref="Overwrite"/> is false.</summary>
     public bool SkipUnchanged { get; init; } = true;
+
+    /// <summary>
+    /// Data-protection rules applied to the RAW payload before it is written, in declaration order. Empty means the
+    /// payload lands verbatim. Format-aware: json, jsonl, xml, and csv payloads are protectable (the rule path is a
+    /// JSON path, an XML element path with an optional trailing <c>@attribute</c>, or a CSV header column name); a
+    /// payload in any other format, or one that fails to parse, fails the run rather than landing unprotected, so
+    /// requested protection can never be silently skipped. See <see cref="AcquireProtectRule"/>.
+    /// </summary>
+    public IReadOnlyList<AcquireProtectRule> Protect { get; init; } = [];
 }
 
 // ---------------------------------------------------------------------------------------------------------------

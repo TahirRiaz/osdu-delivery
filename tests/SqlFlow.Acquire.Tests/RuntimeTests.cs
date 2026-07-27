@@ -37,6 +37,16 @@ public sealed class TemplateEngineTests
     }
 
     [Fact]
+    public void Renders_unix_epoch_pseudo_formats_for_date_variables()
+    {
+        var ctx = new TemplateContext(Ref).WithDate("window.from", Ref);
+        Assert.Equal(Ref.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            TemplateEngine.Render("{window.from:unix}", ctx));
+        Assert.Equal(Ref.ToUnixTimeMilliseconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            TemplateEngine.Render("{window.from:unixms}", ctx));
+    }
+
+    [Fact]
     public void Url_encodes_when_requested()
     {
         var ctx = new TemplateContext(Ref).WithString("q", "a b&c");

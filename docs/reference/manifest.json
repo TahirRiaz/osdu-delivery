@@ -957,6 +957,44 @@
       ]
     },
     {
+      "id": "concept-landing-data-protection",
+      "path": "concepts/landing-data-protection.md",
+      "title": "Landing-time data protection (landing.protect)",
+      "type": "concept",
+      "summary": "landing.protect rules scrub, pseudonymise, or generalise PII in the raw payload before it is written to the lake, format-aware across json, jsonl, xml, and csv.",
+      "keywords": [
+        "protect",
+        "pii",
+        "gdpr",
+        "redact",
+        "mask",
+        "hash",
+        "hmac",
+        "tokenize",
+        "encrypt",
+        "pseudonymisation",
+        "generalize",
+        "data protection",
+        "scrub",
+        "landing"
+      ],
+      "related": [
+        "concept-file-discovery-and-lifecycle",
+        "concept-connections-and-secrets",
+        "flow-source"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Acquire/AcquireProtect.cs",
+        "src/SqlFlow.Core/Acquire/AcquireFlow.cs",
+        "src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs",
+        "src/SqlFlow.Acquire/Runtime/Protection/PayloadTransforms.cs",
+        "src/SqlFlow.Acquire/Runtime/Protection/XmlProtection.cs",
+        "src/SqlFlow.Acquire/Runtime/Protection/CsvProtection.cs",
+        "src/SqlFlow.Acquire/Engine/LandingPipeline.cs",
+        "src/SqlFlow.Yaml/YamlAcquireFlowLoader.cs"
+      ]
+    },
+    {
       "id": "concept-lineage-graph-and-plan",
       "path": "concepts/lineage-graph-and-plan.md",
       "title": "The lineage graph: report model, node identity, execution plan, facts dump",

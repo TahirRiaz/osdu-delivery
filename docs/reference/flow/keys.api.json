@@ -5,7 +5,7 @@
   "generatedFrom": "source code: src/SqlFlow.Yaml/YamlAcquireFlowLoader.cs, src/SqlFlow.Core/Acquire/AcquireFlow.cs, and src/SqlFlow.Acquire (the engine)",
   "naming": "The loader builds its IDeserializer with CamelCaseNamingConvention and IgnoreUnmatchedProperties, so a C# PascalCase property binds to the camelCase YAML key. Dictionary keys (headers, query, bodyFields, params, options) bind verbatim. Enum-like values (transport, auth.type, bodyKind, pagination.strategy, iterate kind/granularity, landing.compression, incremental.source) are parsed case-insensitively with '-' and '_' stripped before matching (YamlAcquireFlowLoader.ParseEnum), so snake_case, kebab-case, and PascalCase spellings are all accepted.",
   "forms": "An api flow declares either ONE endpoint (the single form: source.request + a top-level landing) or SEVERAL endpoints (the multi-item form: an items[] list, each entry carrying its own request/pagination/iterate/landing over the shared source connection envelope). Exactly one form is allowed. In the multi-item form, source holds only the shared envelope (transport/baseUrl/auth/reliability/options): putting request/pagination/iterate on source, or a top-level landing, alongside items is a validation error, as is combining items with incremental (the run watermark is one value per run, so multi-item flows express incrementality through each item's date-window iterate). One multi-item flow is one pipeline row that lands each item to its own raw path, so a single acquisition can feed several downstream file/pre flows and lineage stays intact.",
-  "keyCount": 100,
+  "keyCount": 121,
   "keys": [
     {
       "path": "name",
@@ -50,7 +50,11 @@
       "type": "string (enum)",
       "required": false,
       "default": "http",
-      "enumValues": ["http", "sftp", "azuretable"],
+      "enumValues": [
+        "http",
+        "sftp",
+        "azuretable"
+      ],
       "description": "The transport the source speaks. http covers REST, GraphQL, and SOAP-over-POST (auth/request/pagination apply); sftp lists and downloads remote files; azuretable queries an Azure Storage Table. The non-HTTP transports carry their credentials and locators in source.options. Matching strips '-'/'_' and is case-insensitive, so azure_table and AzureTable also parse. (S3 object copy is a cpy flow, not an api transport.)",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireTransport)"
     },
@@ -74,7 +78,16 @@
       "type": "string (enum)",
       "required": false,
       "default": "none",
-      "enumValues": ["none", "api_key_header", "api_key_query", "bearer", "basic", "oauth2_client_credentials", "oauth2_refresh_token", "token_exchange"],
+      "enumValues": [
+        "none",
+        "api_key_header",
+        "api_key_query",
+        "bearer",
+        "basic",
+        "oauth2_client_credentials",
+        "oauth2_refresh_token",
+        "token_exchange"
+      ],
       "description": "The authentication strategy. none: anonymous. api_key_header: secretRef sent in the header named headerName. api_key_query: secretRef sent as the query parameter named paramName. bearer: Authorization: Bearer <secretRef>. basic: HTTP Basic from secondarySecretRef (username) + secretRef (password). The three token-based types perform a token request described by the token block and apply the returned access token to every data request: oauth2_client_credentials (grant_type client_credentials), oauth2_refresh_token (refresh-token exchange), token_exchange (any bespoke POST-and-extract-token endpoint, including a pre-formed body held whole in Key Vault via token.rawBody).",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireAuthType); applied in src/SqlFlow.Acquire/Runtime/AuthResolver.cs"
     },
@@ -151,7 +164,10 @@
       "type": "string (enum)",
       "required": false,
       "default": "form",
-      "enumValues": ["form", "json"],
+      "enumValues": [
+        "form",
+        "json"
+      ],
       "description": "How the token request body is encoded: form (application/x-www-form-urlencoded, the OAuth2 default) or json (e.g. Entur's {client_id, client_secret, audience} body or easypark's {refreshToken}).",
       "definedIn": "src/SqlFlow.Acquire/Runtime/AuthResolver.cs (BuildTokenRequest)"
     },
@@ -285,7 +301,14 @@
       "type": "string (enum)",
       "required": false,
       "default": "none",
-      "enumValues": ["none", "json", "form", "graphql", "soap", "raw"],
+      "enumValues": [
+        "none",
+        "json",
+        "form",
+        "graphql",
+        "soap",
+        "raw"
+      ],
       "description": "How the request body is encoded. none: no body. json: body sent as application/json. form: bodyFields urlencoded. graphql: body is the query text, wrapped as {\"query\": ..., \"variables\": null} and sent as JSON (the SVV pattern). soap: body is the envelope, sent as text/xml (or contentType). raw: body sent verbatim with contentType.",
       "definedIn": "src/SqlFlow.Acquire/Engine/HttpRequestBuilder.cs (BuildContent)"
     },
@@ -334,7 +357,14 @@
       "type": "string (enum)",
       "required": false,
       "default": "none",
-      "enumValues": ["none", "page", "offset", "cursor_body", "link_header", "keyset"],
+      "enumValues": [
+        "none",
+        "page",
+        "offset",
+        "cursor_body",
+        "link_header",
+        "keyset"
+      ],
       "description": "none: one request. page: increments pageParam from startPage until an empty page. offset: advances offsetParam by limit until an empty page. cursor_body: follows a cursor read from the response at cursorPath until absent. link_header: follows the RFC 5988 Link rel=\"next\" header until absent. keyset: sends keysetParam starting from the stored watermark (or empty), advancing to the max id observed per page (keysetIdPath) or an explicit cursorPath; stops on an empty page, an unchanged id, or stopOnStatus. Every strategy is additionally capped by maxPages.",
       "definedIn": "src/SqlFlow.Acquire/Engine/HttpTransport.cs (Advance)"
     },
@@ -452,7 +482,11 @@
       "path": "source.iterate[].kind",
       "type": "string (enum)",
       "required": true,
-      "enumValues": ["date_window", "list", "ids_from"],
+      "enumValues": [
+        "date_window",
+        "list",
+        "ids_from"
+      ],
       "description": "date_window: walk from->to in granularity steps, binding fromVariable/toVariable per step (a per-run backfill window from the typed run parameters replaces from/to). list: iterate values, binding variable per element. ids_from: run idRequest, select ids with idPath, iterate them (batchSize groups ids into joined batches).",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireIterationKind)"
     },
@@ -469,7 +503,11 @@
       "type": "string (enum)",
       "required": false,
       "default": "day",
-      "enumValues": ["hour", "day", "month"],
+      "enumValues": [
+        "hour",
+        "day",
+        "month"
+      ],
       "appliesWhen": "kind: date_window",
       "description": "The step size: hourly sub-windows (Voi/Ryde), daily windows (most sources), or monthly re-reads (svv index corrections).",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireWindowGranularity)"
@@ -698,14 +736,14 @@
       "path": "items[].landing",
       "type": "object",
       "required": true,
-      "description": "Where this endpoint's raw payloads land. Same shape and fields as the top-level landing (target/pathTemplate/format/compression/overwrite/persistHeaders/skipEmpty/skipUnchanged). Each item's landing target is the raw path a downstream file/pre flow reads, so it is the lineage join point for that endpoint.",
+      "description": "Where this endpoint's raw payloads land. Same shape and fields as the top-level landing (target/pathTemplate/format/compression/overwrite/persistHeaders/skipEmpty/skipUnchanged/protect). Each item's landing target is the raw path a downstream file/pre flow reads, so it is the lineage join point for that endpoint.",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireLanding)"
     },
     {
       "path": "landing",
       "type": "object",
       "required": "single-endpoint form only (required there; replaced by items[].landing in the multi-item form)",
-      "description": "How fetched payloads are written to the raw zone. The payload is landed VERBATIM (raw bytes, original format): no CSV conversion, no flattening; downstream json/csv/xml file flows ingest the landed files into SQL. In the multi-item form this is declared per item under items[].landing instead.",
+      "description": "How fetched payloads are written to the raw zone. The payload is landed VERBATIM (raw bytes, original format): no CSV conversion, no flattening (one exception: declared landing.protect rules scrub/pseudonymise the matched fields before the bytes are written); downstream json/csv/xml file flows ingest the landed files into SQL. In the multi-item form this is declared per item under items[].landing instead.",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireLanding); pipeline in src/SqlFlow.Acquire/Engine/LandingPipeline.cs"
     },
     {
@@ -735,7 +773,10 @@
       "type": "string (enum)",
       "required": false,
       "default": "none",
-      "enumValues": ["none", "gzip"],
+      "enumValues": [
+        "none",
+        "gzip"
+      ],
       "description": "Optional gzip on landing (a .gz suffix is appended after the format extension).",
       "definedIn": "src/SqlFlow.Acquire/Engine/LandingPipeline.cs"
     },
@@ -772,6 +813,184 @@
       "definedIn": "src/SqlFlow.Acquire/Landing/LocalRawLandingStore.cs (PutAsync)"
     },
     {
+      "path": "landing.protect",
+      "type": "array",
+      "required": false,
+      "description": "Data-protection rules applied to the raw payload BEFORE it is written, in declaration order, so PII/sensitive fields are scrubbed, pseudonymised, or generalised at the acquisition boundary and never persisted raw. Format-aware: json, jsonl, xml, and csv payloads are protectable; any other landed format (or a payload that fails to parse) fails the run rather than landing unprotected. This is the ONE deliberate exception to the land-verbatim rule.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].path",
+      "type": "string",
+      "required": true,
+      "description": "The field selector, interpreted per the landed format. JSON/JSONL: a JSON path (optional leading $, dotted properties, [*] array wildcard, [n] index), e.g. $.data[*].rider. XML: an element path starting at the document root (requests.request.rider; repeated elements match all occurrences), with an optional trailing @name selecting an attribute. CSV: the header column name. A path matching nothing is a no-op for JSON/XML; a CSV column the header lacks is an error.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].action",
+      "type": "string",
+      "required": true,
+      "enumValues": [
+        "remove",
+        "redact",
+        "mask",
+        "hash",
+        "hmac",
+        "tokenize",
+        "encrypt",
+        "generalize"
+      ],
+      "description": "The protection transform: remove (delete the field; CSV blanks it to keep the schema), redact (constant or pattern suppression), mask (partial visibility), hash (unkeyed SHA-256 hex), hmac (keyed one-way pseudonym; requires secret), tokenize (token substitution; deterministic when secret is set), encrypt (reversible deterministic AES-256-GCM-SIV; requires secret), generalize (precision reduction: dates, age buckets, zip prefixes, numeric rounding).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].secret",
+      "type": "string (secret reference)",
+      "required": false,
+      "description": "A ${...} reference to the key material for the keyed transforms. REQUIRED for hmac and encrypt; optional for tokenize (a keyed token is deterministic across runs, an unkeyed one is random per run). Resolved once per run through the secret resolver; the raw key never appears in YAML.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].scope",
+      "type": "string",
+      "required": false,
+      "default": "relationship",
+      "enumValues": [
+        "transaction",
+        "relationship",
+        "person"
+      ],
+      "description": "Linkability of the keyed transforms: transaction (run-scoped salt, same value maps differently across runs), relationship (salted by flow name and the optional relationship param; consistent within this source), person (no extra salt; globally consistent wherever the same key is used).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].mode",
+      "type": "string",
+      "required": false,
+      "description": "Transform mode. redact: full (default) | partial | email | phone | card. generalize: year (default) | month | quarter | decade | age_range | zip3 | zip2 | round.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].replacement",
+      "type": "string",
+      "required": false,
+      "default": "[REDACTED]",
+      "description": "redact mode=full: the constant that replaces the value.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].maskChar",
+      "type": "string (one char)",
+      "required": false,
+      "default": "*",
+      "description": "The masking character for mask and the partial/email/phone/card redact modes.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].keepFirst",
+      "type": "integer",
+      "required": false,
+      "default": "0",
+      "description": "redact mode=partial: leading characters kept visible.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].keepLast",
+      "type": "integer",
+      "required": false,
+      "default": "0",
+      "description": "redact mode=partial: trailing characters kept visible.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].show",
+      "type": "integer",
+      "required": false,
+      "default": "4",
+      "description": "mask: leading characters kept visible.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].showLast",
+      "type": "integer",
+      "required": false,
+      "default": "0",
+      "description": "mask: trailing characters kept visible.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].algorithm",
+      "type": "string",
+      "required": false,
+      "default": "hmac_sha256",
+      "enumValues": [
+        "hmac_sha256",
+        "pbkdf2"
+      ],
+      "description": "hmac: hmac_sha256 (fast) or pbkdf2 (KDF-hardened for low-entropy values; iteration count via iterations).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].iterations",
+      "type": "integer",
+      "required": false,
+      "default": "100000",
+      "description": "hmac algorithm=pbkdf2: the PBKDF2 iteration count.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].outputLength",
+      "type": "integer",
+      "required": false,
+      "description": "hmac: truncate the hex output to this many characters (full digest when omitted).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].format",
+      "type": "string",
+      "required": false,
+      "default": "tok_{short}",
+      "description": "tokenize: the token template; {uuid} and {short} expand from the token core, any other text is a literal prefix.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].relationship",
+      "type": "string",
+      "required": false,
+      "description": "scope=relationship: an extra salt label narrowing consistency to a named relationship within the flow.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].bucket",
+      "type": "integer",
+      "required": false,
+      "default": "5",
+      "description": "generalize mode=age_range: the bucket size in years.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].step",
+      "type": "number",
+      "required": false,
+      "default": "1",
+      "description": "generalize mode=round: round to the nearest multiple of this step.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].delimiter",
+      "type": "string (one char, or \\t)",
+      "required": false,
+      "description": "CSV payloads: the field delimiter; auto-detected from the header among ; , tab | when omitted.",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
+      "path": "landing.protect[].params.<name>",
+      "type": "string",
+      "required": false,
+      "description": "Escape hatch for transform parameters not covered by the flat knobs; merged with them (flat knobs win).",
+      "definedIn": "src/SqlFlow.Core/Acquire/AcquireProtect.cs; engine in src/SqlFlow.Acquire/Runtime/Protection/PayloadProtector.cs"
+    },
+    {
       "path": "incremental",
       "type": "object",
       "required": false,
@@ -784,7 +1003,10 @@
       "type": "string (enum)",
       "required": false,
       "default": "response",
-      "enumValues": ["response", "lake"],
+      "enumValues": [
+        "response",
+        "lake"
+      ],
       "description": "Where the watermark is derived from. response: track the max of a response column across the run (persisted in run.json as watermarkAfter). lake: reserved for deriving the resume point from what is already landed.",
       "definedIn": "src/SqlFlow.Core/Acquire/AcquireFlow.cs (AcquireWatermarkSource)"
     },

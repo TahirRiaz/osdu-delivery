@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using SqlFlow.Acquire.Landing;
 using SqlFlow.Acquire.Runtime;
+using SqlFlow.Acquire.Runtime.Protection;
 using SqlFlow.Core;
 using SqlFlow.Core.Acquire;
 using SqlFlow.Core.Runs;
@@ -98,7 +99,25 @@ public sealed class AcquireEngine
                 ct.ThrowIfCancellationRequested();
                 var itemBase = await _secrets.ResolveAsync(TemplateEngine.Render(item.Landing.Target, baseVars), ct).ConfigureAwait(false);
                 resolvedBase ??= itemBase;
-                var pipeline = new LandingPipeline(item.Landing, _landing, itemBase, runId, log, run.DryRun, run.ReprocessFiles);
+
+                // Data-protection rules resolve their key material once per run, then scrub every payload of this
+                // item inside the landing sink, before any byte is written.
+                PayloadProtector? protector = null;
+                if (item.Landing.Protect.Count > 0)
+                {
+                    var protectSecrets = new Dictionary<string, string>(StringComparer.Ordinal);
+                    foreach (var rule in item.Landing.Protect)
+                    {
+                        if (rule.Secret is { } secretRef && !protectSecrets.ContainsKey(secretRef))
+                        {
+                            protectSecrets[secretRef] = await _secrets.ResolveAsync(secretRef, ct).ConfigureAwait(false);
+                        }
+                    }
+
+                    protector = new PayloadProtector(item.Landing.Protect, protectSecrets, flow.Name);
+                }
+
+                var pipeline = new LandingPipeline(item.Landing, _landing, itemBase, runId, log, run.DryRun, run.ReprocessFiles, protector);
                 pipelines.Add(pipeline);
 
                 var contexts = await ExpandAsync(item.Source, baseVars, item.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);

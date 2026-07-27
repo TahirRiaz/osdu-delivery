@@ -26,7 +26,11 @@ pub struct KeyEntry {
     pub path: String,
     #[serde(rename = "type")]
     pub ty: String,
-    #[serde(default)]
+    /// `required` in the JSON is either a bool or a prose string for a
+    /// conditional requirement ("single-endpoint form only ..."); a non-empty
+    /// string counts as required. A strict bool here used to fail the whole
+    /// file's parse and silently EMPTY the census for that flow kind.
+    #[serde(default, deserialize_with = "required_flag")]
     pub required: bool,
     #[serde(default)]
     pub default: Option<String>,
@@ -43,6 +47,27 @@ pub struct KeyEntry {
     /// Parsed structural form of `path`, computed once at load time.
     #[serde(skip)]
     pub segs: Vec<Seg>,
+}
+
+/// Deserialize the census `required` field: a bool passes through; a prose
+/// string (a conditional requirement) is required-when-present, so non-empty
+/// maps to `true`; null/absent maps to `false`.
+fn required_flag<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Flag {
+        Bool(bool),
+        Text(String),
+        Null,
+    }
+    Ok(match Flag::deserialize(deserializer)? {
+        Flag::Bool(b) => b,
+        Flag::Text(s) => !s.trim().is_empty(),
+        Flag::Null => false,
+    })
 }
 
 /// A single segment of a census path.
@@ -412,6 +437,27 @@ mod tests {
             assert!(values.iter().any(|v| v == "link_header"));
         } else {
             panic!("source.pagination.strategy should be a documented attribute");
+        }
+        // The landing-time data-protection rules are census-known list attributes.
+        assert!(matches!(
+            c.resolve(&[
+                AuthoredSeg::Key("landing".into()),
+                AuthoredSeg::Key("protect".into()),
+                AuthoredSeg::List,
+                AuthoredSeg::Key("path".into())
+            ]),
+            Resolution::Exact(_)
+        ));
+        if let Resolution::Exact(entry) = c.resolve(&[
+            AuthoredSeg::Key("landing".into()),
+            AuthoredSeg::Key("protect".into()),
+            AuthoredSeg::List,
+            AuthoredSeg::Key("action".into()),
+        ]) {
+            let values = entry.enum_values.as_ref().expect("protect action declares enum values");
+            assert!(values.iter().any(|v| v == "hmac"));
+        } else {
+            panic!("landing.protect[].action should be a documented attribute");
         }
     }
 

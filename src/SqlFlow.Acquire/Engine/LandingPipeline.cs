@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using SqlFlow.Acquire.Landing;
 using SqlFlow.Acquire.Runtime;
+using SqlFlow.Acquire.Runtime.Protection;
 using SqlFlow.Core.Acquire;
 using SqlFlow.Core.Runs;
 
@@ -11,9 +12,11 @@ namespace SqlFlow.Acquire.Engine;
 /// <summary>
 /// The single sink every transport writes through: it enforces the empty-skip policy, renders the per-item raw path
 /// from the landing template (binding <c>{page}</c>/<c>{item}</c>/<c>{runId}</c> and disambiguating collisions),
-/// derives the file extension from the response format, optionally gzips, writes the raw bytes verbatim through the
-/// selected <see cref="IRawLandingStore"/>, writes a redacted header sidecar when asked, and accumulates the run
-/// counters and per-file manifest. It never transforms the payload: the raw incoming format is preserved.
+/// derives the file extension from the response format, optionally gzips, writes the raw bytes through the selected
+/// <see cref="IRawLandingStore"/>, writes a redacted header sidecar when asked, and accumulates the run counters and
+/// per-file manifest. The payload lands in its raw incoming format, with ONE deliberate exception: when the item
+/// declares <c>landing.protect</c> rules, the <see cref="PayloadProtector"/> scrubs/pseudonymises the matched JSON
+/// fields BEFORE the bytes are written, so protected data never reaches the lake. No other transform is ever applied.
 /// </summary>
 public sealed class LandingPipeline
 {
@@ -24,6 +27,7 @@ public sealed class LandingPipeline
     private readonly IRunEventSink _log;
     private readonly bool _dryRun;
     private readonly bool _forceReland;
+    private readonly PayloadProtector? _protector;
     private readonly HashSet<string> _writtenPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<LandedFile> _files = [];
     // Guards the in-memory state (name reservation, counters, manifest) so an item's fan-out can land its files
@@ -32,7 +36,7 @@ public sealed class LandingPipeline
 
     public LandingPipeline(
         AcquireLanding config, IRawLandingStore store, string resolvedBase, Guid runId, IRunEventSink log,
-        bool dryRun = false, bool forceReland = false)
+        bool dryRun = false, bool forceReland = false, PayloadProtector? protector = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(store);
@@ -46,6 +50,12 @@ public sealed class LandingPipeline
         // A backfill run re-lands every re-fetched file even when byte-identical, so its timestamp is bumped and the
         // downstream incremental flows re-read it. A normal run keeps the flow's own skip-unchanged behavior.
         _forceReland = forceReland;
+        if (config.Protect.Count > 0 && protector is null)
+        {
+            throw new ArgumentException("landing.protect rules are declared but no protector was supplied.", nameof(protector));
+        }
+
+        _protector = protector;
     }
 
     /// <summary>The effective unchanged-file skip: the flow's declared behavior, unless this run is an explicit
@@ -114,7 +124,11 @@ public sealed class LandingPipeline
             }
         }
 
-        var payload = _config.Compression == AcquireCompression.Gzip ? Gzip(item.Content) : item.Content;
+        // Protection runs BEFORE compression and BEFORE any byte reaches the store, format-aware via the same
+        // extension the file lands with, and a parse/unsupported-format failure throws (never "land it raw and
+        // hope"): a protect-carrying flow either lands protected data or lands nothing.
+        var content = _protector is not null ? _protector.Apply(item.Content, extension) : item.Content;
+        var payload = _config.Compression == AcquireCompression.Gzip ? Gzip(content) : content;
         var location = _store.Combine(_base, name);
         var wrote = true;
         if (!_dryRun)

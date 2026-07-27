@@ -23,7 +23,7 @@ docs/reference/
   guides/<slug>.md                task-oriented walkthroughs (9 pages)
 ```
 
-74 pages total: 16 `cli-command`, 22 `flow-reference`, 6 `source-type`, 21 `concept`, 9 `guide`.
+78 pages total: 16 `cli-command`, 24 `flow-reference`, 6 `source-type`, 22 `concept`, 10 `guide`.
 
 Every page carries YAML frontmatter: `id`, `title`, `type`, `summary`, `keywords`, `related`,
 `sourceRefs`, plus `yamlPath` (flow-reference / source-type pages) or `cliCommand`

@@ -113,7 +113,14 @@ public static class TemplateEngine
             var format = token[(colon + 1)..];
             if (context.TryGetDate(name, out var date))
             {
-                return date.ToString(format, CultureInfo.InvariantCulture);
+                // The pseudo-formats unix / unixms render the variable as an epoch count, for APIs whose window
+                // parameters are unix timestamps (e.g. ?fromCreatedAt={window.from:unix}).
+                return format switch
+                {
+                    "unix" => date.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
+                    "unixms" => date.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture),
+                    _ => date.ToString(format, CultureInfo.InvariantCulture),
+                };
             }
 
             if (context.TryGetString(name, out var raw))

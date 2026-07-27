@@ -338,7 +338,80 @@ public sealed class YamlAcquireFlowLoader
             PersistHeaders = y.PersistHeaders ?? false,
             SkipEmpty = y.SkipEmpty ?? true,
             SkipUnchanged = y.SkipUnchanged ?? true,
+            Protect = MapProtect(y.Protect, source),
         };
+
+    private static IReadOnlyList<AcquireProtectRule> MapProtect(List<AcquireProtectYaml>? rules, string source)
+    {
+        if (rules is null || rules.Count == 0)
+        {
+            return [];
+        }
+
+        var mapped = new List<AcquireProtectRule>(rules.Count);
+        foreach (var y in rules)
+        {
+            // Require() rejects a blank action, so ParseEnum's fallback can never be hit.
+            var action = ParseEnum(
+                Require(y.Action, "landing.protect[].action", source), AcquireProtectAction.Remove, "landing.protect[].action", source);
+            var rule = new AcquireProtectRule
+            {
+                Path = Require(y.Path, "landing.protect[].path", source),
+                Action = action,
+                Secret = YamlDocumentParts.NullIfBlank(y.Secret),
+                Scope = ParseEnum(y.Scope, AcquireProtectScope.Relationship, "landing.protect[].scope", source),
+                Params = MapProtectParams(y),
+            };
+
+            if (rule.Secret is null && action is AcquireProtectAction.Hmac or AcquireProtectAction.Encrypt)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'landing.protect' action '{y.Action}' on path '{rule.Path}' requires 'secret' (the key material reference).");
+            }
+
+            mapped.Add(rule);
+        }
+
+        return mapped;
+    }
+
+    private static Dictionary<string, string> MapProtectParams(AcquireProtectYaml y)
+    {
+        // Every non-structural scalar on the rule is a transform parameter, so new transform knobs never need a
+        // loader change; the reserved keys (path/action/secret/scope) are the structure.
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (y.Params is not null)
+        {
+            foreach (var (key, value) in y.Params)
+            {
+                result[key] = value;
+            }
+        }
+
+        void Add(string key, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                result[key] = value!.Trim();
+            }
+        }
+
+        Add("mode", y.Mode);
+        Add("replacement", y.Replacement);
+        Add("maskChar", y.MaskChar);
+        Add("keepFirst", y.KeepFirst);
+        Add("keepLast", y.KeepLast);
+        Add("show", y.Show);
+        Add("showLast", y.ShowLast);
+        Add("algorithm", y.Algorithm);
+        Add("iterations", y.Iterations);
+        Add("outputLength", y.OutputLength);
+        Add("format", y.Format);
+        Add("relationship", y.Relationship);
+        Add("bucket", y.Bucket);
+        Add("step", y.Step);
+        return result;
+    }
 
     private static AcquireIncremental? MapIncremental(AcquireIncrementalYaml? y, string source)
     {
@@ -537,6 +610,32 @@ internal sealed class AcquireLandingYaml
     public bool? PersistHeaders { get; set; }
     public bool? SkipEmpty { get; set; }
     public bool? SkipUnchanged { get; set; }
+    public List<AcquireProtectYaml>? Protect { get; set; }
+}
+
+/// <summary>One landing.protect rule. The transform knobs are flat scalars (mode/replacement/maskChar/...) so the
+/// YAML reads naturally; anything unanticipated can go under <c>params</c>.</summary>
+internal sealed class AcquireProtectYaml
+{
+    public string? Path { get; set; }
+    public string? Action { get; set; }
+    public string? Secret { get; set; }
+    public string? Scope { get; set; }
+    public string? Mode { get; set; }
+    public string? Replacement { get; set; }
+    public string? MaskChar { get; set; }
+    public string? KeepFirst { get; set; }
+    public string? KeepLast { get; set; }
+    public string? Show { get; set; }
+    public string? ShowLast { get; set; }
+    public string? Algorithm { get; set; }
+    public string? Iterations { get; set; }
+    public string? OutputLength { get; set; }
+    public string? Format { get; set; }
+    public string? Relationship { get; set; }
+    public string? Bucket { get; set; }
+    public string? Step { get; set; }
+    public Dictionary<string, string>? Params { get; set; }
 }
 
 internal sealed class AcquireIncrementalYaml
