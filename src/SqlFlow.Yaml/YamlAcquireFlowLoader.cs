@@ -55,7 +55,7 @@ public sealed class YamlAcquireFlowLoader
         var name = YamlDocumentParts.RequireFlowName(y.Name, "an api flow", source);
         var sourceYaml = y.Source ?? throw new FlowValidationException($"{source}: 'source' is required.");
 
-        return new AcquireFlow
+        var flow = new AcquireFlow
         {
             Name = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
@@ -63,6 +63,23 @@ public sealed class YamlAcquireFlowLoader
             Incremental = MapIncremental(y.Incremental, source),
             Params = MapParams(y.Params, source),
         };
+
+        // A lake-sourced watermark reads the resume point back out of the landed file names, so the landing template
+        // must actually encode it. Proving that here means a misconfigured resume fails validation, rather than
+        // surfacing as a silent full re-walk on the next scheduled run.
+        if (flow.Incremental is { Source: AcquireWatermarkSource.Lake } incremental)
+        {
+            try
+            {
+                LakeWatermarkReader.Compile(flow.Items[0].Landing.PathTemplate, incremental.Column);
+            }
+            catch (SqlFlowException ex)
+            {
+                throw new FlowValidationException($"{source}: {ex.Message}", ex);
+            }
+        }
+
+        return flow;
     }
 
     /// <summary>Builds the flow's endpoints from either the singular top-level <c>source.request</c>/<c>landing</c> (one

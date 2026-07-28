@@ -512,4 +512,124 @@ public sealed class EngineTests
         Assert.Contains(files, f => f.EndsWith("100.bin", StringComparison.Ordinal));   // filename keyed on the header
         Assert.Contains(files, f => f.EndsWith("9.bin", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Lake_sourced_watermark_resumes_from_what_is_already_landed()
+    {
+        // The durability property: with incremental.source 'lake' the resume point comes from the DATA in the raw
+        // zone, not from a run log next to the flow file. Both runs below are handed a null prior watermark - the
+        // state a container worker is in after a redeploy, a replica change, or an edit to the flow file - and the
+        // second run must still resume at the highest landed id instead of re-walking the whole feed.
+        var handler = new StubHttpHandler().Route((request, _) =>
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/reports/next", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var (status, id) = Query(request.RequestUri, "idAfter") switch
+            {
+                "" or "0" => (HttpStatusCode.OK, "9"),
+                "9" => (HttpStatusCode.OK, "100"),
+                _ => (HttpStatusCode.Accepted, ""),   // 202: no more reports after the watermark
+            };
+            var response = new HttpResponseMessage(status);
+            if (status == HttpStatusCode.OK)
+            {
+                response.Content = new ByteArrayContent([0x50, 0x4B, 0x03, 0x04]);
+                response.Headers.TryAddWithoutValidation("X-Report-Id", id);
+            }
+
+            return response;
+        });
+
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest { Path = "/reports/next" },
+            Pagination = new AcquirePagination
+            {
+                Strategy = AcquirePaginationStrategy.Keyset,
+                KeysetIdHeader = "X-Report-Id",
+                StopOnStatus = 202,
+            },
+        };
+        var incremental = new AcquireIncremental { Source = AcquireWatermarkSource.Lake, Seed = "0" };
+
+        var engine = TestEngine.Create(handler, new FakeSecrets(), new FixedClock(Now), out var dir);
+        var flow = Flow(source, dir, "reports/{header.x-report-id}", incremental);
+
+        // First run: the lake is empty, so the seed applies and the whole feed is walked.
+        var first = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+        Assert.True(first.Success);
+        Assert.Equal(2, first.FilesWritten);
+        Assert.Equal("100", first.WatermarkAfter);
+
+        // Second run: still no run history (null prior watermark), but the two landed files ARE the record. The
+        // first request must already carry idAfter=100 and the feed must answer 202 with nothing new to land.
+        var requestsBefore = handler.Requests.Count;
+        var second = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+
+        Assert.True(second.Success);
+        Assert.Equal("100", second.WatermarkBefore);   // resumed from the lake, not from the seed
+        Assert.Equal(0, second.FilesWritten);
+        var resumed = handler.Requests.Skip(requestsBefore).ToList();
+        Assert.Equal("100", Query(resumed[0].Uri, "idAfter"));
+        Assert.Single(resumed);                        // one call, answered 202: no re-walk of 9 and 100
+    }
+
+    [Fact]
+    public async Task Lake_sourced_backfill_ignores_the_landed_watermark()
+    {
+        // An explicit reprocess re-fetches from the flow's declared bounds: the operator has decided this run
+        // re-reads history, so the landed files must not cap it back to where the last run finished.
+        var handler = new StubHttpHandler().Route((request, _) =>
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/reports/next", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var (status, id) = Query(request.RequestUri, "idAfter") switch
+            {
+                "" or "0" => (HttpStatusCode.OK, "9"),
+                "9" => (HttpStatusCode.OK, "100"),
+                _ => (HttpStatusCode.Accepted, ""),
+            };
+            var response = new HttpResponseMessage(status);
+            if (status == HttpStatusCode.OK)
+            {
+                response.Content = new ByteArrayContent([0x50, 0x4B, 0x03, 0x04]);
+                response.Headers.TryAddWithoutValidation("X-Report-Id", id);
+            }
+
+            return response;
+        });
+
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest { Path = "/reports/next" },
+            Pagination = new AcquirePagination
+            {
+                Strategy = AcquirePaginationStrategy.Keyset,
+                KeysetIdHeader = "X-Report-Id",
+                StopOnStatus = 202,
+            },
+        };
+        var incremental = new AcquireIncremental { Source = AcquireWatermarkSource.Lake, Seed = "0" };
+
+        var engine = TestEngine.Create(handler, new FakeSecrets(), new FixedClock(Now), out var dir);
+        var flow = Flow(source, dir, "reports/{header.x-report-id}", incremental);
+
+        await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+
+        var reprocess = await engine.RunAsync(
+            flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None,
+            new AcquireRunOverrides { ReprocessFiles = true });
+
+        Assert.True(reprocess.Success);
+        Assert.Equal("0", reprocess.WatermarkBefore);   // the seed, not the landed 100: the lake did not cap the run
+        Assert.Equal(2, reprocess.FilesWritten);        // both reports re-fetched and re-landed
+    }
 }

@@ -80,6 +80,16 @@ public sealed class AcquireEngine
 
             var baseVars = new TemplateContext(now).WithDate("now", now);
             BindParams(flow, run.Params, baseVars, log);
+
+            // A lake-sourced watermark resumes from the DATA rather than from a run log: the raw zone is listed and
+            // the highest value encoded in the landed file names becomes this run's starting point. It replaces the
+            // caller's run-history value outright (the lake is the record, not a cache of it), except on an explicit
+            // reprocess, where the caller has already decided the flow re-fetches from its declared bounds.
+            if (flow.Incremental is { Source: AcquireWatermarkSource.Lake } && !run.ReprocessFiles)
+            {
+                watermark = new WatermarkState(flow.Incremental, await LakeWatermarkAsync(flow, baseVars, log, ct).ConfigureAwait(false));
+            }
+
             if (flow.Incremental is { BindVariable: { } bindVar } && watermark.Before is { } before)
             {
                 baseVars.WithString(bindVar, before);
@@ -205,6 +215,28 @@ public sealed class AcquireEngine
             WatermarkAfter = success ? watermark.Current : watermark.Before,
             Files = pipelines.SelectMany(p => p.Files).ToList(),
         };
+    }
+
+    /// <summary>
+    /// Resolves the resume point by reading what is already landed. Incremental is single-item by construction (the
+    /// run watermark is one value per run), so the flow's one landing target is listed and its names are matched
+    /// against the same pathTemplate that produced them. Returns null when nothing matches, which leaves the seed in
+    /// force: an empty raw zone is a first run, not a failure. A LISTING failure, by contrast, is NOT swallowed -
+    /// treating an unreachable lake as "nothing landed" would silently re-walk the entire history.
+    /// </summary>
+    private async Task<string?> LakeWatermarkAsync(AcquireFlow flow, TemplateContext vars, IRunEventSink log, CancellationToken ct)
+    {
+        var item = flow.Items[0];
+        var compiled = LakeWatermarkReader.Compile(item.Landing.PathTemplate, flow.Incremental?.Column);
+        var landingBase = await _secrets.ResolveAsync(TemplateEngine.Render(item.Landing.Target, vars), ct).ConfigureAwait(false);
+
+        var names = await _landing.ListNamesAsync(landingBase, ct).ConfigureAwait(false);
+        var resolved = LakeWatermarkReader.Read(compiled, names);
+
+        log.Log(RunLogLevel.Info, "watermark.lake", resolved is null
+            ? $"no landed file under '{landingBase}' matches '{item.Landing.PathTemplate}' ({names.Count} name(s) scanned); starting from the seed."
+            : $"resuming from '{resolved}', the highest '{compiled.Selected}' across {names.Count} landed name(s) under '{landingBase}'.");
+        return resolved;
     }
 
     private IAcquireTransport SelectTransport(AcquireTransport transport)

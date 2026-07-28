@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SqlFlow.Core.Acquire;
 using SqlFlow.Core.Runs;
 
 namespace SqlFlow.Acquire.Engine;
@@ -31,11 +32,7 @@ public static class AcquireWatermarkHistory
                 continue;
             }
 
-            var mark = TryReadWatermark(runJson);
-            if (mark is not null && (max is null || string.CompareOrdinal(mark, max) > 0))
-            {
-                max = mark;
-            }
+            max = WatermarkOrder.Max(max, TryReadWatermark(runJson));
         }
 
         return max;

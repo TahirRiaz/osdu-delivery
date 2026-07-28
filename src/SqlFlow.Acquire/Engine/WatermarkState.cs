@@ -48,17 +48,13 @@ public sealed class WatermarkState
 
         lock (_sync)
         {
-            if (Current is null || string.CompareOrdinal(max, Current) > 0)
-            {
-                Current = max;
-            }
+            Current = WatermarkOrder.Max(Current, max);
         }
     }
 
     /// <summary>Observe a keyset id taken from a response header (a binary-body feed has no JSON to read the id
     /// from). The id is the resume watermark directly, so it advances regardless of the configured response column.
-    /// Ids that both parse as integers compare numerically (report ids grow past a digit boundary, where a
-    /// lexicographic max would wrongly rank "9999" above "10000"); otherwise the compare falls back to ordinal.</summary>
+    /// Ordering is <see cref="WatermarkOrder"/>'s, so an id that grows past a digit boundary still advances.</summary>
     public void ObserveId(string? candidate)
     {
         if (string.IsNullOrEmpty(candidate))
@@ -68,19 +64,7 @@ public sealed class WatermarkState
 
         lock (_sync)
         {
-            if (Current is null)
-            {
-                Current = candidate;
-                return;
-            }
-
-            var greater = long.TryParse(candidate, out var candidateId) && long.TryParse(Current, out var currentId)
-                ? candidateId > currentId
-                : string.CompareOrdinal(candidate, Current) > 0;
-            if (greater)
-            {
-                Current = candidate;
-            }
+            Current = WatermarkOrder.Max(Current, candidate);
         }
     }
 }

@@ -23,4 +23,13 @@ public interface IRawLandingStore
     /// written unconditionally (no comparison). Returns <c>true</c> when bytes were written, <c>false</c> when the
     /// write was skipped as unchanged.</summary>
     Task<bool> PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged = true, CancellationToken ct = default);
+
+    /// <summary>
+    /// Enumerates the names already landed under <paramref name="baseLocation"/>, relative to it and using '/' as the
+    /// separator, recursing into subfolders. Directory placeholders are not returned, only leaf objects. A base that
+    /// does not exist yet is an empty list (a flow's first run has landed nothing), never an error: this is the read
+    /// side of <c>incremental.source: lake</c> resume, where "nothing landed" must mean "start from the seed" rather
+    /// than fail the run.
+    /// </summary>
+    Task<IReadOnlyList<string>> ListNamesAsync(string baseLocation, CancellationToken ct = default);
 }

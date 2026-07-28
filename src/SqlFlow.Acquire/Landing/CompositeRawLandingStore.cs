@@ -22,6 +22,9 @@ public sealed class CompositeRawLandingStore : IRawLandingStore
     public Task<bool> PutAsync(string location, ReadOnlyMemory<byte> content, bool overwrite, bool skipUnchanged = true, CancellationToken ct = default)
         => Select(location).PutAsync(location, content, overwrite, skipUnchanged, ct);
 
+    public Task<IReadOnlyList<string>> ListNamesAsync(string baseLocation, CancellationToken ct = default)
+        => Select(baseLocation).ListNamesAsync(baseLocation, ct);
+
     private IRawLandingStore Select(string location)
         => _stores.FirstOrDefault(s => s.CanHandle(location))
            ?? throw new SqlFlowException($"No landing store handles the location '{location}'. Use a local/UNC path or an Azure Storage URI (abfss:// or https://<account>.dfs.core.windows.net).");

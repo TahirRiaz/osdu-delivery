@@ -83,6 +83,54 @@ public sealed class AzureRawLandingStore : IRawLandingStore
         }
     }
 
+    public async Task<IReadOnlyList<string>> ListNamesAsync(string baseLocation, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseLocation);
+        var loc = AzureBlobLocation.Parse(baseLocation);
+        var service = _services.GetOrAdd(
+            loc.BlobServiceEndpoint,
+            endpoint => new Lazy<BlobServiceClient>(() => new BlobServiceClient(endpoint, _credentials.Create()))).Value;
+        var container = service.GetBlobContainerClient(loc.Container);
+
+        // The base addresses a folder, so the prefix is its path plus a separator: without the trailing '/' a sibling
+        // folder sharing the name's prefix (".../omsetning_old") would be enumerated as if it were inside this one.
+        var prefix = loc.BlobPath.Trim('/');
+        prefix = prefix.Length == 0 ? string.Empty : prefix + "/";
+
+        var names = new List<string>();
+        try
+        {
+            // Metadata is requested explicitly: the ADLS directory marker lives there, and without the trait the
+            // dictionary comes back empty so every folder placeholder would be mistaken for a landed file.
+            await foreach (var blob in container
+                .GetBlobsAsync(BlobTraits.Metadata, prefix: prefix, cancellationToken: ct)
+                .ConfigureAwait(false))
+            {
+                // ADLS Gen2 folders surface as zero-length blobs carrying the directory metadata marker; they are
+                // placeholders, not landed payloads, so they never contribute a watermark candidate.
+                if (blob.Properties.ContentLength is 0 or null
+                    && blob.Metadata is { } metadata
+                    && metadata.ContainsKey("hdi_isfolder"))
+                {
+                    continue;
+                }
+
+                names.Add(blob.Name[prefix.Length..]);
+            }
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // No container or no such prefix: nothing has landed here yet, which is a legitimate first-run state.
+            return [];
+        }
+        catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
+        {
+            throw Translate(baseLocation, ex);
+        }
+
+        return names;
+    }
+
     private static async Task UploadStampedAsync(BlobClient blob, ReadOnlyMemory<byte> content, byte[] md5, CancellationToken ct)
     {
         var options = new BlobUploadOptions { HttpHeaders = new BlobHttpHeaders { ContentHash = md5 } };
