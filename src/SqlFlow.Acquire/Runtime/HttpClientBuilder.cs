@@ -61,23 +61,61 @@ public static class HttpClientBuilder
     /// signals when the connect deadline elapses. Keepalive tuning (30s idle before the first probe, 15s between
     /// probes, up to 4 unanswered probes before the OS tears the connection down) is deliberately well inside the
     /// two-minute pooled-connection lifetime, and is supported on both Windows and the Linux worker containers.
+    ///
+    /// The host is resolved here and each candidate address is attempted on its OWN socket, created for that
+    /// address's family. Handing a multi-address <see cref="DnsEndPoint"/> to a single socket instead is what broke
+    /// every acquisition on Linux: the two-argument <see cref="Socket"/> constructor yields a dual-stack IPv6 socket,
+    /// a host with no usable IPv6 route fails the first attempt instantly, and a socket that has failed a connect
+    /// cannot be reused on Linux, so the fallback to the next address threw "Sockets on this platform are invalid for
+    /// use after a failed connection attempt" and masked the real error. Windows hides the bug because ConnectEx
+    /// permits the retry. One socket per address is correct on both, and it means the caller sees the actual connect
+    /// failure (refused, unreachable, timed out) from the last candidate rather than a socket-lifecycle artifact.
     /// </summary>
     private static async ValueTask<Stream> KeepAliveConnectAsync(SocketsHttpConnectionContext context, CancellationToken ct)
     {
-        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        var endPoint = context.DnsEndPoint;
+        var addresses = IPAddress.TryParse(endPoint.Host, out var literal)
+            ? [literal]
+            : await Dns.GetHostAddressesAsync(endPoint.Host, ct).ConfigureAwait(false);
+
+        for (var i = 0; i < addresses.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var socket = CreateKeepAliveSocket(addresses[i].AddressFamily);
+            try
+            {
+                await socket.ConnectAsync(new IPEndPoint(addresses[i], endPoint.Port), ct).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (SocketException) when (i < addresses.Length - 1)
+            {
+                // A further candidate remains, so this address's failure is not terminal: drop the (now unusable)
+                // socket and let the next iteration start a clean one. The final candidate's exception is allowed
+                // to propagate instead, carrying the genuine reason the endpoint could not be reached.
+                socket.Dispose();
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+
+        // Resolution returned nothing at all, so there was never an address to try.
+        throw new SocketException((int)SocketError.HostNotFound);
+    }
+
+    /// <summary>Creates a TCP socket for <paramref name="family"/> with the keepalive probe policy described on
+    /// <see cref="KeepAliveConnectAsync"/>. The family comes from the resolved address so an IPv4-only host is
+    /// dialled on an IPv4 socket rather than through a dual-stack mapping the platform may not route.</summary>
+    private static Socket CreateKeepAliveSocket(AddressFamily family)
+    {
+        var socket = new Socket(family, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
         socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30);
         socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 15);
         socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 4);
-        try
-        {
-            await socket.ConnectAsync(context.DnsEndPoint, ct).ConfigureAwait(false);
-            return new NetworkStream(socket, ownsSocket: true);
-        }
-        catch
-        {
-            socket.Dispose();
-            throw;
-        }
+        return socket;
     }
 }
