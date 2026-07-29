@@ -148,10 +148,12 @@ if (options.Notifications.Enabled)
 }
 
 // ---- Catalog read model: pooled, read-only, transient-retry --------------------------------------------------
+// The provider setup (migrations history table, transient-error resiliency) comes from CatalogDatabase.Configure,
+// the single definition shared with the CLI, the worker and bootstrap, so no host runs with weaker resiliency than
+// another. Only the pooling and no-tracking read posture is local to this registration.
 builder.Services.AddDbContextPool<CatalogDbContext>((sp, db) =>
 {
-    var connectionString = sp.GetRequiredService<CatalogConnectionProvider>().ConnectionString;
-    db.UseSqlServer(connectionString, sql => sql.EnableRetryOnFailure());
+    CatalogDatabase.Configure(db, sp.GetRequiredService<CatalogConnectionProvider>().ConnectionString);
     db.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 });
 

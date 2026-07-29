@@ -25,14 +25,44 @@ namespace SqlFlow.Catalog;
 /// </summary>
 public static class CatalogDatabase
 {
-    /// <summary>The EF options for the catalog, with the migrations history table pinned into the catalog schema.</summary>
+    /// <summary>
+    /// THE single definition of how a catalog <see cref="DbContext"/> talks to SQL Server: the migrations history
+    /// table pinned into the catalog schema, and transient-error resiliency. Every catalog context in the product is
+    /// configured through here (this class's <see cref="BuildOptions"/> for the CLI, the worker and bootstrap; the
+    /// control plane's pooled registration for the API), so no host can end up with weaker resiliency than another.
+    ///
+    /// The resiliency is not optional polish. The catalog is a genuinely concurrent OLTP workload: one schedule fire
+    /// enqueues every member flow at once and each run writes its own claim, status, event and statement rows, and
+    /// <see cref="CatalogTransaction"/> deliberately runs its units at SERIALIZABLE. SQL Server resolves the
+    /// resulting lock cycles by picking a deadlock victim (error 1205), which is a retryable outcome, not a fault.
+    /// Without a retrying execution strategy EF Core surfaces it as "An exception has been raised that is likely due
+    /// to a transient failure...", which fails the RUN over a catalog bookkeeping collision that had nothing to do
+    /// with the data. That is exactly what happened to a 23-flow schedule fire (batch Trapeze) where the worker,
+    /// which builds its context here, had no retry while the control plane's pooled context did.
+    ///
+    /// EF Core forbids a user-initiated transaction under a retrying strategy, because a retry has to replay the
+    /// whole transaction rather than half of it; <see cref="CatalogTransaction"/> already wraps its serializable
+    /// unit in <c>CreateExecutionStrategy().ExecuteAsync</c> and clears the change tracker per attempt, so every
+    /// transactional catalog path is replay-safe.
+    /// </summary>
+    public static void Configure(DbContextOptionsBuilder builder, string connectionString)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        builder.UseSqlServer(connectionString, sql =>
+        {
+            sql.MigrationsHistoryTable("__CatalogMigrationsHistory", CatalogDbContext.SchemaName);
+            sql.EnableRetryOnFailure();
+        });
+    }
+
+    /// <summary>The EF options for the catalog, configured by <see cref="Configure"/>.</summary>
     public static DbContextOptions<CatalogDbContext> BuildOptions(string connectionString)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-        return new DbContextOptionsBuilder<CatalogDbContext>()
-            .UseSqlServer(connectionString, sql =>
-                sql.MigrationsHistoryTable("__CatalogMigrationsHistory", CatalogDbContext.SchemaName))
-            .Options;
+        var builder = new DbContextOptionsBuilder<CatalogDbContext>();
+        Configure(builder, connectionString);
+        return builder.Options;
     }
 
     public static CatalogDbContext Create(string connectionString) => new(BuildOptions(connectionString));
