@@ -1,9 +1,9 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    SQLFlow V3 prod-v2 container deploy: build images in ACR (fast + parallel),
-    point the container apps at the new tag, wait for the new revisions, show the
-    control-plane startup log.
+    SQLFlow V3 prod container deploy: build images in ACR (fast + parallel), point the
+    container apps at the new tag, verify the new revision is actually serving, and roll
+    back automatically if it is not.
 
 .DESCRIPTION
     The image tag is the current commit's short SHA (what the apps actually run).
@@ -24,7 +24,23 @@
         succeeds (cp1252 cannot encode its check mark), so the local exit code is not
         trusted; the run id (printed before any crash) is.
 
-    NOT handled here: the pipeline YAML in the separate dwh-pipelines-prod repo.
+    SAFETY (why this script refuses to guess):
+      * The estate is being moved to a VNet-integrated environment, so for a while BOTH
+        a new app (sqlflow-<app>) and the retired one (sqlflow-v3-<app>) can exist in the
+        same resource group. `az containerapp update -n <name>` targets by name alone, so
+        a stale name silently deploys to the DEAD environment and still reports success.
+        This script resolves each app across both naming schemes and REFUSES to continue
+        when the choice is ambiguous: pass -Target to say which estate you mean.
+      * Every deploy prints the resolved app, its environment, and the image it is
+        replacing, before anything is changed. Use -WhatIf to see that plan and stop.
+      * A deploy is not "done" when the API accepts it. Each app is verified to be
+        serving the new tag on a healthy revision; if it is not, the app is rolled back
+        to the exact image it was running and the script exits non-zero.
+      * Building from a dirty tree is an error, not a warning: the image would not
+        contain your changes. Pass -Force if that is genuinely what you want.
+
+    NOT handled here: creating the container apps (they must already exist, with their
+    identity/secrets/env wired), and the pipeline YAML in the dwh-pipelines-prod repo.
 
 .EXAMPLE
     .\deploy-prod.ps1
@@ -33,11 +49,37 @@
 .EXAMPLE
     .\deploy-prod.ps1 control-plane worker
     Only those apps. Known: control-plane worker gui mcp slack-bot
+
+.EXAMPLE
+    .\deploy-prod.ps1 -WhatIf
+    Resolve the targets and print the plan without building or deploying.
+
+.EXAMPLE
+    .\deploy-prod.ps1 -Target vnet
+    Force the VNet-integrated estate when both naming schemes are present.
 #>
-[CmdletBinding()]
+# PositionalBinding=$false so bare app names only ever bind to -Apps. Without it PowerShell
+# hands the first positional argument to the next declared parameter, and `.\deploy-prod.ps1
+# control-plane worker` fails with "control-plane does not belong to the set" for -Target.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]] $Apps
+    [string[]] $Apps,
+
+    # Which estate to deploy to when an app exists under both naming schemes.
+    # vnet   = the VNet-integrated environment (apps named sqlflow-<app>)
+    # legacy = the original environment        (apps named sqlflow-v3-<app>)
+    [ValidateSet('auto', 'vnet', 'legacy')]
+    [string] $Target = 'auto',
+
+    # Build and deploy even though src/ or gui/ has uncommitted changes.
+    [switch] $Force,
+
+    # Resolve targets and print the plan, then stop.
+    [switch] $WhatIf,
+
+    # Leave a failed deploy in place instead of restoring the previous image.
+    [switch] $NoRollback
 )
 
 Set-StrictMode -Version Latest
@@ -47,6 +89,13 @@ Set-Location -LiteralPath $PSScriptRoot
 $Rg  = 'datawarehouse-west-rg-prod-v2'
 $Acr = 'sqlflowv3acrprod'
 $Sub = '83731164-2cea-4291-b78d-7e2e69eea8a6'
+
+# The two naming schemes an app can live under, newest first. The ACR repository name is
+# always sqlflow-v3-<app> regardless of what the container app resource is called.
+$NamePrefix = [ordered]@{
+    'vnet'   = 'sqlflow-'
+    'legacy' = 'sqlflow-v3-'
+}
 
 # app -> Dockerfile name (as it sits at the root of that app's context) and which context it uses.
 # 'repo' is the whole-repo archive; 'gui' is the gui/ subtree archive (its Dockerfile is at the subtree root).
@@ -73,8 +122,106 @@ $env:PYTHONIOENCODING = 'utf-8'
 $Tag = (git rev-parse --short HEAD).Trim()
 if (-not $Tag) { throw 'Could not read git HEAD. Run this from the SQLFlow V3 repo.' }
 
-if (git status --porcelain -- src gui) {
-    Write-Warning "Uncommitted changes in src/ or gui/ - image $Tag is built from the committed tree and will NOT include them."
+# A dirty tree means the image would NOT contain the working changes. That has burned
+# enough deploys to be an error rather than a warning.
+$dirty = git status --porcelain -- src gui
+if ($dirty) {
+    if (-not $Force) {
+        Write-Host ''
+        Write-Host 'Uncommitted changes in src/ or gui/:' -ForegroundColor Yellow
+        Write-Host $dirty
+        throw "Refusing to deploy: image $Tag is built from the COMMITTED tree and would not include the changes above. Commit them, or pass -Force to deploy $Tag anyway."
+    }
+    Write-Warning "Uncommitted changes in src/ or gui/ - image $Tag is built from the committed tree and will NOT include them (-Force given)."
+}
+
+# Every az call goes through this. PowerShell 5.1 turns ANY stderr output from a native
+# executable into a NativeCommandError, and under $ErrorActionPreference='Stop' that kills
+# the script even when az succeeded (az writes progress, warnings, and stray blank lines to
+# stderr routinely). So stderr is captured, and success is judged by the exit code alone.
+function Invoke-Az {
+    param([Parameter(Mandatory)][string[]] $AzArgs)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $out = & az @AzArgs 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return [pscustomobject]@{ Output = $out; ExitCode = $code }
+}
+
+$r = Invoke-Az @('account', 'set', '--subscription', $Sub)
+if ($r.ExitCode -ne 0) { throw 'az account set failed.' }
+
+# --- Resolve each logical app to a real container app, refusing to guess ---------------
+
+# Every container app in the resource group, fetched once. Resolution then happens in
+# memory: `az containerapp show` on a missing app writes to stderr, which PowerShell 5.1
+# turns into a terminating NativeCommandError under $ErrorActionPreference='Stop', so
+# probing name-by-name would blow up on the very case it needs to handle (not found).
+$listResult = Invoke-Az @('containerapp', 'list', '-g', $Rg, '-o', 'json')
+if ($listResult.ExitCode -ne 0 -or -not $listResult.Output) { throw "Could not list container apps in $Rg." }
+# ConvertFrom-Json emits a JSON array as ONE object, so assign first; piping it straight
+# into a filter would treat the whole array as a single element.
+$AllApps = @((($listResult.Output -join "`n") | ConvertFrom-Json))
+
+function Get-AppRecord {
+    <#
+        Returns the container app resource for a logical app name, or $null when it does
+        not exist. Also carries the environment name and the image currently deployed, so
+        the plan can be shown and a rollback target captured before anything changes.
+    #>
+    param([string] $ResourceName)
+
+    $obj = $AllApps | Where-Object { $_.name -eq $ResourceName } | Select-Object -First 1
+    if (-not $obj) { return $null }
+
+    $envName = ($obj.properties.environmentId -split '/')[-1]
+    $image = $null
+    if ($obj.properties.template.containers -and $obj.properties.template.containers.Count -gt 0) {
+        $image = $obj.properties.template.containers[0].image
+    }
+
+    return [pscustomobject]@{
+        Name        = $ResourceName
+        Environment = $envName
+        Image       = $image
+    }
+}
+
+function Resolve-Target {
+    <#
+        Finds the one container app a logical app refers to. When both naming schemes
+        exist the choice is genuinely ambiguous, so this throws and asks for -Target
+        instead of picking one: silently deploying to the retired estate looks like a
+        success and is the exact failure this guard exists to prevent.
+    #>
+    param([string] $App)
+
+    $found = @()
+    foreach ($scheme in $NamePrefix.Keys) {
+        if ($Target -ne 'auto' -and $scheme -ne $Target) { continue }
+        $rec = Get-AppRecord -ResourceName "$($NamePrefix[$scheme])$App"
+        if ($rec) {
+            $rec | Add-Member -NotePropertyName Scheme -NotePropertyValue $scheme -Force
+            $found += $rec
+        }
+    }
+
+    if ($found.Count -eq 0) {
+        $tried = @()
+        foreach ($scheme in $NamePrefix.Keys) {
+            if ($Target -ne 'auto' -and $scheme -ne $Target) { continue }
+            $tried += "$($NamePrefix[$scheme])$App"
+        }
+        throw "Container app for '$App' not found in $Rg (looked for: $($tried -join ', ')). Create it first, or check -Target."
+    }
+
+    if ($found.Count -gt 1) {
+        $detail = ($found | ForEach-Object { "$($_.Name) (env $($_.Environment), scheme $($_.Scheme))" }) -join ' AND '
+        throw "Ambiguous target for '$App': $detail. Re-run with -Target vnet or -Target legacy so this does not deploy to the wrong estate."
+    }
+
+    return $found[0]
 }
 
 Write-Host ''
@@ -82,16 +229,35 @@ Write-Host '=== SQLFlow V3 deploy ===' -ForegroundColor Cyan
 Write-Host "   tag:  $Tag"
 Write-Host "   apps: $($Apps -join ', ')"
 Write-Host "   rg:   $Rg"
+Write-Host "   target: $Target"
 Write-Host ''
 
-az account set --subscription $Sub
-if ($LASTEXITCODE -ne 0) { throw 'az account set failed.' }
+Write-Host '=== Resolved targets ===' -ForegroundColor Cyan
+$targets = [ordered]@{}
+foreach ($a in $Apps) {
+    $rec = Resolve-Target -App $a
+    $targets[$a] = $rec
+    Write-Host ("   {0,-14} -> {1,-28} env {2,-22} now: {3}" -f $a, $rec.Name, $rec.Environment, $rec.Image)
+}
+
+# Deploying half the estate to one environment and half to another is never intended.
+$envs = @($targets.Values | ForEach-Object { $_.Environment } | Sort-Object -Unique)
+if ($envs.Count -gt 1) {
+    throw "Selected apps span more than one environment ($($envs -join ', ')). Re-run with an explicit -Target."
+}
+
+if ($WhatIf) {
+    Write-Host ''
+    Write-Host "-WhatIf: nothing built or deployed. Would deploy tag $Tag to the apps above." -ForegroundColor Yellow
+    return
+}
 
 function Wait-RunTerminal {
     param([string] $RunId)
     for ($i = 0; $i -lt 120; $i++) {
-        $st = az acr task show-run -r $Acr --run-id $RunId --query status -o tsv 2>$null
-        if ($st) { $st = $st.Trim() }
+        $res = Invoke-Az @('acr', 'task', 'show-run', '-r', $Acr, '--run-id', $RunId, '--query', 'status', '-o', 'tsv')
+        $st = ''
+        if ($res.ExitCode -eq 0 -and $res.Output) { $st = ($res.Output | Select-Object -First 1).ToString().Trim() }
         if ($st -eq 'Succeeded') { return $true }
         if ($st -in @('Failed', 'Canceled', 'Error', 'Timeout')) {
             Write-Host "   run $RunId -> $st" -ForegroundColor Red
@@ -103,40 +269,63 @@ function Wait-RunTerminal {
     return $false
 }
 
-function Deploy-App {
-    param([string] $App)
-    Write-Host "--- sqlflow-v3-$App -> :$Tag ---"
-    az containerapp update -n "sqlflow-v3-$App" -g $Rg `
-        --image "$Acr.azurecr.io/sqlflow-v3-${App}:$Tag" `
-        --query 'properties.template.containers[0].image' -o tsv
-    if ($LASTEXITCODE -ne 0) { throw "Deploy of sqlflow-v3-$App failed." }
+function Set-AppImage {
+    param([string] $ResourceName, [string] $Image)
+    $res = Invoke-Az @('containerapp', 'update', '-n', $ResourceName, '-g', $Rg, '--image', $Image, '-o', 'none')
+    if ($res.ExitCode -ne 0) {
+        Write-Host ($res.Output | Out-String)
+        throw "az containerapp update failed for $ResourceName (exit $($res.ExitCode))."
+    }
 }
 
-function Wait-Running {
-    param([string] $App)
-    Write-Host ''
-    Write-Host "=== Waiting for $App to run on $Tag ==="
-    for ($i = 0; $i -lt 90; $i++) {
-        # Match on the tag, not just runningState: during a swap the OLD revision is still Running.
-        $img = az containerapp revision list -n $App -g $Rg `
-            --query "[?properties.active] | [0].properties.template.containers[0].image" -o tsv 2>$null
-        if ($img -and $img -match [regex]::Escape($Tag)) {
-            Write-Host "   ${App}: Running on $Tag" -ForegroundColor Green
-            return
+function Test-Serving {
+    <#
+        True once the app's active revision runs $Image AND that revision is healthy.
+        Matching on the image alone is not enough: during a swap the OLD revision is
+        still active and Running, so a naive check passes against the previous build.
+    #>
+    param([string] $ResourceName, [string] $Image, [int] $TimeoutSeconds = 900)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $res = Invoke-Az @('containerapp', 'revision', 'list', '-n', $ResourceName, '-g', $Rg, '-o', 'json')
+        if ($res.ExitCode -eq 0 -and $res.Output) {
+            $revs = @((($res.Output -join "`n") | ConvertFrom-Json))
+            foreach ($r in $revs) {
+                if (-not $r.properties.active) { continue }
+                $img = $null
+                if ($r.properties.template.containers -and $r.properties.template.containers.Count -gt 0) {
+                    $img = $r.properties.template.containers[0].image
+                }
+                if ($img -ne $Image) { continue }
+
+                $running = "$($r.properties.runningState)"
+                $health  = "$($r.properties.healthState)"
+                # A job-style app (worker scaled to zero) reports Scaled/Inactive rather than
+                # Running, which is correct and healthy for it, so both are accepted.
+                if ($running -in @('Running', 'RunningAtMaxScale', 'Scaled', 'Succeeded') -and $health -ne 'Unhealthy') {
+                    return $true
+                }
+                if ($running -eq 'Failed' -or $health -eq 'Unhealthy') {
+                    Write-Host "   $ResourceName revision $($r.name): runningState=$running healthState=$health" -ForegroundColor Red
+                    return $false
+                }
+            }
         }
         Start-Sleep -Seconds 10
     }
-    Write-Warning "$App did not reach $Tag in time; check the portal."
+    Write-Host "   $ResourceName did not serve $Image within $TimeoutSeconds s" -ForegroundColor Red
+    return $false
 }
 
 function Show-Log {
-    param([string] $App)
+    param([string] $ResourceName)
     Write-Host ''
-    Write-Host "=== $App startup log (bootstrap / sync / warnings / errors) ==="
+    Write-Host "=== $ResourceName startup log (bootstrap / sync / warnings / errors) ==="
     # Only issues timestamped AFTER 'Bootstrap provisioning completed.' are real; the scheduler
     # races the migrations at startup and prints a harmless early burst.
-    az containerapp logs show -n $App -g $Rg --tail 300 --type console |
-        Select-String -SimpleMatch -Pattern 'Bootstrap', 'Synced', 'warn', 'error', 'exception'
+    $res = Invoke-Az @('containerapp', 'logs', 'show', '-n', $ResourceName, '-g', $Rg, '--tail', '300', '--type', 'console')
+    $res.Output | Select-String -SimpleMatch -Pattern 'Bootstrap', 'Synced', 'warn', 'error', 'exception'
 }
 
 # --- Build a clean, minimal context from tracked files only -------------------------
@@ -145,6 +334,7 @@ Remove-Item -Recurse -Force $CtxRoot -ErrorAction SilentlyContinue
 $needRepo = @($Apps | Where-Object { $Config[$_].Sub -eq 'repo' }).Count -gt 0
 $needGui  = @($Apps | Where-Object { $Config[$_].Sub -eq 'gui' }).Count -gt 0
 
+Write-Host ''
 Write-Host 'Preparing clean build context (tracked files only)...'
 if ($needRepo) {
     $d = Join-Path $CtxRoot 'repo'
@@ -199,16 +389,54 @@ foreach ($j in $jobs) {
 }
 if (-not $allOk) { throw 'One or more builds did not succeed - not deploying. See above.' }
 
-# --- Deploy -------------------------------------------------------------------------
+# --- Deploy, verify, and roll back anything that does not come up --------------------
 Write-Host ''
 Write-Host '=== Deploying container apps ===' -ForegroundColor Cyan
-foreach ($a in $Apps) { Deploy-App $a }
+$failed = @()
+foreach ($a in $Apps) {
+    $rec = $targets[$a]
+    $newImage = "$Acr.azurecr.io/sqlflow-v3-${a}:$Tag"
+    Write-Host "--- $($rec.Name) -> :$Tag ---"
 
-# --- Wait for the control-plane revision, then show its startup log ------------------
-if ($Apps -contains 'control-plane') {
-    Wait-Running 'sqlflow-v3-control-plane'
-    Show-Log 'sqlflow-v3-control-plane'
+    Set-AppImage -ResourceName $rec.Name -Image $newImage
+
+    if (Test-Serving -ResourceName $rec.Name -Image $newImage) {
+        Write-Host "   $($rec.Name): serving $Tag" -ForegroundColor Green
+        continue
+    }
+
+    $failed += $a
+    if ($NoRollback) {
+        Write-Host "   $($rec.Name): FAILED to serve $Tag (-NoRollback, leaving it as is)" -ForegroundColor Red
+        continue
+    }
+    if (-not $rec.Image) {
+        Write-Host "   $($rec.Name): FAILED to serve $Tag and no previous image was recorded, cannot roll back" -ForegroundColor Red
+        continue
+    }
+
+    Write-Host "   $($rec.Name): FAILED to serve $Tag, rolling back to $($rec.Image)" -ForegroundColor Red
+    try {
+        Set-AppImage -ResourceName $rec.Name -Image $rec.Image
+        if (Test-Serving -ResourceName $rec.Name -Image $rec.Image -TimeoutSeconds 600) {
+            Write-Host "   $($rec.Name): rolled back and serving $($rec.Image)" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "   $($rec.Name): ROLLBACK DID NOT COME UP - needs manual attention" -ForegroundColor Red
+        }
+    }
+    catch {
+        Write-Host "   $($rec.Name): rollback threw: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# --- Control-plane startup log is the useful one to eyeball --------------------------
+if ($Apps -contains 'control-plane' -and $failed -notcontains 'control-plane') {
+    Show-Log $targets['control-plane'].Name
 }
 
 Write-Host ''
-Write-Host "=== Done. Deployed tag $Tag to: $($Apps -join ', ') ===" -ForegroundColor Green
+if ($failed.Count -gt 0) {
+    throw "Deploy FAILED for: $($failed -join ', ') (tag $Tag). Any app listed above was rolled back unless -NoRollback was given."
+}
+Write-Host "=== Done. Deployed tag $Tag to: $(($Apps | ForEach-Object { $targets[$_].Name }) -join ', ') ===" -ForegroundColor Green
