@@ -10,6 +10,15 @@ public enum ScheduleMutation
 }
 
 /// <summary>
+/// Where a git-declared schedule's cadence is written, so the catalog can serve the YAML behind a schedule rather
+/// than a reconstruction of it: the repo-relative <paramref name="Path"/> of the declaring file, the
+/// <paramref name="Flow"/> whose inline block declares it (null for a <c>schedules.yaml</c>), and, only for a library
+/// file, that file's <paramref name="Yaml"/> text. A flow document is deliberately not copied here: its redacted text
+/// already lives on its pipeline row.
+/// </summary>
+public sealed record ScheduleDefinitionSource(string Path, string? Flow, string? Yaml);
+
+/// <summary>
 /// Persistence for the schedule table: the scheduler's due scan and atomic fire-claim, plus the upserts that keep
 /// it in step with git (YAML schedules) and the API (ad-hoc schedules, pause/resume). Stateless like
 /// <see cref="RunQueueStore"/>; the next-fire instants are computed by the control plane (which owns the cron
@@ -88,10 +97,11 @@ public static class ScheduleStore
     public static Task<Guid> UpsertYamlScheduleAsync(
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
         int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
-        DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        DateTime computedNextFireUtc, DateTime nowUtc, ScheduleDefinitionSource? definition = null,
+        CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, definition, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
@@ -100,7 +110,8 @@ public static class ScheduleStore
     public static async Task<Guid> StageYamlUpsertAsync(
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
         int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
-        DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
+        DateTime computedNextFireUtc, DateTime nowUtc, ScheduleDefinitionSource? definition = null,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(members);
@@ -123,6 +134,9 @@ public static class ScheduleStore
                 Catchup = catchup,
                 MaxConcurrency = maxConcurrency,
                 Source = "yaml",
+                DefinitionPath = definition?.Path,
+                DefinitionFlow = definition?.Flow,
+                DefinitionYaml = definition?.Yaml,
                 NextFireUtc = computedNextFireUtc,
                 CreatedUtc = nowUtc,
                 UpdatedUtc = nowUtc,
@@ -145,6 +159,11 @@ public static class ScheduleStore
             existing.Catchup = catchup;
             existing.MaxConcurrency = maxConcurrency;
             existing.Source = "yaml";
+            // Git owns where the definition lives: a block moved from a flow into a schedules.yaml (or the reverse)
+            // must repoint the provenance, and the old file's text must not linger.
+            existing.DefinitionPath = definition?.Path;
+            existing.DefinitionFlow = definition?.Flow;
+            existing.DefinitionYaml = definition?.Yaml;
             existing.UpdatedUtc = nowUtc;
             // Only reset the cadence when the timing definition changed; an unchanged re-sync leaves the next fire
             // (and the operator's pause) exactly as they were.

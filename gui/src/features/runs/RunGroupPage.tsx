@@ -2,7 +2,8 @@ import { useCallback, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Loader2, Radio, RotateCcw } from "lucide-react";
+import { CircleAlert, Loader2, Radio, RotateCcw } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -164,6 +165,18 @@ function RunGroupContent({ groupId }: { groupId: string }) {
   }, [queryClient, groupId]);
   const { members: liveMembers, connected: streamConnected } = useRunGroupStream(groupId, live, refreshGroup);
 
+  // The failures themselves, so a fire that went wrong says WHY at the top instead of leaving an operator to open
+  // members one by one looking for the red one. While the group streams, the live members already carry the error
+  // text; at rest this reads the failed members straight from the run log.
+  const failedQuery = useQuery({
+    queryKey: ["runs", "group", groupId, "failed"],
+    queryFn: () => runApi.list({ groupId, status: "failed", page: 1, pageSize: 50 }),
+    enabled: !live && (counts?.failed ?? 0) > 0,
+  });
+  const failures = live
+    ? liveMembers.filter((m) => m.status === "failed")
+    : failedQuery.data?.items ?? [];
+
   // Re-run repeats the group's own scope: the same batch, or the same anchor flow plus descendants, expanded
   // fresh against the current estate (so members added to the batch since last time are included). The new
   // execution is a new group; the button navigates there.
@@ -246,6 +259,37 @@ function RunGroupContent({ groupId }: { groupId: string }) {
 
   return (
     <Page data-testid="page-run-group">
+      {failures.length > 0 && (
+        <Alert variant="destructive" data-testid="group-failures">
+          <CircleAlert />
+          <AlertTitle>
+            {failures.length} of {liveCounts?.total ?? group.counts.total} {failures.length === 1 ? "flow" : "flows"} failed
+          </AlertTitle>
+          <AlertDescription>
+            <ul className="flex w-full flex-col gap-1">
+              {failures.slice(0, 8).map((member) => (
+                <li key={member.runId} className="flex w-full flex-col gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/runs/${member.runId}`)}
+                    className="w-fit font-mono text-[12px] font-medium underline-offset-2 hover:underline"
+                    data-testid="group-failure-flow"
+                  >
+                    {member.flowName}
+                  </button>
+                  <span className="text-[13px] text-destructive/90">
+                    {member.error ?? "Failed without recording an error; open the run's trace."}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {failures.length > 8 && (
+              <span className="text-[13px]">and {failures.length - 8} more below.</span>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <DetailHeaderCard
         title={`${modeLabel}: ${group.anchor}`}
         badges={(

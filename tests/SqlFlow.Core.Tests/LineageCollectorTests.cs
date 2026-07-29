@@ -207,6 +207,36 @@ public sealed class LineageCollectorTests : IDisposable
     }
 
     [Fact]
+    public void Schedules_CarryWhereTheyAreDeclared_SoTheCatalogCanServeTheDefiningYaml()
+    {
+        Write("schedules.yaml", """
+            schedules:
+              nightly: { cron: "0 4 * * *" }
+            """);
+        Write("joiner.flow.yaml", IngestionFlow("joiner", "schedule: nightly"));
+        Write("solo.flow.yaml", IngestionFlow("solo", """
+            schedule:
+              cron: "0 6 * * *"
+            """));
+
+        var collected = new FlowSetCollector().Collect(_root);
+
+        // A library entry points at the file and carries its text: nothing else in the catalog holds a schedules.yaml,
+        // so without this "show me the YAML behind this schedule" would have no answer for it.
+        var nightly = collected.Schedules.Single(s => s.Name == "nightly");
+        Assert.Equal("schedules.yaml", nightly.OriginFile);
+        Assert.Null(nightly.OriginFlow);
+        Assert.Contains("nightly: { cron: \"0 4 * * *\" }", nightly.LibraryYaml, StringComparison.Ordinal);
+
+        // An inline block points at its declaring flow and carries no text: that document is already stored, redacted,
+        // on the pipeline row, and a second copy here would be an unredacted one.
+        var solo = collected.Schedules.Single(s => s.Name == "solo");
+        Assert.Equal("solo.flow.yaml", solo.OriginFile);
+        Assert.Equal("solo", solo.OriginFlow);
+        Assert.Null(solo.LibraryYaml);
+    }
+
+    [Fact]
     public void Schedules_SequenceReference_JoinsTheFlowToEverySchedule()
     {
         Write("schedules.yaml", """

@@ -67,8 +67,21 @@ public sealed record CollectedSchedule
     /// <summary>The cadence (cron or interval, time zone, enabled, catchup).</summary>
     public required SqlFlow.Core.ScheduleSpec Spec { get; init; }
 
+    /// <summary>The repo-relative path of the file the cadence is written in: a <c>schedules.yaml</c> library file,
+    /// or the flow document carrying the inline block. This is what the GUI shows as "where is this defined".</summary>
+    public required string OriginFile { get; init; }
+
+    /// <summary>The flow whose inline <c>schedule:</c> block declares this schedule; null when a library file does.
+    /// With it the catalog can point at the declaring flow's stored (secret-redacted) YAML instead of keeping a
+    /// second copy of the document.</summary>
+    public string? OriginFlow { get; init; }
+
+    /// <summary>The library file's text, carried only for a library-declared schedule: a flow document is already
+    /// stored (redacted) on its pipeline row, but nothing else in the catalog holds a <c>schedules.yaml</c>.</summary>
+    public string? LibraryYaml { get; init; }
+
     /// <summary>Where the definition came from, for warnings (a library file's relative path, or a flow and file).</summary>
-    public required string Origin { get; init; }
+    public string Origin => OriginFlow is null ? OriginFile : $"'{OriginFlow}' ({OriginFile})";
 
     /// <summary>The flow names that joined this schedule: the flow that declared it inline, plus every flow whose
     /// <c>schedule:</c> references it by name. A fire runs exactly this set, ordered by lineage wave. Empty when a

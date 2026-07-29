@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChartGantt, CirclePlay, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
+import { ChartGantt, CirclePlay, FileCode2, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
-import type { Schedule } from "../../api/types";
+import type { RunGroupCounts, RunStatus, Schedule } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -23,12 +23,40 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
-import { ScheduleStateBadge } from "../../components/StatusBadge";
+import { RunStatusBadge, rollupStatus, ScheduleStateBadge } from "../../components/StatusBadge";
 import { RunScheduleDialog } from "./RunScheduleDialog";
+import { ScheduleDefinitionSheet } from "./ScheduleDefinitionSheet";
 
 /** The toast line for a failed mutation (DESIGN.md 8.1): the API's own message when it is one. */
 function errorMessage(error: unknown): string {
   return isApiError(error) ? error.detail ?? error.title : String(error);
+}
+
+/** The states the last fire's members ended in, as the list the group rollup reads: presence is all it needs, so one
+ * entry per non-zero state is enough to get the same worst-wins headline a run group shows. */
+function presentStatuses(counts: RunGroupCounts): RunStatus[] {
+  const pairs: [RunStatus, number][] = [
+    ["failed", counts.failed],
+    ["running", counts.running],
+    ["queued", counts.queued],
+    ["succeeded", counts.succeeded],
+    ["cancelled", counts.cancelled],
+    ["skipped", counts.skipped],
+  ];
+  return pairs.filter(([, n]) => n > 0).map(([status]) => status);
+}
+
+/** How the last fire ended, in words, for the hover: every non-zero state of the set it ran. */
+function describeLastFire(counts: RunGroupCounts): string {
+  const parts = [
+    counts.succeeded > 0 ? `${counts.succeeded} succeeded` : null,
+    counts.failed > 0 ? `${counts.failed} failed` : null,
+    counts.cancelled > 0 ? `${counts.cancelled} cancelled` : null,
+    counts.skipped > 0 ? `${counts.skipped} skipped` : null,
+    counts.running > 0 ? `${counts.running} running` : null,
+    counts.queued > 0 ? `${counts.queued} queued` : null,
+  ].filter((part): part is string => part !== null);
+  return `Last fire ran ${counts.total} ${counts.total === 1 ? "flow" : "flows"}: ${parts.join(", ")}.`;
 }
 
 /** The create-schedule form as a right-side sheet (DESIGN.md 7.4); the old dialog's testid stays on the
@@ -284,6 +312,9 @@ export default function SchedulesPage() {
   // The schedule whose pre-flight run board is open: Run-now opens it rather than firing blind, so an operator sees
   // the waves it will run and presses Start.
   const [runTarget, setRunTarget] = useState<Schedule | null>(null);
+  // The schedule whose defining YAML is open: the cadence is declared in git, so the list can show the document
+  // behind it rather than sending an operator to the repo to find out why a schedule fires when it does.
+  const [definitionTarget, setDefinitionTarget] = useState<Schedule | null>(null);
 
   const pauseResume = useMutation({
     mutationFn: (row: Schedule) => (row.paused ? scheduleApi.resume(row.id) : scheduleApi.pause(row.id)),
@@ -411,41 +442,48 @@ export default function SchedulesPage() {
       id: "lastRun",
       header: "Last run",
       render: (row) => {
-        // A scoped fire is a set, so its "last run" is the whole group, not one member.
-        if (row.lastGroupId !== null) {
-          // While that group is still executing, this is the durable way back to the live run board (the pre-flight
-          // sheet is ephemeral; closing it or switching tabs must not strand the run), so it reads as an active link.
-          return (
-            <Button
-              variant={row.lastGroupActive ? "outline" : "ghost"}
-              size="xs"
-              className={row.lastGroupActive ? "border-info/40 text-info hover:text-info" : undefined}
-              onClick={(e) => {
-                e.stopPropagation();
-                navigate(`/runs/groups/${row.lastGroupId}`);
-              }}
-              data-testid="schedule-last-group"
-            >
-              {row.lastGroupActive
-                ? <><Loader2 className="animate-spin" />view running</>
-                : "view set"}
-            </Button>
-          );
+        if (row.lastGroupId === null && row.lastRunId === null) {
+          return "-";
         }
 
-        return row.lastRunId !== null ? (
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={(e) => {
-              e.stopPropagation();
-              navigate(`/runs/${row.lastRunId}`);
-            }}
-            data-testid="schedule-last-run"
-          >
-            view
-          </Button>
-        ) : "-";
+        // How the last fire ended, worst-wins over its members, exactly as a run group's own header rolls up. Without
+        // it the list showed only that a fire happened, never whether it worked.
+        const counts = row.lastCounts;
+        const outcome = counts !== null && counts.total > 0 ? rollupStatus(presentStatuses(counts)) : null;
+        // A scoped fire is a set, so its "last run" is the whole group, not one member. While that group is still
+        // executing, this is the durable way back to the live run board (the pre-flight sheet is ephemeral; closing
+        // it or switching tabs must not strand the run), so it reads as an active link.
+        const isGroup = row.lastGroupId !== null;
+        const target = isGroup ? `/runs/groups/${row.lastGroupId}` : `/runs/${row.lastRunId}`;
+
+        return (
+          <div className="flex items-center gap-1.5">
+            {outcome !== null && <RunStatusBadge status={outcome} testId="schedule-last-outcome" />}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={row.lastGroupActive ? "outline" : "ghost"}
+                  size="xs"
+                  className={row.lastGroupActive ? "border-info/40 text-info hover:text-info" : undefined}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(target);
+                  }}
+                  data-testid={isGroup ? "schedule-last-group" : "schedule-last-run"}
+                >
+                  {row.lastGroupActive
+                    ? <><Loader2 className="animate-spin" />view running</>
+                    : isGroup ? "view set" : "view"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {counts !== null && counts.total > 0
+                  ? describeLastFire(counts)
+                  : "The runs this fire enqueued are no longer in the catalog."}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        );
       },
     },
     {
@@ -473,6 +511,23 @@ export default function SchedulesPage() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Run now (preview the waves, then start)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="View definition"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDefinitionTarget(row);
+                  }}
+                  data-testid="schedule-definition"
+                >
+                  <FileCode2 />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>View the YAML that defines this schedule</TooltipContent>
             </Tooltip>
             {row.paused ? (
               <Tooltip>
@@ -569,6 +624,10 @@ export default function SchedulesPage() {
       {createOpen && <CreateScheduleSheet onClose={() => setCreateOpen(false)} />}
 
       {runTarget && <RunScheduleDialog schedule={runTarget} onClose={() => setRunTarget(null)} />}
+
+      {definitionTarget && (
+        <ScheduleDefinitionSheet schedule={definitionTarget} onClose={() => setDefinitionTarget(null)} />
+      )}
 
       <ConfirmDialog
         open={deleteTarget !== null}

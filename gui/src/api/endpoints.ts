@@ -16,7 +16,7 @@ import type {
   PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey,
-  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
+  RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
   SourceDiscoverRequest, SourceDiscoverResult,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
@@ -192,6 +192,8 @@ export const scheduleApi = {
   // The cadence plus the flows a fire runs, in wave order, from the same expander the fire uses: the pre-flight
   // run board reads this to show "what runs, in which order" before Start is pressed.
   plan: (id: string) => get<SchedulePlan>(`/api/v1/schedules/${id}/plan`),
+  // The YAML that defines the cadence: the declaring flow's document, or the schedules.yaml library file.
+  definition: (id: string) => get<ScheduleDefinition>(`/api/v1/schedules/${id}/definition`),
   create: (request: CreateScheduleRequest) => post<ScheduleCreated>("/api/v1/schedules", request),
   // Fire the schedule now, on demand (to test it): enqueues a run of its flow without moving the next scheduled fire.
   // Fire the schedule now. Optional batches narrow the fire to members carrying those batch: tags ("run the

@@ -42,6 +42,20 @@ test.describe.serial("schedules", () => {
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible({ timeout: 15_000 });
   });
 
+  test("the definition sheet says an API schedule has no YAML behind it", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-schedules").click();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+
+    await row.getByTestId("schedule-definition").click();
+    const sheet = adminPage.getByTestId("schedule-definition-sheet");
+    await expect(sheet).toBeVisible();
+    // This schedule was created through the GUI, so git has no document for it: the sheet says so rather than
+    // showing a reconstruction the repo does not contain.
+    await expect(sheet).toContainText("No YAML behind this schedule", { timeout: 15_000 });
+    await adminPage.keyboard.press("Escape");
+  });
+
   test("delete removes the schedule after confirmation", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
     const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();

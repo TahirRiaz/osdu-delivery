@@ -192,6 +192,9 @@ export interface RunSummary {
    * that predates the event stream). */
   lastAction: string | null;
   lastActionUtc: string | null;
+  /** Why a failed run failed, carried on the summary so a set (a schedule's fire, a batch run) can show its
+   * failures where they happened. Null for every run that did not fail. */
+  error: string | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -461,8 +464,26 @@ export interface Schedule {
   /** True while that last group is still executing (a member is queued or running), so the list can offer a live
    * re-entry point back to the running set. Always false for a single-member schedule, which has no group. */
   lastGroupActive: boolean;
+  /** How the last fire ended: its members tallied by lifecycle state (the single run's own state when the fire ran
+   * one flow). Null when the schedule has never fired, or its runs have aged out of the catalog. */
+  lastCounts: RunGroupCounts | null;
   createdUtc: string;
   updatedUtc: string;
+}
+
+/** The YAML behind a schedule: the file git declares its cadence in, and that file's text. `yaml` is null for an
+ * API-created schedule (no file backs it) and for a git schedule whose declaring flow has left the estate. */
+export interface ScheduleDefinition {
+  scheduleId: string;
+  name: string;
+  source: string;
+  /** The repo-relative path of the declaring file. */
+  path: string | null;
+  /** The flow whose inline `schedule:` block declares it; null when a schedules.yaml library file does. */
+  flowName: string | null;
+  /** That flow's pipeline id, so the definition can link to the flow it lives on. */
+  pipelineId: string | null;
+  yaml: string | null;
 }
 
 export interface CreateScheduleRequest {

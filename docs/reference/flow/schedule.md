@@ -157,6 +157,20 @@ An unknown scope is rejected: `sqlflow db sync` warns and drops the schedule rat
 
 The `schedule:` value may also be written as a bare scalar (`schedule: nightly`) to reuse a schedule defined elsewhere by name, instead of an inline block. See [Reusable schedules](#reusable-schedules-define-once-reference-by-name).
 
+### Reading the YAML behind a schedule
+
+`GET /api/v1/schedules/{id}/definition` returns where git declares the cadence and the text of that declaration, so a schedule can be read where it is operated instead of only in the repo. Every sync records the provenance on the schedule row (`DefinitionPath`, `DefinitionFlow`, `DefinitionYaml`):
+
+- An inline `schedule:` block resolves to its declaring flow: the response carries that flow's name, its pipeline id, its repo-relative path, and the document text as the catalog stores it (secret-redacted, the same copy the flow's own YAML view serves).
+- A `schedules.yaml` entry resolves to the library file, whose text is kept on the schedule row (nothing else in the catalog holds a library file).
+- An API-created schedule has no file behind it, and answers with a null document rather than a reconstruction git does not contain.
+
+The GUI's schedule list exposes this per row (the "View the YAML that defines this schedule" action).
+
+### Whether the last fire worked
+
+The schedule list and detail (`GET /api/v1/schedules`, `GET /api/v1/schedules/{id}`) carry `lastCounts`: the members of the last fire tallied by lifecycle state (queued, running, succeeded, failed, cancelled, skipped), or the single run's own state when the fire ran one flow. It is null when the schedule has never fired or its runs have aged out. The GUI rolls it up worst-wins into the status badge next to "Last run", the same rule a run group's header uses, so a set where one member failed reads as failed rather than merely "fired".
+
 ### cron
 
 A standard cron expression parsed by Cronos. The field count decides the format (src/SqlFlow.Catalog/ScheduleClock.cs): five fields is standard minute granularity; six or more fields is parsed with a leading seconds field. Whitespace around the value is trimmed.

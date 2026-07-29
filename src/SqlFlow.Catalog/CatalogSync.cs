@@ -135,10 +135,11 @@ public sealed class CatalogSync
         public required FlowDocument? Document { get; init; }
     }
 
-    /// <summary>One validated git-declared schedule, with the flows that joined it, ready to stage into the schedule
-    /// and schedule-member tables.</summary>
+    /// <summary>One validated git-declared schedule, with the flows that joined it and where git declares it, ready
+    /// to stage into the schedule and schedule-member tables.</summary>
     private sealed record PreparedSchedule(
-        string Name, IReadOnlyList<string> Members, Core.ScheduleSpec Spec, DateTime NextFireUtc);
+        string Name, IReadOnlyList<string> Members, Core.ScheduleSpec Spec, DateTime NextFireUtc,
+        ScheduleDefinitionSource Definition);
 
     /// <summary>One run artifact awaiting insertion: the projected header row (client-keyed, so re-adding it on
     /// a transaction retry is safe) and the parsed document its detail rows project from inside the transaction,
@@ -427,7 +428,9 @@ public sealed class CatalogSync
             // the stored member set an honest answer to "what does this fire run".
             var members = schedule.Members.Where(presentNames.Contains).ToList();
             var nextFire = ScheduleClock.NextFire(spec.Cron, spec.IntervalSeconds, spec.Timezone, nowUtc) ?? nowUtc;
-            schedules.Add(new PreparedSchedule(schedule.Name, members, spec, nextFire));
+            schedules.Add(new PreparedSchedule(
+                schedule.Name, members, spec, nextFire,
+                new ScheduleDefinitionSource(schedule.OriginFile, schedule.OriginFlow, schedule.LibraryYaml)));
         }
 
         return (pipelines, present, schedules, anyUnreadable);
@@ -562,7 +565,7 @@ public sealed class CatalogSync
             var scheduleId = await ScheduleStore.StageYamlUpsertAsync(
                 context, repoId, schedule.Name, schedule.Members, schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
                 schedule.Spec.Timezone, schedule.Spec.Enabled, schedule.Spec.Catchup, schedule.Spec.MaxConcurrency,
-                schedule.NextFireUtc, nowUtc, ct).ConfigureAwait(false);
+                schedule.NextFireUtc, nowUtc, schedule.Definition, ct).ConfigureAwait(false);
             scheduleKeep.Add(scheduleId);
         }
 

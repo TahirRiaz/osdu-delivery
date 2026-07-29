@@ -17,13 +17,16 @@ namespace SqlFlow.ControlPlane.Api;
 /// means lineage has not been computed for the repo (or the pipeline row is gone).
 /// <see cref="LastAction"/>/<see cref="LastActionUtc"/> are the run's newest trace event (a stage summary, a
 /// file read, a decision): while the run executes they answer "what is it doing right now", at rest "what did it
-/// do last". Null for a run that recorded no events (one that predates the event stream, or is still queued).</summary>
+/// do last". Null for a run that recorded no events (one that predates the event stream, or is still queued).
+/// <see cref="Error"/> is why a failed run failed, carried on the summary so a set (a schedule's fire, a batch run)
+/// can show its failures where they happened instead of making an operator open each member to find out. Null for
+/// every run that did not fail.</summary>
 public sealed record RunSummaryDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, Guid? GroupId,
-    string? LastAction, DateTime? LastActionUtc);
+    string? LastAction, DateTime? LastActionUtc, string? Error);
 
 /// <summary>One run with its full header for the detail view: the summary plus the lifecycle fields (status, when it
 /// was enqueued, the node that claimed it), the schema version, the start/end window, the host, the error, and the
@@ -308,7 +311,8 @@ public static class RunEndpoints
             db.RunEvents.Where(e => e.RunId == x.Run.RunId)
                 .OrderByDescending(e => e.Id).Select(e => (string?)e.Message).FirstOrDefault(),
             db.RunEvents.Where(e => e.RunId == x.Run.RunId)
-                .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault()));
+                .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault(),
+            x.Run.Error));
 
     /// <summary>A group's member summaries in execution order: the shape both the group view's member list and
     /// the group stream serve.</summary>

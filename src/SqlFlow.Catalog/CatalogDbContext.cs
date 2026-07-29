@@ -365,6 +365,8 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.Cron).HasMaxLength(256);
             entity.Property(s => s.Timezone).HasMaxLength(64).IsRequired();
             entity.Property(s => s.Source).HasMaxLength(16).IsRequired();
+            entity.Property(s => s.DefinitionPath).HasMaxLength(1024);
+            entity.Property(s => s.DefinitionFlow).HasMaxLength(400);
             entity.HasIndex(s => s.RepoId);
             // A name is what flows join, so it identifies exactly one schedule in a repo. The estate scan already
             // collapses a redefined name to the first definition; the unique index is what keeps two sync paths (or

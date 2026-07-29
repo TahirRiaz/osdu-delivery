@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
+using SqlFlow.Core.Runs;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -258,6 +259,15 @@ public sealed class ScheduleApiTests
                     CreatedUtc = DateTime.UtcNow,
                     UpdatedUtc = DateTime.UtcNow,
                 });
+                // Membership is the only selector for what a fire runs, so the flow has to have joined: a schedule
+                // with no members resolves to nothing and correctly enqueues nothing.
+                db.ScheduleMembers.Add(new CatalogScheduleMember
+                {
+                    ScheduleId = scheduleId,
+                    PipelineId = pipelineId,
+                    RepoId = repoId,
+                    FlowName = flowName,
+                });
                 await db.SaveChangesAsync();
             }
 
@@ -293,6 +303,168 @@ public sealed class ScheduleApiTests
             await Cleanup(cs, repoId);
         }
     }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task ScheduleList_ReportsHowTheLastFireEnded()
+    {
+        // "Did the last execution work" must be answerable from the list: the schedule row carries the tally of the
+        // fire's members, so a group with one failure reads as failed rather than merely "fired".
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var scheduleId = Guid.NewGuid();
+        var groupId = Guid.NewGuid();
+        var firstRunId = Guid.NewGuid();
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await SeedActivePipeline(cs, repoId, flowName);
+            var now = DateTime.UtcNow;
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Schedules.Add(new CatalogSchedule
+                {
+                    Id = scheduleId,
+                    RepoId = repoId,
+                    Name = flowName,
+                    // Far in the future, so the scheduler cannot fire it mid-test and rewrite the last-fire pointers.
+                    Cron = "0 6 1 1 *",
+                    Timezone = "UTC",
+                    Enabled = true,
+                    Source = "api",
+                    NextFireUtc = now.AddYears(1),
+                    LastFireUtc = now,
+                    LastRunId = firstRunId,
+                    LastGroupId = groupId,
+                    CreatedUtc = now,
+                    UpdatedUtc = now,
+                });
+                db.Runs.Add(SeedGroupRun(firstRunId, pipelineId, repoId, flowName, groupId, RunStatuses.Succeeded, now));
+                db.Runs.Add(SeedGroupRun(Guid.NewGuid(), pipelineId, repoId, flowName, groupId, RunStatuses.Succeeded, now));
+                db.Runs.Add(SeedGroupRun(Guid.NewGuid(), pipelineId, repoId, flowName, groupId, RunStatuses.Failed, now));
+                db.Runs.Add(SeedGroupRun(Guid.NewGuid(), pipelineId, repoId, flowName, groupId, RunStatuses.Skipped, now));
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["read"]);
+
+            var schedule = await GetJsonAsync<ScheduleDto>(client, token, $"/api/v1/schedules/{scheduleId}");
+            Assert.NotNull(schedule.LastCounts);
+            Assert.Equal(4, schedule.LastCounts.Total);
+            Assert.Equal(2, schedule.LastCounts.Succeeded);
+            Assert.Equal(1, schedule.LastCounts.Failed);
+            Assert.Equal(1, schedule.LastCounts.Skipped);
+            // Every member is terminal, so the fire is over: no live re-entry point.
+            Assert.False(schedule.LastGroupActive);
+
+            // The list projection answers the same way (it is the same pass over the page).
+            var list = await GetJsonAsync<PagedResult<ScheduleDto>>(client, token, $"/api/v1/schedules?repoId={repoId}");
+            var listed = Assert.Single(list.Items);
+            Assert.Equal(1, listed.LastCounts?.Failed);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task ScheduleDefinition_ServesTheDeclaringYaml_OrSaysThereIsNone()
+    {
+        // The three shapes a definition can take: an inline block (serve the declaring flow's stored document), a
+        // schedules.yaml entry (serve the library text on the row), and an API schedule (no file, so no YAML).
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var inlineId = Guid.NewGuid();
+        var libraryId = Guid.NewGuid();
+        var libraryYaml = "schedules:\n  nightly: { cron: \"0 4 * * *\", timezone: \"Europe/Oslo\" }\n";
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await SeedActivePipeline(cs, repoId, flowName);
+            var now = DateTime.UtcNow;
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Schedules.Add(new CatalogSchedule
+                {
+                    Id = inlineId, RepoId = repoId, Name = flowName + "_inline", Cron = "0 4 * * *", Timezone = "UTC",
+                    Enabled = true, Source = "yaml", NextFireUtc = now.AddYears(1),
+                    DefinitionPath = "flows/" + flowName + ".flow.yaml", DefinitionFlow = flowName,
+                    CreatedUtc = now, UpdatedUtc = now,
+                });
+                db.Schedules.Add(new CatalogSchedule
+                {
+                    Id = libraryId, RepoId = repoId, Name = flowName + "_library", Cron = "0 4 * * *", Timezone = "UTC",
+                    Enabled = true, Source = "yaml", NextFireUtc = now.AddYears(1),
+                    DefinitionPath = "schedules.yaml", DefinitionYaml = libraryYaml,
+                    CreatedUtc = now, UpdatedUtc = now,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["read"]);
+
+            var inline = await GetJsonAsync<ScheduleDefinitionDto>(client, token, $"/api/v1/schedules/{inlineId}/definition");
+            Assert.Equal(flowName, inline.FlowName);
+            Assert.Equal(CatalogIdentity.Pipeline(repoId, flowName), inline.PipelineId);
+            Assert.Equal("flows/" + flowName + ".flow.yaml", inline.Path);
+            Assert.Equal("name: " + flowName + "\n", inline.Yaml);
+
+            var library = await GetJsonAsync<ScheduleDefinitionDto>(client, token, $"/api/v1/schedules/{libraryId}/definition");
+            Assert.Null(library.FlowName);
+            Assert.Null(library.PipelineId);
+            Assert.Equal("schedules.yaml", library.Path);
+            Assert.Equal(libraryYaml, library.Yaml);
+
+            // An ad-hoc API schedule has no file behind it, and says so rather than inventing one.
+            Guid apiId;
+            using (var create = await PostAsync(client, token, "/api/v1/schedules",
+                new CreateScheduleRequest(repoId, [flowName], "0 6 1 1 *", null, "UTC", true)))
+            {
+                Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+                var created = await create.Content.ReadFromJsonAsync<ScheduleCreated>();
+                Assert.NotNull(created);
+                apiId = created.Id;
+            }
+
+            var api = await GetJsonAsync<ScheduleDefinitionDto>(client, token, $"/api/v1/schedules/{apiId}/definition");
+            Assert.Equal("api", api.Source);
+            Assert.Null(api.Path);
+            Assert.Null(api.Yaml);
+
+            using var unknown = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/schedules/{Guid.NewGuid()}/definition");
+            Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    private static CatalogRun SeedGroupRun(
+        Guid runId, Guid pipelineId, Guid repoId, string flowName, Guid groupId, string status, DateTime writtenUtc)
+        => new()
+        {
+            RunId = runId,
+            PipelineId = pipelineId,
+            RepoId = repoId,
+            FlowName = flowName,
+            FlowKind = "file",
+            GroupId = groupId,
+            Status = status,
+            Success = status == RunStatuses.Succeeded,
+            WrittenUtc = writtenUtc,
+        };
 
     private static async Task SeedActivePipeline(string cs, Guid repoId, string flowName)
     {
@@ -333,6 +505,7 @@ public sealed class ScheduleApiTests
     private static async Task Cleanup(string cs, Guid repoId)
     {
         await using var db = CatalogDatabase.Create(cs);
+        await db.ScheduleMembers.Where(m => m.RepoId == repoId).ExecuteDeleteAsync();
         await db.Schedules.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
         await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
         await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();

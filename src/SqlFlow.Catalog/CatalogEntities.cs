@@ -1274,6 +1274,21 @@ public class CatalogSchedule
     /// <summary><c>yaml</c> (declared in git, overwritten on sync) or <c>api</c> (created through the control plane).</summary>
     public string Source { get; set; } = "api";
 
+    /// <summary>The repo-relative path of the file this cadence is written in (a flow document with an inline
+    /// <c>schedule:</c> block, or a <c>schedules.yaml</c> library file). Null for an API-created schedule, which has
+    /// no file behind it. Refreshed by every sync, so it always names the file git currently defines it in.</summary>
+    public string? DefinitionPath { get; set; }
+
+    /// <summary>The flow whose inline <c>schedule:</c> block declares this schedule; null when a library file (or the
+    /// API) does. The definition read resolves this flow's pipeline row and serves its stored, secret-redacted YAML,
+    /// so the document text is never duplicated here.</summary>
+    public string? DefinitionFlow { get; set; }
+
+    /// <summary>The declaring library file's text, stored ONLY for a schedule a <c>schedules.yaml</c> defines: a flow
+    /// document already lives (redacted) on its pipeline row, but nothing else in the catalog holds a library file,
+    /// and without it "show me the YAML behind this schedule" would have no answer. Null otherwise.</summary>
+    public string? DefinitionYaml { get; set; }
+
     /// <summary>When the schedule next fires (UTC). The scheduler claims a schedule by advancing this atomically.</summary>
     public DateTime? NextFireUtc { get; set; }
 

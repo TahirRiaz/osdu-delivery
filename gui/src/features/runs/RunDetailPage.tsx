@@ -302,6 +302,15 @@ function RunDetailContent({ runId }: { runId: string }) {
 
   return (
     <Page data-testid="page-run-detail">
+      {/* Why it failed comes first: on a failed run that is the only thing being looked for, and behind a full
+          header card of timings and row counts it was the last thing read. */}
+      {run.status === "failed" && run.error !== null && (
+        <Alert variant="destructive" data-testid="run-error">
+          <CircleAlert />
+          <AlertDescription>{run.error}</AlertDescription>
+        </Alert>
+      )}
+
       <DetailHeaderCard
         title={run.flowName}
         badges={(
@@ -386,13 +395,6 @@ function RunDetailContent({ runId }: { runId: string }) {
           <DetailPair label="Host"><span className="break-all font-mono text-[12px]">{run.host}</span></DetailPair>
         )}
       </DetailHeaderCard>
-
-      {run.status === "failed" && run.error !== null && (
-        <Alert variant="destructive" data-testid="run-error">
-          <CircleAlert />
-          <AlertDescription>{run.error}</AlertDescription>
-        </Alert>
-      )}
 
       {run.status === "failed" && run.failedStatementSql !== null && (
         <Card className="gap-2 rounded-lg border-destructive/50 p-3" data-testid="run-failed-statement">

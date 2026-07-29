@@ -117,13 +117,20 @@ public sealed class FlowSetCollector
     {
         var library = new Dictionary<string, CollectedSchedule>(StringComparer.OrdinalIgnoreCase);
 
-        void Register(string name, ScheduleSpec spec, string origin)
+        void Register(string name, ScheduleSpec spec, string originFile, string? originFlow, string? libraryYaml)
         {
-            var schedule = new CollectedSchedule { Name = name, Spec = spec with { Name = name, Refs = [] }, Origin = origin };
+            var schedule = new CollectedSchedule
+            {
+                Name = name,
+                Spec = spec with { Name = name, Refs = [] },
+                OriginFile = originFile,
+                OriginFlow = originFlow,
+                LibraryYaml = libraryYaml,
+            };
             if (!library.TryAdd(name, schedule))
             {
                 result.Warnings.Add(
-                    $"schedule name '{name}' is declared more than once ({origin} redefines {library[name].Origin}); the first wins.");
+                    $"schedule name '{name}' is declared more than once ({schedule.Origin} redefines {library[name].Origin}); the first wins.");
             }
         }
 
@@ -149,7 +156,7 @@ public sealed class FlowSetCollector
             result.Warnings.AddRange(parsed.Warnings);
             foreach (var named in parsed.Schedules)
             {
-                Register(named.Name, named.Spec, relative);
+                Register(named.Name, named.Spec, relative, originFlow: null, libraryYaml: yaml);
             }
         }
 
@@ -163,7 +170,9 @@ public sealed class FlowSetCollector
                 Register(
                     string.IsNullOrWhiteSpace(inline.Name) ? flow.Node.Name : inline.Name,
                     inline,
-                    $"'{flow.Node.Name}' ({flow.Node.File})");
+                    flow.Node.File,
+                    flow.Node.Name,
+                    libraryYaml: null);
             }
         }
 

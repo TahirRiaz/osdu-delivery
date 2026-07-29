@@ -11,11 +11,25 @@ using SqlFlow.Core.Runs;
 namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>A schedule as the API returns it: its timing, scope, lifecycle flags, source, and the next/last fire.
-/// <paramref name="MaxConcurrency"/> is how many members one fire runs at once (null = unbounded).</summary>
+/// <paramref name="MaxConcurrency"/> is how many members one fire runs at once (null = unbounded).
+/// <paramref name="LastCounts"/> is how the last fire actually ended: its members tallied by lifecycle state (the one
+/// run's own state for a single-member fire), null when the schedule has never fired or its runs have aged out. It is
+/// what makes "did the last execution succeed" answerable from the list without opening the run board.</summary>
 public sealed record ScheduleDto(
     Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
-    Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc, int? MaxConcurrency);
+    Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc, int? MaxConcurrency,
+    RunGroupCountsDto? LastCounts);
+
+/// <summary>
+/// The YAML behind a schedule: where git declares its cadence and the text of that declaration. A schedule declared
+/// by an inline <c>schedule:</c> block serves its declaring flow's document (the pipeline row's secret-redacted copy,
+/// so this read can never leak a literal credential); one declared in a <c>schedules.yaml</c> serves that library
+/// file. <paramref name="Yaml"/> is null for an API-created schedule, which has no file behind it, and for a
+/// git schedule whose declaring flow has left the estate.
+/// </summary>
+public sealed record ScheduleDefinitionDto(
+    Guid ScheduleId, string Name, string Source, string? Path, string? FlowName, Guid? PipelineId, string? Yaml);
 
 /// <summary>The body to create an ad-hoc API schedule: the member flows it runs, exactly one of cron /
 /// intervalSeconds, and optionally a name (defaulting to the first member's flow name). Membership is what a fire
@@ -62,6 +76,7 @@ public static class ScheduleEndpoints
         var schedules = group.MapGroup("/schedules").WithTags("Schedules");
         schedules.MapGet("/", ListSchedulesAsync).WithName("ListSchedules");
         schedules.MapGet("/{id:guid}", GetScheduleAsync).WithName("GetSchedule");
+        schedules.MapGet("/{id:guid}/definition", GetScheduleDefinitionAsync).WithName("GetScheduleDefinition");
         schedules.MapGet("/{id:guid}/plan", GetSchedulePlanAsync).WithName("GetSchedulePlan");
         return group;
     }
@@ -110,19 +125,63 @@ public static class ScheduleEndpoints
 
         var ordered = query.OrderBy(s => s.Name).ThenBy(s => s.Id);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
-        var items = await ordered.Skip((p - 1) * size).Take(size)
+        var rows = await ordered.Skip((p - 1) * size).Take(size)
             .Select(Project(db)).ToListAsync(ct).ConfigureAwait(false);
+        var items = await WithLastFireOutcomeAsync(db, rows, ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<ScheduleDto>(items, p, size, total));
     }
 
     private static async Task<Results<Ok<ScheduleDto>, ProblemHttpResult>> GetScheduleAsync(
         Guid id, CatalogDbContext db, CancellationToken ct)
     {
-        var dto = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
+        var row = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
             .Select(Project(db)).FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        return dto is null
-            ? TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found")
-            : TypedResults.Ok(dto);
+        if (row is null)
+        {
+            return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        var dto = await WithLastFireOutcomeAsync(db, [row], ct).ConfigureAwait(false);
+        return TypedResults.Ok(dto[0]);
+    }
+
+    /// <summary>
+    /// The YAML that defines a schedule, so "why does this fire at 04:15" is answerable from the GUI without going
+    /// to git. The sync records where git declares the cadence; an inline block resolves to its declaring flow's
+    /// stored (secret-redacted) document, a library entry to the <c>schedules.yaml</c> text kept on the row. An
+    /// API-created schedule has no file, and answers with a null document rather than a fabricated one.
+    /// </summary>
+    private static async Task<Results<Ok<ScheduleDefinitionDto>, ProblemHttpResult>> GetScheduleDefinitionAsync(
+        Guid id, CatalogDbContext db, CancellationToken ct)
+    {
+        var schedule = await db.Schedules.AsNoTracking()
+            .Where(s => s.Id == id)
+            .Select(s => new
+            {
+                s.Id, s.RepoId, s.Name, s.Source, s.DefinitionPath, s.DefinitionFlow, s.DefinitionYaml,
+            })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (schedule is null)
+        {
+            return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        if (schedule.DefinitionFlow is not { Length: > 0 } flowName)
+        {
+            return TypedResults.Ok(new ScheduleDefinitionDto(
+                schedule.Id, schedule.Name, schedule.Source, schedule.DefinitionPath, null, null, schedule.DefinitionYaml));
+        }
+
+        // The declaring flow's document is the definition: it is served from the pipeline row rather than copied onto
+        // the schedule, so it stays in step with the flow and carries the same redaction every other YAML read does.
+        var pipelineId = CatalogIdentity.Pipeline(schedule.RepoId, flowName);
+        var pipeline = await db.Pipelines.AsNoTracking()
+            .Where(pl => pl.Id == pipelineId)
+            .Select(pl => new { pl.Id, pl.RelativePath, pl.Yaml })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new ScheduleDefinitionDto(
+            schedule.Id, schedule.Name, schedule.Source, pipeline?.RelativePath ?? schedule.DefinitionPath,
+            flowName, pipeline?.Id, pipeline?.Yaml));
     }
 
     /// <summary>
@@ -316,9 +375,10 @@ public static class ScheduleEndpoints
             return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 
-        var dto = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
+        var row = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
             .Select(Project(db)).FirstAsync(ct).ConfigureAwait(false);
-        return TypedResults.Ok(dto);
+        var dto = await WithLastFireOutcomeAsync(db, [row], ct).ConfigureAwait(false);
+        return TypedResults.Ok(dto[0]);
     }
 
     private static async Task<Results<NoContent, ProblemHttpResult>> DeleteScheduleAsync(
@@ -330,18 +390,105 @@ public static class ScheduleEndpoints
             : TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
     }
 
+    /// <summary>One (run group, status) tally from the last-fire pass.</summary>
+    private sealed record GroupStatusTally(Guid? GroupId, string Status, int Count);
+
+    /// <summary>One single-run fire's current status, keyed by the run the schedule points at.</summary>
+    private sealed record RunStatusRow(Guid Id, string Status);
+
+    /// <summary>A schedule as the database returns it: everything but the last fire's outcome, which is tallied for
+    /// the whole page in one pass rather than as a correlated subquery per row.</summary>
+    private sealed record ScheduleRow(
+        Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds,
+        string Timezone, bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc,
+        DateTime? LastFireUtc, Guid? LastRunId, Guid? LastGroupId, DateTime CreatedUtc, DateTime UpdatedUtc,
+        int? MaxConcurrency);
+
     // An expression (not a method body) so EF Core translates the projection into the SELECT column list. It takes the
     // context because the member count is a correlated subquery over the member table: a schedule's whole meaning is
     // what it runs, so a list that could not say how many flows that is would be answering the wrong question.
-    private static Expression<Func<CatalogSchedule, ScheduleDto>> Project(CatalogDbContext db) => s => new ScheduleDto(
+    private static Expression<Func<CatalogSchedule, ScheduleRow>> Project(CatalogDbContext db) => s => new ScheduleRow(
         s.Id, s.RepoId, s.Name,
         db.ScheduleMembers.Where(m => m.ScheduleId == s.Id).Select(m => m.PipelineId).ToList(),
         s.Cron, s.IntervalSeconds, s.Timezone,
         s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.LastGroupId,
-        // Whether the last scoped fire's group is still executing, so the list can surface a live re-entry point to it
-        // (a member still queued or running). A single-member fire has no group, so this is always false there.
-        s.LastGroupId != null && db.Runs.Any(r =>
-            r.GroupId == s.LastGroupId
-            && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running)),
         s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency);
+
+    /// <summary>
+    /// Fills in how each schedule's last fire ended: the member states of the run group it enqueued, or the single
+    /// run's own state when the fire ran one flow. Two set-based queries for the whole page (one grouped tally over
+    /// the groups, one status read over the single runs) rather than a handful of correlated subqueries per row, so
+    /// the cost does not scale with page size. A schedule that never fired, or whose runs have aged out of the
+    /// catalog, gets a null tally: "unknown", never a fabricated success.
+    /// </summary>
+    private static async Task<IReadOnlyList<ScheduleDto>> WithLastFireOutcomeAsync(
+        CatalogDbContext db, IReadOnlyList<ScheduleRow> rows, CancellationToken ct)
+    {
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var groupIds = rows.Where(r => r.LastGroupId is not null).Select(r => r.LastGroupId).Distinct().ToList();
+        var runIds = rows.Where(r => r.LastGroupId is null && r.LastRunId is not null)
+            .Select(r => r.LastRunId!.Value).Distinct().ToList();
+
+        var groupTallies = new List<GroupStatusTally>();
+        if (groupIds.Count > 0)
+        {
+            groupTallies = await db.Runs.AsNoTracking()
+                .Where(r => groupIds.Contains(r.GroupId))
+                .GroupBy(r => new { r.GroupId, r.Status })
+                .Select(g => new GroupStatusTally(g.Key.GroupId, g.Key.Status, g.Count()))
+                .ToListAsync(ct).ConfigureAwait(false);
+        }
+
+        var runStatuses = new List<RunStatusRow>();
+        if (runIds.Count > 0)
+        {
+            runStatuses = await db.Runs.AsNoTracking()
+                .Where(r => runIds.Contains(r.RunId))
+                .Select(r => new RunStatusRow(r.RunId, r.Status))
+                .ToListAsync(ct).ConfigureAwait(false);
+        }
+
+        var byGroup = groupTallies
+            .Where(t => t.GroupId is not null)
+            .GroupBy(t => t.GroupId!.Value)
+            .ToDictionary(g => g.Key, g => Tally(g.Select(t => (t.Status, t.Count))));
+        var byRun = runStatuses.ToDictionary(r => r.Id, r => Tally([(r.Status, 1)]));
+
+        return rows.Select(r =>
+        {
+            RunGroupCountsDto? counts = null;
+            if (r.LastGroupId is { } groupId)
+            {
+                byGroup.TryGetValue(groupId, out counts);
+            }
+            else if (r.LastRunId is { } runId)
+            {
+                byRun.TryGetValue(runId, out counts);
+            }
+
+            return new ScheduleDto(
+                r.Id, r.RepoId, r.Name, r.MemberPipelineIds, r.Cron, r.IntervalSeconds, r.Timezone,
+                r.Enabled, r.Catchup, r.Paused, r.Source, r.NextFireUtc, r.LastFireUtc, r.LastRunId, r.LastGroupId,
+                // Whether the last scoped fire's group is still executing, so the list can surface a live re-entry
+                // point to it. A single-member fire has no group, so this is always false there.
+                r.LastGroupId is not null && counts is { } c && c.Queued + c.Running > 0,
+                r.CreatedUtc, r.UpdatedUtc, r.MaxConcurrency, counts);
+        }).ToList();
+    }
+
+    /// <summary>Rolls a fire's (status, count) pairs into the lifecycle tally the run board uses, so a schedule's last
+    /// fire and a run group's header are read the same way.</summary>
+    private static RunGroupCountsDto Tally(IEnumerable<(string Status, int Count)> statusCounts)
+    {
+        var byStatus = statusCounts.ToList();
+        int CountOf(string status) => byStatus.Where(x => x.Status == status).Sum(x => x.Count);
+        return new RunGroupCountsDto(
+            byStatus.Sum(x => x.Count),
+            CountOf(RunStatuses.Queued), CountOf(RunStatuses.Running), CountOf(RunStatuses.Succeeded),
+            CountOf(RunStatuses.Failed), CountOf(RunStatuses.Cancelled), CountOf(RunStatuses.Skipped));
+    }
 }
