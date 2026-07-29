@@ -257,6 +257,15 @@ public class CatalogRun
     /// (<see cref="GroupId"/> null), where it stays 0.</summary>
     public int GroupWave { get; set; }
 
+    /// <summary>
+    /// The cap on how many members of this run's <see cref="GroupId"/> may execute at once, or null for unbounded.
+    /// Copied from the firing schedule's <see cref="CatalogSchedule.MaxConcurrency"/> at enqueue rather than joined
+    /// at claim time, for two reasons: the claim predicate stays a single-table read on the queue's hot path, and a
+    /// group already in flight keeps the bound it was queued under, so editing the schedule never retunes a wave
+    /// that is already running. Null on a standalone run, which has no group to bound.
+    /// </summary>
+    public int? GroupMaxConcurrency { get; set; }
+
     public int SchemaVersion { get; set; }
 
     public DateTime WrittenUtc { get; set; }
@@ -1248,6 +1257,15 @@ public class CatalogSchedule
     /// resumes at the next occurrence after now; true catches up, firing one missed occurrence per scheduler tick
     /// until current. Applied by the scheduler when it advances <see cref="NextFireUtc"/>.</summary>
     public bool Catchup { get; set; }
+
+    /// <summary>
+    /// How many of this schedule's members may EXECUTE concurrently, or null (the default) for unbounded. Because a
+    /// group's waves are gated, this is the width of the running wave: 1 makes a fire strictly serial. It bounds the
+    /// FIRE rather than the estate, so one fragile upstream can be protected without throttling every other source's
+    /// throughput. Stamped onto each member run at enqueue (<see cref="CatalogRun.GroupMaxConcurrency"/>) and applied
+    /// by the queue's claim gate.
+    /// </summary>
+    public int? MaxConcurrency { get; set; }
 
     /// <summary>An API-applied operational pause that is independent of <see cref="Enabled"/>, so a git re-sync of a
     /// <c>yaml</c> schedule does not clear a pause an operator set through the GUI.</summary>

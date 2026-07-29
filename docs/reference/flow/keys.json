@@ -3,7 +3,7 @@
   "product": "SQLFlow V3",
   "generatedFrom": "source code: src/SqlFlow.Core/Model and src/SqlFlow.Yaml",
   "naming": "Every loader builds its YamlDotNet IDeserializer with `new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build()` (src/SqlFlow.Yaml/YamlFlowLoader.cs:17-20 and identically in all other loaders). Rule: a C# PascalCase DTO property binds to the camelCase YAML key, i.e. the property name with its leading capital(s) lowercased at each word boundary start; example: C# `PreProcess` binds YAML key `preProcess`, `OnConvertError` binds `onConvertError`, `As` binds `as`. Two carve-outs: (1) dictionary KEYS are never renamed by the convention; `source.options` and `schema.overrides` map keys bind verbatim and are re-wrapped case-insensitively by the mapping layer (YamlFlowLoader.cs:59-61, 253). (2) Enum-like VALUES are plain strings parsed case-insensitively; for load.mode and transform.onConvertError, '-' and '_' are stripped first (NormalizeToken, YamlFlowLoader.cs:286-288), so `truncate-load` == `TruncateLoad`; schema.evolve is parsed case-insensitively but without separator stripping. There are no [YamlMember] aliases anywhere; the only key-level 'alias' is that the YAML key `transform` populates the model property FlowDefinition.Inference (hand-mapped, not a converter).",
-  "keyCount": 162,
+  "keyCount": 164,
   "keys": [
     {
       "path": "batch",
@@ -254,6 +254,14 @@
       "appliesWhen": "schedule.cron is set (bound and stored regardless, but only consumed to evaluate cron; interval schedules ignore it)",
       "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs:90",
       "validation": "Not validated at YAML parse time. At arm time, and only when cron is set, ScheduleClock.TryValidate resolves it via TimeZoneInfo.FindSystemTimeZoneById; a TimeZoneNotFoundException or InvalidTimeZoneException message is surfaced as the catalog sync warning \"'<flow>' (<file>) has an invalid schedule: <error>\" or an API 400 (ScheduleClock.cs:61-75). An unknown zone reaching NextFire yields null and parks the schedule."
+    },
+    {
+      "path": "schedule.maxConcurrency",
+      "type": "int",
+      "required": false,
+      "default": "4",
+      "description": "How many of this schedule's member flows may EXECUTE at the same time when it fires. A fire enqueues its whole member set as one wave-gated run group, and because no member is claimable until every lower wave is terminal, this is effectively the width of the running wave. The queue's claim gate applies it: a member is claimable only while fewer than this many siblings of its group are running (ClaimSqlTemplate, src/SqlFlow.Catalog/RunQueueStore.cs). The bound rides on the run rows themselves (CatalogRun.GroupMaxConcurrency, stamped at enqueue from CatalogSchedule.MaxConcurrency), so a group already in flight keeps the bound it was queued under and editing the schedule never retunes a running wave. Omitting the key takes the product default of 4 (ScheduleDefaults.MaxConcurrency); 1 makes the fire strictly serial; 0 is the explicit opt-out and runs the wave unbounded. A negative value is not a usable bound, so the schedule-library loader warns and falls back to the default. The knob exists because the members of a wave usually share one upstream: a wide source (23 flows reading one modest SQL Server) can exhaust that server's connections while the estate still has worker capacity, and bounding the estate's worker concurrency instead would throttle every other source too. Exact per node (a node claims one run at a time); across a multi-node fleet two nodes can pass the check on the same free slot, so treat it as 'about this many'.",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs (model: src/SqlFlow.Core/ScheduleSpec.cs; default and resolution: SqlFlow.Core.ScheduleDefaults)"
     },
     {
       "path": "schema",

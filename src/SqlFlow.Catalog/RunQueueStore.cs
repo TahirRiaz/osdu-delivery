@@ -29,11 +29,15 @@ public sealed record RunEnqueueRequest(
 /// descendant, so each layer re-reads the same historical slice) or <see cref="RunParameters.ReprocessFromSourceMin"/>
 /// (a relational descendant, so the back-dated rows an upstream flow re-lands are re-pulled instead of stopping below
 /// the target's high-water mark). A member absent from the map runs with default parameters, so an ordinary group (or
-/// a schedule fire) passes no map and every member runs as defined.</para></summary>
+/// a schedule fire) passes no map and every member runs as defined.</para>
+/// <para><paramref name="MaxConcurrency"/> bounds how many members may execute at once (null = unbounded, the
+/// historical behavior). It is stamped onto every member run and applied by the queue's claim gate; because waves are
+/// gated, it is effectively the width of the running wave.</para></summary>
 public sealed record RunGroupEnqueueRequest(
     Guid RepoId, string Mode, string Anchor, IReadOnlyList<RunScopeMember> Members,
     string? TargetPool = null, string? CommitSha = null,
-    IReadOnlyDictionary<string, RunParameters>? MemberParameters = null);
+    IReadOnlyDictionary<string, RunParameters>? MemberParameters = null,
+    int? MaxConcurrency = null);
 
 /// <summary>The outcome of enqueuing a group: the new group id and the ids of every member run, in wave order.</summary>
 public sealed record RunGroupEnqueueResult(Guid GroupId, IReadOnlyList<Guid> RunIds);
@@ -96,6 +100,19 @@ public static class RunQueueStore
     // flow would clobber. Like the group gate, a blocked duplicate is simply not selected, so the worker moves on to
     // the next eligible run; node-restart recovery (RecoverStuckRunningAsync) requeues orphaned running rows, so a
     // crashed run cannot wedge its pipeline.
+    //
+    // The group-concurrency clause bounds how WIDE a fire runs: a member carrying a GroupMaxConcurrency (stamped from
+    // the firing schedule at enqueue) is claimable only while fewer than that many of its siblings are running. Since
+    // the wave gate above already means only one wave is eligible at a time, this is the width of the running wave.
+    // A null bound (every standalone run, and any group whose schedule set none) short-circuits to the historical
+    // unbounded behavior. Like the other gates it filters rather than locks, so a node that finds the wave saturated
+    // moves on to other eligible work instead of blocking.
+    //
+    // The bound is exact per node, because a node's drain loop claims strictly one run at a time (RunWorker.DrainAsync
+    // awaits its concurrency slot, then claims), so its own count is never stale. Across a multi-node fleet two nodes
+    // can pass the check on the same free slot and overshoot by at most (claiming nodes - 1): making that exact would
+    // need a range lock over the group on every claim, serializing the fleet's hot path to bound a soft resource
+    // limit. Treat it as "about this many", which is what protecting an upstream connection budget actually needs.
     private const string ClaimSqlTemplate = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         UPDATE [catalog].[Run]
@@ -108,6 +125,9 @@ public static class RunQueueStore
                   SELECT 1 FROM [catalog].[Run] AS s
                   WHERE s.[GroupId] = r.[GroupId] AND s.[GroupWave] < r.[GroupWave]
                     AND s.[Status] IN (@queued, @running)))
+              AND (r.[GroupMaxConcurrency] IS NULL OR (
+                  SELECT COUNT(*) FROM [catalog].[Run] AS w
+                  WHERE w.[GroupId] = r.[GroupId] AND w.[Status] = @running) < r.[GroupMaxConcurrency])
               AND NOT EXISTS (
                   SELECT 1 FROM [catalog].[Run] AS p
                   WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = @running)
@@ -278,6 +298,9 @@ public static class RunQueueStore
                     GroupId = groupId,
                     // A negative (uncomputed) wave collapses to 0 so an un-analyzed set runs as one parallel wave.
                     GroupWave = member.Wave < 0 ? 0 : member.Wave,
+                    // A non-positive bound would leave every member unclaimable forever, so it collapses to
+                    // unbounded here as a last line of defence; the YAML loaders already reject one with a warning.
+                    GroupMaxConcurrency = request.MaxConcurrency is { } max && max >= 1 ? max : null,
                     FullLoad = memberParameters.FullLoad,
                     BackfillFrom = memberParameters.BackfillFrom,
                     BackfillTo = memberParameters.BackfillTo,

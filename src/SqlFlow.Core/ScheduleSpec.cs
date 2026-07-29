@@ -1,5 +1,47 @@
 namespace SqlFlow.Core;
 
+/// <summary>The product defaults a schedule declaration falls back to when its YAML leaves a key out.</summary>
+public static class ScheduleDefaults
+{
+    /// <summary>
+    /// How many members of one fire execute at once when the schedule does not say. Bounded rather than unbounded
+    /// because the members of a wave almost always share one upstream, and a wide source (23 flows off a single
+    /// modest SQL Server, say) exhausts that server's connections long before the estate runs out of workers. Four
+    /// keeps a fire meaningfully parallel while leaving a small source room to breathe; a source that can take more
+    /// raises it explicitly, and <c>maxConcurrency: 0</c> opts out entirely.
+    /// </summary>
+    public const int MaxConcurrency = 4;
+
+    /// <summary>
+    /// Resolves a declared <c>maxConcurrency</c> to the effective bound, where null means UNBOUNDED. The one
+    /// implementation both YAML loaders and the API create path use, so a schedule means the same thing however it
+    /// was declared:
+    /// <list type="bullet">
+    /// <item>omitted (<paramref name="declared"/> null) takes <see cref="MaxConcurrency"/>;</item>
+    /// <item><c>0</c> is the explicit opt-out and returns null (unbounded);</item>
+    /// <item>a positive value is taken verbatim;</item>
+    /// <item>a negative value is meaningless, so <paramref name="invalid"/> is signalled and the default applies;
+    /// it is never stored, because a bound below zero would leave every member of the fire unclaimable.</item>
+    /// </list>
+    /// </summary>
+    public static int? Resolve(int? declared, out bool invalid)
+    {
+        invalid = false;
+        switch (declared)
+        {
+            case null:
+                return MaxConcurrency;
+            case 0:
+                return null;
+            case > 0:
+                return declared;
+            default:
+                invalid = true;
+                return MaxConcurrency;
+        }
+    }
+}
+
 /// <summary>
 /// A flow's schedule declaration, as written in the <c>schedule:</c> key of its YAML and carried through the
 /// engine. It is written one of two ways, and the two mean different things:
@@ -51,6 +93,22 @@ public sealed record ScheduleSpec
     /// host was down is skipped and the schedule resumes at the next occurrence after now. When true the schedule
     /// catches up, firing one missed occurrence per scheduler tick until it is current again.</summary>
     public bool Catchup { get; init; }
+
+    /// <summary>
+    /// How many of this schedule's members may EXECUTE at the same time, already resolved through
+    /// <see cref="ScheduleDefaults.Resolve"/>: a positive bound, or null for UNBOUNDED (which the YAML asks for with
+    /// <c>maxConcurrency: 0</c>). A schedule that says nothing gets <see cref="ScheduleDefaults.MaxConcurrency"/>;
+    /// a value of 1 makes the fire strictly serial, one member after another.
+    /// <para>
+    /// The bound is per FIRE, and because a group's waves are gated (no member is claimable until every lower wave
+    /// is terminal), only one wave is ever eligible at a time; this is therefore the width of the running wave.
+    /// It exists because the members of a wave usually share one upstream: 23 flows reading a single modest source
+    /// server can exhaust its connections even while the estate has capacity to spare. Bounding the estate's whole
+    /// worker concurrency to protect one source would throttle every other source too, so the knob belongs to the
+    /// schedule that fans out.
+    /// </para>
+    /// </summary>
+    public int? MaxConcurrency { get; init; } = ScheduleDefaults.MaxConcurrency;
 
     /// <summary>Whether this declaration is a membership reference rather than a cadence of its own.</summary>
     public bool IsReference => Refs.Count > 0;

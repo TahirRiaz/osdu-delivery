@@ -447,6 +447,9 @@ export interface Schedule {
   enabled: boolean;
   /** Whether missed occurrences are backfilled (one per scheduler tick) instead of skipped. */
   catchup: boolean;
+  /** How many member flows one fire executes at once; null means unbounded. Because a group's waves are gated this
+   * is the width of the running wave, so it caps the load a fan-out puts on the source the members share. */
+  maxConcurrency: number | null;
   paused: boolean;
   source: string;
   nextFireUtc: string | null;
@@ -473,6 +476,8 @@ export interface CreateScheduleRequest {
   catchup?: boolean | null;
   /** What other flows would join with `schedule: <name>`. Defaults to the first member's flow name. */
   name?: string | null;
+  /** How many members one fire runs at once. Omit for the product default (4); 0 asks for unbounded. */
+  maxConcurrency?: number | null;
 }
 
 export interface ScheduleCreated {

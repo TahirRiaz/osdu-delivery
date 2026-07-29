@@ -120,6 +120,8 @@ public sealed class YamlDocumentLoader
         public bool? Enabled { get; set; }
 
         public bool? Catchup { get; set; }
+
+        public int? MaxConcurrency { get; set; }
     }
 
     /// <summary>The mapping shape the converter delegates an inline <c>schedule:</c> block to: the same inline fields
@@ -139,6 +141,8 @@ public sealed class YamlDocumentLoader
         public bool? Enabled { get; set; }
 
         public bool? Catchup { get; set; }
+
+        public int? MaxConcurrency { get; set; }
     }
 
     /// <summary>
@@ -187,6 +191,7 @@ public sealed class YamlDocumentLoader
                 Timezone = inline.Timezone,
                 Enabled = inline.Enabled,
                 Catchup = inline.Catchup,
+                MaxConcurrency = inline.MaxConcurrency,
             };
         }
 
@@ -370,6 +375,10 @@ public sealed class YamlDocumentLoader
             Timezone = string.IsNullOrWhiteSpace(schedule.Timezone) ? "UTC" : schedule.Timezone.Trim(),
             Enabled = schedule.Enabled ?? true,
             Catchup = schedule.Catchup ?? false,
+            // Omitted takes the product default; 0 is the explicit unbounded opt-out. The probe has nowhere to
+            // surface a warning, so a meaningless negative simply falls back to the default (the schedule-library
+            // loader, which does have a warning channel, reports it).
+            MaxConcurrency = ScheduleDefaults.Resolve(schedule.MaxConcurrency, out _),
         };
     }
 }

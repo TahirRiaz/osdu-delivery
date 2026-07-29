@@ -87,11 +87,11 @@ public static class ScheduleStore
     /// </summary>
     public static Task<Guid> UpsertYamlScheduleAsync(
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
-        int? intervalSeconds, string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc,
-        DateTime nowUtc, CancellationToken ct = default)
+        int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
+        DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, computedNextFireUtc, nowUtc, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
@@ -99,8 +99,8 @@ public static class ScheduleStore
     /// transaction (the public <see cref="UpsertYamlScheduleAsync"/> wraps this for standalone callers).</summary>
     public static async Task<Guid> StageYamlUpsertAsync(
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
-        int? intervalSeconds, string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc,
-        DateTime nowUtc, CancellationToken ct = default)
+        int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
+        DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(members);
@@ -121,6 +121,7 @@ public static class ScheduleStore
                 Timezone = timezone,
                 Enabled = enabled,
                 Catchup = catchup,
+                MaxConcurrency = maxConcurrency,
                 Source = "yaml",
                 NextFireUtc = computedNextFireUtc,
                 CreatedUtc = nowUtc,
@@ -142,6 +143,7 @@ public static class ScheduleStore
             existing.Timezone = timezone;
             existing.Enabled = enabled;
             existing.Catchup = catchup;
+            existing.MaxConcurrency = maxConcurrency;
             existing.Source = "yaml";
             existing.UpdatedUtc = nowUtc;
             // Only reset the cadence when the timing definition changed; an unchanged re-sync leaves the next fire
@@ -222,8 +224,8 @@ public static class ScheduleStore
     /// index is the backstop).</summary>
     public static Task<Guid> CreateApiScheduleAsync(
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
-        int? intervalSeconds, string timezone, bool enabled, bool catchup, DateTime computedNextFireUtc,
-        DateTime nowUtc, CancellationToken ct = default)
+        int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
+        DateTime computedNextFireUtc, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(members);
@@ -242,6 +244,7 @@ public static class ScheduleStore
                 Timezone = timezone,
                 Enabled = enabled,
                 Catchup = catchup,
+                MaxConcurrency = maxConcurrency,
                 Source = "api",
                 NextFireUtc = computedNextFireUtc,
                 CreatedUtc = nowUtc,

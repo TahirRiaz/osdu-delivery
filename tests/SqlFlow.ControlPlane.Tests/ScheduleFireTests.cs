@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.Core;
 using SqlFlow.ControlPlane.Background;
 using SqlFlow.Core.Identity;
 using Xunit;
@@ -275,7 +276,7 @@ public sealed class ScheduleFireTests
     {
         var now = DateTime.UtcNow;
         await ScheduleStore.StageYamlUpsertAsync(
-            db, repoId, scheduleName, members, "0 4 * * *", null, "UTC", enabled: true, catchup: false, now.AddHours(1), now);
+            db, repoId, scheduleName, members, "0 4 * * *", null, "UTC", enabled: true, catchup: false, maxConcurrency: ScheduleDefaults.MaxConcurrency, now.AddHours(1), now);
         await db.SaveChangesAsync();
         var id = CatalogIdentity.YamlSchedule(repoId, scheduleName);
         return await db.Schedules.AsNoTracking().FirstAsync(s => s.Id == id);

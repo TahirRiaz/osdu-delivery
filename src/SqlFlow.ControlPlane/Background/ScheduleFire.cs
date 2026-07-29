@@ -93,12 +93,14 @@ public static class ScheduleFire
         }
 
         // Enqueuing the members as one group makes the queue's claim gate the order (a member is claimable only once
-        // every lower wave is terminal), so waves run in sequence while the members of a wave run concurrently.
+        // every lower wave is terminal), so waves run in sequence while the members of a wave run concurrently. The
+        // schedule's own MaxConcurrency rides along and bounds how many of those members run at once, so a fan-out
+        // never opens more work against a shared upstream than that upstream can take.
         var result = await dispatcher.EnqueueGroupAsync(
             catalog,
             new RunGroupEnqueueRequest(
                 schedule.RepoId, RunGroupModes.Batch, expansion.Anchor, expansion.Members,
-                MemberParameters: memberParameters),
+                MemberParameters: memberParameters, MaxConcurrency: schedule.MaxConcurrency),
             ct).ConfigureAwait(false);
 
         var firstRunId = result.RunIds.Count > 0 ? result.RunIds[0] : Guid.Empty;

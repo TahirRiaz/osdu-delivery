@@ -5,22 +5,26 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Background;
+using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 
 namespace SqlFlow.ControlPlane.Api;
 
-/// <summary>A schedule as the API returns it: its timing, scope, lifecycle flags, source, and the next/last fire.</summary>
+/// <summary>A schedule as the API returns it: its timing, scope, lifecycle flags, source, and the next/last fire.
+/// <paramref name="MaxConcurrency"/> is how many members one fire runs at once (null = unbounded).</summary>
 public sealed record ScheduleDto(
     Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
-    Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc);
+    Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc, int? MaxConcurrency);
 
 /// <summary>The body to create an ad-hoc API schedule: the member flows it runs, exactly one of cron /
 /// intervalSeconds, and optionally a name (defaulting to the first member's flow name). Membership is what a fire
-/// runs, so a schedule with no members is rejected.</summary>
+/// runs, so a schedule with no members is rejected.
+/// <para><paramref name="MaxConcurrency"/> bounds how many members one fire executes at once. Omitted takes the
+/// product default (<see cref="ScheduleDefaults.MaxConcurrency"/>); <c>0</c> asks for unbounded.</para></summary>
 public sealed record CreateScheduleRequest(
     Guid RepoId, IReadOnlyList<string> Members, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled,
-    bool? Catchup = null, string? Name = null);
+    bool? Catchup = null, string? Name = null, int? MaxConcurrency = null);
 
 /// <summary>The created-schedule acknowledgement.</summary>
 public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
@@ -205,7 +209,8 @@ public static class ScheduleEndpoints
         var next = ScheduleClock.NextFire(request.Cron, request.IntervalSeconds, timezone, now);
         var id = await ScheduleStore.CreateApiScheduleAsync(
             db, request.RepoId, name, members, request.Cron, request.IntervalSeconds, timezone,
-            request.Enabled ?? true, request.Catchup ?? false, next ?? now, now, ct).ConfigureAwait(false);
+            request.Enabled ?? true, request.Catchup ?? false, ScheduleDefaults.Resolve(request.MaxConcurrency, out _),
+            next ?? now, now, ct).ConfigureAwait(false);
 
         return TypedResults.Created($"/api/v1/schedules/{id}", new ScheduleCreated(id, next));
     }
@@ -338,5 +343,5 @@ public static class ScheduleEndpoints
         s.LastGroupId != null && db.Runs.Any(r =>
             r.GroupId == s.LastGroupId
             && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running)),
-        s.CreatedUtc, s.UpdatedUtc);
+        s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency);
 }

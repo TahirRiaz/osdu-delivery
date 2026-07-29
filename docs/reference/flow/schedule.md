@@ -69,11 +69,56 @@ target:
 | `timezone` | string | no | `"UTC"` | IANA time zone id the cron expression is evaluated in, for example `Europe/Oslo`. Ignored for interval schedules. |
 | `enabled` | bool | no | `true` | Whether the schedule is active. A disabled schedule is recorded in the catalog but never fires. |
 | `catchup` | bool | no | `false` | Whether missed occurrences (the host was down past a fire) are backfilled. `false` skips the missed fire and resumes at the next occurrence after now; `true` fires one missed occurrence per scheduler tick until the schedule is current again. |
+| `maxConcurrency` | int | no | `4` | How many of the schedule's members execute at the same time. Because waves are gated, this is the width of the running wave. `1` runs the fire strictly serially; `0` opts out and runs the wave unbounded. See [Fire width](#fire-width-maxconcurrency). |
 | `scope` | string | no | `"flow"` | How much the fire runs: `flow` (only the declaring flow), `node` (that flow plus every flow downstream of it), or `batch` (every active flow in the declaring flow's batch). See [Scope](#scope-what-a-fire-runs). |
 
 | `name` | string | no | none | Publishes this inline schedule under a name so other flows can reuse it with `schedule: <name>`. Metadata only: the cadence still applies to this flow. See [Reusable schedules](#reusable-schedules-define-once-reference-by-name). |
 
 Exactly one of `cron` or `intervalSeconds` must be set for the schedule to be armed. A block that sets neither is treated as absent: the loader parses it to no schedule at all (src/SqlFlow.Yaml/YamlDocumentLoader.cs, `MapSchedule`), so an empty block is never stored as a broken schedule.
+
+## Fire width: `maxConcurrency`
+
+A fire enqueues its whole member set as one wave-gated run group: no member is claimable until every member of a
+lower wave is terminal, so exactly one wave is eligible at a time and the members of that wave are free to run
+together. `maxConcurrency` bounds how many of them actually do.
+
+```yaml
+schedules:
+  trapeze_daily:
+    cron: "3 7 * * *"
+    timezone: Europe/Oslo
+    maxConcurrency: 4     # at most 4 of the source's flows execute at once
+```
+
+**Why it belongs to the schedule.** The members of a wave almost always share one upstream, and that upstream is
+usually the scarce resource: 23 flows reading a single modest SQL Server can exhaust its connection budget while the
+estate still has plenty of worker capacity. The alternative lever, the worker's own
+`ControlPlane:Worker:MaxConcurrentRuns`, is estate-wide, so lowering it to protect one fragile source throttles every
+other source too. The bound belongs to the thing that fans out.
+
+**Values.**
+
+- Omitted takes the product default of **4** (`ScheduleDefaults.MaxConcurrency`). This is deliberately bounded rather
+  than unbounded: a schedule nobody has tuned should not be able to open an unlimited number of connections against
+  one server.
+- `1` makes the fire strictly serial, one member after another.
+- `0` is the explicit opt-out: the wave runs unbounded, limited only by worker capacity.
+- A negative value is not a usable bound. The schedule-library loader warns and falls back to the default rather than
+  storing a value that would leave every member unclaimable.
+
+**How it is enforced.** The schedule's bound is stamped onto each member run at enqueue
+(`CatalogRun.GroupMaxConcurrency`, copied from `CatalogSchedule.MaxConcurrency`), and the queue's claim gate refuses
+to claim a member while that many siblings of its group are already running. Stamping rather than joining keeps the
+claim a single-table read on the queue's hot path, and means a group already in flight keeps the bound it was queued
+under: editing the schedule never retunes a wave that is already running.
+
+**Precision.** The bound is exact per node, because a node's drain loop claims strictly one run at a time. Across a
+multi-node fleet two nodes can pass the check on the same free slot, so the wave can overshoot by at most
+(claiming nodes minus one). Making it exact would require a range lock over the group on every claim, serializing the
+fleet's hot path to enforce what is a soft resource limit; treat the number as "about this many".
+
+**Existing schedules.** The catalog column is null (unbounded) for schedules synced before this key existed, and
+takes the default on the next repo sync that rewrites the schedule row.
 
 ## Scope: what a fire runs
 
@@ -165,12 +210,12 @@ A named schedule is defined in one of two ways, and both share a single per-repo
      weekly:    { cron: "0 5 * * 1", timezone: "UTC", catchup: true }
    ```
 
-   Each entry's fields are exactly a flow's inline `schedule:` block (`cron` or `intervalSeconds`, `timezone`, `enabled`, `catchup`, `scope`); the map key is the reference name. A library file is not a flow document (the flow scan globs `*.flow.yaml`) and never becomes a pipeline. An entry that declares neither a cron nor an interval is dropped with a warning.
+   Each entry's fields are exactly a flow's inline `schedule:` block (`cron` or `intervalSeconds`, `timezone`, `enabled`, `catchup`, `maxConcurrency`, `scope`); the map key is the reference name. A library file is not a flow document (the flow scan globs `*.flow.yaml`) and never becomes a pipeline. An entry that declares neither a cron nor an interval is dropped with a warning.
 
 2. **A named inline block on a flow.** An inline `schedule:` block may carry a `name:` key to publish itself for reuse. That flow still runs on its own inline schedule, and any other flow in the repo can reference it by that name:
 
    ```yaml
-   # invoices.flow.yaml — defines "nightly" inline and uses it
+   # invoices.flow.yaml: defines "nightly" inline and uses it
    name: invoices
    schedule:
      name: nightly
@@ -221,13 +266,13 @@ The control plane also manages schedules directly (src/SqlFlow.ControlPlane/Api/
 | --- | --- |
 | `GET /schedules` | List, filterable by `repoId`, `pipelineId`, `source` (`yaml` or `api`), `enabled`; paged with `page` and `pageSize`. |
 | `GET /schedules/{id}` | One schedule; 404 when unknown. |
-| `POST /schedules` | Create an ad-hoc `api` schedule from `{repoId, flowName, cron OR intervalSeconds, timezone?, enabled?, catchup?}`. 400 on a blank `flowName` or invalid timing; 404 when no active pipeline matches. |
+| `POST /schedules` | Create an ad-hoc `api` schedule from `{repoId, flowName, cron OR intervalSeconds, timezone?, enabled?, catchup?, maxConcurrency?}`. 400 on a blank `flowName` or invalid timing; 404 when no active pipeline matches. |
 | `POST /schedules/{id}/run` | Fire the schedule now, on demand (to test it): enqueues a run of its flow through the same durable path a scheduled fire uses and stamps `lastRunId`, without moving the next scheduled fire. 202 with `{runId}`; 404 when unknown; 409 when the flow is inactive or removed. |
 | `POST /schedules/{id}/pause` | Set the operational `paused` flag. |
 | `POST /schedules/{id}/resume` | Clear `paused` and recompute the next fire from now, so a long pause never releases a burst of missed fires. |
 | `DELETE /schedules/{id}` | Remove the schedule; 204 on success, 404 when unknown. |
 
-`ScheduleDto` fields: `id`, `repoId`, `pipelineId`, `flowName`, `cron`, `intervalSeconds`, `timezone`, `enabled`, `catchup`, `paused`, `source`, `nextFireUtc`, `lastFireUtc`, `lastRunId`, `createdUtc`, `updatedUtc`.
+`ScheduleDto` fields: `id`, `repoId`, `pipelineId`, `flowName`, `cron`, `intervalSeconds`, `timezone`, `enabled`, `catchup`, `maxConcurrency`, `paused`, `source`, `nextFireUtc`, `lastFireUtc`, `lastRunId`, `createdUtc`, `updatedUtc`.
 
 ## Examples
 
