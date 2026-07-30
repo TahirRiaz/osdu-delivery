@@ -339,11 +339,13 @@ public sealed class WorkerOptions
 }
 
 /// <summary>The orphan-run reaper: the control plane sweeps for runs left <c>running</c> by a node that has stopped
-/// heartbeating and fails them, releasing the run and the pipeline gate a dead node would otherwise hold forever.
+/// heartbeating and recovers them, releasing the run and the pipeline gate a dead node would otherwise hold
+/// forever. An orphan is requeued for another worker (failed only once it exhausts its attempt budget, cancelled
+/// when an operator cancel was already pending); see <c>RunQueueStore.ReapOrphanedRunningAsync</c>.
 /// <see cref="PollSeconds"/> is how often it sweeps. <see cref="StaleAfterSeconds"/> is how long a claiming node may
 /// be silent before its runs are declared orphaned; it must be comfortably larger than a node's heartbeat cadence
-/// (a few beats) so a transient catalog blip never fails a live node's work. The default gives several missed beats
-/// of margin over the 60s fleet online window.</summary>
+/// (a few beats) so a transient catalog blip never disturbs a live node's work. The default gives several missed
+/// beats of margin over the 60s fleet online window.</summary>
 public sealed class ReaperOptions
 {
     public int PollSeconds { get; set; } = 30;

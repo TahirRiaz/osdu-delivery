@@ -180,21 +180,26 @@ var flowEnvVars = [for (entry, i) in flowEnv: {
   secretRef: 'flow-env-${i}'
 }]
 
-// The replica target is the GREATEST of in-flight work, the always-on floor, and an active manual override, all read
+// The replica target is the GREATEST of demanded work, the always-on floor, and an active manual override, all read
 // from the catalog, so the GUI's fleet controls steer scaling without the control plane ever calling the
 // orchestrator (it only writes [catalog].[WorkerPool] rows; KEDA, which already queries the catalog, reads them).
 // The same query shape as deploy/k8s/worker-pool.yaml. A pool with no WorkerPool row (ISNULL -> 0) still scales to
-// zero once nothing is queued OR running. REQUIRES the WorkerPool table (catalog migration
-// WorkerPoolDesiredAndNodeRestart): deploy the control plane first so the migration lands, then this revision.
+// zero once nothing is queued and no node is busy. REQUIRES the WorkerPool table AND [Node].[BusyRuns] (catalog
+// migrations WorkerPoolDesiredAndNodeRestart + RunAttemptFencingAndNodeBusyRuns): deploy the control plane first
+// so both migrations land, then this revision.
 //
-// The first term counts 'running' as well as 'queued' ON PURPOSE. A worker flips a run to 'running' the moment it
-// claims it, so a queued-only count reads zero while the fleet is still executing: KEDA then scaled to
-// minReplicas 0 after its cooldown and terminated pods mid-run, leaving the orphan reaper to fail live work. A
-// run stuck 'running' behind a dead node cannot pin a replica forever, because that same reaper fails it once its
-// node misses the stale window.
+// The demanded-work term is queued runs PLUS busy nodes (nodes whose heartbeat reports BusyRuns > 0 within the
+// 60s liveness window). Queued runs ask for capacity to start; busy nodes hold the capacity they occupy, so
+// scale-in only ever reclaims idle replicas' worth of target. A queued-only count read zero the moment the fleet
+// claimed the batch, which let KEDA scale in mid-execution and terminate pods carrying live runs. Counting nodes
+// (not running runs) keeps the target honest when one node executes several runs at once, and the liveness window
+// means a dead node's last busy count can never pin a replica: the orphan reaper requeues its runs, which
+// re-enter the queued term until a live node claims them. The platform still picks scale-in victims blindly, so a
+// busy pod can be condemned in the claim/scale-in race; terminationGracePeriodSeconds lets it drain, and the
+// reaper's requeue makes even a severed run recoverable.
 var queueDepthQuery = empty(pool)
-  ? 'SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] IN (\'queued\', \'running\') AND [TargetPool] IS NULL)), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
-  : 'SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] IN (\'queued\', \'running\') AND [TargetPool] = \'${pool}\')), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
+  ? 'SELECT (SELECT MAX(v) FROM (VALUES (((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] IS NULL) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND ([Pool] = N\'\' OR [Pool] IS NULL)))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
+  : 'SELECT (SELECT MAX(v) FROM (VALUES (((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] = \'${pool}\') + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND [Pool] = N\'${pool}\'))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name

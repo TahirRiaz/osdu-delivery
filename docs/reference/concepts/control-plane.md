@@ -121,7 +121,11 @@ Admin surface (policy `admin`): `GET/POST /users`, `POST /users/{id}/role` `/act
 
 ### Fleet visibility
 
-`GET /nodes` (src/SqlFlow.ControlPlane/Api/NodeEndpoints.cs) lists workers that have heartbeated into the catalog, most recently seen first. A node is reported `online` when its last heartbeat is within the last 60 seconds, computed at read time.
+`GET /nodes` (src/SqlFlow.ControlPlane/Api/NodeEndpoints.cs) lists workers that have heartbeated into the catalog, most recently seen first. A node is reported `online` when its last heartbeat is within the last 60 seconds, computed at read time. Each heartbeat also carries the node's `BusyRuns` (how many runs it is executing), which the KEDA autoscaler reads so occupied workers hold their replicas while idle ones remain the reclaimable surplus.
+
+### The orphan-run reaper
+
+A background sweep (`OrphanRunReaper`, src/SqlFlow.ControlPlane/Background/OrphanRunReaper.cs) recovers runs left `running` by a node that stopped heartbeating for `ControlPlane:Reaper:StaleAfterSeconds` (default 180): the executing process is gone, so no outcome will ever be recorded, and the stuck row would otherwise block every future run of its pipeline. Losing a worker is recoverable, not terminal: an orphan is requeued for another worker to execute (its claim cleared), recorded `cancelled` when an operator cancel was already pending, and failed only once it has consumed its whole attempt budget (`RunQueueStore.MaxExecutionAttempts`, 3 claims), which is the bound that stops a poison run from crash-looping the fleet. Every claim increments the run's `Attempt`, which doubles as a fencing token: a zombie node's late outcome writes present a stale attempt and are dropped, so the successor execution's result is authoritative. The same sweep prunes fleet-registry rows for nodes offline longer than `NodeRetentionHours`.
 
 ## Configuration
 

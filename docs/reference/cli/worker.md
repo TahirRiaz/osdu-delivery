@@ -10,6 +10,10 @@ keywords:
   - polling
   - compute node
   - claiming
+  - crash recovery
+  - attempt budget
+  - claim fence
+  - busy heartbeat
 cliCommand: worker
 related:
   - concept-control-plane
@@ -75,11 +79,11 @@ The worker verb takes no positional argument. `worker` is in the parser's no-fil
 
    With pools the banner lists them instead: `pools: onprem, finance`.
 
-4. Orphan recovery runs once, before the first drain: any run left in status `running` and claimed by this node name (an orphan from a previous incarnation that stopped mid-run) is reset to `queued` with the claim cleared, and picked up again on the normal claim path. Recovery is best-effort; a briefly unreachable catalog does not stop the worker from starting.
+4. Orphan recovery runs once, before the first drain: any run left in status `running` and claimed by this node name (an orphan from a previous incarnation that stopped mid-run) is dispositioned exactly as the control plane's liveness reaper would (see "Crash recovery" below): requeued for another execution in the common case, recorded `cancelled` when an operator cancel was already pending, and `failed` only when it has exhausted its attempt budget. Recovery is best-effort; a briefly unreachable catalog does not stop the worker from starting.
 
 ### The drain loop
 
-Each iteration heartbeats the node into the catalog's fleet registry (machine name, assembly version, last-seen timestamp; the heartbeat is best-effort and never interrupts draining), then claims and executes runs one at a time until the queue is empty for this node, then waits `--poll-seconds` and repeats. The standalone worker idles on a plain delay; the control plane's in-process host idles on `RunQueueSignal` (a one-slot `SemaphoreSlim` nudge) with a 2 second poll fallback, so a triggered run starts within milliseconds there.
+Each iteration heartbeats the node into the catalog's fleet registry (machine name, assembly version, last-seen timestamp, and `BusyRuns`, the number of runs this node is executing right now, which is the autoscaler's busy signal; the heartbeat is best-effort and never interrupts draining), then claims and executes runs one at a time until the queue is empty for this node, then waits `--poll-seconds` and repeats. The standalone worker idles on a plain delay; the control plane's in-process host idles on `RunQueueSignal` (a one-slot `SemaphoreSlim` nudge) with a 2 second poll fallback, so a triggered run starts within milliseconds there.
 
 ### Claiming
 
@@ -88,13 +92,15 @@ The claim is one atomic T-SQL UPDATE; the leading SET pins the READ COMMITTED is
 ```sql
 SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 UPDATE [catalog].[Run]
-SET [Status] = @running, [ClaimedByNode] = @node, [StartUtc] = @now
-OUTPUT inserted.[RunId]
+SET [Status] = @running, [ClaimedByNode] = @node, [StartUtc] = @now, [Attempt] = [Attempt] + 1
+OUTPUT inserted.[RunId], inserted.[Attempt]
 WHERE [RunId] = (
     SELECT TOP (1) [RunId] FROM [catalog].[Run] WITH (UPDLOCK, READPAST, ROWLOCK)
     WHERE [Status] = @queued AND {POOL_PREDICATE}
     ORDER BY [EnqueuedUtc], [RunId]);
 ```
+
+The claim increments `[Attempt]` and returns it alongside the run id. That value is the claim's fencing token: every outcome write this node makes for the run (complete, fail, cancel) is conditional on the row still being `running`, claimed by this node, at exactly this attempt. It doubles as the execution counter that bounds crash-recovery requeues (see "Crash recovery" below).
 
 `UPDLOCK` takes the update lock up front, `READPAST` makes concurrent workers skip rows another worker has already locked (each claim gets a different run instead of blocking), and the statement's atomicity is what makes any number of workers safe. `{POOL_PREDICATE}` is `[TargetPool] IS NULL` for a worker with no pools, or `([TargetPool] IS NULL OR [TargetPool] IN (@pool0, ...))` for a pooled worker; pool names are always bound as parameters.
 
@@ -115,7 +121,7 @@ The flow file is the repo root combined with the pipeline's relative path from t
 
 The claimed run executes through the shared engine with the claimed id stamped as the run id, so the artifact and the catalog row record under exactly the id the trigger returned. Per-run substitution parameters travel from the queue row into `DocumentExecutionOptions.Parameters` (`FullLoad`, `BackfillFrom`, `BackfillTo`, `FilePattern`); this is the one handoff point shared by every flow kind.
 
-On completion the outcome is recorded from the run's `run.json` artifact (status, timings, row counts, error, plus drill-down detail). If the artifact is missing, oversized, or corrupt, the run is still driven to `failed` with the reason so it never lingers in `running`. Driving a run to `failed` is a no-op if the run is already terminal, so a late failure never overwrites a recorded success.
+On completion the outcome is recorded from the run's `run.json` artifact (status, timings, row counts, error, plus drill-down detail), under the claim fence: the write applies only while the row still carries this node's claim at this attempt. If the artifact is missing, oversized, or corrupt, the run is still driven to `failed` with the reason so it never lingers in `running`. Driving a run to `failed` is a no-op if the run is already terminal, so a late failure never overwrites a recorded success. If the fence rejects the write (the run was requeued out from under a node presumed dead, and possibly re-claimed), the node logs a warning and drops its result: the successor execution's outcome is authoritative, and the flows' idempotent loads (keyed merges, content-addressed landing) make the double execution harmless.
 
 ### Failure handling
 
@@ -131,6 +137,23 @@ Failure messages written to the run row include, verbatim from src/SqlFlow.Node/
 | `repository '<name>' has no synced root path on this node.` | An unpinned run on a node with no local copy. |
 | `the flow file for '<flow>' was not found on this node.` | The resolved flow path does not exist. |
 | `could not materialize '<remote>' at '<sha>': <cause>` | The git clone or checkout failed. |
+
+### Crash recovery, the attempt budget, and the claim fence
+
+Losing a worker mid-run is recoverable, never terminal for the pipeline. Two sweeps repair `running` rows whose executing process is gone:
+
+- **Same-node restart recovery** (this worker's startup, step 4 above) matches orphans by this node's name.
+- **The control plane's liveness reaper** (`OrphanRunReaper`, sweeping on `ControlPlane:Reaper:PollSeconds`) matches any run whose claiming node has not heartbeated within `StaleAfterSeconds`; it covers pods that die and never return under the same name.
+
+Both apply the same disposition, implemented in `RunQueueStore` (src/SqlFlow.Catalog/RunQueueStore.cs):
+
+1. An orphan with a pending operator cancel is recorded `cancelled`: the cancel intent is authoritative, and a requeue would resurrect work the operator explicitly killed.
+2. An orphan whose `Attempt` is under `MaxExecutionAttempts` (3) goes back to `queued` with the claim cleared, for any eligible worker to claim again. The claim consumed the attempt, so the budget decrements even when the execution was lost.
+3. An orphan that has consumed the whole budget is `failed` (its group dependents skipped): a run that repeatedly dies with its node is treated as the cause, not the victim. This is the poison-run bound that stops a memory-exhausting flow from crash-looping the fleet forever.
+
+Every recovery write is a conditional update guarded on the exact orphaned claim (still `running`, same node, same attempt), so a run its real node completes in the same instant is never overwritten, and concurrent reaper replicas are idempotent.
+
+The fence closes the zombie race: a node that was only presumed dead (its heartbeats blocked, its process alive) may finish after its run was requeued and re-claimed. Its outcome writes present the old attempt and are dropped; the successor's writes present the current attempt and land. Requeue is safe because every flow's load is idempotent: keyed merges collapse re-runs, landing skips byte-identical files, and wave gates hold group dependents while the requeued member is `queued`.
 
 ### Shutdown
 
@@ -150,7 +173,7 @@ In addition, every `${env:...}` reference used by the flows themselves (source a
 
 ## Container image
 
-Dockerfile.worker packages the worker as a container whose entrypoint (deploy/docker/worker-entrypoint.sh) composes the `sqlflow worker` invocation from `SQLFLOW_WORKER_POOL` and `SQLFLOW_WORKER_POLL_SECONDS`; the catalog connection stays on the CLI default `${env:SQLFLOW_CATALOG_DB}`, so it never appears in `ps` output. Both variables are optional, so a bare `sqlflow worker` still drains untargeted runs on the default poll cadence. The container exposes no ports and needs only outbound SQL and git. deploy/compose/docker-compose.yml runs it as the `worker` service, and deploy/k8s/worker-pool.yaml scales it on queue depth with KEDA (an mssql scaler counting `queued` rows, scale-to-zero when the queue is dry).
+Dockerfile.worker packages the worker as a container whose entrypoint (deploy/docker/worker-entrypoint.sh) composes the `sqlflow worker` invocation from `SQLFLOW_WORKER_POOL` and `SQLFLOW_WORKER_POLL_SECONDS`; the catalog connection stays on the CLI default `${env:SQLFLOW_CATALOG_DB}`, so it never appears in `ps` output. Both variables are optional, so a bare `sqlflow worker` still drains untargeted runs on the default poll cadence. The container exposes no ports and needs only outbound SQL and git. deploy/compose/docker-compose.yml runs it as the `worker` service, and deploy/k8s/worker-pool.yaml scales it with KEDA (an mssql scaler whose target is queued runs plus busy nodes, so occupied workers are never scaled away mid-run; scale-to-zero once nothing is queued and no node is busy).
 
 ## Examples
 

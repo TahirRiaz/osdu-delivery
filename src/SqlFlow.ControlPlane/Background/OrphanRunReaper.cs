@@ -6,13 +6,16 @@ using SqlFlow.Core.Secrets;
 namespace SqlFlow.ControlPlane.Background;
 
 /// <summary>
-/// Fails runs that a dead node left <c>running</c>. A worker claims the oldest queued run and flips it to
+/// Recovers runs that a dead node left <c>running</c>. A worker claims the oldest queued run and flips it to
 /// <c>running</c> under its own node name; if that process then dies without recording an outcome (a crashed or
 /// evicted pod, which under Kubernetes never returns under the same name), the run would sit <c>running</c> forever.
 /// That is not just stale history: the claim's pipeline gate makes a stuck <c>running</c> run block every future run
 /// of the same flow, and the GUI shows it as healthily executing when nothing is executing it. This sweep clears
 /// that class of orphan by liveness, so it works across pod restarts where a node's own startup recovery (which
-/// matches only its own machine name) never can.
+/// matches only its own machine name) never can. An orphan is REQUEUED for another worker to execute (losing a pod
+/// must never lose a pipeline), failed only once it exhausts its attempt budget, and recorded cancelled when an
+/// operator's cancel was already pending; see <see cref="RunQueueStore.ReapOrphanedRunningAsync"/> for the exact
+/// disposition rules and the claim fencing that makes them race-free.
 /// </summary>
 /// <remarks>
 /// It keys off the same fleet heartbeat the Nodes page reads, which is trustworthy because a node heartbeats on a
@@ -92,9 +95,9 @@ public sealed partial class OrphanRunReaper : BackgroundService
         await using var scope = _services.CreateAsyncScope();
         var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
         var reaped = await RunQueueStore.ReapOrphanedRunningAsync(catalog, staleBefore, now, ct).ConfigureAwait(false);
-        if (reaped > 0)
+        if (reaped.Any)
         {
-            LogReaped(reaped, (int)_staleAfter.TotalSeconds);
+            LogReaped(reaped.Requeued, reaped.Failed, reaped.Cancelled, (int)_staleAfter.TotalSeconds);
         }
 
         // Prune the fleet registry of nodes long gone: every worker pod registers under a fresh name and the registry
@@ -110,8 +113,8 @@ public sealed partial class OrphanRunReaper : BackgroundService
         }
     }
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Orphan reaper failed {Count} run(s) whose claiming node had not heartbeated in {StaleAfterSeconds}s; their pipelines are unblocked.")]
-    private partial void LogReaped(int count, int staleAfterSeconds);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Orphan reaper recovered runs whose claiming node had not heartbeated in {StaleAfterSeconds}s: {Requeued} requeued for another worker, {Failed} failed (attempt budget exhausted), {Cancelled} recorded cancelled (operator cancel was pending).")]
+    private partial void LogReaped(int requeued, int failed, int cancelled, int staleAfterSeconds);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Pruned {Count} node(s) offline for more than {RetentionHours}h from the fleet registry.")]
     private partial void LogPrunedNodes(int count, int retentionHours);

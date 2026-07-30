@@ -219,7 +219,11 @@ public sealed partial class RunWorker
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            return await NodeStore.HeartbeatAsync(catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, _pool, ct).ConfigureAwait(false);
+            // The beat carries how many runs this node is executing right now: the autoscaler's scale-in signal
+            // (a busy node holds its replica; only idle ones are surplus). Count from the live registration map,
+            // which is exact: runs register before execution starts and deregister when they reach an end state.
+            return await NodeStore.HeartbeatAsync(
+                catalog, _node, _version, _clock.GetUtcNow().UtcDateTime, _pool, _running.Count, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -323,7 +327,7 @@ public sealed partial class RunWorker
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            var recovered = await RunQueueStore.RecoverStuckRunningAsync(catalog, _node, ct).ConfigureAwait(false);
+            var recovered = await RunQueueStore.RecoverStuckRunningAsync(catalog, _node, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             if (recovered > 0)
             {
                 LogRecovered(recovered);
@@ -366,14 +370,14 @@ public sealed partial class RunWorker
             var slotOwnedByRun = false;
             try
             {
-                Guid? runId;
+                ClaimedRun? claim;
                 await using (var scope = _services.CreateAsyncScope())
                 {
                     var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-                    runId = await RunQueueStore.ClaimNextAsync(catalog, _node, pools, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                    claim = await RunQueueStore.ClaimNextAsync(catalog, _node, pools, _clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
                 }
 
-                if (runId is null)
+                if (claim is not { } claimed)
                 {
                     return; // queue drained
                 }
@@ -381,11 +385,11 @@ public sealed partial class RunWorker
                 // Each claimed run executes on its own task with its own DI scope (a scope and its CatalogDbContext
                 // are never shared across tasks). From here the task owns the slot and releases it when the run
                 // reaches its end state; the continuation only prunes the in-flight map used by shutdown.
-                var task = ExecuteClaimedAsync(runId.Value, gate, ct);
+                var task = ExecuteClaimedAsync(claimed, gate, ct);
                 slotOwnedByRun = true;
-                inFlight[runId.Value] = task;
+                inFlight[claimed.RunId] = task;
                 _ = task.ContinueWith(
-                    _ => inFlight.TryRemove(runId.Value, out Task? _),
+                    _ => inFlight.TryRemove(claimed.RunId, out Task? _),
                     CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             }
             finally
@@ -403,19 +407,19 @@ public sealed partial class RunWorker
     /// its end state. Never throws: a shutdown cancellation leaves the run <c>running</c> for the next start's
     /// recovery, and every other failure has already been driven terminal (best-effort) by
     /// <see cref="RunClaimedAsync"/>, so one run can never kill the drain loop or a sibling run.</summary>
-    private async Task ExecuteClaimedAsync(Guid runId, SemaphoreSlim gate, CancellationToken stoppingToken)
+    private async Task ExecuteClaimedAsync(ClaimedRun claim, SemaphoreSlim gate, CancellationToken stoppingToken)
     {
         // A per-run source linked to the shutdown token: an operator cancel trips only this one (aborting just this
         // run), while shutdown trips every run through the link. Registered before execution so a cancel arriving
         // the instant after the claim is still observed. Disposed only after the run ends, so a late cancel never
         // races a disposed source.
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        _running[runId] = runCts;
+        _running[claim.RunId] = runCts;
         try
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            await RunClaimedAsync(scope.ServiceProvider, catalog, runId, stoppingToken, runCts.Token).ConfigureAwait(false);
+            await RunClaimedAsync(scope.ServiceProvider, catalog, claim, stoppingToken, runCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -425,11 +429,11 @@ public sealed partial class RunWorker
         {
             // RunClaimedAsync drives run failures (and operator cancels) terminal itself; this guards the scope
             // plumbing around it.
-            LogRunError(runId, SecretHygiene.RedactedMessage(ex));
+            LogRunError(claim.RunId, SecretHygiene.RedactedMessage(ex));
         }
         finally
         {
-            _running.TryRemove(runId, out _);
+            _running.TryRemove(claim.RunId, out _);
             gate.Release();
         }
     }
@@ -600,14 +604,18 @@ public sealed partial class RunWorker
 
     /// <param name="scope">The claimed run's own DI scope, never shared with another run.</param>
     /// <param name="catalog">The catalog context resolved from <paramref name="scope"/>.</param>
-    /// <param name="runId">The claimed run's id (the orchestrator-assigned id the trigger returned).</param>
+    /// <param name="claim">The claimed run's id (the orchestrator-assigned id the trigger returned) and the claim's
+    /// attempt: the fencing token every outcome write below presents, so if crash recovery requeues this run out
+    /// from under a node presumed dead, that node's late writes are dropped instead of clobbering the successor
+    /// execution's outcome.</param>
     /// <param name="shutdownCt">The node's shutdown token: when it trips, the run is left <c>running</c> for the next
     /// start's recovery (never recorded terminal), so a stop-then-start never loses in-flight work.</param>
     /// <param name="runCt">The per-run token (linked to shutdown): an operator cancel trips this alone, aborting the
     /// flow's in-flight statement so the run is recorded <c>cancelled</c> rather than requeued.</param>
     private async Task RunClaimedAsync(
-        IServiceProvider scope, CatalogDbContext catalog, Guid runId, CancellationToken shutdownCt, CancellationToken runCt)
+        IServiceProvider scope, CatalogDbContext catalog, ClaimedRun claim, CancellationToken shutdownCt, CancellationToken runCt)
     {
+        var (runId, attempt) = claim;
         var ct = shutdownCt;
         try
         {
@@ -651,7 +659,7 @@ public sealed partial class RunWorker
 
             if (run.RepoId is not { } repoId)
             {
-                await FailAsync(catalog, runId, "the run is not attributed to a repository.", ct).ConfigureAwait(false);
+                await FailAsync(catalog, runId, attempt, "the run is not attributed to a repository.", ct).ConfigureAwait(false);
                 return;
             }
 
@@ -659,7 +667,7 @@ public sealed partial class RunWorker
             // only mean the left join found no row: the repo or pipeline has since left the catalog.
             if (run.RepoName is not { } repoName || run.PipelineRelativePath is not { } relativePath)
             {
-                await FailAsync(catalog, runId, "the run's repository or pipeline is no longer in the catalog.", ct).ConfigureAwait(false);
+                await FailAsync(catalog, runId, attempt, "the run's repository or pipeline is no longer in the catalog.", ct).ConfigureAwait(false);
                 return;
             }
 
@@ -685,7 +693,7 @@ public sealed partial class RunWorker
                 // and works even on a node with no locally synced copy of this flow).
                 if (string.IsNullOrWhiteSpace(run.RepoRemoteUrl))
                 {
-                    await FailAsync(catalog, runId,
+                    await FailAsync(catalog, runId, attempt,
                         $"run is pinned to commit '{run.CommitSha}' but repository '{repoName}' has no remote URL to materialize from.", ct).ConfigureAwait(false);
                     return;
                 }
@@ -707,7 +715,7 @@ public sealed partial class RunWorker
                 // Unpinned: run from the node's locally synced repo path (the default).
                 if (string.IsNullOrWhiteSpace(run.RepoRootPath))
                 {
-                    await FailAsync(catalog, runId, $"repository '{repoName}' has no synced root path on this node.", ct).ConfigureAwait(false);
+                    await FailAsync(catalog, runId, attempt, $"repository '{repoName}' has no synced root path on this node.", ct).ConfigureAwait(false);
                     return;
                 }
 
@@ -717,7 +725,7 @@ public sealed partial class RunWorker
             var flowFile = Path.GetFullPath(Path.Combine(flowRoot, relativePath));
             if (!File.Exists(flowFile))
             {
-                await FailAsync(catalog, runId, $"the flow file for '{run.FlowName}' was not found on this node.", ct).ConfigureAwait(false);
+                await FailAsync(catalog, runId, attempt, $"the flow file for '{run.FlowName}' was not found on this node.", ct).ConfigureAwait(false);
                 return;
             }
 
@@ -801,13 +809,22 @@ public sealed partial class RunWorker
             if (exec.RunDirectory is { } runDirectory)
             {
                 var runJson = Path.Combine(runDirectory, "run.json");
-                await RunQueueStore.CompleteFromArtifactAsync(catalog, runId, repoId, runJson, now, ct).ConfigureAwait(false);
+                var outcome = await RunQueueStore.CompleteFromArtifactAsync(
+                    catalog, runId, repoId, runJson, now, _node, attempt, ct).ConfigureAwait(false);
+                if (outcome == RunCompletionOutcome.StaleClaim)
+                {
+                    // This node was presumed dead and the run was requeued (and possibly re-claimed) out from under
+                    // it: the fence dropped this write, the successor execution's outcome is authoritative, and the
+                    // flow's idempotent load makes the double execution harmless. Loud in the log because it means
+                    // this node's heartbeats went unseen for the reaper's whole stale window.
+                    LogStaleClaim(runId, attempt);
+                }
             }
             else
             {
                 // No artifact was written (an IO failure while writing the run history): record the outcome directly
                 // so the run still reaches a terminal state.
-                await FailAsync(catalog, runId, SecretHygiene.RedactedMessage(exec.Error ?? "the run produced no artifact."), ct).ConfigureAwait(false);
+                await FailAsync(catalog, runId, attempt, SecretHygiene.RedactedMessage(exec.Error ?? "the run produced no artifact."), ct).ConfigureAwait(false);
             }
 
             if (exec.Success)
@@ -830,14 +847,14 @@ public sealed partial class RunWorker
             // SqlClient may surface as OperationCanceledException or a SqlException), so its transaction rolled back.
             // Record it 'cancelled' - not 'failed' - and continue to the next claim.
             LogCancelled(runId);
-            await TryCancelRunningAsync(catalog, runId).ConfigureAwait(false);
+            await TryCancelRunningAsync(catalog, runId, attempt).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             // A failed run (bad flow, unreachable database, IO) must never kill the worker: drive it to a terminal
             // state (best-effort) and continue to the next claim.
             LogRunError(runId, SecretHygiene.RedactedMessage(ex));
-            await TryFailAsync(catalog, runId, SecretHygiene.RedactedMessage(ex)).ConfigureAwait(false);
+            await TryFailAsync(catalog, runId, attempt, SecretHygiene.RedactedMessage(ex)).ConfigureAwait(false);
         }
     }
 
@@ -1013,17 +1030,20 @@ public sealed partial class RunWorker
         return new RelationalObject { Database = only.Database!, Schema = only.Schema!, Name = only.Name };
     }
 
-    private Task FailAsync(CatalogDbContext catalog, Guid runId, string error, CancellationToken ct)
-        => RunQueueStore.FailAsync(catalog, runId, error, _clock.GetUtcNow().UtcDateTime, ct);
+    // Every outcome write below presents the claim fence (this node's name + the claim's attempt): if crash
+    // recovery has requeued the run in the meantime (this node was presumed dead), the write silently misses and
+    // the successor execution's outcome stands - a stale write must lose to the fence, never race it.
+    private Task FailAsync(CatalogDbContext catalog, Guid runId, int attempt, string error, CancellationToken ct)
+        => RunQueueStore.FailAsync(catalog, runId, error, _clock.GetUtcNow().UtcDateTime, _node, attempt, ct);
 
-    private async Task TryFailAsync(CatalogDbContext catalog, Guid runId, string error)
+    private async Task TryFailAsync(CatalogDbContext catalog, Guid runId, int attempt, string error)
     {
         try
         {
             // The original cancellation token may be tripped (or the failure may have been a database blip): use a
             // short independent deadline so the run is still driven terminal where the catalog is reachable.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await RunQueueStore.FailAsync(catalog, runId, error, _clock.GetUtcNow().UtcDateTime, cts.Token).ConfigureAwait(false);
+            await RunQueueStore.FailAsync(catalog, runId, error, _clock.GetUtcNow().UtcDateTime, _node, attempt, cts.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1031,14 +1051,14 @@ public sealed partial class RunWorker
         }
     }
 
-    private async Task TryCancelRunningAsync(CatalogDbContext catalog, Guid runId)
+    private async Task TryCancelRunningAsync(CatalogDbContext catalog, Guid runId, int attempt)
     {
         try
         {
             // The per-run token that triggered this is already tripped, so record the outcome on a short independent
             // deadline (mirroring TryFailAsync) - the run must still reach 'cancelled' rather than linger 'running'.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await RunQueueStore.CancelRunningAsync(catalog, runId, _clock.GetUtcNow().UtcDateTime, cts.Token).ConfigureAwait(false);
+            await RunQueueStore.CancelRunningAsync(catalog, runId, _clock.GetUtcNow().UtcDateTime, _node, attempt, cts.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1084,6 +1104,9 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Recovered {Count} run(s) left running by a previous worker incarnation; requeued.")]
     private partial void LogRecovered(int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId}: outcome write dropped by the claim fence (attempt {Attempt}): the run was requeued out from under this node while it executed, so the successor execution's outcome is authoritative. This node's heartbeats went unseen for the reaper's whole stale window; check for catalog connectivity gaps or a paused container.")]
+    private partial void LogStaleClaim(Guid runId, int attempt);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Restart requested at {RequestedUtc:o}; draining in-flight work and exiting so the orchestrator recreates this node.")]
     private partial void LogRestartRequested(DateTime requestedUtc);

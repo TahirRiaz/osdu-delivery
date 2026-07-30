@@ -46,6 +46,36 @@ public sealed record RunGroupEnqueueResult(Guid GroupId, IReadOnlyList<Guid> Run
 /// outright, and how many running members had a cancel request stamped (the latter drives a worker nudge).</summary>
 public sealed record GroupCancelResult(bool Found, int CancelledQueued, int RequestedRunning);
 
+/// <summary>A successful claim: the run to execute and the claim's <see cref="CatalogRun.Attempt"/> value, which is
+/// the fencing token the claiming node presents on every outcome write (complete / fail / cancel). A write whose
+/// token no longer matches the row is a stale write from a superseded execution and is dropped.</summary>
+public readonly record struct ClaimedRun(Guid RunId, int Attempt);
+
+/// <summary>How a completion write-back ended, so the worker can log the difference between a recorded outcome, a
+/// run driven <c>failed</c> because its artifact could not be read, and a write dropped by the claim fence.</summary>
+public enum RunCompletionOutcome
+{
+    /// <summary>The outcome was recorded from a valid artifact.</summary>
+    Recorded,
+
+    /// <summary>The artifact was missing or corrupt; the run was driven to <c>failed</c> so it never lingers.</summary>
+    ArtifactUnreadable,
+
+    /// <summary>The row no longer carries the caller's claim (it was requeued by crash recovery, re-claimed by
+    /// another execution, or driven terminal by someone else), so nothing was written: this caller is a superseded
+    /// execution and the row's current owner is authoritative.</summary>
+    StaleClaim,
+}
+
+/// <summary>The orphan reaper's outcome for one sweep: how many interrupted runs went back to the queue for another
+/// execution, how many had exhausted their attempts and were failed, and how many were recorded cancelled because
+/// an operator's cancel was already pending when the node died.</summary>
+public readonly record struct OrphanReapResult(int Requeued, int Failed, int Cancelled)
+{
+    /// <summary>Whether the sweep changed anything at all.</summary>
+    public bool Any => Requeued > 0 || Failed > 0 || Cancelled > 0;
+}
+
 /// <summary>The result of a cancel request, so the API can answer 200 / 202 / 404 / 409 precisely.</summary>
 public enum CancelOutcome
 {
@@ -113,11 +143,14 @@ public static class RunQueueStore
     // can pass the check on the same free slot and overshoot by at most (claiming nodes - 1): making that exact would
     // need a range lock over the group on every claim, serializing the fleet's hot path to bound a soft resource
     // limit. Treat it as "about this many", which is what protecting an upstream connection budget actually needs.
+    // The claim increments [Attempt] and returns it alongside the id: the incremented value is the claiming node's
+    // fencing token, which every outcome write is conditional on (see the fenced overloads below), and doubles as
+    // the execution counter that bounds crash-recovery requeues.
     private const string ClaimSqlTemplate = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         UPDATE [catalog].[Run]
-        SET [Status] = @running, [ClaimedByNode] = @node, [StartUtc] = @now
-        OUTPUT inserted.[RunId]
+        SET [Status] = @running, [ClaimedByNode] = @node, [StartUtc] = @now, [Attempt] = [Attempt] + 1
+        OUTPUT inserted.[RunId], inserted.[Attempt]
         WHERE [RunId] = (
             SELECT TOP (1) r.[RunId] FROM [catalog].[Run] AS r WITH (UPDLOCK, READPAST, ROWLOCK)
             WHERE r.[Status] = @queued AND {POOL_PREDICATE}
@@ -421,11 +454,12 @@ public static class RunQueueStore
     }
 
     /// <summary>Atomically claims the oldest queued run this node is eligible for, flipping it to <c>running</c> and
-    /// returning its id, or null when there is none. Eligibility: an untargeted run (no pool) is claimable by any
-    /// node; a pooled run only by a node that serves that pool (<paramref name="pools"/>); a run whose pipeline
-    /// already has a running execution waits its turn (same-flow runs never overlap, protecting the flow's canonical
-    /// staging table). Safe to call concurrently from many workers: each claim takes a different run (or none).</summary>
-    public static async Task<Guid?> ClaimNextAsync(
+    /// returning its id and claim attempt (the fencing token the node must present on every outcome write), or null
+    /// when there is none. Eligibility: an untargeted run (no pool) is claimable by any node; a pooled run only by a
+    /// node that serves that pool (<paramref name="pools"/>); a run whose pipeline already has a running execution
+    /// waits its turn (same-flow runs never overlap, protecting the flow's canonical staging table). Safe to call
+    /// concurrently from many workers: each claim takes a different run (or none).</summary>
+    public static async Task<ClaimedRun?> ClaimNextAsync(
         CatalogDbContext catalog, string node, IReadOnlyList<string> pools, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -469,8 +503,13 @@ public static class RunQueueStore
                     AddParameter(command, $"@pool{i}", pools[i]);
                 }
 
-                var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-                return scalar is Guid claimed ? claimed : (Guid?)null;
+                await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    return (ClaimedRun?)null;
+                }
+
+                return new ClaimedRun(reader.GetGuid(0), reader.GetInt32(1));
             }
             finally
             {
@@ -482,9 +521,17 @@ public static class RunQueueStore
     /// <summary>Records a claimed run's outcome from its on-disk <c>run.json</c>: copies the result fields onto the
     /// existing row, flips it to the terminal <c>succeeded</c>/<c>failed</c> state, and inserts the drill-down
     /// detail. If the artifact is missing or corrupt the run is still moved to <c>failed</c> (with the reason) so it
-    /// never lingers in <c>running</c>. Returns true when recorded from a valid artifact.</summary>
-    public static Task<bool> CompleteFromArtifactAsync(
-        CatalogDbContext catalog, Guid runId, Guid repoId, string runJsonPath, DateTime nowUtc, CancellationToken ct = default)
+    /// never lingers in <c>running</c>.
+    /// <para>The claim fence: a worker passes the <paramref name="claimedByNode"/> / <paramref name="claimAttempt"/>
+    /// its claim returned, and the write applies only while the row still carries exactly that claim (still
+    /// <c>running</c>, same node, same attempt). A row that was requeued by crash recovery (and possibly re-claimed
+    /// for a later attempt) no longer matches, so a zombie worker (presumed dead, actually alive) that finishes
+    /// late writes nothing: the current execution is authoritative, and this one's result is dropped as
+    /// <see cref="RunCompletionOutcome.StaleClaim"/>. Passing no fence (the artifact-sync path, which records
+    /// finished CLI runs that were never claimed) applies unconditionally as before.</para></summary>
+    public static Task<RunCompletionOutcome> CompleteFromArtifactAsync(
+        CatalogDbContext catalog, Guid runId, Guid repoId, string runJsonPath, DateTime nowUtc,
+        string? claimedByNode = null, int? claimAttempt = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(runJsonPath);
@@ -496,6 +543,17 @@ public static class RunQueueStore
             // dropped by SaveChanges. AsTracking() overrides that default for this update.
             var existing = await catalog.Runs.AsTracking()
                 .FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
+
+            // The fence check runs inside the same serializable transaction as the write, so "still mine" and the
+            // completion commit atomically: a reaper requeue between them would deadlock/retry, never interleave.
+            if (claimedByNode is not null && (existing is null
+                || existing.Status != RunStatuses.Running
+                || existing.ClaimedByNode != claimedByNode
+                || existing.Attempt != claimAttempt))
+            {
+                return RunCompletionOutcome.StaleClaim;
+            }
+
             string? readError = null;
             try
             {
@@ -543,7 +601,7 @@ public static class RunQueueStore
                             await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
                         }
 
-                        return true;
+                        return RunCompletionOutcome.Recorded;
                     }
                 }
             }
@@ -552,7 +610,8 @@ public static class RunQueueStore
                 readError = SecretHygiene.RedactedMessage(ex);
             }
 
-            // The artifact could not be read: still drive the run to a terminal state so it is never stuck.
+            // The artifact could not be read: still drive the run to a terminal state so it is never stuck. Under a
+            // fence the row is proven above to still be this caller's running claim, so the write is safe here too.
             if (existing is not null)
             {
                 existing.Status = RunStatuses.Failed;
@@ -564,20 +623,27 @@ public static class RunQueueStore
                 await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
             }
 
-            return false;
+            return RunCompletionOutcome.ArtifactUnreadable;
         }, ct);
     }
 
     /// <summary>Drives a run to <c>failed</c> with a reason when execution could not even produce an artifact (the
     /// flow file was missing, failed to load, or the worker threw): a no-op if the run is already terminal, so a
-    /// late failure never overwrites a recorded success.</summary>
+    /// late failure never overwrites a recorded success. A worker failing its OWN claimed run passes the
+    /// <paramref name="claimedByNode"/> / <paramref name="claimAttempt"/> fence its claim returned; the write then
+    /// applies only while the row still carries exactly that claim, so a zombie's late failure can never clobber a
+    /// run that crash recovery has requeued (or another execution now owns). Unfenced callers (the control plane
+    /// failing a queued run) apply on the lifecycle guard alone, as before.</summary>
     public static async Task FailAsync(
-        CatalogDbContext catalog, Guid runId, string error, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid runId, string error, DateTime nowUtc,
+        string? claimedByNode = null, int? claimAttempt = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
         var failed = await catalog.Runs
             .Where(r => r.RunId == runId && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
+            .Where(r => claimedByNode == null
+                || (r.Status == RunStatuses.Running && r.ClaimedByNode == claimedByNode && r.Attempt == claimAttempt))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatuses.Failed)
                 .SetProperty(r => r.Success, false)
@@ -696,14 +762,18 @@ public static class RunQueueStore
 
     /// <summary>Records a running run as <c>cancelled</c> after its owning node has aborted the in-flight statement.
     /// Conditional on the run still being <c>running</c>, so a run that finished on its own (succeeded/failed) in the
-    /// same instant is never overwritten by a late cancel.</summary>
+    /// same instant is never overwritten by a late cancel; with the optional <paramref name="claimedByNode"/> /
+    /// <paramref name="claimAttempt"/> fence, also conditional on the row still carrying the caller's claim, so a
+    /// zombie's late cancel never lands on a requeued or re-claimed execution.</summary>
     public static async Task<int> CancelRunningAsync(
-        CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid runId, DateTime nowUtc,
+        string? claimedByNode = null, int? claimAttempt = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
         var cancelled = await catalog.Runs
             .Where(r => r.RunId == runId && r.Status == RunStatuses.Running)
+            .Where(r => claimedByNode == null || (r.ClaimedByNode == claimedByNode && r.Attempt == claimAttempt))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatuses.Cancelled)
                 .SetProperty(r => r.Success, false)
@@ -720,35 +790,98 @@ public static class RunQueueStore
         return cancelled;
     }
 
-    /// <summary>Requeues runs left <c>running</c> by this node: on worker startup they are orphans from a previous
-    /// incarnation that stopped mid-run, so they are reset to <c>queued</c> to be picked up again. Returns the
-    /// number recovered. (Reclaiming another live node's stale runs by claim age is a multi-node-phase concern.)</summary>
-    public static Task<int> RecoverStuckRunningAsync(CatalogDbContext catalog, string node, CancellationToken ct = default)
+    /// <summary>How many times a run may be claimed for execution before an interrupted attempt is failed instead of
+    /// requeued. Interruption here means the executing process died without recording an outcome (a reclaimed pod, a
+    /// crash, an eviction); a run that FAILS records its failure normally and is never retried by this machinery.
+    /// The cap is what stops a poison run (one that reliably kills its node, e.g. by exhausting memory) from
+    /// crash-looping the fleet forever: three executions distinguishes "unlucky twice" from "the run is the cause".</summary>
+    public const int MaxExecutionAttempts = 3;
+
+    private static string InterruptedTerminalError(string node, int attempt) =>
+        $"Run interrupted: its claiming node '{node}' stopped without recording an outcome, and this was execution "
+        + $"attempt {attempt} of {MaxExecutionAttempts}, so it is not requeued again (a run that repeatedly dies "
+        + "mid-flight is treated as the cause). Re-trigger the flow to run it once more.";
+
+    /// <summary>Recovers runs left <c>running</c> by this node: on worker startup they are orphans from a previous
+    /// incarnation that stopped mid-run. Each goes back to <c>queued</c> to be executed again, unless it has already
+    /// consumed <see cref="MaxExecutionAttempts"/> claims, in which case it is failed (with its dependents skipped)
+    /// exactly as the liveness reaper would: a run that keeps dying with its node is the cause, not the victim.
+    /// Returns the number requeued.</summary>
+    public static async Task<int> RecoverStuckRunningAsync(
+        CatalogDbContext catalog, string node, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(node);
 
-        return catalog.Runs
-            .Where(r => r.Status == RunStatuses.Running && r.ClaimedByNode == node)
+        // An interrupted run the operator had already asked to cancel is recorded cancelled, never requeued: the
+        // cancel intent is authoritative, and a requeue would resurrect work the operator explicitly killed.
+        var pendingCancels = await catalog.Runs.AsNoTracking()
+            .Where(r => r.Status == RunStatuses.Running && r.ClaimedByNode == node && r.CancelRequestedUtc != null)
+            .Select(r => r.RunId)
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var runId in pendingCancels)
+        {
+            await CancelRunningAsync(catalog, runId, nowUtc, ct: ct).ConfigureAwait(false);
+        }
+
+        // Fail the attempt-exhausted ones next (each needs its group descendants skipped, so per-run), then bulk
+        // requeue the rest. Both writes are guarded on the row still being this node's running claim, so a
+        // concurrent liveness reaper doing the same recovery is idempotent, not doubled. The bulk requeue repeats
+        // the under-cap predicate rather than trusting the loops above to have consumed every excluded row, so no
+        // interleaving can ever requeue a run past its attempt budget or against a pending cancel.
+        var exhausted = await catalog.Runs.AsNoTracking()
+            .Where(r => r.Status == RunStatuses.Running && r.ClaimedByNode == node && r.Attempt >= MaxExecutionAttempts)
+            .Select(r => new { r.RunId, r.Attempt })
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var run in exhausted)
+        {
+            var failed = await catalog.Runs
+                .Where(r => r.RunId == run.RunId && r.Status == RunStatuses.Running && r.ClaimedByNode == node)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, RunStatuses.Failed)
+                    .SetProperty(r => r.Success, false)
+                    .SetProperty(r => r.Error, InterruptedTerminalError(node, run.Attempt))
+                    .SetProperty(r => r.EndUtc, nowUtc)
+                    .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+                .ConfigureAwait(false);
+            if (failed > 0)
+            {
+                await SkipGroupDescendantsAsync(catalog, run.RunId, nowUtc, ct).ConfigureAwait(false);
+            }
+        }
+
+        return await catalog.Runs
+            .Where(r => r.Status == RunStatuses.Running && r.ClaimedByNode == node
+                && r.Attempt < MaxExecutionAttempts && r.CancelRequestedUtc == null)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatuses.Queued)
-                .SetProperty(r => r.ClaimedByNode, (string?)null), ct);
+                .SetProperty(r => r.ClaimedByNode, (string?)null)
+                .SetProperty(r => r.StartUtc, (DateTime?)null), ct)
+            .ConfigureAwait(false);
     }
 
-    /// <summary>Fails runs left <c>running</c> by a node that is no longer alive. A run is an orphan when its
+    /// <summary>Recovers runs left <c>running</c> by a node that is no longer alive. A run is an orphan when its
     /// <c>ClaimedByNode</c> has no fleet heartbeat at or after <paramref name="staleBefore"/> (its registry row is
     /// absent or its last-seen is older than the cutoff), or when no claimant is recorded at all: in every case the
     /// process that was executing it is gone and no outcome will ever be recorded, so the run would otherwise sit
     /// <c>running</c> forever and block every future run of its pipeline (the claim's pipeline gate). Unlike
-    /// <see cref="RecoverStuckRunningAsync"/>, which requeues a node's OWN restart orphans by name, this reclaims any
-    /// node's orphans by liveness, so a crashed pod that never returns under the same name is still cleared. Each run
-    /// is failed with a conditional update guarded on it still being <c>running</c>, so a run its real node completes
-    /// in the same instant is never overwritten, and concurrent reapers on multiple control-plane replicas are
-    /// idempotent; a failed group member skips its still-queued dependents, exactly as an operator cancel does.
-    /// Returns the number failed. The liveness signal is only safe to act on because a node heartbeats on a cadence
-    /// independent of its draining (<c>RunWorker.HeartbeatLoopAsync</c>), so a busy node is never mistaken for a dead
-    /// one; the caller sets <paramref name="staleBefore"/> comfortably older than that cadence.</summary>
-    public static async Task<int> ReapOrphanedRunningAsync(
+    /// <see cref="RecoverStuckRunningAsync"/>, which recovers a node's OWN restart orphans by name, this reclaims any
+    /// node's orphans by liveness, so a crashed pod that never returns under the same name is still cleared.
+    /// <para>Losing a worker is recoverable, not terminal, so the default disposition is REQUEUE: the run goes back
+    /// to <c>queued</c> (claim cleared, attempt count already consumed by the claim) and the next eligible worker
+    /// executes it again; flows are idempotent (keyed merges, content-addressed landing), so a half-finished attempt
+    /// re-runs clean. Two cases do not requeue: a run whose operator cancel was already pending is recorded
+    /// <c>cancelled</c> (the cancel intent is authoritative), and a run that has consumed
+    /// <see cref="MaxExecutionAttempts"/> claims is failed, because a run that repeatedly dies with its node is the
+    /// cause rather than the victim (the poison-run bound).</para>
+    /// <para>Every write is a conditional update guarded on the row still carrying the exact orphaned claim (still
+    /// <c>running</c>, same node, same attempt), so a run its real node completes in the same instant is never
+    /// overwritten and concurrent reapers on multiple control-plane replicas are idempotent; a failed or cancelled
+    /// group member skips its still-queued dependents, exactly as an operator cancel does. The liveness signal is
+    /// only safe to act on because a node heartbeats on a cadence independent of its draining
+    /// (<c>RunWorker.HeartbeatLoopAsync</c>), so a busy node is never mistaken for a dead one; the caller sets
+    /// <paramref name="staleBefore"/> comfortably older than that cadence.</para></summary>
+    public static async Task<OrphanReapResult> ReapOrphanedRunningAsync(
         CatalogDbContext catalog, DateTime staleBefore, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -760,38 +893,83 @@ public static class RunQueueStore
             .Where(r => r.Status == RunStatuses.Running)
             .Where(r => r.ClaimedByNode == null
                 || !catalog.Nodes.Any(n => n.Name == r.ClaimedByNode && n.LastSeenUtc >= staleBefore))
-            .Select(r => new { r.RunId, r.ClaimedByNode })
+            .Select(r => new { r.RunId, r.ClaimedByNode, r.Attempt, r.CancelRequestedUtc })
             .ToListAsync(ct).ConfigureAwait(false);
         if (orphans.Count == 0)
         {
-            return 0;
+            return default;
         }
 
-        var failed = 0;
+        var result = default(OrphanReapResult);
         foreach (var orphan in orphans)
         {
             var node = orphan.ClaimedByNode ?? "(unclaimed)";
-            var error =
-                $"Run orphaned: its claiming node '{node}' stopped heartbeating, so the executing process is gone "
-                + "and no outcome will ever be recorded. The control-plane orphan reaper failed it to release the "
-                + "run and its pipeline gate; re-trigger the flow to run it again.";
-            var updated = await catalog.Runs
-                .Where(r => r.RunId == orphan.RunId && r.Status == RunStatuses.Running)
+
+            // The operator already asked for this run's death before its node died: record the cancel, never a
+            // resurrection. The claim fence (node + attempt) keeps this from touching a row the real node is
+            // completing, or that another reaper replica has already moved on.
+            if (orphan.CancelRequestedUtc is not null)
+            {
+                var cancelled = await catalog.Runs
+                    .Where(r => r.RunId == orphan.RunId && r.Status == RunStatuses.Running
+                        && r.ClaimedByNode == orphan.ClaimedByNode && r.Attempt == orphan.Attempt)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, RunStatuses.Cancelled)
+                        .SetProperty(r => r.Success, false)
+                        .SetProperty(r => r.Error,
+                            "The run was cancelled by an operator; its node died before recording the cancellation.")
+                        .SetProperty(r => r.EndUtc, nowUtc)
+                        .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+                    .ConfigureAwait(false);
+                if (cancelled > 0)
+                {
+                    await SkipGroupDescendantsAsync(catalog, orphan.RunId, nowUtc, ct).ConfigureAwait(false);
+                    result = result with { Cancelled = result.Cancelled + 1 };
+                }
+
+                continue;
+            }
+
+            if (orphan.Attempt < MaxExecutionAttempts)
+            {
+                // Requeue: back to the queue with the claim cleared, for any eligible worker to claim (which
+                // increments Attempt again, fencing off this attempt's zombie writes). The under-cap predicate is
+                // repeated in the WHERE so no interleaving can requeue a run past its budget.
+                var requeued = await catalog.Runs
+                    .Where(r => r.RunId == orphan.RunId && r.Status == RunStatuses.Running
+                        && r.ClaimedByNode == orphan.ClaimedByNode && r.Attempt == orphan.Attempt
+                        && r.Attempt < MaxExecutionAttempts)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, RunStatuses.Queued)
+                        .SetProperty(r => r.ClaimedByNode, (string?)null)
+                        .SetProperty(r => r.StartUtc, (DateTime?)null), ct)
+                    .ConfigureAwait(false);
+                if (requeued > 0)
+                {
+                    result = result with { Requeued = result.Requeued + 1 };
+                }
+
+                continue;
+            }
+
+            var failed = await catalog.Runs
+                .Where(r => r.RunId == orphan.RunId && r.Status == RunStatuses.Running
+                    && r.ClaimedByNode == orphan.ClaimedByNode && r.Attempt == orphan.Attempt)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(r => r.Status, RunStatuses.Failed)
                     .SetProperty(r => r.Success, false)
-                    .SetProperty(r => r.Error, error)
+                    .SetProperty(r => r.Error, InterruptedTerminalError(node, orphan.Attempt))
                     .SetProperty(r => r.EndUtc, nowUtc)
                     .SetProperty(r => r.WrittenUtc, nowUtc), ct)
                 .ConfigureAwait(false);
-            if (updated > 0)
+            if (failed > 0)
             {
                 await SkipGroupDescendantsAsync(catalog, orphan.RunId, nowUtc, ct).ConfigureAwait(false);
-                failed++;
+                result = result with { Failed = result.Failed + 1 };
             }
         }
 
-        return failed;
+        return result;
     }
 
     /// <summary>When a group member reaches a non-success terminal state (failed / cancelled), marks every member

@@ -496,7 +496,11 @@
         "pools",
         "polling",
         "compute node",
-        "claiming"
+        "claiming",
+        "crash recovery",
+        "attempt budget",
+        "claim fence",
+        "busy heartbeat"
       ],
       "cliCommand": "worker",
       "related": [

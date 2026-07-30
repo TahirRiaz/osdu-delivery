@@ -138,13 +138,13 @@ public sealed class RunGroupQueueTests
             var (runA, runB) = (result.RunIds[0], result.RunIds[1]);
 
             // Only the wave-0 member is claimable; the wave-1 member is gated behind it.
-            Assert.Equal(runA, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
-            Assert.Null(await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(runA, await ClaimId(db, Node, [], DateTime.UtcNow));
+            Assert.Null(await ClaimId(db, Node, [], DateTime.UtcNow));
             Assert.Equal(RunStatuses.Queued, (await Reload(db, runB)).Status);
 
             // Once wave 0 succeeds, the wave-1 member becomes claimable.
             await CompleteSuccess(db, runA, repoId, $"a_{suffix}", dir);
-            Assert.Equal(runB, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(runB, await ClaimId(db, Node, [], DateTime.UtcNow));
         }
         finally
         {
@@ -176,14 +176,14 @@ public sealed class RunGroupQueueTests
                 db, new RunGroupEnqueueRequest(repoId, RunGroupModes.Node, A, members), DateTime.UtcNow);
             var (runA, runB, runC) = (result.RunIds[0], result.RunIds[1], result.RunIds[2]);
 
-            Assert.Equal(runA, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(runA, await ClaimId(db, Node, [], DateTime.UtcNow));
 
             // A fails: its dependent B is skipped; the independent C stays queued and is now claimable.
             await RunQueueStore.FailAsync(db, runA, "boom", DateTime.UtcNow);
             Assert.Equal(RunStatuses.Failed, (await Reload(db, runA)).Status);
             Assert.Equal(RunStatuses.Skipped, (await Reload(db, runB)).Status);
             Assert.Equal(RunStatuses.Queued, (await Reload(db, runC)).Status);
-            Assert.Equal(runC, await RunQueueStore.ClaimNextAsync(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(runC, await ClaimId(db, Node, [], DateTime.UtcNow));
         }
         finally
         {
@@ -392,8 +392,11 @@ public sealed class RunGroupQueueTests
               "result": { "rowsLoaded": 1, "durationSeconds": 1.0 }
             }
             """);
-        Assert.True(await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
+        Assert.Equal(RunCompletionOutcome.Recorded, await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
     }
+
+    private static async Task<Guid?> ClaimId(CatalogDbContext db, string node, IReadOnlyList<string> pools, DateTime nowUtc)
+        => (await RunQueueStore.ClaimNextAsync(db, node, pools, nowUtc))?.RunId;
 
     private static async Task<CatalogRun> Reload(CatalogDbContext db, Guid runId)
     {

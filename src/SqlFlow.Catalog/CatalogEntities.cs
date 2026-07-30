@@ -192,8 +192,19 @@ public class CatalogRun
     public DateTime? EnqueuedUtc { get; set; }
 
     /// <summary>The worker/node that claimed the run for execution; null until claimed (and for an artifact-sourced
-    /// run). The basis for crash recovery: a run left <c>running</c> by a node that died is requeued.</summary>
+    /// run). The basis for crash recovery: a run left <c>running</c> by a node that died is requeued by the
+    /// control plane's orphan reaper (or failed once <see cref="Attempt"/> reaches the retry cap), so losing a
+    /// worker mid-run is recoverable rather than terminal.</summary>
     public string? ClaimedByNode { get; set; }
+
+    /// <summary>How many times this run has been claimed for execution, incremented atomically by the claim itself.
+    /// Serves two roles at once. As a retry counter it bounds crash recovery: an orphaned <c>running</c> run is
+    /// requeued only while this is under the cap, so a poison run that kills its node cannot crash-loop the fleet
+    /// forever. As a fencing token it guards every outcome write: the claim returns the incremented value to the
+    /// claiming node, and the node's completion/failure/cancel writes are conditional on the row still carrying
+    /// that exact value, so a zombie node (presumed dead, actually alive) can never overwrite the outcome of a
+    /// requeued and re-claimed execution with its own stale result.</summary>
+    public int Attempt { get; set; }
 
     /// <summary>When an operator asked to cancel this run while it was already <c>running</c> (a queued run is
     /// cancelled outright, so this stays null for that path). It is a durable request, not the outcome: the owning
@@ -973,6 +984,13 @@ public class CatalogNode
     /// a pool that is still spinning one up). The empty string is the default (untargeted) pool; null is a node that
     /// registered before pools were recorded and is treated as the default pool.</summary>
     public string? Pool { get; set; }
+
+    /// <summary>How many runs this node was executing at its last heartbeat. The autoscaler's scale-in signal: the
+    /// replica target counts nodes that are busy (this &gt; 0 and recently heartbeated) alongside the queued
+    /// backlog, so occupied workers hold their replicas while idle ones remain the reclaimable surplus. Refreshed
+    /// on every heartbeat; a stale row is excluded by the same liveness window the orphan reaper uses, so a dead
+    /// node's last busy count can never pin a replica.</summary>
+    public int BusyRuns { get; set; }
 
     /// <summary>When set, an operator has asked this node to restart. The worker observes it on its heartbeat cadence,
     /// stops claiming, drains its in-flight work, and exits, after which the orchestrator (Container Apps / K8s)
