@@ -287,18 +287,18 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Trigger_Preview_BatchScope_ListsTheMembersWithoutEnqueuing()
+    public async Task Trigger_Preview_NodeScope_ListsTheMembersWithoutEnqueuing()
     {
         var (dll, url, cs) = await RequireAsync();
         var (username, password) = await SeedOperatorAsync(cs);
-        var (repoId, repoName, flowName, batch) = await SeedRepoPipelineAsync(cs);
+        var (repoId, repoName, flowName, _) = await SeedRepoPipelineAsync(cs);
         var token = await MintPatAsync(url, username, password);
 
         try
         {
             var preview = await CliBinary.RunAsync(
                 dll,
-                ["trigger", "--repo", repoName, "--scope", "batch", "--batch", batch, "--preview"],
+                ["trigger", "--repo", repoName, "--flow", flowName, "--scope", "node", "--preview"],
                 env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
 
             Assert.True(preview.Exit == 0, preview.AllOutput);
@@ -307,6 +307,15 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
 
             await using var db = CatalogDatabase.Create(cs);
             Assert.False(await db.Runs.AnyAsync(r => r.RepoId == repoId), "preview must not enqueue");
+
+            // There is no ad-hoc batch scope anymore: a whole source runs through its schedule, and the CLI
+            // answers the retired spelling with guidance instead of a server round trip.
+            var batchScope = await CliBinary.RunAsync(
+                dll,
+                ["trigger", "--repo", repoName, "--scope", "batch", "--preview"],
+                env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
+            Assert.Equal(1, batchScope.Exit);
+            Assert.Contains("schedule", batchScope.StdErr, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -316,18 +325,18 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Trigger_BatchScope_GroupShowAndRerun()
+    public async Task Trigger_NodeScope_GroupShowAndRerun()
     {
         var (dll, url, cs) = await RequireAsync();
         var (username, password) = await SeedOperatorAsync(cs);
-        var (repoId, repoName, flowName, batch) = await SeedRepoPipelineAsync(cs);
+        var (repoId, repoName, flowName, _) = await SeedRepoPipelineAsync(cs);
         var token = await MintPatAsync(url, username, password);
         var env = CliEnv(url, ("SQLFLOW_TOKEN", token));
 
         try
         {
             var trigger = await CliBinary.RunAsync(
-                dll, ["trigger", "--repo", repoName, "--scope", "batch", "--batch", batch, "--json"],
+                dll, ["trigger", "--repo", repoName, "--flow", flowName, "--scope", "node", "--json"],
                 env: env, workingDirectory: _dir);
             Assert.True(trigger.Exit == 0, trigger.AllOutput);
             using var accepted = JsonDocument.Parse(trigger.StdOut);

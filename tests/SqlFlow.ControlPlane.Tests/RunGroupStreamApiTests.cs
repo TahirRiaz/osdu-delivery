@@ -44,12 +44,17 @@ public sealed class RunGroupStreamApiTests
         {
             await using (var db = CatalogDatabase.Create(cs))
             {
+                // The fabricated running member must be claimed by a LIVE node: a real running run always has a
+                // heartbeating claimant, and the host's orphan reaper (rightly) reclaims one that does not.
+                await NodeStore.HeartbeatAsync(db, "cp-gstream-node-" + suffix, "1.0.0", DateTime.UtcNow, ct: ct);
                 db.RunGroups.Add(new CatalogRunGroup
                 {
                     GroupId = groupId, RepoId = repoId, Mode = "batch", Anchor = "BB", MemberCount = 2,
                     EnqueuedUtc = t0,
                 });
-                db.Runs.Add(SeedMember(runA, repoId, flowA, groupId, groupWave: 1, RunStatuses.Running, t0));
+                var runningMember = SeedMember(runA, repoId, flowA, groupId, groupWave: 1, RunStatuses.Running, t0);
+                runningMember.ClaimedByNode = "cp-gstream-node-" + suffix;
+                db.Runs.Add(runningMember);
                 db.Runs.Add(SeedMember(runB, repoId, flowB, groupId, groupWave: 2, RunStatuses.Queued, t0));
                 await db.SaveChangesAsync(ct);
             }
@@ -118,6 +123,7 @@ public sealed class RunGroupStreamApiTests
             await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunGroups.Where(g => g.GroupId == groupId).ExecuteDeleteAsync();
+            await NodeStore.DeleteAsync(db, "cp-gstream-node-" + suffix);
         }
     }
 

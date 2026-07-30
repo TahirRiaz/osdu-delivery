@@ -78,12 +78,15 @@ public static class RunTriggerEndpoints
                 title: "Invalid request");
         }
 
-        // The scope selects Flow (one flow), Node (a flow and its descendants), or Batch (a whole data source).
+        // The scope selects Flow (one flow) or Node (a flow and its descendants). There is no ad-hoc batch scope:
+        // a whole source runs through its schedule (fire it, or POST /schedules/{id}/run), whose member set is
+        // the single authority on what a source executes.
         var scope = RunScopeExpander.TryParseScope(request.Scope);
         if (scope is null)
         {
             return TypedResults.Problem(
-                detail: "scope must be one of 'flow', 'node', or 'batch' (or omitted for a single flow).",
+                detail: "scope must be one of 'flow' or 'node' (or omitted for a single flow). To run a whole "
+                        + "source, fire its schedule (POST /schedules/{id}/run): membership is what a fire runs.",
                 statusCode: StatusCodes.Status400BadRequest,
                 title: "Invalid request");
         }

@@ -393,6 +393,9 @@ public sealed class RunTriggerApiTests
             // (absent) owning node to honor. This exercises the endpoint's running-run branch deterministically.
             await using (var db = CatalogDatabase.Create(cs))
             {
+                // The fabricated running run must be claimed by a LIVE node: a real running run always has a
+                // heartbeating claimant, and the host's orphan reaper (rightly) reclaims one that does not.
+                await NodeStore.HeartbeatAsync(db, "some-remote-node-" + suffix, "1.0.0", DateTime.UtcNow);
                 db.Runs.Add(new CatalogRun
                 {
                     RunId = runId,
@@ -432,6 +435,7 @@ public sealed class RunTriggerApiTests
         {
             await using var db = CatalogDatabase.Create(cs);
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            await NodeStore.DeleteAsync(db, "some-remote-node-" + suffix);
         }
     }
 

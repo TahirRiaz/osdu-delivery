@@ -183,13 +183,14 @@ internal static partial class RemoteVerbs
 
     /// <summary>
     /// 'sqlflow trigger --repo &lt;name|id&gt; --flow &lt;f&gt;': enqueues a run on the fleet through
-    /// <c>POST /api/v1/runs</c>, exactly as the GUI's trigger dialog does. <c>--scope flow|node|batch</c>
-    /// picks a single flow (default), the flow plus its lineage descendants, or a whole batch
-    /// (<c>--batch</c> names the label; omitted, the anchor flow's own batch is used). <c>--preview</c> shows
-    /// what a node/batch scope would enqueue without enqueuing. The built-in backfill flags are the same as a
-    /// local run: <c>--full</c>, <c>--from</c>/<c>--to</c>, <c>--file-pattern</c>; <c>--pool</c> routes to a
-    /// node pool and <c>--commit</c> pins an exact git version. <c>--follow</c> attaches to the live trace
-    /// (single run) or the member stream (group) and exits by the terminal outcome.
+    /// <c>POST /api/v1/runs</c>, exactly as the GUI's trigger dialog does. <c>--scope flow|node</c>
+    /// picks a single flow (default) or the flow plus its lineage descendants. There is no ad-hoc batch
+    /// scope: a whole source runs through its schedule ('sqlflow schedules run &lt;id&gt;'), whose member set
+    /// is the single authority on what a source executes. <c>--preview</c> shows what a node scope would
+    /// enqueue without enqueuing. The built-in backfill flags are the same as a local run: <c>--full</c>,
+    /// <c>--from</c>/<c>--to</c>, <c>--file-pattern</c>; <c>--pool</c> routes to a node pool and
+    /// <c>--commit</c> pins an exact git version. <c>--follow</c> attaches to the live trace (single run) or
+    /// the member stream (group) and exits by the terminal outcome.
     /// </summary>
     public static async Task<int> TriggerAsync(string[] args)
     {
@@ -202,28 +203,30 @@ internal static partial class RemoteVerbs
             var repo = await ResolveRepoAsync(client, args, ct).ConfigureAwait(false);
             var flowName = Program.GetOption(args, "--flow");
             var scope = (Program.GetOption(args, "--scope") ?? "flow").Trim().ToLowerInvariant();
-            var batch = Program.GetOption(args, "--batch");
-            if (scope is not ("flow" or "node" or "batch"))
+            if (scope is "batch")
             {
-                Console.Error.WriteLine($"ERROR  --scope '{scope}' is not one of flow, node, batch.");
+                Console.Error.WriteLine(
+                    "ERROR  --scope batch is gone: a whole source runs through its schedule, whose membership is "
+                    + "what a fire runs. Use 'sqlflow schedules list --repo <r>' to find it and 'sqlflow schedules "
+                    + "run <id>' to fire it.");
                 return 1;
             }
 
-            if (scope is "flow" or "node" && string.IsNullOrWhiteSpace(flowName))
+            if (scope is not ("flow" or "node"))
+            {
+                Console.Error.WriteLine($"ERROR  --scope '{scope}' is not one of flow, node.");
+                return 1;
+            }
+
+            if (string.IsNullOrWhiteSpace(flowName))
             {
                 Console.Error.WriteLine($"ERROR  --scope {scope} requires --flow <name>.");
                 return 1;
             }
 
-            if (scope is "batch" && string.IsNullOrWhiteSpace(batch) && string.IsNullOrWhiteSpace(flowName))
-            {
-                Console.Error.WriteLine("ERROR  --scope batch requires --batch <label> (or --flow, whose batch label is used).");
-                return 1;
-            }
-
             if (args.Contains("--preview"))
             {
-                var preview = await client.PreviewScopeAsync(repo.Id, flowName, scope, batch, ct).ConfigureAwait(false);
+                var preview = await client.PreviewScopeAsync(repo.Id, flowName, scope, batch: null, ct).ConfigureAwait(false);
                 if (json)
                 {
                     Console.WriteLine(JsonSerializer.Serialize(preview, ControlPlaneClient.JsonIndented));
@@ -241,7 +244,7 @@ internal static partial class RemoteVerbs
 
             var parameters = Program.ParseRunParameters(args);
             var request = new RunTriggerRequest(
-                repo.Id, flowName ?? string.Empty,
+                repo.Id, flowName,
                 Pool: Program.GetOption(args, "--pool"),
                 CommitSha: Program.GetOption(args, "--commit"),
                 FullLoad: parameters.FullLoad,
@@ -249,7 +252,6 @@ internal static partial class RemoteVerbs
                 BackfillTo: parameters.BackfillTo,
                 FilePattern: parameters.FilePattern,
                 Scope: scope,
-                Batch: batch,
                 AssertionsOnly: parameters.AssertionsOnly);
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
@@ -493,16 +495,21 @@ internal static partial class RemoteVerbs
                         return 1;
                     }
 
-                    // A fresh expansion of the same anchor: mode 'batch' re-runs the whole label, anything
-                    // else anchors the flow and its descendants. No commit pin, so the members resolve from
-                    // the repo's current synced state, matching the GUI's re-run semantics.
-                    var isBatch = string.Equals(group.Mode, "batch", StringComparison.OrdinalIgnoreCase);
+                    // A batch-mode group is a schedule fire (the anchor is the schedule's name), and a schedule's
+                    // membership is the single authority on what its source runs, so the rerun goes back through
+                    // the schedule itself rather than re-deriving the set here.
+                    if (string.Equals(group.Mode, "batch", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return await RerunScheduleGroupAsync(client, group, json, args, ct).ConfigureAwait(false);
+                    }
+
+                    // A fresh node expansion of the same anchor flow: the members resolve from the repo's current
+                    // synced state (no commit pin), matching the GUI's re-run semantics.
                     var request = new RunTriggerRequest(
                         group.RepoId,
-                        isBatch ? string.Empty : group.Anchor,
+                        group.Anchor,
                         Pool: Program.GetOption(args, "--pool"),
-                        Scope: isBatch ? "batch" : "node",
-                        Batch: isBatch ? group.Anchor : null);
+                        Scope: "node");
                     var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
                     var rerun = outcome.Group ?? throw new SqlFlowException(
                         $"the control plane accepted the rerun of '{group.Anchor}' as a single run, not a group; check the group's scope.");
@@ -522,6 +529,60 @@ internal static partial class RemoteVerbs
                 }
             }
         }).ConfigureAwait(false);
+    }
+
+    /// <summary>Reruns a schedule-fired (batch-mode) group by firing its schedule again. The group's anchor is the
+    /// schedule's name, and a schedule's membership is the single authority on what its source runs, so re-firing
+    /// the schedule is the only faithful re-expansion; re-deriving the set here would be a second opinion.</summary>
+    private static async Task<int> RerunScheduleGroupAsync(
+        ControlPlaneClient client, RunGroupDto group, bool json, string[] args, CancellationToken ct)
+    {
+        // Resolve the schedule by name within the group's repo, paging until found or exhausted.
+        ScheduleDto? schedule = null;
+        for (var page = 1; schedule is null; page++)
+        {
+            var schedules = await client.ListSchedulesAsync(group.RepoId, null, null, page, 50, ct).ConfigureAwait(false);
+            schedule = schedules.Items.FirstOrDefault(
+                s => string.Equals(s.Name, group.Anchor, StringComparison.OrdinalIgnoreCase));
+            if (schedules.Items.Count < 50)
+            {
+                break;
+            }
+        }
+
+        if (schedule is null)
+        {
+            Console.Error.WriteLine(
+                $"ERROR  group {group.GroupId} was fired by schedule '{group.Anchor}', which no longer exists in "
+                + "this repo; there is nothing to re-expand. Fire the source's current schedule instead "
+                + "('sqlflow schedules list --repo <r>').");
+            return 1;
+        }
+
+        var fired = await client.RunScheduleNowAsync(schedule.Id, ct).ConfigureAwait(false);
+        if (fired is null)
+        {
+            Console.Error.WriteLine($"ERROR  schedule '{schedule.Name}' ({schedule.Id}) disappeared before it could fire.");
+            return 1;
+        }
+
+        if (json && !args.Contains("--follow"))
+        {
+            Console.WriteLine(JsonSerializer.Serialize(fired, ControlPlaneClient.JsonIndented));
+            return 0;
+        }
+
+        Note(json, fired.GroupId is { } firedGroup
+            ? $"OK   schedule '{schedule.Name}' re-fired: {fired.MemberCount} member flow(s) as group {firedGroup}."
+            : $"OK   schedule '{schedule.Name}' re-fired: run {fired.RunId}.");
+        if (!args.Contains("--follow"))
+        {
+            return 0;
+        }
+
+        return fired.GroupId is { } follow
+            ? await FollowGroupAsync(client, follow, json, ct).ConfigureAwait(false)
+            : await FollowRunAsync(client, fired.RunId, json, ct).ConfigureAwait(false);
     }
 
     // ---- follow (SSE) -------------------------------------------------------------------------------------

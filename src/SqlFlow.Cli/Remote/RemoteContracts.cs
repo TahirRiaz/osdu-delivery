@@ -150,21 +150,25 @@ internal sealed record DashboardDto(
 /// <summary>A worker node as the fleet view lists it.</summary>
 internal sealed record NodeDto(string Name, DateTime FirstSeenUtc, DateTime LastSeenUtc, string? Version, bool Online);
 
-/// <summary>A schedule as the catalog holds it.</summary>
+/// <summary>A schedule as the catalog holds it: a named member SET (what a fire runs), not a single flow.</summary>
 internal sealed record ScheduleDto(
-    Guid Id, Guid RepoId, Guid PipelineId, string FlowName, string? Cron, int? IntervalSeconds, string Timezone,
-    bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
-    DateTime CreatedUtc, DateTime UpdatedUtc);
+    Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds,
+    string Timezone, bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc,
+    DateTime? LastFireUtc, Guid? LastRunId, Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc,
+    DateTime UpdatedUtc, int? MaxConcurrency, RunGroupCountsDto? LastCounts);
 
-/// <summary>Creates a schedule (exactly one of cron / interval).</summary>
+/// <summary>Creates a schedule: at least one member flow, exactly one of cron / interval. The name defaults to the
+/// first member's flow name on the server.</summary>
 internal sealed record CreateScheduleRequest(
-    Guid RepoId, string FlowName, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled, bool? Catchup);
+    Guid RepoId, IReadOnlyList<string> Members, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled,
+    bool? Catchup = null, string? Name = null, int? MaxConcurrency = null);
 
 /// <summary>The created-schedule acknowledgement.</summary>
 internal sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
 
-/// <summary>The manual run-now acknowledgement: the id of the run the schedule's flow was enqueued as.</summary>
-internal sealed record ScheduleRunAccepted(Guid RunId);
+/// <summary>The manual run-now acknowledgement: the enqueued run (the group's first member for a multi-member
+/// schedule), plus the run group and member count when the fire expanded to a wave-ordered set.</summary>
+internal sealed record ScheduleRunAccepted(Guid RunId, Guid? GroupId = null, int MemberCount = 1);
 
 /// <summary>A managed git source the control plane keeps the catalog synced from.</summary>
 internal sealed record RepoSourceDto(

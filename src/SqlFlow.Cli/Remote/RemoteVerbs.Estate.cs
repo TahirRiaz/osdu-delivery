@@ -134,13 +134,13 @@ internal static partial class RemoteVerbs
                         return 0;
                     }
 
-                    Console.WriteLine($"{"SCHEDULE",-36}  {"FLOW",-32}  {"TRIGGER",-22}  {"STATE",-8}  NEXT FIRE (UTC)");
+                    Console.WriteLine($"{"SCHEDULE",-36}  {"NAME",-28}  {"MEMBERS",7}  {"TRIGGER",-22}  {"STATE",-8}  NEXT FIRE (UTC)");
                     foreach (var schedule in schedules.Items)
                     {
                         var trigger = schedule.Cron ?? $"every {schedule.IntervalSeconds}s";
                         var state = schedule.Paused ? "paused" : schedule.Enabled ? "enabled" : "disabled";
                         Console.WriteLine(
-                            $"{schedule.Id,-36}  {Truncate(schedule.FlowName, 32),-32}  {Truncate(trigger, 22),-22}  {state,-8}  {FormatUtc(schedule.NextFireUtc)}");
+                            $"{schedule.Id,-36}  {Truncate(schedule.Name, 28),-28}  {schedule.MemberPipelineIds.Count,7}  {Truncate(trigger, 22),-22}  {state,-8}  {FormatUtc(schedule.NextFireUtc)}");
                     }
 
                     Console.WriteLine($"({schedules.Items.Count} of {schedules.Total} schedule(s))");
@@ -169,10 +169,14 @@ internal static partial class RemoteVerbs
                 {
                     // The cheap client-side shape checks come before any catalog round trip, so a wrong
                     // invocation is answered instantly and identically whether or not the repo exists.
+                    // A schedule owns a member SET (what a fire runs): --flow takes one name or a
+                    // comma-separated list, and every member joins the same wave-ordered fire.
                     var flow = Program.GetOption(args, "--flow");
-                    if (string.IsNullOrWhiteSpace(flow))
+                    var members = (flow ?? string.Empty)
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (members.Length == 0)
                     {
-                        Console.Error.WriteLine("ERROR  'schedules create' requires --flow <name>.");
+                        Console.Error.WriteLine("ERROR  'schedules create' requires --flow <name[,name...]>: membership is what a fire runs.");
                         return 1;
                     }
 
@@ -182,6 +186,18 @@ internal static partial class RemoteVerbs
                     {
                         Console.Error.WriteLine("ERROR  'schedules create' takes exactly one of --cron <expr> or --interval <seconds>.");
                         return 1;
+                    }
+
+                    int? maxConcurrency = null;
+                    if (Program.GetOption(args, "--max-concurrency") is { } widthRaw)
+                    {
+                        if (!int.TryParse(widthRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var width) || width <= 0)
+                        {
+                            Console.Error.WriteLine($"ERROR  --max-concurrency '{widthRaw}' is not a positive number.");
+                            return 1;
+                        }
+
+                        maxConcurrency = width;
                     }
 
                     var repo = await ResolveRepoAsync(client, args, ct).ConfigureAwait(false);
@@ -199,16 +215,20 @@ internal static partial class RemoteVerbs
                     }
 
                     var created = await client.CreateScheduleAsync(new CreateScheduleRequest(
-                        repo.Id, flow, cron, interval, Program.GetOption(args, "--timezone"),
+                        repo.Id, members, cron, interval, Program.GetOption(args, "--timezone"),
                         Enabled: !args.Contains("--disabled"),
-                        Catchup: args.Contains("--catchup") ? true : null), ct).ConfigureAwait(false);
+                        Catchup: args.Contains("--catchup") ? true : null,
+                        Name: Program.GetOption(args, "--name"),
+                        MaxConcurrency: maxConcurrency), ct).ConfigureAwait(false);
                     if (json)
                     {
                         Console.WriteLine(JsonSerializer.Serialize(created, ControlPlaneClient.JsonIndented));
                         return 0;
                     }
 
-                    Console.WriteLine($"OK   schedule {created.Id} created for '{flow}' in [{repo.Name}]; next fire {FormatUtc(created.NextFireUtc)} UTC.");
+                    Console.WriteLine(
+                        $"OK   schedule {created.Id} created with {members.Length} member flow(s) in [{repo.Name}]; "
+                        + $"next fire {FormatUtc(created.NextFireUtc)} UTC.");
                     return 0;
                 }
 
@@ -219,8 +239,8 @@ internal static partial class RemoteVerbs
                         return 1;
                     }
 
-                    var runId = await client.RunScheduleNowAsync(id, ct).ConfigureAwait(false);
-                    if (runId is null)
+                    var fired = await client.RunScheduleNowAsync(id, ct).ConfigureAwait(false);
+                    if (fired is null)
                     {
                         Console.Error.WriteLine($"ERROR  no schedule '{id}'.");
                         return 1;
@@ -228,11 +248,13 @@ internal static partial class RemoteVerbs
 
                     if (json)
                     {
-                        Console.WriteLine(JsonSerializer.Serialize(new ScheduleRunAccepted(runId.Value), ControlPlaneClient.JsonIndented));
+                        Console.WriteLine(JsonSerializer.Serialize(fired, ControlPlaneClient.JsonIndented));
                         return 0;
                     }
 
-                    Console.WriteLine($"OK   schedule {id} fired; enqueued run {runId}. Follow it with: sqlflow runs show {runId} --follow");
+                    Console.WriteLine(fired.GroupId is { } firedGroup
+                        ? $"OK   schedule {id} fired; enqueued {fired.MemberCount} member flow(s) as group {firedGroup}. Follow it with: sqlflow groups show {firedGroup} --follow"
+                        : $"OK   schedule {id} fired; enqueued run {fired.RunId}. Follow it with: sqlflow runs show {fired.RunId} --follow");
                     return 0;
                 }
 

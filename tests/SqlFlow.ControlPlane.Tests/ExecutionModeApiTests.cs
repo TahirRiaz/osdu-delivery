@@ -71,8 +71,8 @@ public sealed class ExecutionModeApiTests
             using var wrongKind = await SendAsync(client, token, new { repoId, flowName = "flow-hc", assertionsOnly = true });
             Assert.Equal(HttpStatusCode.BadRequest, wrongKind.StatusCode);
 
-            // An assertions-only run is a single-flow concept: a batch scope is refused at the boundary.
-            using var groupScope = await SendAsync(client, token, new { repoId, flowName = "flow-ing", scope = "batch", assertionsOnly = true });
+            // An assertions-only run is a single-flow concept: a group (node) scope is refused at the boundary.
+            using var groupScope = await SendAsync(client, token, new { repoId, flowName = "flow-ing", scope = "node", assertionsOnly = true });
             Assert.Equal(HttpStatusCode.BadRequest, groupScope.StatusCode);
 
             // The ingestion flow is accepted, and the run detail carries the flag for the audit trail.

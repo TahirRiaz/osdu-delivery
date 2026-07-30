@@ -2151,14 +2151,15 @@ internal static class Program
                                                  the browser device grant (for SSO/Entra accounts); --with-token stores
                                                  a pasted PAT. --no-store prints the minted secret once instead (CI).
               sqlflow logout                     Revoke the stored token server-side and remove it locally.
-              sqlflow trigger  --repo <name|id> --flow <f> [--scope flow|node|batch] [--batch <label>]
+              sqlflow trigger  --repo <name|id> --flow <f> [--scope flow|node]
                                [--pool <p>] [--commit <sha>] [--full] [--from <date>] [--to <date>]
                                [--file-pattern <glob>] [--assertions-only] [--preview] [--follow]
                                                  Enqueue a run on the fleet (POST /runs), exactly as the GUI's trigger
-                                                 dialog does: scope flow (default), node (the flow + its lineage
-                                                 descendants), or batch (a whole label). --preview shows the members
-                                                 and waves without enqueuing; backfill flags are the same as a local
-                                                 run; --follow attaches to the live trace (or the group's member
+                                                 dialog does: scope flow (default) or node (the flow + its lineage
+                                                 descendants). A whole source runs through its schedule ('schedules
+                                                 run'), whose membership is what a fire runs. --preview shows the
+                                                 members and waves without enqueuing; backfill flags are the same as a
+                                                 local run; --follow attaches to the live trace (or the group's member
                                                  stream) and exits by the terminal outcome.
               sqlflow runs list [--status s] [--flow name] [--batch b] [--kind k] [--repo r] [--group g] [--latest]
               sqlflow runs show <runId> [--files --statements --assertions --keys --metrics]
@@ -2173,11 +2174,11 @@ internal static class Program
                                                  and where the credential came from (--token / SQLFLOW_TOKEN / store).
               sqlflow summary                    The dashboard rollup: estate size, run queue, fleet, schedules, sync.
               sqlflow nodes                      The worker fleet with heartbeat-derived online/offline state.
-              sqlflow schedules list | show <id> | create --repo r --flow f (--cron <expr>|--interval <seconds>)
-                               [--timezone tz] [--disabled] [--catchup]
+              sqlflow schedules list | show <id> | create --repo r --flow f[,f2,...] (--cron <expr>|--interval <seconds>)
+                               [--name <n>] [--timezone tz] [--max-concurrency <n>] [--disabled] [--catchup]
                                | run <id> | pause <id> | resume <id> | delete <id>
-                                                 The scheduling surface (cron or fixed interval per flow); 'run' fires
-                                                 a schedule now (enqueues a run to test it) without moving its cadence.
+                                                 The scheduling surface: a schedule owns a member SET (what a fire
+                                                 runs, wave-ordered); 'run' fires it now without moving its cadence.
               sqlflow repos    list | show <name|id> | sync <name|id>
                                | register --name r --remote-url u [--branch b] [--interval s]
                                  [--credential-ref ${env:GIT_TOKEN}] [--credential-user u] [--disabled]
@@ -2940,7 +2941,8 @@ internal static class Program
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
         "--scope", "--batch", "--pool", "--poll-seconds", "--commit", "--flow", "--status", "--kind", "--group",
         "--page", "--page-size", "--from", "--to", "--file-pattern",
-        "--cron", "--interval", "--timezone", "--remote-url", "--credential-ref", "--credential-user",
+        "--cron", "--interval", "--timezone", "--max-concurrency",
+        "--remote-url", "--credential-ref", "--credential-user",
         "--ref", "--sample", "--max-columns", "--max-candidates", "--active", "--enabled",
         "--search", "--relation", "--tier", "--server", "--operation", "--last",
     };

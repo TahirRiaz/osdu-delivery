@@ -42,6 +42,9 @@ public sealed class RunTraceStreamApiTests
             long preSeededEventId;
             await using (var db = CatalogDatabase.Create(cs))
             {
+                // The fabricated running run must be claimed by a LIVE node: a real running run always has a
+                // heartbeating claimant, and the host's orphan reaper (rightly) reclaims one that does not.
+                await NodeStore.HeartbeatAsync(db, "cp-stream-node-" + suffix, "1.0.0", DateTime.UtcNow, ct: ct);
                 db.Runs.Add(new CatalogRun
                 {
                     RunId = runId,
@@ -50,6 +53,7 @@ public sealed class RunTraceStreamApiTests
                     FlowName = flowName,
                     FlowKind = "ing",
                     Status = RunStatuses.Running,
+                    ClaimedByNode = "cp-stream-node-" + suffix,
                     Success = false,
                     WrittenUtc = t0,
                 });
@@ -125,6 +129,7 @@ public sealed class RunTraceStreamApiTests
             await db.RunEvents.Where(e => e.RunId == runId).ExecuteDeleteAsync();
             await db.RunStatements.Where(s => s.RunId == runId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RunId == runId).ExecuteDeleteAsync();
+            await NodeStore.DeleteAsync(db, "cp-stream-node-" + suffix);
         }
     }
 
