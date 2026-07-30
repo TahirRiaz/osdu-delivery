@@ -13,6 +13,15 @@ namespace SqlFlow.SqlServer.Catalog;
 /// </summary>
 public sealed class SqlServerCatalogReader : IProviderCatalogReader
 {
+    /// <summary>
+    /// Every command here waits on the server rather than a client clock. These catalog scans run on the hot
+    /// ingestion path (schema introspection before each load) and take metadata locks that queue behind any
+    /// concurrent DDL transaction in the same database, so under a wide batch fire they routinely wait longer
+    /// than ADO.NET's 30 second default. That default would abort the whole flow with a bare "Execution Timeout
+    /// Expired" instead of letting the introspection complete.
+    /// </summary>
+    private const int NoClientTimeout = 0;
+
     public bool CanHandle(DataSourceKind kind) => kind is DataSourceKind.MSSQL or DataSourceKind.AZDB;
 
     public async Task<IReadOnlyList<DatabaseInfo>> ListDatabasesAsync(DbConnection connection, CatalogQuery query, CancellationToken ct = default)
@@ -21,6 +30,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
         ArgumentNullException.ThrowIfNull(query);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
         command.CommandText = """
             SELECT d.name AS DatabaseName, d.collation_name AS Collation, d.state_desc AS State
             FROM sys.databases AS d
@@ -53,6 +63,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
         UseDatabase(connection, database);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
         command.CommandText = """
             SELECT s.name AS SchemaName, p.name AS Owner
             FROM sys.schemas AS s
@@ -85,6 +96,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
 
         var limit = ClampLimit(query.Limit);
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
         command.CommandText = """
             SELECT o.[name] AS ObjectName,
                    SCHEMA_NAME(o.schema_id) AS SchemaName,
@@ -137,6 +149,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
         UseDatabase(connection, database);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
         command.CommandText = """
             SELECT TOP (@lim)
                    SCHEMA_NAME(o.schema_id) AS SchemaName,
@@ -184,6 +197,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
 
         await using (var lookup = connection.CreateCommand())
         {
+            lookup.CommandTimeout = NoClientTimeout;
             lookup.CommandText = """
                 SELECT o.object_id AS ObjectId, o.[type] AS ObjectTypeCode, ISNULL(tb.temporal_type, 0) AS TemporalType
                 FROM sys.objects AS o
@@ -212,6 +226,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
     private static async Task<IReadOnlyList<CatalogColumn>> ReadColumnsAsync(DbConnection connection, int objectId, CancellationToken ct)
     {
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
         command.CommandText = """
             SELECT c.column_id AS Ordinal, c.[name] AS ColumnName, t.[name] AS BaseTypeName,
                    c.max_length AS MaxLengthBytes, c.[precision] AS Prec, c.scale AS Scale,
@@ -264,6 +279,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
     private static async Task<IReadOnlyList<CatalogIndex>> ReadIndexesAsync(DbConnection connection, int objectId, CancellationToken ct)
     {
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
         command.CommandText = """
             SELECT i.[name] AS IndexName, i.is_primary_key AS IsPk, i.is_unique AS IsUnique,
                    CASE WHEN i.[type] = 1 THEN 1 ELSE 0 END AS IsClustered,

@@ -37,7 +37,7 @@ public sealed class SqlExportFlowLoader : IExportFlowLoader
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var command = new SqlCommand(
                 "SELECT [FlowID] FROM [flw].[Export] WHERE [Batch] = @batch AND ISNULL([DeactivateFromBatch], 0) = 0 ORDER BY [FlowID];",
-                connection);
+                connection) { CommandTimeout = 0 };
             command.Parameters.Add(new SqlParameter("@batch", System.Data.SqlDbType.NVarChar, 250) { Value = batch });
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -64,7 +64,7 @@ public sealed class SqlExportFlowLoader : IExportFlowLoader
             "[AddTimeStampToFileName],[Subfolderpattern],[NoOfThreads],[ZipTrg],[OnErrorResume],[PostInvokeAlias]," +
             "[DeactivateFromBatch],[FlowType],[FromObjectMK],[ToObjectMK],[CreatedBy],[CreatedDate] " +
             "FROM [flw].[Export] WHERE [FlowID] = @id;",
-            connection);
+            connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);

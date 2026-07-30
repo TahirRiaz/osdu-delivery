@@ -22,7 +22,9 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
-        await using var command = new SqlCommand(sql, connection);
+        // INFORMATION_SCHEMA reads take metadata locks and queue behind any uncommitted DDL in the database,
+        // so a wide batch fire pushes them past ADO.NET's 30 second default. The server bounds this wait.
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
         command.Parameters.AddWithValue("@schema", schema);
         command.Parameters.AddWithValue("@table", table);
 
@@ -59,7 +61,7 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
         {
             foreach (var statement in statements)
             {
-                await using var command = new SqlCommand(statement, connection, transaction);
+                await using var command = new SqlCommand(statement, connection, transaction) { CommandTimeout = 0 };
                 await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
@@ -171,7 +173,7 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
 
         try
         {
-            await using var command = new SqlCommand("SET LOCK_TIMEOUT -1;", connection);
+            await using var command = new SqlCommand("SET LOCK_TIMEOUT -1;", connection) { CommandTimeout = 0 };
             await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (SqlException)
@@ -189,13 +191,18 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
     private static async Task SetSessionLockTimeoutAsync(SqlConnection connection, int lockTimeoutMs, CancellationToken ct)
     {
         // lockTimeoutMs is an int, so direct interpolation is injection-safe.
-        await using var command = new SqlCommand($"SET LOCK_TIMEOUT {lockTimeoutMs};", connection);
+        await using var command = new SqlCommand($"SET LOCK_TIMEOUT {lockTimeoutMs};", connection) { CommandTimeout = 0 };
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     private static async Task AcquireAppLockOrThrowAsync(SqlConnection connection, string resource, int timeoutMs, CancellationToken ct)
     {
-        await using var command = new SqlCommand("sys.sp_getapplock", connection) { CommandType = CommandType.StoredProcedure };
+        // The wait is bounded server-side by @LockTimeout, which is the whole point of this call: on expiry
+        // sp_getapplock returns -1 and the caller gets a typed, retryable SchemaLockTimeoutException. A client
+        // CommandTimeout must never be the shorter of the two, or it aborts the round trip first and the
+        // graceful path becomes unreachable. ADO.NET's 30 second default is exactly AppLockTimeoutMs's default,
+        // so the client always won that race; 0 hands the bound back to @LockTimeout where it belongs.
+        await using var command = new SqlCommand("sys.sp_getapplock", connection) { CommandType = CommandType.StoredProcedure, CommandTimeout = 0 };
         command.Parameters.AddWithValue("@Resource", resource);
         command.Parameters.AddWithValue("@LockMode", "Exclusive");
         command.Parameters.AddWithValue("@LockOwner", "Session");
@@ -240,7 +247,7 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
 
         try
         {
-            await using var command = new SqlCommand("sys.sp_releaseapplock", connection) { CommandType = CommandType.StoredProcedure };
+            await using var command = new SqlCommand("sys.sp_releaseapplock", connection) { CommandType = CommandType.StoredProcedure, CommandTimeout = 0 };
             command.Parameters.AddWithValue("@Resource", resource);
             command.Parameters.AddWithValue("@LockOwner", "Session");
             await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);

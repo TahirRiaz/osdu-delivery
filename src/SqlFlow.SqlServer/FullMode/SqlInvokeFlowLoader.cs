@@ -28,7 +28,7 @@ public sealed class SqlInvokeFlowLoader : IInvokeFlowLoader
         await using var connection = new SqlConnection(_controlConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
-        await using var command = new SqlCommand(SelectColumns + "WHERE [FlowID] = @id;", connection);
+        await using var command = new SqlCommand(SelectColumns + "WHERE [FlowID] = @id;", connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
 
         var row = await ReadAsync(command, ct).ConfigureAwait(false)
@@ -43,7 +43,7 @@ public sealed class SqlInvokeFlowLoader : IInvokeFlowLoader
         await using var connection = new SqlConnection(_controlConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
-        await using var command = new SqlCommand(SelectColumns + "WHERE [InvokeAlias] = @alias;", connection);
+        await using var command = new SqlCommand(SelectColumns + "WHERE [InvokeAlias] = @alias;", connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@alias", System.Data.SqlDbType.NVarChar, 250) { Value = invokeAlias });
 
         var row = await ReadAsync(command, ct).ConfigureAwait(false)
@@ -61,7 +61,7 @@ public sealed class SqlInvokeFlowLoader : IInvokeFlowLoader
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var command = new SqlCommand(
                 "SELECT [FlowID] FROM [flw].[Invoke] WHERE [Batch] = @batch AND ISNULL([DeactivateFromBatch], 0) = 0 ORDER BY [FlowID];",
-                connection);
+                connection) { CommandTimeout = 0 };
             command.Parameters.Add(new SqlParameter("@batch", System.Data.SqlDbType.NVarChar, 70) { Value = batch });
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))

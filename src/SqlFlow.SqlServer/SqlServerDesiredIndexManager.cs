@@ -30,7 +30,8 @@ public sealed class SqlServerDesiredIndexManager : IDesiredIndexManager
         {
             try
             {
-                await using var command = new SqlCommand(index.StatementText, connection);
+                // Building an index on a freshly loaded table is unbounded work; the server decides when it ends.
+                await using var command = new SqlCommand(index.StatementText, connection) { CommandTimeout = 0 };
                 await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                 actions.Add(new IndexAction { IndexName = index.Name, Table = index.Table, Kind = IndexActionKind.Created, Sql = index.StatementText });
             }

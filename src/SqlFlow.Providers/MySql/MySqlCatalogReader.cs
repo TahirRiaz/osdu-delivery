@@ -24,6 +24,7 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
         ArgumentNullException.ThrowIfNull(query);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
         command.CommandText = """
             SELECT SCHEMA_NAME, DEFAULT_COLLATION_NAME
             FROM information_schema.SCHEMATA
@@ -68,6 +69,7 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
 
         await using (var command = connection.CreateCommand())
         {
+            command.CommandTimeout = 0;
             command.CommandText = $"""
                 SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, COALESCE(TABLE_ROWS, 0)
                 FROM information_schema.TABLES
@@ -98,6 +100,7 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
 
         await using (var countCommand = connection.CreateCommand())
         {
+            countCommand.CommandTimeout = 0;
             countCommand.CommandText = """
                 SELECT COUNT(*)
                 FROM information_schema.TABLES
@@ -122,6 +125,7 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
         command.CommandText = """
             SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
             FROM information_schema.TABLES
@@ -160,6 +164,7 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
         string? tableType = null;
         await using (var typeCommand = connection.CreateCommand())
         {
+            typeCommand.CommandTimeout = 0;
             typeCommand.CommandText = """
                 SELECT TABLE_TYPE FROM information_schema.TABLES
                 WHERE TABLE_SCHEMA = COALESCE(@db, DATABASE()) AND TABLE_NAME = @name;
@@ -177,6 +182,7 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
         var columns = new List<CatalogColumn>();
         await using (var command = connection.CreateCommand())
         {
+            command.CommandTimeout = 0;
             command.CommandText = """
                 SELECT c.COLUMN_NAME, c.ORDINAL_POSITION, c.COLUMN_TYPE, c.IS_NULLABLE, c.COLLATION_NAME,
                        c.EXTRA, c.COLUMN_DEFAULT, (c.COLUMN_KEY = 'PRI') AS IS_PK

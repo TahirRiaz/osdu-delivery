@@ -50,7 +50,8 @@ public sealed class SqlServerInferenceValidator : IInferenceValidator
 
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
-        await using var command = new SqlCommand(select.ToString(), connection);
+        // Two aggregates per checked column over the full table: a scan whose duration scales with the target.
+        await using var command = new SqlCommand(select.ToString(), connection) { CommandTimeout = 0 };
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
         var results = new List<ConversionCheckResult>(checks.Count);

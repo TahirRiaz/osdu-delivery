@@ -31,7 +31,7 @@ public sealed class SqlServerIndexManager : IIndexManager
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
         var names = new List<string>();
-        await using (var command = new SqlCommand(sql, connection))
+        await using (var command = new SqlCommand(sql, connection) { CommandTimeout = 0 })
         {
             command.Parameters.AddWithValue("@table", qualified);
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -86,7 +86,7 @@ public sealed class SqlServerIndexManager : IIndexManager
     {
         const string sql = "SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID(@table) AND name IS NOT NULL;";
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        await using var command = new SqlCommand(sql, connection);
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
         command.Parameters.AddWithValue("@table", qualified);
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))

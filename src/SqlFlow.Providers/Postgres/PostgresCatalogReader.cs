@@ -22,6 +22,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
         ArgumentNullException.ThrowIfNull(connection);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
         command.CommandText = "SELECT current_database();";
         var name = (string?)await command.ExecuteScalarAsync(ct).ConfigureAwait(false) ?? string.Empty;
         return [new DatabaseInfo { Name = name, State = "ONLINE" }];
@@ -33,6 +34,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
         ArgumentNullException.ThrowIfNull(query);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
         command.CommandText = """
             SELECT schema_name, schema_owner
             FROM information_schema.schemata
@@ -62,6 +64,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
 
         await using (var command = connection.CreateCommand())
         {
+            command.CommandTimeout = 0;
             command.CommandText = $"""
                 SELECT t.table_schema, t.table_name, t.table_type,
                        COALESCE((SELECT c.reltuples::bigint FROM pg_catalog.pg_class c
@@ -95,6 +98,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
 
         await using (var countCommand = connection.CreateCommand())
         {
+            countCommand.CommandTimeout = 0;
             countCommand.CommandText = """
                 SELECT COUNT(*)
                 FROM information_schema.tables t
@@ -119,6 +123,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
 
         await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
         command.CommandText = """
             SELECT table_schema, table_name, table_type
             FROM information_schema.tables
@@ -154,6 +159,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
         string? tableType = null;
         await using (var typeCommand = connection.CreateCommand())
         {
+            typeCommand.CommandTimeout = 0;
             typeCommand.CommandText = "SELECT table_type FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2;";
             AddParameter(typeCommand, schema);
             AddParameter(typeCommand, name.Name);
@@ -168,6 +174,7 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
         var columns = new List<CatalogColumn>();
         await using (var command = connection.CreateCommand())
         {
+            command.CommandTimeout = 0;
             command.CommandText = """
                 SELECT c.column_name, c.ordinal_position, c.udt_name,
                        c.character_maximum_length, c.numeric_precision, c.numeric_scale, c.datetime_precision,

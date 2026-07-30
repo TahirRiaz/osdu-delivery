@@ -292,6 +292,9 @@ public sealed class OracleCatalogReader : IProviderCatalogReader
     {
         var command = (OracleCommand)connection.CreateCommand();
         command.BindByName = true;
+        // Dictionary queries on a busy instance can outlast the provider's default client timeout; the server
+        // decides when they finish, so a slow catalog read degrades throughput instead of failing the flow.
+        command.CommandTimeout = 0;
         return command;
     }
 

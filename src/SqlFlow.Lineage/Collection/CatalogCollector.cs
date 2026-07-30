@@ -502,7 +502,7 @@ public sealed class CatalogCollector
 
     private static async Task<object?> Scalar(SqlConnection connection, string sql, CancellationToken ct)
     {
-        await using var command = new SqlCommand(sql, connection);
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
         return await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
     }
 }

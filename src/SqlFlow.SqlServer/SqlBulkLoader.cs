@@ -42,7 +42,9 @@ public sealed class SqlBulkLoader : IBulkLoader
 
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
-        await using var command = new SqlCommand($"TRUNCATE TABLE {target.QualifiedName};", connection);
+        // TRUNCATE needs a schema-modification lock, so it queues behind every reader and writer on the table.
+        // The wait is bounded by the server's lock timeout, never by a client clock.
+        await using var command = new SqlCommand($"TRUNCATE TABLE {target.QualifiedName};", connection) { CommandTimeout = 0 };
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 }

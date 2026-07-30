@@ -27,7 +27,7 @@ public sealed class SqlServerLocaleProvider : IServerLocaleProvider
             WHERE s.session_id = @@SPID;
             """;
 
-        await using var command = new SqlCommand(sql, connection);
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await reader.ReadAsync(ct).ConfigureAwait(false))
         {

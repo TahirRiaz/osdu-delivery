@@ -43,7 +43,7 @@ public sealed class SqlIngestionFlowLoader : IFlowLoader
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
         int flowId;
-        await using (var command = new SqlCommand("SELECT TOP (1) [FlowID] FROM [flw].[Ingestion] WHERE [SysAlias] = @alias ORDER BY [FlowID];", connection))
+        await using (var command = new SqlCommand("SELECT TOP (1) [FlowID] FROM [flw].[Ingestion] WHERE [SysAlias] = @alias ORDER BY [FlowID];", connection) { CommandTimeout = 0 })
         {
             command.Parameters.Add(new SqlParameter("@alias", System.Data.SqlDbType.NVarChar, 250) { Value = sysAlias });
             var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
@@ -73,7 +73,7 @@ public sealed class SqlIngestionFlowLoader : IFlowLoader
             await using var command = new SqlCommand(
                 "SELECT [FlowID] FROM [flw].[Ingestion] WHERE [Batch] = @batch AND ISNULL([DeactivateFromBatch], 0) = 0 " +
                 "ORDER BY ISNULL([BatchOrderBy], 2147483647), [FlowID];",
-                connection);
+                connection) { CommandTimeout = 0 };
             command.Parameters.Add(new SqlParameter("@batch", System.Data.SqlDbType.NVarChar, 250) { Value = batch });
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -93,7 +93,7 @@ public sealed class SqlIngestionFlowLoader : IFlowLoader
 
     private static async Task<LegacyIngestionRow?> ReadFlowAsync(SqlConnection connection, int flowId, CancellationToken ct)
     {
-        await using var command = new SqlCommand(FlowQuery, connection);
+        await using var command = new SqlCommand(FlowQuery, connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadIngestionRow(reader) : null;
@@ -104,7 +104,7 @@ public sealed class SqlIngestionFlowLoader : IFlowLoader
         await using var command = new SqlCommand(
             "SELECT [SurrogateKeyID],[FlowID],[SurrogateServer],[SurrogateDbSchTbl],[SurrogateColumn],[KeyColumns]," +
             "[sKeyColumns],[PreProcess],[PostProcess],[ToObjectMK] FROM [flw].[SurrogateKey] WHERE [FlowID] = @id ORDER BY [SurrogateKeyID];",
-            connection);
+            connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
 
         var rows = new List<LegacySurrogateKeyRow>();
@@ -133,7 +133,7 @@ public sealed class SqlIngestionFlowLoader : IFlowLoader
     {
         await using var command = new SqlCommand(
             "SELECT [VirtualID],[FlowID],[ColumnName],[DataType],[DataTypeExp],[SelectExp] FROM [flw].[IngestionVirtual] WHERE [FlowID] = @id ORDER BY [VirtualID];",
-            connection);
+            connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
 
         var rows = new List<LegacyIngestionVirtualRow>();
@@ -162,7 +162,7 @@ public sealed class SqlIngestionFlowLoader : IFlowLoader
             "[IgnoreDeletedRowsAfter],[srcFilter],[trgFilter],[OnErrorResume],[PreProcessOnTrg],[PostProcessOnTrg]," +
             "[Description],[ToObjectMK],[CreatedBy],[CreatedDate] " +
             "FROM [flw].[MatchKey] WHERE [FlowID] = @id ORDER BY [MatchKeyID];",
-            connection);
+            connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await reader.ReadAsync(ct).ConfigureAwait(false))

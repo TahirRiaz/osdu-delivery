@@ -37,7 +37,7 @@ public sealed class SqlStoredProcedureFlowLoader : IStoredProcedureFlowLoader
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var command = new SqlCommand(
                 "SELECT [FlowID] FROM [flw].[StoredProcedure] WHERE [Batch] = @batch AND ISNULL([DeactivateFromBatch], 0) = 0 ORDER BY [FlowID];",
-                connection);
+                connection) { CommandTimeout = 0 };
             command.Parameters.Add(new SqlParameter("@batch", System.Data.SqlDbType.NVarChar, 70) { Value = batch });
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -61,7 +61,7 @@ public sealed class SqlStoredProcedureFlowLoader : IStoredProcedureFlowLoader
             "SELECT [FlowID],[Batch],[SysAlias],[trgServer],[trgDBSchSP],[OnErrorResume],[PostInvokeAlias],[Description]," +
             "[FlowType],[DeactivateFromBatch],[FromObjectMK],[ToObjectMK],[CreatedBy],[CreatedDate] " +
             "FROM [flw].[StoredProcedure] WHERE [FlowID] = @id;",
-            connection);
+            connection) { CommandTimeout = 0 };
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.Int) { Value = flowId });
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);

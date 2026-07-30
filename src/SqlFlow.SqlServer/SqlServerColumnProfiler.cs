@@ -142,7 +142,7 @@ public sealed class SqlServerColumnProfiler : IColumnProfiler
         {
             // Session-scoped, so connection disposal would reclaim it anyway; dropping eagerly keeps the
             // session tidy while the connection is still open.
-            await using var drop = new SqlCommand($"DROP TABLE {SampleTableName};", connection);
+            await using var drop = new SqlCommand($"DROP TABLE {SampleTableName};", connection) { CommandTimeout = 0 };
             await drop.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
