@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "15080314050561981020"
+      "templateHash": "4847426421861038731"
     }
   },
   "parameters": {
@@ -155,7 +155,7 @@
     "scalerSecretRef": "[if(empty(parameters('scalerConnectionSecretName')), 'catalog-db', 'catalog-scaler')]",
     "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
     "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
-    "queueDepthQuery": "[if(empty(parameters('pool')), 'SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] IS NULL', format('SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = ''queued'' AND [TargetPool] = ''{0}''', parameters('pool')))]"
+    "queueDepthQuery": "[if(empty(parameters('pool')), 'SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] IN (''queued'', ''running'') AND [TargetPool] IS NULL)), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N''''), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N''''), 0))) AS t(v))', format('SELECT (SELECT MAX(v) FROM (VALUES ((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] IN (''queued'', ''running'') AND [TargetPool] = ''{0}'')), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N''{1}''), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N''{2}''), 0))) AS t(v))', parameters('pool'), parameters('pool'), parameters('pool')))]"
   },
   "resources": [
     {

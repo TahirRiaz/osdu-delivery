@@ -174,15 +174,17 @@ metadata:
 spec:
   scaleTargetRef:
     name: sqlflow-worker-default
-  minReplicaCount: 0   # scale to zero when the queue is dry
+  minReplicaCount: 0   # scale to zero when nothing is queued or running
   maxReplicaCount: 10
-  cooldownPeriod: 300  # keep a warm worker for five minutes after the queue drains
+  cooldownPeriod: 300  # keep a warm worker for five minutes after the work drains
   pollingInterval: 15
   triggers:
     - type: mssql
       metadata:
+        # Counts 'running' as well as 'queued': a worker flips a run to 'running' as soon as it claims it, so a
+        # queued-only count reads zero while the fleet is still executing and KEDA would terminate pods mid-run.
         # For a pooled copy of this manifest change the predicate to: [TargetPool] = '<pool-name>'.
-        query: "SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = 'queued' AND [TargetPool] IS NULL"
+        query: "SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] IN ('queued', 'running') AND [TargetPool] IS NULL"
         targetValue: "1"
       authenticationRef:
         name: sqlflow-catalog-auth
