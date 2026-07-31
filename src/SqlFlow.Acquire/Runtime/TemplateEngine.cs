@@ -10,7 +10,8 @@ namespace SqlFlow.Acquire.Runtime;
 /// <list type="number">
 /// <item>a bare date/time format (<c>{yyyy}</c>, <c>{yyyyMMdd}</c>, <c>{yyyy-MM-dd}</c>, <c>{HH:mm:ss}</c>) is
 /// formatted against the reference date;</item>
-/// <item><c>{name:format}</c> formats a date-valued context variable (<c>{window.from:yyyy-MM-dd}</c>);</item>
+/// <item><c>{name:format}</c> formats a date-valued context variable (<c>{window.from:yyyy-MM-dd}</c>), with a
+/// <c>utc:</c> prefix converting to UTC first (<c>{window.from:utc:yyyy-MM-ddTHH}</c>);</item>
 /// <item><c>{name}</c> substitutes a context variable verbatim (a string) or ISO-8601 (a date).</item>
 /// </list>
 /// A referenced variable that is not in the context is an authoring error, not a silent blank, so a broken template
@@ -113,8 +114,18 @@ public static class TemplateEngine
             var format = token[(colon + 1)..];
             if (context.TryGetDate(name, out var date))
             {
+                // The 'utc:' prefix shifts the value to UTC before formatting, for an API whose window
+                // parameter is expressed in UTC (e.g. ?end_time={window.from:utc:yyyy-MM-ddTHH}). Without it a
+                // window built in local time renders local hours, which such an API reads as a different - and,
+                // near now, a still-future - period.
+                if (format.StartsWith("utc:", StringComparison.Ordinal))
+                {
+                    return date.ToUniversalTime().ToString(format[4..], CultureInfo.InvariantCulture);
+                }
+
                 // The pseudo-formats unix / unixms render the variable as an epoch count, for APIs whose window
-                // parameters are unix timestamps (e.g. ?fromCreatedAt={window.from:unix}).
+                // parameters are unix timestamps (e.g. ?fromCreatedAt={window.from:unix}). Both are absolute
+                // instants, so they need no UTC variant.
                 return format switch
                 {
                     "unix" => date.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),

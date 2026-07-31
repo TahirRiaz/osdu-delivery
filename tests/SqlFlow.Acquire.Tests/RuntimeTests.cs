@@ -48,6 +48,18 @@ public sealed class TemplateEngineTests
     }
 
     [Fact]
+    public void Renders_utc_prefixed_formats_by_shifting_the_offset_first()
+    {
+        // 01:30 at +02:00 is 23:30 UTC the day before: the plain format keeps the local wall clock, the
+        // utc: prefix converts first, which is what a UTC-parameterized endpoint expects.
+        var local = new DateTimeOffset(2026, 7, 31, 1, 30, 0, TimeSpan.FromHours(2));
+        var ctx = new TemplateContext(local).WithDate("window.from", local);
+        Assert.Equal("2026-07-31T01", TemplateEngine.Render("{window.from:yyyy-MM-ddTHH}", ctx));
+        Assert.Equal("2026-07-30T23", TemplateEngine.Render("{window.from:utc:yyyy-MM-ddTHH}", ctx));
+        Assert.Equal("2026-07-30", TemplateEngine.Render("{window.from:utc:yyyy-MM-dd}", ctx));
+    }
+
+    [Fact]
     public void Url_encodes_when_requested()
     {
         var ctx = new TemplateContext(Ref).WithString("q", "a b&c");
