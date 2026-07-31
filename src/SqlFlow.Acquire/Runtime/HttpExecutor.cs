@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using SqlFlow.Core;
+using SqlFlow.Core.Acquire;
 
 namespace SqlFlow.Acquire.Runtime;
 
@@ -84,10 +85,13 @@ public sealed class HttpExecutor
 
     /// <param name="requestFactory">Builds a fresh request per attempt.</param>
     /// <param name="allowStatuses">Non-2xx statuses to return instead of throwing (e.g. a 202 pagination sentinel).</param>
+    /// <param name="responseCharset">The response body's ACTUAL charset, overriding the declared one, for
+    /// endpoints that label their payload wrongly (see <see cref="AcquireRequest.ResponseCharset"/>).</param>
     /// <param name="ct">Cancels the send, including the rate-limit wait between attempts.</param>
     public async Task<HttpFetchResult> SendAsync(
         Func<HttpRequestMessage> requestFactory,
         IReadOnlySet<int>? allowStatuses = null,
+        string? responseCharset = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(requestFactory);
@@ -112,7 +116,7 @@ public sealed class HttpExecutor
                 if (response.IsSuccessStatusCode || (allowStatuses?.Contains(code) ?? false))
                 {
                     var body = await ReadCappedAsync(response, ct).ConfigureAwait(false);
-                    body = NormalizeToUtf8(body, response.Content.Headers);
+                    body = NormalizeToUtf8(body, response.Content.Headers, responseCharset);
                     return new HttpFetchResult(status, body, response.Headers, response.Content.Headers);
                 }
 
@@ -200,11 +204,29 @@ public sealed class HttpExecutor
     /// UTF-8/ASCII charset, a non-text media type, or an unknown charset are returned unchanged (byte-for-byte),
     /// so this is a no-op for the common case and never corrupts a payload it cannot confidently decode.
     /// </summary>
-    internal static byte[] NormalizeToUtf8(byte[] body, HttpContentHeaders? contentHeaders)
+    internal static byte[] NormalizeToUtf8(byte[] body, HttpContentHeaders? contentHeaders, string? charsetOverride = null)
     {
         if (body.Length == 0)
         {
             return body;
+        }
+
+        // An authored override is authoritative: the endpoint declares its charset wrongly (or not at all),
+        // so the declared header and the text-likeness gate are deliberately bypassed. An override that does
+        // not resolve is an authoring error and throws, unlike a bad declared charset which is tolerated.
+        if (!string.IsNullOrWhiteSpace(charsetOverride))
+        {
+            Encoding forced;
+            try
+            {
+                forced = Encoding.GetEncoding(charsetOverride.Trim());
+            }
+            catch (ArgumentException ex)
+            {
+                throw new SqlFlowException($"responseCharset '{charsetOverride}' is not a recognized encoding.", ex);
+            }
+
+            return forced.CodePage == Encoding.UTF8.CodePage ? body : Encoding.UTF8.GetBytes(forced.GetString(body));
         }
 
         var charset = contentHeaders?.ContentType?.CharSet?.Trim().Trim('"');

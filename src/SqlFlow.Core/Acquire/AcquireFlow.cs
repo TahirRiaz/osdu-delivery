@@ -270,6 +270,14 @@ public sealed record AcquireRequest
 
     /// <summary>Explicit Content-Type for a <see cref="AcquireBodyKind.Raw"/> body.</summary>
     public string? ContentType { get; init; }
+
+    /// <summary>
+    /// The RESPONSE body's actual character set (e.g. <c>iso-8859-1</c>), overriding whatever charset the
+    /// server declares, for endpoints that label their payload wrongly (the vegvesen /export endpoint sends
+    /// <c>charset=UTF-8</c> headers over ISO-8859-1 bytes). When set, the body is transcoded from this
+    /// encoding to UTF-8 before landing; null (the default) trusts the declared charset.
+    /// </summary>
+    public string? ResponseCharset { get; init; }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -414,7 +414,7 @@ public sealed class AcquireEngine
         var idRequest = iteration.IdRequest ?? throw new SqlFlowException("An idsFrom iteration requires an 'idRequest'.");
         var idPath = iteration.IdPath ?? throw new SqlFlowException("An idsFrom iteration requires an 'idPath'.");
 
-        var result = await dataHttp.SendAsync(() => HttpRequestBuilder.Build(source.BaseUrl, idRequest, ctx, discoveryAuth, new Dictionary<string, string>(StringComparer.Ordinal)), allowStatuses: null, ct).ConfigureAwait(false);
+        var result = await dataHttp.SendAsync(() => HttpRequestBuilder.Build(source.BaseUrl, idRequest, ctx, discoveryAuth, new Dictionary<string, string>(StringComparer.Ordinal)), allowStatuses: null, idRequest.ResponseCharset, ct).ConfigureAwait(false);
         using var document = JsonDocument.Parse(result.Body);
         var ids = JsonPathReader.SelectValues(document.RootElement, idPath);
 

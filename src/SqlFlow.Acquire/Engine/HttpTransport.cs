@@ -45,7 +45,7 @@ public sealed class HttpTransport : IAcquireTransport
 
             var probeRequest = fetch.Probe is not null ? factory() : null;
             var startTimestamp = Stopwatch.GetTimestamp();
-            result = await http.SendAsync(factory, allowStatuses, ct).ConfigureAwait(false);
+            result = await http.SendAsync(factory, allowStatuses, request.ResponseCharset, ct).ConfigureAwait(false);
             var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
 
             fetch.Pages++;

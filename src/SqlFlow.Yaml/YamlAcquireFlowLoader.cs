@@ -258,6 +258,7 @@ public sealed class YamlAcquireFlowLoader
             Body = y.Body,
             BodyFields = y.BodyFields ?? new Dictionary<string, string>(StringComparer.Ordinal),
             ContentType = YamlDocumentParts.NullIfBlank(y.ContentType),
+            ResponseCharset = YamlDocumentParts.NullIfBlank(y.ResponseCharset),
         };
     }
 
@@ -562,6 +563,7 @@ internal sealed class AcquireRequestYaml
     public string? Body { get; set; }
     public Dictionary<string, string>? BodyFields { get; set; }
     public string? ContentType { get; set; }
+    public string? ResponseCharset { get; set; }
 }
 
 internal sealed class AcquirePaginationYaml

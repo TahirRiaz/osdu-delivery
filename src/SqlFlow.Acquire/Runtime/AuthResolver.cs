@@ -99,7 +99,7 @@ public sealed class AuthResolver
 
         var rawBody = token.RawBody is null ? null : await ResolveAsync(token.RawBody, vars, ct).ConfigureAwait(false);
 
-        var result = await authHttp.SendAsync(() => BuildTokenRequest(token, tokenUrl, body, rawBody, basicHeader), allowStatuses: null, ct).ConfigureAwait(false);
+        var result = await authHttp.SendAsync(() => BuildTokenRequest(token, tokenUrl, body, rawBody, basicHeader), allowStatuses: null, ct: ct).ConfigureAwait(false);
 
         JsonElement root;
         try
@@ -120,7 +120,7 @@ public sealed class AuthResolver
         if (!string.IsNullOrWhiteSpace(token.DiscoveryUrl))
         {
             var discoveryUrl = await _secrets.ResolveAsync(token.DiscoveryUrl!, ct).ConfigureAwait(false);
-            var result = await authHttp.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, discoveryUrl), allowStatuses: null, ct).ConfigureAwait(false);
+            var result = await authHttp.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, discoveryUrl), allowStatuses: null, ct: ct).ConfigureAwait(false);
             JsonElement root;
             try
             {
