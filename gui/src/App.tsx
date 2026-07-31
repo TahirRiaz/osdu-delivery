@@ -8,6 +8,7 @@ import { lazyRoute } from "./lib/lazyRoute";
 
 // Feature pages are lazy so heavy dependencies (Monaco, React Flow, Recharts) load with their page, not at boot.
 const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
+const InsightsPage = lazyRoute("InsightsPage", () => import("./features/insights/InsightsPage"));
 const RunsPage = lazyRoute("RunsPage", () => import("./features/runs/RunsPage"));
 const RunDetailPage = lazyRoute("RunDetailPage", () => import("./features/runs/RunDetailPage"));
 const RunGroupPage = lazyRoute("RunGroupPage", () => import("./features/runs/RunGroupPage"));
@@ -51,6 +52,7 @@ export default function App() {
           )}
         >
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/insights" element={<InsightsPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/groups/:groupId" element={<RunGroupPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />

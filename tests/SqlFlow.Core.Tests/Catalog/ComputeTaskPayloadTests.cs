@@ -91,6 +91,23 @@ public sealed class ComputeTaskPayloadTests
     }
 
     [Theory]
+    [InlineData(ComputeOperations.MissingIndexes)]
+    [InlineData(ComputeOperations.StatisticsHealth)]
+    [InlineData(ComputeOperations.IndexUsage)]
+    [InlineData(ComputeOperations.TopQueries)]
+    public void Validate_AcceptsWarehouseHealthOperations_OnSqlServerKindsOnly(string operation)
+    {
+        var payload = Valid(operation);
+        payload.Validate();
+        (payload with { ProviderKind = DataSourceKind.MSSQL }).Validate();
+        (payload with { ProviderKind = DataSourceKind.AZDB }).Validate();
+        (payload with { Database = "dw", Limit = 50 }).Validate();
+        Assert.Throws<SqlFlowException>(() => (payload with { ProviderKind = DataSourceKind.MySQL }).Validate());
+        Assert.Throws<SqlFlowException>(() => (payload with { ProviderKind = DataSourceKind.PostgreSQL }).Validate());
+        Assert.Throws<SqlFlowException>(() => (payload with { ProviderKind = DataSourceKind.Oracle }).Validate());
+    }
+
+    [Theory]
     [InlineData(-5)]
     [InlineData(500)] // between 1 and 999: too small to be a meaningful sample
     [InlineData(20_000_000)]

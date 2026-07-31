@@ -291,6 +291,52 @@ pub struct SearchInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct InsightsWindowInput {
+    /// The analysis window in days (1-90; default 7).
+    pub days: Option<i64>,
+    /// Restrict to one repository (GUID, optional).
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// Restrict to one batch (source-system grouping, optional).
+    pub batch: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InsightsFlowsInput {
+    /// The analysis window in days (1-90; default 7).
+    pub days: Option<i64>,
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    pub batch: Option<String>,
+    /// Most flows to return, ordered by total processing time (default 100, max 500).
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InsightsStepsInput {
+    /// The pipeline id (GUID) to drill into.
+    #[serde(rename = "pipelineId")]
+    pub pipeline_id: String,
+    /// The analysis window in days (1-90; default 30).
+    pub days: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WarehouseHealthInput {
+    /// Which DMV probe to run: missingIndexes, statisticsHealth, indexUsage, or topQueries.
+    pub operation: String,
+    /// The datasource connection reference (a whole ${env:...} / ${keyvault:...} token the estate's pipelines
+    /// declare, or an @alias). Omit to probe the estate's busiest target datasource (the warehouse).
+    pub reference: Option<String>,
+    /// The database to scope the probe to; omit for the connection's default database.
+    pub database: Option<String>,
+    /// Most rows to return (default 100, max 1000).
+    pub limit: Option<i64>,
+    /// Route the probe to a worker pool that can reach the source (optional).
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct TriggerRunInput {
     /// The repository id (GUID) that owns the flow.
     #[serde(rename = "repoId")]
@@ -969,6 +1015,80 @@ impl SqlFlowMcp {
         self.get("/api/v1/summary", &[]).await
     }
 
+    // ---- Insights (read) -------------------------------------------------
+
+    #[tool(
+        description = "Per-flow performance over a window: run/failure counts, avg/max/total durations, \
+            rows/sec throughput, last-run outcome, and the duration trend versus the previous window. Ordered \
+            by total processing time, so the first rows ARE 'where the time goes'. Start here for 'what is \
+            slow' and 'what got slower'."
+    )]
+    async fn insights_flows(&self, Parameters(i): Parameters<InsightsFlowsInput>) -> String {
+        let q = vec![
+            ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("batch", i.batch.unwrap_or_default()),
+            ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/insights/flows", &q).await
+    }
+
+    #[tool(
+        description = "The ranked 'what needs attention' list computed from the window's run history: flows \
+            failing repeatedly, whose last run failed, getting slower, succeeding with zero rows, dominating \
+            processing time, or active-but-silent. Each item carries a severity (critical/warning/info), a \
+            category, and the evidence numbers inline."
+    )]
+    async fn insights_attention(&self, Parameters(i): Parameters<InsightsWindowInput>) -> String {
+        let q = vec![
+            ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("batch", i.batch.unwrap_or_default()),
+        ];
+        self.get("/api/v1/insights/attention", &q).await
+    }
+
+    #[tool(
+        description = "The one-call optimization briefing: run-history advisories merged with the newest \
+            warehouse DMV probe results (missing indexes, stale statistics, unused indexes, expensive queries) \
+            into a single ranked list. Items carry ready-to-review SQL suggestions (CREATE INDEX, UPDATE \
+            STATISTICS, DROP INDEX) - present them for human review, never execute them unreviewed. The \
+            warehouseProbes field reports how fresh each DMV dimension is; when it is empty or stale, run \
+            analyze_warehouse_health first and re-read. The best first call for 'what should we optimize'."
+    )]
+    async fn insights_recommendations(&self, Parameters(i): Parameters<InsightsWindowInput>) -> String {
+        let q = vec![
+            ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("batch", i.batch.unwrap_or_default()),
+        ];
+        self.get("/api/v1/insights/recommendations", &q).await
+    }
+
+    #[tool(
+        description = "Drill one flow down to its engine steps: avg/max/total elapsed per step across the \
+            window's runs, rows processed, and a sample of the SQL the step executed in the newest traced run. \
+            Use after insights_flows/attention names a slow flow, to see WHICH step (and which SQL) eats the time."
+    )]
+    async fn insights_steps(&self, Parameters(i): Parameters<InsightsStepsInput>) -> String {
+        let q = vec![("days", i.days.map(|n| n.to_string()).unwrap_or_default())];
+        self.get(&format!("/api/v1/insights/pipelines/{}/steps", i.pipeline_id), &q)
+            .await
+    }
+
+    #[tool(
+        description = "Run a live warehouse DMV probe on a worker node (requires the 'operate' scope) and wait \
+            for its result: missingIndexes (sys.dm_db_missing_index_*, with CREATE INDEX suggestions), \
+            statisticsHealth (sys.dm_db_stats_properties staleness, with UPDATE STATISTICS suggestions), \
+            indexUsage (sys.dm_db_index_usage_stats, flagging write-only indexes), or topQueries \
+            (sys.dm_exec_query_stats by total elapsed time). Omit reference to probe the estate's busiest \
+            target datasource (the warehouse). SQL Server / Azure SQL sources only. The result also feeds \
+            insights_recommendations for later calls."
+    )]
+    async fn analyze_warehouse_health(&self, Parameters(i): Parameters<WarehouseHealthInput>) -> String {
+        done(self.run_warehouse_probe(i).await)
+    }
+
     // ---- Operate (write) -------------------------------------------------
 
     #[tool(
@@ -1105,6 +1225,79 @@ impl SqlFlowMcp {
     /// Shared GET-and-render used by every read tool.
     async fn get(&self, path: &str, query: &[(&str, String)]) -> String {
         done(self.cp.get(path, query).await.map(|v| json_str(&v)))
+    }
+
+    /// Enqueues one warehouse-health compute task and long-polls it to a terminal state. The default
+    /// datasource is the estate's busiest resolvable SQL Server target (by pipelines writing through it):
+    /// in this product's model that IS the warehouse. The poll budget comfortably exceeds the server's
+    /// two-minute probe budget, so a hung probe still terminates here with the task's own timeout error.
+    async fn run_warehouse_probe(&self, input: WarehouseHealthInput) -> anyhow::Result<String> {
+        const OPERATIONS: [&str; 4] = ["missingIndexes", "statisticsHealth", "indexUsage", "topQueries"];
+        if !OPERATIONS.contains(&input.operation.as_str()) {
+            anyhow::bail!(
+                "Unknown warehouse-health operation '{}'. Valid operations: {}.",
+                input.operation,
+                OPERATIONS.join(", ")
+            );
+        }
+
+        let reference = match input.reference {
+            Some(reference) if !reference.trim().is_empty() => reference.trim().to_string(),
+            _ => {
+                let datasources = self.cp.get("/api/v1/datasources", &[]).await?;
+                datasources
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| {
+                        d["resolvable"].as_bool() == Some(true)
+                            && matches!(d["kind"].as_str(), None | Some("MSSQL") | Some("AZDB"))
+                    })
+                    .max_by_key(|d| d["targetPipelines"].as_i64().unwrap_or(0))
+                    .and_then(|d| d["reference"].as_str().map(String::from))
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "No resolvable SQL Server datasource found to probe. Pass `reference` explicitly \
+                         (see the datasources list)."
+                    ))?
+            }
+        };
+
+        let mut body = json!({ "reference": reference, "operation": input.operation });
+        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
+            body["database"] = json!(database.trim());
+        }
+        if let Some(limit) = input.limit {
+            body["limit"] = json!(limit);
+        }
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        let accepted = self.cp.post("/api/v1/datasources/tasks", body).await?;
+        let task_id = accepted["taskId"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("The control plane's accept response carried no taskId: {accepted}"))?;
+
+        // Each poll long-polls server-side for up to 20s; twelve rounds outlast the probe's own budget.
+        for _ in 0..12 {
+            let task = self
+                .cp
+                .get(&format!("/api/v1/datasources/tasks/{task_id}"), &[("waitMs", "20000".to_string())])
+                .await?;
+            match task["status"].as_str() {
+                Some("succeeded") | Some("failed") | Some("cancelled") | Some("skipped") => {
+                    return Ok(json_str(&task));
+                }
+                _ => {}
+            }
+        }
+
+        anyhow::bail!(
+            "The {} probe (task {task_id}) did not reach a terminal state in time; check it with the \
+             datasources task list.",
+            input.operation
+        )
     }
 }
 
@@ -1279,7 +1472,13 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
 - Ask about an object (text-to-query): describe_object returns one object's identity, columns, generating
   script, module body, and lineage edges in one call: start here to reason about, or author SQL against, a
   specific table or view.
-- Operate (privileged): trigger_run, cancel_run.
+- Performance and optimization: insights_recommendations is the one-call briefing (run-history advisories
+  merged with warehouse DMV findings, each with ready-to-review SQL); insights_flows ranks flows by
+  processing time with trends; insights_attention lists what is failing/degrading/silent; insights_steps
+  drills a slow flow to its hot steps and their SQL. When the warehouse dimension is missing or stale, run
+  analyze_warehouse_health (missingIndexes / statisticsHealth / indexUsage / topQueries) and re-read.
+  Suggested SQL from these tools is for human review, never for unreviewed execution.
+- Operate (privileged): trigger_run, cancel_run, analyze_warehouse_health.
 
 SQLFlow authors T-SQL against SQL Server and orchestrates it with `.flow.yaml` documents. It is a
 distinct product from DeltaForge; use these tools and the embedded corpus as the source of truth.";

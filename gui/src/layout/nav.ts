@@ -9,6 +9,7 @@ import {
   Compass,
   Database,
   FolderGit2,
+  Gauge,
   KeyRound,
   KeySquare,
   LayoutDashboard,
@@ -51,6 +52,7 @@ export const navGroups: NavGroup[] = [
     icon: Activity,
     items: [
       { label: "Dashboard", to: "/", icon: LayoutDashboard, testId: "nav-dashboard" },
+      { label: "Insights", to: "/insights", icon: Gauge, testId: "nav-insights" },
       { label: "Runs", to: "/runs", icon: CirclePlay, testId: "nav-runs" },
       { label: "Nodes", to: "/nodes", icon: Server, testId: "nav-nodes" },
     ],

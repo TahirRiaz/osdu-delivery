@@ -33,13 +33,39 @@ public static class ComputeOperations
     /// <summary>Profile one table/view for its minimal unique key(s) (SQL Server / Azure SQL sources only).</summary>
     public const string DetectUniqueKey = "detectUniqueKey";
 
+    /// <summary>Report the engine's missing-index advisories (<c>sys.dm_db_missing_index_*</c>) for the scoped
+    /// database, ranked by estimated improvement, with a ready-to-review CREATE INDEX suggestion per advisory
+    /// (SQL Server / Azure SQL sources only).</summary>
+    public const string MissingIndexes = "missingIndexes";
+
+    /// <summary>Report statistics freshness (<c>sys.dm_db_stats_properties</c>) for the scoped database: rows
+    /// modified since the last update, sample rates, and which statistics have gone stale, with an UPDATE
+    /// STATISTICS suggestion per stale entry (SQL Server / Azure SQL sources only).</summary>
+    public const string StatisticsHealth = "statisticsHealth";
+
+    /// <summary>Report per-index read/write usage (<c>sys.dm_db_index_usage_stats</c>) for the scoped database,
+    /// surfacing write-only and never-read indexes that cost maintenance without serving queries
+    /// (SQL Server / Azure SQL sources only).</summary>
+    public const string IndexUsage = "indexUsage";
+
+    /// <summary>Report the plan cache's most expensive statements (<c>sys.dm_exec_query_stats</c>) ranked by
+    /// total elapsed time, with per-statement execution counts, CPU, and I/O
+    /// (SQL Server / Azure SQL sources only).</summary>
+    public const string TopQueries = "topQueries";
+
     /// <summary>Every operation this build understands, for validation messages.</summary>
     public static readonly string[] All =
-        [TestConnection, ListDatabases, ListSchemas, ListObjects, SearchObjects, IntrospectObject, DetectUniqueKey];
+        [TestConnection, ListDatabases, ListSchemas, ListObjects, SearchObjects, IntrospectObject, DetectUniqueKey,
+         MissingIndexes, StatisticsHealth, IndexUsage, TopQueries];
+
+    /// <summary>The warehouse-health subset: DMV probes authored in T-SQL, so they require a SQL Server family
+    /// source, exactly like <see cref="DetectUniqueKey"/>.</summary>
+    public static bool IsWarehouseHealth(string? operation)
+        => operation is MissingIndexes or StatisticsHealth or IndexUsage or TopQueries;
 
     public static bool IsKnown(string? operation)
         => operation is TestConnection or ListDatabases or ListSchemas or ListObjects or SearchObjects
-            or IntrospectObject or DetectUniqueKey;
+            or IntrospectObject or DetectUniqueKey || IsWarehouseHealth(operation);
 }
 
 /// <summary>
@@ -233,6 +259,18 @@ public sealed record ComputeTaskPayload
                 }
 
                 break;
+        }
+
+        if (ComputeOperations.IsWarehouseHealth(Operation))
+        {
+            // The probes are T-SQL over SQL Server DMVs. An @alias resolves its kind on the node; the executor
+            // re-checks the RESOLVED kind there, so a MySQL alias still fails precisely.
+            if (ProviderKind is DataSourceKind.MySQL or DataSourceKind.PostgreSQL or DataSourceKind.Oracle)
+            {
+                throw new SqlFlowException(
+                    $"{Operation} reads SQL Server dynamic management views; the source must be SQL Server or " +
+                    "Azure SQL (kind mssql or azdb).");
+            }
         }
 
         if (Operation == ComputeOperations.DetectUniqueKey)

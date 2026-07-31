@@ -6,6 +6,7 @@ using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Profiling;
+using SqlFlow.SqlServer.Health;
 using SqlFlow.SqlServer.Profiling;
 
 namespace SqlFlow.Execution;
@@ -154,6 +155,12 @@ public sealed class ComputeTaskExecutor
             case ComputeOperations.DetectUniqueKey:
                 return await DetectUniqueKeyAsync(payload, reference, kind, ct).ConfigureAwait(false);
 
+            case ComputeOperations.MissingIndexes:
+            case ComputeOperations.StatisticsHealth:
+            case ComputeOperations.IndexUsage:
+            case ComputeOperations.TopQueries:
+                return await WarehouseHealthAsync(payload, reference, kind, ct).ConfigureAwait(false);
+
             default:
                 // Validate() has already refused unknown operations at both boundaries; reaching this arm means a
                 // new operation was added to the contract without an executor arm, which must fail loudly.
@@ -229,6 +236,54 @@ public sealed class ComputeTaskExecutor
         var report = (await UniqueKeyDetector.DetectAsync(probe, probe.EligibleColumns, options, ct).ConfigureAwait(false))
             with { ObjectName = name.QualifiedName, ExcludedColumns = probe.ExcludedColumns };
         return ToJson(report);
+    }
+
+    /// <summary>Runs one of the warehouse-health DMV probes. The kind gate ran at enqueue for explicit kinds; an
+    /// @alias resolves its kind here on the node, so the resolved kind is re-checked before any T-SQL runs
+    /// against a foreign engine, exactly like detectUniqueKey. The result wraps the probe's rows with the
+    /// database they were measured in, so a task history is self-describing.</summary>
+    private async Task<string> WarehouseHealthAsync(
+        ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
+    {
+        var resolved = await _resolver.ResolveAsync(reference, ConnectionRole.Source, kind, ct).ConfigureAwait(false);
+        if (resolved.Kind is not (DataSourceKind.MSSQL or DataSourceKind.AZDB))
+        {
+            throw new SqlFlowException(
+                $"{payload.Operation} reads SQL Server dynamic management views; the source resolved to kind " +
+                $"'{resolved.Kind}'. Only SQL Server and Azure SQL sources are supported.");
+        }
+
+        var database = NullIfBlank(payload.Database);
+        switch (payload.Operation)
+        {
+            case ComputeOperations.MissingIndexes:
+            {
+                var advisories = await SqlServerHealthProbe
+                    .MissingIndexesAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database = advisories.Count > 0 ? advisories[0].Database : database, advisories });
+            }
+
+            case ComputeOperations.StatisticsHealth:
+            {
+                var statistics = await SqlServerHealthProbe
+                    .StatisticsHealthAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database, statistics, staleCount = statistics.Count(s => s.IsStale) });
+            }
+
+            case ComputeOperations.IndexUsage:
+            {
+                var indexes = await SqlServerHealthProbe
+                    .IndexUsageAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database, indexes, unusedCount = indexes.Count(i => i.IsUnused) });
+            }
+
+            default:
+            {
+                var queries = await SqlServerHealthProbe
+                    .TopQueriesAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database, queries });
+            }
+        }
     }
 
     private static ThreePartName RequiredName(ComputeTaskPayload payload) => new()

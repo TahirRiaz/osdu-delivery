@@ -3,9 +3,10 @@
 
 import { del, get, getAnonymous, getText, post, postAnonymous, put, streamSse, type QueryParams, type SseFrame } from "./client";
 import type {
-  AccessToken, AllSearchResult, AuthProviders, ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
+  AccessToken, AllSearchResult, Attention, AuthProviders, ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
   ComputeTaskSummary, CreateAccessTokenRequest, CreateNotificationSubscriptionRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
+  FlowInsights, Recommendations, StepInsights,
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodeScript,
@@ -45,6 +46,29 @@ export const authApi = {
 
 export const summaryApi = {
   get: () => get<Dashboard>("/api/v1/summary"),
+};
+
+// ---- Insights ------------------------------------------------------------------------------------------------------
+
+export interface InsightsQuery {
+  /** The analysis window in days (1-90; the server defaults flows/attention to 7). */
+  days?: number;
+  repoId?: string;
+  batch?: string;
+}
+
+export const insightsApi = {
+  /** Per-flow performance over the window, ordered by total processing time. */
+  flows: (query: InsightsQuery & { limit?: number } = {}) =>
+    get<FlowInsights>("/api/v1/insights/flows", query as QueryParams),
+  /** The ranked "what needs attention" advisory list computed from the window's run history. */
+  attention: (query: InsightsQuery = {}) => get<Attention>("/api/v1/insights/attention", query as QueryParams),
+  /** Run-history advisories merged with the newest warehouse DMV probe results, with suggested SQL. */
+  recommendations: (query: InsightsQuery = {}) =>
+    get<Recommendations>("/api/v1/insights/recommendations", query as QueryParams),
+  /** One flow's step-level hotspots (avg/max/total elapsed per engine step, with sample SQL). */
+  steps: (pipelineId: string, days?: number) =>
+    get<StepInsights>(`/api/v1/insights/pipelines/${pipelineId}/steps`, { days }),
 };
 
 // ---- Repos and pipelines ----------------------------------------------------------------------------------------------

@@ -1144,7 +1144,11 @@ export type ComputeOperation =
   | "listObjects"
   | "searchObjects"
   | "introspectObject"
-  | "detectUniqueKey";
+  | "detectUniqueKey"
+  | "missingIndexes"
+  | "statisticsHealth"
+  | "indexUsage"
+  | "topQueries";
 
 /** The body that requests an ad-hoc compute task. References only; a secret is never sent. */
 export interface ComputeTaskRequest {
@@ -1429,4 +1433,201 @@ export interface RunStatementPurgeResult {
 /** The outcome of a manual run-event purge: how many event rows were deleted. */
 export interface RunEventPurgeResult {
   eventsDeleted: number;
+}
+
+// ---- Insights ------------------------------------------------------------------------------------------------------------------
+
+/** One flow's performance over the insights window. Duration averages cover succeeded runs only; totals and
+ * failure stats cover every terminal run. Trend compares against the equally-sized previous window. */
+export interface FlowInsight {
+  pipelineId: string;
+  flowName: string;
+  flowKind: string;
+  batch: string | null;
+  active: boolean;
+  runs: number;
+  failures: number;
+  failureRate: number;
+  avgDurationSeconds: number | null;
+  maxDurationSeconds: number | null;
+  totalDurationSeconds: number;
+  rowsLoaded: number;
+  rowsPerSecond: number | null;
+  lastRunUtc: string;
+  lastStatus: string;
+  lastError: string | null;
+  prevAvgDurationSeconds: number | null;
+  durationTrendPercent: number | null;
+}
+
+export interface FlowInsights {
+  windowDays: number;
+  fromUtc: string;
+  asOfUtc: string;
+  totalRuns: number;
+  totalFailures: number;
+  totalDurationSeconds: number;
+  totalRowsLoaded: number;
+  flows: FlowInsight[];
+}
+
+export type InsightSeverity = "critical" | "warning" | "info";
+
+/** One advisory on the attention list, with the evidence numbers inline in the detail sentence. */
+export interface AttentionItem {
+  severity: InsightSeverity;
+  category: string;
+  pipelineId: string;
+  flowName: string;
+  batch: string | null;
+  title: string;
+  detail: string;
+}
+
+export interface Attention {
+  windowDays: number;
+  asOfUtc: string;
+  items: AttentionItem[];
+}
+
+/** One actionable recommendation, from run history ("runHistory") or the newest DMV probe ("warehouseDmv").
+ * suggestedSql is a ready-to-review statement, never something to execute unreviewed. */
+export interface Recommendation {
+  severity: InsightSeverity;
+  category: string;
+  source: "runHistory" | "warehouseDmv";
+  title: string;
+  detail: string;
+  suggestedSql: string | null;
+  pipelineId: string | null;
+  flowName: string | null;
+  reference: string | null;
+  database: string | null;
+}
+
+/** Which warehouse DMV probe feeds the recommendations, and how fresh it is. */
+export interface WarehouseProbeStatus {
+  operation: ComputeOperation;
+  taskId: string;
+  reference: string;
+  database: string | null;
+  completedUtc: string | null;
+}
+
+export interface Recommendations {
+  windowDays: number;
+  asOfUtc: string;
+  items: Recommendation[];
+  warehouseProbes: WarehouseProbeStatus[];
+}
+
+/** One engine step's cost across the window's runs of a flow, with a sample of the SQL it executed. */
+export interface StepInsight {
+  step: string;
+  occurrences: number;
+  avgElapsedMs: number;
+  maxElapsedMs: number;
+  totalElapsedMs: number;
+  rowsProcessed: number;
+  sampleSql: string | null;
+}
+
+export interface StepInsights {
+  pipelineId: string;
+  flowName: string;
+  windowDays: number;
+  fromUtc: string;
+  sampleRunId: string | null;
+  steps: StepInsight[];
+}
+
+// ---- Warehouse health probe results (compute-task result shapes) ---------------------------------------------------------------
+
+/** One missing-index advisory from sys.dm_db_missing_index_*, with a ready-to-review CREATE INDEX. */
+export interface MissingIndexAdvisory {
+  database: string;
+  schema: string;
+  table: string;
+  equalityColumns: string | null;
+  inequalityColumns: string | null;
+  includedColumns: string | null;
+  userSeeks: number;
+  userScans: number;
+  lastUserSeek: string | null;
+  avgTotalUserCost: number;
+  avgUserImpactPercent: number;
+  improvementMeasure: number;
+  suggestedIndexSql: string;
+}
+
+export interface MissingIndexesResult {
+  database: string | null;
+  advisories: MissingIndexAdvisory[];
+}
+
+/** Statistics freshness for one statistics object (sys.dm_db_stats_properties). */
+export interface StatisticsAdvisory {
+  schema: string;
+  table: string;
+  statisticName: string;
+  rows: number;
+  rowsSampled: number;
+  samplePercent: number;
+  modificationCounter: number;
+  modificationPercent: number;
+  lastUpdated: string | null;
+  isStale: boolean;
+  suggestedUpdateSql: string;
+}
+
+export interface StatisticsHealthResult {
+  database: string | null;
+  statistics: StatisticsAdvisory[];
+  staleCount: number;
+}
+
+/** Read/write usage for one index since the counters last reset (sys.dm_db_index_usage_stats). */
+export interface IndexUsageEntry {
+  schema: string;
+  table: string;
+  indexName: string;
+  indexType: string;
+  isUnique: boolean;
+  isPrimaryKey: boolean;
+  userSeeks: number;
+  userScans: number;
+  userLookups: number;
+  reads: number;
+  writes: number;
+  lastRead: string | null;
+  sizeKb: number;
+  rowCount: number;
+  isUnused: boolean;
+}
+
+export interface IndexUsageResult {
+  database: string | null;
+  indexes: IndexUsageEntry[];
+  unusedCount: number;
+}
+
+/** One cached statement ranked by total elapsed time (sys.dm_exec_query_stats). */
+export interface ExpensiveQuery {
+  database: string | null;
+  statementText: string;
+  executionCount: number;
+  totalElapsedMs: number;
+  avgElapsedMs: number;
+  maxElapsedMs: number;
+  totalCpuMs: number;
+  avgCpuMs: number;
+  totalLogicalReads: number;
+  avgLogicalReads: number;
+  lastExecutionTime: string;
+  cachedSince: string;
+}
+
+export interface TopQueriesResult {
+  database: string | null;
+  queries: ExpensiveQuery[];
 }
