@@ -73,6 +73,11 @@ public sealed class CsvSourceReader : FileSourceReaderBase
     {
         var meta = PreIngestionCsv.FromSource(source);
 
+        if (!meta.FirstRowHasHeader)
+        {
+            return await ReadHeaderlessColumnNamesAsync(store, file, meta, ct).ConfigureAwait(false);
+        }
+
         await using (var stream = await store.OpenReadAsync(file, ct).ConfigureAwait(false))
         using (var reader = new StreamReader(stream, ResolveEncoding(meta.SrcEncoding)))
         using (var parser = Configure(new GenericParser(), reader, meta))
@@ -82,11 +87,6 @@ public sealed class CsvSourceReader : FileSourceReaderBase
             {
                 return ResolveColumnNames(parser, meta);
             }
-        }
-
-        if (!meta.FirstRowHasHeader)
-        {
-            return [];
         }
 
         await using var headerStream = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
@@ -156,6 +156,44 @@ public sealed class CsvSourceReader : FileSourceReaderBase
 
             yield return line;
         }
+    }
+
+    /// <summary>
+    /// Names the columns of a headerless file. Such a file names its columns positionally
+    /// (<c>Column1..ColumnN</c>), so N is the width of its WIDEST row, not of its first. Ragged files are
+    /// normal in this shape: the Nets settlement export interleaves record types of different widths, and its
+    /// first row is a narrow 28-field header record while the transaction rows that follow carry 30. Sizing
+    /// the schema from row one would drop every cell past the 28th, silently losing two columns of every
+    /// transaction. So the whole file is scanned once for its maximum width. That costs one extra sequential
+    /// parse of a file the run is about to parse anyway, and it is the only width that cannot be wrong: any
+    /// cap would mis-size a file whose widest row arrives late.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> ReadHeaderlessColumnNamesAsync(
+        IFileStore store, FileRef file, PreIngestionCsv meta, CancellationToken ct)
+    {
+        var width = 0;
+
+        await using (var stream = await store.OpenReadAsync(file, ct).ConfigureAwait(false))
+        using (var reader = new StreamReader(stream, ResolveEncoding(meta.SrcEncoding)))
+        using (var parser = Configure(new GenericParser(), reader, meta))
+        {
+            while (TryReadRow(parser, file))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (parser.ColumnCount > width)
+                {
+                    width = parser.ColumnCount;
+                }
+            }
+        }
+
+        var names = new string[width];
+        for (var i = 0; i < width; i++)
+        {
+            names[i] = GeneratedColumnName(i);
+        }
+
+        return names;
     }
 
     private static string[] ResolveColumnNames(GenericParser parser, PreIngestionCsv meta)
@@ -239,13 +277,47 @@ public sealed class CsvSourceReader : FileSourceReaderBase
         .Select(w => int.Parse(w, CultureInfo.InvariantCulture))
         .ToArray();
 
-    private static Encoding ResolveEncoding(string? name) => name?.Trim().ToUpperInvariant() switch
+    /// <summary>
+    /// Resolves the declared source encoding. Beyond the Unicode family it accepts any code page .NET knows by
+    /// name or number (Latin1/ISO-8859-1, windows-1252, 1252, ...), which is what legacy CSV feeds are delivered
+    /// in: the Nets settlement files are Latin1, and reading them as UTF-8 mangles every Norwegian character.
+    /// An encoding the runtime cannot resolve is an authoring error, so it fails loudly rather than silently
+    /// falling back to UTF-8 and corrupting the landed text.
+    /// </summary>
+    private static Encoding ResolveEncoding(string? name)
     {
-        null or "" => Encoding.UTF8,
-        "UTF8" or "UTF-8" => Encoding.UTF8,
-        "ASCII" => Encoding.ASCII,
-        "UNICODE" or "UTF16" or "UTF-16" => Encoding.Unicode,
-        "UTF32" or "UTF-32" => Encoding.UTF32,
-        _ => Encoding.UTF8,
-    };
+        var trimmed = name?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return Encoding.UTF8;
+        }
+
+        switch (trimmed.ToUpperInvariant())
+        {
+            case "UTF8" or "UTF-8":
+                return Encoding.UTF8;
+            case "ASCII":
+                return Encoding.ASCII;
+            case "UNICODE" or "UTF16" or "UTF-16":
+                return Encoding.Unicode;
+            case "UTF32" or "UTF-32":
+                return Encoding.UTF32;
+            case "LATIN1" or "LATIN-1" or "ISO-8859-1" or "ISO8859-1":
+                return Encoding.Latin1;
+        }
+
+        // The single-byte code pages (windows-1252 and friends) live in the code-page provider, which is not
+        // registered by default on .NET Core; registering is idempotent and cheap.
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        try
+        {
+            return int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var codePage)
+                ? Encoding.GetEncoding(codePage)
+                : Encoding.GetEncoding(trimmed);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+        {
+            throw new SqlFlowException($"Unknown source encoding '{trimmed}'. Use a .NET encoding name or code page number (for example utf-8, Latin1, windows-1252, 1252).", ex);
+        }
+    }
 }
