@@ -411,6 +411,21 @@ public sealed class IngestionFlowRunner
 
             Info("stage.copy", $"{rowsStaged} row(s) staged");
 
+            // 4.5. Index the staging heap on the merge key before any keyed apply. The batched upsert probes
+            //      staging once per key window, and on a multi-million-row load an unindexed heap turns every
+            //      probe into a full scan (a 16M-row staged fact spent over an hour in the loop); one sorted
+            //      rebuild here makes each window an index seek. Keyless loads (insert-all) skip it.
+            var stagingKeys = EffectiveKeyColumns(flow).Select(k => MapName(nameMap, k)).ToList();
+            if (stagingKeys.Count > 0 && rowsStaged > 0)
+            {
+                var stagingIndexSql =
+                    $"CREATE CLUSTERED INDEX [IX_{Escape(staging.Name)}_key] ON {SchemaQualified(staging)} " +
+                    $"({string.Join(", ", stagingKeys.Select(k => $"[{Escape(k)}]"))});";
+                Trace("staging.index", stagingIndexSql);
+                await ExecuteAsync(targetConnectionString, stagingIndexSql, ct).ConfigureAwait(false);
+                Info("staging.index", $"clustered key index on staging ({string.Join(", ", stagingKeys)})");
+            }
+
             // 5. Evolve the target to the desired schema when schema sync is enabled. Capture whether the
             //    target was created this run, so the create-time index steps fire exactly once.
             var targetCreated = false;
