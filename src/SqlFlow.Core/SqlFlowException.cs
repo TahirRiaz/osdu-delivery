@@ -16,6 +16,23 @@ public class SqlFlowException : Exception
     }
 }
 
+/// <summary>
+/// Thrown when an acquisition request came back with a non-2xx status the retry policy will not retry. Carries the
+/// status code so a fan-out can decide per request whether the failure is fatal to the run or a tolerated skip: a
+/// per-id rejection (a route id the endpoint no longer accepts) must not poison the other ids in the same sweep.
+/// </summary>
+public sealed class HttpStatusException : SqlFlowException
+{
+    public HttpStatusException(int statusCode, string message)
+        : base(message)
+    {
+        StatusCode = statusCode;
+    }
+
+    /// <summary>The HTTP status code the endpoint answered with.</summary>
+    public int StatusCode { get; }
+}
+
 /// <summary>Thrown when a pipeline definition is invalid.</summary>
 public sealed class FlowValidationException : SqlFlowException
 {

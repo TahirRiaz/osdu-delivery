@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Acquire;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
@@ -114,7 +114,7 @@ public sealed class YamlAcquireFlowLoader
             }
 
             var auth = MapAuth(sourceYaml.Auth, source);
-            var reliability = MapReliability(sourceYaml.Reliability);
+            var reliability = MapReliability(sourceYaml.Reliability, source);
             var options = MapOptions(sourceYaml.Options);
 
             var items = new List<AcquireItem>(y.Items.Count);
@@ -159,7 +159,7 @@ public sealed class YamlAcquireFlowLoader
             Request = MapRequest(sourceYaml.Request, source),
             Pagination = MapPagination(sourceYaml.Pagination, source),
             Iterations = (sourceYaml.Iterate ?? []).Select(it => MapIteration(it, source)).ToList(),
-            Reliability = MapReliability(sourceYaml.Reliability),
+            Reliability = MapReliability(sourceYaml.Reliability, source),
             Options = MapOptions(sourceYaml.Options),
         };
 
@@ -318,7 +318,36 @@ public sealed class YamlAcquireFlowLoader
         return iteration;
     }
 
-    private static AcquireReliability MapReliability(AcquireReliabilityYaml? y)
+    /// <summary>Validates <c>reliability.skipStatusCodes</c>. A code outside 100-599 is a typo, and a 2xx can never
+    /// reach the skip path (a success is landed, not thrown), so both fail at parse rather than silently doing
+    /// nothing at run time.</summary>
+    private static IReadOnlyList<int> MapSkipStatusCodes(List<int>? codes, string source)
+    {
+        if (codes is null || codes.Count == 0)
+        {
+            return [];
+        }
+
+        foreach (var code in codes)
+        {
+            if (code is < 100 or > 599)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'source.reliability.skipStatusCodes' holds {code}, which is not an HTTP status code (100-599).");
+            }
+
+            if (code is >= 200 and <= 299)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'source.reliability.skipStatusCodes' holds {code}; a 2xx response is landed, never skipped. " +
+                    "List only the non-2xx statuses a single fan-out request may be tolerated to fail with (e.g. 400, 404, 410).");
+            }
+        }
+
+        return codes.Distinct().OrderBy(c => c).ToList();
+    }
+
+    private static AcquireReliability MapReliability(AcquireReliabilityYaml? y, string source)
     {
         if (y is null)
         {
@@ -333,6 +362,7 @@ public sealed class YamlAcquireFlowLoader
             MaxResponseBytes = y.MaxResponseBytes ?? (500L * 1024 * 1024),
             VerifyTls = y.VerifyTls ?? true,
             UrlAllowlist = y.UrlAllowlist ?? [],
+            SkipStatusCodes = MapSkipStatusCodes(y.SkipStatusCodes, source),
             Retry = y.Retry is null
                 ? new AcquireRetry()
                 : new AcquireRetry
@@ -608,6 +638,7 @@ internal sealed class AcquireReliabilityYaml
     public long? MaxResponseBytes { get; set; }
     public bool? VerifyTls { get; set; }
     public List<string>? UrlAllowlist { get; set; }
+    public List<int>? SkipStatusCodes { get; set; }
     public AcquireRetryYaml? Retry { get; set; }
 }
 

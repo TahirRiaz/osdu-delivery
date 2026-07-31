@@ -638,6 +638,14 @@
       "definedIn": "src/SqlFlow.Acquire/Runtime/UrlGuard.cs"
     },
     {
+      "path": "source.reliability.skipStatusCodes",
+      "type": "list<int>",
+      "required": false,
+      "default": "[] (every non-2xx fails the run)",
+      "description": "Non-retryable HTTP statuses that mark a single fan-out request as a tolerated SKIP instead of failing the run. A wide date x id sweep routinely carries ids the endpoint no longer accepts (a decommissioned route, a closed account), and one stale id must not cost the whole sweep; each skipped request is logged as 'acquire.skip' with the endpoint's own error body and counted in the run's skippedRequests, so a newly-broken id stays visible. Only non-2xx codes in 100-599 are accepted (a 2xx is landed, never skipped) and the retry policy still runs first, so a transient 429/5xx retries before it can be skipped.",
+      "definedIn": "src/SqlFlow.Acquire/Engine/AcquireEngine.cs"
+    },
+    {
       "path": "source.reliability.retry",
       "type": "object",
       "required": false,

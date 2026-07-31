@@ -446,6 +446,15 @@ public sealed record AcquireReliability
 
     /// <summary>SSRF host allowlist. Empty means "any public host" (private / loopback / link-local / metadata IPs are always blocked).</summary>
     public IReadOnlyList<string> UrlAllowlist { get; init; } = [];
+
+    /// <summary>
+    /// Non-retryable HTTP statuses that mark a single fan-out request as a tolerated SKIP instead of failing the run.
+    /// A wide date x id sweep routinely carries ids the endpoint no longer accepts (a decommissioned route, a closed
+    /// account), and one stale id must not cost the whole sweep. Each skipped request is logged with the endpoint's
+    /// own error body and counted, so a newly-broken id is still visible rather than silent. Empty by default: every
+    /// non-2xx fails the run, which is the right default for a single-request feed.
+    /// </summary>
+    public IReadOnlyList<int> SkipStatusCodes { get; init; } = [];
 }
 
 public sealed record AcquireRetry

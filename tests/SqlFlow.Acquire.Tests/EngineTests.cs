@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net;
 using SqlFlow.Acquire.Engine;
 using SqlFlow.Core.Acquire;
@@ -631,5 +631,63 @@ public sealed class EngineTests
         Assert.True(reprocess.Success);
         Assert.Equal("0", reprocess.WatermarkBefore);   // the seed, not the landed 100: the lake did not cap the run
         Assert.Equal(2, reprocess.FilesWritten);        // both reports re-fetched and re-landed
+    }
+
+    [Fact]
+    public async Task A_tolerated_status_skips_only_the_rejected_fan_out_leg()
+    {
+        // A wide date x id sweep carries ids the endpoint no longer accepts (Norled's decommissioned ferry routes
+        // answer HTTP 400 "Invalid route"). With those statuses listed in reliability.skipStatusCodes, the rejected
+        // leg is abandoned and counted, and every other leg still lands - one stale id must not cost the sweep.
+        var handler = new StubHttpHandler()
+            .Json("route=350", _ => "\"Invalid route\"", HttpStatusCode.BadRequest)
+            .Json("/pax", _ => """[{"tripId":"t1"}]""");
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest { Path = "/pax", Query = new Dictionary<string, string> { ["route"] = "{routeId}" } },
+            Iterations = [new AcquireIteration
+            {
+                Kind = AcquireIterationKind.List,
+                Variable = "routeId",
+                Values = ["500", "350", "520"],
+            }],
+            Reliability = new AcquireReliability { SkipStatusCodes = [400, 404, 410], Concurrency = 1 },
+        };
+
+        var (result, files, _) = await RunAsync(handler, source, "route_{routeId}");
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.SkippedRequests);
+        Assert.Equal(2, result.FilesWritten);
+        Assert.Equal(["route_500.json", "route_520.json"], files.Select(Path.GetFileName).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task An_untolerated_status_still_fails_the_whole_run()
+    {
+        // The default is unchanged: with no skipStatusCodes declared, a rejected leg fails the run rather than
+        // quietly shrinking the sweep. Only statuses the author explicitly listed are survivable.
+        var handler = new StubHttpHandler()
+            .Json("route=350", _ => "\"Invalid route\"", HttpStatusCode.BadRequest)
+            .Json("/pax", _ => """[{"tripId":"t1"}]""");
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest { Path = "/pax", Query = new Dictionary<string, string> { ["route"] = "{routeId}" } },
+            Iterations = [new AcquireIteration
+            {
+                Kind = AcquireIterationKind.List,
+                Variable = "routeId",
+                Values = ["500", "350", "520"],
+            }],
+            Reliability = new AcquireReliability { Concurrency = 1 },
+        };
+
+        var (result, _, _) = await RunAsync(handler, source, "route_{routeId}");
+
+        Assert.False(result.Success);
+        Assert.Equal(0, result.SkippedRequests);
+        Assert.Contains("400", result.Error, StringComparison.Ordinal);
     }
 }

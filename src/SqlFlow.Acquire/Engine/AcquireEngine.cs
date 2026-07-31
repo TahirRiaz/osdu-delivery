@@ -65,6 +65,10 @@ public sealed class AcquireEngine
         // rather than throwing out of the runner.
         var pages = 0;
         var iterations = 0;
+        // Fan-out combinations abandoned on a tolerated non-2xx (reliability.skipStatusCodes). Counted separately
+        // from landing skips: nothing was fetched at all, so a run that skipped every combination must not read
+        // like a run that fetched everything and found it empty.
+        var skippedRequests = 0;
         var success = true;
         string? error = null;
         string? resolvedBase = null;
@@ -101,6 +105,7 @@ public sealed class AcquireEngine
             // config, so the auth executor keeps the SSRF IP guard but not the host allowlist.
             var authHttp = HttpExecutorFor(client, envelope.Reliability, []);
 
+            var skipStatuses = envelope.Reliability.SkipStatusCodes;
             var refreshPerIteration = envelope.Auth.Token?.RefreshPerIteration == true;
             var discoveryAuth = await _auth.ResolveAsync(envelope.Auth, authHttp, baseVars, ct).ConfigureAwait(false);
 
@@ -158,7 +163,22 @@ public sealed class AcquireEngine
                         MaxPagesOverride = run.MaxPagesOverride,
                     };
 
-                    await transport.FetchAsync(fetch, token).ConfigureAwait(false);
+                    try
+                    {
+                        await transport.FetchAsync(fetch, token).ConfigureAwait(false);
+                    }
+                    catch (HttpStatusException ex) when (skipStatuses.Contains(ex.StatusCode))
+                    {
+                        // A tolerated per-request rejection: this one combination of the fan-out is not servable
+                        // (a decommissioned id, a window the endpoint refuses), and the sweep's remaining
+                        // combinations are unaffected. Logged with the endpoint's own message so a newly-broken id
+                        // is visible in the run log rather than silently absent, and counted as a skip so the run
+                        // summary never reads as if the combination had landed.
+                        Interlocked.Increment(ref skippedRequests);
+                        log.Log(RunLogLevel.Info, "acquire.skip", ex.Message);
+                        return;
+                    }
+
                     Interlocked.Add(ref pages, fetch.Pages);
                     Interlocked.Increment(ref iterations);
                 }
@@ -209,6 +229,7 @@ public sealed class AcquireEngine
             PagesFetched = pages,
             FilesWritten = pipelines.Sum(p => p.FilesWritten),
             Skipped = pipelines.Sum(p => p.Skipped),
+            SkippedRequests = skippedRequests,
             BytesWritten = pipelines.Sum(p => p.BytesWritten),
             LandedBase = resolvedBase,
             WatermarkBefore = watermark.Before,

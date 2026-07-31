@@ -68,6 +68,10 @@ public sealed record AcquireRunResult
     /// <summary>How many fetched payloads were skipped because they were empty.</summary>
     public int Skipped { get; init; }
 
+    /// <summary>How many fan-out requests were abandoned on a tolerated non-2xx status (reliability.skipStatusCodes).
+    /// Distinct from <see cref="Skipped"/>: those payloads were fetched and found empty, these were never fetched.</summary>
+    public int SkippedRequests { get; init; }
+
     public long BytesWritten { get; init; }
 
     /// <summary>The resolved raw-zone base the files landed under.</summary>
