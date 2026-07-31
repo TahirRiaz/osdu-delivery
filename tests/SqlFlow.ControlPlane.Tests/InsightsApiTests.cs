@@ -133,13 +133,19 @@ public sealed class InsightsApiTests
             Assert.Contains("boom", flow.LastError, StringComparison.Ordinal);
             Assert.NotNull(flow.PrevAvgDurationSeconds);
             Assert.Equal(50, flow.PrevAvgDurationSeconds!.Value, 1);
+            Assert.Equal(500, flow.PrevRowsLoaded);
             Assert.NotNull(flow.DurationTrendPercent);
             Assert.Equal(200, flow.DurationTrendPercent!.Value, 1);
 
+            // The flow trips two rules (last run failed, getting slower) but occupies ONE slot: the most
+            // urgent finding wins and the other folds into the "Also:" note.
             var attention = await GetJsonAsync<AttentionDto>(
                 client, token, $"/api/v1/insights/attention?days=7&repoId={repoId}");
-            Assert.Contains(attention.Items, i => i.PipelineId == pipelineId && i.Category == "last-run-failed");
-            Assert.Contains(attention.Items, i => i.PipelineId == pipelineId && i.Category == "degrading");
+            var flowItem = Assert.Single(attention.Items, i => i.PipelineId == pipelineId);
+            Assert.Equal("last-run-failed", flowItem.Category);
+            Assert.Contains("Also: getting slower", flowItem.Detail, StringComparison.Ordinal);
+            Assert.True(attention.TotalItems >= 1);
+            Assert.True(attention.WarningCount >= 1);
 
             // A completed warehouse probe task feeds the recommendations with its suggested DDL.
             await using (var db = CatalogDatabase.Create(cs))
@@ -164,18 +170,33 @@ public sealed class InsightsApiTests
                 await db.SaveChangesAsync();
             }
 
-            var recommendations = await GetJsonAsync<RecommendationsDto>(
+            // Compact by default: the advisory names the SQL's existence without carrying it.
+            var compact = await GetJsonAsync<RecommendationsDto>(
                 client, token, $"/api/v1/insights/recommendations?days=7&repoId={repoId}");
-            Assert.Contains(recommendations.Items, i => i.Category == "last-run-failed" && i.PipelineId == pipelineId);
+            Assert.Contains(compact.Items, i => i.Category == "last-run-failed" && i.PipelineId == pipelineId);
+            var compactIndex = Assert.Single(
+                compact.Items, i => i.Category == "missing-index" && i.Title.Contains(suffix, StringComparison.Ordinal));
+            Assert.True(compactIndex.HasSuggestedSql);
+            Assert.Null(compactIndex.SuggestedSql);
+            Assert.True(compact.TotalItems >= 2);
+
+            // includeSql=true is the full form the GUI reads.
+            var full = await GetJsonAsync<RecommendationsDto>(
+                client, token, $"/api/v1/insights/recommendations?days=7&repoId={repoId}&includeSql=true");
             var missingIndex = Assert.Single(
-                recommendations.Items, i => i.Category == "missing-index" && i.Title.Contains(suffix, StringComparison.Ordinal));
+                full.Items, i => i.Category == "missing-index" && i.Title.Contains(suffix, StringComparison.Ordinal));
             Assert.Equal("warehouseDmv", missingIndex.Source);
             Assert.Equal("warning", missingIndex.Severity); // improvementMeasure over the 1M threshold
             Assert.Contains("CREATE NONCLUSTERED INDEX", missingIndex.SuggestedSql, StringComparison.Ordinal);
-            Assert.Contains(recommendations.WarehouseProbes, p => p.Operation == "missingIndexes");
+            Assert.Contains(full.WarehouseProbes, p => p.Operation == "missingIndexes");
+
+            // The compact default carries timings only; SQL bodies travel on request.
+            var compactSteps = await GetJsonAsync<StepInsightsDto>(
+                client, token, $"/api/v1/insights/pipelines/{pipelineId}/steps?days=7");
+            Assert.All(compactSteps.Steps, s => Assert.Null(s.SampleSql));
 
             var steps = await GetJsonAsync<StepInsightsDto>(
-                client, token, $"/api/v1/insights/pipelines/{pipelineId}/steps?days=7");
+                client, token, $"/api/v1/insights/pipelines/{pipelineId}/steps?days=7&includeSql=true");
             Assert.Equal(flowName, steps.FlowName);
             Assert.Equal(2, steps.Steps.Count);
             Assert.Equal("staging.load", steps.Steps[0].Step); // ordered by total elapsed

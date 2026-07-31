@@ -62,13 +62,15 @@ export const insightsApi = {
   flows: (query: InsightsQuery & { limit?: number } = {}) =>
     get<FlowInsights>("/api/v1/insights/flows", query as QueryParams),
   /** The ranked "what needs attention" advisory list computed from the window's run history. */
-  attention: (query: InsightsQuery = {}) => get<Attention>("/api/v1/insights/attention", query as QueryParams),
-  /** Run-history advisories merged with the newest warehouse DMV probe results, with suggested SQL. */
-  recommendations: (query: InsightsQuery = {}) =>
+  attention: (query: InsightsQuery & { limit?: number } = {}) =>
+    get<Attention>("/api/v1/insights/attention", query as QueryParams),
+  /** Run-history advisories merged with the newest warehouse DMV probe results. Compact by default;
+   * includeSql=true carries the suggested statements (the GUI's expandable SQL). */
+  recommendations: (query: InsightsQuery & { limit?: number; includeSql?: boolean } = {}) =>
     get<Recommendations>("/api/v1/insights/recommendations", query as QueryParams),
-  /** One flow's step-level hotspots (avg/max/total elapsed per engine step, with sample SQL). */
-  steps: (pipelineId: string, days?: number) =>
-    get<StepInsights>(`/api/v1/insights/pipelines/${pipelineId}/steps`, { days }),
+  /** One flow's step-level hotspots; includeSql=true adds one sample statement per step. */
+  steps: (pipelineId: string, days?: number, includeSql?: boolean) =>
+    get<StepInsights>(`/api/v1/insights/pipelines/${pipelineId}/steps`, { days, includeSql }),
 };
 
 // ---- Repos and pipelines ----------------------------------------------------------------------------------------------

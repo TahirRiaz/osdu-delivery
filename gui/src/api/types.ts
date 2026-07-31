@@ -1457,6 +1457,7 @@ export interface FlowInsight {
   lastStatus: string;
   lastError: string | null;
   prevAvgDurationSeconds: number | null;
+  prevRowsLoaded: number | null;
   durationTrendPercent: number | null;
 }
 
@@ -1473,25 +1474,34 @@ export interface FlowInsights {
 
 export type InsightSeverity = "critical" | "warning" | "info";
 
-/** One advisory on the attention list, with the evidence numbers inline in the detail sentence. */
+/** One advisory on the attention list, with the evidence numbers inline in the detail sentence. One item per
+ * flow (extra findings fold into an "Also:" note); a collapsed item aggregates a batch whose flows tripped the
+ * same rule together (pipelineId null, flowCount > 1, flow names in the detail). */
 export interface AttentionItem {
   severity: InsightSeverity;
   category: string;
-  pipelineId: string;
-  flowName: string;
+  pipelineId: string | null;
+  flowName: string | null;
   batch: string | null;
+  flowCount: number;
   title: string;
   detail: string;
 }
 
+/** The attention list, capped at the requested limit; the counts cover everything found. */
 export interface Attention {
   windowDays: number;
   asOfUtc: string;
+  totalItems: number;
+  criticalCount: number;
+  warningCount: number;
+  infoCount: number;
   items: AttentionItem[];
 }
 
 /** One actionable recommendation, from run history ("runHistory") or the newest DMV probe ("warehouseDmv").
- * suggestedSql is a ready-to-review statement, never something to execute unreviewed. */
+ * suggestedSql is a ready-to-review statement, never something to execute unreviewed; it travels only when the
+ * query asked includeSql=true, and hasSuggestedSql says one exists either way. */
 export interface Recommendation {
   severity: InsightSeverity;
   category: string;
@@ -1499,6 +1509,7 @@ export interface Recommendation {
   title: string;
   detail: string;
   suggestedSql: string | null;
+  hasSuggestedSql: boolean;
   pipelineId: string | null;
   flowName: string | null;
   reference: string | null;
@@ -1514,9 +1525,14 @@ export interface WarehouseProbeStatus {
   completedUtc: string | null;
 }
 
+/** The recommendations briefing, capped at the requested limit; the counts cover everything found. */
 export interface Recommendations {
   windowDays: number;
   asOfUtc: string;
+  totalItems: number;
+  criticalCount: number;
+  warningCount: number;
+  infoCount: number;
   items: Recommendation[];
   warehouseProbes: WarehouseProbeStatus[];
 }

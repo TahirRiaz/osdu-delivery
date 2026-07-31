@@ -299,6 +299,12 @@ pub struct InsightsWindowInput {
     pub repo_id: Option<String>,
     /// Restrict to one batch (source-system grouping, optional).
     pub batch: Option<String>,
+    /// Most advisories to return (default 20; the counts in the answer cover everything found).
+    pub limit: Option<i64>,
+    /// Set true to include ready-to-review SQL suggestions inline. Default false: items report
+    /// hasSuggestedSql instead, keeping the briefing small; re-ask with includeSql for the ones you act on.
+    #[serde(rename = "includeSql")]
+    pub include_sql: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -319,6 +325,9 @@ pub struct InsightsStepsInput {
     pub pipeline_id: String,
     /// The analysis window in days (1-90; default 30).
     pub days: Option<i64>,
+    /// Set true to include one sample SQL statement per step (can be large). Default false: timings only.
+    #[serde(rename = "includeSql")]
+    pub include_sql: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -330,7 +339,8 @@ pub struct WarehouseHealthInput {
     pub reference: Option<String>,
     /// The database to scope the probe to; omit for the connection's default database.
     pub database: Option<String>,
-    /// Most rows to return (default 100, max 1000).
+    /// Most rows to return (default 20, max 1000). The full row set persists on the compute task either way;
+    /// the GUI's warehouse panel shows it, so ask for more rows only when you will read them.
     pub limit: Option<i64>,
     /// Route the probe to a worker pool that can reach the source (optional).
     pub pool: Option<String>,
@@ -374,6 +384,31 @@ fn done(result: anyhow::Result<String>) -> String {
 
 fn json_str(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+}
+
+/// Caps every string in a JSON document to `max` characters (marking the cut), recursively. The warehouse
+/// probes carry statement bodies that can run to kilobytes each; the model reading the tool result needs the
+/// shape and the head of the text, and the untruncated document stays on the compute task for the GUI.
+fn truncate_long_strings(value: &mut Value, max: usize) {
+    match value {
+        Value::String(s) => {
+            if s.chars().count() > max {
+                let head: String = s.chars().take(max).collect();
+                *s = format!("{head}... [truncated]");
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                truncate_long_strings(item, max);
+            }
+        }
+        Value::Object(map) => {
+            for (_, item) in map.iter_mut() {
+                truncate_long_strings(item, max);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The `sqlflow` CLI executable the discover tool shells out to: `SQLFLOW_CLI` when
@@ -1028,22 +1063,26 @@ impl SqlFlowMcp {
             ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
             ("repoId", i.repo_id.unwrap_or_default()),
             ("batch", i.batch.unwrap_or_default()),
-            ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
+            // A context-frugal default: the list is ordered by total time, so 25 rows carry the story.
+            ("limit", i.limit.unwrap_or(25).to_string()),
         ];
         self.get("/api/v1/insights/flows", &q).await
     }
 
     #[tool(
         description = "The ranked 'what needs attention' list computed from the window's run history: flows \
-            failing repeatedly, whose last run failed, getting slower, succeeding with zero rows, dominating \
-            processing time, or active-but-silent. Each item carries a severity (critical/warning/info), a \
-            category, and the evidence numbers inline."
+            failing repeatedly, whose last run failed, getting slower, gone quiet (loaded rows before, none \
+            now), dominating processing time, or active-but-silent. Deduplicated (one item per flow, extra \
+            findings in an 'Also:' note) and batch-collapsed (a source whose flows tripped together reads as \
+            one item with flowCount). Capped at limit; totalItems and the severity counts cover everything \
+            found."
     )]
     async fn insights_attention(&self, Parameters(i): Parameters<InsightsWindowInput>) -> String {
         let q = vec![
             ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
             ("repoId", i.repo_id.unwrap_or_default()),
             ("batch", i.batch.unwrap_or_default()),
+            ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
         ];
         self.get("/api/v1/insights/attention", &q).await
     }
@@ -1051,16 +1090,20 @@ impl SqlFlowMcp {
     #[tool(
         description = "The one-call optimization briefing: run-history advisories merged with the newest \
             warehouse DMV probe results (missing indexes, stale statistics, unused indexes, expensive queries) \
-            into a single ranked list. Items carry ready-to-review SQL suggestions (CREATE INDEX, UPDATE \
-            STATISTICS, DROP INDEX) - present them for human review, never execute them unreviewed. The \
-            warehouseProbes field reports how fresh each DMV dimension is; when it is empty or stale, run \
-            analyze_warehouse_health first and re-read. The best first call for 'what should we optimize'."
+            into a single ranked list, deduplicated and capped at limit (default 20; totalItems and the \
+            severity counts cover everything found). Compact by default: items report hasSuggestedSql; pass \
+            includeSql=true to carry the ready-to-review statements (CREATE INDEX, UPDATE STATISTICS, DROP \
+            INDEX) - present them for human review, never execute them unreviewed. The warehouseProbes field \
+            reports how fresh each DMV dimension is; when it is empty or stale, run analyze_warehouse_health \
+            first and re-read. The best first call for 'what should we optimize'."
     )]
     async fn insights_recommendations(&self, Parameters(i): Parameters<InsightsWindowInput>) -> String {
         let q = vec![
             ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
             ("repoId", i.repo_id.unwrap_or_default()),
             ("batch", i.batch.unwrap_or_default()),
+            ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
+            ("includeSql", i.include_sql.map(|b| b.to_string()).unwrap_or_default()),
         ];
         self.get("/api/v1/insights/recommendations", &q).await
     }
@@ -1071,7 +1114,10 @@ impl SqlFlowMcp {
             Use after insights_flows/attention names a slow flow, to see WHICH step (and which SQL) eats the time."
     )]
     async fn insights_steps(&self, Parameters(i): Parameters<InsightsStepsInput>) -> String {
-        let q = vec![("days", i.days.map(|n| n.to_string()).unwrap_or_default())];
+        let q = vec![
+            ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+            ("includeSql", i.include_sql.map(|b| b.to_string()).unwrap_or_default()),
+        ];
         self.get(&format!("/api/v1/insights/pipelines/{}/steps", i.pipeline_id), &q)
             .await
     }
@@ -1266,9 +1312,8 @@ impl SqlFlowMcp {
         if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
             body["database"] = json!(database.trim());
         }
-        if let Some(limit) = input.limit {
-            body["limit"] = json!(limit);
-        }
+        // Context-frugal default: 20 ranked rows answer the question; the task row keeps whatever ran.
+        body["limit"] = json!(input.limit.unwrap_or(20));
         if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
             body["pool"] = json!(pool);
         }
@@ -1281,12 +1326,13 @@ impl SqlFlowMcp {
 
         // Each poll long-polls server-side for up to 20s; twelve rounds outlast the probe's own budget.
         for _ in 0..12 {
-            let task = self
+            let mut task = self
                 .cp
                 .get(&format!("/api/v1/datasources/tasks/{task_id}"), &[("waitMs", "20000".to_string())])
                 .await?;
             match task["status"].as_str() {
                 Some("succeeded") | Some("failed") | Some("cancelled") | Some("skipped") => {
+                    truncate_long_strings(&mut task, 400);
                     return Ok(json_str(&task));
                 }
                 _ => {}

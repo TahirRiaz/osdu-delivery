@@ -68,7 +68,7 @@ export function StepsSheet({ pipelineId, flowName, windowDays, onClose }: StepsS
   const [selectedStep, setSelectedStep] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ["insights", "steps", pipelineId, windowDays],
-    queryFn: () => insightsApi.steps(pipelineId!, windowDays),
+    queryFn: () => insightsApi.steps(pipelineId!, windowDays, true),
     enabled: pipelineId !== null,
   });
 

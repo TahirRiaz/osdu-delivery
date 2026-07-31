@@ -118,15 +118,19 @@ export default function InsightsPage() {
   const navigate = useNavigate();
   const [days, setDays] = useLocalStorageState<number>("insights.windowDays", 7);
   const [drill, setDrill] = useState<{ pipelineId: string; flowName: string } | null>(null);
+  const [showAllAttention, setShowAllAttention] = useState(false);
+  const [showAllFlows, setShowAllFlows] = useState(false);
 
   const flowsQuery = useQuery({
     queryKey: ["insights", "flows", days],
     queryFn: () => insightsApi.flows({ days, limit: 200 }),
     refetchInterval: pollingInterval(60000),
   });
+  // The GUI reads the full form (SQL inline, deep list) and discloses progressively; the compact default
+  // exists for context-limited clients like the MCP tools.
   const recommendationsQuery = useQuery({
     queryKey: ["insights", "recommendations", days],
-    queryFn: () => insightsApi.recommendations({ days }),
+    queryFn: () => insightsApi.recommendations({ days, limit: 100, includeSql: true }),
     refetchInterval: pollingInterval(60000),
   });
 
@@ -267,9 +271,12 @@ export default function InsightsPage() {
   }
 
   const failurePercent = flows.totalRuns > 0 ? (flows.totalFailures / flows.totalRuns) * 100 : 0;
-  const criticalCount = recommendations?.items.filter((i) => i.severity === "critical").length ?? 0;
-  const warningCount = recommendations?.items.filter((i) => i.severity === "warning").length ?? 0;
+  const criticalCount = recommendations?.criticalCount ?? 0;
+  const warningCount = recommendations?.warningCount ?? 0;
   const topByTime = flows.flows.slice(0, 10);
+  const attentionItems = recommendations?.items ?? [];
+  const visibleAttention = showAllAttention ? attentionItems : attentionItems.slice(0, 6);
+  const visibleFlows = showAllFlows ? flows.flows : flows.flows.slice(0, 10);
 
   return (
     <Page data-testid="page-insights">
@@ -332,9 +339,26 @@ export default function InsightsPage() {
             />
           ) : (
             <div className="flex flex-col" data-testid="insights-attention-list">
-              {recommendations.items.map((item, index) => (
+              {visibleAttention.map((item, index) => (
                 <RecommendationRow key={`${item.category}-${item.pipelineId ?? item.title}-${index}`} item={item} />
               ))}
+              {attentionItems.length > 6 && (
+                <div className="pt-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground"
+                    onClick={() => setShowAllAttention((current) => !current)}
+                    data-testid="insights-attention-toggle"
+                  >
+                    {showAllAttention
+                      ? "Show top 6"
+                      : `Show all ${recommendations.totalItems > attentionItems.length
+                          ? `${attentionItems.length} of ${recommendations.totalItems}`
+                          : attentionItems.length}`}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
@@ -395,11 +419,24 @@ export default function InsightsPage() {
         <CardContent className="px-4 pt-3">
           <DataTable
             columns={flowColumns}
-            rows={flows.flows}
+            rows={visibleFlows}
             rowKey={(f) => f.pipelineId}
             onRowClick={(f) => setDrill({ pipelineId: f.pipelineId, flowName: f.flowName })}
             emptyMessage="No terminal runs in the window."
             data-testid="insights-flows-table"
+            footer={flows.flows.length > 10 ? (
+              <div className="px-2 py-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => setShowAllFlows((current) => !current)}
+                  data-testid="insights-flows-toggle"
+                >
+                  {showAllFlows ? "Show top 10" : `Show all ${flows.flows.length}`}
+                </Button>
+              </div>
+            ) : undefined}
           />
         </CardContent>
       </Card>

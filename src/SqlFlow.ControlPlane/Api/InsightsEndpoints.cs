@@ -18,7 +18,7 @@ public sealed record FlowInsightDto(
     double? AvgDurationSeconds, double? MaxDurationSeconds, double TotalDurationSeconds,
     long RowsLoaded, double? RowsPerSecond,
     DateTime LastRunUtc, string LastStatus, string? LastError,
-    double? PrevAvgDurationSeconds, double? DurationTrendPercent);
+    double? PrevAvgDurationSeconds, long? PrevRowsLoaded, double? DurationTrendPercent);
 
 /// <summary>The flow-performance rollup: estate totals for the window plus the per-flow table, ordered by total
 /// processing time (the flows "where the time goes" first).</summary>
@@ -28,23 +28,32 @@ public sealed record FlowInsightsDto(
     IReadOnlyList<FlowInsightDto> Flows);
 
 /// <summary>One advisory on the attention list: a severity (critical / warning / info), a machine-usable
-/// category, the flow it concerns, and a human sentence with the evidence numbers inline.</summary>
+/// category, and a human sentence with the evidence numbers inline. Exactly one item exists per flow (a flow
+/// tripping several rules keeps its most urgent finding, the rest folded into an "Also:" note). A collapsed
+/// item aggregates a batch whose flows tripped the same rule together: its pipeline identity is null,
+/// <see cref="FlowCount"/> says how many flows it covers, and the flow names ride in the detail.</summary>
 public sealed record AttentionItemDto(
-    string Severity, string Category, Guid PipelineId, string FlowName, string? Batch, string Title, string Detail);
+    string Severity, string Category, Guid? PipelineId, string? FlowName, string? Batch, int FlowCount,
+    string Title, string Detail);
 
 /// <summary>The "what needs attention" rollup: every advisory the window's run history supports, ordered most
 /// severe first. Empty means the estate ran clean over the window.</summary>
-public sealed record AttentionDto(int WindowDays, DateTime AsOfUtc, IReadOnlyList<AttentionItemDto> Items);
+public sealed record AttentionDto(
+    int WindowDays, DateTime AsOfUtc, int TotalItems, int CriticalCount, int WarningCount, int InfoCount,
+    IReadOnlyList<AttentionItemDto> Items);
 
 /// <summary>One actionable recommendation: what to do, why (with the evidence numbers inline), and where it
 /// came from. <see cref="Source"/> is "runHistory" for advisories computed from the catalog's run telemetry and
 /// "warehouseDmv" for advisories read from the newest warehouse-health probe results. <see cref="SuggestedSql"/>
-/// carries a ready-to-review statement (CREATE INDEX, UPDATE STATISTICS, DROP INDEX) when one exists; it is a
-/// suggestion for human review, never something a client should execute unreviewed. Flow-scoped items carry the
-/// pipeline identity; warehouse-scoped items carry the datasource reference and database instead.</summary>
+/// carries a ready-to-review statement (CREATE INDEX, UPDATE STATISTICS, DROP INDEX) when one exists AND the
+/// caller asked for SQL (<c>includeSql=true</c>); the default answer stays compact for context-limited clients
+/// (an MCP agent), with <see cref="HasSuggestedSql"/> saying a statement exists to fetch. It is a suggestion
+/// for human review, never something a client should execute unreviewed. Flow-scoped items carry the pipeline
+/// identity; warehouse-scoped items carry the datasource reference and database instead.</summary>
 public sealed record RecommendationDto(
     string Severity, string Category, string Source, string Title, string Detail,
-    string? SuggestedSql, Guid? PipelineId, string? FlowName, string? Reference, string? Database);
+    string? SuggestedSql, bool HasSuggestedSql, Guid? PipelineId, string? FlowName, string? Reference,
+    string? Database);
 
 /// <summary>The freshness of one warehouse-health probe feeding the recommendations: which operation ran, when,
 /// and against what. A client (the GUI's refresh, or an MCP agent) re-runs stale probes through
@@ -53,13 +62,16 @@ public sealed record WarehouseProbeStatusDto(
     string Operation, Guid TaskId, string Reference, string? Database, DateTime? CompletedUtc);
 
 /// <summary>The one-call "what should we focus on" answer: run-history advisories and warehouse DMV advisories
-/// merged into a single ranked list. <see cref="WarehouseProbes"/> reports which DMV probes the list is built
-/// from (empty means none has ever run, so only run-history items appear and a client should trigger the
-/// <c>missingIndexes</c> / <c>statisticsHealth</c> / <c>indexUsage</c> / <c>topQueries</c> compute operations
-/// to light up the warehouse dimension).</summary>
+/// merged into a single ranked list, most severe first, TRUNCATED to the requested limit so the answer stays
+/// readable in a chat context. The severity counts cover every advisory found (not just the page), so a
+/// truncated list is visibly truncated: <c>totalItems</c> versus <c>items.length</c> says how much was cut.
+/// <see cref="WarehouseProbes"/> reports which DMV probes the list is built from (empty means none has ever
+/// run, so only run-history items appear and a client should trigger the <c>missingIndexes</c> /
+/// <c>statisticsHealth</c> / <c>indexUsage</c> / <c>topQueries</c> compute operations to light up the
+/// warehouse dimension).</summary>
 public sealed record RecommendationsDto(
-    int WindowDays, DateTime AsOfUtc, IReadOnlyList<RecommendationDto> Items,
-    IReadOnlyList<WarehouseProbeStatusDto> WarehouseProbes);
+    int WindowDays, DateTime AsOfUtc, int TotalItems, int CriticalCount, int WarningCount, int InfoCount,
+    IReadOnlyList<RecommendationDto> Items, IReadOnlyList<WarehouseProbeStatusDto> WarehouseProbes);
 
 /// <summary>One engine step's cost across the window's runs of a flow, with a sample of the SQL the step
 /// executed in the newest traced run (so the hotspot points at reviewable code, not just a label).</summary>
@@ -124,9 +136,10 @@ public static class InsightsEndpoints
     }
 
     private static async Task<Results<Ok<AttentionDto>, ProblemHttpResult>> GetAttentionAsync(
-        CatalogDbContext db, TimeProvider clock, int? days, Guid? repoId, string? batch, CancellationToken ct)
+        CatalogDbContext db, TimeProvider clock, int? days, Guid? repoId, string? batch, int? limit,
+        CancellationToken ct)
     {
-        if (Validate(days, limit: null) is { } problem)
+        if (Validate(days, limit) is { } problem)
         {
             return problem;
         }
@@ -134,20 +147,28 @@ public static class InsightsEndpoints
         var windowDays = days ?? 7;
         var (asOfUtc, items) = await ComputeAttentionAsync(db, clock, windowDays, repoId, batch, ct)
             .ConfigureAwait(false);
-        return TypedResults.Ok(new AttentionDto(windowDays, asOfUtc, items));
+        return TypedResults.Ok(new AttentionDto(
+            windowDays, asOfUtc, items.Count,
+            items.Count(i => i.Severity == "critical"),
+            items.Count(i => i.Severity == "warning"),
+            items.Count(i => i.Severity == "info"),
+            items.Take(limit ?? 50).ToList()));
     }
 
     /// <summary>
     /// The one-call action list an operator or an MCP agent starts from: the run-history advisories merged with
-    /// the newest warehouse DMV probe results, each item carrying its evidence and (where one exists) a
-    /// ready-to-review SQL suggestion. The DMV dimension reads the newest SUCCEEDED compute task per
-    /// (operation, datasource); it never opens a datasource connection itself, so a client wanting fresher DMV
-    /// data triggers the probes through <c>POST /api/v1/datasources/tasks</c> and re-reads.
+    /// the newest warehouse DMV probe results. Compact by default: the list caps at <c>limit</c> (severity
+    /// counts cover everything found, so truncation is visible) and SQL suggestions travel only when
+    /// <c>includeSql=true</c>, so a context-limited client reads a briefing, not a dump. The DMV dimension
+    /// reads the newest SUCCEEDED compute task per (operation, datasource); it never opens a datasource
+    /// connection itself, so a client wanting fresher DMV data triggers the probes through
+    /// <c>POST /api/v1/datasources/tasks</c> and re-reads.
     /// </summary>
     private static async Task<Results<Ok<RecommendationsDto>, ProblemHttpResult>> GetRecommendationsAsync(
-        CatalogDbContext db, TimeProvider clock, int? days, Guid? repoId, string? batch, CancellationToken ct)
+        CatalogDbContext db, TimeProvider clock, int? days, Guid? repoId, string? batch, int? limit,
+        bool? includeSql, CancellationToken ct)
     {
-        if (Validate(days, limit: null) is { } problem)
+        if (Validate(days, limit) is { } problem)
         {
             return problem;
         }
@@ -157,8 +178,9 @@ public static class InsightsEndpoints
             .ConfigureAwait(false);
         var items = attention
             .Select(a => new RecommendationDto(
-                a.Severity, a.Category, "runHistory", $"{a.Title}: {a.FlowName}", a.Detail,
-                SuggestedSql: null, a.PipelineId, a.FlowName, Reference: null, Database: null))
+                a.Severity, a.Category, "runHistory", a.Title, a.Detail,
+                SuggestedSql: null, HasSuggestedSql: false, a.PipelineId, a.FlowName,
+                Reference: null, Database: null))
             .ToList();
 
         var (probeItems, probes) = await DistillWarehouseProbesAsync(db, ct).ConfigureAwait(false);
@@ -169,65 +191,103 @@ public static class InsightsEndpoints
             .ThenBy(i => i.Source, StringComparer.Ordinal) // runHistory before warehouseDmv within a severity
             .ThenBy(i => i.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        return TypedResults.Ok(new RecommendationsDto(windowDays, asOfUtc, ordered, probes));
+        var page = ordered
+            .Take(limit ?? 20)
+            .Select(i => includeSql == true ? i : i with { SuggestedSql = null })
+            .ToList();
+        return TypedResults.Ok(new RecommendationsDto(
+            windowDays, asOfUtc, ordered.Count,
+            ordered.Count(i => i.Severity == "critical"),
+            ordered.Count(i => i.Severity == "warning"),
+            ordered.Count(i => i.Severity == "info"),
+            page, probes));
     }
 
+    /// <summary>One advisory candidate before dedupe/collapse: the rank orders categories by urgency, the
+    /// impact orders within a category, and the short label is what the candidate contributes when it folds
+    /// into another item's "Also:" note.</summary>
+    private sealed record AttentionCandidate(
+        int Rank, double Impact, string Severity, string Category, Guid PipelineId, string FlowName,
+        string? Batch, string Title, string Detail, string ShortLabel);
+
+    /// <summary>Categories where many flows of one source trip together (an upstream went quiet, a schedule
+    /// stopped firing): three or more same-category items in one batch collapse to a single advisory.</summary>
+    private static readonly string[] CollapsibleCategories = ["zero-rows", "silent"];
+
+    private const int CollapseThreshold = 3;
+
+    /// <summary>
+    /// Builds the attention list with three noise controls, in order. (1) Signal quality: zero-rows fires only
+    /// for a feed that WENT quiet (loaded rows in the previous window, none in this one); an incremental flow
+    /// with simply no new data, or a staged flow that never loaded, is not an advisory. (2) One item per flow:
+    /// a flow tripping several rules keeps its most urgent item, with the others folded into an "Also:" note,
+    /// so the same flow never occupies multiple slots. (3) Batch collapse: three or more same-category items
+    /// in one batch (a source whose flows went quiet together) merge into a single advisory naming the batch
+    /// and its flows. The result is ordered most-urgent-first and UNCAPPED; the endpoints cap it and report
+    /// the full counts.
+    /// </summary>
     private static async Task<(DateTime AsOfUtc, List<AttentionItemDto> Items)> ComputeAttentionAsync(
         CatalogDbContext db, TimeProvider clock, int windowDays, Guid? repoId, string? batch, CancellationToken ct)
     {
         var report = await ComputeFlowInsightsAsync(db, clock, windowDays, repoId, batch, MaxFlows, ct)
             .ConfigureAwait(false);
-        var items = new List<(int Rank, double Impact, AttentionItemDto Item)>();
+        var candidates = new List<AttentionCandidate>();
 
         foreach (var flow in report.Flows)
         {
-            var isRepeatFailer = flow.Failures >= 2 && flow.FailureRate >= 0.5;
-            if (isRepeatFailer)
+            if (flow.Failures >= 2 && flow.FailureRate >= 0.5)
             {
-                items.Add((0, flow.Failures, new AttentionItemDto(
-                    "critical", "failing", flow.PipelineId, flow.FlowName, flow.Batch,
-                    "Failing repeatedly",
+                candidates.Add(new AttentionCandidate(
+                    0, flow.Failures, "critical", "failing", flow.PipelineId, flow.FlowName, flow.Batch,
+                    $"{flow.FlowName} fails repeatedly",
                     $"{flow.Failures} of {flow.Runs} runs failed in the last {windowDays}d." +
-                    (flow.LastError is null ? string.Empty : $" Last error: {flow.LastError}"))));
+                    (flow.LastError is null ? string.Empty : $" Last error: {flow.LastError}"),
+                    "fails repeatedly"));
             }
             else if (flow.LastStatus == RunStatuses.Failed)
             {
-                items.Add((1, flow.TotalDurationSeconds, new AttentionItemDto(
-                    "warning", "last-run-failed", flow.PipelineId, flow.FlowName, flow.Batch,
-                    "Last run failed",
-                    $"The newest run failed at {flow.LastRunUtc:yyyy-MM-dd HH:mm} UTC." +
-                    (flow.LastError is null ? string.Empty : $" Error: {flow.LastError}"))));
+                candidates.Add(new AttentionCandidate(
+                    1, flow.TotalDurationSeconds, "warning", "last-run-failed", flow.PipelineId, flow.FlowName,
+                    flow.Batch,
+                    $"{flow.FlowName}: last run failed",
+                    $"Failed at {flow.LastRunUtc:yyyy-MM-dd HH:mm} UTC." +
+                    (flow.LastError is null ? string.Empty : $" Error: {flow.LastError}"),
+                    "last run failed"));
             }
 
             if (flow is { DurationTrendPercent: >= 50, AvgDurationSeconds: >= 10, PrevAvgDurationSeconds: not null }
                 && flow.Runs >= 2)
             {
-                items.Add((1, flow.DurationTrendPercent.Value, new AttentionItemDto(
-                    "warning", "degrading", flow.PipelineId, flow.FlowName, flow.Batch,
-                    "Getting slower",
-                    $"Average duration rose {flow.DurationTrendPercent:0}% versus the previous {windowDays}d " +
-                    $"({FormatSeconds(flow.PrevAvgDurationSeconds.Value)} to {FormatSeconds(flow.AvgDurationSeconds!.Value)}).")));
+                candidates.Add(new AttentionCandidate(
+                    1, flow.DurationTrendPercent.Value, "warning", "degrading", flow.PipelineId, flow.FlowName,
+                    flow.Batch,
+                    $"{flow.FlowName} is getting slower",
+                    $"Average duration +{flow.DurationTrendPercent:0}% vs the previous {windowDays}d " +
+                    $"({FormatSeconds(flow.PrevAvgDurationSeconds.Value)} to {FormatSeconds(flow.AvgDurationSeconds!.Value)}).",
+                    $"getting slower (+{flow.DurationTrendPercent:0}%)"));
             }
 
-            if (flow.FlowKind == "ing" && flow.Failures == 0 && flow.Runs >= 1 && flow.RowsLoaded == 0)
+            // A feed that WENT quiet: rows in the previous window, none in this one. A flow that never loads
+            // rows (incremental with no new data, or a staged endpoint) is normal and stays off the list.
+            if (flow is { FlowKind: "ing", Failures: 0, Runs: >= 1, RowsLoaded: 0, PrevRowsLoaded: > 0 })
             {
-                items.Add((2, flow.Runs, new AttentionItemDto(
-                    "warning", "zero-rows", flow.PipelineId, flow.FlowName, flow.Batch,
-                    "Succeeds but loads nothing",
-                    $"{flow.Runs} run(s) succeeded in the last {windowDays}d without loading a single row. The " +
-                    "source may be empty, mispatterned, or awaiting an upstream cutover; the flow's declared " +
-                    "endpoints are the design, so diagnose before touching them.")));
+                candidates.Add(new AttentionCandidate(
+                    2, flow.PrevRowsLoaded ?? 0, "warning", "zero-rows", flow.PipelineId, flow.FlowName, flow.Batch,
+                    $"{flow.FlowName} went quiet",
+                    $"0 rows in {flow.Runs} succeeded run(s) this window; the previous {windowDays}d loaded " +
+                    $"{flow.PrevRowsLoaded:#,0} rows. The upstream may have stopped producing.",
+                    "went quiet (0 rows)"));
             }
 
             if (report.TotalDurationSeconds > 0 && flow.TotalDurationSeconds >= 600
                 && flow.TotalDurationSeconds / report.TotalDurationSeconds >= 0.25)
             {
-                items.Add((3, flow.TotalDurationSeconds, new AttentionItemDto(
-                    "info", "time-hog", flow.PipelineId, flow.FlowName, flow.Batch,
-                    "Dominates processing time",
-                    $"Consumed {flow.TotalDurationSeconds / report.TotalDurationSeconds * 100:0}% of all " +
-                    $"processing time in the last {windowDays}d ({FormatSeconds(flow.TotalDurationSeconds)} total); " +
-                    "the highest-leverage flow to optimize.")));
+                candidates.Add(new AttentionCandidate(
+                    3, flow.TotalDurationSeconds, "info", "time-hog", flow.PipelineId, flow.FlowName, flow.Batch,
+                    $"{flow.FlowName} dominates processing time",
+                    $"{flow.TotalDurationSeconds / report.TotalDurationSeconds * 100:0}% of all processing time " +
+                    $"({FormatSeconds(flow.TotalDurationSeconds)}); the highest-leverage flow to optimize.",
+                    "dominates processing time"));
             }
         }
 
@@ -252,20 +312,63 @@ public static class InsightsEndpoints
                 continue;
             }
 
-            items.Add((4, 0, new AttentionItemDto(
-                "info", "silent", pipeline.Id, pipeline.Name, pipeline.Batch,
-                "Active but not running",
-                $"No run in the last {windowDays}d; the last run was {pipeline.LastRunUtc:yyyy-MM-dd HH:mm} UTC. " +
-                "Check its schedule membership and worker pool if it should still be flowing.")));
+            candidates.Add(new AttentionCandidate(
+                4, 0, "info", "silent", pipeline.Id, pipeline.Name, pipeline.Batch,
+                $"{pipeline.Name} is active but not running",
+                $"No run in the last {windowDays}d; last ran {pipeline.LastRunUtc:yyyy-MM-dd HH:mm} UTC.",
+                "not running"));
         }
 
-        var ordered = items
+        // One item per flow: keep the most urgent candidate, fold the rest into an "Also:" note.
+        var perFlow = candidates
+            .GroupBy(c => c.PipelineId)
+            .Select(g =>
+            {
+                var ordered = g.OrderBy(c => c.Rank).ThenByDescending(c => c.Impact).ToList();
+                var primary = ordered[0];
+                return ordered.Count == 1
+                    ? primary
+                    : primary with
+                    {
+                        Detail = $"{primary.Detail} Also: {string.Join(", ", ordered.Skip(1).Select(c => c.ShortLabel))}.",
+                    };
+            })
+            .ToList();
+
+        // Batch collapse: a source whose flows went quiet (or silent) together reads as ONE advisory, not a
+        // wall of near-identical lines. Flow names ride in the detail, capped, so the item stays scannable.
+        var items = new List<(int Rank, double Impact, AttentionItemDto Item)>();
+        foreach (var cluster in perFlow.GroupBy(c => (c.Category, Batch: c.Batch ?? string.Empty)))
+        {
+            var members = cluster.OrderByDescending(c => c.Impact).ThenBy(c => c.FlowName, StringComparer.OrdinalIgnoreCase).ToList();
+            if (members.Count >= CollapseThreshold && CollapsibleCategories.Contains(cluster.Key.Category)
+                && cluster.Key.Batch.Length > 0)
+            {
+                var first = members[0];
+                var names = members.Select(m => m.FlowName).Take(8).ToList();
+                var overflow = members.Count - names.Count;
+                var verb = cluster.Key.Category == "zero-rows"
+                    ? "went quiet (0 rows after loading rows in the previous window)"
+                    : "are active but not running";
+                items.Add((first.Rank, members.Count, new AttentionItemDto(
+                    first.Severity, first.Category, PipelineId: null, FlowName: null, cluster.Key.Batch,
+                    members.Count,
+                    $"{members.Count} {cluster.Key.Batch} flows {cluster.Key.Category switch { "zero-rows" => "went quiet", _ => "stopped running" }}",
+                    $"{string.Join(", ", names)}{(overflow > 0 ? $" and {overflow} more" : string.Empty)} {verb}.")));
+                continue;
+            }
+
+            items.AddRange(members.Select(m => (m.Rank, m.Impact, new AttentionItemDto(
+                m.Severity, m.Category, m.PipelineId, m.FlowName, m.Batch, 1, m.Title, m.Detail))));
+        }
+
+        var orderedItems = items
             .OrderBy(i => i.Rank)
             .ThenByDescending(i => i.Impact)
-            .ThenBy(i => i.Item.FlowName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(i => i.Item.Title, StringComparer.OrdinalIgnoreCase)
             .Select(i => i.Item)
             .ToList();
-        return (report.AsOfUtc, ordered);
+        return (report.AsOfUtc, orderedItems);
     }
 
     /// <summary>How many advisories each DMV category contributes to the recommendations; the full lists stay
@@ -345,12 +448,13 @@ public static class InsightsEndpoints
             var seeks = Num(advisory, "userSeeks") + Num(advisory, "userScans");
             var impact = Num(advisory, "avgUserImpactPercent");
             var measure = Num(advisory, "improvementMeasure");
+            var sql = Str(advisory, "suggestedIndexSql");
             items.Add(new RecommendationDto(
                 measure >= 1_000_000 ? "warning" : "info", "missing-index", "warehouseDmv",
                 $"Missing index on {table}",
                 $"The optimizer wanted this index {seeks:0} time(s) with an estimated {impact:0}% cost " +
                 "reduction. Review for overlap with existing indexes and write cost before creating it.",
-                Str(advisory, "suggestedIndexSql"), PipelineId: null, FlowName: null, reference, database));
+                sql, sql is not null, PipelineId: null, FlowName: null, reference, database));
         }
     }
 
@@ -363,13 +467,14 @@ public static class InsightsEndpoints
                      .Take(MaxProbeItemsPerCategory))
         {
             var table = $"{Str(stat, "schema")}.{Str(stat, "table")}";
+            var sql = Str(stat, "suggestedUpdateSql");
             items.Add(new RecommendationDto(
                 "warning", "stale-statistics", "warehouseDmv",
                 $"Stale statistics on {table}",
                 $"'{Str(stat, "statisticName")}' has {Num(stat, "modificationCounter"):0} modifications " +
                 $"({Num(stat, "modificationPercent"):0.#}% of {Num(stat, "rows"):0} rows) since its last " +
                 "update; the optimizer is planning against a stale picture of the data.",
-                Str(stat, "suggestedUpdateSql"), PipelineId: null, FlowName: null, reference, database));
+                sql, sql is not null, PipelineId: null, FlowName: null, reference, database));
         }
     }
 
@@ -390,7 +495,7 @@ public static class InsightsEndpoints
                 $"Maintained by {Num(index, "writes"):0} write(s) but served zero reads since the usage " +
                 $"counters last reset ({Num(index, "sizeKb"):0} KB). Confirm the counter window covers a full " +
                 "workload cycle (month-end, year-end jobs) before dropping.",
-                $"DROP INDEX [{name}] ON [{schema}].[{table}];",
+                $"DROP INDEX [{name}] ON [{schema}].[{table}];", HasSuggestedSql: true,
                 PipelineId: null, FlowName: null, reference, database));
         }
     }
@@ -411,7 +516,7 @@ public static class InsightsEndpoints
                 "Expensive query in the plan cache",
                 $"{Num(query, "executionCount"):0} execution(s), {Num(query, "avgElapsedMs"):0} ms average, " +
                 $"{FormatSeconds(Num(query, "totalElapsedMs") / 1000)} total elapsed: {snippet}",
-                SuggestedSql: null, PipelineId: null, FlowName: null, reference,
+                SuggestedSql: null, HasSuggestedSql: false, PipelineId: null, FlowName: null, reference,
                 Str(query, "database") ?? database));
         }
     }
@@ -442,7 +547,7 @@ public static class InsightsEndpoints
     };
 
     private static async Task<Results<Ok<StepInsightsDto>, ProblemHttpResult>> GetStepInsightsAsync(
-        Guid pipelineId, CatalogDbContext db, TimeProvider clock, int? days, CancellationToken ct)
+        Guid pipelineId, CatalogDbContext db, TimeProvider clock, int? days, bool? includeSql, CancellationToken ct)
     {
         if (Validate(days, limit: null) is { } problem)
         {
@@ -484,6 +589,9 @@ public static class InsightsEndpoints
 
         // The newest run that recorded statements supplies one sample SQL per step, so a hot step shows the
         // code it ran. Steps the trace labels but the statements do not (source.open, incremental) get null.
+        // SQL bodies travel only on request (includeSql=true): the default answer stays small enough for a
+        // context-limited client, which still learns which steps are hot and can re-ask with SQL for one flow.
+        var wantSql = includeSql == true;
         var sampleRunId = await db.RunStatements.AsNoTracking()
             .Join(db.Runs.AsNoTracking(), s => s.RunId, r => r.RunId, (s, r) => new { s.RunId, r.PipelineId, r.WrittenUtc })
             .Where(x => x.PipelineId == pipelineId)
@@ -492,7 +600,7 @@ public static class InsightsEndpoints
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
         var sampleSqlByStep = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (sampleRunId is { } runId)
+        if (wantSql && sampleRunId is { } runId)
         {
             var statements = await db.RunStatements.AsNoTracking()
                 .Where(s => s.RunId == runId)
@@ -554,8 +662,13 @@ public static class InsightsEndpoints
                 && r.Status == RunStatuses.Succeeded
                 && (repoId == null || r.RepoId == repoId))
             .GroupBy(r => r.PipelineId)
-            .Select(g => new { PipelineId = g.Key, AvgDuration = g.Average(r => r.DurationSeconds) })
-            .ToDictionaryAsync(g => g.PipelineId, g => g.AvgDuration, ct).ConfigureAwait(false);
+            .Select(g => new
+            {
+                PipelineId = g.Key,
+                AvgDuration = g.Average(r => r.DurationSeconds),
+                Rows = g.Sum(r => r.RowsLoaded ?? 0),
+            })
+            .ToDictionaryAsync(g => g.PipelineId, g => (g.AvgDuration, g.Rows), ct).ConfigureAwait(false);
 
         var latest = await window
             .Where(r => r.RunId == db.Runs
@@ -593,9 +706,9 @@ public static class InsightsEndpoints
                 continue; // the pipeline's runs all left the window between the two queries; nothing to report
             }
 
-            var prevAvg = previous.GetValueOrDefault(aggregate.PipelineId);
-            double? trend = prevAvg is > 0 && aggregate.AvgDuration is { } avg
-                ? (avg - prevAvg.Value) / prevAvg.Value * 100.0
+            var hasPrevious = previous.TryGetValue(aggregate.PipelineId, out var prev);
+            double? trend = hasPrevious && prev.AvgDuration is > 0 && aggregate.AvgDuration is { } avg
+                ? (avg - prev.AvgDuration.Value) / prev.AvgDuration.Value * 100.0
                 : null;
             flows.Add(new FlowInsightDto(
                 aggregate.PipelineId, last.FlowName, last.FlowKind, pipelineMeta?.Batch,
@@ -606,7 +719,7 @@ public static class InsightsEndpoints
                 aggregate.RowsLoaded,
                 aggregate.TotalDuration > 0 ? aggregate.RowsLoaded / aggregate.TotalDuration : null,
                 last.WrittenUtc, last.Status, Truncate(last.Error, MaxErrorChars),
-                prevAvg, trend));
+                hasPrevious ? prev.AvgDuration : null, hasPrevious ? prev.Rows : null, trend));
         }
 
         var orderedFlows = flows
