@@ -411,19 +411,18 @@ public sealed class IngestionFlowRunner
 
             Info("stage.copy", $"{rowsStaged} row(s) staged");
 
-            // 4.5. Index the staging heap on the merge key before any keyed apply. The batched upsert probes
-            //      staging once per key window, and on a multi-million-row load an unindexed heap turns every
-            //      probe into a full scan (a 16M-row staged fact spent over an hour in the loop); one sorted
-            //      rebuild here makes each window an index seek. Keyless loads (insert-all) skip it.
-            var stagingKeys = EffectiveKeyColumns(flow).Select(k => MapName(nameMap, k)).ToList();
-            if (stagingKeys.Count > 0 && rowsStaged > 0)
+            // 4.5. Staging stays a HEAP for the plain set-based apply (one hash join reads it once; index
+            //      maintenance would cost more than it buys). Only dataset processing indexes it: the ordered
+            //      per-dataset loop dedups and filters staging by the dataset column once per distinct dataset,
+            //      so it gets the legacy engine's NCI_DataSets nonclustered index after the bulk copy.
+            if (flow.Load.DataSetColumn is { } dataSetColumn && rowsStaged > 0)
             {
+                var mappedDataSet = MapName(nameMap, dataSetColumn);
                 var stagingIndexSql =
-                    $"CREATE CLUSTERED INDEX [IX_{Escape(staging.Name)}_key] ON {SchemaQualified(staging)} " +
-                    $"({string.Join(", ", stagingKeys.Select(k => $"[{Escape(k)}]"))});";
+                    $"CREATE NONCLUSTERED INDEX [NCI_DataSets] ON {SchemaQualified(staging)} ([{Escape(mappedDataSet)}] ASC);";
                 Trace("staging.index", stagingIndexSql);
                 await ExecuteAsync(targetConnectionString, stagingIndexSql, ct).ConfigureAwait(false);
-                Info("staging.index", $"clustered key index on staging ({string.Join(", ", stagingKeys)})");
+                Info("staging.index", $"NCI_DataSets on staging ([{mappedDataSet}])");
             }
 
             // 5. Evolve the target to the desired schema when schema sync is enabled. Capture whether the
