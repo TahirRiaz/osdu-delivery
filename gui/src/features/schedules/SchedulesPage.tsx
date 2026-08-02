@@ -24,7 +24,7 @@ import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
-import { RunStatusBadge, rollupStatus, ScheduleStateBadge } from "../../components/StatusBadge";
+import { IconBadge, RunStatusBadge, rollupStatus, ScheduleStateBadge } from "../../components/StatusBadge";
 import { cronSummary, intervalSummary, shortZone } from "./cadence";
 import { RunScheduleDialog } from "./RunScheduleDialog";
 import { ScheduleDefinitionSheet } from "./ScheduleDefinitionSheet";
@@ -492,18 +492,9 @@ export default function SchedulesPage() {
       render: (row) => (
         <div className="flex items-center gap-1">
           <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
+          {/* Through the same pill as every other status, so the two icons in this cell read as one language. */}
           {row.lastGroupActive && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex">
-                  <Badge className="gap-1 border-transparent bg-info/12 text-info" data-testid="schedule-running">
-                    <Loader2 className="size-3 animate-spin" />
-                    running
-                  </Badge>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>A fire of this schedule is executing now. Open "view running" to watch or cancel it.</TooltipContent>
-            </Tooltip>
+            <IconBadge tone="info" label="running now" icon={Loader2} spin testId="schedule-running" />
           )}
         </div>
       ),

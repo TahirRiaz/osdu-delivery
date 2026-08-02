@@ -83,7 +83,7 @@ function runStatusVisual(status: RunStatus | string): { tone: Tone; label: strin
  * plus tone still carry the state without color alone (DESIGN.md 7.3), and the hidden label keeps the word
  * queryable in tests and available to assistive tech.
  */
-function IconBadge({
+export function IconBadge({
   tone,
   label,
   icon: Icon,
@@ -163,12 +163,15 @@ export function ActiveBadge({ active }: { active: boolean }) {
     : <IconBadge tone="muted" label="inactive" icon={CircleMinus} testId="active-badge" />;
 }
 
+/** A schedule's state as the tinted icon alone, like every run status: three states with three distinct icon
+ * shapes, under a column header that already says "State", so spelling the word out again cost a column's width
+ * per row and told the reader nothing the check mark did not. */
 export function ScheduleStateBadge({ enabled, paused }: { enabled: boolean; paused: boolean }) {
   if (!enabled) {
-    return <Pill tone="muted" label="disabled" icon={Power} testId="schedule-badge" />;
+    return <IconBadge tone="muted" label="disabled" icon={Power} testId="schedule-badge" />;
   }
 
   return paused
-    ? <Pill tone="warning" label="paused" icon={Pause} testId="schedule-badge" />
-    : <Pill tone="success" label="enabled" icon={CircleCheck} testId="schedule-badge" />;
+    ? <IconBadge tone="warning" label="paused" icon={Pause} testId="schedule-badge" />
+    : <IconBadge tone="success" label="enabled" icon={CircleCheck} testId="schedule-badge" />;
 }
