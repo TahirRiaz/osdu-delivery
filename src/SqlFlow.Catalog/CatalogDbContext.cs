@@ -367,6 +367,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.Source).HasMaxLength(16).IsRequired();
             entity.Property(s => s.DefinitionPath).HasMaxLength(1024);
             entity.Property(s => s.DefinitionFlow).HasMaxLength(400);
+            entity.Property(s => s.AfterSchedule).HasMaxLength(400);
             entity.HasIndex(s => s.RepoId);
             // A name is what flows join, so it identifies exactly one schedule in a repo. The estate scan already
             // collapses a redefined name to the first definition; the unique index is what keeps two sync paths (or
@@ -375,6 +376,11 @@ public sealed class CatalogDbContext : DbContext
             // The scheduler scans for due, active schedules ordered by when they are next due:
             // WHERE Enabled = 1 AND Paused = 0 AND NextFireUtc <= now.
             entity.HasIndex(s => s.NextFireUtc);
+            // The chained scan is the other half of the scheduler tick: WHERE Enabled = 1 AND Paused = 0 AND
+            // AfterSchedule IS NOT NULL, resolved against the parent by (RepoId, Name). Chained schedules are a small
+            // minority of the table, so the filtered index keeps that scan off the clock-driven rows entirely.
+            entity.HasIndex(s => new { s.RepoId, s.AfterSchedule })
+                  .HasFilter("[AfterSchedule] IS NOT NULL");
         });
 
         modelBuilder.Entity<CatalogScheduleMember>(entity =>

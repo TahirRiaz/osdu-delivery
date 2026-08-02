@@ -82,6 +82,26 @@ public sealed record ScheduleSpec
     /// <summary>A fixed interval, in seconds, between runs. Null when the schedule is cron-based.</summary>
     public int? IntervalSeconds { get; init; }
 
+    /// <summary>
+    /// The name of the schedule this one CHAINS BEHIND, making it a shadow schedule: it has no cadence of its own
+    /// and never becomes due on the clock. It fires once each time the named parent's fire COMPLETES, which is how a
+    /// chain like <c>a -> b -> c</c> is written (each link names the one before it).
+    /// <para>
+    /// Completion means every run the parent's last fire enqueued has reached a terminal state, whatever that state
+    /// is. The chain deliberately does NOT require the parent to have SUCCEEDED: these links exist to serialise work
+    /// that must not overlap, and gating on success would let one failed link park every downstream schedule
+    /// indefinitely, which is a far worse operational failure than running the next link after a bad one. A link that
+    /// genuinely must not run on bad upstream data belongs in the same schedule as its parent, where wave ordering
+    /// already skips a member whose dependency failed.
+    /// </para>
+    /// Mutually exclusive with <see cref="Cron"/> and <see cref="IntervalSeconds"/>: a schedule is driven by the
+    /// clock or by a parent, never both. Null for an ordinary scheduled or referencing declaration.
+    /// </summary>
+    public string? After { get; init; }
+
+    /// <summary>Whether this schedule is driven by a parent's completion rather than by the clock.</summary>
+    public bool IsChained => !string.IsNullOrWhiteSpace(After);
+
     /// <summary>The IANA time zone the cron is evaluated in (for example <c>Europe/Oslo</c>); <c>UTC</c> by default.</summary>
     public string Timezone { get; init; } = "UTC";
 

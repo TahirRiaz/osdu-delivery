@@ -17,7 +17,16 @@ public sealed record NamedSchedule(string Name, ScheduleSpec Spec);
 /// repeating the block. The cadence fields are exactly a flow's inline <c>schedule:</c> block (cron or
 /// intervalSeconds, timezone, enabled, catchup, maxConcurrency); the map key is the reference name. Cron/interval syntax is not
 /// validated here (the catalog owns the cron library, as for inline schedules); an entry that declares neither a
-/// cron nor an interval is dropped with a warning so an empty placeholder never becomes a broken schedule.
+/// cron, an interval, nor an <c>after</c> is dropped with a warning so an empty placeholder never becomes a broken
+/// schedule.
+/// <para>
+/// An entry may instead declare <c>after: &lt;other-schedule&gt;</c>, which makes it a CHAINED (shadow) schedule: it
+/// carries no cadence and never becomes due on the clock, firing once each time the named parent's fire completes.
+/// That is how a strict serial chain is expressed (<c>a</c> on a cron, <c>b: {after: a}</c>, <c>c: {after: b}</c>),
+/// which a stagger of independent crons can only approximate. Declaring both a cron and an <c>after</c> is
+/// contradictory, so the cron is dropped with a warning; chaining a schedule to itself is dropped entirely. Longer
+/// cycles cannot be seen from one file and are broken at fire time by the scheduler.
+/// </para>
 /// </summary>
 public sealed class YamlScheduleLibraryLoader
 {
@@ -36,6 +45,8 @@ public sealed class YamlScheduleLibraryLoader
         public string? Cron { get; set; }
 
         public int? IntervalSeconds { get; set; }
+
+        public string? After { get; set; }
 
         public string? Timezone { get; set; }
 
@@ -79,17 +90,37 @@ public sealed class YamlScheduleLibraryLoader
                 continue;
             }
 
-            if (entry is null || (string.IsNullOrWhiteSpace(entry.Cron) && entry.IntervalSeconds is null))
+            var after = string.IsNullOrWhiteSpace(entry?.After) ? null : entry.After.Trim();
+            var hasClock = entry is not null && (!string.IsNullOrWhiteSpace(entry.Cron) || entry.IntervalSeconds is not null);
+
+            if (entry is null || (!hasClock && after is null))
             {
-                warnings.Add($"{source}: schedule '{name}' declares neither a cron nor an intervalSeconds; ignored.");
+                warnings.Add(
+                    $"{source}: schedule '{name}' declares neither a cron, an intervalSeconds, nor an after; ignored.");
+                continue;
+            }
+
+            // A schedule is driven by the clock or by a parent, never both: honouring a cron on a chained schedule
+            // would fire it twice per cycle, once on the clock and once behind its parent.
+            if (hasClock && after is not null)
+            {
+                warnings.Add(
+                    $"{source}: schedule '{name}' sets 'after: {after}' together with a cron/intervalSeconds; "
+                    + "a chained schedule has no cadence of its own, so the cron is ignored.");
+            }
+
+            if (after is not null && string.Equals(after, name, StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add($"{source}: schedule '{name}' chains after itself; ignored.");
                 continue;
             }
 
             schedules.Add(new NamedSchedule(name, new ScheduleSpec
             {
                 Name = name,
-                Cron = string.IsNullOrWhiteSpace(entry.Cron) ? null : entry.Cron.Trim(),
-                IntervalSeconds = entry.IntervalSeconds,
+                Cron = after is not null || string.IsNullOrWhiteSpace(entry.Cron) ? null : entry.Cron.Trim(),
+                IntervalSeconds = after is not null ? null : entry.IntervalSeconds,
+                After = after,
                 Timezone = string.IsNullOrWhiteSpace(entry.Timezone) ? "UTC" : entry.Timezone.Trim(),
                 Enabled = entry.Enabled ?? true,
                 Catchup = entry.Catchup ?? false,

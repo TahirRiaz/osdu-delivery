@@ -93,13 +93,18 @@ public sealed partial class SchedulerService : BackgroundService
     {
         var now = _clock.GetUtcNow().UtcDateTime;
         IReadOnlyList<CatalogSchedule> due;
+        IReadOnlyList<CatalogSchedule> chained;
         await using (var scope = _services.CreateAsyncScope())
         {
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
             due = await ScheduleStore.ListDueAsync(catalog, now, MaxPerTick, ct).ConfigureAwait(false);
+
+            // The second driver: schedules with no cadence of their own, waiting on a parent's fire to finish. Scanned
+            // every tick alongside the clock scan, so a chain advances one link per tick as each parent completes.
+            chained = await ScheduleStore.ListChainedReadyAsync(catalog, MaxPerTick, ct).ConfigureAwait(false);
         }
 
-        if (due.Count == 0)
+        if (due.Count == 0 && chained.Count == 0)
         {
             return;
         }
@@ -108,7 +113,76 @@ public sealed partial class SchedulerService : BackgroundService
         // due schedules never opens more than MaxConcurrentFires catalog conversations at once. WhenAll observes
         // every task, so the gate is fully released before it is disposed.
         using var gate = new SemaphoreSlim(MaxConcurrentFires, MaxConcurrentFires);
-        await Task.WhenAll(due.Select(schedule => FireGuardedAsync(schedule, now, gate, ct))).ConfigureAwait(false);
+        var fires = due.Select(schedule => FireGuardedAsync(schedule, now, gate, ct))
+            .Concat(chained.Select(schedule => FireChainedGuardedAsync(schedule, now, gate, ct)));
+        await Task.WhenAll(fires).ConfigureAwait(false);
+    }
+
+    /// <summary>Fires one ready chained schedule behind the same concurrency gate and isolation as a clock fire.</summary>
+    private async Task FireChainedGuardedAsync(CatalogSchedule schedule, DateTime now, SemaphoreSlim gate, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+            await FireChainedAsync(catalog, schedule, now, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // shutdown mid-tick; ExecuteAsync observes the cancellation and stops cleanly
+        }
+        catch (Exception ex)
+        {
+            LogFireError(schedule.Id, schedule.Name, SecretHygiene.RedactedMessage(ex));
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Fires a chained schedule behind its completed parent. The claim stamps the parent fire being consumed rather
+    /// than advancing a next-fire, which is what makes one parent fire trigger the child exactly once however many
+    /// nodes or ticks observe the same completed parent.
+    /// </summary>
+    private async Task FireChainedAsync(CatalogDbContext catalog, CatalogSchedule schedule, DateTime now, CancellationToken ct)
+    {
+        if (schedule.AfterSchedule is not { Length: > 0 } parentName)
+        {
+            return; // not actually chained (defensive against a concurrent change)
+        }
+
+        // Re-read the parent's fire instant on this scope: the scan that selected this child ran on another scope,
+        // and the value stamped must be the one readiness was judged against.
+        var parentFire = await ScheduleStore.GetParentLastFireUtcAsync(catalog, schedule.RepoId, parentName, ct)
+            .ConfigureAwait(false);
+        if (parentFire is not { } parentFireUtc || parentFireUtc == schedule.LastParentFireUtc)
+        {
+            return; // the parent was re-declared, or another node already consumed this fire
+        }
+
+        var won = await ScheduleStore.TryClaimChainedFireAsync(
+            catalog, schedule.Id, schedule.LastParentFireUtc, parentFireUtc, now, ct).ConfigureAwait(false);
+        if (!won)
+        {
+            return;
+        }
+
+        var fire = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, now, ct).ConfigureAwait(false);
+        switch (fire.Outcome)
+        {
+            case ScheduleFire.Outcome.ScopeEmpty:
+                LogScopeEmpty(schedule.Id, schedule.Name);
+                break;
+            case ScheduleFire.Outcome.Enqueued:
+                LogChainedFired(schedule.Id, schedule.Name, parentName, fire.RunId);
+                break;
+            case ScheduleFire.Outcome.EnqueuedGroup:
+                LogChainedFiredGroup(schedule.Id, fire.MemberCount, schedule.Name, parentName, fire.GroupId ?? Guid.Empty);
+                break;
+        }
     }
 
     /// <summary>Fires one due schedule behind the concurrency gate, on its own scope. A failure (a transient
@@ -191,6 +265,12 @@ public sealed partial class SchedulerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} ('{ScheduleName}') fired: enqueued its {MemberCount} members as wave-ordered run group {GroupId}.")]
     private partial void LogFiredGroup(Guid scheduleId, int memberCount, string scheduleName, Guid groupId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} ('{ScheduleName}') fired behind '{ParentName}': enqueued run {RunId} for its single member.")]
+    private partial void LogChainedFired(Guid scheduleId, string scheduleName, string parentName, Guid runId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Schedule {ScheduleId} ('{ScheduleName}') fired behind '{ParentName}': enqueued its {MemberCount} members as wave-ordered run group {GroupId}.")]
+    private partial void LogChainedFiredGroup(Guid scheduleId, int memberCount, string scheduleName, string parentName, Guid groupId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} ('{ScheduleName}') resolved to no runnable flow: nothing joins it, or every member is deactivated or mode: manual. Nothing enqueued this occurrence.")]
     private partial void LogScopeEmpty(Guid scheduleId, string scheduleName);

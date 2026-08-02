@@ -1261,8 +1261,26 @@ public class CatalogSchedule
     public string? Cron { get; set; }
 
     /// <summary>A fixed interval in seconds between fires. Null when the schedule is cron-based. Exactly one of
-    /// <see cref="Cron"/> / <see cref="IntervalSeconds"/> is set.</summary>
+    /// <see cref="Cron"/> / <see cref="IntervalSeconds"/> / <see cref="AfterSchedule"/> is set.</summary>
     public int? IntervalSeconds { get; set; }
+
+    /// <summary>
+    /// The name of the schedule this one chains behind, within the same repo, or null for a clock-driven schedule.
+    /// When set this is a SHADOW schedule: it has no cadence, <see cref="NextFireUtc"/> stays null so the clock scan
+    /// never sees it, and it fires once each time the parent's fire completes. Stored by NAME rather than by id
+    /// because git is the source of truth and a sync rewrites rows: a name survives a parent being deleted and
+    /// re-created, and it is what the YAML actually said.
+    /// </summary>
+    public string? AfterSchedule { get; set; }
+
+    /// <summary>
+    /// The parent's <see cref="LastFireUtc"/> that this chained schedule has already reacted to, or null if it has
+    /// never fired behind its current parent. This is the idempotence key of the chain: the scheduler fires a child
+    /// only when the parent's last fire is complete AND differs from this value, then stamps it, so one parent fire
+    /// triggers each child exactly once no matter how many scheduler ticks observe the completed parent. Null on a
+    /// clock-driven schedule.
+    /// </summary>
+    public DateTime? LastParentFireUtc { get; set; }
 
     /// <summary>The IANA time zone the cron expression is evaluated in (for example <c>Europe/Oslo</c>); <c>UTC</c>
     /// by default. Ignored for interval schedules.</summary>

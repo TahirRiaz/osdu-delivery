@@ -40,6 +40,76 @@ public static class ScheduleStore
     }
 
     /// <summary>
+    /// The chained (shadow) schedules that are ready to fire: active, driven by a parent rather than the clock, whose
+    /// parent's most recent fire has COMPLETED and has not already triggered this child.
+    /// <para>
+    /// Readiness is evaluated entirely in the database so the scheduler never pulls the run table into memory. A
+    /// parent fire counts as complete when the parent has fired at all and no run it enqueued is still queued or
+    /// running: the fire is identified by <see cref="CatalogSchedule.LastGroupId"/> for a multi-member fire and
+    /// <see cref="CatalogSchedule.LastRunId"/> for a single-member one. Whether those runs succeeded is deliberately
+    /// not considered; see <c>ScheduleSpec.After</c> for why a chain must not be parked by one bad link.
+    /// </para>
+    /// A parent that is itself chained is handled by the same rule applied to it, so a chain of any length advances
+    /// one link per tick. A cycle simply never becomes ready (no link's parent ever completes a fire the child has
+    /// not already consumed), so a mis-declared loop stalls quietly instead of firing forever.
+    /// </summary>
+    public static async Task<IReadOnlyList<CatalogSchedule>> ListChainedReadyAsync(
+        CatalogDbContext catalog, int max, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        var query =
+            from child in catalog.Schedules.AsNoTracking()
+            where child.Enabled && !child.Paused && child.AfterSchedule != null
+            join parent in catalog.Schedules.AsNoTracking()
+                on new { child.RepoId, Name = child.AfterSchedule! } equals new { parent.RepoId, parent.Name }
+            where parent.LastFireUtc != null
+               && (child.LastParentFireUtc == null || child.LastParentFireUtc != parent.LastFireUtc)
+               && !catalog.Runs.Any(r =>
+                      (parent.LastGroupId != null && r.GroupId == parent.LastGroupId
+                       || parent.LastGroupId == null && r.RunId == parent.LastRunId)
+                      && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
+            orderby parent.LastFireUtc
+            select child;
+
+        return await query.Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Atomically claims a chained schedule's fire by stamping the parent fire it is reacting to, from the value the
+    /// caller observed (normally null, or the previous parent fire). Returns true only for the winner, so when several
+    /// control-plane nodes see the same completed parent exactly one child fire is enqueued.
+    /// </summary>
+    public static async Task<bool> TryClaimChainedFireAsync(
+        CatalogDbContext catalog, Guid id, DateTime? observedLastParentFireUtc, DateTime parentFireUtc,
+        DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var affected = await catalog.Schedules
+            .Where(s => s.Id == id
+                        && (observedLastParentFireUtc == null
+                                ? s.LastParentFireUtc == null
+                                : s.LastParentFireUtc == observedLastParentFireUtc))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.LastParentFireUtc, parentFireUtc)
+                .SetProperty(x => x.LastFireUtc, nowUtc)
+                .SetProperty(x => x.UpdatedUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+        return affected > 0;
+    }
+
+    /// <summary>The parent's last fire instant, used to stamp a chained child when it fires behind it.</summary>
+    public static async Task<DateTime?> GetParentLastFireUtcAsync(
+        CatalogDbContext catalog, Guid repoId, string parentName, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return await catalog.Schedules.AsNoTracking()
+            .Where(s => s.RepoId == repoId && s.Name == parentName)
+            .Select(s => s.LastFireUtc)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Atomically claims a schedule's fire by advancing <see cref="CatalogSchedule.NextFireUtc"/> from the value the
     /// caller observed to the next occurrence. Returns true only if this caller won the race: the compare-and-swap on
     /// the observed next-fire means that when several control-plane nodes scan the same due schedule, exactly one
@@ -98,10 +168,10 @@ public static class ScheduleStore
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
         int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
         DateTime computedNextFireUtc, DateTime nowUtc, ScheduleDefinitionSource? definition = null,
-        CancellationToken ct = default)
+        string? afterSchedule = null, CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, definition, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, definition, afterSchedule, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
@@ -111,11 +181,19 @@ public static class ScheduleStore
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
         int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
         DateTime computedNextFireUtc, DateTime nowUtc, ScheduleDefinitionSource? definition = null,
-        CancellationToken ct = default)
+        string? afterSchedule = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(members);
         ArgumentException.ThrowIfNullOrWhiteSpace(scheduleName);
+
+        // A chained schedule is driven by its parent, never by the clock: it keeps no cadence and, crucially, a null
+        // next fire, which is what keeps it out of the due scan entirely.
+        var chained = !string.IsNullOrWhiteSpace(afterSchedule);
+        var parent = chained ? afterSchedule!.Trim() : null;
+        var effectiveCron = chained ? null : cron;
+        var effectiveInterval = chained ? null : intervalSeconds;
+        DateTime? effectiveNextFire = chained ? null : computedNextFireUtc;
 
         var id = CatalogIdentity.YamlSchedule(repoId, scheduleName);
         var existing = await catalog.Schedules.AsTracking()
@@ -127,8 +205,9 @@ public static class ScheduleStore
                 Id = id,
                 RepoId = repoId,
                 Name = scheduleName,
-                Cron = cron,
-                IntervalSeconds = intervalSeconds,
+                Cron = effectiveCron,
+                IntervalSeconds = effectiveInterval,
+                AfterSchedule = parent,
                 Timezone = timezone,
                 Enabled = enabled,
                 Catchup = catchup,
@@ -137,7 +216,7 @@ public static class ScheduleStore
                 DefinitionPath = definition?.Path,
                 DefinitionFlow = definition?.Flow,
                 DefinitionYaml = definition?.Yaml,
-                NextFireUtc = computedNextFireUtc,
+                NextFireUtc = effectiveNextFire,
                 CreatedUtc = nowUtc,
                 UpdatedUtc = nowUtc,
             });
@@ -146,14 +225,16 @@ public static class ScheduleStore
         {
             // Only the TIMING definition resets the cadence. Membership changes what a fire runs, not when, so
             // adding or removing a member must not shift the next fire or disturb the rhythm.
-            var definitionChanged = existing.Cron != cron
-                || existing.IntervalSeconds != intervalSeconds
+            var definitionChanged = existing.Cron != effectiveCron
+                || existing.IntervalSeconds != effectiveInterval
                 || existing.Timezone != timezone;
+            var chainChanged = !string.Equals(existing.AfterSchedule, parent, StringComparison.Ordinal);
 
             existing.RepoId = repoId;
             existing.Name = scheduleName;
-            existing.Cron = cron;
-            existing.IntervalSeconds = intervalSeconds;
+            existing.Cron = effectiveCron;
+            existing.IntervalSeconds = effectiveInterval;
+            existing.AfterSchedule = parent;
             existing.Timezone = timezone;
             existing.Enabled = enabled;
             existing.Catchup = catchup;
@@ -165,10 +246,23 @@ public static class ScheduleStore
             existing.DefinitionFlow = definition?.Flow;
             existing.DefinitionYaml = definition?.Yaml;
             existing.UpdatedUtc = nowUtc;
-            // Only reset the cadence when the timing definition changed; an unchanged re-sync leaves the next fire
-            // (and the operator's pause) exactly as they were.
-            if (definitionChanged || existing.NextFireUtc is null)
+
+            // Re-pointing the chain restarts it: the consumed-parent stamp refers to the OLD parent's fire clock and
+            // would be meaningless (and could suppress the first fire) against a different one.
+            if (chainChanged)
             {
+                existing.LastParentFireUtc = null;
+            }
+
+            if (chained)
+            {
+                // Becoming chained must retire any pending clock occurrence, or the schedule would fire on both.
+                existing.NextFireUtc = null;
+            }
+            else if (definitionChanged || chainChanged || existing.NextFireUtc is null)
+            {
+                // Only reset the cadence when the timing definition changed; an unchanged re-sync leaves the next fire
+                // (and the operator's pause) exactly as they were.
                 existing.NextFireUtc = computedNextFireUtc;
             }
         }

@@ -11,7 +11,13 @@ param(
     [string] $MetaDb   = 'dw-sqlflow-prod-last',
     [string] $User     = 'SQLFlow',
     [string] $Password = 'fhin352',
-    [string] $TargetConnEnv = '${env:SQLFLOW_CONN_DWPREPROD}'
+    [string] $TargetConnEnv = '${env:SQLFLOW_CONN_DWPREPROD}',
+    # Overrides the flow name (and file name), which otherwise derives from the pre table.
+    [string] $FlowName,
+    # Overrides batch, which otherwise carries the legacy batch code verbatim.
+    [string] $Batch,
+    # Emits schedule membership so the flow joins the source's single schedule.
+    [string] $Schedule
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,8 +74,11 @@ $cols = $rows | ForEach-Object {
 $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine("# Generated from old SQLFlow metadata (flw.PreIngestionCSV FlowID $FlowId) by Generate-PreFlow.ps1.")
 [void]$sb.AppendLine("# Stage 1 of 2 (pre): lands the CSV into [$schema].[$table] and builds the typed view v_$table.")
-[void]$sb.AppendLine("name: $($table.ToLower())_01_csv")
-[void]$sb.AppendLine("batch: $($h.Batch)")
+$flowNameOut = if ($FlowName) { $FlowName } else { "$($table.ToLower())_01_csv" }
+$batchOut    = if ($Batch)    { $Batch }    else { $h.Batch }
+[void]$sb.AppendLine("name: $flowNameOut")
+[void]$sb.AppendLine("batch: $batchOut")
+if ($Schedule) { [void]$sb.AppendLine("schedule: $Schedule") }
 [void]$sb.AppendLine("source:")
 [void]$sb.AppendLine("  type: csv")
 [void]$sb.AppendLine("  location: $loc")
@@ -126,7 +135,7 @@ foreach ($c in $cols) {
     [void]$sb.AppendLine($line)
 }
 
-$outFile = Join-Path $OutDir ("{0}_01_csv.yaml" -f $table.ToLower())
+$outFile = Join-Path $OutDir ("{0}.yaml" -f $flowNameOut)
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 $sb.ToString() | Set-Content -Path $outFile -Encoding utf8 -NoNewline
 Write-Host "wrote $outFile ($($cols.Count) transform column(s))"

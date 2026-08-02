@@ -9,7 +9,15 @@ param(
     [string] $Server   = '92.221.59.28',
     [string] $MetaDb   = 'dw-sqlflow-prod-last',
     [string] $User     = 'SQLFlow',
-    [string] $Password = 'fhin352'
+    [string] $Password = 'fhin352',
+    # Overrides the flow name (and file name), which otherwise derives from the TARGET table.
+    # Required when several source flows merge into one shared arc table, as APC does: five
+    # operators all feed [arc].[APC_Calls], so the derived name would collide for all of them.
+    [string] $FlowName,
+    # Overrides batch, which otherwise carries the legacy batch code verbatim.
+    [string] $Batch,
+    # Emits schedule membership so the flow joins the source's single schedule.
+    [string] $Schedule
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,8 +79,11 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine("# Generated from old SQLFlow metadata (flw.Ingestion FlowID $FlowId) by Generate-OdsFlow.ps1.")
 [void]$sb.AppendLine("# Stage 2 of 2 (ods): keyed-merges the typed pre view into the ODS/arc table.")
 [void]$sb.AppendLine("flowType: ing")
-[void]$sb.AppendLine("name: $($table.ToLower())_02_ing")
-[void]$sb.AppendLine("batch: $batch")
+$flowNameOut = if ($FlowName) { $FlowName } else { "$($table.ToLower())_02_ing" }
+$batchOut    = if ($Batch)    { $Batch }    else { $batch }
+[void]$sb.AppendLine("name: $flowNameOut")
+[void]$sb.AppendLine("batch: $batchOut")
+if ($Schedule) { [void]$sb.AppendLine("schedule: $Schedule") }
 [void]$sb.AppendLine("")
 [void]$sb.AppendLine("connections:")
 [void]$sb.AppendLine("  pre: $srcConn")
@@ -110,7 +121,7 @@ if ($incCols.Count -gt 0) {
 [void]$sb.AppendLine("  insertedDate: $(( $sysCols -contains 'INSERTEDDATE_DW' ).ToString().ToLower())")
 [void]$sb.AppendLine("  updatedDate: $(( $sysCols -contains 'UPDATEDDATE_DW' ).ToString().ToLower())")
 
-$outFile = Join-Path $OutDir ("{0}_02_ing.yaml" -f $table.ToLower())
+$outFile = Join-Path $OutDir ("{0}.yaml" -f $flowNameOut)
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 $sb.ToString() | Set-Content -Path $outFile -Encoding utf8 -NoNewline
 Write-Host "wrote $outFile (keys: $($keyCols.Count), incremental: $($incCols.Count), identity: $(if($identity){$identity}else{'none'}))"
