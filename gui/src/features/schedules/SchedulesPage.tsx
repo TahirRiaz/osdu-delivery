@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { type MouseEvent, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { format, formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { ChartGantt, CirclePlay, FileCode2, Link2, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { parseUtc } from "../../lib/time";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
 import type { RunGroupCounts, RunStatus, Schedule } from "../../api/types";
@@ -22,8 +24,8 @@ import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
-import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge, rollupStatus, ScheduleStateBadge } from "../../components/StatusBadge";
+import { cronSummary, intervalSummary, shortZone } from "./cadence";
 import { RunScheduleDialog } from "./RunScheduleDialog";
 import { ScheduleDefinitionSheet } from "./ScheduleDefinitionSheet";
 
@@ -57,6 +59,83 @@ function describeLastFire(counts: RunGroupCounts): string {
     counts.queued > 0 ? `${counts.queued} queued` : null,
   ].filter((part): part is string => part !== null);
   return `Last fire ran ${counts.total} ${counts.total === 1 ? "flow" : "flows"}: ${parts.join(", ")}.`;
+}
+
+/** A fire time for the list face. Seconds are dropped here: they distinguish a run's phases, never two fires of
+ * a schedule that ticks on a cron minute, and the two instant columns must read the same. Full precision stays
+ * one hover away in {@link instantDetail}. */
+function firedAt(utc: string): string {
+  return format(parseUtc(utc), "MMM d, HH:mm");
+}
+
+/** The same instant in full for the hover: exact local time to the second, how long away it is, and the UTC it
+ * is stored as. This is what the shared RelativeTime puts in its own tooltip; this page spells it out because
+ * its two instant cells wrap it in more than a bare timestamp. */
+function instantDetail(utc: string): string {
+  const date = parseUtc(utc);
+  const iso = date.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+  return `${format(date, "MMM d, HH:mm:ss")} · ${formatDistanceToNow(date, { addSuffix: true })} · ${iso}`;
+}
+
+/**
+ * When a schedule runs, in one cell. The cadence reads in words; the exact expression, the zone it is
+ * evaluated in, and whether missed occurrences are backfilled live in the hover, because they answer a
+ * question an operator asks about ONE schedule and never about the whole list at once. The zone in particular
+ * was its own column that repeated the same value down every row, and printed a meaningless value on chained
+ * links: a schedule with no cron of its own is never evaluated against a clock, so it has no zone to speak of.
+ */
+function TriggerCell({ schedule }: { schedule: Schedule }) {
+  // A chained link has no cadence by design. Naming what fires it is the whole answer to "why does this never
+  // run on its own"; a bare dash reads as a broken schedule.
+  if (schedule.cron === null && schedule.intervalSeconds === null && schedule.afterSchedule) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center gap-1">
+            <Link2 className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="text-muted-foreground">after</span>
+            <Mono>{schedule.afterSchedule}</Mono>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>
+          Chained, not clocked: no cron and no timezone of its own. It becomes due exactly once, when
+          {" "}{schedule.afterSchedule} has finished, so the two can never overlap.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  const summary = schedule.cron !== null
+    ? cronSummary(schedule.cron)
+    : schedule.intervalSeconds !== null ? intervalSummary(schedule.intervalSeconds) : null;
+
+  if (schedule.cron === null && schedule.intervalSeconds === null) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  // An interval fires every N seconds from the last fire, so no timezone applies to it. Only a cron is
+  // evaluated against a wall clock, and only then is the zone worth showing.
+  const zone = schedule.cron !== null ? shortZone(schedule.timezone) : null;
+  const exact = schedule.cron !== null ? `cron: ${schedule.cron}` : `every ${schedule.intervalSeconds}s`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-baseline gap-1.5">
+          {/* An unrecognised expression shows itself rather than a guess at what it means. */}
+          {summary === null ? <Mono>{exact}</Mono> : <span>{summary}</span>}
+          {zone !== null && <span className="text-[11px] text-muted-foreground">{zone}</span>}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <span className="font-mono">{exact}</span>
+        {schedule.cron !== null && <> evaluated in {schedule.timezone}.</>}
+        {schedule.catchup
+          ? " Missed occurrences are backfilled, one per scheduler tick."
+          : " Missed occurrences are skipped, not backfilled."}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 /** The create-schedule form as a right-side sheet (DESIGN.md 7.4); the old dialog's testid stays on the
@@ -343,18 +422,29 @@ export default function SchedulesPage() {
       id: "name",
       header: "Schedule",
       render: (row) => (
-        <RouterLink
-          to={`/runs?scheduleId=${row.id}`}
-          className="font-mono text-[12px] font-medium text-primary hover:underline"
-          data-testid="schedule-name-link"
-        >
-          {row.name}
-        </RouterLink>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <RouterLink
+              to={`/runs?scheduleId=${row.id}`}
+              className="font-mono text-[12px] font-medium text-primary hover:underline"
+              data-testid="schedule-name-link"
+            >
+              {row.name}
+            </RouterLink>
+          </TooltipTrigger>
+          {/* Where the schedule comes from used to be its own column, identical on nearly every row. It only
+            * matters when a reader asks why a cadence cannot be edited here, which is a hover, not a column. */}
+          <TooltipContent>
+            {row.source === "yaml"
+              ? "Declared in git. Change the cadence in the YAML; this list shows what the repo says."
+              : `Created through the ${row.source} surface, not git. Open its runs.`}
+          </TooltipContent>
+        </Tooltip>
       ),
     },
     {
       id: "members",
-      header: "Runs",
+      header: "Flows",
       render: (row) => (row.memberPipelineIds.length === 1 ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -394,31 +484,8 @@ export default function SchedulesPage() {
     {
       id: "trigger",
       header: "Trigger",
-      render: (row) => {
-        if (row.cron !== null) {
-          return <Mono>cron: {row.cron}</Mono>;
-        }
-
-        if (row.intervalSeconds !== null) {
-          return <Mono>every {row.intervalSeconds}s</Mono>;
-        }
-
-        // A chained schedule has no cadence on purpose. Naming what fires it is the whole answer to "why does
-        // this never run on its own"; a bare dash reads as a broken schedule.
-        if (row.afterSchedule) {
-          return (
-            <span className="inline-flex items-center gap-1">
-              <Link2 className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="text-muted-foreground">after</span>
-              <Mono>{row.afterSchedule}</Mono>
-            </span>
-          );
-        }
-
-        return "-";
-      },
+      render: (row) => <TriggerCell schedule={row} />,
     },
-    { id: "timezone", header: "Timezone", render: (row) => row.timezone },
     {
       id: "state",
       header: "State",
@@ -438,28 +505,54 @@ export default function SchedulesPage() {
               <TooltipContent>A fire of this schedule is executing now. Open "view running" to watch or cancel it.</TooltipContent>
             </Tooltip>
           )}
-          {row.catchup && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex">
-                  <Badge variant="outline">catchup</Badge>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>Missed occurrences are backfilled (one per tick), not skipped.</TooltipContent>
-            </Tooltip>
-          )}
         </div>
       ),
     },
-    { id: "source", header: "Source", render: (row) => <Badge variant="outline">{row.source}</Badge> },
-    { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} absolute /> },
-    { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} absolute /> },
+    {
+      id: "nextFire",
+      header: "Next fire",
+      render: (row) => {
+        // A chained link has no clock, so there is no instant to print. The Trigger cell one column left already
+        // names the parent, so repeating it here would just be the same string twice; the dash carries the
+        // explanation on hover instead, marked as hoverable so it does not read as a broken schedule.
+        if (row.nextFireUtc === null && row.afterSchedule) {
+          return (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-help text-muted-foreground">-</span>
+              </TooltipTrigger>
+              <TooltipContent>
+                Not on a clock: this becomes due the moment {row.afterSchedule} finishes, so there is no next
+                instant to predict.
+              </TooltipContent>
+            </Tooltip>
+          );
+        }
+
+        if (row.nextFireUtc === null) {
+          return <span className="text-muted-foreground">-</span>;
+        }
+
+        // Same clock format as Last run, to the minute: a schedule fires on a cron minute, so the seconds are
+        // always noise, and two adjacent columns printing the same kind of instant must read the same.
+        return (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="font-mono text-[12px] tabular-nums">{firedAt(row.nextFireUtc)}</span>
+            </TooltipTrigger>
+            <TooltipContent className="font-mono text-[11px]">{instantDetail(row.nextFireUtc)}</TooltipContent>
+          </Tooltip>
+        );
+      },
+    },
     {
       id: "lastRun",
+      // The moment of the last fire and how that fire ended were two columns saying one thing. Together they are
+      // the answer to "did the last run work, and when": outcome on the face, the clock beside it.
       header: "Last run",
       render: (row) => {
         if (row.lastGroupId === null && row.lastRunId === null) {
-          return "-";
+          return <span className="text-muted-foreground">never</span>;
         }
 
         // How the last fire ended, worst-wins over its members, exactly as a run group's own header rolls up. Without
@@ -471,31 +564,52 @@ export default function SchedulesPage() {
         // it or switching tabs must not strand the run), so it reads as an active link.
         const isGroup = row.lastGroupId !== null;
         const target = isGroup ? `/runs/groups/${row.lastGroupId}` : `/runs/${row.lastRunId}`;
+        const testId = isGroup ? "schedule-last-group" : "schedule-last-run";
+        const open = (e: MouseEvent) => {
+          e.stopPropagation();
+          navigate(target);
+        };
+
+        const outcomeText = counts !== null && counts.total > 0
+          ? describeLastFire(counts)
+          : "The runs this fire enqueued are no longer in the catalog.";
 
         return (
           <div className="flex items-center gap-1.5">
             {outcome !== null && <RunStatusBadge status={outcome} testId="schedule-last-outcome" />}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant={row.lastGroupActive ? "outline" : "ghost"}
-                  size="xs"
-                  className={row.lastGroupActive ? "border-info/40 text-info hover:text-info" : undefined}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(target);
-                  }}
-                  data-testid={isGroup ? "schedule-last-group" : "schedule-last-run"}
-                >
-                  {row.lastGroupActive
-                    ? <><Loader2 className="animate-spin" />view running</>
-                    : isGroup ? "view set" : "view"}
-                </Button>
+                {/* Still executing: the durable way back to the live run board (the pre-flight sheet is
+                  * ephemeral, so closing it or switching tabs must not strand the run) stays a real button. */}
+                {row.lastGroupActive ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="border-info/40 text-info hover:text-info"
+                    onClick={open}
+                    data-testid={testId}
+                  >
+                    <Loader2 className="animate-spin" />
+                    view running
+                  </Button>
+                ) : (
+                  // Finished: the time it fired IS the link to what it did, which is one cell instead of a
+                  // timestamp column plus a "view" button that repeated the same destination on every row.
+                  <button
+                    type="button"
+                    onClick={open}
+                    className="font-mono text-[12px] tabular-nums hover:text-primary hover:underline"
+                    data-testid={testId}
+                  >
+                    {row.lastFireUtc === null ? "view" : firedAt(row.lastFireUtc)}
+                  </button>
+                )}
               </TooltipTrigger>
-              <TooltipContent>
-                {counts !== null && counts.total > 0
-                  ? describeLastFire(counts)
-                  : "The runs this fire enqueued are no longer in the catalog."}
+              <TooltipContent className="max-w-xs">
+                {outcomeText}
+                {row.lastFireUtc !== null && (
+                  <span className="mt-1 block font-mono text-[11px]">{instantDetail(row.lastFireUtc)}</span>
+                )}
               </TooltipContent>
             </Tooltip>
           </div>
