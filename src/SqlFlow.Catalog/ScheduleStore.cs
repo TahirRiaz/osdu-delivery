@@ -98,6 +98,26 @@ public static class ScheduleStore
         return affected > 0;
     }
 
+    /// <summary>
+    /// Marks this schedule's fire as already consumed by the schedules chained directly behind it, so a run that was
+    /// asked to stay put does not drag its chain along.
+    /// <para>
+    /// Only the DIRECT children need stamping. A grandchild waits on its own parent's fire, and that parent is not
+    /// going to fire, so the whole tail is suppressed by stopping the first link. The stamp is the same value the
+    /// child would have recorded had it run, which is why this leaves no residue: the next genuine fire of the parent
+    /// carries a later instant and the chain resumes normally.
+    /// </para>
+    /// </summary>
+    public static Task<int> SuppressChainAsync(
+        CatalogDbContext catalog, Guid repoId, string parentName, DateTime parentFireUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentName);
+        return catalog.Schedules
+            .Where(s => s.RepoId == repoId && s.AfterSchedule == parentName)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastParentFireUtc, parentFireUtc), ct);
+    }
+
     /// <summary>The parent's last fire instant, used to stamp a chained child when it fires behind it.</summary>
     public static async Task<DateTime?> GetParentLastFireUtcAsync(
         CatalogDbContext catalog, Guid repoId, string parentName, CancellationToken ct = default)
