@@ -111,8 +111,25 @@ foreach ($p in $pre) {
     $name   = "apc_${key}_01_csv"
     $sched  = "apc_${region}_daily"
     if ($WhatIf) { Write-Host "  [pre] FlowID $($p.FlowID) -> $name (batch $key, schedule $sched)"; continue }
+    # APC files are '<Dataset>_yyyyMMdd.csv', so the file's business date is in its NAME, and that is what
+    # FileDate_DW is stamped with; the blob's last-modified time is only the fallback for a file whose name
+    # carries no date.
+    #
+    # Last-modified cannot be the basis for this source. It is a property of the STORAGE, not of the data: the
+    # 540,778 historical files were moved into the new lake with a server-side copy, which stamped every one of
+    # them with the copy instant, and object stores do not allow it to be set back. On modified time the whole
+    # 2021-2026 history reads as newer than arc's high-water mark and replays on every run, and a --from/--to
+    # backfill cannot address a period at all, because every file claims the same instant. Reading the stamp out
+    # of the file name puts the watermark, the stored provenance and any backfill window on one clock that
+    # belongs to the data and survives being copied.
+    #
+    # A consequence worth knowing: a correction for an old operating day, redelivered later, now sorts by the
+    # day it describes rather than the day it arrived, so it does not drift in on the watermark. It is picked up
+    # by an explicit backfill of that period, which is deterministic and repeatable precisely because the dates
+    # come from the names.
     & "$tools\Generate-PreFlow.ps1" -FlowId $p.FlowID -OutDir $OutDir `
-        -StorageUrlBase $StorageUrlBase -FlowName $name -Batch $key -Schedule $sched | Out-Null
+        -StorageUrlBase $StorageUrlBase -FlowName $name -Batch $key -Schedule $sched `
+        -FileDateFrom 'name' -FileDatePattern '(?<year>\d{4})(?<month>\d{2})(?<day>\d{2})' | Out-Null
     Write-Host "  [pre] $name  [$sched]"
     $made++
 }

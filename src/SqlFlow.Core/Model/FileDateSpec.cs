@@ -128,13 +128,41 @@ public sealed class FileDateSpec
             return null;
         }
 
-        var (year, month, day, hour) = _hive ? ParseHive(text) : ParsePattern(text);
-        return Compose(year, month, day, hour);
+        var parts = _hive ? ParseHive(text) : ParsePattern(text);
+        return Compose(parts);
     }
 
-    private static (int? Year, int? Month, int? Day, int? Hour) ParseHive(string text)
+    /// <summary>
+    /// The single instant the text encodes: the START of the interval <see cref="Extract"/> would return, or null
+    /// when the text carries no recognizable date. This is the file's BUSINESS timestamp, and it is what
+    /// <c>FileDate_DW</c> is stamped with when a flow configures a name/path date source.
+    /// <para>
+    /// It exists because an object store's last-modified time is not a durable property of the data: a
+    /// server-side copy, a lifecycle tier move or a re-upload rewrites it, and it cannot be set back. A pipeline
+    /// whose watermark and provenance rest on that timestamp silently replays its whole history the first time
+    /// the files are moved, and cannot express a backfill window at all. A timestamp read out of the file's own
+    /// name survives every one of those, so the watermark, the stored provenance and a <c>--from/--to</c>
+    /// backfill all agree on one clock that belongs to the data rather than to the storage account.
+    /// </para>
+    /// A name that encodes only a date yields midnight; finer components are used when the pattern captures them.
+    /// </summary>
+    public DateTime? ExtractTimestamp(string text)
     {
-        int? year = null, month = null, day = null, hour = null;
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        var parts = _hive ? ParseHive(text) : ParsePattern(text);
+        return Compose(parts)?.Lo;
+    }
+
+    /// <summary>The date components a name or path yielded; a null component was not captured.</summary>
+    private readonly record struct DateParts(int? Year, int? Month, int? Day, int? Hour, int? Minute, int? Second);
+
+    private static DateParts ParseHive(string text)
+    {
+        int? year = null, month = null, day = null, hour = null, minute = null, second = null;
         foreach (Match token in HiveToken.Matches(text))
         {
             var key = token.Groups["k"].Value.ToLowerInvariant();
@@ -150,36 +178,43 @@ public sealed class FileDateSpec
                 case "month" or "mm": month = value; break;
                 case "day" or "dd": day = value; break;
                 case "hour" or "hh": hour = value; break;
+                case "minute" or "min" or "mi": minute = value; break;
+                case "second" or "sec" or "ss": second = value; break;
             }
         }
 
-        return (year, month, day, hour);
+        return new DateParts(year, month, day, hour, minute, second);
     }
 
-    private (int? Year, int? Month, int? Day, int? Hour) ParsePattern(string text)
+    private DateParts ParsePattern(string text)
     {
         var match = _pattern!.Match(text);
         if (!match.Success)
         {
-            return (null, null, null, null);
+            return default;
         }
 
-        // Named groups win when present; otherwise the unnamed groups are read positionally as year, month, day, hour.
+        // Named groups win when present; otherwise the unnamed groups are read positionally as
+        // year, month, day, hour, minute, second.
         var named = _pattern.GetGroupNames().Any(n => !int.TryParse(n, out _));
         if (named)
         {
-            return (
+            return new DateParts(
                 NamedInt(match, "year", "y"),
                 NamedInt(match, "month", "m"),
                 NamedInt(match, "day", "d"),
-                NamedInt(match, "hour", "h"));
+                NamedInt(match, "hour", "h"),
+                NamedInt(match, "minute", "mi"),
+                NamedInt(match, "second", "ss"));
         }
 
-        return (
+        return new DateParts(
             PositionalInt(match, 1),
             PositionalInt(match, 2),
             PositionalInt(match, 3),
-            PositionalInt(match, 4));
+            PositionalInt(match, 4),
+            PositionalInt(match, 5),
+            PositionalInt(match, 6));
     }
 
     private static int? NamedInt(Match match, string primary, string alias)
@@ -201,8 +236,10 @@ public sealed class FileDateSpec
             ? value
             : null;
 
-    private static DateInterval? Compose(int? year, int? month, int? day, int? hour)
+    private static DateInterval? Compose(DateParts parts)
     {
+        var (year, month, day, hour, minute, second) = parts;
+
         if (year is null || year < 1 || year > 9999)
         {
             return null;
@@ -243,8 +280,33 @@ public sealed class FileDateSpec
                 return null;
             }
 
-            var loHour = new DateTime(year.Value, month.Value, day.Value, hour.Value, 0, 0, DateTimeKind.Utc);
-            return new DateInterval(loHour, loHour.AddHours(1).AddTicks(-1));
+            if (minute is null)
+            {
+                var loHour = new DateTime(year.Value, month.Value, day.Value, hour.Value, 0, 0, DateTimeKind.Utc);
+                return new DateInterval(loHour, loHour.AddHours(1).AddTicks(-1));
+            }
+
+            if (minute is < 0 or > 59)
+            {
+                return null;
+            }
+
+            if (second is null)
+            {
+                var loMinute = new DateTime(year.Value, month.Value, day.Value, hour.Value, minute.Value, 0, DateTimeKind.Utc);
+                return new DateInterval(loMinute, loMinute.AddMinutes(1).AddTicks(-1));
+            }
+
+            if (second is < 0 or > 59)
+            {
+                return null;
+            }
+
+            // A full timestamp is a one-second interval, not a point: a name that resolves to the second still
+            // covers that second, so an overlap test against a window bounded at the same second includes it.
+            var loSecond = new DateTime(
+                year.Value, month.Value, day.Value, hour.Value, minute.Value, second.Value, DateTimeKind.Utc);
+            return new DateInterval(loSecond, loSecond.AddSeconds(1).AddTicks(-1));
         }
         catch (ArgumentOutOfRangeException)
         {

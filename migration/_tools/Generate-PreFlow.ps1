@@ -17,8 +17,20 @@ param(
     # Overrides batch, which otherwise carries the legacy batch code verbatim.
     [string] $Batch,
     # Emits schedule membership so the flow joins the source's single schedule.
-    [string] $Schedule
+    [string] $Schedule,
+    # Where the incremental date window reads a file's business date: 'name' or 'path' instead of the default
+    # blob last-modified timestamp. Essential when the lake was populated by a COPY: a server-side copy stamps
+    # every file with the copy instant, so a modified-time watermark sees the entire migrated history as new and
+    # replays it. Reading the date out of the file name is immune to that.
+    [ValidateSet('modified', 'name', 'path')]
+    [string] $FileDateFrom = 'modified',
+    # The regex whose named groups (year/month/day/hour) yield the date, required when FileDateFrom is name/path.
+    [string] $FileDatePattern
 )
+
+if ($FileDateFrom -ne 'modified' -and -not $FileDatePattern) {
+    throw "-FileDatePattern is required when -FileDateFrom is '$FileDateFrom'."
+}
 
 $ErrorActionPreference = 'Stop'
 $TAB = [char]9
@@ -87,6 +99,17 @@ if ($Schedule) { [void]$sb.AppendLine("schedule: $Schedule") }
 if ($h.SearchSubDirectories) { [void]$sb.AppendLine("    searchSubDirectories: `"true`"") }
 [void]$sb.AppendLine("    delimiter: `"$delim`"")
 if ($h.srcEncoding) { [void]$sb.AppendLine("    srcEncoding: $($h.srcEncoding)") }
+# Read the file's business date from its NAME rather than its last-modified timestamp. The incremental
+# watermark is compared against this date, so a lake populated by a server-side copy (which stamps every blob
+# with the copy instant) is still selected correctly instead of replaying its whole history every run.
+if ($FileDateFrom -ne 'modified') {
+    [void]$sb.AppendLine("    fileDate.from: `"$FileDateFrom`"")
+    # SINGLE-quoted: a YAML double-quoted scalar processes backslash escapes, so a regex like \d{4} fails to
+    # parse with "unknown escape character". Single quotes take the value literally; an embedded single quote
+    # would need doubling, which a date regex does not contain.
+    $escaped = $FileDatePattern -replace "'", "''"
+    [void]$sb.AppendLine("    fileDate.pattern: '$escaped'")
+}
 # Enable exactly the provenance columns the metadata carries. Any V3-default provenance column not in the
 # metadata (notably RowNumber_DW, which old SQLFlow never had) is disabled so the pre table matches prod.
 $provPresent = @{}

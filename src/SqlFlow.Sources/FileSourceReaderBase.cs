@@ -25,6 +25,28 @@ namespace SqlFlow.Sources;
 /// </summary>
 public abstract class FileSourceReaderBase : ISourceReader
 {
+    /// <summary>
+    /// The file's business timestamp for <c>FileDate_DW</c>: the instant encoded in its name or path when the flow
+    /// configured a <c>fileDate</c> source, else its last-modified time.
+    /// <para>
+    /// The fallback is deliberate and applies per file, not per flow: a spec that matches most files but not one
+    /// oddly-named straggler stamps that straggler with its modified time rather than failing the run or leaving
+    /// the column null. Selection has already decided whether the file belongs to this load (an undated file is
+    /// excluded from a dated selection), so by the time provenance is written the only question left is what to
+    /// record, and the modified time is the honest answer when the name carries nothing.
+    /// </para>
+    /// </summary>
+    private static DateTime ResolveFileDate(FileDateSpec? spec, FileRef file, DateTime fileModifiedUtc)
+    {
+        if (spec is null)
+        {
+            return fileModifiedUtc;
+        }
+
+        var text = spec.Source == FileDateSource.Path ? file.Path : file.Name;
+        return spec.ExtractTimestamp(text) ?? fileModifiedUtc;
+    }
+
     protected const string FileLineNumberColumn = "FileLineNumber";
     protected const string FileNameColumn = "FileName_DW";
     protected const string FileDateColumn = "FileDate_DW";
@@ -477,12 +499,22 @@ public abstract class FileSourceReaderBase : ISourceReader
 
                     // Provenance values are constant per file, so encode them once here rather than per row. The
                     // DataSet date is the date detected in the file NAME (legacy pre-ingestion behavior) or, when
-                    // none is found or the flow opted out, the file's last-modified timestamp - the same fallback
-                    // FileDate_DW always uses. The string encodings match the transformation view's casts:
+                    // none is found or the flow opted out, the file's last-modified timestamp. The string encodings
+                    // match the transformation view's casts:
                     // FileDate_DW/DataSet_DW as yyyyMMddHHmmss (view CASTs to decimal(14,0)/numeric(14,0)),
                     // FileRowDate_DW as yyyy-MM-dd HH:mm:ss (view CONVERTs to datetime, style 20), FileSize_DW as digits.
+                    //
+                    // FileDate_DW is the file's BUSINESS timestamp when the flow configures a fileDate source
+                    // (fileDate.from: name/path), and its last-modified time otherwise. The distinction matters
+                    // because last-modified is a property of the STORAGE, not of the data: a server-side copy
+                    // between accounts, a lifecycle tier move or a re-upload rewrites it, and object stores do not
+                    // let it be set back. A watermark resting on it therefore treats an entire migrated history as
+                    // new the first time the lake is moved, and a --from/--to backfill cannot address a period at
+                    // all. Reading the stamp out of the file's own name keeps the watermark, the stored provenance
+                    // and a backfill window on one clock that belongs to the data.
+                    var fileDateUtc = ResolveFileDate(options.FileDate, file, fileModifiedUtc);
                     var dataSetUtc = dataSetSpec.Resolve(file.Name, fileModifiedUtc);
-                    var fileDateValue = fileModifiedUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+                    var fileDateValue = fileDateUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
                     var fileRowDateValue = ingestedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
                     var fileSizeValue = file.Size.ToString(CultureInfo.InvariantCulture);
                     var dataSetValue = dataSetUtc.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
