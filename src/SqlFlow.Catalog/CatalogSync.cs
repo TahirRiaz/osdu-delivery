@@ -417,7 +417,12 @@ public sealed class CatalogSync
         foreach (var schedule in collectedSchedules)
         {
             var spec = schedule.Spec;
-            if (!ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
+            // A CHAINED schedule is driven by its parent's completion, not by the clock, so it carries neither a cron
+            // nor an interval. The clock validation demands exactly one of those, so applying it to a chained schedule
+            // would reject every one of them and silently drop it from the catalog: registered nowhere, invisible in
+            // the GUI, and impossible to run by hand. Only clock-driven schedules are validated here.
+            if (!spec.IsChained
+                && !ScheduleClock.TryValidate(spec.Cron, spec.IntervalSeconds, spec.Timezone, out var scheduleError))
             {
                 warnings.Add($"schedule '{schedule.Name}' ({schedule.Origin}) is invalid: {scheduleError}");
                 continue;
