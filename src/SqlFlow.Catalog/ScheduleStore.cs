@@ -140,6 +140,11 @@ public static class ScheduleStore
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.LastRunId, runId)
                 .SetProperty(x => x.LastGroupId, (Guid?)null)
+                // Stamped on EVERY dispatch, not just a clock-driven one. LastFireUtc means "when this schedule
+                // last dispatched its members", so a manual run-now advances a chained child exactly as a cron
+                // fire does. Without this, "run this source now" would start the head and silently leave the rest
+                // of the chain behind, which is not what an operator asking for a run means.
+                .SetProperty(x => x.LastFireUtc, nowUtc)
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct);
     }
 
@@ -154,6 +159,9 @@ public static class ScheduleStore
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.LastRunId, firstRunId)
                 .SetProperty(x => x.LastGroupId, groupId)
+                // See SetLastRunAsync: every dispatch stamps the fire instant, so a manually started schedule
+                // carries its chain with it instead of stopping at the head.
+                .SetProperty(x => x.LastFireUtc, nowUtc)
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct);
     }
 

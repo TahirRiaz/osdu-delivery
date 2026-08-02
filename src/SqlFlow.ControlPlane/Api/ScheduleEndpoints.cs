@@ -14,12 +14,26 @@ namespace SqlFlow.ControlPlane.Api;
 /// <paramref name="MaxConcurrency"/> is how many members one fire runs at once (null = unbounded).
 /// <paramref name="LastCounts"/> is how the last fire actually ended: its members tallied by lifecycle state (the one
 /// run's own state for a single-member fire), null when the schedule has never fired or its runs have aged out. It is
-/// what makes "did the last execution succeed" answerable from the list without opening the run board.</summary>
+/// what makes "did the last execution succeed" answerable from the list without opening the run board.
+/// <para><paramref name="AfterSchedule"/> is the schedule this one CHAINS BEHIND, or null when it is clock driven. A
+/// chained schedule has no cadence of its own and a null <paramref name="NextFireUtc"/>: it becomes due once, when the
+/// named parent's fire completes. <paramref name="TriggersSchedules"/> is the other direction, the schedules this one
+/// sets off when it finishes, in chain order. It is on the DTO so a client can tell an operator what starting this
+/// schedule will actually run: firing the head of a five-link chain dispatches all five, and a run dialog that shows
+/// only the head's own members would understate what was just asked for. Each link keeps its OWN wave-ordered run
+/// group; the chain sequences whole groups, it does not merge their waves.</para></summary>
 public sealed record ScheduleDto(
     Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
     Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc, int? MaxConcurrency,
-    RunGroupCountsDto? LastCounts);
+    RunGroupCountsDto? LastCounts, string? AfterSchedule = null,
+    IReadOnlyList<ScheduleChainLinkDto>? TriggersSchedules = null);
+
+/// <summary>One link a schedule sets off, in chain order: the schedule that will fire, how many flows it runs, and
+/// whether it is currently able to (a disabled or paused link stops the chain there, and an operator about to start
+/// the head needs to see that before wondering why the tail never ran).</summary>
+public sealed record ScheduleChainLinkDto(
+    Guid Id, string Name, int Depth, int MemberCount, bool Enabled, bool Paused);
 
 /// <summary>
 /// The YAML behind a schedule: where git declares its cadence and the text of that declaration. A schedule declared
@@ -402,7 +416,7 @@ public static class ScheduleEndpoints
         Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds,
         string Timezone, bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc,
         DateTime? LastFireUtc, Guid? LastRunId, Guid? LastGroupId, DateTime CreatedUtc, DateTime UpdatedUtc,
-        int? MaxConcurrency);
+        int? MaxConcurrency, string? AfterSchedule);
 
     // An expression (not a method body) so EF Core translates the projection into the SELECT column list. It takes the
     // context because the member count is a correlated subquery over the member table: a schedule's whole meaning is
@@ -412,7 +426,94 @@ public static class ScheduleEndpoints
         db.ScheduleMembers.Where(m => m.ScheduleId == s.Id).Select(m => m.PipelineId).ToList(),
         s.Cron, s.IntervalSeconds, s.Timezone,
         s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.LastGroupId,
-        s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency);
+        s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency, s.AfterSchedule);
+
+    /// <summary>
+    /// Walks the chain forward from each schedule on the page: which schedules its completion sets off, theirs in
+    /// turn, and so on, in chain order with the depth each sits at.
+    /// <para>
+    /// One query for the whole repo rather than a walk per row: a chain is a handful of rows and the page needs the
+    /// same map for every schedule on it. Following a name to its child is guarded against a cycle by remembering
+    /// what has already been visited, so a mis-declared loop yields the links it can reach instead of hanging the
+    /// request. A disabled or paused link is still reported: it is exactly what an operator needs to see, because the
+    /// chain stops there and the tail will not run.
+    /// </para>
+    /// </summary>
+    private static async Task<Dictionary<Guid, IReadOnlyList<ScheduleChainLinkDto>>> ChainsAsync(
+        CatalogDbContext db, IReadOnlyList<ScheduleRow> rows, CancellationToken ct)
+    {
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var repoIds = rows.Select(r => r.RepoId).Distinct().ToList();
+        var chained = await db.Schedules.AsNoTracking()
+            .Where(s => repoIds.Contains(s.RepoId) && s.AfterSchedule != null)
+            .Select(s => new
+            {
+                s.Id,
+                s.RepoId,
+                s.Name,
+                Parent = s.AfterSchedule!,
+                s.Enabled,
+                s.Paused,
+                MemberCount = db.ScheduleMembers.Count(m => m.ScheduleId == s.Id),
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        if (chained.Count == 0)
+        {
+            return [];
+        }
+
+        // Children keyed by (repo, parent name): a name identifies a schedule within its repo, and that is the same
+        // key the scheduler resolves a chain by.
+        var childrenByParent = chained
+            .GroupBy(c => (c.RepoId, Parent: c.Parent.ToLowerInvariant()))
+            .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList());
+
+        var result = new Dictionary<Guid, IReadOnlyList<ScheduleChainLinkDto>>();
+        foreach (var row in rows)
+        {
+            var links = new List<ScheduleChainLinkDto>();
+            var visited = new HashSet<Guid>();
+            var frontier = new List<(string Name, int Depth)> { (row.Name, 0) };
+
+            while (frontier.Count > 0)
+            {
+                var next = new List<(string Name, int Depth)>();
+                foreach (var (name, depth) in frontier)
+                {
+                    if (!childrenByParent.TryGetValue((row.RepoId, name.ToLowerInvariant()), out var children))
+                    {
+                        continue;
+                    }
+
+                    foreach (var child in children)
+                    {
+                        if (!visited.Add(child.Id))
+                        {
+                            continue; // already reached: a cycle, or a diamond back onto the same link
+                        }
+
+                        links.Add(new ScheduleChainLinkDto(
+                            child.Id, child.Name, depth + 1, child.MemberCount, child.Enabled, child.Paused));
+                        next.Add((child.Name, depth + 1));
+                    }
+                }
+
+                frontier = next;
+            }
+
+            if (links.Count > 0)
+            {
+                result[row.Id] = links;
+            }
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Fills in how each schedule's last fire ended: the member states of the run group it enqueued, or the single
@@ -457,6 +558,7 @@ public static class ScheduleEndpoints
             .GroupBy(t => t.GroupId!.Value)
             .ToDictionary(g => g.Key, g => Tally(g.Select(t => (t.Status, t.Count))));
         var byRun = runStatuses.ToDictionary(r => r.Id, r => Tally([(r.Status, 1)]));
+        var chains = await ChainsAsync(db, rows, ct).ConfigureAwait(false);
 
         return rows.Select(r =>
         {
@@ -470,13 +572,15 @@ public static class ScheduleEndpoints
                 byRun.TryGetValue(runId, out counts);
             }
 
+            chains.TryGetValue(r.Id, out var triggers);
+
             return new ScheduleDto(
                 r.Id, r.RepoId, r.Name, r.MemberPipelineIds, r.Cron, r.IntervalSeconds, r.Timezone,
                 r.Enabled, r.Catchup, r.Paused, r.Source, r.NextFireUtc, r.LastFireUtc, r.LastRunId, r.LastGroupId,
                 // Whether the last scoped fire's group is still executing, so the list can surface a live re-entry
                 // point to it. A single-member fire has no group, so this is always false there.
                 r.LastGroupId is not null && counts is { } c && c.Queued + c.Running > 0,
-                r.CreatedUtc, r.UpdatedUtc, r.MaxConcurrency, counts);
+                r.CreatedUtc, r.UpdatedUtc, r.MaxConcurrency, counts, r.AfterSchedule, triggers);
         }).ToList();
     }
 
