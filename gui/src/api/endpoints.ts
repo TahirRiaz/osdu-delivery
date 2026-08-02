@@ -227,7 +227,15 @@ export const scheduleApi = {
   // every member. A filter can only ever select a subset of the schedule's own members.
   // An optional from/to window turns the fire into a backfill: the schedule re-processes the source for that date
   // range (its integration roots re-land the slice, its silver flows re-pull from the source minimum).
-  runNow: (id: string, batches?: string[], from?: string | null, to?: string | null) => {
+  // chain=false keeps the fire to this schedule alone; the schedules chained behind it do not follow. Omitted means
+  // the chain runs, matching what a clock-driven fire does.
+  runNow: (
+    id: string,
+    batches?: string[],
+    from?: string | null,
+    to?: string | null,
+    chain?: boolean,
+  ) => {
     const params = new URLSearchParams();
     for (const b of batches ?? []) {
       params.append("batch", b);
@@ -237,6 +245,9 @@ export const scheduleApi = {
     }
     if (to) {
       params.set("to", to);
+    }
+    if (chain === false) {
+      params.set("chain", "false");
     }
     const query = params.toString() === "" ? "" : `?${params.toString()}`;
     return post<ScheduleRunAccepted>(`/api/v1/schedules/${id}/run${query}`);

@@ -23,9 +23,11 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
@@ -142,6 +144,9 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   // its integration roots re-land the slice, its silver (relational ingestion) flows re-pull from the source minimum.
   const [backfillFrom, setBackfillFrom] = useState("");
   const [backfillTo, setBackfillTo] = useState("");
+  // Whether this manual fire carries the schedules chained behind it. Defaults to true so the manual path matches
+  // what the clock does; an operator re-running one region alone turns it off.
+  const [runChain, setRunChain] = useState(true);
   const phase: "preview" | "running" = groupId === null ? "preview" : "running";
 
   const plan = useQuery({
@@ -175,6 +180,7 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
       selectedBatches,
       trimmedFrom === "" ? null : `${trimmedFrom}:00Z`,
       trimmedTo === "" ? null : `${trimmedTo}:00Z`,
+      runChain,
     ),
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
@@ -362,15 +368,31 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                   <div className="flex flex-wrap items-center gap-2">
                     <Link2 className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     <span className="text-[13px] font-medium">
-                      Then triggers {chainLinks.length}{" "}
-                      {chainLinks.length === 1 ? "schedule" : "schedules"}
+                      {runChain
+                        ? `Then triggers ${chainLinks.length} ${chainLinks.length === 1 ? "schedule" : "schedules"}`
+                        : "Chained schedules held back"}
                     </span>
                     <span className="text-[13px] text-muted-foreground">·</span>
                     <span className="text-[13px] text-muted-foreground">
                       {chainFlowCount} more {chainFlowCount === 1 ? "flow" : "flows"}
                     </span>
+                    <span className="grow" />
+                    {phase === "preview" && (
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          id="run-schedule-chain-toggle"
+                          checked={runChain}
+                          onCheckedChange={setRunChain}
+                          disabled={run.isPending}
+                          data-testid="run-schedule-chain-toggle"
+                        />
+                        <Label htmlFor="run-schedule-chain-toggle" className="text-xs font-normal">
+                          Run the chain
+                        </Label>
+                      </div>
+                    )}
                   </div>
-                  <ol className="mt-2 space-y-1">
+                  <ol className={cn("mt-2 space-y-1", !runChain && "opacity-50")}>
                     {chainLinks.map((link) => {
                       const stopped = !link.enabled || link.paused;
                       return (
@@ -378,11 +400,11 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                           <span className="font-mono text-muted-foreground">
                             {"→".repeat(link.depth)}
                           </span>
-                          <span className="font-mono">{link.name}</span>
+                          <span className={cn("font-mono", !runChain && "line-through")}>{link.name}</span>
                           <span className="text-muted-foreground">
                             {link.memberCount} {link.memberCount === 1 ? "flow" : "flows"}
                           </span>
-                          {stopped && (
+                          {runChain && stopped && (
                             <Badge variant="outline" className="text-muted-foreground">
                               {link.paused ? "paused" : "disabled"}
                             </Badge>
@@ -392,10 +414,21 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                     })}
                   </ol>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Each runs as its own wave-ordered set, starting only once the one before it has finished.
-                    {chainStopsAt !== null && (
-                      <> The chain stops at <span className="font-mono">{chainStopsAt}</span>; links after it will not run.</>
-                    )}
+                    {runChain
+                      ? (
+                        <>
+                          Each runs as its own wave-ordered set, starting only once the one before it has finished.
+                          {chainStopsAt !== null && (
+                            <> The chain stops at <span className="font-mono">{chainStopsAt}</span>; links after it will not run.</>
+                          )}
+                        </>
+                      )
+                      : (
+                        <>
+                          Only this schedule&apos;s {memberCount} {memberCount === 1 ? "flow" : "flows"} will run. The
+                          links behind it stay put, and their own cadence is untouched.
+                        </>
+                      )}
                   </p>
                 </div>
               )}

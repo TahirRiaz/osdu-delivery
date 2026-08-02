@@ -299,10 +299,15 @@ public static class ScheduleEndpoints
     /// nightly, but only the small tables". It may be repeated (<c>?batch=small&amp;batch=medium</c>) to run several
     /// batches at once, and can only ever select a subset of the schedule's own members.
     /// </para>
+    /// <para>
+    /// <c>chain=false</c> keeps the fire to THIS schedule: the schedules chained behind it are marked as having
+    /// already consumed this fire, so they do not follow. It defaults to true, which is what the schedule does when
+    /// the clock fires it, so a manual run is not silently a different execution from the automatic one.
+    /// </para>
     /// Answers 202 with the run (and group) reference, 404 for an unknown schedule, and 409 when nothing is runnable.
     /// </summary>
     private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
-        Guid id, string[]? batch, DateTime? from, DateTime? to,
+        Guid id, string[]? batch, DateTime? from, DateTime? to, bool? chain,
         CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
     {
         var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
@@ -345,6 +350,15 @@ public static class ScheduleEndpoints
                   + (filter.Count == 1 ? $"batch '{filter[0]}'." : $"any of the batches: {string.Join(", ", filter)}.");
             return TypedResults.Problem(
                 detail: detail, statusCode: StatusCodes.Status409Conflict, title: "Cannot run schedule");
+        }
+
+        // Whether this fire carries its chain. A manual run means one of two different things depending on why it was
+        // asked for: "re-run this region" or "run the whole source now". Defaulting to carrying the chain matches what
+        // the schedule does on its own, so the manual path is not a quietly different execution; chain=false marks the
+        // links behind it as having already consumed this fire, which holds them without touching their own cadence.
+        if (chain == false)
+        {
+            await ScheduleStore.SuppressChainAsync(db, schedule.RepoId, schedule.Name, now, ct).ConfigureAwait(false);
         }
 
         // A group fire points at the group, whose detail reflects the whole set as it executes; a single-flow fire
