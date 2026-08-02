@@ -467,8 +467,26 @@ export interface Schedule {
   /** How the last fire ended: its members tallied by lifecycle state (the single run's own state when the fire ran
    * one flow). Null when the schedule has never fired, or its runs have aged out of the catalog. */
   lastCounts: RunGroupCounts | null;
+  /** The schedule this one CHAINS BEHIND, or null when it is driven by the clock. A chained schedule has no cadence
+   * of its own and a null `nextFireUtc`: it becomes due once, when the named parent's fire completes. */
+  afterSchedule?: string | null;
+  /** The schedules this one sets off when it finishes, in chain order. Firing the head of a five-link chain
+   * dispatches all five, so a run dialog showing only this schedule's own members would understate it. */
+  triggersSchedules?: ScheduleChainLink[] | null;
   createdUtc: string;
   updatedUtc: string;
+}
+
+/** One link a schedule sets off. `enabled`/`paused` matter to an operator about to start the head: a stopped link
+ * ends the chain there, and the tail never runs. */
+export interface ScheduleChainLink {
+  id: string;
+  name: string;
+  /** How far down the chain this link sits: 1 is fired directly by this schedule, 2 by that one, and so on. */
+  depth: number;
+  memberCount: number;
+  enabled: boolean;
+  paused: boolean;
 }
 
 /** The YAML behind a schedule: the file git declares its cadence in, and that file's text. `yaml` is null for an

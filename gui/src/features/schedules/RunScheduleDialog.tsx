@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Hourglass,
   Info,
+  Link2,
   Loader2,
   Play,
   SkipForward,
@@ -224,6 +225,23 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   const waves = useMemo(() => toWaves(visibleMembers), [visibleMembers]);
   const memberCount = visibleMembers.length;
 
+  // The chain this fire sets off, in order. Sorted by depth so the list reads as the sequence it will run in
+  // rather than the order the API happened to walk it.
+  const chainLinks = useMemo(
+    () => [...(schedule.triggersSchedules ?? [])].sort((a, b) => a.depth - b.depth),
+    [schedule.triggersSchedules],
+  );
+  const chainFlowCount = useMemo(
+    () => chainLinks.reduce((sum, link) => sum + link.memberCount, 0),
+    [chainLinks],
+  );
+  // The first stopped link ends the chain: everything after it is unreachable this fire, so naming it up front
+  // saves an operator wondering later why the tail never ran.
+  const chainStopsAt = useMemo(
+    () => chainLinks.find((link) => !link.enabled || link.paused)?.name ?? null,
+    [chainLinks],
+  );
+
   const statusOf = (flowName: string): MemberStatus => {
     if (phase !== "running") {
       return "pending";
@@ -334,6 +352,53 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                     )}
                 </p>
               </div>
+
+              {/* This schedule is the head of a chain, so starting it does not stop at its own members: each link
+                  fires when the one before it finishes. Showing only the 17 flows in this fire would understate a
+                  five-link chain by four fifths, which is the difference between "run this region" and "run the
+                  whole source". A stopped link is called out rather than hidden: the chain ends there. */}
+              {chainLinks.length > 0 && (
+                <div className="rounded-md border bg-muted/50 p-3" data-testid="run-schedule-chain">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link2 className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="text-[13px] font-medium">
+                      Then triggers {chainLinks.length}{" "}
+                      {chainLinks.length === 1 ? "schedule" : "schedules"}
+                    </span>
+                    <span className="text-[13px] text-muted-foreground">·</span>
+                    <span className="text-[13px] text-muted-foreground">
+                      {chainFlowCount} more {chainFlowCount === 1 ? "flow" : "flows"}
+                    </span>
+                  </div>
+                  <ol className="mt-2 space-y-1">
+                    {chainLinks.map((link) => {
+                      const stopped = !link.enabled || link.paused;
+                      return (
+                        <li key={link.id} className="flex flex-wrap items-center gap-1.5 text-xs">
+                          <span className="font-mono text-muted-foreground">
+                            {"→".repeat(link.depth)}
+                          </span>
+                          <span className="font-mono">{link.name}</span>
+                          <span className="text-muted-foreground">
+                            {link.memberCount} {link.memberCount === 1 ? "flow" : "flows"}
+                          </span>
+                          {stopped && (
+                            <Badge variant="outline" className="text-muted-foreground">
+                              {link.paused ? "paused" : "disabled"}
+                            </Badge>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Each runs as its own wave-ordered set, starting only once the one before it has finished.
+                    {chainStopsAt !== null && (
+                      <> The chain stops at <span className="font-mono">{chainStopsAt}</span>; links after it will not run.</>
+                    )}
+                  </p>
+                </div>
+              )}
 
               {/* A prior fire of this schedule is still executing (the last group has queued/running members). Rather
                   than fire a second overlapping run, point the operator at the live board for the run already going. */}

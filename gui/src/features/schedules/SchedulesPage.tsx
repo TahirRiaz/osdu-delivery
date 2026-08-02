@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChartGantt, CirclePlay, FileCode2, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
+import { ChartGantt, CirclePlay, FileCode2, Link2, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -399,7 +399,23 @@ export default function SchedulesPage() {
           return <Mono>cron: {row.cron}</Mono>;
         }
 
-        return row.intervalSeconds !== null ? <Mono>every {row.intervalSeconds}s</Mono> : "-";
+        if (row.intervalSeconds !== null) {
+          return <Mono>every {row.intervalSeconds}s</Mono>;
+        }
+
+        // A chained schedule has no cadence on purpose. Naming what fires it is the whole answer to "why does
+        // this never run on its own"; a bare dash reads as a broken schedule.
+        if (row.afterSchedule) {
+          return (
+            <span className="inline-flex items-center gap-1">
+              <Link2 className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="text-muted-foreground">after</span>
+              <Mono>{row.afterSchedule}</Mono>
+            </span>
+          );
+        }
+
+        return "-";
       },
     },
     { id: "timezone", header: "Timezone", render: (row) => row.timezone },
