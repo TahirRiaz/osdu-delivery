@@ -690,4 +690,121 @@ public sealed class EngineTests
         Assert.Equal(0, result.SkippedRequests);
         Assert.Contains("400", result.Error, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Soap_flow_discovers_records_over_xml_binds_two_variables_and_pages_in_the_body()
+    {
+        // The whole SOAP shape in one run, as the Questback integration service presents it: credentials live
+        // inside the envelope, the discovery call answers in XML and yields two values per record (the entity id
+        // AND its per-entity security token), and paging is an element in the request body rather than a query
+        // parameter. Page 0 of each entity returns records, page 1 returns none and ends that entity's loop.
+        const string quests = """
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><GetQuestsResponse xmlns="https://x.test/2011/03"><GetQuestsResult><Quests>
+                <Quest><QuestId>11</QuestId><SecurityLock>aaa</SecurityLock></Quest>
+                <Quest><QuestId>22</QuestId><SecurityLock>bbb</SecurityLock></Quest>
+              </Quests></GetQuestsResult></GetQuestsResponse></s:Body>
+            </s:Envelope>
+            """;
+
+        static string ResponsesFor(string questId) => $"""
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><GetResponsesResponse xmlns="https://x.test/2011/03"><GetResponsesResult><Responses>
+                <Response><ResponseId>{questId}01</ResponseId></Response>
+                <Response><ResponseId>{questId}02</ResponseId></Response>
+              </Responses></GetResponsesResult></GetResponsesResponse></s:Body>
+            </s:Envelope>
+            """;
+
+        const string empty = """
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><GetResponsesResponse xmlns="https://x.test/2011/03"><GetResponsesResult><Responses/></GetResponsesResult></GetResponsesResponse></s:Body>
+            </s:Envelope>
+            """;
+
+        var handler = new StubHttpHandler().Route((_, body) =>
+        {
+            string xml;
+            if (body.Contains("GetQuests", StringComparison.Ordinal))
+            {
+                xml = quests;
+            }
+            else
+            {
+                // Read back what the templated body actually carried: the bound quest id and the page element.
+                var questId = body.Contains("<QuestId>11</QuestId>", StringComparison.Ordinal) ? "11" : "22";
+                xml = body.Contains("<PageNo>0</PageNo>", StringComparison.Ordinal) ? ResponsesFor(questId) : empty;
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(xml, System.Text.Encoding.UTF8, "text/xml"),
+            };
+        });
+
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest
+            {
+                Method = "POST",
+                Path = "/integration.svc",
+                BodyKind = AcquireBodyKind.Soap,
+                Body = """
+                    <GetResponses><Username>u</Username><Password>${test:token}</Password>
+                      <QuestId>{questId}</QuestId><SecurityLock>{securityLock}</SecurityLock>
+                      <PageNo>{pageNo}</PageNo></GetResponses>
+                    """,
+            },
+            Pagination = new AcquirePagination
+            {
+                Strategy = AcquirePaginationStrategy.Page,
+                PageVariable = "pageNo",
+                StartPage = 0,
+                RecordsPath = "//Response",
+                MaxPages = 10,
+            },
+            Iterations = [new AcquireIteration
+            {
+                Kind = AcquireIterationKind.IdsFrom,
+                IdRequest = new AcquireRequest
+                {
+                    Method = "POST",
+                    Path = "/integration.svc",
+                    BodyKind = AcquireBodyKind.Soap,
+                    Body = "<GetQuests><Password>${test:token}</Password></GetQuests>",
+                },
+                IdPath = "//Quest",
+                IdBindings = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["questId"] = "QuestId",
+                    ["securityLock"] = "SecurityLock",
+                },
+            }],
+            Reliability = new AcquireReliability { Concurrency = 1 },
+        };
+
+        // The landing names pages with the built-in {page} discriminator: the page VARIABLE is bound only onto the
+        // request context, so a landing path keeps describing the iteration rather than the paging mechanics.
+        var (result, files, h) = await RunAsync(handler, source, "quest{questId}_page{page}");
+
+        // One landed page per quest: page 0 has records, page 1 is empty and stops the loop before landing.
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(2, result.FilesWritten);
+        Assert.Contains(files, f => f.Contains("quest11_page0000", StringComparison.Ordinal));
+        Assert.Contains(files, f => f.Contains("quest22_page0000", StringComparison.Ordinal));
+
+        // The discovery call and every data call carry the RESOLVED password, never the literal reference.
+        Assert.All(h.Requests, r => Assert.Contains("<Password>SECRET123</Password>", r.Body, StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Requests, r => r.Body.Contains("${test:", StringComparison.Ordinal));
+
+        // Both variables of each record reached the body together, and paging advanced inside it.
+        var data = h.Requests.Where(r => r.Body.Contains("GetResponses", StringComparison.Ordinal)).ToList();
+        Assert.Contains(data, r => r.Body.Contains("<QuestId>11</QuestId>", StringComparison.Ordinal)
+                                   && r.Body.Contains("<SecurityLock>aaa</SecurityLock>", StringComparison.Ordinal));
+        Assert.Contains(data, r => r.Body.Contains("<QuestId>22</QuestId>", StringComparison.Ordinal)
+                                   && r.Body.Contains("<SecurityLock>bbb</SecurityLock>", StringComparison.Ordinal));
+        Assert.Contains(data, r => r.Body.Contains("<PageNo>1</PageNo>", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Requests, r => r.Uri.Query.Contains("page", StringComparison.OrdinalIgnoreCase));
+    }
 }

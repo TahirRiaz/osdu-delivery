@@ -135,7 +135,12 @@ public sealed class AcquireEngine
                 var pipeline = new LandingPipeline(item.Landing, _landing, itemBase, runId, log, run.DryRun, run.ReprocessFiles, protector);
                 pipelines.Add(pipeline);
 
-                var contexts = await ExpandAsync(item.Source, baseVars, item.Source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
+                // Credentials inside a request BODY are the norm for SOAP (and for any service whose sign-in is a
+                // field rather than a header), so a body's secret references resolve here, once per item, instead of
+                // shipping to the service verbatim. Resolved before the discovery call, which needs them too.
+                var source = await ResolveRequestSecretsAsync(item.Source, ct).ConfigureAwait(false);
+
+                var contexts = await ExpandAsync(source, baseVars, source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
 
                 // One request pipeline per fan-out combination. The combinations are independent (each lands its own
                 // file through the shared, thread-safe rate limiter, landing sink, and watermark), so the item runs
@@ -150,7 +155,7 @@ public sealed class AcquireEngine
                         : discoveryAuth;
                     var fetch = new AcquireFetch
                     {
-                        Source = item.Source,
+                        Source = source,
                         Vars = vars,
                         Auth = iterationAuth,
                         Landing = pipeline,
@@ -422,6 +427,45 @@ public sealed class AcquireEngine
         AcquireWindowGranularity.Month => from.AddMonths(1),
         _ => from.AddDays(1),
     };
+
+    /// <summary>
+    /// Resolves <c>${scheme:locator}</c> secret references inside an item's request bodies (the data request and any
+    /// discovery request), returning a source that carries the resolved text. Bodies are the one request part a
+    /// credential legitimately lives in: a SOAP envelope names its username and password as elements, so leaving the
+    /// reference unresolved would post the literal <c>${keyvault:...}</c> to the service. URLs, headers, and query
+    /// values are not touched here because auth already owns those, and the templated body is rendered per request
+    /// after this, so an iteration variable still substitutes normally.
+    /// </summary>
+    private async Task<AcquireSource> ResolveRequestSecretsAsync(AcquireSource source, CancellationToken ct)
+    {
+        var request = source.Request;
+        var resolvedRequest = request?.Body is { Length: > 0 } body
+            ? request with { Body = await _secrets.ResolveAsync(body, ct).ConfigureAwait(false) }
+            : request;
+
+        var iterations = new List<AcquireIteration>(source.Iterations.Count);
+        var iterationChanged = false;
+        foreach (var iteration in source.Iterations)
+        {
+            if (iteration.IdRequest?.Body is { Length: > 0 } idBody)
+            {
+                var resolved = await _secrets.ResolveAsync(idBody, ct).ConfigureAwait(false);
+                iterations.Add(iteration with { IdRequest = iteration.IdRequest with { Body = resolved } });
+                iterationChanged = true;
+            }
+            else
+            {
+                iterations.Add(iteration);
+            }
+        }
+
+        if (ReferenceEquals(resolvedRequest, request) && !iterationChanged)
+        {
+            return source;
+        }
+
+        return source with { Request = resolvedRequest, Iterations = iterations };
+    }
 
     private static async Task<IReadOnlyList<Action<TemplateContext>>> IdsFromBindersAsync(
         AcquireSource source,

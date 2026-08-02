@@ -106,7 +106,10 @@ public sealed class HttpTransport : IAcquireTransport
         var query = new Dictionary<string, string>(StringComparer.Ordinal);
         switch (pagination.Strategy)
         {
-            case AcquirePaginationStrategy.Page:
+            // A body-carried page is bound as a template variable instead; sending it as a query parameter as well
+            // would put the page in two places at once, and a service that validates its query string rejects the
+            // one it never declared.
+            case AcquirePaginationStrategy.Page when pagination.PageVariable is null:
                 query[pagination.PageParam] = pageNumber.ToString(CultureInfo.InvariantCulture);
                 break;
             case AcquirePaginationStrategy.Offset:
