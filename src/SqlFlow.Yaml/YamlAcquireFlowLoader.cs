@@ -274,6 +274,7 @@ public sealed class YamlAcquireFlowLoader
             Strategy = ParseEnum(y.Strategy, AcquirePaginationStrategy.None, "source.pagination.strategy", source),
             MaxPages = y.MaxPages ?? 50,
             PageParam = y.PageParam ?? "page",
+            PageVariable = YamlDocumentParts.NullIfBlank(y.PageVariable),
             StartPage = y.StartPage ?? 1,
             OffsetParam = y.OffsetParam ?? "offset",
             LimitParam = y.LimitParam ?? "limit",
@@ -303,6 +304,9 @@ public sealed class YamlAcquireFlowLoader
             Values = y.Values ?? [],
             IdRequest = MapRequest(y.IdRequest, source),
             IdPath = YamlDocumentParts.NullIfBlank(y.IdPath),
+            IdBindings = y.IdBindings is null
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                : y.IdBindings.ToDictionary(b => b.Key, b => b.Value, StringComparer.Ordinal),
             BatchSize = y.BatchSize ?? 1,
             BatchSeparator = y.BatchSeparator ?? ",",
         };
@@ -311,8 +315,15 @@ public sealed class YamlAcquireFlowLoader
         {
             case AcquireIterationKind.List when iteration.Variable is null || iteration.Values.Count == 0:
                 throw new FlowValidationException($"{source}: a list iteration requires 'variable' and non-empty 'values'.");
-            case AcquireIterationKind.IdsFrom when iteration.Variable is null || iteration.IdRequest is null || iteration.IdPath is null:
-                throw new FlowValidationException($"{source}: an idsFrom iteration requires 'variable', 'idRequest', and 'idPath'.");
+
+            // With idBindings the bound names come from the bindings themselves, so 'variable' is neither needed
+            // nor meaningful; without them the single bound variable is still required.
+            case AcquireIterationKind.IdsFrom when iteration.IdRequest is null || iteration.IdPath is null:
+                throw new FlowValidationException($"{source}: an idsFrom iteration requires 'idRequest' and 'idPath'.");
+            case AcquireIterationKind.IdsFrom when iteration.IdBindings.Count == 0 && iteration.Variable is null:
+                throw new FlowValidationException($"{source}: an idsFrom iteration requires 'variable' (or an 'idBindings' map binding one variable per record).");
+            case AcquireIterationKind.IdsFrom when iteration.IdBindings.Count > 0 && iteration.BatchSize > 1:
+                throw new FlowValidationException($"{source}: an idsFrom iteration cannot combine 'idBindings' with a 'batchSize' above 1.");
         }
 
         return iteration;
@@ -601,6 +612,7 @@ internal sealed class AcquirePaginationYaml
     public string? Strategy { get; set; }
     public int? MaxPages { get; set; }
     public string? PageParam { get; set; }
+    public string? PageVariable { get; set; }
     public int? StartPage { get; set; }
     public string? OffsetParam { get; set; }
     public string? LimitParam { get; set; }
@@ -626,6 +638,7 @@ internal sealed class AcquireIterationYaml
     public List<string>? Values { get; set; }
     public AcquireRequestYaml? IdRequest { get; set; }
     public string? IdPath { get; set; }
+    public Dictionary<string, string>? IdBindings { get; set; }
     public int? BatchSize { get; set; }
     public string? BatchSeparator { get; set; }
 }

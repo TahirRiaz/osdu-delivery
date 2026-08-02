@@ -37,11 +37,17 @@ public sealed class HttpTransport : IAcquireTransport
         {
             var extraQuery = BuildPageQuery(pagination, pageNumber, offset, cursor, idAfter);
 
+            // Body-carried paging: the page number is a template variable the request body renders, not a query
+            // parameter. Bound on a clone so the landing context keeps naming the iteration, not the page.
+            var vars = pagination.PageVariable is { } pageVariable
+                ? fetch.Vars.Clone().WithString(pageVariable, pageNumber.ToString(CultureInfo.InvariantCulture))
+                : fetch.Vars;
+
             HttpFetchResult result;
             Func<HttpRequestMessage> factory =
                 pagination.Strategy == AcquirePaginationStrategy.LinkHeader && nextLink is { } linkUrl
-                    ? () => HttpRequestBuilder.BuildForUrl(linkUrl, request, fetch.Vars, fetch.Auth)
-                    : () => HttpRequestBuilder.Build(fetch.Source.BaseUrl, request, fetch.Vars, fetch.Auth, extraQuery);
+                    ? () => HttpRequestBuilder.BuildForUrl(linkUrl, request, vars, fetch.Auth)
+                    : () => HttpRequestBuilder.Build(fetch.Source.BaseUrl, request, vars, fetch.Auth, extraQuery);
 
             var probeRequest = fetch.Probe is not null ? factory() : null;
             var startTimestamp = Stopwatch.GetTimestamp();
@@ -59,7 +65,14 @@ public sealed class HttpTransport : IAcquireTransport
             }
 
             var json = TryParseJson(result);
-            var recordCount = json is { } document ? JsonPathReader.CountRecords(document.RootElement, pagination.RecordsPath) : -1;
+            // An XML page is inspected the same way a JSON one is: enough to count records for the empty-page stop
+            // and the skip-empty policy. The landed bytes stay the untouched response either way.
+            var xml = json is null ? XmlPathReader.TryParse(result.Body, result.ContentType) : null;
+            var recordCount = json is { } document
+                ? JsonPathReader.CountRecords(document.RootElement, pagination.RecordsPath)
+                : xml is { } element
+                    ? XmlPathReader.CountRecords(element, pagination.RecordsPath)
+                    : -1;
 
             var landed = await fetch.Landing.LandAsync(
                 new LandedItem(result.Body, result.ContentType, page.ToString("0000", CultureInfo.InvariantCulture), recordCount, HeaderMap(result)),

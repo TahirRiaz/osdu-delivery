@@ -101,6 +101,7 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | JSON / form-urlencoded body | `request.bodyKind: json` / `form` + `bodyFields` |
 | Path + query templating with date/id tokens | `{placeholder}`, `{yyyyMMdd}`, `{window.from:fmt}` |
 | Page-number pagination (Questback, frida) | `pagination.strategy: page` |
+| Page number carried in the request BODY, not the query (SOAP `<PageNo>`) | `pagination.pageVariable` + the `{token}` in `request.body` |
 | Offset/limit pagination | `pagination.strategy: offset` |
 | Cursor-in-body pagination | `pagination.strategy: cursor_body` + `cursorPath` |
 | Link-header pagination (GitHub-style, SVV NVDB next-href) | `pagination.strategy: link_header` |
@@ -110,6 +111,8 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | Monthly window (svv_index) | `granularity: month` |
 | Static list fan-out (operatorIds, routes, lines) | `iterate: list` + `values` |
 | Ids from a prior call (bikes -> alerts/sessions) | `iterate: ids_from` + `idRequest` + `idPath` |
+| Ids out of an XML/SOAP discovery response (Questback quests) | `ids_from` with an XPath `idPath` (namespaces stripped) |
+| Fan-out needing more than the id per record (Questback `questId` + `securityLock`) | `ids_from` + `idBindings` (variable -> path, relative to each record) |
 | Many endpoints of one system consolidated (Citybike's 11 runbooks) | `items:` list, one entry per endpoint over the shared `source` |
 | Batched-id chunking, max N per request (svv 50 ids) | `ids_from` + `batchSize` + `batchSeparator` |
 | Retry with backoff (shiplog, norled, questback) | `reliability.retry` |

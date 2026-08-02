@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using SqlFlow.Acquire.Runtime;
 using SqlFlow.Core;
 using SqlFlow.Core.Acquire;
@@ -274,5 +276,87 @@ public sealed class JsonPathReaderTests
         Assert.Equal(0, JsonPathReader.CountRecords(top.RootElement, null));
         using var wrapped = JsonDocument.Parse("""{"items":[{"a":1}]}""");
         Assert.Equal(1, JsonPathReader.CountRecords(wrapped.RootElement, null));
+    }
+
+    [Fact]
+    public void Selects_every_matching_record_for_a_multi_variable_fan_out()
+    {
+        using var doc = JsonDocument.Parse("""{"data":[{"id":1,"lock":"a"},{"id":2,"lock":"b"}]}""");
+        var records = JsonPathReader.SelectElements(doc.RootElement, "$.data[*]");
+        Assert.Equal(2, records.Count);
+        Assert.Equal("1", JsonPathReader.SelectValue(records[0], "id"));
+        Assert.Equal("b", JsonPathReader.SelectValue(records[1], "lock"));
+    }
+}
+
+public sealed class XmlPathReaderTests
+{
+    private const string SoapBody = """
+        <?xml version="1.0"?>
+        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+          <s:Body>
+            <GetQuestsResponse xmlns="https://integration.questback.com/2011/03">
+              <GetQuestsResult>
+                <Quests>
+                  <Quest><QuestId>1</QuestId><SecurityLock>aaa</SecurityLock></Quest>
+                  <Quest><QuestId>2</QuestId><SecurityLock>bbb</SecurityLock></Quest>
+                </Quests>
+              </GetQuestsResult>
+            </GetQuestsResponse>
+          </s:Body>
+        </s:Envelope>
+        """;
+
+    private static XElement Parse(string xml)
+        => XmlPathReader.TryParse(Encoding.UTF8.GetBytes(xml), "text/xml")
+           ?? throw new InvalidOperationException("expected the body to parse as XML");
+
+    [Fact]
+    public void Reads_values_through_stripped_namespaces()
+    {
+        var root = Parse(SoapBody);
+        Assert.Equal(["1", "2"], XmlPathReader.SelectValues(root, "//Quest/QuestId"));
+        Assert.Equal("aaa", XmlPathReader.SelectValue(root, "//Quest/SecurityLock"));
+        Assert.Equal("2", XmlPathReader.MaxValue(root, "//Quest/QuestId"));
+    }
+
+    [Fact]
+    public void Selects_records_so_each_can_bind_several_variables()
+    {
+        var records = XmlPathReader.SelectNodes(Parse(SoapBody), "//Quest");
+        Assert.Equal(2, records.Count);
+        Assert.Equal("2", XmlPathReader.SelectValue(records[1], "QuestId"));
+        Assert.Equal("bbb", XmlPathReader.SelectValue(records[1], "SecurityLock"));
+    }
+
+    [Fact]
+    public void Counts_records_only_when_a_records_path_names_them()
+    {
+        var root = Parse(SoapBody);
+        Assert.Equal(2, XmlPathReader.CountRecords(root, "//Quest"));
+        Assert.Equal(0, XmlPathReader.CountRecords(root, "//Missing"));
+
+        // Without a path an XML page has no array to auto-locate, so the count is "unknown" rather than a guess.
+        Assert.Equal(-1, XmlPathReader.CountRecords(root, null));
+    }
+
+    [Fact]
+    public void Recognises_xml_bodies_and_rejects_others()
+    {
+        Assert.True(XmlPathReader.LooksLikeXml("﻿  <a/>"u8.ToArray(), contentType: null));
+        Assert.True(XmlPathReader.LooksLikeXml("{}"u8.ToArray(), "application/soap+xml"));
+        Assert.False(XmlPathReader.LooksLikeXml("""{"a":1}"""u8.ToArray(), "application/json"));
+        Assert.Null(XmlPathReader.TryParse("""{"a":1}"""u8.ToArray(), "application/json"));
+    }
+
+    [Fact]
+    public void Returns_null_for_a_malformed_xml_payload_instead_of_throwing()
+        => Assert.Null(XmlPathReader.TryParse("<a><b></a>"u8.ToArray(), "text/xml"));
+
+    [Fact]
+    public void Rejects_a_malformed_path_with_the_path_in_the_message()
+    {
+        var ex = Assert.Throws<SqlFlowException>(() => XmlPathReader.SelectNodes(Parse(SoapBody), "//["));
+        Assert.Contains("//[", ex.Message, StringComparison.Ordinal);
     }
 }

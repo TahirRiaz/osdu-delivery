@@ -42,6 +42,11 @@ public static class JsonPathReader
         return null;
     }
 
+    /// <summary>Every element a (possibly wildcard) path selects, in document order. Used to fan out over records
+    /// when each one contributes several bound variables rather than a single id.</summary>
+    public static IReadOnlyList<JsonElement> SelectElements(JsonElement root, string path)
+        => Evaluate(root, Parse(path)).ToList();
+
     /// <summary>The first element a path selects, or null.</summary>
     public static JsonElement? SelectElement(JsonElement root, string path)
     {

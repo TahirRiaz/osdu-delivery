@@ -319,6 +319,14 @@ public sealed record AcquirePagination
     public string PageParam { get; init; } = "page";
     public int StartPage { get; init; } = 1;
 
+    /// <summary>
+    /// Binds the page number to this template variable instead of sending it as a query parameter, for services that
+    /// carry paging in the request BODY rather than the URL (a SOAP envelope's <c>&lt;PageNo&gt;</c> is the standard
+    /// case). The request body already renders <c>{token}</c> placeholders, so the page simply becomes one of them.
+    /// Null (the default) keeps the page in the query string.
+    /// </summary>
+    public string? PageVariable { get; init; }
+
     // Offset strategy
     public string OffsetParam { get; init; } = "offset";
     public string LimitParam { get; init; } = "limit";
@@ -349,7 +357,9 @@ public sealed record AcquirePagination
     /// <summary>An HTTP status that terminates keyset/page pagination without being an error (e.g. 202 "no more").</summary>
     public int? StopOnStatus { get; init; }
 
-    /// <summary>The JSON path to the record array used to detect an empty page (default: whole body is the array).</summary>
+    /// <summary>The path to the records used to detect an empty page: a JSON path (default: the whole body is the
+    /// array, or a common wrapper key) or, for an XML response, an XPath selecting the record elements. An XML page
+    /// has no array to auto-locate, so a body-paged XML source must set this to be able to stop on its last page.</summary>
     public string? RecordsPath { get; init; }
 }
 
@@ -408,8 +418,22 @@ public sealed record AcquireIteration
     /// <summary>The request that produces the id list (a full request template).</summary>
     public AcquireRequest? IdRequest { get; init; }
 
-    /// <summary>The JSON path selecting the ids from the id request's response, e.g. <c>$[*].BikeId</c>.</summary>
+    /// <summary>
+    /// Selects the ids from the id request's response: a JSON path for a JSON response (<c>$[*].BikeId</c>) or an
+    /// XPath for an XML one (<c>//Quest/QuestId</c>), chosen by what the discovery response actually is. When
+    /// <see cref="IdBindings"/> is set this instead selects the record ELEMENTS the bindings are read from.
+    /// </summary>
     public string? IdPath { get; init; }
+
+    /// <summary>
+    /// Binds several variables per discovered record instead of one value per id: each entry is a variable name and
+    /// a path relative to the record <see cref="IdPath"/> selected. This is what a fan-out needs when the follow-up
+    /// request takes more than the id itself, for example a SOAP service whose per-entity call must echo back both
+    /// the entity id and a per-entity security token from the discovery response. Empty (the default) keeps the
+    /// single-variable behavior. Incompatible with <see cref="BatchSize"/> greater than one, since a batch of joined
+    /// ids has no single record to read the other variables from.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> IdBindings { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>When &gt; 1, ids are grouped into batches of this size and the variable is bound to a joined batch.</summary>
     public int BatchSize { get; init; } = 1;

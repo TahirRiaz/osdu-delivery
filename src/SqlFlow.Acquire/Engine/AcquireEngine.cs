@@ -431,13 +431,35 @@ public sealed class AcquireEngine
         HttpExecutor dataHttp,
         CancellationToken ct)
     {
-        var variable = iteration.Variable ?? throw new SqlFlowException("An idsFrom iteration requires 'variable'.");
         var idRequest = iteration.IdRequest ?? throw new SqlFlowException("An idsFrom iteration requires an 'idRequest'.");
         var idPath = iteration.IdPath ?? throw new SqlFlowException("An idsFrom iteration requires an 'idPath'.");
 
         var result = await dataHttp.SendAsync(() => HttpRequestBuilder.Build(source.BaseUrl, idRequest, ctx, discoveryAuth, new Dictionary<string, string>(StringComparer.Ordinal)), allowStatuses: null, idRequest.ResponseCharset, ct).ConfigureAwait(false);
-        using var document = JsonDocument.Parse(result.Body);
-        var ids = JsonPathReader.SelectValues(document.RootElement, idPath);
+
+        // The discovery response decides how it is read: an XML service (SOAP and friends) gets XPath, everything
+        // else JSON. Both feed the same binder list, so the fan-out downstream is identical either way.
+        var xml = XmlPathReader.TryParse(result.Body, result.ContentType);
+        return iteration.IdBindings.Count > 0
+            ? RecordBinders(iteration, idPath, result, xml)
+            : ScalarBinders(iteration, idPath, result, xml);
+    }
+
+    /// <summary>The single-variable fan-out: one bound value per discovered id, optionally joined into batches.</summary>
+    private static IReadOnlyList<Action<TemplateContext>> ScalarBinders(
+        AcquireIteration iteration, string idPath, HttpFetchResult result, System.Xml.Linq.XElement? xml)
+    {
+        var variable = iteration.Variable ?? throw new SqlFlowException("An idsFrom iteration requires 'variable'.");
+
+        IReadOnlyList<string> ids;
+        if (xml is not null)
+        {
+            ids = XmlPathReader.SelectValues(xml, idPath);
+        }
+        else
+        {
+            using var document = JsonDocument.Parse(result.Body);
+            ids = JsonPathReader.SelectValues(document.RootElement, idPath);
+        }
 
         var batchSize = Math.Max(1, iteration.BatchSize);
         var binders = new List<Action<TemplateContext>>();
@@ -445,6 +467,61 @@ public sealed class AcquireEngine
         {
             var batch = string.Join(iteration.BatchSeparator, ids.Skip(i).Take(batchSize));
             binders.Add(c => c.WithString(variable, batch));
+        }
+
+        return binders;
+    }
+
+    /// <summary>
+    /// The multi-variable fan-out: <c>idPath</c> selects one element per record and each binding reads a value from
+    /// inside it, so a follow-up request can carry more than the id (a per-entity token, a name, a date range).
+    /// A record missing a bound path binds the empty string rather than dropping the record, because a request
+    /// template that renders an empty token fails loudly at the service instead of silently shrinking the sweep.
+    /// </summary>
+    private static IReadOnlyList<Action<TemplateContext>> RecordBinders(
+        AcquireIteration iteration, string idPath, HttpFetchResult result, System.Xml.Linq.XElement? xml)
+    {
+        if (iteration.BatchSize > 1)
+        {
+            throw new SqlFlowException(
+                "An idsFrom iteration cannot combine 'idBindings' with a batchSize above 1: a batch of joined ids has no single record to read the other variables from.");
+        }
+
+        var binders = new List<Action<TemplateContext>>();
+        if (xml is not null)
+        {
+            foreach (var record in XmlPathReader.SelectNodes(xml, idPath))
+            {
+                var values = iteration.IdBindings.ToDictionary(
+                    binding => binding.Key,
+                    binding => XmlPathReader.SelectValue(record, binding.Value) ?? string.Empty,
+                    StringComparer.Ordinal);
+                binders.Add(c =>
+                {
+                    foreach (var (name, value) in values)
+                    {
+                        c.WithString(name, value);
+                    }
+                });
+            }
+
+            return binders;
+        }
+
+        using var document = JsonDocument.Parse(result.Body);
+        foreach (var record in JsonPathReader.SelectElements(document.RootElement, idPath))
+        {
+            var values = iteration.IdBindings.ToDictionary(
+                binding => binding.Key,
+                binding => JsonPathReader.SelectValue(record, binding.Value) ?? string.Empty,
+                StringComparer.Ordinal);
+            binders.Add(c =>
+            {
+                foreach (var (name, value) in values)
+                {
+                    c.WithString(name, value);
+                }
+            });
         }
 
         return binders;
