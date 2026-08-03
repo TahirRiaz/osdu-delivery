@@ -32,6 +32,24 @@ public sealed class TemplateEngineTests
     }
 
     [Fact]
+    public void Formats_relative_date_expressions_against_the_reference_date()
+    {
+        var ctx = new TemplateContext(Ref);
+        Assert.Equal("2026-01-09", TemplateEngine.Render("{now-6mo:yyyy-MM-dd}", ctx));
+        Assert.Equal("2026-07-01", TemplateEngine.Render("{startOfMonth:yyyy-MM-dd}", ctx));
+        Assert.Equal("2026-07-08", TemplateEngine.Render("{yesterday:yyyy-MM-dd}", ctx));
+        Assert.Equal("2025-07-09", TemplateEngine.Render("{now-1y:yyyy-MM-dd}", ctx));
+    }
+
+    [Fact]
+    public void An_unbound_variable_is_still_an_error_and_not_read_as_a_date()
+    {
+        var ctx = new TemplateContext(Ref);
+        var ex = Assert.Throws<SqlFlowException>(() => TemplateEngine.Render("{operatorId:yyyy}", ctx));
+        Assert.Contains("operatorId", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Substitutes_string_and_formatted_date_variables()
     {
         var ctx = new TemplateContext(Ref).WithString("operatorId", "1295").WithDate("window.from", Ref);

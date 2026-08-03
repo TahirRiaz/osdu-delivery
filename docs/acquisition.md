@@ -100,6 +100,8 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | SOAP-over-POST envelope (Questback) | `request.bodyKind: soap` |
 | JSON / form-urlencoded body | `request.bodyKind: json` / `form` + `bodyFields` |
 | Path + query templating with date/id tokens | `{placeholder}`, `{yyyyMMdd}`, `{window.from:fmt}` |
+| Rolling boundary inside a request, with no fan-out (Questback's closed-quest window) | `{now-6mo:yyyy-MM-dd}`, `{startOfMonth:yyyy-MM-dd}` |
+| Credentials inside the request body rather than a header (SOAP `<Password>`) | `${keyvault:...}` in `request.body` (resolved per item) |
 | Page-number pagination (Questback, frida) | `pagination.strategy: page` |
 | Page number carried in the request BODY, not the query (SOAP `<PageNo>`) | `pagination.pageVariable` + the `{token}` in `request.body` |
 | Offset/limit pagination | `pagination.strategy: offset` |

@@ -12,6 +12,38 @@ namespace SqlFlow.Acquire.Runtime;
 /// </summary>
 public static partial class RelativeTime
 {
+    /// <summary>
+    /// Resolves only the ANCHOR grammar (<c>now</c>, <c>today-1d</c>, <c>startOfMonth-1mo</c>), never the ISO-8601
+    /// fallback, returning false for anything else. Template rendering uses this to tell a relative-date token from
+    /// an ordinary variable name: a token like <c>{now-6mo:yyyy-MM-dd}</c> is a date expression, while
+    /// <c>{operatorId}</c> is a variable that must still fail loudly when it is unbound.
+    /// </summary>
+    public static bool TryResolveAnchor(string expression, DateTimeOffset now, out DateTimeOffset resolved)
+    {
+        resolved = default;
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return false;
+        }
+
+        var match = Offset().Match(expression.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var anchor = Anchor(match.Groups["anchor"].Value, now);
+        if (!match.Groups["delta"].Success)
+        {
+            resolved = anchor;
+            return true;
+        }
+
+        var sign = match.Groups["sign"].Value == "-" ? -1 : 1;
+        resolved = Apply(anchor, sign * int.Parse(match.Groups["n"].Value, CultureInfo.InvariantCulture), match.Groups["unit"].Value);
+        return true;
+    }
+
     public static DateTimeOffset Resolve(string expression, DateTimeOffset now)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(expression);

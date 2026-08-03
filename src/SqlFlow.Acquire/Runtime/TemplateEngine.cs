@@ -12,6 +12,9 @@ namespace SqlFlow.Acquire.Runtime;
 /// formatted against the reference date;</item>
 /// <item><c>{name:format}</c> formats a date-valued context variable (<c>{window.from:yyyy-MM-dd}</c>), with a
 /// <c>utc:</c> prefix converting to UTC first (<c>{window.from:utc:yyyy-MM-ddTHH}</c>);</item>
+/// <item><c>{expression:format}</c> formats a relative date computed from the reference date
+/// (<c>{now-6mo:yyyy-MM-dd}</c>, <c>{startOfMonth:yyyy-MM-dd}</c>), for a request that needs a rolling boundary
+/// without a date-window iteration to bind it;</item>
 /// <item><c>{name}</c> substitutes a context variable verbatim (a string) or ISO-8601 (a date).</item>
 /// </list>
 /// A referenced variable that is not in the context is an authoring error, not a silent blank, so a broken template
@@ -137,6 +140,21 @@ public static class TemplateEngine
             if (context.TryGetString(name, out var raw))
             {
                 return raw;
+            }
+
+            // A relative date expression rather than a variable: {now-6mo:yyyy-MM-dd} lets a request that needs a
+            // rolling boundary compute it inline, instead of forcing a date-window iteration whose only purpose
+            // would be to bind one date - and which would fan the request out into one call per step.
+            if (RelativeTime.TryResolveAnchor(name, context.ReferenceDate, out var relative))
+            {
+                return format.StartsWith("utc:", StringComparison.Ordinal)
+                    ? relative.ToUniversalTime().ToString(format[4..], CultureInfo.InvariantCulture)
+                    : format switch
+                    {
+                        "unix" => relative.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
+                        "unixms" => relative.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture),
+                        _ => relative.ToString(format, CultureInfo.InvariantCulture),
+                    };
             }
 
             throw Missing(name, template, context);
