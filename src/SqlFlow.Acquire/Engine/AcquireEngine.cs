@@ -26,14 +26,20 @@ public sealed class AcquireEngine
     private readonly TimeProvider _time;
     private readonly Func<AcquireReliability, HttpClient> _httpClientFactory;
 
+    /// <summary>Reads a target-sourced watermark. Optional: only a flow declaring <c>incremental.source: sql</c>
+    /// needs one, and such a flow fails with a clear message when the host has not registered it.</summary>
+    private readonly IAcquireWatermarkProbe? _watermarkProbe;
+
     public AcquireEngine(
         IRawLandingStore landing,
         AuthResolver auth,
         ISecretResolver secrets,
         IEnumerable<IAcquireTransport> transports,
         TimeProvider time,
-        Func<AcquireReliability, HttpClient>? httpClientFactory = null)
+        Func<AcquireReliability, HttpClient>? httpClientFactory = null,
+        IAcquireWatermarkProbe? watermarkProbe = null)
     {
+        _watermarkProbe = watermarkProbe;
         ArgumentNullException.ThrowIfNull(landing);
         ArgumentNullException.ThrowIfNull(auth);
         ArgumentNullException.ThrowIfNull(secrets);
@@ -94,6 +100,20 @@ public sealed class AcquireEngine
                 watermark = new WatermarkState(flow.Incremental, await LakeWatermarkAsync(flow, baseVars, log, ct).ConfigureAwait(false));
             }
 
+            // A target-sourced watermark resumes from what was LOADED, for a feed whose landed file names cannot
+            // encode the resume value and whose run-record value would not survive a redeploy. Same precedence as
+            // the lake: the probed value replaces the caller's, except on an explicit reprocess.
+            IReadOnlyDictionary<string, string?>? watermarkByEntity = null;
+            if (flow.Incremental is { Source: AcquireWatermarkSource.Sql } sqlIncremental && !run.ReprocessFiles)
+            {
+                var probed = await SqlWatermarkAsync(sqlIncremental, log, ct).ConfigureAwait(false);
+                watermarkByEntity = probed.ByKey;
+                if (probed.ByKey is null)
+                {
+                    watermark = new WatermarkState(flow.Incremental, probed.Single);
+                }
+            }
+
             if (flow.Incremental is { BindVariable: { } bindVar } && watermark.Before is { } before)
             {
                 baseVars.WithString(bindVar, before);
@@ -141,6 +161,28 @@ public sealed class AcquireEngine
                 var source = await ResolveRequestSecretsAsync(item.Source, ct).ConfigureAwait(false);
 
                 var contexts = await ExpandAsync(source, baseVars, source.Iterations, 0, discoveryAuth, dataHttp, now, watermark, run, ct).ConfigureAwait(false);
+
+                // Per-entity resume: give each fan-out combination the watermark of the entity it is fetching. An
+                // entity the target has never seen gets the seed, so a newly-appearing one is loaded from its start
+                // rather than skipped or silently pinned to another entity's position.
+                if (watermarkByEntity is not null
+                    && flow.Incremental is { KeyVariable: { } keyVar, BindVariable: { } entityBindVar } inc)
+                {
+                    foreach (var context in contexts)
+                    {
+                        if (!context.TryGetString(keyVar, out var entity))
+                        {
+                            throw new SqlFlowException(
+                                $"The watermark is keyed by '{keyVar}', but this flow's fan-out never binds that variable, so no entity can be matched to a resume point.");
+                        }
+
+                        var resume = watermarkByEntity.TryGetValue(entity, out var value) ? value : null;
+                        if ((resume ?? inc.Seed) is { } effective)
+                        {
+                            context.WithString(entityBindVar, effective);
+                        }
+                    }
+                }
 
                 // One request pipeline per fan-out combination. The combinations are independent (each lands its own
                 // file through the shared, thread-safe rate limiter, landing sink, and watermark), so the item runs
@@ -264,6 +306,56 @@ public sealed class AcquireEngine
             : $"resuming from '{resolved}', the highest '{compiled.Selected}' across {names.Count} landed name(s) under '{landingBase}'.");
         return resolved;
     }
+
+    /// <summary>
+    /// Resolves the resume point by running the flow's own scalar query against the flow's own connection. Nothing
+    /// about the queried object is known here: the statement is passed through verbatim, so this works for any
+    /// target shape without the engine learning a single table or column name.
+    /// </summary>
+    private async Task<SqlWatermarks> SqlWatermarkAsync(AcquireIncremental incremental, IRunEventSink log, CancellationToken ct)
+    {
+        var connection = incremental.Connection
+                         ?? throw new SqlFlowException("A sql watermark requires 'incremental.connection'.");
+        var query = incremental.Query
+                    ?? throw new SqlFlowException("A sql watermark requires 'incremental.query'.");
+        if (_watermarkProbe is null)
+        {
+            throw new SqlFlowException(
+                "A sql watermark needs a database probe, and none is registered in this host. Register an " +
+                $"{nameof(IAcquireWatermarkProbe)} (the engine host wiring does) or use a lake/response watermark.");
+        }
+
+        var rows = await _watermarkProbe.ReadAsync(
+            await _secrets.ResolveAsync(connection, ct).ConfigureAwait(false), query, ct).ConfigureAwait(false);
+
+        if (incremental.KeyVariable is not { } keyVariable)
+        {
+            var single = rows.Count > 0 ? rows[0].Value : null;
+            log.Log(RunLogLevel.Info, "watermark.sql", single is null
+                ? "the watermark query returned no value; starting from the seed."
+                : $"resuming from '{single}', read from the loaded target.");
+            return new SqlWatermarks(single, null);
+        }
+
+        // Per-entity: each fan-out combination resumes from its OWN high-water mark, so one lagging entity does not
+        // drag the whole sweep back to the oldest position (which is what a single flow-wide watermark would do).
+        var byKey = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            if (row.Key is { Length: > 0 } key)
+            {
+                byKey[key] = row.Value;
+            }
+        }
+
+        log.Log(RunLogLevel.Info, "watermark.sql",
+            $"read {byKey.Count} per-entity watermark(s) keyed by '{keyVariable}' from the loaded target; an entity with no row starts from the seed.");
+        return new SqlWatermarks(null, byKey);
+    }
+
+    /// <summary>The resolved probe result: one value for the whole flow, or one per entity keyed by a fan-out
+    /// variable. Exactly one of the two is populated.</summary>
+    private readonly record struct SqlWatermarks(string? Single, IReadOnlyDictionary<string, string?>? ByKey);
 
     private IAcquireTransport SelectTransport(AcquireTransport transport)
         => _transports.FirstOrDefault(t => t.CanHandle(transport))

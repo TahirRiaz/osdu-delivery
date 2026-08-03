@@ -129,6 +129,8 @@ the patterns; the engine is verified against public APIs and a deterministic tes
 | Binary/XLSX response (Entur report) | `landing.format: auto` (lands `.bin`/declared ext) |
 | gzip on landing | `landing.compression: gzip` |
 | Incremental resume from lake state (Entur lastReportId) | `incremental` + keyset |
+| Resume from what was LOADED, not from a run record (survives redeploys) | `incremental.source: sql` + `connection` + `query` |
+| Per-entity high-water marks, so one lagging entity does not refetch them all | two-column watermark `query` + `keyVariable` |
 | SFTP download, modified-within window (Citybike/Nets, Ferde) | `transport: sftp` |
 | Azure Storage Table query (fjord1, apc) | `transport: azuretable` + OData `filter` |
 | Secrets from Key Vault, never inline | `${keyvault:vault/secret}` refs |

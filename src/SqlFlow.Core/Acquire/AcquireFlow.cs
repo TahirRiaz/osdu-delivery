@@ -560,6 +560,14 @@ public enum AcquireWatermarkSource
 
     /// <summary>Track the max of a response field across a run and persist it in the run record for the next run.</summary>
     Response,
+
+    /// <summary>
+    /// Read the resume point from the LOADED data with a scalar query the flow supplies. Use it when the landed
+    /// file names cannot encode the resume value (a feed partitioned by entity and page rather than by time) and a
+    /// run-record value would be too fragile, since that one is node-local and does not survive a redeploy or an
+    /// edit to the flow. The loaded table survives both and is the state the pipeline is actually tracking.
+    /// </summary>
+    Sql,
 }
 
 /// <summary>Incremental resume configuration for keyset/date-window flows.</summary>
@@ -575,4 +583,29 @@ public sealed record AcquireIncremental
 
     /// <summary>A seed used on the first run when no prior watermark exists.</summary>
     public string? Seed { get; init; }
+
+    /// <summary>The connection the <see cref="AcquireWatermarkSource.Sql"/> probe reads from. A connection
+    /// reference like any other, so the target it points at is the flow's choice, not the engine's.</summary>
+    public string? Connection { get; init; }
+
+    /// <summary>
+    /// The query whose result is the resume point, for the <see cref="AcquireWatermarkSource.Sql"/> source. Taken
+    /// verbatim: the engine never composes it and knows nothing of the table or column involved, so the shape of the
+    /// query (and the format of what it returns) is entirely the flow's to decide. Returning no row, or NULL, leaves
+    /// the flow on its <see cref="Seed"/>.
+    /// <para>
+    /// One column is a single watermark for the whole flow. TWO columns is one watermark per entity - the first
+    /// column matched against <see cref="KeyVariable"/>, the second the resume point - which is what a fan-out feed
+    /// needs so each entity resumes from its own position instead of every one being dragged back to the oldest.
+    /// </para>
+    /// </summary>
+    public string? Query { get; init; }
+
+    /// <summary>
+    /// The fan-out variable a per-entity watermark is keyed by (e.g. <c>questId</c>, <c>vehicleId</c>): for each
+    /// combination of the fan-out, the row whose key equals this variable's value supplies
+    /// <see cref="BindVariable"/>, and an entity with no row falls back to <see cref="Seed"/>. Null means the
+    /// watermark is global to the flow.
+    /// </summary>
+    public string? KeyVariable { get; init; }
 }

@@ -4,6 +4,7 @@ using System.Text;
 using SqlFlow.Acquire.Engine;
 using SqlFlow.Acquire.Landing;
 using SqlFlow.Acquire.Runtime;
+using SqlFlow.Core.Acquire;
 using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.Acquire.Tests;
@@ -109,13 +110,20 @@ internal sealed class FakeSecrets : ISecretResolver
 /// <summary>Builds an <see cref="AcquireEngine"/> wired to a stub HTTP handler and a temp-directory landing store.</summary>
 internal static class TestEngine
 {
-    public static AcquireEngine Create(StubHttpHandler handler, ISecretResolver secrets, TimeProvider time, out string landingDir)
+    public static AcquireEngine Create(
+        StubHttpHandler handler,
+        ISecretResolver secrets,
+        TimeProvider time,
+        out string landingDir,
+        IAcquireWatermarkProbe? watermarkProbe = null)
     {
         landingDir = Path.Combine(Path.GetTempPath(), "sqlflow-acquire-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(landingDir);
         var store = new CompositeRawLandingStore([new LocalRawLandingStore()]);
         var transports = new IAcquireTransport[] { new HttpTransport() };
-        return new AcquireEngine(store, new AuthResolver(secrets), secrets, transports, time, _ => new HttpClient(handler, disposeHandler: false));
+        return new AcquireEngine(
+            store, new AuthResolver(secrets), secrets, transports, time,
+            _ => new HttpClient(handler, disposeHandler: false), watermarkProbe);
     }
 
     public static IReadOnlyList<string> LandedFiles(string landingDir)

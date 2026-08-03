@@ -58,6 +58,7 @@ public static class SqlFlowEngineServices
         services.AddSingleton<IIndexManager, SqlServerIndexManager>();
         services.AddSingleton<IDesiredIndexManager, SqlServerDesiredIndexManager>();
         services.AddSingleton<IIncrementalProbe, SqlServerIncrementalProbe>();
+        services.AddSingleton<SqlFlow.Core.Acquire.IAcquireWatermarkProbe, SqlServerAcquireWatermarkProbe>();
         services.AddSingleton<IStateStore, NullStateStore>();
         services.AddSingleton<IFlowEventSink, ConsoleFlowEventSink>();
 

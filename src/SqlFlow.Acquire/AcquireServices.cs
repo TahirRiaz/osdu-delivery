@@ -34,7 +34,11 @@ public static class AcquireServices
             sp.GetRequiredService<AuthResolver>(),
             sp.GetRequiredService<SqlFlow.Core.Secrets.ISecretResolver>(),
             sp.GetServices<IAcquireTransport>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            httpClientFactory: null,
+            // Optional: only a flow declaring 'incremental.source: sql' needs it, and the host that owns a database
+            // provider registers it. Absent, such a flow fails with a message naming what to register.
+            watermarkProbe: sp.GetService<SqlFlow.Core.Acquire.IAcquireWatermarkProbe>()));
         services.AddSingleton<AcquireFlowRunner>();
 
         return services;

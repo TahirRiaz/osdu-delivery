@@ -691,6 +691,110 @@ public sealed class EngineTests
         Assert.Contains("400", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>A probe returning whatever rows the test hands it, recording the query it was asked to run.</summary>
+    private sealed class StubWatermarkProbe(params (string? Key, string? Value)[] rows) : IAcquireWatermarkProbe
+    {
+        public string? Query { get; private set; }
+
+        public string? Connection { get; private set; }
+
+        public Task<IReadOnlyList<AcquireWatermarkRow>> ReadAsync(string connection, string query, CancellationToken ct = default)
+        {
+            Connection = connection;
+            Query = query;
+            return Task.FromResult<IReadOnlyList<AcquireWatermarkRow>>(
+                rows.Select(r => new AcquireWatermarkRow(r.Key, r.Value)).ToList());
+        }
+    }
+
+    [Fact]
+    public async Task Sql_watermark_resumes_the_whole_flow_from_the_loaded_target()
+    {
+        // The flow states the query; the engine runs it verbatim and binds the result. Nothing about the queried
+        // object is known to the engine, which is what keeps this usable for any source.
+        var handler = new StubHttpHandler().Json("/orders", _ => """[{"id":1}]""");
+        var probe = new StubWatermarkProbe((null, "2026-07-30T10:51:58"));
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest { Path = "/orders", Query = { } },
+            Pagination = new AcquirePagination(),
+        };
+        source = source with { Request = source.Request! with { Query = new Dictionary<string, string>(StringComparer.Ordinal) { ["since"] = "{since}" } } };
+
+        var engine = TestEngine.Create(handler, new FakeSecrets(), new FixedClock(Now), out var dir, probe);
+        var flow = new AcquireFlow
+        {
+            Name = "Test_Flow",
+            Items = [new AcquireItem { Source = source, Landing = new AcquireLanding { Target = dir, PathTemplate = "orders" } }],
+            Incremental = new AcquireIncremental
+            {
+                Source = AcquireWatermarkSource.Sql,
+                Connection = "conn-ref",
+                Query = "SELECT MAX(SomeColumn) FROM SomeTable",
+                BindVariable = "since",
+                Seed = "2000-01-01",
+            },
+        };
+
+        var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal("SELECT MAX(SomeColumn) FROM SomeTable", probe.Query);
+        Assert.Equal("2026-07-30T10:51:58", Query(handler.Requests[0].Uri, "since"));
+    }
+
+    [Fact]
+    public async Task Sql_watermark_gives_every_entity_its_own_resume_point()
+    {
+        // The point of the two-column form: one lagging entity must not drag the others back to its position, and
+        // an entity the target has never seen starts from the seed rather than being skipped.
+        var handler = new StubHttpHandler().Json("/data", _ => """[{"id":1}]""");
+        var probe = new StubWatermarkProbe(("A", "2026-07-01"), ("B", "2023-01-15"));
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest
+            {
+                Path = "/data",
+                Query = new Dictionary<string, string>(StringComparer.Ordinal) { ["entity"] = "{entityId}", ["since"] = "{since}" },
+            },
+            Iterations = [new AcquireIteration
+            {
+                Kind = AcquireIterationKind.List,
+                Variable = "entityId",
+                Values = ["A", "B", "C"],
+            }],
+            Reliability = new AcquireReliability { Concurrency = 1 },
+        };
+
+        var engine = TestEngine.Create(handler, new FakeSecrets(), new FixedClock(Now), out var dir, probe);
+        var flow = new AcquireFlow
+        {
+            Name = "Test_Flow",
+            Items = [new AcquireItem { Source = source, Landing = new AcquireLanding { Target = dir, PathTemplate = "e_{entityId}" } }],
+            Incremental = new AcquireIncremental
+            {
+                Source = AcquireWatermarkSource.Sql,
+                Connection = "conn-ref",
+                Query = "SELECT EntityKey, MAX(LoadedAt) FROM SomeTable GROUP BY EntityKey",
+                KeyVariable = "entityId",
+                BindVariable = "since",
+                Seed = "2000-01-01",
+            },
+        };
+
+        var result = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+
+        Assert.True(result.Success, result.Error);
+        var since = handler.Requests.ToDictionary(r => Query(r.Uri, "entity"), r => Query(r.Uri, "since"), StringComparer.Ordinal);
+        Assert.Equal("2026-07-01", since["A"]);
+        Assert.Equal("2023-01-15", since["B"]);
+
+        // C has never been loaded, so it starts from the seed and is fetched, not skipped.
+        Assert.Equal("2000-01-01", since["C"]);
+    }
+
     [Fact]
     public async Task Soap_flow_discovers_records_over_xml_binds_two_variables_and_pages_in_the_body()
     {

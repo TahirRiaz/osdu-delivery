@@ -59,7 +59,7 @@ public sealed class YamlAcquireFlowLoader
         {
             Name = name,
             Batch = YamlDocumentParts.NullIfBlank(y.Batch),
-            Items = MapItems(y, sourceYaml, source),
+            Items = MapItems(y, sourceYaml, source, y.Incremental),
             Incremental = MapIncremental(y.Incremental, source),
             Params = MapParams(y.Params, source),
         };
@@ -87,7 +87,8 @@ public sealed class YamlAcquireFlowLoader
     /// over the shared <c>source</c> connection envelope). Exactly one form is allowed: mixing the top-level landing with
     /// items, or putting a per-endpoint request/pagination/iterate on the shared source in the multi-item form, fails at
     /// parse rather than silently landing to the wrong place.</summary>
-    private static IReadOnlyList<AcquireItem> MapItems(AcquireDocumentYaml y, AcquireSourceYaml sourceYaml, string source)
+    private static IReadOnlyList<AcquireItem> MapItems(
+        AcquireDocumentYaml y, AcquireSourceYaml sourceYaml, string source, AcquireIncrementalYaml? incremental)
     {
         var transport = ParseEnum(sourceYaml.Transport, AcquireTransport.Http, "source.transport", source);
         var baseUrl = Require(sourceYaml.BaseUrl, "source.baseUrl", source);
@@ -106,11 +107,17 @@ public sealed class YamlAcquireFlowLoader
                     $"{source}: in a multi-item api flow, 'request'/'pagination'/'iterate' belong under each 'items[]' entry, not the shared 'source'.");
             }
 
-            if (y.Incremental is not null)
+            // A response- or lake-sourced watermark is derived from ONE endpoint's traffic or landed names, so on a
+            // multi-item flow there is no single answer to which item it belongs to. A sql-sourced one has no such
+            // ambiguity: the flow states the query outright, it is resolved once before any item runs, and it is only
+            // ever read - so every item can legitimately share it, which is what lets a multi-endpoint source resume
+            // from the state of what it has already loaded.
+            if (incremental is not null
+                && ParseEnum(incremental.Source, AcquireWatermarkSource.Response, "incremental.source", source) != AcquireWatermarkSource.Sql)
             {
                 throw new FlowValidationException(
-                    $"{source}: 'incremental' is only valid on a single-endpoint api flow (the run watermark is one value per run). " +
-                    "Express a multi-item flow's incrementality through each item's date-window 'iterate'.");
+                    $"{source}: a response- or lake-sourced 'incremental' is only valid on a single-endpoint api flow (the run watermark is one value per run). " +
+                    "Use 'incremental.source: sql' to share one probed watermark across items, or express incrementality through each item's date-window 'iterate'.");
             }
 
             var auth = MapAuth(sourceYaml.Auth, source);
@@ -479,13 +486,32 @@ public sealed class YamlAcquireFlowLoader
             return null;
         }
 
-        return new AcquireIncremental
+        var incremental = new AcquireIncremental
         {
             Source = ParseEnum(y.Source, AcquireWatermarkSource.Response, "incremental.source", source),
             Column = YamlDocumentParts.NullIfBlank(y.Column),
             BindVariable = YamlDocumentParts.NullIfBlank(y.BindVariable),
             Seed = YamlDocumentParts.NullIfBlank(y.Seed),
+            Connection = YamlDocumentParts.NullIfBlank(y.Connection),
+            Query = YamlDocumentParts.NullIfBlank(y.Query),
+            KeyVariable = YamlDocumentParts.NullIfBlank(y.KeyVariable),
         };
+
+        // A sql watermark carries its whole definition in the flow, so both halves must be present: without them
+        // there is nothing for the engine to run, and it has no default of its own to fall back on.
+        if (incremental.Source == AcquireWatermarkSource.Sql && (incremental.Connection is null || incremental.Query is null))
+        {
+            throw new FlowValidationException($"{source}: a sql watermark requires both 'incremental.connection' and 'incremental.query'.");
+        }
+
+        // A per-entity watermark is only meaningful if something receives it: without a bindVariable the resolved
+        // value has nowhere to go, and the flow would silently fetch its full window every run.
+        if (incremental.KeyVariable is not null && incremental.BindVariable is null)
+        {
+            throw new FlowValidationException($"{source}: 'incremental.keyVariable' needs a 'incremental.bindVariable' for the per-entity watermark to bind to.");
+        }
+
+        return incremental;
     }
 
     private static IReadOnlyDictionary<string, string?> MapOptions(Dictionary<string, string>? options)
@@ -707,4 +733,7 @@ internal sealed class AcquireIncrementalYaml
     public string? Column { get; set; }
     public string? BindVariable { get; set; }
     public string? Seed { get; set; }
+    public string? Connection { get; set; }
+    public string? Query { get; set; }
+    public string? KeyVariable { get; set; }
 }
