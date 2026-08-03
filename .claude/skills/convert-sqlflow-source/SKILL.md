@@ -67,6 +67,13 @@ If the user gives only a readable name, derive the batch code by querying the me
   Use it when the `B:\` DDL drive is not mounted or the 92.221.59.28 restores are stale/missing a table
   (they lag the real estate; e.g. `arc.Frida_Vehicles` exists only here). **Read operations ONLY**: schema
   reads (`sys.columns`), row counts, reconciliation queries. Never write, never point a flow at it.
+- **Real OLD prod PRE (live truth, READ ONLY)**: the User-scoped environment variable **`OldPreConStr`**
+  (same access pattern: `[Environment]::GetEnvironmentVariable('OldPreConStr','User')`, NOT inherited by the
+  shell) holds the connection string to the actual old production PRE landing database: server
+  `dw-sql-server-prod.database.windows.net,1433`, database `dw-pre-prod`, user `dw-kolumbus-admin`. This is
+  the counterpart to `OldDwhConStr` and the authority for what the landing tables really look like, what a
+  push-fed source actually writes, and which principals were granted on them
+  (`sys.database_principals`, `sys.database_permissions`, `sys.database_role_members`). **Read only.**
 - Generators: `migration/_tools/Generate-PreFlow.ps1`, `migration/_tools/Generate-OdsFlow.ps1`. Both read the
   legacy metadata over the network and default `-Server` to `92.221.59.28`. Pass `-Server` only to override.
 - Run the tooling from the SQLFlowV3 repo root `c:\Projects\SQLFlowV3`. Build the CLI first if needed. When
@@ -194,6 +201,50 @@ changed so the old captures are the only copy). That is the deactivated STATIC-A
 the live feed. Everything the external interface CAN still serve must be acquired FROM that interface. If you
 find yourself reaching for an old-lake mirror as the steady-state feed, stop: you are re-pointing the source at a
 dying target instead of establishing the real acquisition.
+
+### 2.0 First decide whether the source is PULLED or PUSHED
+
+Everything else in Phase 2 assumes SQLFlow FETCHES the data. Some sources are the other way round: the
+upstream platform WRITES rows straight into the pre database, and SQLFlow only merges pre -> arc. The tells,
+checked before hunting for a producer:
+
+- The batch has an `flw.Ingestion` row but NO `flw.PreIngestion*` row of any kind. There is no landing flow
+  because there is no file and no fetch.
+- The ingestion `srcDBSchTbl` is a view in the pre database over a table in a schema that no flow writes,
+  typically **`stg`** rather than `pre` (e.g. `pre.v_SanntidNG_...` over `stg.SanntidNG_...`).
+- The old pre database (`OldPreConStr`) holds principals that are NOT SQLFlow and NOT the DBA: an external
+  managed identity or a source-named SQL login with INSERT/UPDATE on exactly that one staging table. That
+  grant list IS the acquisition contract.
+- The staging table has no `_DW` provenance columns, and the ingestion's `IncrementalColumns` /
+  `DataSetColumn` name columns that do not exist in the source view (leftover defaults from `SQLFlowInit`).
+  Do not carry those over: drop the watermark, the legacy engine compared the whole view every run.
+
+For a pushed source there is NO stage-0 flow and there must never be one. The acquisition is a **receive
+endpoint**, and porting it means recreating that endpoint in the new estate, as DDL, not YAML:
+
+1. Recreate the staging table in the new pre database, shape-for-shape (including its heap/index layout).
+2. Recreate the pre view over it verbatim; its column list is the arc contract.
+3. Recreate the writer's principals and grants, enumerating them from the OLD pre database first
+   (`sys.database_principals`, `sys.database_permissions`) and reproducing them exactly, no wider.
+4. Ship only the `02_ing` flow, plus the DDL scripts, plus a schedule that starts DISABLED.
+
+Head the ing flow with a comment saying the source is pushed and why no acquisition flow exists, so the next
+person does not "fix" the missing stage 0 by inventing an api/cpy flow.
+
+**Cutover for a pushed source is not ours to make.** The upstream owner has to repoint their writer at the new
+server; until they do, the new staging table stays empty and the V3 flow is a no-op, so there is no value in
+enabling its schedule early. Land the history into arc directly (Phase 5.6) and hand back the exact
+connection details and grants the upstream needs.
+
+**Grant caveat on the new estate**: `dw-mi-sql-prod` is a Managed Instance with NO Entra administrator and no
+instance managed identity, so it cannot authenticate Entra principals at all. `CREATE USER [x] FROM EXTERNAL
+PROVIDER` fails with "Only connections established with Active Directory accounts can create other Active
+Directory users", and the Azure SQL Database escape hatch `CREATE USER [x] WITH SID = 0x..., TYPE = E` is a
+syntax error on MI. The SQLFlow login is `db_owner` but holds no server role and only `CONNECT SQL`, so it
+cannot create a SQL login either. Reproducing an external writer's access therefore needs an instance
+administrator (`dwmiadmin`, whose password is not in `sqlflow-v3-secrets`) and, for the Entra path, two
+instance-level changes: `az sql mi update --assign-identity` and `az sql mi ad-admin create`. Both are shared
+prod infrastructure: propose them, do not perform them.
 
 ### 2.1 Crosscheck the producer against what the pre flows READ (MANDATORY)
 
@@ -509,6 +560,27 @@ Three deactivated flows, run once by hand, then left in the repo as the document
   already be unique.
 - Merges beyond ~1M rows on Azure SQL: set `batchUpsert: true` (+ `batchUpsertRowCount`) or the single
   transaction aborts with "SqlTransaction has completed".
+
+### 5.6 PUSHED sources: seed arc straight from old prod over the OLDPROD linked server
+
+A pushed source (Phase 2.0) has no acquisition to replay, so the whole history is seeded server-to-server
+from old prod's arc table via the `OLDPROD` linked server on the MI, the same route Phase 5.3 uses for the
+fara-dat archive. Old prod is an Azure SQL Database and the new estate a Managed Instance, so there is no
+backup/restore path, and a client-side bulk copy bottlenecks on the operator's link.
+
+- Carry the surrogate PK across verbatim under `SET IDENTITY_INSERT`, so new arc is row-for-row identical to
+  old arc and anything downstream holding that key still resolves. `IDENTITY_INSERT` is session scoped: the
+  whole windowed loop must run on ONE connection.
+- Create the target's CLUSTERED PK before the load (ascending identity inserts append cheaply) but build the
+  nonclustered merge-key index AFTER it, or every insert becomes a random one.
+- Window on the PK (2-4M rows), with a `NOT EXISTS` anti-join per window so an interrupted run resumes.
+- Do NOT bother seeding the new staging table. The staging table is a receive buffer, not a consumer contract:
+  its content is already fully represented in arc, the upstream writer refills it after cutover, and (unlike
+  arc) there is no linked server to the old PRE database, only to the old DWH. Say so in the flow comment
+  rather than leaving it looking like an oversight.
+- Old prod keeps merging until cutover, so the seed is a snapshot with a small recent tail missing. That tail
+  lands on the first V3 fire after cutover, because the merge key is unique and re-asserting a row is a no-op.
+  Record the snapshot date and count.
 
 ---
 
