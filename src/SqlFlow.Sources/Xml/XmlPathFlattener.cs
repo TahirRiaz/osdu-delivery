@@ -268,10 +268,10 @@ public sealed class XmlPathFlattener
         return sb.ToString();
     }
 
-    private static string TextOf(XElement element) => element.Value.Trim();
+    private string TextOf(XElement element) => _config.TrimText ? element.Value.Trim() : element.Value;
 
     /// <summary>The element's own direct text (and CDATA), excluding descendant elements' text. For mixed content.</summary>
-    private static string DirectText(XElement element)
+    private string DirectText(XElement element)
     {
         var sb = new StringBuilder();
         foreach (var node in element.Nodes())
@@ -282,7 +282,7 @@ public sealed class XmlPathFlattener
             }
         }
 
-        return sb.ToString().Trim();
+        return _config.TrimText ? sb.ToString().Trim() : sb.ToString();
     }
 
     /// <summary>

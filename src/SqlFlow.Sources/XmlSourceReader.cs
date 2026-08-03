@@ -136,6 +136,7 @@ public sealed class XmlSourceReader : FileSourceReaderBase, IFlattenIntrospector
             JoinSeparator = meta.JoinSeparator,
             IncludeAttributes = meta.IncludeAttributes,
             AttributePrefix = meta.AttributePrefix ?? "@",
+            TrimText = meta.TrimText,
         };
     }
 

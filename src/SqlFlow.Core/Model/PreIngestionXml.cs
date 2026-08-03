@@ -71,6 +71,13 @@ public sealed record PreIngestionXml : IFlowMetadata
     /// <summary>Strip namespace prefixes from element/attribute names (default true).</summary>
     public bool StripNamespacePrefixes { get; init; } = true;
 
+    /// <summary>
+    /// Trim surrounding whitespace from every element's text (default true). Set <c>trimText: "false"</c> when the
+    /// whitespace is part of the value rather than document indentation, e.g. a rendered label whose leading space
+    /// a downstream contract depends on.
+    /// </summary>
+    public bool TrimText { get; init; } = true;
+
     /// <summary>Expected number of columns; 0 disables the check.</summary>
     public int ExpectedColumnCount { get; init; }
 
@@ -170,6 +177,7 @@ public sealed record PreIngestionXml : IFlowMetadata
             IncludeAttributes = o.GetBool("includeAttributes", true),
             AttributePrefix = o.GetString("attributePrefix", "@"),
             StripNamespacePrefixes = o.GetBool("stripNamespacePrefixes", true),
+            TrimText = o.GetBool("trimText", true),
             ExpectedColumnCount = o.GetInt("expectedColumnCount", 0),
             IncludeFileLineNumber = o.GetBool("includeFileLineNumber", false),
             ShowPathWithFileName = o.GetBool("showPathWithFileName", false),

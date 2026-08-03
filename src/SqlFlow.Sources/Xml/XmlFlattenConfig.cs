@@ -56,6 +56,14 @@ public sealed record XmlFlattenConfig
     /// <summary>Repeating-element paths to explode: each element becomes its own output row. Multiple paths cross-product.</summary>
     public IReadOnlyList<string> ExplodePaths { get; init; } = [];
 
+    /// <summary>
+    /// Trim surrounding whitespace from every element's text (the default). Turn it OFF when the whitespace is
+    /// part of the value: a source whose text is a rendered label can carry a deliberate leading space, and a
+    /// downstream contract built on that label then depends on it surviving. Trimming is the right default for
+    /// XML, where indentation is not data, so this is opt-out rather than opt-in.
+    /// </summary>
+    public bool TrimText { get; init; } = true;
+
     /// <summary>Schema-evolution aliases: a normalized source path mapped to the output column it should feed.</summary>
     public IReadOnlyDictionary<string, string> PathAliasColumns { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
