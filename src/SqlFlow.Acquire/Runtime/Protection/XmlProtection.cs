@@ -43,8 +43,12 @@ internal static class XmlProtection
         }
 
         // Keep the declaration when the payload carried one; SaveOptions.DisableFormatting preserves whitespace.
+        //
+        // The writer MUST report UTF-8. XDocument.Save stamps the writer's own encoding into the declaration, and a
+        // plain StringWriter reports UTF-16, so the saved text would announce encoding="utf-16" while the bytes
+        // below are UTF-8 - a document every strict parser rejects with "no Unicode byte order mark".
         var builder = new StringBuilder();
-        using (var writer = new StringWriter(builder, System.Globalization.CultureInfo.InvariantCulture))
+        using (var writer = new Utf8StringWriter(builder))
         {
             document.Save(writer, SaveOptions.DisableFormatting);
         }
@@ -143,4 +147,12 @@ internal static class XmlProtection
         ProtectPath.Kind.Wildcard => true,
         _ => false,
     };
+
+    /// <summary>A <see cref="StringWriter"/> that reports UTF-8, so the declaration XDocument.Save writes matches
+    /// the UTF-8 bytes the protected payload is actually landed as.</summary>
+    private sealed class Utf8StringWriter(StringBuilder builder)
+        : StringWriter(builder, System.Globalization.CultureInfo.InvariantCulture)
+    {
+        public override Encoding Encoding => Encoding.UTF8;
+    }
 }

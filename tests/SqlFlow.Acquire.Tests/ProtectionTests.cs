@@ -433,6 +433,30 @@ public sealed class ProtectionTests
     }
 
     [Fact]
+    public void Xml_KeepsTheDeclarationConsistentWithTheUtf8_BytesItLands()
+    {
+        // The protected payload is written as UTF-8, so a declaration announcing anything else makes the landed
+        // file unparseable ("There is no Unicode byte order mark. Cannot switch to Unicode") even though its
+        // content is correct. Saving through a writer that reports UTF-16 is exactly how that happens.
+        const string xml = """
+            <?xml version="1.0" encoding="utf-8"?><responses><response><id>1</id><email>kari@example.no</email></response></responses>
+            """;
+        var protector = Protector(new AcquireProtectRule { Path = "responses.response.email", Action = AcquireProtectAction.Remove });
+
+        var bytes = protector.Apply(Encoding.UTF8.GetBytes(xml), "xml");
+        var result = Encoding.UTF8.GetString(bytes);
+
+        Assert.Contains("encoding=\"utf-8\"", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("utf-16", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("kari@example.no", result, StringComparison.Ordinal);
+
+        // The decisive check: a strict reader over the landed BYTES accepts them.
+        using var stream = new MemoryStream(bytes);
+        var reloaded = System.Xml.Linq.XDocument.Load(stream);
+        Assert.Equal("responses", reloaded.Root!.Name.LocalName);
+    }
+
+    [Fact]
     public void Xml_InvalidPayload_Throws()
     {
         var protector = Protector(new AcquireProtectRule { Path = "a.b", Action = AcquireProtectAction.Remove });
