@@ -227,6 +227,66 @@ public sealed class ScheduleApiTests
 
     [SkippableFact]
     [Trait("Category", "Integration")]
+    public async Task RunScheduleNow_WithABatchFilter_FiresOnlyThatBatchsMembers()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var alphaOne = flowName + "_a1";
+        var alphaTwo = flowName + "_a2";
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            // Three members across two batches: the unlabelled flow (the default batch) and two carrying "alpha".
+            await SeedActivePipeline(cs, repoId, flowName);
+            await SeedBatchedPipeline(cs, repoId, alphaOne, "alpha");
+            await SeedBatchedPipeline(cs, repoId, alphaTwo, "alpha");
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["operate"]);
+
+            Guid scheduleId;
+            using (var create = await PostAsync(client, token, "/api/v1/schedules",
+                new CreateScheduleRequest(repoId, [flowName, alphaOne, alphaTwo], "0 6 1 1 *", null, "UTC", true)))
+            {
+                Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+                var created = await create.Content.ReadFromJsonAsync<ScheduleCreated>();
+                Assert.NotNull(created);
+                scheduleId = created.Id;
+            }
+
+            // ?batch=alpha narrows the fire to the two labelled members. The parameter rides on the query string of a
+            // POST with no body, exactly as the run board sends it, so this also pins the binding: an array parameter
+            // that fell back to body binding would arrive null and quietly fire the whole schedule.
+            using (var run = await PostAsync(client, token, $"/api/v1/schedules/{scheduleId}/run?batch=alpha", null))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, run.StatusCode);
+                var accepted = await run.Content.ReadFromJsonAsync<ScheduleRunAccepted>();
+                Assert.NotNull(accepted);
+                Assert.Equal(2, accepted.MemberCount);
+                Assert.NotNull(accepted.GroupId);
+            }
+
+            // Only the alpha flows were enqueued; the default-batch member of the same schedule stayed put.
+            var runs = await GetJsonAsync<PagedResult<RunSummaryDto>>(
+                client, token, $"/api/v1/runs?repoId={repoId}&pageSize=200");
+            Assert.Contains(runs.Items, r => r.FlowName == alphaOne);
+            Assert.Contains(runs.Items, r => r.FlowName == alphaTwo);
+            Assert.DoesNotContain(runs.Items, r => r.FlowName == flowName);
+
+            // A batch no member carries is a 409, not a silent whole-schedule fire.
+            using var unmatched = await PostAsync(client, token, $"/api/v1/schedules/{scheduleId}/run?batch=nosuch", null);
+            Assert.Equal(HttpStatusCode.Conflict, unmatched.StatusCode);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
     public async Task Scheduler_FiresADueSchedule_EnqueuingARunForThePipeline()
     {
         var cs = CatalogTestDb.Require();
@@ -484,6 +544,31 @@ public sealed class ScheduleApiTests
             RepoId = repoId,
             Name = flowName,
             Kind = "file",
+            RelativePath = "flows/" + flowName + ".flow.yaml",
+            ContentHash = new string('0', 64),
+            Yaml = "name: " + flowName + "\n",
+            DefinitionJson = "{}",
+            Active = true,
+            Wave = 0,
+            FirstSeenUtc = now,
+            LastSeenUtc = now,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Adds one more active flow to a repo already seeded by <see cref="SeedActivePipeline"/>, carrying a
+    /// batch label so a fire can be narrowed to it.</summary>
+    private static async Task SeedBatchedPipeline(string cs, Guid repoId, string flowName, string batch)
+    {
+        var now = DateTime.UtcNow;
+        await using var db = CatalogDatabase.Create(cs);
+        db.Pipelines.Add(new CatalogPipeline
+        {
+            Id = CatalogIdentity.Pipeline(repoId, flowName),
+            RepoId = repoId,
+            Name = flowName,
+            Kind = "file",
+            Batch = batch,
             RelativePath = "flows/" + flowName + ".flow.yaml",
             ContentHash = new string('0', 64),
             Yaml = "name: " + flowName + "\n",

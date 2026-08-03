@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
@@ -297,7 +298,10 @@ public static class ScheduleEndpoints
     /// <para>
     /// The optional <c>batch</c> query parameter narrows the fire to members carrying that <c>batch:</c> tag: "run the
     /// nightly, but only the small tables". It may be repeated (<c>?batch=small&amp;batch=medium</c>) to run several
-    /// batches at once, and can only ever select a subset of the schedule's own members.
+    /// batches at once, and can only ever select a subset of the schedule's own members. It carries an explicit
+    /// <see cref="FromQueryAttribute"/> because minimal-API binding only infers an array parameter as a query
+    /// collection on methods that cannot carry a body; on this POST an uninferred <c>string[]</c> would be read from
+    /// the (absent) JSON body and silently bind to null, firing the whole schedule instead of the chosen batches.
     /// </para>
     /// <para>
     /// <c>chain=false</c> keeps the fire to THIS schedule: the schedules chained behind it are marked as having
@@ -307,7 +311,7 @@ public static class ScheduleEndpoints
     /// Answers 202 with the run (and group) reference, 404 for an unknown schedule, and 409 when nothing is runnable.
     /// </summary>
     private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
-        Guid id, string[]? batch, DateTime? from, DateTime? to, bool? chain,
+        Guid id, [FromQuery] string[]? batch, DateTime? from, DateTime? to, bool? chain,
         CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
     {
         var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
