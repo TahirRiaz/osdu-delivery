@@ -170,10 +170,12 @@ public sealed class AcquireEngine
                 {
                     foreach (var context in contexts)
                     {
+                        // An item that does not fan out over the keyed entity (a register or lookup endpoint
+                        // alongside the per-entity ones) simply has no watermark to receive. That a flow binds the
+                        // key SOMEWHERE is checked up front, so skipping here cannot hide a misconfiguration.
                         if (!context.TryGetString(keyVar, out var entity))
                         {
-                            throw new SqlFlowException(
-                                $"The watermark is keyed by '{keyVar}', but this flow's fan-out never binds that variable, so no entity can be matched to a resume point.");
+                            continue;
                         }
 
                         var resume = watermarkByEntity.TryGetValue(entity, out var value) ? value : null;

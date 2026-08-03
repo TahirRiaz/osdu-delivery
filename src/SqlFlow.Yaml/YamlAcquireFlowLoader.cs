@@ -64,6 +64,25 @@ public sealed class YamlAcquireFlowLoader
             Params = MapParams(y.Params, source),
         };
 
+        // A per-entity watermark is matched against a fan-out variable, so some item must actually bind that
+        // variable. Checking it here means a typo fails validation instead of silently leaving every entity on its
+        // seed and re-fetching the full window on every scheduled run. Items that do NOT fan out over the entity
+        // are fine and simply receive nothing.
+        if (flow.Incremental is { KeyVariable: { } keyVariable })
+        {
+            var bound = flow.Items.Any(item => item.Source.Iterations.Any(iteration =>
+                string.Equals(iteration.Variable, keyVariable, StringComparison.Ordinal)
+                || iteration.IdBindings.ContainsKey(keyVariable)
+                || string.Equals(iteration.FromVariable, keyVariable, StringComparison.Ordinal)
+                || string.Equals(iteration.ToVariable, keyVariable, StringComparison.Ordinal)));
+
+            if (!bound)
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'incremental.keyVariable' is '{keyVariable}', but no item's 'iterate' binds that variable, so no entity could ever be matched to a resume point.");
+            }
+        }
+
         // A lake-sourced watermark reads the resume point back out of the landed file names, so the landing template
         // must actually encode it. Proving that here means a misconfigured resume fails validation, rather than
         // surfacing as a silent full re-walk on the next scheduled run.
