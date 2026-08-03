@@ -27,6 +27,10 @@ public sealed record StoredProcedureFlow
     /// <summary>The three-part procedure to execute (legacy trgDBSchSP).</summary>
     public required RelationalObject Procedure { get; init; }
 
+    /// <summary>The input parameters bound to the procedure (legacy flw.Parameter), in declaration order.
+    /// Empty for a procedure that takes none, which is the common case.</summary>
+    public IReadOnlyList<StoredProcedureParameter> Parameters { get; init; } = [];
+
     public bool OnErrorResume { get; init; } = true;     // OnErrorResume (default true)
 
     public string? PostInvokeAlias { get; init; }        // PostInvokeAlias

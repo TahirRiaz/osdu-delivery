@@ -2,7 +2,7 @@
 id: flow-sp
 title: "Stored-procedure flow (flowType: sp)"
 type: flow-reference
-summary: "flowType: sp executes one existing stored procedure (three-part name, no parameters) on a resolved SQL Server, with optional post-run invoke hook."
+summary: "flowType: sp executes one existing stored procedure (three-part name) on a resolved SQL Server, binding literal or run-time-resolved parameters, with optional post-run invoke hook."
 keywords:
   - stored procedure
   - flowtype sp
@@ -31,7 +31,7 @@ sourceRefs:
 
 # Stored-procedure flow (flowType: sp)
 
-A `flowType: sp` document executes one existing stored procedure on a resolved SQL Server, with no parameters bound (the legacy contract). Use it for orchestration steps that already live in T-SQL: mart rebuilds, statistics refreshes, archive sweeps. The document is self-contained; the `connections:` block it declares becomes an in-memory data-source store, so no control database is required. The procedure runs with `CommandType.StoredProcedure` and no command timeout, and the `EXEC` statement is captured in the run's SQL trace.
+A `flowType: sp` document executes one existing stored procedure on a resolved SQL Server. Parameters can be bound from the `procedure.parameters` block, either as literals or as SQL expressions resolved at run time (the V3 form of the legacy `flw.Parameter` table). Use it for orchestration steps that already live in T-SQL: mart rebuilds, statistics refreshes, archive sweeps. The document is self-contained; the `connections:` block it declares becomes an in-memory data-source store, so no control database is required. The procedure runs with `CommandType.StoredProcedure` and no command timeout, and the `EXEC` statement is captured in the run's SQL trace.
 
 ## Minimal example
 
@@ -77,6 +77,87 @@ sqlflow run refresh-marts.flow.yaml --log-level trace --show-sql
 | `connection` | string | exactly one of `server`/`connection` | none | An inline connection string or `${...}` reference, registered under the synthesized name `target`. |
 | `provider` | string | no | `mssql` | Provider of a direct `connection:`. Must resolve to SQL Server (`mssql` or `azdb`). |
 | `object` | string | yes | none | The three-part procedure name `Database.Schema.Procedure`. |
+| `parameters` | map | no | empty | Input parameters bound to the procedure, keyed by name (see below). |
+
+### `procedure.parameters` keys
+
+Each entry is keyed by the parameter name, with or without a leading `@` (both forms normalise to the same
+parameter, and declaring both is an error). The value is either a scalar shorthand for a literal
+(`BatchSize: 5000`) or a map:
+
+| Key | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `selectExp` | string | exactly one of `selectExp`/`value` | none | A scalar SQL query evaluated immediately before the procedure runs; its single value is bound as the parameter. |
+| `value` | scalar | exactly one of `selectExp`/`value` | none | A literal value, bound as-is. |
+| `server` | string | no | the procedure's server | A name declared under `connections:` to evaluate `selectExp` on, for a cross-server lookup (legacy `ParamAltServer`). |
+| `prefetch` | bool | no | `false` | Resolve this parameter before the others so later `selectExp` queries can reference its value as `@Name` (legacy `PreFetch`). |
+| `default` | scalar | no | none | Value to bind when `selectExp` yields NULL or no row (legacy `Defaultvalue`); without it the parameter binds `NULL`. |
+
+Unknown keys inside a parameter are rejected at parse time. This is deliberate: the document deserializer
+ignores unmatched properties elsewhere, so a typo like `select_exp` would otherwise be silently dropped and the
+run would fail inside SQL Server with a missing-parameter error.
+
+## Run-time values
+
+The point of `selectExp` is that the value is not known when the YAML is written. A watermark is the common
+case: resolve the newest row already loaded, and pass it to the procedure as the incremental low-water mark.
+
+```yaml
+flowType: sp
+name: stage-fact-validation
+
+connections:
+  dwh: ${env:SQLFLOW_DW}
+
+procedure:
+  server: dwh
+  object: DW.arc.Stage_Fact_Validation
+  parameters:
+    UpdatedDate_DW:
+      selectExp: "SELECT ISNULL(MAX(UpdatedDate_DW),'1900-01-01') FROM [edw].[Fact_Validation]"
+```
+
+Each resolved value is logged at Info as `parameter.resolve` and the query itself is captured in the SQL
+trace, so a run record shows both the expression and the value it produced.
+
+Parameters can build on each other. A `prefetch: true` parameter resolves first, and any later `selectExp`
+that names it as `@Name` gets it bound as a SQL parameter (only queries that actually mention it, so no query
+has to declare parameters it does not use):
+
+```yaml
+  parameters:
+    Cutoff:
+      selectExp: SELECT MAX(LoadDate) FROM stg.Control
+      prefetch: true
+    RowLimit:
+      selectExp: SELECT COUNT(*) FROM stg.Queue WHERE LoadDate <= @Cutoff
+```
+
+## Row counts from OUTPUT parameters
+
+If the procedure declares any OUTPUT parameter named `@Fetched`, `@Inserted`, `@Updated`, or `@Deleted`, it is
+bound automatically and read back into the run's row counts, which is how the legacy engine populated
+`flw.SysLog`. The declared set is read from the catalog (`sys.parameters`) rather than assumed, so binding one
+the procedure does not declare can never fail the call, and a procedure declaring none is unaffected.
+
+```sql
+CREATE PROCEDURE arc.Stage_Fact_Validation
+    @UpdatedDate_DW DATETIME,
+    @Fetched INT = 0 OUTPUT,
+    @Inserted INT = 0 OUTPUT
+AS
+BEGIN
+    ...
+END;
+```
+
+A run against that procedure logs `procedure.stats` and carries the counts on both the result and the run
+record:
+
+```
+INFO  parameter.resolve   @UpdatedDate_DW = 2026-08-03 01:23:03
+INFO  procedure.stats     45745 fetched, 45745 inserted, 0 updated, 0 deleted
+```
 
 ## Key details
 
@@ -156,7 +237,7 @@ Default `true`. Consumed by full-mode batch execution: in a stored-procedure bat
 
 Implemented by src/SqlFlow.SqlServer/StoredProcedures/StoredProcedureFlowRunner.cs:
 
-- The server alias is resolved through the connection registry, then the procedure runs as `CommandType.StoredProcedure` with `CommandTimeout = 0` (no timeout) and no parameters bound.
+- The server alias is resolved through the connection registry, every declared parameter is resolved (prefetched ones first), then the procedure runs as `CommandType.StoredProcedure` with `CommandTimeout = 0` (no timeout).
 - The SQL trace records one step, `procedure.exec`, with the text `EXEC` followed by the procedure's bracketed, `]`-escaped three-part name and a semicolon, for example `EXEC [DW].[dbo].[usp_RefreshMarts];`. The trace is captured unconditionally and the result carries it on success and on failure.
 - The runner also builds an `IngestionRunRecord` for the run log (`FlowType` `sp`, zero row counts, `Process` `-->{server}.[Database].[Schema].[Object]`); the without-database CLI path wires a no-op run log, so this record is built and then discarded, not written to `run.json` or the shadow catalog. Full mode's control-database host persists it as one `flw.SysLog` row instead.
 - Failures (other than cancellation) never throw; the runner returns a failed result carrying the original error message, and a run-log write failure never masks the run error.

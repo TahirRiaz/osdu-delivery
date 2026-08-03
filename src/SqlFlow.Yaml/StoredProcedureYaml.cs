@@ -32,4 +32,18 @@ internal sealed class StoredProcedureTargetYaml
     public string? Provider { get; set; }
 
     public string? Object { get; set; }
+
+    /// <summary>The procedure's input parameters, keyed by name (with or without a leading '@'). Each value is
+    /// either a scalar shorthand (a literal value) or a map with 'selectExp'/'value'/'server'/'prefetch'/
+    /// 'default' keys; the loader disambiguates.</summary>
+    public Dictionary<string, object>? Parameters { get; set; }
+}
+
+internal sealed class StoredProcedureParameterYaml
+{
+    public string? SelectExp { get; set; }
+    public object? Value { get; set; }
+    public string? Server { get; set; }
+    public bool? Prefetch { get; set; }
+    public object? Default { get; set; }
 }

@@ -28,9 +28,11 @@ public sealed record StoredProcedureDocument
 }
 
 /// <summary>
-/// Loads a stored-procedure flow (one existing procedure executed on a resolved SQL Server, no parameters
-/// bound, the legacy contract) from YAML. YamlDotNet handles the grammar; this class is the mapping/validation
-/// layer that turns the parsed document into a validated <see cref="StoredProcedureDocument"/>.
+/// Loads a stored-procedure flow (one existing procedure executed on a resolved SQL Server) from YAML.
+/// YamlDotNet handles the grammar; this class is the mapping/validation layer that turns the parsed document
+/// into a validated <see cref="StoredProcedureDocument"/>. Input parameters are bound from the
+/// <c>procedure.parameters</c> block, either as literals or as scalar queries resolved at run time, which is
+/// the V3 form of the legacy flw.Parameter table.
 /// </summary>
 public sealed class YamlStoredProcedureFlowLoader
 {
@@ -96,6 +98,7 @@ public sealed class YamlStoredProcedureFlowLoader
 
         var servicePrincipals = YamlInvokeParts.MapServicePrincipals(y.ServicePrincipals, source);
         var invokes = YamlInvokeParts.MapInvokes(y.Invokes, servicePrincipals, source);
+        var parameters = MapParameters(procedureYaml.Parameters, connections, source);
 
         var flow = new StoredProcedureFlow
         {
@@ -105,6 +108,7 @@ public sealed class YamlStoredProcedureFlowLoader
             Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Server = server,
             Procedure = YamlDocumentParts.ParseQualifiedObject(raw, "procedure.object", source),
+            Parameters = parameters,
             OnErrorResume = y.OnErrorResume ?? true,
             PostInvokeAlias = YamlInvokeParts.ResolveHookAlias(y.PostInvoke, "postInvoke", invokes, source),
             Description = YamlDocumentParts.NullIfBlank(y.Description),
@@ -117,5 +121,138 @@ public sealed class YamlStoredProcedureFlowLoader
             Invokes = invokes.Values.ToList(),
             ServicePrincipals = servicePrincipals.Values.ToList(),
         };
+    }
+
+    /// <summary>
+    /// Maps the <c>procedure.parameters</c> block. Each entry is either a scalar shorthand (the value is a
+    /// literal) or a map declaring <c>selectExp</c>/<c>value</c>/<c>server</c>/<c>prefetch</c>/<c>default</c>.
+    /// Declaration order is preserved so prefetched parameters resolve in a predictable sequence.
+    /// </summary>
+    private static IReadOnlyList<StoredProcedureParameter> MapParameters(
+        Dictionary<string, object>? yaml, Dictionary<string, DataSource> connections, string source)
+    {
+        if (yaml is null || yaml.Count == 0)
+        {
+            return [];
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<StoredProcedureParameter>(yaml.Count);
+
+        foreach (var (rawName, rawValue) in yaml)
+        {
+            // Legacy stored the name with its '@'; both forms are accepted and normalised to the bare name so
+            // '@Foo' and 'Foo' cannot be declared as two different parameters.
+            var name = (YamlDocumentParts.NullIfBlank(rawName) ?? string.Empty).TrimStart('@').Trim();
+            if (name.Length == 0)
+            {
+                throw new FlowValidationException($"{source}: a 'procedure.parameters' entry has an empty name.");
+            }
+
+            if (!seen.Add(name))
+            {
+                throw new FlowValidationException(
+                    $"{source}: 'procedure.parameters' declares '{name}' more than once (the leading '@' is optional and ignored).");
+            }
+
+            result.Add(MapParameter(name, rawValue, connections, source));
+        }
+
+        return result;
+    }
+
+    private static StoredProcedureParameter MapParameter(
+        string name, object? rawValue, Dictionary<string, DataSource> connections, string source)
+    {
+        // Scalar shorthand: `MyParam: 42` is the literal form, equivalent to `MyParam: { value: 42 }`.
+        if (rawValue is not IDictionary<object, object> map)
+        {
+            return new StoredProcedureParameter { Name = name, Value = rawValue };
+        }
+
+        var dto = new StoredProcedureParameterYaml();
+        foreach (var (k, v) in map)
+        {
+            switch (Convert.ToString(k, System.Globalization.CultureInfo.InvariantCulture)?.Trim().ToLowerInvariant())
+            {
+                case "selectexp": dto.SelectExp = Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture); break;
+                case "value": dto.Value = v; break;
+                case "server": dto.Server = Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture); break;
+                case "prefetch": dto.Prefetch = ParseBool(v, name, source); break;
+                case "default": dto.Default = v; break;
+                default:
+                    throw new FlowValidationException(
+                        $"{source}: parameter '{name}' has unknown key '{k}'. Supported keys are selectExp, value, server, prefetch, default.");
+            }
+        }
+
+        var selectExp = YamlDocumentParts.NullIfBlank(dto.SelectExp);
+        var hasValue = dto.Value is not null;
+
+        // Silently accepting neither would bind DBNull and fail deep inside SQL Server; accepting both would
+        // make the precedence a guess. Both are configuration errors worth catching at parse time.
+        if (selectExp is null && !hasValue)
+        {
+            throw new FlowValidationException(
+                $"{source}: parameter '{name}' must declare either 'selectExp' (a scalar query resolved at run time) or 'value' (a literal).");
+        }
+
+        if (selectExp is not null && hasValue)
+        {
+            throw new FlowValidationException(
+                $"{source}: parameter '{name}' declares both 'selectExp' and 'value'; use exactly one.");
+        }
+
+        var server = YamlDocumentParts.NullIfBlank(dto.Server);
+        if (server is not null)
+        {
+            if (selectExp is null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: parameter '{name}' sets 'server' but has no 'selectExp'; a literal value has nothing to evaluate.");
+            }
+
+            if (!connections.ContainsKey(server))
+            {
+                throw new FlowValidationException(
+                    $"{source}: parameter '{name}' names connection '{server}', which is not declared in 'connections'.");
+            }
+
+            YamlDocumentParts.RequireSqlServerConnection(
+                connections, server, $"procedure.parameters.{name}.server", "a stored-procedure parameter query's server", source);
+        }
+
+        if (dto.Prefetch == true && selectExp is null)
+        {
+            throw new FlowValidationException(
+                $"{source}: parameter '{name}' sets 'prefetch' but has no 'selectExp'; a literal value needs no resolution order.");
+        }
+
+        return new StoredProcedureParameter
+        {
+            Name = name,
+            SelectExp = selectExp,
+            Value = dto.Value,
+            Server = server,
+            Prefetch = dto.Prefetch ?? false,
+            Default = dto.Default,
+        };
+    }
+
+    private static bool ParseBool(object? raw, string parameterName, string source)
+    {
+        if (raw is bool b)
+        {
+            return b;
+        }
+
+        var text = Convert.ToString(raw, System.Globalization.CultureInfo.InvariantCulture);
+        if (bool.TryParse(text, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new FlowValidationException(
+            $"{source}: parameter '{parameterName}' has a non-boolean 'prefetch' value '{text}'.");
     }
 }

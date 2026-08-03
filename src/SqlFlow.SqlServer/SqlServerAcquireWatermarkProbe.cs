@@ -26,6 +26,7 @@ public sealed class SqlServerAcquireWatermarkProbe : IAcquireWatermarkProbe
 
         await using var command = sql.CreateCommand();
         command.CommandText = query;
+        command.CommandTimeout = 0;
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (reader.FieldCount is not (1 or 2))
