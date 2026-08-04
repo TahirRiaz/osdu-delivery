@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using SqlFlow.Core;
@@ -444,80 +445,197 @@ public sealed class JsonFlattenEdgeCaseTests
     // ---------------------------------------------------------------------------------------------
 
     [Fact]
-    public void RecordReader_CrlfNdjson_ParsesOneRecordPerLine()
+    public async Task RecordReader_CrlfNdjson_ParsesOneRecordPerLine()
     {
-        var records = JsonRecordReader.ReadRecords(BytesEdge("{ \"id\": 1 }\r\n{ \"id\": 2 }\r\n"), "ndjson", "$", "x.ndjson").ToList();
-        Assert.Equal(2, records.Count);
+        var records = await EdgeRecords("{ \"id\": 1 }\r\n{ \"id\": 2 }\r\n", fileName: "x.ndjson");
+        Assert.Equal(2, records);
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("   \n  \t ")]
-    public void RecordReader_EmptyOrWhitespaceOnly_YieldsNoRecords(string content)
+    public async Task RecordReader_EmptyOrWhitespaceOnly_YieldsNoRecords(string content)
     {
-        var records = JsonRecordReader.ReadRecords(BytesEdge(content), "json", "$", "x.json").ToList();
-        Assert.Empty(records);
+        Assert.Equal(0, await EdgeRecords(content));
     }
 
     [Fact]
-    public void RecordReader_TopLevelScalar_YieldsNoRecords()
+    public async Task RecordReader_TopLevelScalar_YieldsNoRecords()
     {
-        var records = JsonRecordReader.ReadRecords(BytesEdge("42"), "json", "$", "x.json").ToList();
-        Assert.Empty(records);
+        Assert.Equal(0, await EdgeRecords("42"));
     }
 
     [Fact]
-    public void RecordReader_TopLevelMixedArray_FansOutEveryElementIncludingScalars()
+    public async Task RecordReader_TopLevelMixedArray_FansOutEveryElementIncludingScalars()
     {
-        // ExpandRoot yields each array element; non-object elements are still emitted (and would flatten away).
-        var records = JsonRecordReader.ReadRecords(BytesEdge("[1, { \"id\": 2 }, \"s\"]"), "json", "$", "x.json").ToList();
-        Assert.Equal(3, records.Count);
+        // Every array element is a record; non-object elements are still emitted (and would flatten away).
+        Assert.Equal(3, await EdgeRecords("[1, { \"id\": 2 }, \"s\"]"));
     }
 
     [Fact]
-    public void RecordReader_RootPathToObject_YieldsSingleRecord()
+    public async Task RecordReader_RootPathToObject_YieldsSingleRecord()
     {
-        var records = JsonRecordReader.ReadRecords(BytesEdge("{ \"data\": { \"x\": 1 } }"), "json", "$.data", "x.json").ToList();
-        Assert.Single(records);
+        Assert.Equal(1, await EdgeRecords("{ \"data\": { \"x\": 1 } }", "$.data"));
     }
 
     [Fact]
-    public void RecordReader_RootPathArrayIndex_SelectsTheIndexedElement()
+    public async Task RecordReader_RootPathArrayIndex_SelectsTheIndexedElement()
     {
-        var records = JsonRecordReader.ReadRecords(BytesEdge("{ \"d\": [ { \"a\": 1 }, { \"a\": 2 } ] }"), "json", "$.d[1]", "x.json").ToList();
-        Assert.Single(records);
+        Assert.Equal(1, await EdgeRecords("{ \"d\": [ { \"a\": 1 }, { \"a\": 2 } ] }", "$.d[1]"));
     }
 
     [Fact]
-    public void RecordReader_RootPathNotFound_YieldsNoRecords()
+    public async Task RecordReader_RootPathNotFound_YieldsNoRecords()
     {
-        var records = JsonRecordReader.ReadRecords(BytesEdge("{ \"a\": 1 }"), "json", "$.missing", "x.json").ToList();
-        Assert.Empty(records);
+        Assert.Equal(0, await EdgeRecords("{ \"a\": 1 }", "$.missing"));
     }
 
     [Fact]
-    public void RecordReader_RootPathNonNumericIndex_Throws()
+    public async Task RecordReader_RootPathNonNumericIndex_Throws()
     {
-        var ex = Assert.Throws<SqlFlowException>(
-            () => JsonRecordReader.ReadRecords(BytesEdge("{ \"d\": [1] }"), "json", "$.d[x]", "x.json").ToList());
+        var ex = await Assert.ThrowsAsync<SqlFlowException>(() => EdgeRecords("{ \"d\": [1] }", "$.d[x]"));
         Assert.Contains("rootPath", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void RecordReader_TrailingCommaAndComments_AreTolerated()
+    public async Task RecordReader_TrailingCommaAndComments_AreTolerated()
     {
-        Assert.Single(JsonRecordReader.ReadRecords(BytesEdge("{ \"id\": 1, }"), "json", "$", "x.json").ToList());
-        Assert.Single(JsonRecordReader.ReadRecords(BytesEdge("{ \"id\": 1 /* note */ }"), "json", "$", "x.json").ToList());
+        Assert.Equal(1, await EdgeRecords("{ \"id\": 1, }"));
+        Assert.Equal(1, await EdgeRecords("{ \"id\": 1 /* note */ }"));
     }
 
     [Fact]
-    public void RecordReader_SingleMalformedDocument_ThrowsWithFirstLineNumber()
+    public async Task RecordReader_SingleMalformedDocument_ThrowsWithFirstLineNumber()
     {
-        // A single malformed line is not a valid whole document, so the reader falls back to line mode and
-        // surfaces the parse error against line 1.
-        var ex = Assert.Throws<SqlFlowException>(
-            () => JsonRecordReader.ReadRecords(BytesEdge("{ oops"), "json", "$", "bad.json").ToList());
+        var ex = await Assert.ThrowsAsync<SqlFlowException>(() => EdgeRecords("{ oops", fileName: "bad.json"));
         Assert.Contains("line 1", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RecordReader_LargeTopLevelArray_ReadsOnlyAWindowAheadOfTheCurrentRecord()
+    {
+        // The point of the streaming reader: a large array of records is never materialized, so the first
+        // record is available after a bounded read and memory does not scale with the file. Measured by how
+        // much of the stream has actually been consumed rather than by heap sampling, so it is deterministic.
+        var json = new StringBuilder("[");
+        for (var i = 0; i < 20_000; i++)
+        {
+            if (i > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(CultureInfo.InvariantCulture, $$"""{"id":{{i}},"name":"record number {{i}} with some padding text"}""");
+        }
+
+        json.Append(']');
+        var payload = BytesEdge(json.ToString());
+        Assert.True(payload.Length > 1_000_000, "the sample must be far larger than the reader's buffer");
+
+        using var counting = new CountingStream(payload);
+        var records = 0;
+        long readAtFirstRecord = 0;
+        await foreach (var record in JsonRecordReader.ReadRecordsAsync(counting, "$", "big.json"))
+        {
+            _ = record.ValueKind;
+            if (records == 0)
+            {
+                readAtFirstRecord = counting.BytesRead;
+            }
+
+            records++;
+        }
+
+        Assert.Equal(20_000, records);
+        Assert.True(
+            readAtFirstRecord <= 256 * 1024,
+            $"the first record should arrive after a bounded read, but {readAtFirstRecord} of {payload.Length} bytes were consumed");
+    }
+
+    [Fact]
+    public async Task RecordReader_RecordLargerThanTheBuffer_GrowsToFitIt()
+    {
+        // One value that dwarfs the initial window must still be read: the buffer grows for exactly that case.
+        var big = new string('x', 300_000);
+        var json = $$"""[ { "id": 1, "blob": "{{big}}" }, { "id": 2, "blob": "small" } ]""";
+
+        using var stream = new MemoryStream(BytesEdge(json));
+        var lengths = new List<int>();
+        await foreach (var record in JsonRecordReader.ReadRecordsAsync(stream, "$", "big-value.json"))
+        {
+            lengths.Add(record.GetProperty("blob").GetString()!.Length);
+        }
+
+        Assert.Equal([300_000, 5], lengths);
+    }
+
+    [Fact]
+    public async Task RecordReader_NdjsonWithARootPath_NavigatesEveryLine()
+    {
+        // Several top-level values, each an envelope: the root path is applied to each one independently.
+        var ndjson = "{ \"data\": [ { \"id\": 1 }, { \"id\": 2 } ] }\n{ \"data\": [ { \"id\": 3 } ] }\n";
+        Assert.Equal(3, await EdgeRecords(ndjson, "$.data", "x.ndjson"));
+    }
+
+    /// <summary>Counts the records the streaming reader yields, consuming each within the iteration step.</summary>
+    private static async Task<int> EdgeRecords(string content, string rootPath = "$", string fileName = "x.json")
+    {
+        using var stream = new MemoryStream(BytesEdge(content));
+        var count = 0;
+        await foreach (var record in JsonRecordReader.ReadRecordsAsync(stream, rootPath, fileName))
+        {
+            _ = record.ValueKind;
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>A forward-only stream that reports how many bytes a reader has actually pulled from it.</summary>
+    private sealed class CountingStream(byte[] data) : Stream
+    {
+        private readonly MemoryStream _inner = new(data);
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = _inner.Read(buffer, offset, count);
+            BytesRead += read;
+            return read;
+        }
+
+        public override void Flush() => _inner.Flush();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------

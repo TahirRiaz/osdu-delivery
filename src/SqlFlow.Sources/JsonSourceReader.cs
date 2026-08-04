@@ -70,8 +70,9 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     {
         var meta = PreIngestionJsn.FromSource(source);
         var flattener = new JsonPathFlattener(BuildFlattenConfig(meta));
-        var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
-        return DiscoverColumns(JsonRecordReader.ReadRecords(data, source.Type, meta.RootPath, file.Name), flattener);
+        await using var stream = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
+        return await DiscoverColumnsAsync(JsonRecordReader.ReadRecordsAsync(stream, meta.RootPath, file.Name, ct), flattener)
+            .ConfigureAwait(false);
     }
 
     protected override async IAsyncEnumerable<FileLine> ReadLinesAsync(
@@ -79,14 +80,20 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     {
         var meta = PreIngestionJsn.FromSource(source);
         var flattener = new JsonPathFlattener(BuildFlattenConfig(meta));
-        var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
 
         // A file's column order is fixed by the discovery the schema pass already ran and cached, so the data
-        // pass is one download and one parse: the records stream out of the in-memory bytes exactly once, and
-        // the cells below line up positionally with ReadColumnNamesAsync. Only a standalone read with no prior
-        // schema pass on this spec discovers the order here, from a first parse of the same bytes.
-        var columns = CachedRawColumnNames(source, file)
-            ?? DiscoverColumns(JsonRecordReader.ReadRecords(data, source.Type, meta.RootPath, file.Name), flattener);
+        // pass is one read of the file: the records stream past exactly once, and the cells below line up
+        // positionally with ReadColumnNamesAsync. Only a standalone read with no prior schema pass on this spec
+        // discovers the order here, which costs one extra pass over the file (a separate open, since the read is
+        // streaming and forward-only - nothing is retained to re-read).
+        var columns = CachedRawColumnNames(source, file);
+        if (columns is null)
+        {
+            await using var discovery = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
+            columns = await DiscoverColumnsAsync(JsonRecordReader.ReadRecordsAsync(discovery, meta.RootPath, file.Name, ct), flattener)
+                .ConfigureAwait(false);
+        }
+
         // Case-insensitive, matching SQL Server collation and the base pipeline's column union, so the
         // positional projection cannot desync on keys that differ only in case.
         var index = new Dictionary<string, int>(columns.Count, StringComparer.OrdinalIgnoreCase);
@@ -99,7 +106,8 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
         // per output row, while the (optional) FileLineNumber stays the source record's ordinal.
         long recordOrdinal = 0;
         long outputRow = 0;
-        foreach (var record in JsonRecordReader.ReadRecords(data, source.Type, meta.RootPath, file.Name))
+        await using var data = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
+        await foreach (var record in JsonRecordReader.ReadRecordsAsync(data, meta.RootPath, file.Name, ct).ConfigureAwait(false))
         {
             ct.ThrowIfCancellationRequested();
             recordOrdinal++;
@@ -180,9 +188,9 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
             }
 
             filesScanned++;
-            var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
+            await using var data = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
 
-            foreach (var document in JsonRecordReader.ReadTopLevelDocuments(data, source.Type, file.Name))
+            await foreach (var document in JsonRecordReader.ReadTopLevelDocumentsAsync(data, file.Name, ct).ConfigureAwait(false))
             {
                 if (maxRecords > 0 && documentsScanned >= maxRecords)
                 {
@@ -221,9 +229,9 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
             }
 
             filesScanned++;
-            var data = await ReadAllBytesAsync(store, file, ct).ConfigureAwait(false);
+            await using var data = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
 
-            foreach (var record in JsonRecordReader.ReadRecords(data, source.Type, rootPath, file.Name))
+            await foreach (var record in JsonRecordReader.ReadRecordsAsync(data, rootPath, file.Name, ct).ConfigureAwait(false))
             {
                 if (maxRecords > 0 && recordsScanned >= maxRecords)
                 {
@@ -329,11 +337,11 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
         };
     }
 
-    private static List<string> DiscoverColumns(IEnumerable<JsonElement> records, JsonPathFlattener flattener)
+    private static async Task<List<string>> DiscoverColumnsAsync(IAsyncEnumerable<JsonElement> records, JsonPathFlattener flattener)
     {
         var order = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var record in records)
+        await foreach (var record in records.ConfigureAwait(false))
         {
             foreach (var (name, _) in flattener.Flatten(record))
             {
@@ -345,13 +353,5 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
         }
 
         return order;
-    }
-
-    private static async Task<byte[]> ReadAllBytesAsync(IFileStore store, FileRef file, CancellationToken ct)
-    {
-        await using var stream = await store.OpenReadAsync(file, ct).ConfigureAwait(false);
-        using var buffer = new MemoryStream();
-        await stream.CopyToAsync(buffer, ct).ConfigureAwait(false);
-        return buffer.ToArray();
     }
 }

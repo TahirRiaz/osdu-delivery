@@ -194,65 +194,84 @@ public sealed class JsonFlattenerTests
     }
 
     [Fact]
-    public void RecordReader_SingleObject_YieldsOneRecord()
+    public async Task RecordReader_SingleObject_YieldsOneRecord()
     {
         // Records are valid only during iteration (the backing document is short-lived), so the kind is
         // captured inside the loop rather than after materializing the sequence.
-        var kinds = new List<JsonValueKind>();
-        foreach (var record in JsonRecordReader.ReadRecords(Bytes("""{ "id": 1 }"""), "json", "$", "x.json"))
-        {
-            kinds.Add(record.ValueKind);
-        }
+        var kinds = await RecordKinds("""{ "id": 1 }""");
 
         Assert.Single(kinds);
         Assert.Equal(JsonValueKind.Object, kinds[0]);
     }
 
     [Fact]
-    public void RecordReader_TopLevelArray_FansOutToOneRecordPerElement()
+    public async Task RecordReader_TopLevelArray_FansOutToOneRecordPerElement()
     {
-        var records = JsonRecordReader.ReadRecords(Bytes("""[ { "id": 1 }, { "id": 2 }, { "id": 3 } ]"""), "json", "$", "x.json").ToList();
+        var records = await RecordKinds("""[ { "id": 1 }, { "id": 2 }, { "id": 3 } ]""");
         Assert.Equal(3, records.Count);
     }
 
     [Fact]
-    public void RecordReader_Ndjson_ParsesOneRecordPerLineAndSkipsBlanksAndComments()
+    public async Task RecordReader_Ndjson_ParsesOneRecordPerLineAndSkipsBlanksAndComments()
     {
         var ndjson = "{ \"id\": 1 }\n\n# a comment\n{ \"id\": 2 }\n";
-        var records = JsonRecordReader.ReadRecords(Bytes(ndjson), "ndjson", "$", "x.ndjson").ToList();
+        var records = await RecordKinds(ndjson, fileName: "x.ndjson");
         Assert.Equal(2, records.Count);
     }
 
     [Fact]
-    public void RecordReader_PlainJsonThatIsActuallyNdjson_FallsBackToLineMode()
+    public async Task RecordReader_PlainJsonThatIsActuallyNdjson_ReadsEachLineAsARecord()
     {
-        // Two objects on two lines is not one valid JSON document; the reader must fall back to NDJSON.
-        var records = JsonRecordReader.ReadRecords(Bytes("{ \"id\": 1 }\n{ \"id\": 2 }\n"), "json", "$", "x.json").ToList();
+        // Two objects on two lines is not one valid JSON document; the reader treats a stream of top-level
+        // values as exactly that, so NDJSON needs no separate mode.
+        var records = await RecordKinds("{ \"id\": 1 }\n{ \"id\": 2 }\n");
         Assert.Equal(2, records.Count);
     }
 
     [Fact]
-    public void RecordReader_RootPath_NavigatesToANestedRecordArray()
+    public async Task RecordReader_RootPath_NavigatesToANestedRecordArray()
     {
         var json = """{ "meta": { "v": 1 }, "data": { "records": [ { "id": 1 }, { "id": 2 } ] } }""";
-        var records = JsonRecordReader.ReadRecords(Bytes(json), "json", "$.data.records", "x.json").ToList();
+        var records = await RecordKinds(json, "$.data.records");
         Assert.Equal(2, records.Count);
     }
 
     [Fact]
-    public void RecordReader_StripsUtf8Bom()
+    public async Task RecordReader_StripsUtf8Bom()
     {
         var withBom = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Bytes("""{ "id": 1 }""")).ToArray();
-        var records = JsonRecordReader.ReadRecords(withBom, "json", "$", "x.json").ToList();
+        using var stream = new MemoryStream(withBom);
+        var records = new List<JsonValueKind>();
+        await foreach (var record in JsonRecordReader.ReadRecordsAsync(stream, "$", "x.json"))
+        {
+            records.Add(record.ValueKind);
+        }
+
         Assert.Single(records);
     }
 
     [Fact]
-    public void RecordReader_MalformedNdjsonLine_ThrowsWithLineNumber()
+    public async Task RecordReader_MalformedNdjsonLine_ThrowsWithLineNumber()
     {
-        var ex = Assert.Throws<SqlFlowException>(
-            () => JsonRecordReader.ReadRecords(Bytes("{ \"id\": 1 }\n{ oops\n"), "ndjson", "$", "bad.ndjson").ToList());
+        var ex = await Assert.ThrowsAsync<SqlFlowException>(
+            () => RecordKinds("{ \"id\": 1 }\n{ oops\n", fileName: "bad.ndjson"));
         Assert.Contains("line 2", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Reads every record's value kind, which both counts the records and keeps to the reader's contract that
+    /// an element is valid only until the next one is requested.
+    /// </summary>
+    private static async Task<List<JsonValueKind>> RecordKinds(string content, string rootPath = "$", string fileName = "x.json")
+    {
+        using var stream = new MemoryStream(Bytes(content));
+        var kinds = new List<JsonValueKind>();
+        await foreach (var record in JsonRecordReader.ReadRecordsAsync(stream, rootPath, fileName))
+        {
+            kinds.Add(record.ValueKind);
+        }
+
+        return kinds;
     }
 
     [Fact]
