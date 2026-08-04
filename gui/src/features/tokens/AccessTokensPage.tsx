@@ -63,7 +63,7 @@ function StateBadge({ state }: { state: TokenState }) {
       data-testid="token-state"
       className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ${classes}`}
     >
-      <Icon className="size-3 shrink-0" />
+      <Icon className="size-3.5 shrink-0" />
       {state}
     </span>
   );

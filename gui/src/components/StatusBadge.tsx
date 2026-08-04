@@ -51,7 +51,7 @@ function Pill({
         toneClasses[tone],
       )}
     >
-      <Icon className={cn("size-3 shrink-0", spin && "animate-spin")} />
+      <Icon className={cn("size-3.5 shrink-0", spin && "animate-spin")} />
       {label}
     </span>
   );
@@ -102,11 +102,11 @@ export function IconBadge({
         <span
           data-testid={testId}
           className={cn(
-            "inline-flex size-5 shrink-0 items-center justify-center rounded-full",
+            "inline-flex size-5.5 shrink-0 items-center justify-center rounded-full",
             toneClasses[tone],
           )}
         >
-          <Icon className={cn("size-3 shrink-0", spin && "animate-spin")} />
+          <Icon className={cn("size-3.5 shrink-0", spin && "animate-spin")} />
           <span className="sr-only">{label}</span>
         </span>
       </TooltipTrigger>

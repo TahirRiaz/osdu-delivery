@@ -37,13 +37,13 @@ export function StatusBar() {
         {running !== undefined && running > 0
           ? (
             <>
-              <Loader2 className="size-3 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin" />
               {running} running
             </>
           )
           : (
             <>
-              <CircleCheck className="size-3" />
+              <CircleCheck className="size-3.5" />
               No active runs
             </>
           )}
@@ -54,7 +54,7 @@ export function StatusBar() {
           className="flex items-center gap-1 px-2 hover:bg-white/15"
           aria-label="Show queued runs"
         >
-          <Clock3 className="size-3" />
+          <Clock3 className="size-3.5" />
           {queued} queued
         </button>
       )}
@@ -63,13 +63,13 @@ export function StatusBar() {
           data-testid="rate-limit-banner"
           className="flex items-center gap-1 bg-warning px-2 text-warning-foreground"
         >
-          <TriangleAlert className="size-3" />
+          <TriangleAlert className="size-3.5" />
           Rate limited; live updates resume shortly
         </span>
       )}
       <span className="flex-1" />
       <span className="flex items-center gap-1 px-2">
-        <User className="size-3" />
+        <User className="size-3.5" />
         {session?.subject}
         {session?.role ? ` (${session.role})` : ""}
       </span>

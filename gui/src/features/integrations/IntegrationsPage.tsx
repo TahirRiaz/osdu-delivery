@@ -120,7 +120,7 @@ function OutcomePill({ ok, label }: { ok: boolean; label: string }) {
     <span
       className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ${ok ? "bg-success/12 text-success" : "bg-destructive/12 text-destructive"}`}
     >
-      <Icon className="size-3 shrink-0" />
+      <Icon className="size-3.5 shrink-0" />
       {label}
     </span>
   );

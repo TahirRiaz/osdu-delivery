@@ -124,7 +124,7 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
         </span>
         {startingUp && (
           <span className="flex items-center justify-end gap-1 text-xs text-warning">
-            <Loader2 className="size-3 animate-spin" />
+            <Loader2 className="size-3.5 animate-spin" />
             starting...
           </span>
         )}

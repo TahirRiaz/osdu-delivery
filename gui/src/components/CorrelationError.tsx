@@ -24,7 +24,7 @@ export function CorrelationError({ error, "data-testid": testId }: { error: ApiE
                   onClick={() => void navigator.clipboard.writeText(error.correlationId ?? "")}
                   className="rounded-sm p-0.5 hover:bg-muted hover:text-foreground"
                 >
-                  <Copy className="size-3" />
+                  <Copy className="size-3.5" />
                 </button>
               </TooltipTrigger>
               <TooltipContent>Copy correlation id</TooltipContent>

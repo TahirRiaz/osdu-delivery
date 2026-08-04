@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, CircleAlert, Info, Loader2 } from "lucide-react";
+import { ChevronDown, CircleAlert, Info, Loader2, ShieldCheck, Waypoints, Workflow } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -30,51 +31,90 @@ function MicrosoftMark() {
   );
 }
 
+/** What the product does, said once, in the panel that only wide screens have room for. */
+const CAPABILITIES: ReadonlyArray<{ icon: LucideIcon; title: string; body: string }> = [
+  {
+    icon: Workflow,
+    title: "Pipelines as code",
+    body: "Flows live as YAML in your repository, versioned and reviewed like the rest of your codebase.",
+  },
+  {
+    icon: Waypoints,
+    title: "Lineage end to end",
+    body: "Follow every table and column from the source system through to the warehouse it lands in.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Governed execution",
+    body: "Managed identity, secrets from the vault, and an audited history of every run.",
+  },
+];
+
 /**
- * The branded left column, shown only on wide screens: the white SQLFlow lockup and a short line about
- * what the product is, over a navy field carrying concentric arcs that echo the logo mark. Purely
- * decorative, so it is hidden from assistive tech and never rendered on the narrow, form-only layout.
+ * The branded left column, shown only on wide screens: the SQLFlow lockup, what the product does, and the
+ * three capabilities worth naming, over a navy field carrying concentric arcs that echo the logo mark. It
+ * carries the page on large displays, where a lone card would otherwise float in an empty background.
+ * Purely decorative, so it is hidden from assistive tech and never rendered on the narrow, form-only layout.
  */
 function BrandPanel() {
   return (
     <div
-      className="relative hidden overflow-hidden lg:flex lg:w-[46%] lg:max-w-xl lg:flex-col lg:justify-between lg:p-12"
+      className="relative hidden overflow-hidden lg:flex lg:w-[52%] lg:flex-col xl:w-[55%]"
       style={{ background: "linear-gradient(155deg, var(--brand-navy) 0%, var(--brand-navy-deep) 100%)" }}
       aria-hidden="true"
     >
-      {/* Concentric arcs echoing the logo mark, bleeding off the bottom-right corner. */}
+      {/* Concentric arcs echoing the logo mark, oversized and bleeding off the bottom-right corner so the
+          field still reads as branded on a 4K display rather than as flat navy. */}
       <svg
-        className="pointer-events-none absolute -bottom-24 -right-24 h-[32rem] w-[32rem]"
+        className="pointer-events-none absolute -bottom-[22rem] -right-[16rem] h-[58rem] w-[58rem]"
         viewBox="0 0 200 200"
         fill="none"
       >
-        {[30, 55, 80, 105].map((r, i) => (
+        {[30, 55, 80, 105, 130].map((r, i) => (
           <circle
             key={r}
             cx="100"
             cy="100"
             r={r}
             stroke="var(--brand-cream)"
-            strokeWidth="1.5"
-            strokeOpacity={0.16 - i * 0.03}
+            strokeWidth="0.75"
+            strokeOpacity={0.18 - i * 0.03}
           />
         ))}
       </svg>
+      {/* A soft light source behind the headline, so the gradient is not the only depth cue. */}
+      <div
+        className="pointer-events-none absolute -left-40 -top-40 size-[42rem] rounded-full"
+        style={{ background: "radial-gradient(circle, rgba(146,182,224,0.18) 0%, rgba(146,182,224,0) 65%)" }}
+      />
 
-      <div className="relative flex items-center gap-3">
-        <img src="/brand/logo-white.png" alt="" className="h-8 w-auto object-contain" />
+      {/* Content stays a readable column and centres itself once the panel grows past it. */}
+      <div className="relative mx-auto flex h-full w-full max-w-xl flex-col justify-center px-12 py-14 xl:px-16 xl:py-16">
+        <img src="/brand/logo-full.png" alt="" className="h-20 w-auto self-start object-contain xl:h-24" />
+
+        <div className="mt-14">
+          <h2 className="text-3xl font-semibold leading-[1.15] tracking-tight text-white xl:text-[2.5rem]">
+            Move data with confidence.
+          </h2>
+          <p className="mt-4 max-w-md text-[15px] leading-relaxed text-white/60">
+            Orchestrate ingestion, transformation, and lineage across your estate from a single control plane.
+          </p>
+
+          <ul className="mt-12 flex flex-col gap-7">
+            {CAPABILITIES.map(({ icon: Icon, title, body }) => (
+              <li key={title} className="flex gap-4">
+                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5">
+                  <Icon className="size-[18px] text-white/70" strokeWidth={1.75} />
+                </span>
+                <div>
+                  <p className="text-sm font-medium text-white/90">{title}</p>
+                  <p className="mt-1 max-w-sm text-[13px] leading-relaxed text-white/50">{body}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
-
-      <div className="relative max-w-sm">
-        <h2 className="text-2xl font-semibold leading-snug text-white">
-          Move data with confidence.
-        </h2>
-        <p className="mt-3 text-sm leading-relaxed text-white/60">
-          Orchestrate ingestion, transformation, and lineage across your estate from a single control plane.
-        </p>
-      </div>
-
-      <p className="relative text-xs text-white/40">SQLFlow control plane</p>
     </div>
   );
 }
@@ -138,21 +178,29 @@ export default function LoginPage() {
     <div className="flex min-h-screen bg-background">
       <BrandPanel />
 
-      <div className="flex flex-1 items-center justify-center p-6">
+      <div className="relative flex flex-1 flex-col items-center justify-center gap-6 p-6 sm:p-10">
+        {/* A barely-there wash behind the card, so the form column reads as lit rather than as dead space
+            on a large display. */}
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ background: "radial-gradient(60rem 40rem at 50% 40%, color-mix(in oklab, var(--primary) 7%, transparent) 0%, transparent 70%)" }}
+          aria-hidden="true"
+        />
+
+        {/* The lockup sits with the form on narrow screens, where the brand panel is hidden. The navy plaque
+            keeps the light-blue mark legible on the light theme's near-white background. */}
+        <div className="relative rounded-xl px-6 py-3.5 lg:hidden" style={{ backgroundColor: "var(--brand-navy)" }}>
+          <img src="/brand/logo-full.png" alt="SQLFlow" className="h-11 w-auto object-contain" />
+        </div>
+
         <Card
-          className="w-full max-w-sm gap-0 rounded-xl border-border/70 p-7 shadow-lg shadow-black/5"
+          className="relative w-full max-w-[25rem] gap-0 rounded-xl border-border/70 p-7 shadow-xl shadow-black/5 sm:p-8"
           data-testid="login-card"
         >
           <div className="flex flex-col gap-5">
-            {/* The lockup sits with the form on narrow screens, where the brand panel is hidden. */}
-            <div className="flex items-center gap-2.5 lg:hidden">
-              <img src="/brand/logo-icon.png" alt="" className="size-8 rounded-md object-contain" />
-              <span className="text-base font-semibold">SQLFlow</span>
-            </div>
-
             <div>
-              <h1 className="text-xl font-semibold tracking-tight">Welcome back</h1>
-              <p className="mt-1 text-[13px] text-muted-foreground">Sign in to your SQLFlow account to continue.</p>
+              <h1 className="text-[22px] font-semibold tracking-tight">Welcome back</h1>
+              <p className="mt-1.5 text-[13px] text-muted-foreground">Sign in to your SQLFlow account to continue.</p>
             </div>
 
           {sessionEndedReason && (
@@ -291,6 +339,10 @@ export default function LoginPage() {
           )}
           </div>
         </Card>
+
+        <p className="relative max-w-[25rem] text-center text-xs text-muted-foreground">
+          Trouble signing in? Your SQLFlow administrator can reset the account or issue a new one.
+        </p>
       </div>
     </div>
   );

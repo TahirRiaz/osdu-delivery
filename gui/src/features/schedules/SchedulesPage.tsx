@@ -92,7 +92,7 @@ function TriggerCell({ schedule }: { schedule: Schedule }) {
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex items-center gap-1">
-            <Link2 className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+            <Link2 className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
             <span className="text-muted-foreground">after</span>
             <Mono>{schedule.afterSchedule}</Mono>
           </span>
@@ -265,7 +265,7 @@ function CreateScheduleSheet({ onClose }: { onClose: () => void }) {
                       onClick={() => setMembers((prev) => prev.filter((f) => f !== member))}
                       className="rounded-full hover:text-destructive"
                     >
-                      <X className="size-3" />
+                      <X className="size-3.5" />
                     </button>
                   </Badge>
                 ))}

@@ -115,6 +115,13 @@ never in series colors; status colors never appear as series.
 - Control height **32px** (`h-8`, button `size="sm"`, inputs `className="h-8"`) for toolbar controls,
   filters, and forms; 24px (`size="xs"`) for compact in-row actions. Never the 36px defaults.
 - Table rows 32px; header row 32px with `text-xs font-medium text-muted-foreground` uppercase-free.
+- **Icon sizes are set by the control, never per call site.** 16px (`size-4`) is the house glyph: nav
+  items, toolbar buttons, and every icon-only button down to the 24px `size="icon-xs"` row action, which
+  keeps a 16px glyph in its 24px box. 14px (`size-3.5`) is the floor, used only where a glyph sits inside
+  text at 11-12px: status pills, `Badge`, the status bar, and inline log/trace markers. 12px glyphs are
+  not legible at this stroke weight and are not used. A page should not hand-set an icon size; if one
+  looks wrong, fix the variant in `button.tsx`, `badge.tsx`, or `StatusBadge.tsx` so every call site moves
+  together.
 - Radius: `--radius` 6px. Cards/popovers `rounded-lg`, controls `rounded-md`, badges `rounded-sm` or
   full. Nothing larger; the workbench look is tight, not bubbly.
 - Shadows are near-absent: popovers/menus get the shadcn default; cards get borders, not shadows.
@@ -163,7 +170,7 @@ Fixed viewport frame, no page scroll; only the editor area and panel scroll inte
 - **Status bar** (`h-[22px]`, `bg-status-bar`, white text, 11px): left segments show live workload
   (running/queued run counts, click-through to filtered Runs) and the rate-limit pause (testid
   `rate-limit-banner`); right segments show the signed-in subject and role. Segments are flat text +
-  16px icons with hover wash; no borders.
+  14px icons with hover wash; no borders.
 - **Command palette** (Ctrl+K, also Ctrl+Shift+P): cmdk dialog listing every nav destination grouped as
   in the side bar, plus a catalog-search action. Fuzzy filter, Enter navigates.
 
@@ -195,7 +202,9 @@ columns right-aligned mono tabular; status columns render `StatusBadge`.
 One component maps every domain status (run, node, schedule, user, sync) to {icon, label, status
 color}: succeeded/online/active = success, failed/error/offline = destructive, running/syncing = info
 with a spinning indicator, queued/paused = warning, cancelled/skipped/disabled = muted. Badge form:
-`rounded-full` pill, 11px label, tinted background (`bg-<status>/12`), solid text color, 12px icon.
+`rounded-full` pill, 11px label, tinted background (`bg-<status>/12`), solid text color, 14px icon.
+Icon-only form (`IconBadge`, used in dense table cells): a 22px tinted circle around the same 14px glyph,
+with the word on hover and for assistive tech.
 Testid `status-badge` preserved.
 
 ### 7.4 Dialogs, sheets, and the panel

@@ -48,7 +48,7 @@ function StatusPill({ connected, ended, failed }: { connected: boolean; ended: b
           failed ? "bg-destructive/12 text-destructive" : "bg-success/12 text-success",
         )}
       >
-        {failed ? <CircleAlert className="size-3 shrink-0" /> : <CheckCircle2 className="size-3 shrink-0" />}
+        {failed ? <CircleAlert className="size-3.5 shrink-0" /> : <CheckCircle2 className="size-3.5 shrink-0" />}
         {failed ? "failed" : "complete"}
       </span>
     );
@@ -61,7 +61,7 @@ function StatusPill({ connected, ended, failed }: { connected: boolean; ended: b
         connected ? "bg-success/12 text-success" : "bg-warning/15 text-warning",
       )}
     >
-      {connected ? <Radio className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
+      {connected ? <Radio className="size-3.5 shrink-0" /> : <Loader2 className="size-3.5 shrink-0 animate-spin" />}
       {connected ? "live" : "reconnecting"}
     </span>
   );
@@ -85,7 +85,7 @@ function HeaderButton({
       data-testid={testId}
       className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
     >
-      <Icon className="size-3 shrink-0" />
+      <Icon className="size-3.5 shrink-0" />
       {label}
     </button>
   );
@@ -141,7 +141,7 @@ function CopyLineButton({ getText }: { getText: () => string }) {
       onClick={doCopy}
       className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
     >
-      {copied ? <Check className="size-3 shrink-0 text-success" /> : <Copy className="size-3 shrink-0" />}
+      {copied ? <Check className="size-3.5 shrink-0 text-success" /> : <Copy className="size-3.5 shrink-0" />}
       {copied ? "Copied" : "Copy"}
     </button>
   );
@@ -327,7 +327,7 @@ export function TraceLog({
                 problemsOnly ? "bg-muted" : "hover:bg-muted",
               )}
             >
-              <CircleAlert className="size-3 shrink-0" />
+              <CircleAlert className="size-3.5 shrink-0" />
               {problems.length} problem{problems.length === 1 ? "" : "s"}
             </button>
           ) : null}
@@ -361,7 +361,7 @@ export function TraceLog({
               : "border-warning/30 bg-warning/8 text-warning",
           )}
         >
-          <CircleAlert className="size-3 shrink-0" />
+          <CircleAlert className="size-3.5 shrink-0" />
           <span className="truncate">
             <span className="font-medium">
               {errorCount > 0
@@ -381,7 +381,7 @@ export function TraceLog({
           data-testid="trace-problems-all"
           className="flex w-full shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
         >
-          <CircleAlert className="size-3 shrink-0" />
+          <CircleAlert className="size-3.5 shrink-0" />
           <span>Showing only the {problems.length} problem line{problems.length === 1 ? "" : "s"}</span>
           <span className="ml-auto shrink-0">show all lines</span>
         </button>

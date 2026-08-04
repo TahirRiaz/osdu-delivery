@@ -115,7 +115,7 @@ function StreamStateBadge({ connected }: { connected: boolean }) {
         connected ? "bg-success/12 text-success" : "bg-warning/15 text-warning",
       )}
     >
-      {connected ? <Radio className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
+      {connected ? <Radio className="size-3.5 shrink-0" /> : <Loader2 className="size-3.5 shrink-0 animate-spin" />}
       {connected ? "live" : "reconnecting"}
     </span>
   );
