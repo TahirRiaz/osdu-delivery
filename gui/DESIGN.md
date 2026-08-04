@@ -192,8 +192,9 @@ empty background); features must not hand-roll that icon/clear arrangement. **Se
 free-text field is the leading control of the filter row on every page that has one, ahead of the dropdowns
 that narrow it, and it is never pushed to the far right with `ml-auto`: typing a name is the fastest way
 into a long list, so it is the first thing the eye and the tab order reach. The same holds for a plain
-`Input` used as free text (the Runs board's flow name, the browse page's name filter) and for a search that
-shares a row with a section heading: it follows the heading rather than floating opposite it.
+`Input` used as free text (the Runs board's flow name, the browse page's name filter). A section heading
+never shares the search's row: it sits on its own line above, so the field starts at the left edge of its
+row exactly as a `FilterBar` does.
 
 ### 7.2 Tables
 

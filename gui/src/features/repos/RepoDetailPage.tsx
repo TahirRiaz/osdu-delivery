@@ -300,18 +300,16 @@ export default function RepoDetailPage() {
       )}
 
       <div className="flex flex-col gap-3">
-        {/* The search follows the heading rather than being pushed to the far right (DESIGN.md 7.1), so it starts
-            where the filter row starts on every other page. */}
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-base font-medium">Projects</h2>
-          <SearchInput
-            value={pipelineFilter}
-            onChange={setPipelineFilter}
-            placeholder="Search by name, path, kind, project"
-            label="Search pipelines"
-            testId="repo-pipeline-search"
-          />
-        </div>
+        {/* The heading sits on its own line above the search, like every other section on the estate, so the
+            search box starts at the left edge of its row exactly as the filter row does on every other page. */}
+        <h2 className="text-base font-medium">Projects</h2>
+        <SearchInput
+          value={pipelineFilter}
+          onChange={setPipelineFilter}
+          placeholder="Search by name, path, kind, project"
+          label="Search pipelines"
+          testId="repo-pipeline-search"
+        />
         <PipelinesByProject
           repoId={repoId}
           filter={pipelineFilter}
