@@ -203,7 +203,7 @@ export default function ScheduleTimelinePage() {
       </FilterBar>
 
       {stats !== null && runsQuery.data !== undefined && (
-        <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+        <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
           <KpiCard label="Schedules" value={`${stats.activeScheduleCount}/${stats.scheduleCount}`} testId="timeline-insight" />
           <KpiCard label="Runs" value={String(stats.runCount)} testId="timeline-insight" />
           <KpiCard
@@ -218,7 +218,12 @@ export default function ScheduleTimelinePage() {
             testId="timeline-insight"
           />
           <KpiCard label="Busiest hour" value={stats.busiestHour ?? "-"} testId="timeline-insight" />
-          <KpiCard label="Best window" value={stats.bestWindow ?? "-"} testId="timeline-insight" />
+          <KpiCard
+            label="Best window"
+            value={stats.bestWindow?.range ?? "-"}
+            caption={stats.bestWindow === null ? undefined : `${stats.bestWindow.freeHours}h free`}
+            testId="timeline-insight"
+          />
         </div>
       )}
 

@@ -59,6 +59,12 @@ export interface TimelineRow {
   bars: RunBar[];
 }
 
+/** The quietest stretch of the day: the span itself, and how many hours it covers. */
+export interface QuietWindow {
+  range: string;
+  freeHours: number;
+}
+
 export interface TimelineStats {
   scheduleCount: number;
   activeScheduleCount: number;
@@ -67,7 +73,7 @@ export interface TimelineStats {
   successRate: number | null;
   avgDurationSeconds: number | null;
   busiestHour: string | null;
-  bestWindow: string | null;
+  bestWindow: QuietWindow | null;
 }
 
 /** The human trigger label for a schedule, matching the wording the Schedules table uses. */
@@ -165,9 +171,9 @@ export function busiestHour(bars: readonly RunBar[]): string | null {
   return buckets[peak] === 0 ? null : `${pad2(peak)}:00-${pad2((peak + 1) % 24)}:00`;
 }
 
-/** The longest contiguous run of zero-activity local hours (wrapping across midnight), as
- * "HH:00-HH:00 (Nh free)"; null when every hour saw a run, or there were no runs at all. */
-export function bestWindow(bars: readonly RunBar[]): string | null {
+/** The longest contiguous run of zero-activity local hours (wrapping across midnight): the span as
+ * "HH:00-HH:00" plus its length in hours. Null when every hour saw a run, or there were no runs at all. */
+export function bestWindow(bars: readonly RunBar[]): QuietWindow | null {
   if (bars.length === 0) {
     return null;
   }
@@ -200,7 +206,7 @@ export function bestWindow(bars: readonly RunBar[]): string | null {
   }
 
   const len = Math.min(bestLen, 24);
-  return `${pad2(bestStart)}:00-${pad2((bestStart + len) % 24)}:00 (${len}h free)`;
+  return { range: `${pad2(bestStart)}:00-${pad2((bestStart + len) % 24)}:00`, freeHours: len };
 }
 
 /** Rolls the lanes up into the insight-strip figures shown above the chart. */
