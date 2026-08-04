@@ -9,9 +9,10 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The pipeline-files endpoint over a seeded catalog: the files a pipeline has processed across its runs, one row
+/// The pipeline-files endpoints over a seeded catalog: the files a pipeline has processed across its runs, one row
 /// per distinct file (a file re-pulled by several runs is deduplicated), newest-modified first, searchable, and
-/// each flagged <c>lastRun</c> when it was processed by the pipeline's most recent file-bearing run.
+/// each flagged <c>lastRun</c> when it was processed by the pipeline's most recent file-bearing run, plus the
+/// size profile computed over that same deduplicated universe.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class PipelineFilesApiTests
@@ -93,6 +94,106 @@ public sealed class PipelineFilesApiTests
         }
     }
 
+    [SkippableFact]
+    public async Task FileStats_ProfileTheDeduplicatedFiles_AndReportZerosForAPipelineWithNone()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repoId = FlowIdentity.FromName("cp_stats_" + suffix);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, "cp_stats_land_" + suffix);
+        var emptyPipelineId = CatalogIdentity.Pipeline(repoId, "cp_stats_none_" + suffix);
+        var olderRun = Guid.NewGuid();
+        var newerRun = Guid.NewGuid();
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Pipelines.Add(Pipeline(pipelineId, repoId, "cp_stats_land_" + suffix));
+                db.Pipelines.Add(Pipeline(emptyPipelineId, repoId, "cp_stats_none_" + suffix));
+                db.Runs.Add(Run(olderRun, pipelineId, repoId, new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc)));
+                db.Runs.Add(Run(newerRun, pipelineId, repoId, new DateTime(2024, 6, 2, 0, 0, 0, DateTimeKind.Utc)));
+
+                // Four distinct files sized 100, 200, 300 and 1400 bytes; b.csv is re-pulled by the newer run and
+                // must count once, so a re-run cannot re-weight the profile.
+                db.RunFiles.Add(Sized(olderRun, repoId, "a.csv", 100, new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero)));
+                db.RunFiles.Add(Sized(olderRun, repoId, "b.csv", 200, new DateTimeOffset(2024, 3, 1, 0, 0, 0, TimeSpan.Zero)));
+                db.RunFiles.Add(Sized(newerRun, repoId, "b.csv", 200, new DateTimeOffset(2024, 3, 1, 0, 0, 0, TimeSpan.Zero)));
+                db.RunFiles.Add(Sized(newerRun, repoId, "c.csv", 300, new DateTimeOffset(2024, 2, 1, 0, 0, 0, TimeSpan.Zero)));
+                db.RunFiles.Add(Sized(newerRun, repoId, "d.csv", 1400, new DateTimeOffset(2024, 4, 1, 0, 0, 0, TimeSpan.Zero)));
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueReadTokenAsync(client);
+
+            var stats = await GetJsonAsync<PipelineFileStatsDto>(
+                client, token, $"/api/v1/pipelines/{pipelineId}/files/stats");
+
+            Assert.Equal(4, stats.FileCount);
+            Assert.Equal(2000, stats.TotalBytes);
+            Assert.Equal(500, stats.AvgBytes);
+            // Even count: the median straddles the two middle files (200 and 300).
+            Assert.Equal(250, stats.MedianBytes);
+            Assert.Equal(100, stats.MinBytes);
+            Assert.Equal(1400, stats.MaxBytes);
+            // Population standard deviation of {100, 200, 300, 1400} around 500 is sqrt(275000) = 524.4.
+            Assert.Equal(524, stats.StdDevBytes);
+            Assert.Equal(40, stats.TotalRows);
+            Assert.Equal(10, stats.AvgRows);
+            Assert.Equal(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), stats.OldestModified);
+            Assert.Equal(new DateTimeOffset(2024, 4, 1, 0, 0, 0, TimeSpan.Zero), stats.NewestModified);
+
+            // Fewer files than the window, so the recent profile covers all four.
+            Assert.NotNull(stats.Recent);
+            Assert.Equal(4, stats.Recent.FileCount);
+            Assert.Equal(500, stats.Recent.AvgBytes);
+            Assert.Equal(100, stats.Recent.MinBytes);
+            Assert.Equal(1400, stats.Recent.MaxBytes);
+
+            // A real pipeline that has processed no files reports zeros with no window (not a 404).
+            var empty = await GetJsonAsync<PipelineFileStatsDto>(
+                client, token, $"/api/v1/pipelines/{emptyPipelineId}/files/stats");
+            Assert.Equal(0, empty.FileCount);
+            Assert.Equal(0, empty.TotalBytes);
+            Assert.Equal(0, empty.AvgBytes);
+            Assert.Null(empty.Recent);
+            Assert.Null(empty.NewestModified);
+
+            // An unknown pipeline is a 404.
+            using var missing = new HttpRequestMessage(
+                HttpMethod.Get, new Uri($"/api/v1/pipelines/{Guid.NewGuid()}/files/stats", UriKind.Relative));
+            missing.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var missingResponse = await client.SendAsync(missing);
+            Assert.Equal(System.Net.HttpStatusCode.NotFound, missingResponse.StatusCode);
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.RunFiles.Where(f => f.RunId == olderRun || f.RunId == newerRun).ExecuteDeleteAsync();
+            await db.Runs.Where(r => r.RunId == olderRun || r.RunId == newerRun).ExecuteDeleteAsync();
+            await db.Pipelines.Where(pp => pp.Id == pipelineId || pp.Id == emptyPipelineId).ExecuteDeleteAsync();
+        }
+    }
+
+    private static CatalogPipeline Pipeline(Guid pipelineId, Guid repoId, string name)
+        => new()
+        {
+            Id = pipelineId,
+            RepoId = repoId,
+            Name = name,
+            Kind = "file",
+            RelativePath = name + ".flow.yaml",
+            ContentHash = "hash",
+            Active = true,
+            FirstSeenUtc = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc),
+            LastSeenUtc = new DateTime(2024, 6, 2, 0, 0, 0, DateTimeKind.Utc),
+        };
+
     private static CatalogRun Run(Guid runId, Guid pipelineId, Guid repoId, DateTime startUtc)
         => new()
         {
@@ -118,6 +219,19 @@ public sealed class PipelineFilesApiTests
             Rows = 1,
             Columns = 1,
             SizeBytes = 100,
+        };
+
+    private static CatalogRunFile Sized(Guid runId, Guid repoId, string name, long sizeBytes, DateTimeOffset modified)
+        => new()
+        {
+            RunId = runId,
+            RepoId = repoId,
+            Name = name,
+            Path = "/data/" + name,
+            Modified = modified,
+            Rows = 10,
+            Columns = 1,
+            SizeBytes = sizeBytes,
         };
 
     private static async Task<string> IssueReadTokenAsync(HttpClient client)

@@ -784,6 +784,20 @@ impl SqlFlowMcp {
         self.get(&format!("/api/v1/pipelines/{}/definition", input.id), &[]).await
     }
 
+    #[tool(
+        description = "Get a pipeline's file-size profile: what a normal delivery from this flow weighs. \
+            Returns fileCount, totalBytes, avgBytes, medianBytes, minBytes, maxBytes, stdDevBytes (population), \
+            totalRows, avgRows, the oldest/newest file timestamps, and a 'recent' window over the newest files \
+            (fileCount, avgBytes, minBytes, maxBytes). Computed over every distinct file in the flow's run \
+            history (deduplicated by name+path, so a re-run does not re-weight it). Use it to say whether a \
+            delivery is normal: compare a file against avgBytes/medianBytes and call it anomalous only beyond a \
+            few stdDevBytes, and read 'recent' against the all-time numbers to spot a source whose deliveries \
+            have changed size. A flow that has processed no files reports zeros (not an error)."
+    )]
+    async fn pipeline_file_stats(&self, Parameters(input): Parameters<GuidInput>) -> String {
+        self.get(&format!("/api/v1/pipelines/{}/files/stats", input.id), &[]).await
+    }
+
     #[tool(description = "Get a pipeline's pre-ingestion transform columns (kind: declared|detected).")]
     async fn pipeline_columns(&self, Parameters(input): Parameters<PipelineColumnsInput>) -> String {
         let q = vec![("kind", input.kind.unwrap_or_default())];
@@ -1504,7 +1518,8 @@ ONLINE (needs the control plane):
 ";
 
 const INSTRUCTIONS_ONLINE_TAIL: &str = "\
-- Read: list_repos, list_pipelines, get_pipeline, pipeline_definition, pipeline_columns, list_runs,
+- Read: list_repos, list_pipelines, get_pipeline, pipeline_definition, pipeline_columns,
+  pipeline_file_stats, list_runs,
   get_run, run_statements/assertions/files/health_metrics, lineage_objects/_detail/_columns/_edges/
   _waves/_dependencies, search_objects/_columns/_definitions, list_schedules, get_schedule,
   get_schedule_plan, list_nodes, list_repo_sources, summary.
@@ -1512,6 +1527,10 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
   get_schedule_plan returns both the cadence AND the wave-ordered flows that fire runs. A schedule whose
   scope is 'node'/'batch' runs a whole set resolved through lineage, so the plan (not the schedule's own
   flow name) is what actually gets updated; members sharing a wave run concurrently.
+- \"Is this delivery normal / how big are this source's files?\": pipeline_file_stats returns the flow's
+  size profile (average, median, spread, extremes, totals) over its whole file history plus a window over
+  the newest files. Read it before calling a load small, large, or missing: judge a file against the
+  median and the standard deviation, and a regime change by recent-vs-all-time.
 - Browse the schema: list_schemas gives every (server, database, schema) with its object count; then
   lineage_objects filters by database/schema/kind/name to enumerate the tables and views in one. This is how
   you answer open schema questions without a pre-known object key.

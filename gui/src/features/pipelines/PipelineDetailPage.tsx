@@ -224,6 +224,55 @@ function FilesTab({ pipelineId }: { pipelineId: string }) {
   );
 }
 
+/**
+ * The header's file-size profile: the average size of the files this flow delivers, over its whole recorded run
+ * history, with the rest of the profile (count, total, median, spread, extremes, and the newest files' window) in
+ * the tooltip. It answers "what does a delivery from here normally weigh" at a glance, so an operator can tell an
+ * ordinary load from an outsized or suspiciously thin one without opening the Files tab. A flow that has processed
+ * no files (a stored procedure, an export with no recorded output) shows a dash.
+ */
+function AvgFileSize({ pipelineId }: { pipelineId: string }) {
+  const statsQuery = useQuery({
+    queryKey: ["pipelines", "file-stats", pipelineId],
+    queryFn: () => pipelineApi.fileStats(pipelineId),
+    enabled: pipelineId !== "",
+  });
+
+  if (statsQuery.isError) {
+    return <>-</>;
+  }
+
+  const stats = statsQuery.data;
+  if (stats === undefined) {
+    return <Skeleton className="h-4 w-20" />;
+  }
+
+  if (stats.fileCount === 0) {
+    return <>-</>;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="font-mono tabular-nums" data-testid="pipeline-avg-file-size">
+          {formatBytes(stats.avgBytes)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm">
+        <div className="flex flex-col gap-0.5">
+          <span>{`${stats.fileCount.toLocaleString()} file(s), ${formatBytes(stats.totalBytes)} in total`}</span>
+          <span>{`Median ${formatBytes(stats.medianBytes)}, spread ±${formatBytes(stats.stdDevBytes)}`}</span>
+          <span>{`Smallest ${formatBytes(stats.minBytes)}, largest ${formatBytes(stats.maxBytes)}`}</span>
+          {stats.recent !== null && (
+            <span>{`Newest ${stats.recent.fileCount} average ${formatBytes(stats.recent.avgBytes)}`}</span>
+          )}
+          <span>{`${stats.avgRows.toLocaleString()} row(s) per file on average`}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 const scheduleColumns: Column<Schedule>[] = [
   { id: "trigger", header: "Trigger", render: (row) => <Mono>{scheduleTrigger(row)}</Mono> },
   { id: "timezone", header: "Timezone", render: (row) => row.timezone },
@@ -464,6 +513,7 @@ export default function PipelineDetailPage() {
         <DetailPair label="Path">
           <TruncatedText text={detail.relativePath} mono maxWidth={240} copy copyTestId="copy-pipeline-path" />
         </DetailPair>
+        <DetailPair label="Avg file size"><AvgFileSize pipelineId={pipelineId} /></DetailPair>
         <DetailPair label="First seen"><RelativeTime value={detail.firstSeenUtc} absolute /></DetailPair>
         <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} absolute /></DetailPair>
       </DetailHeaderCard>

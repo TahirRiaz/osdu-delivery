@@ -79,6 +79,7 @@ Read surface (policy `read`):
 | `GET /pipelines`, `GET /pipelines/{id}` | Pipeline registry (filters: `repoId`, `kind`, `active`, `name`) |
 | `GET /pipelines/{id}/definition` | The pipeline's parsed definition as JSON |
 | `GET /pipelines/{id}/columns` | Declared and detected pre-ingestion transform columns |
+| `GET /pipelines/{id}/files`, `GET /pipelines/{id}/files/stats` | Every distinct file the pipeline has processed (deduplicated by name and path), and the size profile over them: average, median, standard deviation, extremes, totals, and a window over the newest files, so a caller can tell a normal delivery from an anomalous one |
 | `GET /runs`, `GET /runs/{runId}` | Run history and detail (filters include `repoId`, `pipelineId`, `flowKind`, `status`, `success`, `flowName`, `batch`, `latest`) |
 | `GET /runs/{runId}/files` `/assertions` `/statements` `/surrogate-keys` `/health-metrics` | Per-run drill-down |
 | `GET /runs/{runId}/trace` | The run's consolidated trace: canonical engine events (file progress, resolved watermarks, decisions, stage summaries, warnings) interleaved with the generated SQL statements by timestamp |

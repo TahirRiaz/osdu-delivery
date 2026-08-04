@@ -67,6 +67,44 @@ public sealed record PipelineColumnDto(
 public sealed record PipelineFileDto(
     string Name, string? Path, DateTimeOffset? Modified, long Rows, long SizeBytes, bool LastRun, DateTime? LastProcessedUtc);
 
+/// <summary>
+/// The size profile of a pipeline's file deliveries, computed from every distinct file across its whole run
+/// history (deduplicated by name + path, so a re-pulled file counts once): what a normal delivery from this flow
+/// looks like. <see cref="AvgBytes"/> is the headline; <see cref="MedianBytes"/> is the more honest "typical file"
+/// when a few outsized deliveries drag the mean, and <see cref="StdDevBytes"/> (population) is the spread that
+/// tells a caller how much variation is normal before a file counts as anomalous. A pipeline that has processed no
+/// files reports zeros with no timestamps and no <see cref="Recent"/> window.
+/// </summary>
+/// <param name="FileCount">How many distinct files the pipeline has processed.</param>
+/// <param name="TotalBytes">The summed size of those files.</param>
+/// <param name="AvgBytes">The mean file size, rounded to whole bytes.</param>
+/// <param name="MedianBytes">The median file size, rounded to whole bytes.</param>
+/// <param name="MinBytes">The smallest file.</param>
+/// <param name="MaxBytes">The largest file.</param>
+/// <param name="StdDevBytes">The population standard deviation of the file sizes, rounded to whole bytes.</param>
+/// <param name="TotalRows">The summed row count across those files.</param>
+/// <param name="AvgRows">The mean row count per file, rounded.</param>
+/// <param name="OldestModified">The oldest last-modified timestamp seen, null when no file carries one.</param>
+/// <param name="NewestModified">The newest last-modified timestamp seen, null when no file carries one.</param>
+/// <param name="Recent">The newest files' window, for comparing the current regime against the all-time profile.</param>
+public sealed record PipelineFileStatsDto(
+    long FileCount, long TotalBytes, long AvgBytes, long MedianBytes, long MinBytes, long MaxBytes,
+    long StdDevBytes, long TotalRows, long AvgRows,
+    DateTimeOffset? OldestModified, DateTimeOffset? NewestModified, PipelineRecentFilesDto? Recent);
+
+/// <summary>The newest files a pipeline has processed (by last-modified), profiled on their own so a caller can
+/// tell the current delivery shape from the all-time one: a source whose files grew tenfold this month reads as
+/// normal against its lifetime average and abnormal against this window.</summary>
+/// <param name="FileCount">How many files the window covers (at most the window size).</param>
+/// <param name="AvgBytes">The mean size within the window, rounded to whole bytes.</param>
+/// <param name="MinBytes">The smallest file in the window.</param>
+/// <param name="MaxBytes">The largest file in the window.</param>
+/// <param name="OldestModified">The oldest last-modified timestamp in the window, null when none carries one.</param>
+/// <param name="NewestModified">The newest last-modified timestamp in the window, null when none carries one.</param>
+public sealed record PipelineRecentFilesDto(
+    int FileCount, long AvgBytes, long MinBytes, long MaxBytes,
+    DateTimeOffset? OldestModified, DateTimeOffset? NewestModified);
+
 /// <summary>The bootstrap token request body (only honored when a bootstrap secret is configured).</summary>
 public sealed record TokenRequest(string Secret, string? Subject, IReadOnlyList<string>? Scopes);
 

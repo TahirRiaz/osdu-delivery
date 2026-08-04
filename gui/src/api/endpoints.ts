@@ -14,7 +14,7 @@ import type {
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
-  PipelineColumn, PipelineDetail, PipelineFile, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
+  PipelineColumn, PipelineDetail, PipelineFile, PipelineFileStats, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
@@ -112,6 +112,9 @@ export const pipelineApi = {
   columns: (id: string) => get<PipelineColumn[]>(`/api/v1/pipelines/${id}/columns`),
   files: (id: string, query: PipelineFilesQuery = {}) =>
     get<PagedResult<PipelineFile>>(`/api/v1/pipelines/${id}/files`, query as QueryParams),
+  /** The size profile of this flow's file deliveries (average, median, spread, extremes), computed over its
+   * whole run history: the header's "what does a delivery from here normally weigh". */
+  fileStats: (id: string) => get<PipelineFileStats>(`/api/v1/pipelines/${id}/files/stats`),
 };
 
 export interface PipelineFilesQuery extends PageQuery {

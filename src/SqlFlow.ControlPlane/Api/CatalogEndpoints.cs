@@ -34,6 +34,7 @@ public static class CatalogEndpoints
         pipelines.MapGet("/{id:guid}/parameters", GetPipelineParametersAsync).WithName("GetPipelineParameters");
         pipelines.MapGet("/{id:guid}/columns", GetPipelineColumnsAsync).WithName("GetPipelineColumns");
         pipelines.MapGet("/{id:guid}/files", GetPipelineFilesAsync).WithName("GetPipelineFiles");
+        pipelines.MapGet("/{id:guid}/files/stats", GetPipelineFileStatsAsync).WithName("GetPipelineFileStats");
 
         return group;
     }
@@ -467,6 +468,23 @@ public static class CatalogEndpoints
                 x.Name, x.Path, x.Modified, x.Rows, x.SizeBytes, x.InLastRun == 1, x.LastProcessedUtc))
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<PipelineFileDto>(items, p, size, total));
+    }
+
+    /// <summary>
+    /// The size profile of the pipeline's file deliveries: average, median, spread, extremes and totals over every
+    /// distinct file in its run history, plus a recent-files window. Computed on demand from the same universe the
+    /// files view browses, so it needs no stored aggregate and never goes stale. A pipeline that has processed no
+    /// files reports zeros; an unknown pipeline is a 404.
+    /// </summary>
+    private static async Task<Results<Ok<PipelineFileStatsDto>, ProblemHttpResult>> GetPipelineFileStatsAsync(
+        Guid id, CatalogDbContext db, CancellationToken ct)
+    {
+        if (!await db.Pipelines.AsNoTracking().AnyAsync(p => p.Id == id, ct).ConfigureAwait(false))
+        {
+            return NotFound("pipeline", id);
+        }
+
+        return TypedResults.Ok(await PipelineFileStats.ComputeAsync(db, id, ct).ConfigureAwait(false));
     }
 
     private static ProblemHttpResult NotFound(string resource, Guid id)

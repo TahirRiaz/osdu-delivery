@@ -243,6 +243,36 @@ export interface RunFile {
   hash: string | null;
 }
 
+/** The newest files a pipeline has processed, profiled on their own: the current delivery shape, which reads
+ * differently from the lifetime profile when a source's files have grown or shrunk. */
+export interface PipelineRecentFiles {
+  fileCount: number;
+  avgBytes: number;
+  minBytes: number;
+  maxBytes: number;
+  oldestModified: string | null;
+  newestModified: string | null;
+}
+
+/** The size profile of a pipeline's file deliveries, computed over every distinct file in its run history:
+ * what a normal delivery from this flow looks like. A pipeline that has processed no files reports zeros. */
+export interface PipelineFileStats {
+  fileCount: number;
+  totalBytes: number;
+  avgBytes: number;
+  /** The median size: the honest "typical file" when a few outsized deliveries drag the mean. */
+  medianBytes: number;
+  minBytes: number;
+  maxBytes: number;
+  /** Population standard deviation: how much variation is normal before a file counts as anomalous. */
+  stdDevBytes: number;
+  totalRows: number;
+  avgRows: number;
+  oldestModified: string | null;
+  newestModified: string | null;
+  recent: PipelineRecentFiles | null;
+}
+
 export interface PipelineFile {
   name: string;
   path: string | null;
