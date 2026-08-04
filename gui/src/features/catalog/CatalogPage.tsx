@@ -9,6 +9,7 @@ import { isApiError } from "../../api/client";
 import { repoSourceApi } from "../../api/endpoints";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
+import { SubscriberDetails } from "../subscribers/SubscriberDetails";
 import { CatalogTree } from "./CatalogTree";
 import { FlowDetailsPanel } from "./FlowDetailsPanel";
 import { ObjectDetailsPanel } from "./ObjectDetailsPanel";
@@ -134,8 +135,8 @@ export default function CatalogPage() {
         <div className="min-h-80 min-w-0 flex-1 overflow-y-auto p-4 md:max-h-[calc(100vh-220px)]">
           {selectedNode === null && (
             <p className="text-[13px] text-muted-foreground" data-testid="catalog-details-placeholder">
-              Select an object or a flow in the tree to see its details: overview, columns, code, and the
-              relationships extracted from the SQL.
+              Select an object, a flow, or a subscriber in the tree to see its details: overview, columns, code,
+              the relationships extracted from the SQL, and who consumes it.
             </p>
           )}
           {selectedNode !== null && selectedNode.type === "object" && (
@@ -144,9 +145,14 @@ export default function CatalogPage() {
           {selectedNode !== null && selectedNode.type === "flow" && (
             <FlowDetailsPanel repoId={selectedNode.repoId} pipelineId={selectedNode.pipelineId} />
           )}
-          {selectedNode !== null && selectedNode.type !== "object" && selectedNode.type !== "flow" && (
+          {selectedNode !== null && selectedNode.type === "subscriber" && (
+            <SubscriberDetails subscriberKey={selectedNode.key} />
+          )}
+          {selectedNode !== null && selectedNode.type !== "object" && selectedNode.type !== "flow"
+            && selectedNode.type !== "subscriber" && (
             <p className="text-[13px] text-muted-foreground" data-testid="catalog-details-folder">
-              This is a grouping level. Expand it in the tree and select an object or a flow for details.
+              This is a grouping level. Expand it in the tree and select an object, a flow, or a subscriber for
+              details.
             </p>
           )}
         </div>

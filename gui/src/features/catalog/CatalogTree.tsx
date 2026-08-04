@@ -24,6 +24,7 @@ import {
   Layers,
   Loader2,
   Monitor,
+  MonitorPlay,
   Network,
   Package,
   Server,
@@ -37,7 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { lineageApi, repoApi } from "../../api/endpoints";
-import type { FileNode, FileOriginKind, LineageObject, PagedResult, PipelineSummary, Repo, SchemaKindCount } from "../../api/types";
+import type { FileNode, FileOriginKind, LineageObject, PagedResult, PipelineSummary, Repo, SchemaKindCount, Subscriber } from "../../api/types";
 import { fetchAllPipelines } from "../pipelines/fetchAllPipelines";
 import { compareKinds, metaForKind } from "./kindMeta";
 import { encodeNodeId, UNRESOLVED_LABEL, decodeNodeId, type CatalogNode } from "./nodeIds";
@@ -224,11 +225,12 @@ interface SchemaBranch { schema: string | null; objectCount: number; kinds: Kind
 interface KindCount { kind: string; objectCount: number }
 
 /** Folds the flat per-kind rows into database > schema > kind, excluding files (they live under Sources) and
- * merging connection-reference aliases so one database reached via two refs is one node. */
+ * subscribers (they live under Subscribers, and belong to no database), and merging connection-reference
+ * aliases so one database reached via two refs is one node. */
 function foldDatabases(rows: SchemaKindCount[]): DatabaseBranch[] {
   const databases = new Map<string | null, DatabaseBranch>();
   for (const row of rows) {
-    if (row.kind === "File") {
+    if (row.kind === "File" || row.kind === "Subscriber") {
       continue;
     }
     let database = databases.get(row.database);
@@ -618,7 +620,11 @@ function ObjectMatches({ filter, onSelect }: { filter: string; onSelect: (id: st
           <button
             key={row.key}
             type="button"
-            onClick={() => onSelect(encodeNodeId({ type: "object", objectKey: row.key }))}
+            // A subscriber is in the object registry (it is a graph node) but is not a database object: send it
+            // to its own node so the panel shows what it consumes, not an empty table overview.
+            onClick={() => onSelect(row.kind === "Subscriber"
+              ? encodeNodeId({ type: "subscriber", key: row.key })
+              : encodeNodeId({ type: "object", objectKey: row.key }))}
             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-accent/60"
           >
             <span className="inline-flex shrink-0 text-muted-foreground">{metaForKind(row.kind).icon}</span>
@@ -678,7 +684,30 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
     queryFn: async () => (await fetchAllPipelines({})).items,
   });
 
+  const subscribers = useQuery({ queryKey: ["catalog-subscribers"], queryFn: () => lineageApi.subscribers() });
+
   const databases = useMemo(() => foldDatabases(schemaKinds.data ?? []), [schemaKinds.data]);
+
+  // Subscribers group by the consuming tool (PowerBI, Tableau, Excel, ...), the one grouping a person browsing
+  // "who uses our data" actually reaches for. The filter narrows on the subscriber's name and its owner.
+  const subscriberTypes = useMemo(() => {
+    const rows = (subscribers.data ?? []).filter((row) => needle === ""
+      || lower(row.name).includes(needle)
+      || lower(row.owner ?? "").includes(needle)
+      || lower(row.type).includes(needle));
+    const byType = new Map<string, Subscriber[]>();
+    for (const row of rows) {
+      const group = byType.get(row.type);
+      if (group === undefined) {
+        byType.set(row.type, [row]);
+      } else {
+        group.push(row);
+      }
+    }
+    return [...byType.entries()]
+      .map(([type, group]) => ({ type, rows: group.sort((a, b) => a.name.localeCompare(b.name)) }))
+      .sort((a, b) => a.type.localeCompare(b.type));
+  }, [subscribers.data, needle]);
 
   const filteredDatabases = useMemo(() => {
     if (needle === "") {
@@ -739,6 +768,7 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
       open.add(encodeNodeId({ type: "databasesRoot" }));
       open.add(encodeNodeId({ type: "sourcesRoot" }));
       open.add(encodeNodeId({ type: "flowsRoot" }));
+      open.add(encodeNodeId({ type: "subscribersRoot" }));
       for (const database of filteredDatabases) {
         open.add(encodeNodeId({ type: "database", database: database.database }));
       }
@@ -778,7 +808,7 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
     (rows.find((row) => row.dataset.id === selectedId) ?? rows[0])?.focus();
   };
 
-  const skeletonError = [schemaKinds, fileTree, repos, pipelines].find((query) => query.isError);
+  const skeletonError = [schemaKinds, fileTree, repos, pipelines, subscribers].find((query) => query.isError);
   if (skeletonError !== undefined) {
     return (
       <Alert variant="destructive" data-testid="catalog-tree-error">
@@ -791,7 +821,7 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
       </Alert>
     );
   }
-  if (schemaKinds.isPending || fileTree.isPending || repos.isPending || pipelines.isPending) {
+  if (schemaKinds.isPending || fileTree.isPending || repos.isPending || pipelines.isPending || subscribers.isPending) {
     return (
       <div className="flex flex-col gap-2" data-testid="catalog-tree-loading">
         {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-7 w-full" />)}
@@ -810,6 +840,7 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
   const totalDbObjects = databases.reduce((sum, database) => sum + database.objectCount, 0);
   const totalFiles = (fileTree.data ?? []).length;
   const totalFlows = (pipelines.data ?? []).length;
+  const totalSubscribers = (subscribers.data ?? []).length;
 
   return (
     <div className="flex flex-col gap-3" data-testid="catalog-tree">
@@ -900,6 +931,35 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
                 <TreeNode key={repoId} id={repoId}
                   label={<NodeLabel icon={<FolderGit2 className="size-4" />} text={repo.name} count={root.count} />}>
                   {renderFlowFolder(repo.id, "", root)}
+                </TreeNode>
+              );
+            })}
+          </TreeNode>
+
+          {/* Subscribers (the consumption estate: consuming tool > subscriber) */}
+          <TreeNode
+            id={encodeNodeId({ type: "subscribersRoot" })}
+            label={<NodeLabel icon={<MonitorPlay className="size-4" />} text="Subscribers" count={totalSubscribers} />}
+          >
+            {subscriberTypes.length === 0 && (
+              <TreeNode
+                id="subs#empty"
+                disabled
+                label={<NodeLabel text="No subscribers declared; add a subscribers.yaml to a repo" />}
+              />
+            )}
+            {subscriberTypes.map((group) => {
+              const typeId = encodeNodeId({ type: "subscriberType", subscriberType: group.type });
+              return (
+                <TreeNode key={typeId} id={typeId}
+                  label={<NodeLabel icon={<MonitorPlay className="size-4" />} text={group.type} count={group.rows.length} />}>
+                  {group.rows.map((row) => (
+                    <TreeNode
+                      key={encodeNodeId({ type: "subscriber", key: row.key })}
+                      id={encodeNodeId({ type: "subscriber", key: row.key })}
+                      label={<NodeLabel icon={<MonitorPlay className="size-4" />} text={row.name} count={row.objectCount} />}
+                    />
+                  ))}
                 </TreeNode>
               );
             })}

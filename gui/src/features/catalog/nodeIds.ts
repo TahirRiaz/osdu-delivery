@@ -3,10 +3,11 @@
 // (a database name, a storage path, a batch) round-trips regardless of the characters it contains. A null
 // database/schema/container encodes as the sentinel "~".
 //
-// Three perspectives:
-//   Databases  connection > database > schema > kind > object   (the SQL estate; files excluded)
-//   Sources    origin system > container > folder > file        (storage accounts, SFTP servers, filesystem)
-//   Flows      repo > batch > flow                              (the pipeline estate, for navigation)
+// Four perspectives:
+//   Databases    connection > database > schema > kind > object   (the SQL estate; files excluded)
+//   Sources      origin system > container > folder > file        (storage accounts, SFTP servers, filesystem)
+//   Flows        repo > batch > flow                              (the pipeline estate, for navigation)
+//   Subscribers  type > subscriber                                (the consumption estate: who reads it all)
 
 export type CatalogNode =
   // Databases
@@ -26,6 +27,10 @@ export type CatalogNode =
   | { type: "flowFolder"; repoId: string; path: string }
   | { type: "batch"; repoId: string; path: string; batch: string }
   | { type: "flow"; repoId: string; pipelineId: string }
+  // Subscribers: the consuming tool (PowerBI/Tableau/...) > the subscriber itself
+  | { type: "subscribersRoot" }
+  | { type: "subscriberType"; subscriberType: string }
+  | { type: "subscriber"; key: string }
   // A leaf object (a database object OR a file), keyed by its global object key
   | { type: "object"; objectKey: string };
 
@@ -71,6 +76,12 @@ export function encodeNodeId(node: CatalogNode): string {
       return `bat:${seg(node.repoId)}|${seg(node.path)}|${seg(node.batch)}`;
     case "flow":
       return `flw:${seg(node.repoId)}|${seg(node.pipelineId)}`;
+    case "subscribersRoot":
+      return "subs";
+    case "subscriberType":
+      return `subt:${seg(node.subscriberType)}`;
+    case "subscriber":
+      return `sub:${encodeURIComponent(node.key)}`;
     case "object":
       return `obj:${encodeURIComponent(node.objectKey)}`;
   }
@@ -86,6 +97,9 @@ export function decodeNodeId(id: string): CatalogNode | null {
   }
   if (id === "flows") {
     return { type: "flowsRoot" };
+  }
+  if (id === "subs") {
+    return { type: "subscribersRoot" };
   }
 
   const colon = id.indexOf(":");
@@ -155,6 +169,12 @@ export function decodeNodeId(id: string): CatalogNode | null {
         return parts.length === 2 && notNull(parts[0]) && notNull(parts[1])
           ? { type: "flow", repoId: decodeURIComponent(parts[0]), pipelineId: decodeURIComponent(parts[1]) }
           : null;
+      case "subt":
+        return parts.length === 1 && notNull(parts[0])
+          ? { type: "subscriberType", subscriberType: decodeURIComponent(parts[0]) }
+          : null;
+      case "sub":
+        return parts.length === 1 ? { type: "subscriber", key: decodeURIComponent(parts[0]) } : null;
       case "obj":
         return parts.length === 1 ? { type: "object", objectKey: decodeURIComponent(parts[0]) } : null;
       default:
@@ -174,7 +194,14 @@ export function ancestorIds(node: CatalogNode): string[] {
     case "databasesRoot":
     case "sourcesRoot":
     case "flowsRoot":
+    case "subscribersRoot":
       return [];
+    case "subscriberType":
+      return [encodeNodeId({ type: "subscribersRoot" })];
+    case "subscriber":
+      // The id does not carry the subscriber's type, so a deep link opens the Subscribers root; the tree
+      // reveals the type branch from the loaded list, exactly as a file's chain is revealed.
+      return [encodeNodeId({ type: "subscribersRoot" })];
     case "database":
       return [encodeNodeId({ type: "databasesRoot" })];
     case "schema":
