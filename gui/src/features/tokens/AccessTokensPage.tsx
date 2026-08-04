@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleCheck, CircleMinus, Clock3, KeyRound, Loader2, TriangleAlert } from "lucide-react";
+import { Clock3, KeyRound, Loader2, Power, PowerOff, TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
+import { StatePill } from "../../components/StatusBadge";
 import { parseUtc } from "../../lib/time";
 
 /** One error-to-text mapping for every toast on this page (the API's detail wins over a generic title). */
@@ -51,22 +52,18 @@ function tokenState(token: AccessToken, nowMs: number): TokenState {
   return "active";
 }
 
-/** The token lifecycle pill, following the StatusBadge form (DESIGN.md 7.3): icon + label, never color alone. */
+/**
+ * The token lifecycle pill. A lifecycle is a state, not a run outcome, so it renders through the shared
+ * `StatePill` (DESIGN.md 7.3): outlined chip and an on/off glyph, never the filled check mark that means a
+ * run succeeded.
+ */
 function StateBadge({ state }: { state: TokenState }) {
-  const { classes, Icon } = state === "active"
-    ? { classes: "bg-success/12 text-success", Icon: CircleCheck }
+  const { tone, Icon } = state === "active"
+    ? { tone: "success" as const, Icon: Power }
     : state === "expired"
-      ? { classes: "bg-warning/15 text-warning", Icon: Clock3 }
-      : { classes: "bg-muted text-muted-foreground", Icon: CircleMinus };
-  return (
-    <span
-      data-testid="token-state"
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ${classes}`}
-    >
-      <Icon className="size-3.5 shrink-0" />
-      {state}
-    </span>
-  );
+      ? { tone: "warning" as const, Icon: Clock3 }
+      : { tone: "muted" as const, Icon: PowerOff };
+  return <StatePill tone={tone} label={state} icon={Icon} testId="token-state" />;
 }
 
 const EXPIRY_OPTIONS: { label: string; days: number | null }[] = [

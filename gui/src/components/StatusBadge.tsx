@@ -7,6 +7,7 @@ import {
   Loader2,
   Pause,
   Power,
+  PowerOff,
   SkipForward,
   Wifi,
   WifiOff,
@@ -18,7 +19,23 @@ import type { RunStatus } from "../api/types";
 
 type Tone = "success" | "destructive" | "info" | "warning" | "muted";
 
-const toneClasses: Record<Tone, string> = {
+/**
+ * Which of the two status families a badge belongs to (DESIGN.md 7.3).
+ *
+ * `outcome` is something that ran and finished: a run status, a delivery result. It renders as a filled,
+ * tinted circle.
+ *
+ * `state` is how an object is configured right now: a pipeline active or not, a schedule enabled/paused,
+ * a node online. It renders as an outlined rounded square with an on/off style glyph.
+ *
+ * The two families must never share a silhouette. A green check on a green disc means "this run
+ * succeeded" and nothing else; an object that is merely switched on says so with a power glyph in an
+ * outlined chip, so the two stop reading as the same thing in a dense table.
+ */
+type Family = "outcome" | "state";
+
+/** Filled tint for the outcome family: solid presence, because something actually happened. */
+const outcomeToneClasses: Record<Tone, string> = {
   success: "bg-success/12 text-success",
   destructive: "bg-destructive/12 text-destructive",
   info: "bg-info/12 text-info",
@@ -26,20 +43,38 @@ const toneClasses: Record<Tone, string> = {
   muted: "bg-muted text-muted-foreground",
 };
 
+/** Outline for the state family: a hairline ring instead of a fill, so a setting never shouts like a result. */
+const stateToneClasses: Record<Tone, string> = {
+  success: "text-success ring-success/45",
+  destructive: "text-destructive ring-destructive/45",
+  info: "text-info ring-info/45",
+  warning: "text-warning ring-warning/50",
+  muted: "text-muted-foreground ring-border",
+};
+
+/** The surface of a badge: filled disc for outcomes, outlined chip for states. */
+function familyClasses(family: Family, tone: Tone): string {
+  return family === "state"
+    ? cn("bg-transparent ring-1 ring-inset", stateToneClasses[tone])
+    : outcomeToneClasses[tone];
+}
+
 /**
- * The one status pill (DESIGN.md 7.3): tinted background, solid text, and an icon so color never
- * carries the state alone. Every domain badge below renders through this.
+ * The one status pill (DESIGN.md 7.3): an icon plus its word, so color never carries the state alone.
+ * Outcomes are a filled `rounded-full` pill; states are an outlined `rounded-md` chip.
  */
 function Pill({
   tone,
   label,
   icon: Icon,
+  family = "outcome",
   spin = false,
   testId,
 }: {
   tone: Tone;
   label: string;
   icon: LucideIcon;
+  family?: Family;
   spin?: boolean;
   testId: string;
 }) {
@@ -47,8 +82,9 @@ function Pill({
     <span
       data-testid={testId}
       className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
-        toneClasses[tone],
+        "inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 text-[11px] font-medium leading-4",
+        family === "state" ? "rounded-md" : "rounded-full",
+        familyClasses(family, tone),
       )}
     >
       <Icon className={cn("size-3.5 shrink-0", spin && "animate-spin")} />
@@ -81,18 +117,21 @@ function runStatusVisual(status: RunStatus | string): { tone: Tone; label: strin
  * A status rendered as the tinted icon alone: the word is redundant next to the icon (and next to a column
  * header that already names the state), so it moves to a hover tooltip and a visually hidden label. Icon shape
  * plus tone still carry the state without color alone (DESIGN.md 7.3), and the hidden label keeps the word
- * queryable in tests and available to assistive tech.
+ * queryable in tests and available to assistive tech. Pass `family="state"` for a configuration state so it
+ * cannot be mistaken for a run outcome.
  */
 export function IconBadge({
   tone,
   label,
   icon: Icon,
+  family = "outcome",
   spin = false,
   testId,
 }: {
   tone: Tone;
   label: string;
   icon: LucideIcon;
+  family?: Family;
   spin?: boolean;
   testId: string;
 }) {
@@ -102,8 +141,9 @@ export function IconBadge({
         <span
           data-testid={testId}
           className={cn(
-            "inline-flex size-5.5 shrink-0 items-center justify-center rounded-full",
-            toneClasses[tone],
+            "inline-flex size-5.5 shrink-0 items-center justify-center",
+            family === "state" ? "rounded-[6px]" : "rounded-full",
+            familyClasses(family, tone),
           )}
         >
           <Icon className={cn("size-3.5 shrink-0", spin && "animate-spin")} />
@@ -151,27 +191,52 @@ export function rollupStatus(statuses: readonly (RunStatus | string)[]): RunStat
   return has("cancelled") ? "cancelled" : "skipped";
 }
 
+/** A node's reachability: a state, not a result, so it takes the outlined chip. */
 export function OnlineBadge({ online }: { online: boolean }) {
   return online
-    ? <Pill tone="success" label="online" icon={Wifi} testId="online-badge" />
-    : <Pill tone="muted" label="offline" icon={WifiOff} testId="online-badge" />;
+    ? <Pill family="state" tone="success" label="online" icon={Wifi} testId="online-badge" />
+    : <Pill family="state" tone="muted" label="offline" icon={WifiOff} testId="online-badge" />;
 }
 
+/**
+ * Whether a pipeline, user, or integration is switched on. A power glyph in an outlined square, never the
+ * check mark on a filled disc: in a table where the neighbouring column shows how the last run ended, an
+ * "active" check and a "succeeded" check were the same picture and had to be read twice to tell apart.
+ */
 export function ActiveBadge({ active }: { active: boolean }) {
   return active
-    ? <IconBadge tone="success" label="active" icon={CircleCheck} testId="active-badge" />
-    : <IconBadge tone="muted" label="inactive" icon={CircleMinus} testId="active-badge" />;
+    ? <IconBadge family="state" tone="success" label="active" icon={Power} testId="active-badge" />
+    : <IconBadge family="state" tone="muted" label="inactive" icon={PowerOff} testId="active-badge" />;
 }
 
-/** A schedule's state as the tinted icon alone, like every run status: three states with three distinct icon
- * shapes, under a column header that already says "State", so spelling the word out again cost a column's width
- * per row and told the reader nothing the check mark did not. */
+/** A schedule's own state, in the same on/off language as {@link ActiveBadge}: three states, three glyphs,
+ * under a column header that already says "State", so spelling the word out again cost a column's width per
+ * row and told the reader nothing the glyph did not. */
 export function ScheduleStateBadge({ enabled, paused }: { enabled: boolean; paused: boolean }) {
   if (!enabled) {
-    return <IconBadge tone="muted" label="disabled" icon={Power} testId="schedule-badge" />;
+    return <IconBadge family="state" tone="muted" label="disabled" icon={PowerOff} testId="schedule-badge" />;
   }
 
   return paused
-    ? <IconBadge tone="warning" label="paused" icon={Pause} testId="schedule-badge" />
-    : <IconBadge tone="success" label="enabled" icon={CircleCheck} testId="schedule-badge" />;
+    ? <IconBadge family="state" tone="warning" label="paused" icon={Pause} testId="schedule-badge" />
+    : <IconBadge family="state" tone="success" label="enabled" icon={Power} testId="schedule-badge" />;
+}
+
+/**
+ * A lifecycle state that is not a simple on/off (an access token that is active, expired, or revoked). Same
+ * outlined-chip family as the badges above, exported so features stop hand-rolling their own pill and drifting
+ * back onto the outcome check mark.
+ */
+export function StatePill({
+  tone,
+  label,
+  icon,
+  testId,
+}: {
+  tone: Tone;
+  label: string;
+  icon: LucideIcon;
+  testId: string;
+}) {
+  return <Pill family="state" tone={tone} label={label} icon={icon} testId={testId} />;
 }

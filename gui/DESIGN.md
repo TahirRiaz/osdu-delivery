@@ -200,11 +200,25 @@ columns right-aligned mono tabular; status columns render `StatusBadge`.
 ### 7.3 StatusBadge
 
 One component maps every domain status (run, node, schedule, user, sync) to {icon, label, status
-color}: succeeded/online/active = success, failed/error/offline = destructive, running/syncing = info
-with a spinning indicator, queued/paused = warning, cancelled/skipped/disabled = muted. Badge form:
-`rounded-full` pill, 11px label, tinted background (`bg-<status>/12`), solid text color, 14px icon.
-Icon-only form (`IconBadge`, used in dense table cells): a 22px tinted circle around the same 14px glyph,
-with the word on hover and for assistive tech.
+color}: succeeded = success, failed/error = destructive, running/syncing = info with a spinning
+indicator, queued/paused = warning, cancelled/skipped/disabled = muted.
+
+**Two families, never one silhouette.** A status is either an *outcome* (something ran and finished: a
+run status, a delivery, a connection test) or a *state* (how an object is configured right now: a
+pipeline active, a schedule enabled or paused, a node online, a token revoked). They are told apart by
+shape and fill, not only by color, because the pages that show both show them side by side and a green
+check meant both "succeeded" and "switched on":
+
+- **Outcome** = filled tinted surface (`bg-<status>/12`), `rounded-full`, result glyphs
+  (`CircleCheck`, `CircleX`, `Clock3`, spinning `Loader2`, `Ban`, `SkipForward`).
+- **State** = no fill, hairline `ring-1 ring-inset` in the status color, `rounded-md` (pill) or
+  `rounded-[6px]` (icon-only), on/off glyphs (`Power`, `PowerOff`, `Pause`, `Wifi`/`WifiOff`).
+
+Badge form: 11px label, 14px icon. Icon-only form (`IconBadge`, used in dense table cells): a 22px
+surface around the same 14px glyph, with the word on hover and for assistive tech. Pass
+`family="state"` (or use `ActiveBadge`/`ScheduleStateBadge`/`OnlineBadge`/`StatePill`) for a
+configuration state; the default is `outcome`. Features must not hand-roll a status pill: a new state
+goes through `StatePill` so it cannot drift back onto the outcome check mark.
 Testid `status-badge` preserved.
 
 ### 7.4 Dialogs, sheets, and the panel
