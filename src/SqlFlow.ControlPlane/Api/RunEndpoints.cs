@@ -18,6 +18,10 @@ namespace SqlFlow.ControlPlane.Api;
 /// <see cref="LastAction"/>/<see cref="LastActionUtc"/> are the run's newest trace event (a stage summary, a
 /// file read, a decision): while the run executes they answer "what is it doing right now", at rest "what did it
 /// do last". Null for a run that recorded no events (one that predates the event stream, or is still queued).
+/// They are resolved ONLY for a run group's member list (the runs list filtered by <see cref="GroupId"/>, and the
+/// group stream): that is the one place any client renders them, and each costs a per-row lookup into the event
+/// log for a message with no length bound, so the general run board (hundreds of rows, polled) does not pay for a
+/// column it never shows and reports both as null there.
 /// <see cref="Error"/> is why a failed run failed, carried on the summary so a set (a schedule's fire, a batch run)
 /// can show its failures where they happened instead of making an operator open each member to find out. Null for
 /// every run that did not fail.</summary>
@@ -217,20 +221,32 @@ public static class RunEndpoints
         }
 
         // latest=true keeps only each pipeline's newest run: the batch status board ("what is red right now"),
-        // one row per pipeline, versus the full history the flat inbox and the pipeline detail show. A row
-        // survives when it IS the top-1 of ALL of the pipeline's runs ordered by WrittenUtc then RunId, both
-        // descending: exactly the row the previous correlated NOT-EXISTS kept (RunId breaks WrittenUtc ties,
-        // and being the primary key it makes the maximum unique), but shaped as a per-pipeline TOP(1) seek the
-        // (PipelineId, WrittenUtc DESC, RunId DESC) index on Run answers directly. It still applies BEFORE the
-        // lifecycle filters below so status=failed means "currently failed", not "ever failed".
+        // one row per pipeline, versus the full history the flat inbox and the pipeline detail show. The newest
+        // run of a pipeline is the top-1 of its runs ordered by WrittenUtc then RunId, both descending (RunId
+        // breaks WrittenUtc ties, and being the primary key it makes the maximum unique).
+        //
+        // The set is built PER PIPELINE, not per run: the distinct pipeline list drives one TOP(1) seek each on
+        // the (PipelineId, WrittenUtc DESC, RunId DESC) index, and the outer query keeps the runs whose id is in
+        // that set. Correlating the top-1 to the outer row instead (x.RunId == top-1 for x.PipelineId) reads
+        // identically but makes the optimizer evaluate the seek once per row of the WHOLE run history to keep the
+        // few hundred that survive, so its cost grew with every run ever recorded rather than with the number of
+        // pipelines. Distinct pipelines is the real cardinality of the answer.
+        //
+        // It still applies BEFORE the lifecycle filters below so status=failed means "currently failed", not
+        // "ever failed", and the source is db.Runs (not the Pipeline table) so a run whose pipeline left the
+        // catalog still reports its own latest.
         if (latest == true)
         {
-            query = query.Where(x => x.RunId == db.Runs
-                .Where(candidate => candidate.PipelineId == x.PipelineId)
-                .OrderByDescending(candidate => candidate.WrittenUtc)
-                .ThenByDescending(candidate => candidate.RunId)
-                .Select(candidate => candidate.RunId)
-                .FirstOrDefault());
+            var latestRunIds = db.Runs.AsNoTracking()
+                .Select(run => run.PipelineId)
+                .Distinct()
+                .Select(pipelineId => db.Runs
+                    .Where(candidate => candidate.PipelineId == pipelineId)
+                    .OrderByDescending(candidate => candidate.WrittenUtc)
+                    .ThenByDescending(candidate => candidate.RunId)
+                    .Select(candidate => candidate.RunId)
+                    .FirstOrDefault());
+            query = query.Where(x => latestRunIds.Contains(x.RunId));
         }
 
         // Lifecycle filter (queued / running / succeeded / failed / cancelled): the GUI's "active runs" and
@@ -264,9 +280,18 @@ public static class RunEndpoints
             : groupId is not null
                 ? joined.OrderBy(x => x.Run.GroupWave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId)
                 : joined.OrderByDescending(x => x.Run.WrittenUtc).ThenBy(x => x.Run.RunId);
-        var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
-        var items = await ProjectSummaries(db, ordered.Skip((p - 1) * size).Take(size))
+        // The last action is only ever rendered for a group's members (the group page's member table, the CLI's
+        // group watch), so it is resolved only when a group is what was asked for: on the open run board that
+        // saves two per-row lookups into the event log on every row of every poll.
+        var items = await ProjectSummaries(db, ordered.Skip((p - 1) * size).Take(size), groupId is not null)
             .ToListAsync(ct).ConfigureAwait(false);
+
+        // The page is read first because it often proves the total: a first page that came back short IS the whole
+        // result, so the count query (which re-runs the filters, the latest-run resolution and the pipeline join)
+        // is skipped outright for every view narrow enough to fit one page.
+        var total = p == 1 && items.Count < size
+            ? items.Count
+            : await ordered.LongCountAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<RunSummaryDto>(items, p, size, total));
     }
 
@@ -299,26 +324,42 @@ public static class RunEndpoints
            };
 
     /// <summary>Projects joined run rows to <see cref="RunSummaryDto"/>: the single summary shape the runs list
-    /// and the group stream both serve. The per-row subqueries (the file count and the newest trace event, the
-    /// "last action") are TOP-1/COUNT seeks on the RunId indexes.</summary>
-    private static IQueryable<RunSummaryDto> ProjectSummaries(CatalogDbContext db, IQueryable<SummarySource> source)
-        => source.Select(x => new RunSummaryDto(
-            x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
-            x.Run.Status, x.Run.Success,
-            x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
-            x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
-            db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId,
-            db.RunEvents.Where(e => e.RunId == x.Run.RunId)
-                .OrderByDescending(e => e.Id).Select(e => (string?)e.Message).FirstOrDefault(),
-            db.RunEvents.Where(e => e.RunId == x.Run.RunId)
-                .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault(),
-            x.Run.Error));
+    /// and the group stream both serve. The per-row subqueries are TOP-1/COUNT seeks on the RunId indexes, and
+    /// they run only for the rows of the page the caller asked for (the projection is applied after the paging).
+    /// <paramref name="includeLastAction"/> decides whether the newest trace event is resolved: it costs two of
+    /// those seeks per row, one of them fetching a message with no length bound, and only a group's member list
+    /// shows it, so every other caller passes false and reports it as null.</summary>
+    private static IQueryable<RunSummaryDto> ProjectSummaries(
+        CatalogDbContext db, IQueryable<SummarySource> source, bool includeLastAction)
+        => includeLastAction
+            ? source.Select(x => new RunSummaryDto(
+                x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
+                x.Run.Status, x.Run.Success,
+                x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
+                x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
+                db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId,
+                db.RunEvents.Where(e => e.RunId == x.Run.RunId)
+                    .OrderByDescending(e => e.Id).Select(e => (string?)e.Message).FirstOrDefault(),
+                db.RunEvents.Where(e => e.RunId == x.Run.RunId)
+                    .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault(),
+                x.Run.Error))
+            : source.Select(x => new RunSummaryDto(
+                x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
+                x.Run.Status, x.Run.Success,
+                x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
+                x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
+                db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId,
+                null, null,
+                x.Run.Error));
 
     /// <summary>A group's member summaries in execution order: the shape both the group view's member list and
-    /// the group stream serve.</summary>
+    /// the group stream serve. This is the one list that shows the last action, so it resolves it.</summary>
     private static IQueryable<RunSummaryDto> GroupMembersQuery(CatalogDbContext db, Guid groupId)
-        => ProjectSummaries(db, JoinPipelines(db, db.Runs.AsNoTracking().Where(r => r.GroupId == groupId))
-            .OrderBy(x => x.Run.GroupWave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId));
+        => ProjectSummaries(
+            db,
+            JoinPipelines(db, db.Runs.AsNoTracking().Where(r => r.GroupId == groupId))
+                .OrderBy(x => x.Run.GroupWave).ThenBy(x => x.Run.FlowName).ThenBy(x => x.Run.RunId),
+            includeLastAction: true);
 
     private static async Task<Results<Ok<RunDetailDto>, ProblemHttpResult>> GetRunAsync(
         Guid runId, CatalogDbContext db, CancellationToken ct)
