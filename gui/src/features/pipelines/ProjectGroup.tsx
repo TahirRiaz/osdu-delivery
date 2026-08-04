@@ -40,14 +40,14 @@ export function groupByProject(pipelines: PipelineSummary[]): [string, PipelineS
  * `filtered` keys the collapsible so it remounts (and springs back open) when a search starts or clears, surfacing a
  * matching flow in a project the user had collapsed. */
 export function ProjectGroup({
-  project, rows, repoId, filtered, defaultOpen = true, onOpen, onRunBatch,
+  project, rows, repoId, filtered, defaultOpen = false, onOpen, onRunBatch,
 }: {
   project: string;
   rows: PipelineSummary[];
   repoId: string;
   filtered: boolean;
-  /** Whether the flow table starts expanded. The repo-detail view opens projects by default; the all-repos tree
-   * keeps them collapsed so the page reads as a repo -> folder outline, opening only the folder the user clicks. */
+  /** Whether the flow table starts expanded. Projects stay collapsed so a repo with dozens of them reads as a
+   * folder outline the user opens one at a time; a search passes true so every matching project springs open. */
   defaultOpen?: boolean;
   onOpen: (pipelineId: string) => void;
   onRunBatch: (repoId: string, flowName: string) => void;

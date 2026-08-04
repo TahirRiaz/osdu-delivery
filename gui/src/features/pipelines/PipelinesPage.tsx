@@ -1,22 +1,22 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ChevronDown, FolderGit2, Search, X } from "lucide-react";
+import { ChevronDown, FolderGit2 } from "lucide-react";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
-import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isApiError } from "../../api/client";
-import { pipelineApi, repoApi } from "../../api/endpoints";
+import { repoApi } from "../../api/endpoints";
 import type { PipelineSummary } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
-import { activeFilterClass, FilterBar } from "../../components/FilterBar";
+import { FilterBar } from "../../components/FilterBar";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
+import { SearchInput } from "../../components/SearchInput";
+import { fetchAllPipelines, type FetchResult } from "./fetchAllPipelines";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { groupByProject, pipelineMatches, ProjectGroup } from "./ProjectGroup";
 
@@ -25,39 +25,6 @@ const kinds = ["file", "ing", "api", "cpy", "sftp", "exp", "sp", "inv", "hc", "s
 
 /** The radix Select cannot carry an empty-string item value, so "all" stands in for the unfiltered choice. */
 const ALL = "all";
-
-/** One page of the fetch-all sweep; large enough that a normal estate lands in a couple of round-trips. */
-const PAGE_SIZE = 500;
-
-/** The most pipelines the grouped view will pull into the browser at once. Beyond this the tree stays responsive by
- * showing the first slice and asking the user to narrow with filters or search, rather than fetching without bound. */
-const FETCH_CAP = 5000;
-
-interface FetchResult {
-  items: PipelineSummary[];
-  total: number;
-  capped: boolean;
-}
-
-/** Pull every pipeline matching the server-side filters (repo/kind/active) by paging until the estate is exhausted or
- * the fetch cap is hit; the free-text search then narrows this set in the browser. */
-async function fetchAllPipelines(
-  filters: { repoId?: string; kind?: string; active?: boolean },
-): Promise<FetchResult> {
-  const items: PipelineSummary[] = [];
-  let total = 0;
-  let page = 1;
-  for (;;) {
-    const res = await pipelineApi.list({ ...filters, page, pageSize: PAGE_SIZE });
-    total = res.total;
-    items.push(...res.items);
-    if (items.length >= total || res.items.length === 0 || items.length >= FETCH_CAP) {
-      break;
-    }
-    page += 1;
-  }
-  return { items, total, capped: items.length < total };
-}
 
 /** One repo's pipelines: a collapsible section holding the repo's project groups. Rendered only in the all-repos view;
  * when a single repo is selected the page drops this level and shows its projects directly. */
@@ -181,28 +148,16 @@ export default function PipelinesPage() {
             <SelectItem value="inactive">inactive</SelectItem>
           </SelectContent>
         </Select>
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, path, kind, project"
-            aria-label="Search pipelines"
-            className={cn("h-8 pl-8 pr-8 text-[13px]", search !== "" && activeFilterClass)}
-            data-testid="filter-name"
-          />
-          {search !== "" && (
-            <button
-              type="button"
-              onClick={() => setSearch("")}
-              aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              data-testid="filter-name-clear"
-            >
-              <X className="size-4" />
-            </button>
-          )}
-        </div>
+        {/* The dropdowns that shape the tree sit at the left; the free-text search sits at the far right, where it
+            does on the repo detail page, so the eye lands in the same place on both. */}
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search by name, path, kind, project"
+          label="Search pipelines"
+          testId="filter-name"
+          className="sm:ml-auto"
+        />
       </FilterBar>
 
       <PipelinesTree

@@ -186,7 +186,11 @@ description (13px muted), and right-aligned toolbar actions (small buttons). Bel
 `FilterBar`. No breadcrumbs in v1 except detail pages: parent link + entity name. Filter controls are 32px
 (`h-8`): text `Input`s for free text, `Select` for a short fixed set, and `FilterCombobox` (a searchable
 popover, the empty string meaning "no filter") for a filter over many values like the Runs board's schedule
-and batch dropdowns, where a plain `Select` would not scroll usably.
+and batch dropdowns, where a plain `Select` would not scroll usably. Free-text search over a list or tree
+goes through `SearchInput` (leading magnifier, trailing clear, filled surface so the field never reads as
+empty background); features must not hand-roll that icon/clear arrangement. It sits at the **right end** of
+the filter row (`className="sm:ml-auto"`), opposite the dropdowns that shape the view, so search is in the
+same place on every page that has it.
 
 ### 7.2 Tables
 

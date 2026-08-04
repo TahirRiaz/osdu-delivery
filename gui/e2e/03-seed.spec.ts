@@ -45,6 +45,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
     await expect(row.first()).toBeVisible({ timeout: 30_000 });
     await row.first().click();
     await expect(adminPage.getByTestId("page-repo-detail")).toBeVisible();
+    // The project accordions start collapsed; a search opens the matching one and surfaces the flow row.
+    await adminPage.getByTestId("repo-pipeline-search").fill("Csv_Basic");
     await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first()).toBeVisible();
   });
 });

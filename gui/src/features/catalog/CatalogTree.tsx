@@ -36,8 +36,9 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
-import { lineageApi, pipelineApi, repoApi } from "../../api/endpoints";
+import { lineageApi, repoApi } from "../../api/endpoints";
 import type { FileNode, FileOriginKind, LineageObject, PagedResult, PipelineSummary, Repo, SchemaKindCount } from "../../api/types";
+import { fetchAllPipelines } from "../pipelines/fetchAllPipelines";
 import { compareKinds, metaForKind } from "./kindMeta";
 import { encodeNodeId, UNRESOLVED_LABEL, decodeNodeId, type CatalogNode } from "./nodeIds";
 
@@ -670,21 +671,11 @@ export function CatalogTree({ selectedId, onSelect, initialExpanded }: CatalogTr
   const schemaKinds = useQuery({ queryKey: ["catalog-schema-kinds"], queryFn: () => lineageApi.schemaKinds() });
   const fileTree = useQuery({ queryKey: ["catalog-file-tree"], queryFn: () => lineageApi.fileTree() });
   const repos = useQuery({ queryKey: ["catalog-repos"], queryFn: () => repoApi.list({ pageSize: 200 }) });
-  // Every flow, in as few calls as the page size allows: the folder tree needs the whole set to render, and
-  // flows are bounded by the estate's file count, not its data volume.
+  // Every flow, through the shared sweep: the folder tree needs the whole set to render, and flows are bounded by
+  // the estate's file count, not its data volume.
   const pipelines = useQuery({
     queryKey: ["catalog-all-pipelines"],
-    queryFn: async () => {
-      const items: PipelineSummary[] = [];
-      for (let page = 1; ; page++) {
-        const result = await pipelineApi.list({ page, pageSize: 500 });
-        items.push(...result.items);
-        if (result.items.length === 0 || result.page * result.pageSize >= result.total) {
-          break;
-        }
-      }
-      return items;
-    },
+    queryFn: async () => (await fetchAllPipelines({})).items,
   });
 
   const databases = useMemo(() => foldDatabases(schemaKinds.data ?? []), [schemaKinds.data]);

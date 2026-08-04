@@ -1,16 +1,15 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Network, Play, RefreshCw, Search, X } from "lucide-react";
+import { Loader2, Network, Play, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
-import { pipelineApi, repoApi, repoSourceApi } from "../../api/endpoints";
+import { repoApi, repoSourceApi } from "../../api/endpoints";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
@@ -18,13 +17,13 @@ import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { RelativeTime } from "../../components/RelativeTime";
+import { SearchInput } from "../../components/SearchInput";
+import { TruncatedText } from "../../components/TruncatedText";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { fetchAllPipelines } from "../pipelines/fetchAllPipelines";
 import { groupByProject, pipelineMatches, ProjectGroup } from "../pipelines/ProjectGroup";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { useSyncTracePanel } from "./useSyncTracePanel";
-
-/** The most pipelines a single repo realistically holds; one page covers grouping them by project. */
-const REPO_PIPELINE_CAP = 500;
 
 /** The most repos/sources a single control plane realistically holds; one page covers the by-name lookup. */
 const SOURCE_LOOKUP_CAP = 200;
@@ -40,9 +39,11 @@ function PipelinesByProject({
   onOpen: (pipelineId: string) => void;
   onRunBatch: (repoId: string, flowName: string) => void;
 }) {
+  // Every page of the repo's flows, not just the first: the API clamps a page at 200 rows, so a single request drops
+  // whole project folders off the end of the alphabet with nothing on screen to say so.
   const query = useQuery({
     queryKey: ["pipelines", "by-repo-grouped", repoId],
-    queryFn: () => pipelineApi.list({ repoId, page: 1, pageSize: REPO_PIPELINE_CAP }),
+    queryFn: () => fetchAllPipelines({ repoId }),
   });
 
   if (query.isError) {
@@ -51,11 +52,12 @@ function PipelinesByProject({
       : <p className="text-[13px] text-destructive">{String(query.error)}</p>;
   }
 
-  const pipelines = query.data?.items;
-  if (pipelines === undefined) {
+  const result = query.data;
+  if (result === undefined) {
     return <Skeleton className="h-28 w-full rounded-lg" />;
   }
 
+  const pipelines = result.items;
   if (pipelines.length === 0) {
     return (
       <EmptyState
@@ -69,18 +71,30 @@ function PipelinesByProject({
   const needle = filter.trim().toLowerCase();
   const matches = needle === "" ? pipelines : pipelines.filter((p) => pipelineMatches(p, needle));
 
+  // Only reachable on an estate past the sweep's cap; says so rather than quietly showing a partial tree.
+  const cappedNote = result.capped && (
+    <p className="text-xs text-warning" data-testid="repo-pipelines-capped">
+      Showing the first {pipelines.length.toLocaleString()} of {result.total.toLocaleString()} pipelines. Narrow with
+      the search above to see the rest.
+    </p>
+  );
+
   if (matches.length === 0) {
     return (
-      <EmptyState
-        title="No matches"
-        description={`No pipeline matches "${filter.trim()}". Search by name, path, kind, or project.`}
-        data-testid="repo-no-matches"
-      />
+      <div className="flex flex-col gap-2">
+        {cappedNote}
+        <EmptyState
+          title="No matches"
+          description={`No pipeline matches "${filter.trim()}". Search by name, path, kind, or project.`}
+          data-testid="repo-no-matches"
+        />
+      </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-2" data-testid="repo-projects">
+      {cappedNote}
       {groupByProject(matches).map(([project, rows]) => (
         <ProjectGroup
           key={project}
@@ -88,6 +102,7 @@ function PipelinesByProject({
           rows={rows}
           repoId={repoId}
           filtered={needle !== ""}
+          defaultOpen={needle !== ""}
           onOpen={onOpen}
           onRunBatch={onRunBatch}
         />
@@ -257,8 +272,14 @@ export default function RepoDetailPage() {
             </>
           )}
         >
-          <DetailPair label="Remote URL">{repo.remoteUrl ?? "-"}</DetailPair>
-          <DetailPair label="Root path">{repo.rootPath ?? "-"}</DetailPair>
+          {/* URL and root path are the two values long enough to wrap over several lines and push the rest of the
+              grid down, so they clip to one line and carry the full string in a tooltip and on the clipboard. */}
+          <DetailPair label="Remote URL">
+            <TruncatedText text={repo.remoteUrl} mono copy copyTestId="copy-remote-url" />
+          </DetailPair>
+          <DetailPair label="Root path">
+            <TruncatedText text={repo.rootPath} mono copy copyTestId="copy-root-path" />
+          </DetailPair>
           <DetailPair label="Branch">{source?.branch ?? "-"}</DetailPair>
           <DetailPair label="Sync">
             {source === undefined
@@ -281,28 +302,13 @@ export default function RepoDetailPage() {
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-medium">Projects</h2>
-          <div className="relative w-full sm:w-72">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={pipelineFilter}
-              onChange={(e) => setPipelineFilter(e.target.value)}
-              placeholder="Search by name, path, kind, project"
-              aria-label="Search pipelines"
-              className="h-8 pl-8 pr-8 text-[13px]"
-              data-testid="repo-pipeline-search"
-            />
-            {pipelineFilter !== "" && (
-              <button
-                type="button"
-                onClick={() => setPipelineFilter("")}
-                aria-label="Clear search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                data-testid="repo-pipeline-search-clear"
-              >
-                <X className="size-4" />
-              </button>
-            )}
-          </div>
+          <SearchInput
+            value={pipelineFilter}
+            onChange={setPipelineFilter}
+            placeholder="Search by name, path, kind, project"
+            label="Search pipelines"
+            testId="repo-pipeline-search"
+          />
         </div>
         <PipelinesByProject
           repoId={repoId}

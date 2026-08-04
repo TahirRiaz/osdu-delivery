@@ -41,9 +41,11 @@ test.describe.serial("new features", () => {
     await expect(adminPage.getByTestId("page-repo-detail")).toBeVisible({ timeout: 15_000 });
 
     // Pipelines are grouped into project (root-folder) sections; the fixture flow sits at the repo root, so it is
-    // under one project accordion, and its pipeline is listed and reachable.
+    // under one project accordion. The accordions start collapsed, so opening the "(root)" one reveals its flows.
     await expect(adminPage.getByTestId("repo-projects")).toBeVisible({ timeout: 15_000 });
-    await expect(adminPage.getByTestId("repo-project").first()).toBeVisible();
+    const rootFolder = adminPage.getByTestId("repo-project").filter({ hasText: "(root)" });
+    await expect(rootFolder).toBeVisible();
+    await rootFolder.getByText("(root)").click();
     await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first()).toBeVisible();
   });
 
