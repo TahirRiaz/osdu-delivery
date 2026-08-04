@@ -573,6 +573,11 @@ export interface Node {
   restartRequestedUtc: string | null;
 }
 
+/** The outcome of purging the fleet registry's offline nodes: how many dead entries were removed. */
+export interface NodePurgeResult {
+  removed: number;
+}
+
 /** One worker pool's desired compute state and its live resolution. `pool` is the empty string for the default
  *  (untargeted) pool. `replicaTarget` is the count the autoscaler holds: max of queued runs, the always-on floor,
  *  and the manual override while active. */

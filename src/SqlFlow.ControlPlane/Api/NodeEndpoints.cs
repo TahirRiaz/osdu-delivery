@@ -22,6 +22,9 @@ public sealed record WorkerPoolDto(
     string Pool, int MinReplicas, int ManualReplicas, DateTime? ManualUntilUtc, bool ManualActive,
     int QueuedRuns, int ReplicaTarget, int OnlineNodes, DateTime? UpdatedUtc, string? UpdatedBy);
 
+/// <summary>The outcome of purging the fleet registry's offline nodes: how many dead entries were removed.</summary>
+public sealed record NodePurgeResult(int Removed);
+
 /// <summary>A request to set a pool's desired compute state. Every field is optional so a caller can adjust one facet
 /// without disturbing the other: send <see cref="MinReplicas"/> to set/clear the always-on floor; send
 /// <see cref="ManualReplicas"/> (with <see cref="ManualForMinutes"/>) to bring workers up now for a bounded window
@@ -34,7 +37,8 @@ public sealed record WorkerPoolScaleRequest(
 /// The fleet surface. Reads (<c>read</c> scope): <c>GET /api/v1/nodes</c> lists the workers that have heartbeated,
 /// most recently seen first, with a derived online flag; <c>GET /api/v1/nodes/pools</c> lists each pool's desired
 /// state and resolved replica target. Controls (<c>operate</c> scope): <c>PUT /api/v1/nodes/pools/scale</c> sets a
-/// pool's always-on floor and manual override, and <c>POST /api/v1/nodes/{name}/restart</c> asks a node to restart.
+/// pool's always-on floor and manual override, <c>POST /api/v1/nodes/{name}/restart</c> asks a node to restart, and
+/// <c>DELETE /api/v1/nodes/{name}</c> / <c>DELETE /api/v1/nodes/offline</c> drop one dead entry or every offline one.
 /// The control plane never calls the orchestrator: both controls only write catalog rows, which the worker (restart)
 /// and the autoscaler (scale, which already queries the catalog) read, so influencing compute needs no
 /// infrastructure credentials.
@@ -64,6 +68,10 @@ public static class NodeEndpoints
         ArgumentNullException.ThrowIfNull(group);
         group.MapPut("/nodes/pools/scale", ScalePoolAsync).WithTags("Nodes").WithName("ScaleWorkerPool");
         group.MapPost("/nodes/{name}/restart", RestartNodeAsync).WithTags("Nodes").WithName("RestartNode");
+        // The literal /nodes/offline outranks the /nodes/{name} parameter route, so the bulk purge is never mistaken
+        // for a single delete. Worker names are orchestrator-generated (sqlflow-worker--<revision>-<suffix>), so no
+        // real node answers to "offline".
+        group.MapDelete("/nodes/offline", PurgeOfflineNodesAsync).WithTags("Nodes").WithName("PurgeOfflineNodes");
         group.MapDelete("/nodes/{name}", DeleteNodeAsync).WithTags("Nodes").WithName("DeleteNode");
         return group;
     }
@@ -214,6 +222,18 @@ public static class NodeEndpoints
         }
 
         return TypedResults.Ok();
+    }
+
+    private static async Task<Ok<NodePurgeResult>> PurgeOfflineNodesAsync(
+        CatalogDbContext db, TimeProvider clock, CancellationToken ct)
+    {
+        // "Offline" here is exactly what the list view shows: last heartbeat older than the liveness window. Every
+        // worker pod registers under a fresh name, so these rows are dead for good; a node that is somehow still
+        // alive re-registers on its next heartbeat. This is the on-demand form of the reaper's scheduled prune.
+        var removed = await NodeStore
+            .PruneStaleAsync(db, clock.GetUtcNow().UtcDateTime - OnlineWindow, ct)
+            .ConfigureAwait(false);
+        return TypedResults.Ok(new NodePurgeResult(removed));
     }
 
     private static ProblemHttpResult BadRequest(string detail)

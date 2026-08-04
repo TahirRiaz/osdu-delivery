@@ -9,7 +9,7 @@ import type {
   FlowInsights, Recommendations, StepInsights,
   DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
   FilePipelineMatch,
-  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodeScript,
+  LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodePurgeResult, NodeScript,
   ObjectDossier, PipelineBatch, SchemaKindCount, FileNode, FileFlows,
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
@@ -269,6 +269,8 @@ export const nodeApi = {
   restart: (name: string) => post<void>(`/api/v1/nodes/${encodeURIComponent(name)}/restart`),
   /** Remove a node from the fleet registry (a dead entry); a live node re-registers on its next heartbeat. */
   delete: (name: string) => del<void>(`/api/v1/nodes/${encodeURIComponent(name)}`),
+  /** Drop every offline node from the fleet registry at once; returns how many entries were removed. */
+  purgeOffline: () => del<NodePurgeResult>("/api/v1/nodes/offline"),
 };
 
 // ---- Datasources and ad-hoc compute ---------------------------------------------------------------------------------

@@ -85,6 +85,57 @@ public sealed class NodeRegistryTests
         }
     }
 
+    // The purge is fleet-wide by design, so this test also clears any other dead rows the shared catalog is holding.
+    // That is exactly what the reaper does on its own schedule, and no live node is touched.
+    [SkippableFact]
+    public async Task PurgeOffline_RemovesStaleNodes_AndLeavesLiveOnesAlone()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var onlineNode = "node_on_" + suffix;
+        var offlineNode = "node_off_" + suffix;
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await NodeStore.HeartbeatAsync(db, onlineNode, "1.0", DateTime.UtcNow);
+                db.Nodes.Add(new CatalogNode
+                {
+                    Name = offlineNode,
+                    FirstSeenUtc = DateTime.UtcNow.AddDays(-1),
+                    LastSeenUtc = DateTime.UtcNow.AddMinutes(-10), // well outside the liveness window
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["operate"]);
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Delete, new Uri("/api/v1/nodes/offline", UriKind.Relative));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            var purged = await response.Content.ReadFromJsonAsync<NodePurgeResult>();
+
+            Assert.NotNull(purged);
+            Assert.True(purged.Removed >= 1, "the stale node should have been purged");
+
+            await using var check = CatalogDatabase.Create(cs);
+            Assert.False(await check.Nodes.AnyAsync(n => n.Name == offlineNode), "the offline node should be gone");
+            Assert.True(await check.Nodes.AnyAsync(n => n.Name == onlineNode), "a live node must survive the purge");
+        }
+        finally
+        {
+            await Cleanup(cs, onlineNode);
+            await Cleanup(cs, offlineNode);
+        }
+    }
+
     private static async Task Cleanup(string cs, string node)
     {
         await using var db = CatalogDatabase.Create(cs);

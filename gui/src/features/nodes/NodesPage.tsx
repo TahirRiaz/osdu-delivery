@@ -8,6 +8,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { OnlineBadge } from "../../components/StatusBadge";
 import { NodeRestartButton } from "./NodeRestartButton";
 import { NodeDeleteButton } from "./NodeDeleteButton";
+import { PurgeOfflineNodesButton } from "./PurgeOfflineNodesButton";
 import { WorkerPoolsPanel } from "./WorkerPoolsPanel";
 
 const columns: Column<Node>[] = [
@@ -33,13 +34,15 @@ const columns: Column<Node>[] = [
 ];
 
 /** The worker fleet: which nodes exist, which are heartbeating, and what they run, plus per-pool compute controls
- *  (always-on floor, manual scale, spawn) and a per-node restart. */
+ *  (always-on floor, manual scale, spawn), a per-node restart, and a purge of the offline entries the fleet
+ *  accumulates as pods come and go. */
 export default function NodesPage() {
   return (
     <Page data-testid="page-nodes">
       <PageHeader
         title="Nodes"
         subtitle="A node is online when it heartbeated within the last minute; anything older shows as offline."
+        actions={<PurgeOfflineNodesButton />}
       />
 
       <WorkerPoolsPanel />
