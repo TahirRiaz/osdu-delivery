@@ -13,6 +13,7 @@ import {
   KeyRound,
   KeySquare,
   LayoutDashboard,
+  MonitorPlay,
   Network,
   Radar,
   Search,
@@ -86,6 +87,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: "Catalog", to: "/catalog", icon: BookOpen, testId: "nav-catalog" },
       { label: "Lineage", to: "/lineage", icon: Network, testId: "nav-lineage" },
+      { label: "Subscribers", to: "/subscribers", icon: MonitorPlay, testId: "nav-subscribers" },
       { label: "Search", to: "/search", icon: Search, testId: "nav-search" },
     ],
   },

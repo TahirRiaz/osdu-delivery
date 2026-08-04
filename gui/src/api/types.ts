@@ -934,6 +934,68 @@ export interface ObjectDossier {
   references: ObjectRelationship[];
   /** Tables that reference this object (it is the referenced/key side). */
   referencedBy: ObjectRelationship[];
+  /** The data subscribers that consume this object: who breaks if it changes. */
+  subscribers: ObjectSubscriber[];
+}
+
+/** One data subscriber consuming an object, resolved from its read edges. `queries` names the subscriber's
+ * own queries that reference this object, so the link is evidence rather than assertion. */
+export interface ObjectSubscriber {
+  /** The subscriber's node key; opens its dossier. */
+  key: string;
+  name: string;
+  /** What consumes the data: PowerBI, Tableau, Excel, Notebook, Application, ... */
+  type: string;
+  owner: string | null;
+  description: string | null;
+  url: string | null;
+  queries: string[];
+}
+
+/** One data subscriber in the estate-wide list: what consumes the warehouse and how much of it it reads. */
+export interface Subscriber {
+  key: string;
+  name: string;
+  type: string;
+  owner: string | null;
+  description: string | null;
+  url: string | null;
+  repoId: string;
+  /** The repo-relative subscribers.yaml that declares it. */
+  file: string;
+  queryCount: number;
+  /** How many distinct warehouse objects its queries read, from the lineage edges. */
+  objectCount: number;
+  firstSeenUtc: string;
+  lastSeenUtc: string;
+}
+
+/** Everything one subscriber consumes: the consumption-side twin of the object dossier. */
+export interface SubscriberDossier {
+  subscriber: Subscriber;
+  queries: SubscriberQuery[];
+  objects: SubscriberObject[];
+}
+
+/** One query a subscriber runs, and the object keys parsing it proved it reads. */
+export interface SubscriberQuery {
+  ordinal: number;
+  name: string;
+  serverRef: string;
+  sql: string;
+  objectKeys: string[];
+}
+
+/** One warehouse object a subscriber reads, with the subscriber's queries that reference it. */
+export interface SubscriberObject {
+  key: string;
+  database: string | null;
+  schema: string | null;
+  name: string;
+  kind: string;
+  /** The object's depth in the estate-wide data-movement graph; null when it takes part in none. */
+  level: number | null;
+  queries: string[];
 }
 
 export interface WavePipeline {

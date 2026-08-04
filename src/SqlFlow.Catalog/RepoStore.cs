@@ -58,6 +58,8 @@ public static class RepoStore
             await catalog.PipelineColumns.Where(c => c.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             var lineageEdges = await catalog.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await catalog.ObjectRelationships.Where(r => r.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.SubscriberQueries.Where(q => q.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.Subscribers.Where(s => s.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await catalog.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await catalog.ScheduleMembers.Where(m => m.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             var schedules = await catalog.Schedules.Where(s => s.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);

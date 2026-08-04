@@ -2049,7 +2049,7 @@
       "path": "flow/sp.md",
       "title": "Stored-procedure flow (flowType: sp)",
       "type": "flow-reference",
-      "summary": "flowType: sp executes one existing stored procedure (three-part name, no parameters) on a resolved SQL Server, with optional post-run invoke hook.",
+      "summary": "flowType: sp executes one existing stored procedure (three-part name) on a resolved SQL Server, binding literal or run-time-resolved parameters, with optiona...",
       "keywords": [
         "stored procedure",
         "flowtype sp",
@@ -2076,6 +2076,47 @@
         "src/SqlFlow.SqlServer/StoredProcedures/StoredProcedureFlowRunner.cs",
         "samples/sp/refresh-marts.flow.yaml",
         "samples/lineage-demo/30-build-order-fact.flow.yaml"
+      ]
+    },
+    {
+      "id": "flow-subscribers",
+      "path": "flow/subscribers.md",
+      "title": "subscribers.yaml and consumption lineage",
+      "type": "flow-reference",
+      "summary": "Declare who consumes the warehouse in a subscribers.yaml; every subscriber query is parsed into read edges, so lineage answers which report uses which table.",
+      "keywords": [
+        "subscribers.yaml",
+        "data subscriber",
+        "subscriber",
+        "consumer",
+        "powerbi",
+        "tableau",
+        "dashboard",
+        "report",
+        "consumption lineage",
+        "who reads this table",
+        "impact analysis",
+        "downstream",
+        "DataSubscriber",
+        "DataSubscriberQuery"
+      ],
+      "yamlPath": "subscribers",
+      "related": [
+        "concept-lineage-graph-and-plan",
+        "concept-lineage-tiers",
+        "flow-schedule",
+        "flow-overview"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Subscribers/DataSubscriber.cs",
+        "src/SqlFlow.Yaml/YamlSubscriberLibraryLoader.cs",
+        "src/SqlFlow.Lineage/Collection/FlowSetCollector.cs",
+        "src/SqlFlow.Lineage/Collection/LineageFacts.cs",
+        "src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs",
+        "src/SqlFlow.Core/Lineage/LineageReport.cs",
+        "src/SqlFlow.Catalog/CatalogEntities.cs",
+        "src/SqlFlow.Catalog/CatalogSync.cs",
+        "src/SqlFlow.ControlPlane/Api/LineageEndpoints.cs"
       ]
     },
     {

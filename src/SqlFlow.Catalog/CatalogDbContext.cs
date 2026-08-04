@@ -32,6 +32,10 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogObjectRelationship> ObjectRelationships => Set<CatalogObjectRelationship>();
 
+    public DbSet<CatalogSubscriber> Subscribers => Set<CatalogSubscriber>();
+
+    public DbSet<CatalogSubscriberQuery> SubscriberQueries => Set<CatalogSubscriberQuery>();
+
     public DbSet<CatalogFlowDependency> FlowDependencies => Set<CatalogFlowDependency>();
 
     public DbSet<CatalogRunFile> RunFiles => Set<CatalogRunFile>();
@@ -236,6 +240,36 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(r => r.FromObjectKey);
             entity.HasIndex(r => r.ToObjectKey);
             entity.HasIndex(r => r.RepoId);
+        });
+
+        modelBuilder.Entity<CatalogSubscriber>(entity =>
+        {
+            entity.ToTable("Subscriber");
+            entity.HasKey(s => s.Id);
+            entity.Property(s => s.Name).HasMaxLength(250).IsRequired();
+            entity.Property(s => s.Type).HasMaxLength(250).IsRequired();
+            entity.Property(s => s.ObjectKey).HasMaxLength(900).IsRequired();
+            entity.Property(s => s.File).HasMaxLength(1024).IsRequired();
+            entity.Property(s => s.Owner).HasMaxLength(250);
+            entity.Property(s => s.Description).HasMaxLength(1024);
+            entity.Property(s => s.Url).HasMaxLength(1024);
+            // The hot queries: the per-repo replacement, a subscriber by name, and the join back from an edge's
+            // ViaModule to the consumer it belongs to.
+            entity.HasIndex(s => s.RepoId);
+            entity.HasIndex(s => s.Name);
+            entity.HasIndex(s => s.ObjectKey);
+        });
+
+        modelBuilder.Entity<CatalogSubscriberQuery>(entity =>
+        {
+            entity.ToTable("SubscriberQuery");
+            entity.HasKey(q => q.Id);
+            entity.Property(q => q.SubscriberKey).HasMaxLength(900).IsRequired();
+            entity.Property(q => q.Name).HasMaxLength(250).IsRequired();
+            entity.Property(q => q.ServerRef).HasMaxLength(400).IsRequired();
+            entity.Property(q => q.Sql).IsRequired();
+            entity.HasIndex(q => q.SubscriberKey);
+            entity.HasIndex(q => q.RepoId);
         });
 
         modelBuilder.Entity<CatalogFlowDependency>(entity =>

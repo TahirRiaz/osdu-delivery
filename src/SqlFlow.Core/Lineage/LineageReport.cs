@@ -29,6 +29,12 @@ public enum LineageNodeKind
 
     /// <summary>A file endpoint (a file flow's source, an export flow's destination).</summary>
     File = 7,
+
+    /// <summary>A data subscriber: a report, workbook, notebook, or application that CONSUMES the warehouse.
+    /// It is the far end of the graph, the only node kind that lives outside the databases SQLFlow moves data
+    /// between, and it exists so "which dashboard breaks if I change this table" is a graph query rather than
+    /// tribal knowledge.</summary>
+    Subscriber = 8,
 }
 
 /// <summary>How a flow or module relates to an object (the DeltaForge typed-relation taxonomy).</summary>
@@ -65,6 +71,53 @@ public sealed record LineageFlowNode
     /// <summary>The flow's declared lifecycle (the YAML <c>lifecycle:</c>): only production pipelines generate
     /// notification events. Execution is unaffected either way.</summary>
     public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
+}
+
+/// <summary>
+/// One data subscriber participating in the graph: a report, workbook, notebook, or application that consumes
+/// the warehouse. A subscriber is not a flow (it never runs and moves nothing) and not a database object, so it
+/// carries its own node record; its <see cref="ObjectKey"/> is the identity of the
+/// <see cref="LineageNodeKind.Subscriber"/> object node its read edges point from, which is how the consumption
+/// side and the production side meet in one graph.
+/// </summary>
+public sealed record LineageSubscriberNode
+{
+    public required string Name { get; init; }
+
+    /// <summary>What consumes the data: PowerBI, Tableau, Excel, Notebook, Application, or the estate's own label.</summary>
+    public required string Type { get; init; }
+
+    /// <summary>The subscriber's node key: the identity its <c>Reads</c> edges carry as <c>ViaModule</c>.</summary>
+    public required string ObjectKey { get; init; }
+
+    /// <summary>The subscriber library file that declares it, relative to the scanned folder.</summary>
+    public required string File { get; init; }
+
+    /// <summary>The team or person to contact before a breaking change to a table it reads.</summary>
+    public string? Owner { get; init; }
+
+    public string? Description { get; init; }
+
+    /// <summary>Where the subscriber lives (report URL, workbook path, repository).</summary>
+    public string? Url { get; init; }
+
+    /// <summary>The queries it runs, in declaration order: the evidence behind its read edges.</summary>
+    public required IReadOnlyList<LineageSubscriberQuery> Queries { get; init; }
+}
+
+/// <summary>One query a subscriber runs, and the objects parsing it proved that query reads.</summary>
+public sealed record LineageSubscriberQuery
+{
+    public required string Name { get; init; }
+
+    /// <summary>The server identity the query runs against (the connection reference behind its alias).</summary>
+    public required string ServerRef { get; init; }
+
+    /// <summary>The query text as declared. Kept so the catalog can show WHY a table is linked to a report.</summary>
+    public required string Sql { get; init; }
+
+    /// <summary>The node keys this query reads, ordinal-sorted and deduplicated.</summary>
+    public required IReadOnlyList<string> ObjectKeys { get; init; }
 }
 
 /// <summary>One catalog or file object participating in the graph. The key is the canonical node identity:
@@ -272,8 +325,9 @@ public sealed record LineageReport
     /// <summary>The current lineage.json schema version written by this build. Version 2 adds the object
     /// <see cref="LineageObjectNode.Script"/> and its offline columns; version 3 adds the interpreted data
     /// model (the per-object <see cref="LineageObjectNode.KeyColumns"/> and the <see cref="Relationships"/>
-    /// list). Each version is additive: an older reader sees the same shape plus new fields it can ignore.</summary>
-    public const int CurrentSchemaVersion = 3;
+    /// list); version 4 adds the consumption side (<see cref="Subscribers"/> and their read edges). Each
+    /// version is additive: an older reader sees the same shape plus new fields it can ignore.</summary>
+    public const int CurrentSchemaVersion = 4;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
@@ -290,6 +344,13 @@ public sealed record LineageReport
     public required IReadOnlyList<LineageObjectNode> Objects { get; init; }
 
     public required IReadOnlyList<LineageEdge> Edges { get; init; }
+
+    /// <summary>The consumption side of the estate: every declared data subscriber, sorted by name, with the
+    /// queries that link it to the warehouse. Their read edges are in <see cref="Edges"/> like any other fact
+    /// (carrying the subscriber's node key as <c>ViaModule</c>), so "what consumes this table" needs no special
+    /// query path. Empty when the estate declares no <c>subscribers.yaml</c>; not required in the envelope so a
+    /// version-3 document still deserializes.</summary>
+    public IReadOnlyList<LineageSubscriberNode> Subscribers { get; init; } = [];
 
     /// <summary>The interpreted data model: every PK/FK-style relationship the codebase's SQL exhibits
     /// (explicit constraint clauses plus inferred join predicates), both ends resolved to node keys and

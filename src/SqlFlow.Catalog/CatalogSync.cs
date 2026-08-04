@@ -1374,6 +1374,52 @@ public sealed class CatalogSync
             context.ObjectRelationships.Add(CatalogProjection.Relationship(relationship, repoId));
         }
 
+        // The consumption side. Repo-scoped and replaced wholesale like the edges above: a subscriber deleted from
+        // subscribers.yaml must stop being listed as a consumer, and its stale queries must go with it. FirstSeenUtc
+        // survives the replacement, so the catalog can still say how long a report has been reading the warehouse.
+        var subscriberFirstSeen = await context.Subscribers.AsNoTracking()
+            .Where(s => s.RepoId == repoId)
+            .Select(s => new { s.ObjectKey, s.FirstSeenUtc })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var firstSeenByKey = subscriberFirstSeen.ToDictionary(s => s.ObjectKey, s => s.FirstSeenUtc, StringComparer.Ordinal);
+
+        await context.SubscriberQueries.Where(q => q.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        await context.Subscribers.Where(s => s.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        foreach (var subscriber in report.Subscribers)
+        {
+            context.Subscribers.Add(new CatalogSubscriber
+            {
+                RepoId = repoId,
+                Name = subscriber.Name,
+                Type = subscriber.Type,
+                ObjectKey = subscriber.ObjectKey,
+                File = subscriber.File,
+                Owner = subscriber.Owner,
+                Description = subscriber.Description,
+                Url = subscriber.Url,
+                FirstSeenUtc = firstSeenByKey.TryGetValue(subscriber.ObjectKey, out var seen) ? seen : nowUtc,
+                LastSeenUtc = nowUtc,
+            });
+
+            var ordinal = 0;
+            foreach (var query in subscriber.Queries)
+            {
+                ordinal++;
+                context.SubscriberQueries.Add(new CatalogSubscriberQuery
+                {
+                    RepoId = repoId,
+                    SubscriberKey = subscriber.ObjectKey,
+                    Ordinal = ordinal,
+                    Name = query.Name,
+                    ServerRef = query.ServerRef,
+                    // A subscriber query is authored SQL and can embed a literal credential exactly as a module
+                    // body can, so it is redacted on the same path the object definitions take.
+                    Sql = SecretHygiene.RedactedMessage(query.Sql),
+                    ObjectKeys = string.Join('\n', query.ObjectKeys),
+                });
+            }
+        }
+
         // Object levels: each object's depth in the ESTATE-WIDE data-movement graph, so the explorer lists and
         // sorts objects in dependency order (sources first, then everything derived from them, row by row).
         // The graph merges this report's edges (pending in the change tracker; this repo's stored edges were

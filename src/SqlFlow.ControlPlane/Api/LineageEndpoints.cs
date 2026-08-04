@@ -81,7 +81,39 @@ public sealed record ObjectDossierDto(
     IReadOnlyList<ObjectColumnDto> Columns,
     IReadOnlyList<EdgeDto> Edges,
     IReadOnlyList<ObjectRelationshipDto> References,
-    IReadOnlyList<ObjectRelationshipDto> ReferencedBy);
+    IReadOnlyList<ObjectRelationshipDto> ReferencedBy,
+    IReadOnlyList<ObjectSubscriberDto> Subscribers);
+
+/// <summary>One data subscriber that consumes an object: the answer to "who breaks if I change this table",
+/// resolved from the object's read edges to the consumer behind them. <c>Queries</c> names the subscriber's
+/// queries that actually reference this object, so the link is evidence rather than assertion.</summary>
+public sealed record ObjectSubscriberDto(
+    string Key, string Name, string Type, string? Owner, string? Description, string? Url,
+    IReadOnlyList<string> Queries);
+
+/// <summary>One data subscriber in the estate-wide list: what consumes the warehouse, who owns it, and how many
+/// distinct objects its queries read.</summary>
+public sealed record SubscriberDto(
+    string Key, string Name, string Type, string? Owner, string? Description, string? Url,
+    Guid RepoId, string File, int QueryCount, int ObjectCount, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>Everything known about one subscriber: its metadata, the queries it runs, and every warehouse
+/// object those queries read, resolved to real names. This is the consumption-side twin of the object
+/// dossier: the object dossier answers "who consumes me", this answers "what do I consume".</summary>
+public sealed record SubscriberDossierDto(
+    SubscriberDto Subscriber,
+    IReadOnlyList<SubscriberQueryDto> Queries,
+    IReadOnlyList<SubscriberObjectDto> Objects);
+
+/// <summary>One query a subscriber runs, and the objects parsing it proved it reads.</summary>
+public sealed record SubscriberQueryDto(
+    int Ordinal, string Name, string ServerRef, string Sql, IReadOnlyList<string> ObjectKeys);
+
+/// <summary>One warehouse object a subscriber reads, located and named from the global object registry, with
+/// the subscriber's own queries that reference it.</summary>
+public sealed record SubscriberObjectDto(
+    string Key, string? Database, string? Schema, string Name, string Kind, int? Level,
+    IReadOnlyList<string> Queries);
 
 /// <summary>One repo whose lineage references an object: how many edges in that repo touch it, and whether any of
 /// them writes/creates it (the repo where a flow populates it). The list is ranked so the writing repo comes
@@ -212,6 +244,8 @@ public static class LineageEndpoints
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
         lineage.MapGet("/file-pipelines", MatchFilePipelinesAsync).WithName("MatchFilePipelines");
         lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
+        lineage.MapGet("/subscribers", ListSubscribersAsync).WithName("ListLineageSubscribers");
+        lineage.MapGet("/subscribers/dossier", GetSubscriberDossierAsync).WithName("GetLineageSubscriberDossier");
         lineage.MapGet("/projects", ListProjectsAsync).WithName("ListLineageProjects");
         lineage.MapGet("/project-graph", GetProjectGraphAsync).WithName("GetLineageProjectGraph");
 
@@ -770,6 +804,11 @@ public static class LineageEndpoints
     /// collection is capped for a stable, single-response payload (the paged endpoints serve the full sets).</summary>
     private const int MaxDossierRows = 500;
 
+    /// <summary>The node-key prefix every data subscriber carries: subscribers live on a synthetic server
+    /// identity, so a key starting with this is a consumer, never a database object. Mirrors the <c>file|</c>
+    /// prefix the drawable graph already keys file endpoints by.</summary>
+    private const string SubscriberKeyPrefix = "subscriber|";
+
     private static async Task<Results<Ok<ObjectDossierDto>, ProblemHttpResult>> GetObjectDossierAsync(
         string key, CatalogDbContext db, CancellationToken ct)
     {
@@ -846,7 +885,197 @@ public static class LineageEndpoints
             .OrderByDescending(r => r.Occurrences).ThenBy(r => r.OtherName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges, references, referencedBy));
+        // Who consumes this object. The read edges already carry it, but a raw subscriber node key tells a person
+        // nothing; this resolves them to the reports and their owners, which is the whole point of the model.
+        var subscribers = await LoadObjectSubscribersAsync(db, key, ct).ConfigureAwait(false);
+
+        return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges, references, referencedBy, subscribers));
+    }
+
+    /// <summary>
+    /// The estate's data subscribers: every report, workbook, notebook, and application declared as consuming
+    /// the warehouse, with how much of it each one reads. Filterable by <c>type</c> (the consuming tool) and by
+    /// a free-text <c>search</c> over the name and owner, which is how a person actually looks a dashboard up.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<SubscriberDto>>> ListSubscribersAsync(
+        CatalogDbContext db, string? type, string? search, CancellationToken ct)
+    {
+        var query = db.Subscribers.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            query = query.Where(s => s.Type == type);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(s => s.Name.Contains(term)
+                || (s.Owner != null && s.Owner.Contains(term))
+                || (s.Description != null && s.Description.Contains(term)));
+        }
+
+        var rows = await query
+            .OrderBy(s => s.Name)
+            .Take(MaxDossierRows)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (rows.Count == 0)
+        {
+            return TypedResults.Ok<IReadOnlyList<SubscriberDto>>([]);
+        }
+
+        var keys = rows.Select(s => s.ObjectKey).ToList();
+        var queryCounts = (await db.SubscriberQueries.AsNoTracking()
+                .Where(q => keys.Contains(q.SubscriberKey))
+                .GroupBy(q => q.SubscriberKey)
+                .Select(g => new { Key = g.Key, Count = g.Count() })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToDictionary(x => x.Key, x => x.Count, StringComparer.Ordinal);
+
+        // How much of the warehouse each subscriber touches comes from the EDGES, not from the stored query
+        // text: the edges are what the parser actually resolved, deduplicated across a subscriber's queries.
+        var objectCounts = (await db.LineageEdges.AsNoTracking()
+                .Where(e => e.Flow == null && e.ViaModule != null && keys.Contains(e.ViaModule))
+                .Select(e => new { Key = e.ViaModule!, e.ObjectKey })
+                .Distinct()
+                .GroupBy(x => x.Key)
+                .Select(g => new { Key = g.Key, Count = g.Count() })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToDictionary(x => x.Key, x => x.Count, StringComparer.Ordinal);
+
+        var result = rows
+            .Select(s => new SubscriberDto(
+                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Url, s.RepoId, s.File,
+                queryCounts.GetValueOrDefault(s.ObjectKey),
+                objectCounts.GetValueOrDefault(s.ObjectKey),
+                s.FirstSeenUtc, s.LastSeenUtc))
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<SubscriberDto>>(result);
+    }
+
+    /// <summary>
+    /// Everything one subscriber consumes: its queries, and every warehouse object those queries read, named and
+    /// located from the global object registry. The per-object query list comes from the stored per-query
+    /// breakdown, so the answer to "why does this report depend on that table" is the query that says so.
+    /// </summary>
+    private static async Task<Results<Ok<SubscriberDossierDto>, ProblemHttpResult>> GetSubscriberDossierAsync(
+        string key, CatalogDbContext db, CancellationToken ct)
+    {
+        var row = await db.Subscribers.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ObjectKey == key, ct).ConfigureAwait(false);
+        if (row is null)
+        {
+            return NotFound("subscriber", key);
+        }
+
+        var queryRows = await db.SubscriberQueries.AsNoTracking()
+            .Where(q => q.SubscriberKey == key)
+            .OrderBy(q => q.Ordinal)
+            .Take(MaxDossierRows)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var queries = queryRows
+            .Select(q => new SubscriberQueryDto(q.Ordinal, q.Name, q.ServerRef, q.Sql, SplitKeys(q.ObjectKeys)))
+            .ToList();
+
+        // The object side: every key any of the queries read, with the queries that read it. Built from the
+        // per-query breakdown so a table read by three of a report's datasets says so.
+        var queriesByObject = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var query in queries)
+        {
+            foreach (var objectKey in query.ObjectKeys)
+            {
+                if (!queriesByObject.TryGetValue(objectKey, out var names))
+                {
+                    names = [];
+                    queriesByObject[objectKey] = names;
+                }
+
+                if (!names.Contains(query.Name, StringComparer.Ordinal))
+                {
+                    names.Add(query.Name);
+                }
+            }
+        }
+
+        var levels = (await db.Objects.AsNoTracking()
+                .Where(o => queriesByObject.Keys.Contains(o.Key))
+                .Select(o => new { o.Key, o.Level })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToDictionary(x => x.Key, x => x.Level, StringComparer.Ordinal);
+        var locations = await LoadObjectLocationsAsync(db, queriesByObject.Keys.ToList(), ct).ConfigureAwait(false);
+
+        var objects = queriesByObject
+            .Select(entry =>
+            {
+                var found = locations.TryGetValue(entry.Key, out var location);
+                return new SubscriberObjectDto(
+                    entry.Key, location.Database, location.Schema,
+                    found ? location.Name : entry.Key,
+                    location.Kind ?? "Unknown",
+                    levels.GetValueOrDefault(entry.Key),
+                    entry.Value);
+            })
+            .OrderBy(o => o.Schema, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(o => o.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var subscriber = new SubscriberDto(
+            row.ObjectKey, row.Name, row.Type, row.Owner, row.Description, row.Url, row.RepoId, row.File,
+            queries.Count, objects.Count, row.FirstSeenUtc, row.LastSeenUtc);
+        return TypedResults.Ok(new SubscriberDossierDto(subscriber, queries, objects));
+    }
+
+    /// <summary>Splits a stored newline-joined object-key list back into its keys, dropping blanks (a query that
+    /// resolved nothing stores an empty string).</summary>
+    private static IReadOnlyList<string> SplitKeys(string joined)
+        => string.IsNullOrEmpty(joined)
+            ? []
+            : joined.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>The subscribers consuming one object, for its dossier: the read edges attributed to a subscriber
+    /// node, joined to the consumer rows and to the individual queries that name the object.</summary>
+    private static async Task<IReadOnlyList<ObjectSubscriberDto>> LoadObjectSubscribersAsync(
+        CatalogDbContext db, string objectKey, CancellationToken ct)
+    {
+        // A subscriber's facts are module-attributed (no flow), so its edges are exactly the flowless ones whose
+        // ViaModule is a known subscriber key.
+        var moduleKeys = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.ObjectKey == objectKey && e.Flow == null && e.ViaModule != null)
+            .Select(e => e.ViaModule!)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (moduleKeys.Count == 0)
+        {
+            return [];
+        }
+
+        var rows = await db.Subscribers.AsNoTracking()
+            .Where(s => moduleKeys.Contains(s.ObjectKey))
+            .OrderBy(s => s.Name)
+            .Take(MaxDossierRows)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var keys = rows.Select(s => s.ObjectKey).ToList();
+        var queryRows = await db.SubscriberQueries.AsNoTracking()
+            .Where(q => keys.Contains(q.SubscriberKey))
+            .OrderBy(q => q.Ordinal)
+            .Select(q => new { q.SubscriberKey, q.Name, q.ObjectKeys })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var namingQueries = queryRows
+            .Where(q => SplitKeys(q.ObjectKeys).Contains(objectKey, StringComparer.Ordinal))
+            .GroupBy(q => q.SubscriberKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<string>)g.Select(q => q.Name).ToList(), StringComparer.Ordinal);
+
+        return rows
+            .Select(s => new ObjectSubscriberDto(
+                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Url,
+                namingQueries.GetValueOrDefault(s.ObjectKey, [])))
+            .ToList();
     }
 
     /// <summary>Ranks a relationship tier string for the dossier's cross-repo dedupe: Derived is the live
@@ -1327,9 +1556,31 @@ public static class LineageEndpoints
             .OrderBy(key => key, StringComparer.Ordinal)
             .ToList();
 
+        // The consumption side of the drawable graph. A subscriber is referenced as a ViaModule, never as an
+        // object key, so it is absent from the registry lookup above and needs its display name fetched here;
+        // without it the canvas would draw the case-folded node key at the end of the chain.
+        var subscriberKeys = includedEdges
+            .Where(e => e.Flow is null && e.ViaModule is not null
+                && e.ViaModule.StartsWith(SubscriberKeyPrefix, StringComparison.Ordinal))
+            .Select(e => e.ViaModule!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var subscriberNames = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (subscriberKeys.Count > 0)
+        {
+            var named = await db.Subscribers.AsNoTracking()
+                .Where(s => subscriberKeys.Contains(s.ObjectKey))
+                .Select(s => new { s.ObjectKey, s.Name })
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var row in named)
+            {
+                subscriberNames.TryAdd(row.ObjectKey, row.Name);
+            }
+        }
+
         var (objects, flowGraph, objectGraph) = DeriveDrawableGraph(
             includedEdges, includedObjects, includedPipes, locations,
-            pipeRows.ToDictionary(p => p.Id, p => p.Name), openFrontier);
+            pipeRows.ToDictionary(p => p.Id, p => p.Name), openFrontier, subscriberNames);
 
         return TypedResults.Ok(new ProjectGraphDto(
             pipelines, edges, openFrontier, truncated, objects, flowGraph, objectGraph));
@@ -1343,7 +1594,10 @@ public static class LineageEndpoints
     /// knows it as one (a DB-managed fact/dim or compatibility view), and its data path draws base-to-view, so
     /// a view is never wired to the file its maintaining flow read; a <c>Requires</c> (an executed procedure)
     /// is a code dependency, not data movement, and draws nothing. The objects view composes the same facts as
-    /// object-to-object movement per flow. Self-edges never draw; the first spelling of a duplicate wins.
+    /// object-to-object movement per flow. A data subscriber is a module whose body reads but which no flow
+    /// maintains, so it draws base-to-subscriber and terminates the chain: the graph ends where the data is
+    /// actually consumed, not at the last table SQLFlow writes. Self-edges never draw; the first spelling of a
+    /// duplicate wins.
     /// </summary>
     private static (List<ProjectGraphObjectDto> Objects, List<ProjectGraphDrawEdgeDto> FlowGraph, List<ProjectGraphDrawEdgeDto> ObjectGraph) DeriveDrawableGraph(
         IReadOnlyList<EdgeRow> includedEdges,
@@ -1351,7 +1605,8 @@ public static class LineageEndpoints
         IReadOnlyCollection<Guid> includedPipes,
         IReadOnlyDictionary<string, (string? Database, string? Schema, string Name, string? Kind)> locations,
         IReadOnlyDictionary<Guid, string> pipelineNameById,
-        IReadOnlyList<string> openFrontier)
+        IReadOnlyList<string> openFrontier,
+        IReadOnlyDictionary<string, string> subscriberNames)
     {
         var frontierSet = new HashSet<string>(openFrontier, StringComparer.Ordinal);
         var nameByKey = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1389,14 +1644,24 @@ public static class LineageEndpoints
         }
 
         // A module with body reads is a view worth wiring when a flow maintains it OR the registry kind says
-        // View; an unwritten module with no known kind could be a procedure, which draws nothing.
+        // View; an unwritten module with no known kind could be a procedure, which draws nothing. A subscriber
+        // is a module too (its queries read), but never a view: it is drawn as the consuming leaf instead.
+        var subscriberKeys = moduleReads.Keys
+            .Where(subscriberNames.ContainsKey)
+            .ToHashSet(StringComparer.Ordinal);
         var viewKeys = moduleReads.Keys
+            .Where(key => !subscriberKeys.Contains(key))
             .Where(key => writtenKeys.Contains(key)
                 || (locations.TryGetValue(key, out var l) && string.Equals(l.Kind, "View", StringComparison.OrdinalIgnoreCase)))
             .ToHashSet(StringComparer.Ordinal);
 
         string KindOf(string key)
         {
+            if (subscriberKeys.Contains(key))
+            {
+                return "subscriber";
+            }
+
             if (key.StartsWith("file|", StringComparison.Ordinal))
             {
                 // A "file" node whose identity is a remote endpoint is the acquisition's external SOURCE, not a
@@ -1420,17 +1685,26 @@ public static class LineageEndpoints
             return viewKeys.Contains(key) ? "view" : "table";
         }
 
-        var objects = includedObjects
+        var includedSet = includedObjects as ISet<string> ?? new HashSet<string>(includedObjects, StringComparer.Ordinal);
+
+        // A subscriber node is drawn only when something it reads is actually on the canvas; otherwise it would
+        // float unattached in a project it consumes nothing from.
+        var drawnSubscribers = subscriberKeys
+            .Where(key => moduleReads[key].Any(includedSet.Contains))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var objects = includedObjects.Concat(drawnSubscribers)
+            .Distinct(StringComparer.Ordinal)
             .OrderBy(key => key, StringComparer.Ordinal)
             .Select(key =>
             {
                 locations.TryGetValue(key, out var loc);
-                var location = key.StartsWith("file|", StringComparison.Ordinal)
+                var location = key.StartsWith("file|", StringComparison.Ordinal) || drawnSubscribers.Contains(key)
                     ? null
                     : string.Join(".", new[] { loc.Database, loc.Schema }.Where(part => !string.IsNullOrEmpty(part)));
                 return new ProjectGraphObjectDto(
                     key,
-                    loc.Name ?? nameByKey.GetValueOrDefault(key, key),
+                    subscriberNames.GetValueOrDefault(key) ?? loc.Name ?? nameByKey.GetValueOrDefault(key, key),
                     KindOf(key),
                     string.IsNullOrEmpty(location) ? null : location,
                     frontierSet.Contains(key));
@@ -1488,7 +1762,6 @@ public static class LineageEndpoints
             }
         }
 
-        var includedSet = includedObjects as ISet<string> ?? new HashSet<string>(includedObjects, StringComparer.Ordinal);
         foreach (var viewKey in viewKeys.OrderBy(key => key, StringComparer.Ordinal))
         {
             if (!includedSet.Contains(viewKey))
@@ -1504,6 +1777,21 @@ public static class LineageEndpoints
                 {
                     AddFlowEdge(baseKey, viewKey, "view", owner);
                     AddObjectEdge(baseKey, viewKey, label, owner);
+                }
+            }
+        }
+
+        // The consuming leaf: every object a drawn subscriber reads points at it. No pipeline maintains a
+        // subscriber, so the edge carries no pipeline id and takes no per-flow colour.
+        foreach (var subscriberKey in drawnSubscribers.OrderBy(key => key, StringComparer.Ordinal))
+        {
+            var label = subscriberNames.GetValueOrDefault(subscriberKey) ?? "consumes";
+            foreach (var baseKey in moduleReads[subscriberKey].OrderBy(key => key, StringComparer.Ordinal))
+            {
+                if (includedSet.Contains(baseKey))
+                {
+                    AddFlowEdge(baseKey, subscriberKey, "consumed by", null);
+                    AddObjectEdge(baseKey, subscriberKey, label, null);
                 }
             }
         }

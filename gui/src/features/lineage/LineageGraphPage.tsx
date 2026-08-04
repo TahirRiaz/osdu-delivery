@@ -58,6 +58,10 @@ import "@xyflow/react/dist/style.css";
 
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 56;
+
+/** The node-key prefix every data subscriber carries (subscribers live on a synthetic server identity), so a
+ * consuming leaf can be told from a database object without a second lookup. */
+const SUBSCRIBER_KEY_PREFIX = "subscriber|";
 const LAYER_SPACING = 150; // vertical gap between layers (rows, top to bottom); clears NODE_HEIGHT + edge/label room
 const NODE_SPACING = 260;  // horizontal gap between nodes within a layer; clears NODE_WIDTH
 
@@ -1016,9 +1020,12 @@ export default function LineageGraphPage() {
       outgoing,
       frontier: frontierSet,
       repoOf,
-      openTarget: (id) => (objectNodeIds.has(id)
-        ? { label: "Open in explorer", to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}` }
-        : { label: "Open pipeline", to: `/pipelines/${id}` }),
+      // A subscriber is a consumer, not a catalog object: it opens where its queries and reads live.
+      openTarget: (id) => (id.startsWith(SUBSCRIBER_KEY_PREFIX)
+        ? { label: "Open subscriber", to: `/subscribers?key=${encodeURIComponent(id)}` }
+        : objectNodeIds.has(id)
+          ? { label: "Open in explorer", to: `/lineage/objects?name=${encodeURIComponent(names.get(id) ?? id)}` }
+          : { label: "Open pipeline", to: `/pipelines/${id}` }),
     };
     // The accent colors are theme-scoped custom properties; rebuilding on mode change keeps them in sync.
   }, [pipelines, graphObjects, flowGraphEdges, frontierSet, selectedWave, repoId, mode]); // eslint-disable-line react-hooks/exhaustive-deps

@@ -26,6 +26,7 @@ const DiscoverPage = lazyRoute("DiscoverPage", () => import("./features/discover
 const UniqueKeyDetectionPage = lazyRoute("UniqueKeyDetectionPage", () => import("./features/datasources/UniqueKeyDetectionPage"));
 const CatalogPage = lazyRoute("CatalogPage", () => import("./features/catalog/CatalogPage"));
 const LineagePage = lazyRoute("LineagePage", () => import("./features/lineage/LineagePage"));
+const SubscribersPage = lazyRoute("SubscribersPage", () => import("./features/subscribers/SubscribersPage"));
 const LineageGraphPage = lazyRoute("LineageGraphPage", () => import("./features/lineage/LineageGraphPage"));
 const SearchPage = lazyRoute("SearchPage", () => import("./features/search/SearchPage"));
 const UsersPage = lazyRoute("UsersPage", () => import("./features/users/UsersPage"));
@@ -80,6 +81,8 @@ export default function App() {
           {/* The graph is the lineage landing; the searchable object catalog is the secondary explorer. */}
           <Route path="/lineage" element={<LineageGraphPage />} />
           <Route path="/lineage/objects" element={<LineagePage />} />
+          {/* The consumption side: who reads the warehouse, and through which queries. */}
+          <Route path="/subscribers" element={<SubscribersPage />} />
           {/* The graph used to live here; keep the old link working, carrying any repo/view query through. */}
           <Route path="/lineage/graph" element={<LineageGraphRedirect />} />
           <Route path="/search" element={<SearchPage />} />

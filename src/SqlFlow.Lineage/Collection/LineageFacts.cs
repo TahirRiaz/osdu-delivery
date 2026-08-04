@@ -89,6 +89,43 @@ public sealed record CollectedSchedule
     public List<string> Members { get; } = [];
 }
 
+/// <summary>
+/// One declared data subscriber as collected: the consumer's metadata, the node key its read edges are
+/// attributed to, and the queries that produced them. The read facts themselves are already in
+/// <see cref="CollectionResult.Facts"/> (carrying <see cref="LineageFact.ViaModuleKey"/> = this node key), so
+/// the graph builder needs this record only for the consumer's own node and for the per-query evidence: which
+/// objects each individual query touches, which is what lets the catalog answer "why is this report linked to
+/// that table" with the query rather than a shrug.
+/// </summary>
+public sealed record CollectedSubscriber
+{
+    public required Core.Subscribers.DataSubscriber Subscriber { get; init; }
+
+    /// <summary>The subscriber's node key, before the builder's aliasing pass (a subscriber lives on the
+    /// synthetic <see cref="ServerIdentity.Subscriber"/> server, so the pass is a no-op for it, but it goes
+    /// through the same resolution as every other identity rather than assuming so).</summary>
+    public required string NodeKey { get; init; }
+
+    /// <summary>The subscriber library file that declares it, relative to the scanned folder.</summary>
+    public required string File { get; init; }
+
+    public required IReadOnlyList<CollectedSubscriberQuery> Queries { get; init; }
+}
+
+/// <summary>One subscriber query as collected: its text and the raw identities parsing it proved it reads.</summary>
+public sealed record CollectedSubscriberQuery
+{
+    public required string Name { get; init; }
+
+    public required string ServerRef { get; init; }
+
+    public required string Sql { get; init; }
+
+    /// <summary>The identities the query reads, as the SQL spelled them; the builder resolves each with the
+    /// same completion and synonym follow every other identity gets.</summary>
+    public required IReadOnlyList<ModelObjectRef> Objects { get; init; }
+}
+
 /// <summary>An object a collector saw created, with its generating DDL and (for a plain table) its columns.
 /// The observed tier produces these from the run trace and the declared tier from a hook, so the catalog
 /// attaches a script and an offline column dictionary to an object without a live connection. The graph
@@ -229,6 +266,10 @@ public sealed class CollectionResult
     /// runs: a schedule fires once and runs its member set as one wave-ordered group. Ordered by name.</summary>
     public List<CollectedSchedule> Schedules { get; } = [];
 
+    /// <summary>Every data subscriber the estate declares, ordered by name: the consumption side of the graph.
+    /// Empty when no subscriber library file exists.</summary>
+    public List<CollectedSubscriber> Subscribers { get; } = [];
+
     public List<LineageFact> Facts { get; } = [];
 
     public List<CollectedObjectArtifact> ObjectArtifacts { get; } = [];
@@ -275,6 +316,7 @@ public sealed class CollectionResult
     {
         ArgumentNullException.ThrowIfNull(other);
         Flows.AddRange(other.Flows);
+        Subscribers.AddRange(other.Subscribers);
         Facts.AddRange(other.Facts);
         ObjectArtifacts.AddRange(other.ObjectArtifacts);
         CatalogObjects.AddRange(other.CatalogObjects);
@@ -323,6 +365,12 @@ public static class ServerIdentity
 {
     /// <summary>The identity of file endpoints (a file flow's source, an export destination).</summary>
     public const string FileSystem = "file";
+
+    /// <summary>The identity data subscribers live on. A report or workbook belongs to no server SQLFlow
+    /// connects to, but it still needs a node identity built by the one rule, so it gets a synthetic one; the
+    /// segment can never collide with a real reference, which is always a <c>${...}</c>, an <c>@alias</c>, or
+    /// an <c>inline:</c> hash.</summary>
+    public const string Subscriber = "subscriber";
 
     public static string From(string connectionReference)
     {

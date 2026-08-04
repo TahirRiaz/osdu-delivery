@@ -18,7 +18,7 @@ import type {
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
-  SourceDiscoverRequest, SourceDiscoverResult,
+  SourceDiscoverRequest, SourceDiscoverResult, Subscriber, SubscriberDossier,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
 
@@ -386,6 +386,12 @@ export const lineageApi = {
   objectColumns: (key: string, query: PageQuery = {}) =>
     get<PagedResult<LineageObjectColumn>>("/api/v1/lineage/objects/columns", { key, ...query } as QueryParams),
   objectRepos: (key: string) => get<ObjectRepo[]>("/api/v1/lineage/objects/repos", { key }),
+  // Who consumes the warehouse: the reports, workbooks, and applications declared in a subscribers.yaml.
+  subscribers: (query: { type?: string; search?: string } = {}) =>
+    get<Subscriber[]>("/api/v1/lineage/subscribers", query as QueryParams),
+  // What one subscriber consumes: its queries, and every object those queries read.
+  subscriberDossier: (key: string) =>
+    get<SubscriberDossier>("/api/v1/lineage/subscribers/dossier", { key }),
   filePipelines: (file: string) => get<FilePipelineMatch[]>("/api/v1/lineage/file-pipelines", { file }),
   edges: (repoId: string, query: LineageEdgeQuery = {}) =>
     get<PagedResult<LineageEdge>>(`/api/v1/repos/${repoId}/lineage/edges`, query as QueryParams),

@@ -527,6 +527,84 @@ public class CatalogLineageEdge
 }
 
 /// <summary>
+/// One data subscriber: a report, workbook, notebook, or application that CONSUMES the warehouse. The V3 form
+/// of a legacy <c>flw.DataSubscriber</c> row, declared in a repo's <c>subscribers.yaml</c> and synced like any
+/// other repo knowledge (repo-scoped, fully replaced on each sync). Its consumption itself is NOT stored here:
+/// the queries are parsed into ordinary <see cref="CatalogLineageEdge"/> rows carrying <see cref="ObjectKey"/>
+/// as <c>ViaModule</c>, so "what consumes table X" is the same edge query as "what writes table X" and needs no
+/// second graph. This row holds only what a person needs about the consumer itself: what it is, who owns it,
+/// and where to find it.
+/// </summary>
+public class CatalogSubscriber
+{
+    public long Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The subscriber's name (legacy <c>SubscriberName</c>); its identity across the estate.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>What consumes the data (legacy <c>SubscriberType</c>): PowerBI, Tableau, Excel, and so on.</summary>
+    public string Type { get; set; } = string.Empty;
+
+    /// <summary>The subscriber's lineage node key: the <see cref="CatalogLineageEdge.ViaModule"/> of every edge
+    /// its queries produced, and the <see cref="CatalogObject.Key"/> of its node in the object registry.</summary>
+    public string ObjectKey { get; set; } = string.Empty;
+
+    /// <summary>The repo-relative path of the subscriber library file that declares it.</summary>
+    public string File { get; set; } = string.Empty;
+
+    /// <summary>Who to contact before a breaking change to a table it reads (legacy <c>CreatedBy</c>).</summary>
+    public string? Owner { get; set; }
+
+    public string? Description { get; set; }
+
+    /// <summary>Where the subscriber lives: report URL, workbook path, repository.</summary>
+    public string? Url { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// One query a subscriber runs against the warehouse: the V3 form of a legacy <c>flw.DataSubscriberQuery</c>
+/// row. It is the EVIDENCE behind the subscriber's edges, kept so the catalog can answer "why is this report
+/// linked to that table" with the query that links them rather than an assertion. The queryable index of what
+/// reads what remains <see cref="CatalogLineageEdge"/>; <see cref="ObjectKeys"/> is the per-query breakdown for
+/// display, newline-joined in the order the parser resolved them.
+/// </summary>
+public class CatalogSubscriberQuery
+{
+    public long Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The owning subscriber's <see cref="CatalogSubscriber.ObjectKey"/>. Keyed by the node key rather
+    /// than by a surrogate id, matching how every other catalog table references the graph: a repo's subscriber
+    /// rows and their queries are then written and replaced independently, in one pass, with no identity
+    /// round-trip between them.</summary>
+    public string SubscriberKey { get; set; } = string.Empty;
+
+    /// <summary>The query's position within its subscriber, 1-based: the declaration order in the YAML, so the
+    /// catalog lists a report's datasets the way its author wrote them.</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>The query's label within its subscriber (legacy <c>QueryName</c>).</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The server identity the query runs against (legacy <c>srcServer</c>, resolved to a reference).</summary>
+    public string ServerRef { get; set; } = string.Empty;
+
+    /// <summary>The query text as declared (legacy <c>FullyQualifiedQuery</c>).</summary>
+    public string Sql { get; set; } = string.Empty;
+
+    /// <summary>The object keys this one query reads, newline-joined. Empty when the query named nothing
+    /// lineage could resolve.</summary>
+    public string ObjectKeys { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// One flow-level dependency in a repo's execution plan: <see cref="ToFlow"/> must wait for <see cref="FromFlow"/>
 /// because of the objects one writes and the other reads. This is the edge set behind the waves; together with
 /// <see cref="CatalogPipeline.Wave"/> it is the executable order of the estate's pipelines. Repo-scoped and fully

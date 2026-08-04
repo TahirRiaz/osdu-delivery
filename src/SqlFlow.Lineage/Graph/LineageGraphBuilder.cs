@@ -205,6 +205,16 @@ public static class LineageGraphBuilder
             EnsureNode(KeyOf(fact), fact.ServerRef, fact.Database, fact.Schema, fact.Name, fact.KindHint);
         }
 
+        // The consumption side's own nodes. A subscriber is the ViaModule of its read facts, and a module key
+        // creates no node by itself; it is also the one node kind no database inventory can ever supply, so it is
+        // materialized here from the collected declarations.
+        foreach (var subscriber in collected.Subscribers)
+        {
+            EnsureNode(
+                subscriber.NodeKey, ServerIdentity.Subscriber, database: null, schema: null,
+                subscriber.Subscriber.Name, LineageNodeKind.Subscriber);
+        }
+
         // ---- Edge assembly: deduplicated, latest observation wins. -----------------------------------
         var edges = new Dictionary<(string? Flow, string? Module, LineageRelation Relation, string Key, LineageTier Tier), LineageEdge>();
         foreach (var fact in facts)
@@ -507,6 +517,35 @@ public static class LineageGraphBuilder
             .ThenBy(r => r.Origin)
             .ToList();
 
+        // ---- The consumption side, projected for the report. Each query's objects go through the same identity
+        // resolution its facts did, so the per-query evidence names the SAME nodes the edges point at. -------
+        var subscriberNodes = collected.Subscribers
+            .Select(s => new LineageSubscriberNode
+            {
+                Name = s.Subscriber.Name,
+                Type = s.Subscriber.Type,
+                ObjectKey = s.NodeKey,
+                File = s.File,
+                Owner = s.Subscriber.Owner,
+                Description = s.Subscriber.Description,
+                Url = s.Subscriber.Url,
+                Queries = s.Queries
+                    .Select(q => new LineageSubscriberQuery
+                    {
+                        Name = q.Name,
+                        ServerRef = q.ServerRef,
+                        Sql = q.Sql,
+                        ObjectKeys = q.Objects
+                            .Select(ModelKeyOf)
+                            .Distinct(StringComparer.Ordinal)
+                            .OrderBy(k => k, StringComparer.Ordinal)
+                            .ToList(),
+                    })
+                    .ToList(),
+            })
+            .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         return new LineageReport
         {
             GeneratedAtUtc = generatedAtUtc,
@@ -515,6 +554,7 @@ public static class LineageGraphBuilder
             Flows = flows.Select(f => f.Node).ToList(),
             Objects = nodes.Values.OrderBy(n => n.Key, StringComparer.Ordinal).ToList(),
             Relationships = modelRelationships,
+            Subscribers = subscriberNodes,
             Edges = edges.Values
                 .OrderBy(e => e.Flow ?? string.Empty, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(e => e.ViaModule ?? string.Empty, StringComparer.Ordinal)

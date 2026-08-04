@@ -24,6 +24,8 @@ public sealed class FlowSetCollector
 
     private readonly YamlScheduleLibraryLoader _scheduleLibraries = new();
 
+    private readonly YamlSubscriberLibraryLoader _subscriberLibraries = new();
+
     public CollectionResult Collect(string flowDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(flowDirectory);
@@ -37,9 +39,10 @@ public sealed class FlowSetCollector
         // A flow document is any *.yaml under the estate; the historical .flow.yaml suffix is no longer required (it
         // still matches, so existing repos keep working). A .yaml that does not parse as a flow is a library, config,
         // or unrelated file and is silently ignored, not reported as broken. Shared-schedule libraries are handled by
-        // ResolveSchedules, so they are excluded from the flow parse here.
+        // ResolveSchedules and subscriber libraries by CollectSubscribers, so both are excluded from the flow parse
+        // here.
         var files = Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)
-            .Where(f => !IsScheduleLibraryFile(f))
+            .Where(f => !IsScheduleLibraryFile(f) && !IsSubscriberLibraryFile(f))
             .OrderBy(f => f, StringComparer.Ordinal);
 
         // File producers (invokes that land files) and consumers (file ingestions) are gathered across the whole
@@ -79,6 +82,10 @@ public sealed class FlowSetCollector
         // collected because a reference can point at a definition in any file.
         ResolveSchedules(result, root);
 
+        // The consumption side: who reads the warehouse the flows above just built. Collected after the flows so a
+        // subscriber's read facts join a graph whose producing side is already fully known.
+        CollectSubscribers(result, root);
+
         var duplicates = result.Flows
             .GroupBy(f => f.Node.Name, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1);
@@ -101,6 +108,142 @@ public sealed class FlowSetCollector
         var name = Path.GetFileName(path);
         return name.Equals("schedules.yaml", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith(".schedules.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether a file is a subscriber library: named <c>subscribers.yaml</c> or ending in
+    /// <c>.subscribers.yaml</c>. Like a schedule library it is not a flow document and never becomes a pipeline;
+    /// it declares who CONSUMES the estate, and is handled by <see cref="CollectSubscribers"/>.</summary>
+    private static bool IsSubscriberLibraryFile(string path)
+    {
+        var name = Path.GetFileName(path);
+        return name.Equals("subscribers.yaml", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".subscribers.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Collects the estate's data subscribers: the reports, workbooks, notebooks, and applications that read the
+    /// warehouse. Each subscriber becomes a node of its own, and each of its queries is parsed with the same
+    /// extractor a stored-procedure body or a document hook goes through, so the tables and views the query names
+    /// resolve to the SAME node identities the loading flows write. That is the whole point of the port: a list of
+    /// dashboard names is an inventory, but a parsed query is lineage, and only the second can answer "which
+    /// reports break if I change this table".
+    /// <para>
+    /// The read facts are attributed as MODULE facts (<c>ViaModule</c> = the subscriber's node key, no flow),
+    /// which is exactly what a subscriber is to the graph: a body of SQL that reads objects but runs no pipeline.
+    /// Nothing in the edge model, the execution plan, or the wave computation needed changing to hold them.
+    /// </para>
+    /// </summary>
+    private void CollectSubscribers(CollectionResult result, string root)
+    {
+        var files = Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)
+            .Where(IsSubscriberLibraryFile)
+            .OrderBy(f => f, StringComparer.Ordinal);
+
+        // Subscriber names are the estate's identity for a consumer, so a name declared twice (across files, or in
+        // one file) would merge two different reports into one node. The first wins and the collision is reported.
+        var declared = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var file in files)
+        {
+            var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            string yaml;
+            try
+            {
+                yaml = File.ReadAllText(file);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                result.Warnings.Add($"{relative}: skipped: {ex.Message}");
+                continue;
+            }
+
+            var library = _subscriberLibraries.Parse(yaml, relative);
+            result.Warnings.AddRange(library.Warnings);
+            RegisterServers(result, library.Connections.Values);
+
+            foreach (var subscriber in library.Subscribers)
+            {
+                if (declared.TryGetValue(subscriber.Name, out var firstFile))
+                {
+                    result.Warnings.Add(
+                        $"{relative}: subscriber '{subscriber.Name}' is already declared in {firstFile}; the first wins.");
+                    continue;
+                }
+
+                declared.Add(subscriber.Name, relative);
+                result.Subscribers.Add(CollectSubscriber(result, subscriber, library.Connections, relative));
+            }
+        }
+
+        result.Subscribers.Sort((a, b) =>
+            string.Compare(a.Subscriber.Name, b.Subscriber.Name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Parses one subscriber's queries into read facts plus the per-query evidence the catalog shows.</summary>
+    private static CollectedSubscriber CollectSubscriber(
+        CollectionResult result,
+        Core.Subscribers.DataSubscriber subscriber,
+        IReadOnlyDictionary<string, Core.Connections.DataSource> connections,
+        string file)
+    {
+        var subscriberKey = NodeKey.For(ServerIdentity.Subscriber, database: null, schema: null, subscriber.Name);
+        var queries = new List<CollectedSubscriberQuery>(subscriber.Queries.Count);
+
+        foreach (var query in subscriber.Queries)
+        {
+            // The loader already rejected a query whose server is not declared, so the lookup cannot miss.
+            var serverRef = ServerIdentity.From(connections[query.Server].ConnectionRef);
+            var label = $"subscriber '{subscriber.Name}' query '{query.Name}'";
+
+            var deps = TSqlLineageExtractor.Extract(query.Sql, label, defaultDatabase: null);
+            result.Warnings.AddRange(deps.Warnings);
+
+            var objects = new List<ModelObjectRef>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var fact in ScriptFactBuilder.Facts(
+                         deps, flow: null, viaModuleKey: subscriberKey, serverRef, LineageTier.Declared,
+                         minimumParts: 1))
+            {
+                result.Facts.Add(fact);
+                if (seen.Add(NodeKey.For(fact.ServerRef, fact.Database, fact.Schema, fact.Name)))
+                {
+                    objects.Add(new ModelObjectRef
+                    {
+                        ServerRef = fact.ServerRef,
+                        Database = fact.Database,
+                        Schema = fact.Schema,
+                        Name = fact.Name,
+                    });
+                }
+            }
+
+            // A report's query is a first-class source of data-model knowledge: the joins an analyst writes are
+            // the joins the business actually uses, and they carry the same weight here as a warehouse view's.
+            ScriptFactBuilder.AppendModelObservations(result, deps, serverRef, LineageTier.Declared, label);
+
+            if (objects.Count == 0)
+            {
+                result.Warnings.Add(
+                    $"{file}: subscriber '{subscriber.Name}' query '{query.Name}' names no warehouse object that "
+                    + "lineage can resolve; it contributes no consumption edge.");
+            }
+
+            queries.Add(new CollectedSubscriberQuery
+            {
+                Name = query.Name,
+                ServerRef = serverRef,
+                Sql = query.Sql,
+                Objects = objects,
+            });
+        }
+
+        return new CollectedSubscriber
+        {
+            Subscriber = subscriber,
+            NodeKey = subscriberKey,
+            File = file,
+            Queries = queries,
+        };
     }
 
     /// <summary>

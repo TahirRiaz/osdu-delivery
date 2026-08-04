@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { KeyRound, Network } from "lucide-react";
+import { KeyRound, MonitorPlay, Network } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
-import type { LineageObjectColumn, ObjectRelationship } from "../../api/types";
+import type { LineageObjectColumn, ObjectRelationship, ObjectSubscriber } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -123,6 +123,48 @@ function relationshipColumns(): Column<ObjectRelationship>[] {
   ];
 }
 
+/** The consumers table: who reads this object, what they are, who owns them, and through which queries. This
+ * is the impact-analysis view, so the owner column is deliberately as prominent as the name. */
+function consumerColumns(): Column<ObjectSubscriber>[] {
+  return [
+    {
+      id: "name",
+      header: "Subscriber",
+      render: (row) => (
+        <span className="flex min-w-0 items-center gap-1.5">
+          <MonitorPlay className="size-4 shrink-0 text-muted-foreground" />
+          <Link
+            to={`/subscribers?key=${encodeURIComponent(row.key)}`}
+            className="truncate text-[13px] text-primary hover:underline"
+          >
+            {row.name}
+          </Link>
+        </span>
+      ),
+    },
+    {
+      id: "type",
+      header: "Type",
+      render: (row) => <Badge variant="secondary" className="text-[11px]">{row.type}</Badge>,
+      width: 120,
+    },
+    {
+      id: "owner",
+      header: "Owner",
+      render: (row) => (row.owner === null ? <span className="text-muted-foreground">-</span> : <Mono>{row.owner}</Mono>),
+    },
+    {
+      id: "queries",
+      header: "Through",
+      render: (row) => (
+        <span className="whitespace-normal break-words font-mono text-[12px] text-muted-foreground">
+          {row.queries.length === 0 ? "-" : row.queries.join(", ")}
+        </span>
+      ),
+    },
+  ];
+}
+
 /** A flow reference: its name (linking to the pipeline view) and kind badge. */
 function FlowRef({ pipelineId, flow, kind }: { pipelineId: string; flow: string; kind: string }) {
   return (
@@ -216,7 +258,7 @@ function FileProvenance({ objectKey }: { objectKey: string }) {
  * not the flow lineage; tracing which flows move the data is one click away via the lineage jump.
  */
 export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
-  const [tab, setTab] = useState<"overview" | "columns" | "code" | "relationships" | "pipelines">("overview");
+  const [tab, setTab] = useState<"overview" | "columns" | "code" | "relationships" | "pipelines" | "consumers">("overview");
   // Reset to Overview when the selected object changes, so a tab valid only for a file (or only for a table)
   // never lingers onto the next selection.
   useEffect(() => setTab("overview"), [objectKey]);
@@ -247,7 +289,7 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
       : <p className="text-[13px] text-destructive">{String(dossier.error)}</p>;
   }
 
-  const { object, columns, references, referencedBy } = dossier.data;
+  const { object, columns, references, referencedBy, subscribers } = dossier.data;
   const keys = keyColumnSet(object.keyColumns);
   const relationshipCount = references.length + referencedBy.length;
   // A file source's useful detail is its provenance (pipelines + landing), not columns/keys/joins, which it
@@ -287,6 +329,11 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
                 </TabsTrigger>
               </>
             )}
+          {subscribers.length > 0 && (
+            <TabsTrigger value="consumers" data-testid="catalog-tab-consumers">
+              {`Consumers (${subscribers.length})`}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="overview">
@@ -382,6 +429,19 @@ export function ObjectDetailsPanel({ objectKey }: { objectKey: string }) {
               </section>
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="consumers">
+          <p className="mb-3 text-[13px] text-muted-foreground">
+            Declared consumers whose queries read this object. This is who to tell before a breaking change.
+          </p>
+          <DataTable<ObjectSubscriber>
+            columns={consumerColumns()}
+            rows={subscribers}
+            rowKey={(row) => row.key}
+            emptyMessage="No subscriber reads this object."
+            data-testid="catalog-object-consumers"
+          />
         </TabsContent>
       </Tabs>
     </div>
