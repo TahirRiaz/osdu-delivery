@@ -40,6 +40,7 @@ public sealed class CsvSourceReader : FileSourceReaderBase
             IncrementalAfterDate = meta.IncrementalAfterDate,
             FileDate = FileDateSpec.FromOptions(source.Options),
             DataSetDate = DataSetDateSpec.FromOptions(source.Options),
+            ReadAhead = FileSourceOptions.ParseReadAhead(source.Options, FileSourceOptions.StreamingDefaultReadAhead),
             CopyToPath = meta.CopyToPath,
             ZipToPath = meta.ZipToPath,
             SrcDeleteIngested = meta.SrcDeleteIngested,

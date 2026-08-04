@@ -1094,6 +1094,91 @@ public sealed class CsvSourceReaderTests : IDisposable
         Assert.True(File.Exists(Path.Combine(copyDir, "toCopy.csv")), "the ingested file should be copied to copyToPath");
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // readAhead: how many files the run keeps open at once. It must never change WHAT is read or the
+    // order it arrives in, only how much of the per-file latency is overlapped.
+    // ---------------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("4")]
+    public async Task ReadAhead_ProducesTheSameColumnUnionAndRowOrderWhateverTheDepth(string readAhead)
+    {
+        // Three files with drifting schemas: the union order and the row order are both file-ordered, so a
+        // deeper readahead (whose reads finish out of order) must still produce exactly the depth-1 answer.
+        Csv("ra_1.csv", "Id,Name\n1,a\n2,b\n");
+        Csv("ra_2.csv", "Id,Name,Extra\n3,c,x\n");
+        Csv("ra_3.csv", "Id,Late\n4,z\n");
+
+        var (columns, rows) = await ReadAllAsync(Folder(new() { ["srcFile"] = "ra_*.csv", ["readAhead"] = readAhead }));
+
+        Assert.Equal(new[] { "Id", "Name", "Extra", "Late" }, columns.Take(4).ToArray());
+        Assert.Equal(new[] { "1", "2", "3", "4" }, rows.Select(r => (string?)r[0]).ToArray());
+        Assert.Equal(new[] { "a", "b", "c", null }, rows.Select(r => (string?)r[1]).ToArray());
+    }
+
+    [Fact]
+    public async Task ReadAhead_OpensThatManyFilesAtOnceAndNeverMore()
+    {
+        // Proven against a store that records concurrent opens: depth 1 is one file at a time, depth 3
+        // overlaps three, and neither exceeds what the flow asked for.
+        Assert.Equal(1, await MaxConcurrentOpensAsync(readAhead: 1, files: 6));
+        Assert.Equal(3, await MaxConcurrentOpensAsync(readAhead: 3, files: 6));
+    }
+
+    [Fact]
+    public async Task ReadAhead_DefaultsToTheStreamingDepth_ForAStreamingFormat()
+    {
+        // CSV streams a file line by line, so an open file is cheap and the default overlaps several.
+        Assert.Equal(FileSourceOptions.StreamingDefaultReadAhead, await MaxConcurrentOpensAsync(readAhead: null, files: 8));
+    }
+
+    [Fact]
+    public async Task ReadAhead_FewerFilesThanTheDepth_OpensOnlyWhatExists()
+    {
+        Assert.Equal(2, await MaxConcurrentOpensAsync(readAhead: 8, files: 2));
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("33")]
+    public async Task ReadAhead_OutOfRange_IsRejectedWithTheAllowedRange(string readAhead)
+    {
+        var source = Csv("bad_depth.csv", "Id\n1\n", new() { ["readAhead"] = readAhead });
+
+        var ex = await Assert.ThrowsAsync<SqlFlowException>(() => _reader.GetColumnsAsync(source));
+
+        Assert.Contains("readAhead", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("32", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Runs a full read against a store that tracks how many files are open simultaneously, and reports the
+    /// peak. A null <paramref name="readAhead"/> leaves the option unset, so the format's default applies.
+    /// </summary>
+    private static async Task<int> MaxConcurrentOpensAsync(int? readAhead, int files)
+    {
+        var store = new ConcurrencyTrackingFileStore(files, "csv", name => $"Id,Name\n{name},x\n");
+        var reader = new CsvSourceReader(new LocalFileLifecycle(), [store]);
+        var options = new Dictionary<string, string?> { ["srcFile"] = "*.csv" };
+        if (readAhead is { } depth)
+        {
+            options["readAhead"] = depth.ToString(CultureInfo.InvariantCulture);
+        }
+
+        var source = new SourceSpec { Type = "csv", Location = ConcurrencyTrackingFileStore.Root, Options = options };
+
+        var columns = await reader.GetColumnsAsync(source);
+        await using var data = (await reader.OpenAsync(source, columns)).Reader;
+        while (await data.ReadAsync())
+        {
+            // Drain: the peak is measured across the whole run, schema pass and data pass alike.
+        }
+
+        return store.MaxConcurrentOpens;
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir))

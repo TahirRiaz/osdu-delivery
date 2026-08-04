@@ -129,6 +129,7 @@ Matched files are processed in ascending modified-date order (name as tiebreaker
 | `zipToPath` | string | empty | Zip each ingested file to this path after the load. |
 | `srcDeleteIngested` | bool | `false` | Delete each ingested file after the load. |
 | `srcDeleteAtPath` | bool | `false` | Delete each ingested file at its source path after the load. |
+| `readAhead` | `1` | How many source files are kept open at once (1 to 32). Files are still read one at a time in file order; a higher value only opens and downloads the following files ahead of their turn, which removes the per-file latency that dominates a source of many small files. The reader buffers a non-seekable stream in full, so each extra open file multiplies the peak. An out-of-range value fails with `Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.` |
 
 ### Provenance columns (default on)
 

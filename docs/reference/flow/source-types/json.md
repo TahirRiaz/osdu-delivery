@@ -98,6 +98,7 @@ Shared file-source options, bound by `PreIngestionJsn.FromSource` and threaded i
 | `copyToPath` / `zipToPath` | (none) | Post-load file lifecycle: copy or zip ingested files. |
 | `srcDeleteIngested` / `srcDeleteAtPath` | `false` | Post-load file lifecycle: delete ingested files. |
 | `initFromFileDate` / `initToFileDate` | (none) | File modified-date window for file selection. |
+| `readAhead` | `4` | How many source files are kept open at once (1 to 32). Files are still read one at a time in file order; a higher value only opens and downloads the following files ahead of their turn, which removes the per-file latency that dominates a source of many small files. The JSON reader streams records, so an open file costs a small buffer and one record. An out-of-range value fails with `Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.` |
 | `includeFileName`, `includeFileDate`, `includeFileRowDate`, `includeFileSize`, `includeDataSet`, `includeRowNumber` | `true` | Provenance column toggles. |
 | `includeFileLineNumber` | `false` | Adds the source record ordinal as a column. |
 | `showPathWithFileName` | `false` | Include the path with the file name in `FileName_DW`. |

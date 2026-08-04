@@ -1,3 +1,5 @@
+using System.Globalization;
+using SqlFlow.Core;
 using SqlFlow.Core.Model;
 
 namespace SqlFlow.Sources;
@@ -60,6 +62,58 @@ public sealed record FileSourceOptions
     // --- Streaming caps (0 = unbounded; not all formats use these) ---
     public int MaxRows { get; init; }
     public int SkipEndingDataRows { get; init; }
+
+    /// <summary>
+    /// How many source files the flow keeps open at once: one plus the number opened ahead of the one being
+    /// read. It buys latency, not parallel parsing. Rows must reach the loader in file order, so files are
+    /// still consumed strictly one at a time; a higher value only means the next files' listing, schema read
+    /// and download are already in flight when their turn comes, which is what a source of many small remote
+    /// files spends most of its wall clock waiting on.
+    /// <para>
+    /// The cost is per open file, so the default is a property of the FORMAT (see
+    /// <see cref="StreamingDefaultReadAhead"/> and <see cref="WholeFileDefaultReadAhead"/>) and the flow's
+    /// <c>readAhead</c> option tunes it per source: raise it for many small files, lower it when each file is
+    /// large enough that even a streaming reader's concurrent downloads are unwelcome.
+    /// </para>
+    /// </summary>
+    public int ReadAhead { get; init; } = WholeFileDefaultReadAhead;
+
+    /// <summary>
+    /// The default for a format whose reader streams a file (CSV, JSON): an open file costs a small buffer and
+    /// one record, so several can be in flight for the price of nothing much, and a source of many small
+    /// remote files stops paying its per-file round trip serially.
+    /// </summary>
+    public const int StreamingDefaultReadAhead = 4;
+
+    /// <summary>
+    /// The default for a format whose reader must hold a whole file to read it (XLS and Parquet buffer a
+    /// non-seekable stream in full; XML parses the whole document): every extra open file multiplies the peak,
+    /// so these stay at one file at a time unless the flow's author, who knows how big the files are, says
+    /// otherwise.
+    /// </summary>
+    public const int WholeFileDefaultReadAhead = 1;
+
+    /// <summary>The most files any flow may hold open at once, whatever it asks for.</summary>
+    public const int MaxReadAhead = 32;
+
+    /// <summary>
+    /// Reads the flow's <c>readAhead</c> option, falling back to the format's default. Rejecting an
+    /// out-of-range value outright (rather than clamping it) keeps the flow definition honest: an author who
+    /// wrote 200 gets told the ceiling instead of silently running something else.
+    /// </summary>
+    public static int ParseReadAhead(IReadOnlyDictionary<string, string?> options, int formatDefault)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var readAhead = options.GetInt("readAhead", formatDefault);
+        if (readAhead < 1 || readAhead > MaxReadAhead)
+        {
+            throw new SqlFlowException(
+                $"Invalid 'readAhead' value '{readAhead.ToString(CultureInfo.InvariantCulture)}'. "
+                + $"Use 1 (read one file at a time) to {MaxReadAhead.ToString(CultureInfo.InvariantCulture)}.");
+        }
+
+        return readAhead;
+    }
 }
 
 /// <summary>One parsed source row handed from a format reader to the shared pipeline.</summary>

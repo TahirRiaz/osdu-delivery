@@ -75,6 +75,7 @@ All options live under `source.options` and all values are YAML strings. Parquet
 | `zipToPath` | string | none | Zip each ingested file to this path after load. |
 | `srcDeleteIngested` | bool | `false` | Delete each file after successful ingestion. |
 | `srcDeleteAtPath` | bool | `false` | Delete at the source path as part of the lifecycle. |
+| `readAhead` | `1` | How many source files are kept open at once (1 to 32). Files are still read one at a time in file order; a higher value only opens and downloads the following files ahead of their turn, which removes the per-file latency that dominates a source of many small files. The reader buffers a non-seekable stream in full, so each extra open file multiplies the peak. An out-of-range value fails with `Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.` |
 | `showPathWithFileName` | bool | `false` | Include the full path in the `FileName_DW` value. |
 | `includeFileName` | bool | `true` | Inject the `FileName_DW` provenance column. |
 | `includeFileDate` | bool | `true` | Inject the `FileDate_DW` provenance column. |

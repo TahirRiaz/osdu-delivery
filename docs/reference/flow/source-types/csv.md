@@ -102,6 +102,7 @@ dotnet run --project src/SqlFlow.Cli -- run samples/csv/csv-basic.flow.yaml
 | `zipToPath` | none | Compress each ingested file to this path after the load completes. |
 | `srcDeleteIngested` | `false` | Delete each source file after ingestion. |
 | `srcDeleteAtPath` | `false` | Delete each source file at the source path after ingestion (either delete flag triggers the delete). |
+| `readAhead` | `4` | How many source files are kept open at once (1 to 32). Files are still read one at a time in file order; a higher value only opens and downloads the following files ahead of their turn, which removes the per-file latency that dominates a source of many small files. CSV streams each file line by line, so an open file costs little. An out-of-range value fails with `Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.` |
 
 The `fileDate.*` option group (for example `fileDate.from: path` with `fileDate.hive: "true"`) redirects where the file's business date is read from (path tokens or file name instead of the modified timestamp); see [File discovery, date windows, and lifecycle](../../concepts/file-discovery-and-lifecycle.md) for the full contract.
 

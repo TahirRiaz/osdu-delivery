@@ -892,6 +892,16 @@
       "validation": "Values below 1 throw SqlFlowException \"Invalid maxDepth '<n>'. Use a positive integer.\" (src/SqlFlow.Sources/JsonSourceReader.cs:247-250; XmlSourceReader.cs:115-118)."
     },
     {
+      "path": "source.options.readAhead",
+      "type": "int",
+      "required": false,
+      "default": "4 for streaming formats (csv, json, jsonl, ndjson); 1 for formats that hold a whole file (xls, xlsx, xml, parquet, prq)",
+      "appliesWhen": "source.type in (csv,json,jsonl,ndjson,xml,xls,xlsx,parquet,prq)",
+      "description": "How many source files the run keeps open at once, on both the schema pass and the data pass. Files are still consumed strictly in file order and rows still reach the loader in that order; a value above 1 only opens (and, for a remote store, downloads) the following files ahead of their turn, which removes the per-file latency that dominates a source of many small files. Because the cost is per open file, tune it per source: raise it for many small files, keep it at 1 for a format that must hold a whole file in memory to read it (xls, xml), where each extra open file multiplies the peak.",
+      "definedIn": "src/SqlFlow.Sources/FileSourceOptions.cs:78",
+      "validation": "Values below 1 or above 32 throw SqlFlowException \"Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.\" (src/SqlFlow.Sources/FileSourceOptions.cs:92-97)."
+    },
+    {
       "path": "source.options.maxRows",
       "type": "int",
       "required": false,

@@ -103,6 +103,20 @@ When the system column is disabled, a source column with that name is an ordinar
 
 `OpenAsync` streams rows file by file through a `StreamingDataReader` into the bulk loader at bounded memory. Each file's cells are mapped positionally onto the union schema by column name; `maxRows` caps the total rows across files, and `skipEndingDataRows` holds back the trailing N rows of each file via a sliding window. Both are CSV-only: `PreIngestionCsv` is the only metadata record with `MaxRows`/`SkipEndingDataRows` fields, so the other formats always run with these caps unset (the `FileSourceOptions` default of 0, unbounded). Every read returns a manifest of `ProcessedFile` records, one per file: `Name`, `Path`, `SizeBytes`, `Modified`, `Rows`, `Columns`.
 
+### How many files are open at once (`readAhead`)
+
+Files are always consumed one at a time, in file order, on both passes: the schema union and the row stream must be file-ordered, so nothing about the result depends on which read finished first. What `readAhead` controls is how many files are OPENED ahead of the one being read, on the schema pass (`ReadAheadAsync`) and the data pass (the prefetch queue in `StreamRowsAsync`) alike. It buys latency, not parallel parsing: for a source of many small remote files, the per-file round trip is most of the wall clock, and overlapping the opens removes it.
+
+Because the cost is per open file, the default is a property of the format, and the option tunes it per source:
+
+| Format | Default | Why |
+|---|---|---|
+| csv, json, jsonl, ndjson | `4` | The reader streams the file, so an open file costs a small buffer and one record. |
+| xls, xlsx, parquet, prq | `1` | A non-seekable stream is buffered in full to be read (`OpenSeekableAsync`), so each extra open file multiplies the peak. |
+| xml | `1` | The reader parses a whole document. |
+
+Values outside 1 to 32 fail with `Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.` A failure or cancellation cancels the reads still in flight and disposes them, so no download or stream leaks, and a file's own error still surfaces at that file's position in the order.
+
 ### Cell coercion
 
 `CoerceCell` maps each source cell onto its resolved target column type:

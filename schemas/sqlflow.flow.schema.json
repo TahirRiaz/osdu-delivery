@@ -325,6 +325,13 @@
               ],
               "description": "Cap how many rows are loaded; 0 = all."
             },
+            "readAhead": {
+              "type": [
+                "string",
+                "integer"
+              ],
+              "description": "How many source files to keep open at once (1 to 32). Files are still read one at a time in file order; a higher value only opens and downloads the next ones ahead of their turn, which pays off for many small remote files. Defaults to 4 for the streaming formats (csv, json) and 1 for formats that hold a whole file in memory (xls, xml, parquet), where each extra open file multiplies the peak."
+            },
             "maxBufferSize": {
               "type": [
                 "string",

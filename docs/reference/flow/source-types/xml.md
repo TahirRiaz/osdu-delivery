@@ -184,6 +184,7 @@ The XML reader rides the shared file-source base, so the common options bound by
 | `zipToPath` | unset | Zip ingested files to this path. |
 | `srcDeleteIngested` | `false` | Delete files after successful ingestion. |
 | `srcDeleteAtPath` | `false` | Delete at the source path. |
+| `readAhead` | `1` | How many source files are kept open at once (1 to 32). Files are still read one at a time in file order; a higher value only opens and downloads the following files ahead of their turn, which removes the per-file latency that dominates a source of many small files. The reader parses a whole document, so each extra open file multiplies the peak. An out-of-range value fails with `Invalid 'readAhead' value '<n>'. Use 1 (read one file at a time) to 32.` |
 | `showPathWithFileName` | `false` | Include the path in the FileName_DW column. |
 | `includeFileName`, `includeFileDate`, `includeFileRowDate`, `includeFileSize`, `includeDataSet`, `includeRowNumber` | `true` | Provenance column toggles. |
 | `includeFileLineNumber` | `false` | Include the source record number as a column. |

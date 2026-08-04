@@ -247,6 +247,37 @@ public sealed class XmlSourceReaderTests : IDisposable
         Assert.Equal("not-a-number", Cell(cols, Assert.Single(rows), "RowNumber_DW"));
     }
 
+    [Fact]
+    public async Task ReadAhead_DefaultsToOneFileAtATime_BecauseXmlHoldsAWholeDocument()
+    {
+        // The XML reader parses a whole document to read it, so every extra open file multiplies the peak.
+        // Its default must stay at one file at a time; a flow that knows its files are small can raise it.
+        Assert.Equal(FileSourceOptions.WholeFileDefaultReadAhead, await MaxConcurrentOpensAsync(readAhead: null));
+        Assert.Equal(3, await MaxConcurrentOpensAsync(readAhead: 3));
+    }
+
+    private static async Task<int> MaxConcurrentOpensAsync(int? readAhead)
+    {
+        var store = new ConcurrencyTrackingFileStore(6, "xml", name => $"<rows><row><id>{name}</id></row></rows>");
+        var reader = new XmlSourceReader(new LocalFileLifecycle(), [store]);
+        var options = new Dictionary<string, string?> { ["srcFile"] = "*.xml" };
+        if (readAhead is { } depth)
+        {
+            options["readAhead"] = depth.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        var source = new SourceSpec { Type = "xml", Location = ConcurrencyTrackingFileStore.Root, Options = options };
+
+        var columns = await reader.GetColumnsAsync(source);
+        await using var data = (await reader.OpenAsync(source, columns)).Reader;
+        while (await data.ReadAsync())
+        {
+            // Drain: the peak covers the schema pass and the data pass alike.
+        }
+
+        return store.MaxConcurrentOpens;
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir))

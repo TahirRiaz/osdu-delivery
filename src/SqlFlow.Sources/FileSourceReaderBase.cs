@@ -231,9 +231,14 @@ public abstract class FileSourceReaderBase : ISourceReader
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var sourceColumns = new Dictionary<string, SourceColumn>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var file in files)
+        // Schemas are read up to `readAhead` files at a time but MERGED strictly in file order, so the union's
+        // column order is exactly what a one-at-a-time read produces and a flow's target column order does not
+        // depend on which read finished first. A file's failure likewise surfaces when its turn comes, naming
+        // the file a sequential read would have failed on.
+        await foreach (var schema in ReadAheadAsync(
+            files, (file, token) => GetOrReadFileSchemaAsync(run, store, file, source, token), options.ReadAhead, ct).ConfigureAwait(false))
         {
-            foreach (var column in (await GetOrReadFileSchemaAsync(run, store, file, source, ct).ConfigureAwait(false)).Columns)
+            foreach (var column in schema.Columns)
             {
                 if (string.IsNullOrEmpty(column.Name))
                 {
@@ -325,6 +330,74 @@ public abstract class FileSourceReaderBase : ISourceReader
                 return sourceColumns[name];
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// Applies <paramref name="read"/> to the files with at most <paramref name="readAhead"/> in flight, and
+    /// yields the results in FILE order regardless of which finished first. This is the readahead the
+    /// <c>readAhead</c> option buys on the schema pass: a source of many small remote files spends its wall
+    /// clock on per-file latency, and overlapping the reads removes it without making the merge order depend
+    /// on timing. An abandoned read (a failure ahead of it in the queue) is cancelled and observed, so nothing
+    /// leaks and no exception goes unhandled.
+    /// </summary>
+    private static async IAsyncEnumerable<T> ReadAheadAsync<T>(
+        IReadOnlyList<FileRef> files,
+        Func<FileRef, CancellationToken, Task<T>> read,
+        int readAhead,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        // Each read captures its own outcome, so awaiting a queued read never throws: a failure is raised at
+        // the reader's position in file order, and an abandoned read cannot become an unobserved exception.
+        async Task<(T? Value, Exception? Error)> ReadCapturedAsync(FileRef file)
+        {
+            try
+            {
+                return (await read(file, cts.Token).ConfigureAwait(false), null);
+            }
+            catch (Exception ex)
+            {
+                return (default, ex);
+            }
+        }
+
+        var inFlight = new Queue<Task<(T? Value, Exception? Error)>>(readAhead);
+        var next = 0;
+        while (next < files.Count && inFlight.Count < readAhead)
+        {
+            inFlight.Enqueue(ReadCapturedAsync(files[next++]));
+        }
+
+        try
+        {
+            while (inFlight.Count > 0)
+            {
+                var (value, error) = await inFlight.Dequeue().ConfigureAwait(false);
+                if (error is not null)
+                {
+                    ExceptionDispatchInfo.Capture(error).Throw();
+                }
+
+                if (next < files.Count)
+                {
+                    inFlight.Enqueue(ReadCapturedAsync(files[next++]));
+                }
+
+                yield return value!;
+            }
+        }
+        finally
+        {
+            if (inFlight.Count > 0)
+            {
+                await cts.CancelAsync().ConfigureAwait(false);
+                while (inFlight.Count > 0)
+                {
+                    await inFlight.Dequeue().ConfigureAwait(false);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -434,12 +507,14 @@ public abstract class FileSourceReaderBase : ISourceReader
         long total = 0;
         var reachedMax = false;
 
-        // Bounded prefetch (depth 1): while file i streams into the loader, file i+1's schema lookup and open
-        // (the download, for a remote store) already run in the background, so the pipeline never idles between
-        // files. Depth stays at one because an opened file can hold a large buffer. Rows are still emitted
-        // strictly in file order; a prefetch failure is captured and surfaced only when that file's turn
-        // arrives, and an abandoned prefetch (cancellation, a prior file failing, maxRows reached) is cancelled
-        // and disposed in the finally below so no download or stream leaks.
+        // Bounded prefetch: while a file streams into the loader, the next `readAhead - 1` files' schema lookup
+        // and open (the download, for a remote store) already run in the background, so the pipeline never
+        // idles between files. Depth is the flow's `readAhead` (default 1, the long-standing behavior) because
+        // the cost of an open file is a property of the format and the source: a streaming reader holds a small
+        // buffer, while a format that must materialize a file to read it holds all of it. Rows are still
+        // emitted strictly in file order; a prefetch failure is captured and surfaced only when that file's
+        // turn arrives, and abandoned prefetches (cancellation, a prior file failing, maxRows reached) are
+        // cancelled and disposed in the finally below so no download or stream leaks.
         using var prefetchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         async Task<OpenedFile> OpenFileAsync(FileRef file)
@@ -475,15 +550,22 @@ public abstract class FileSourceReaderBase : ISourceReader
             return opened;
         }
 
-        var pending = OpenFileAsync(files[0]);
+        var pending = new Queue<Task<OpenedFile>>(options.ReadAhead);
+        var nextToOpen = 0;
+        while (nextToOpen < files.Count && pending.Count < options.ReadAhead)
+        {
+            pending.Enqueue(OpenFileAsync(files[nextToOpen++]));
+        }
+
         try
         {
-            for (var f = 0; f < files.Count && !reachedMax; f++)
+            while (pending.Count > 0 && !reachedMax)
             {
-                // pending is null only after the last file was claimed, and then the loop condition has
-                // already stopped the iteration, so it is always set here.
-                var current = await pending!.ConfigureAwait(false);
-                pending = f + 1 < files.Count ? OpenFileAsync(files[f + 1]) : null;
+                var current = await pending.Dequeue().ConfigureAwait(false);
+                if (nextToOpen < files.Count)
+                {
+                    pending.Enqueue(OpenFileAsync(files[nextToOpen++]));
+                }
 
                 try
                 {
@@ -607,16 +689,19 @@ public abstract class FileSourceReaderBase : ISourceReader
         }
         finally
         {
-            if (pending is not null)
+            if (pending.Count > 0)
             {
-                // A prefetched file whose turn never came: cancel its in-flight open, then await and dispose it
-                // so nothing leaks. Its captured error, if any, is intentionally dropped - the failure (or
-                // cancellation) that ended the run is already propagating to the caller.
+                // Prefetched files whose turn never came: cancel the in-flight opens, then await and dispose
+                // each so nothing leaks. Their captured errors, if any, are intentionally dropped - the failure
+                // (or cancellation) that ended the run is already propagating to the caller.
                 prefetchCts.Cancel();
-                var abandoned = await pending.ConfigureAwait(false);
-                if (abandoned.Lines is not null)
+                while (pending.Count > 0)
                 {
-                    await abandoned.Lines.DisposeAsync().ConfigureAwait(false);
+                    var abandoned = await pending.Dequeue().ConfigureAwait(false);
+                    if (abandoned.Lines is not null)
+                    {
+                        await abandoned.Lines.DisposeAsync().ConfigureAwait(false);
+                    }
                 }
             }
         }
