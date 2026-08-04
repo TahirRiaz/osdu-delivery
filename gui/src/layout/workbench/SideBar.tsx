@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
+import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../../auth/AuthContext";
 import { navGroups, selectedNavPath, type NavGroup } from "../nav";
@@ -124,11 +125,48 @@ export function SideBarSections({ reveal, onNavigate }: SideBarSectionsProps) {
   );
 }
 
-/** The desktop side bar surface: the grouped navigation inside its own scroll container. */
+/**
+ * The global catalog search, the first thing in the navigation (DESIGN.md sections 6 and 7.1): Enter takes
+ * the term to the search page. It sits above the scrolling nav so it never scrolls out of reach, and is
+ * shared by the desktop side bar and the mobile navigation sheet.
+ */
+export function SideBarSearch({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
+  const navigate = useNavigate();
+  const [term, setTerm] = useState("");
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = term.trim();
+    if (trimmed === "") {
+      return;
+    }
+
+    navigate(`/search?q=${encodeURIComponent(trimmed)}`);
+    onNavigate?.();
+  };
+
+  return (
+    <form onSubmit={submit} className={cn("shrink-0 border-b border-sidebar-border px-2 py-2", className)}>
+      <SearchInput
+        value={term}
+        onChange={setTerm}
+        placeholder="Search catalog"
+        label="Search objects, columns, and definitions"
+        testId="global-search"
+        className="sm:w-full"
+      />
+    </form>
+  );
+}
+
+/** The desktop side bar surface: the global search over the grouped navigation in its own scroll container. */
 export function SideBar({ reveal }: { reveal: { id: string; nonce: number } | null }) {
   return (
-    <nav aria-label="Main navigation" className="h-full overflow-y-auto bg-sidebar py-1">
-      <SideBarSections reveal={reveal} />
-    </nav>
+    <div className="flex h-full min-h-0 flex-col bg-sidebar">
+      <SideBarSearch />
+      <nav aria-label="Main navigation" className="min-h-0 flex-1 overflow-y-auto py-1">
+        <SideBarSections reveal={reveal} />
+      </nav>
+    </div>
   );
 }

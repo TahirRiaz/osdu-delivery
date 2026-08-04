@@ -1,6 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Menu, Moon, Search, Sun } from "lucide-react";
+import { Command, Menu, Moon, Sun } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -14,26 +14,18 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuth } from "../../auth/AuthContext";
 import { useThemeMode } from "../../theme/ThemeModeContext";
-import { SideBarSections } from "./SideBar";
+import { SideBarSearch, SideBarSections } from "./SideBar";
 
 /**
- * The workbench title bar (DESIGN.md section 6): brand on the left, the centered global search, theme
- * toggle and account menu on the right. On mobile, a hamburger opens the navigation sheet.
+ * The workbench title bar (DESIGN.md section 6): brand on the left, command palette, theme toggle and
+ * account menu on the right. Global search lives at the top of the navigation, not here. On mobile, a
+ * hamburger opens the navigation sheet, which carries the same search.
  */
 export function TitleBar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { session, logout } = useAuth();
   const { mode, toggle } = useThemeMode();
   const navigate = useNavigate();
-  const [searchTerm, setSearchTerm] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-
-  const submitSearch = (event: FormEvent) => {
-    event.preventDefault();
-    const term = searchTerm.trim();
-    if (term !== "") {
-      navigate(`/search?q=${encodeURIComponent(term)}`);
-    }
-  };
 
   return (
     <header
@@ -49,9 +41,13 @@ export function TitleBar({ onOpenPalette }: { onOpenPalette: () => void }) {
         </SheetTrigger>
         <SheetContent side="left" className="w-72 gap-0 bg-sidebar p-0">
           <SheetTitle className="sr-only">Navigation</SheetTitle>
-          <nav aria-label="Main navigation" className="h-full overflow-y-auto py-1">
-            <SideBarSections reveal={null} onNavigate={() => setMobileNavOpen(false)} />
-          </nav>
+          <div className="flex h-full min-h-0 flex-col">
+            {/* The right padding clears the sheet's own close button. */}
+            <SideBarSearch className="pr-10" onNavigate={() => setMobileNavOpen(false)} />
+            <nav aria-label="Main navigation" className="min-h-0 flex-1 overflow-y-auto py-1">
+              <SideBarSections reveal={null} onNavigate={() => setMobileNavOpen(false)} />
+            </nav>
+          </div>
         </SheetContent>
       </Sheet>
 
@@ -60,27 +56,22 @@ export function TitleBar({ onOpenPalette }: { onOpenPalette: () => void }) {
         <span className="hidden text-[13px] font-semibold sm:block">SQLFlow</span>
       </div>
 
-      <form
-        onSubmit={submitSearch}
-        className="mx-auto flex h-6 w-full max-w-xl items-center gap-1.5 rounded-md bg-white/10 px-2 transition-colors focus-within:bg-white/15 hover:bg-white/15"
-      >
-        <Search className="size-3.5 shrink-0 opacity-60" />
-        <input
-          data-testid="global-search"
-          value={searchTerm}
-          onChange={(event) => setSearchTerm(event.target.value)}
-          placeholder="Search objects, columns, definitions"
-          className="w-full bg-transparent text-xs text-white outline-none placeholder:text-white/50"
-        />
-        <button
-          type="button"
-          onClick={onOpenPalette}
-          aria-label="Open command palette"
-          className="hidden shrink-0 items-center rounded-sm border border-white/20 px-1 font-mono text-[10px] leading-4 text-white/60 hover:border-white/40 hover:text-white sm:flex"
-        >
-          Ctrl K
-        </button>
-      </form>
+      <div className="flex-1" />
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            data-testid="command-palette-button"
+            aria-label="Open command palette"
+            onClick={onOpenPalette}
+            className="hidden h-6 shrink-0 items-center gap-1.5 rounded-md bg-white/10 px-2 text-white/70 transition-colors hover:bg-white/15 hover:text-white sm:flex"
+          >
+            <Command className="size-3.5" />
+            <span className="font-mono text-[10px] leading-none">Ctrl K</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Command palette</TooltipContent>
+      </Tooltip>
 
       <Tooltip>
         <TooltipTrigger asChild>

@@ -132,29 +132,33 @@ Fixed viewport frame, no page scroll; only the editor area and panel scroll inte
 
 ```
 +------------------------------------------------------------------+
-| Title bar (36px): brand | global search (center) | theme, account|
+| Title bar (36px): brand |            palette, theme, account      |
 +---+--------------------------------------------------------------+
 | A | Side bar (resizable | Tab strip (35px)                       |
 | c | 200-320px):         +----------------------------------------+
-| t | grouped nav,        | Editor: the routed page                |
-| B | collapsible         |   (scrolls internally)                 |
-| a | sections            +----------------------------------------+
+| t | global search,      | Editor: the routed page                |
+| B | then grouped nav,   |   (scrolls internally)                 |
+| a | collapsible sections+----------------------------------------+
 | r |                     | Bottom panel (resizable, closable)     |
 +---+---------------------+----------------------------------------+
 | Status bar (22px, brand blue)                                    |
 +------------------------------------------------------------------+
 ```
 
-- **Title bar** (`h-9`, `bg-activity-bar`): logo + product name left; centered global search box
-  (max-w-xl, testid `global-search`, Enter navigates to `/search?q=`); right side theme toggle (testid
-  `theme-toggle`) and account menu (testids `account-menu-button`, `account-subject`, `account-tokens`,
-  `account-notifications`, `account-logout`). On mobile a hamburger opens the nav sheet.
+- **Title bar** (`h-9`, `bg-activity-bar`): logo + product name left, everything else right: the command
+  palette button (testid `command-palette-button`, a `Ctrl K` chip), the theme toggle (testid
+  `theme-toggle`) and the account menu (testids `account-menu-button`, `account-subject`,
+  `account-tokens`, `account-notifications`, `account-logout`). Nothing floats in the middle: the bar
+  carries chrome only, never a content control. On mobile a hamburger opens the nav sheet.
 - **Activity bar** (`w-12`): one icon per nav group, Settings gear pinned at the bottom. Active group
   shows a 2px left indicator + full-intensity icon. Click: reveal the group in the side bar; click on
   the active group toggles the side bar. Tooltips on the right.
-- **Side bar** (resizable 12-35%, persisted): all nav groups as collapsible sections (uppercase 11px
-  headers), items 28px tall with 16px lucide icons, nav testids preserved (`nav-runs`, ...). Selection
-  follows the longest-prefix rule; selected item gets `bg-sidebar-accent` plus a 2px accent inset.
+- **Side bar** (resizable 12-35%, persisted): the global search first (`SearchInput`, testid
+  `global-search`, Enter navigates to `/search?q=`), pinned above the scroll area on its own hairline so a
+  long nav never scrolls it away; then all nav groups as collapsible sections (uppercase 11px headers),
+  items 28px tall with 16px lucide icons, nav testids preserved (`nav-runs`, ...). Selection follows the
+  longest-prefix rule; selected item gets `bg-sidebar-accent` plus a 2px accent inset. The mobile nav
+  sheet renders the same search over the same sections.
 - **Tab strip** (`h-[35px]`, `bg-tab-bar`): one tab per visited route; active tab wears `bg-tab-active`,
   a 1px top accent line, and its close button always visible; inactive tabs reveal close on hover.
   Middle-click closes. Tabs keep their label (max `w-52`, never squeezed to an icon), so a long strip
