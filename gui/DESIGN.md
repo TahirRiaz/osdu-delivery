@@ -150,8 +150,12 @@ Fixed viewport frame, no page scroll; only the editor area and panel scroll inte
   follows the longest-prefix rule; selected item gets `bg-sidebar-accent` plus a 2px accent inset.
 - **Tab strip** (`h-[35px]`, `bg-tab-bar`): one tab per visited route; active tab wears `bg-tab-active`,
   a 1px top accent line, and its close button always visible; inactive tabs reveal close on hover.
-  Middle-click closes. Tabs persist per browser session. Detail pages set real titles via
-  `useTabTitle(...)` once data loads.
+  Middle-click closes. Tabs keep their label (max `w-52`, never squeezed to an icon), so a long strip
+  scrolls horizontally and the active tab is scrolled into view on navigation. Right-click opens the tab
+  menu: Close, Close Others, Close to the Right, Close All, Copy Link. The strip ends in an overflow
+  button (testid `tabs-overflow-menu`) listing every open tab plus Close Others / Close All. Closing the
+  last tab falls back to the dashboard, so the strip is never empty. Tabs persist per browser session.
+  Detail pages set real titles via `useTabTitle(...)` once data loads.
 - **Editor**: the routed page inside a scroll container with the measure cap. Pages never add their own
   outer padding.
 - **Bottom panel** (resizable 15-70%, closable): live surfaces opened by features through `usePanel()`

@@ -24,8 +24,15 @@ interface TabsValue {
   activePath: string;
   activate: (tab: WorkbenchTab) => void;
   close: (path: string) => void;
+  /** Closes every tab except the given one. */
+  closeOthers: (path: string) => void;
+  /** Closes every tab sitting to the right of the given one. */
+  closeToRight: (path: string) => void;
+  closeAll: () => void;
   setTitle: (path: string, title: string) => void;
 }
+
+const HOME_PATH = "/";
 
 const TabsContext = createContext<TabsValue | null>(null);
 
@@ -92,21 +99,58 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     navigate(tab.url);
   }, [navigate]);
 
+  /**
+   * The one closing path: drops every tab the predicate selects, then keeps the routed page valid. Closing
+   * the active tab focuses the nearest survivor to its right, else the one to its left; emptying the strip
+   * falls back to the dashboard, so there is never a routed page without a tab.
+   */
+  const closeTabs = useCallback((shouldClose: (tab: WorkbenchTab, index: number) => boolean) => {
+    const survivors = tabs.filter((tab, index) => !shouldClose(tab, index));
+    if (survivors.length === tabs.length) {
+      return;
+    }
+
+    if (survivors.length === 0) {
+      const home: WorkbenchTab = { path: HOME_PATH, url: HOME_PATH, title: routeTitle(HOME_PATH).title };
+      setTabs([home]);
+      navigate(home.url);
+      return;
+    }
+
+    setTabs(survivors);
+
+    const activeIndex = tabs.findIndex((tab) => tab.path === location.pathname);
+    if (activeIndex < 0 || !shouldClose(tabs[activeIndex], activeIndex)) {
+      return;
+    }
+
+    const survivorsBefore = tabs
+      .slice(0, activeIndex)
+      .filter((tab, index) => !shouldClose(tab, index))
+      .length;
+    navigate(survivors[Math.min(survivorsBefore, survivors.length - 1)].url);
+  }, [tabs, location.pathname, navigate]);
+
   const close = useCallback((path: string) => {
+    closeTabs((tab) => tab.path === path);
+  }, [closeTabs]);
+
+  const closeOthers = useCallback((path: string) => {
+    closeTabs((tab) => tab.path !== path);
+  }, [closeTabs]);
+
+  const closeToRight = useCallback((path: string) => {
     const index = tabs.findIndex((tab) => tab.path === path);
     if (index < 0) {
       return;
     }
 
-    const next = tabs.filter((tab) => tab.path !== path);
-    setTabs(next);
-    if (path === location.pathname) {
-      // Closing the active tab focuses its right neighbor, else the left one, else the dashboard (which
-      // re-opens as a fresh tab when none remain).
-      const target = next[Math.min(index, next.length - 1)];
-      navigate(target !== undefined ? target.url : "/");
-    }
-  }, [tabs, location.pathname, navigate]);
+    closeTabs((_tab, position) => position > index);
+  }, [tabs, closeTabs]);
+
+  const closeAll = useCallback(() => {
+    closeTabs(() => true);
+  }, [closeTabs]);
 
   const setTitle = useCallback((path: string, title: string) => {
     setTabs((current) => {
@@ -126,8 +170,11 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     activePath: location.pathname,
     activate,
     close,
+    closeOthers,
+    closeToRight,
+    closeAll,
     setTitle,
-  }), [tabs, location.pathname, activate, close, setTitle]);
+  }), [tabs, location.pathname, activate, close, closeOthers, closeToRight, closeAll, setTitle]);
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;
 }
