@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CheckCircle2, CircleAlert, Copy, Eraser, Loader2, Radio } from "lucide-react";
+import {
+  Check, CheckCircle2, CircleAlert, Copy, Eraser, Loader2, Maximize2, OctagonAlert, Radio, TriangleAlert,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { prettyPrintSql } from "@/lib/sql";
 import { parseUtc } from "../lib/time";
 
@@ -20,17 +22,26 @@ export interface TraceLine {
   groupKey?: string;
 }
 
-/** The tint of one line by its level (never by color alone: the tag column always names the level/step). */
+/**
+ * Message text stays neutral at every level: a trace can be thousands of warnings long, and tinting all of them
+ * turns the panel into a wall of one color where nothing stands out. Severity is carried by the leading glyph
+ * (see {@link LevelMark}) instead, so a handful of problems read as problems against calm text.
+ */
 function levelClass(level: TraceLine["level"]): string {
+  return level === "trace" || level === "debug" ? "text-muted-foreground" : "text-foreground";
+}
+
+/** The shape+color severity glyph for a warning/error line; nothing at all for the ordinary levels. */
+function LevelMark({ level }: { level: TraceLine["level"] }) {
   if (level === "error") {
-    return "text-destructive";
+    return <OctagonAlert className="mr-1.5 inline size-3.5 shrink-0 align-[-2px] text-destructive" />;
   }
 
   if (level === "warning") {
-    return "text-warning";
+    return <TriangleAlert className="mr-1.5 inline size-3.5 shrink-0 align-[-2px] text-warning" />;
   }
 
-  return level === "info" ? "text-foreground" : "text-muted-foreground";
+  return null;
 }
 
 /** A compact UTC clock stamp (HH:mm:ss.fff); "-" for a line without a timestamp. */
@@ -166,9 +177,13 @@ function SqlBlock({ sql, className }: { sql: string; className?: string }) {
 /**
  * One trace line as a table row: a timestamp column and a tag column that both size to their content (the tag is
  * never clipped), then a single event column that takes the remaining width and holds the message with an inline,
- * dimmed one-line SQL/error preview. Only the event column clips (never wraps, never widens the panel), and the
- * whole event is a hover trigger for a rich card showing the message and the SQL pretty-printed, plus any error,
- * with a copy button, so nothing is lost to the truncation.
+ * dimmed one-line SQL/error preview, and finally a narrow expand column.
+ *
+ * Only the event column clips (never wraps, never widens the panel), and the full line lives behind the expand
+ * button: a click opens a popover with the message, the SQL pretty-printed, any error, and a copy button. The
+ * detail is deliberately click-only. A hover trigger fires on every line the pointer crosses, so scrolling a long
+ * trace flashes a string of cards nobody asked for; the button only appears on the row under the pointer (or the
+ * focused row) and stays put until it is clicked.
  */
 function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) {
   const level = levelClass(line.level);
@@ -176,63 +191,80 @@ function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) 
   // leading margins are only added between parts that actually render.
   const hasMsg = line.message.trim().length > 0;
 
-  const event = (
-    <HoverCard openDelay={120} closeDelay={80}>
-      <HoverCardTrigger asChild>
-        <div
-          tabIndex={0}
-          className="block cursor-default truncate rounded-sm outline-none hover:bg-muted/40 focus-visible:bg-muted/40"
-        >
-          {hasMsg ? <span className={level}>{line.message}</span> : null}
-          {line.sql ? (
-            <span className={cn(hasMsg && "ml-2", "text-muted-foreground/80")}>{collapse(line.sql)}</span>
-          ) : null}
-          {line.error ? (
-            <span className={cn((hasMsg || line.sql) && "ml-2", "text-destructive")}>!! {collapse(line.error)}</span>
-          ) : null}
-        </div>
-      </HoverCardTrigger>
-      <HoverCardContent align="start" side="top" className="w-[min(90vw,760px)] overflow-hidden p-0">
-        <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-          <span className="truncate">
-            <span className="tabular-nums">{fmtTime(line.timestampUtc)}</span>
-            <span className="mx-1.5">·</span>
-            <span className="uppercase">{line.tag}</span>
-          </span>
-          <CopyLineButton getText={() => lineText(line)} />
-        </div>
-        <div className="max-h-[50vh] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
-          {hasMsg ? <p className={cn("whitespace-pre-wrap break-words", level)}>{line.message}</p> : null}
-          {line.sql ? <SqlBlock sql={line.sql} className={cn(hasMsg && "mt-2")} /> : null}
-          {line.error ? (
-            <div
-              className={cn("whitespace-pre-wrap break-words text-destructive", (hasMsg || line.sql) && "mt-2")}
-            >
-              !! {line.error}
-            </div>
-          ) : null}
-        </div>
-      </HoverCardContent>
-    </HoverCard>
-  );
-
   return (
     <>
       {separated ? (
         <tr aria-hidden>
-          <td colSpan={3} className="p-0">
+          <td colSpan={4} className="p-0">
             <div className="my-1 border-t border-dashed border-border/60" />
           </td>
         </tr>
       ) : null}
-      <tr className="align-top">
+      <tr className={cn("group align-top", line.level === "error" && "bg-destructive/6")}>
         <td className="whitespace-nowrap pr-3 align-top text-muted-foreground tabular-nums">
           {fmtTime(line.timestampUtc)}
         </td>
         <td className="whitespace-nowrap pr-3 align-top uppercase text-muted-foreground">
           {line.tag}
         </td>
-        <td className="w-full max-w-0 p-0 align-top">{event}</td>
+        <td className="w-full max-w-0 p-0 align-top">
+          <div className="truncate">
+            <LevelMark level={line.level} />
+            {hasMsg ? <span className={level}>{line.message}</span> : null}
+            {line.sql ? (
+              <span className={cn(hasMsg && "ml-2", "text-muted-foreground/80")}>{collapse(line.sql)}</span>
+            ) : null}
+            {line.error ? (
+              <span className={cn((hasMsg || line.sql) && "ml-2", "text-destructive")}>!! {collapse(line.error)}</span>
+            ) : null}
+          </div>
+        </td>
+        <td className="w-0 whitespace-nowrap pl-2 align-top">
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                title="Show the full line"
+                aria-label="Show the full line"
+                data-testid="trace-line-expand"
+                className="inline-flex rounded-sm p-0.5 text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 data-[state=open]:bg-muted data-[state=open]:text-foreground data-[state=open]:opacity-100"
+              >
+                <Maximize2 className="size-3.5 shrink-0" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              side="top"
+              collisionPadding={8}
+              className="w-[min(90vw,760px)] overflow-hidden p-0"
+            >
+              <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+                <span className="truncate">
+                  <span className="tabular-nums">{fmtTime(line.timestampUtc)}</span>
+                  <span className="mx-1.5">·</span>
+                  <span className="uppercase">{line.tag}</span>
+                </span>
+                <CopyLineButton getText={() => lineText(line)} />
+              </div>
+              <div className="max-h-[50vh] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
+                {hasMsg ? (
+                  <p className={cn("whitespace-pre-wrap break-words", level)}>
+                    <LevelMark level={line.level} />
+                    {line.message}
+                  </p>
+                ) : null}
+                {line.sql ? <SqlBlock sql={line.sql} className={cn(hasMsg && "mt-2")} /> : null}
+                {line.error ? (
+                  <div
+                    className={cn("whitespace-pre-wrap break-words text-destructive", (hasMsg || line.sql) && "mt-2")}
+                  >
+                    !! {line.error}
+                  </div>
+                ) : null}
+              </div>
+            </PopoverContent>
+          </Popover>
+        </td>
       </tr>
     </>
   );

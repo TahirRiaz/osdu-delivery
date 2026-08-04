@@ -235,6 +235,21 @@ Testid `status-badge` preserved.
 - **Bottom panel**: live process output (streaming run trace, sync progress). Never modal.
 - **Popover/DropdownMenu**: pickers, row action menus (`user-actions`, ...).
 
+### 7.4a Trace log (`TraceLog`)
+
+The shared terminal-style log behind every trace (run, sync, lineage). Two rules keep a several-thousand
+line trace readable:
+
+- **Severity is a glyph, not a tint.** Message text is `foreground` (muted for trace/debug) at every
+  level; a warning or error line is marked by a 14px `TriangleAlert` / `OctagonAlert` in the status color
+  ahead of the text, and an error row takes a `bg-destructive/6` wash. Tinting whole lines makes a trace
+  of 2000 warnings one flat block of amber in which the one error disappears. Status color stays for the
+  counts, the problems band, and these glyphs.
+- **Line detail is click-only.** Each row truncates to one line and ends in a `Maximize2` button (testid
+  `trace-line-expand`, revealed on row hover/focus) that opens a popover with the full message, the SQL
+  pretty-printed, any error, and Copy. No hover card: a hover trigger on a dense scrolling list fires on
+  every row the pointer crosses and flashes a string of cards nobody asked for.
+
 ### 7.5 Forms
 
 react-hook-form + zod (already in place) with shadcn `Input`, `Select`, `Checkbox`, `Switch`,
