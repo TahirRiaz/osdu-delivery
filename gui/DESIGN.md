@@ -188,9 +188,12 @@ description (13px muted), and right-aligned toolbar actions (small buttons). Bel
 popover, the empty string meaning "no filter") for a filter over many values like the Runs board's schedule
 and batch dropdowns, where a plain `Select` would not scroll usably. Free-text search over a list or tree
 goes through `SearchInput` (leading magnifier, trailing clear, filled surface so the field never reads as
-empty background); features must not hand-roll that icon/clear arrangement. It sits at the **right end** of
-the filter row (`className="sm:ml-auto"`), opposite the dropdowns that shape the view, so search is in the
-same place on every page that has it.
+empty background); features must not hand-roll that icon/clear arrangement. **Search comes first.** The
+free-text field is the leading control of the filter row on every page that has one, ahead of the dropdowns
+that narrow it, and it is never pushed to the far right with `ml-auto`: typing a name is the fastest way
+into a long list, so it is the first thing the eye and the tab order reach. The same holds for a plain
+`Input` used as free text (the Runs board's flow name, the browse page's name filter) and for a search that
+shares a row with a section heading: it follows the heading rather than floating opposite it.
 
 ### 7.2 Tables
 

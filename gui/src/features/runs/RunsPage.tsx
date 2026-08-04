@@ -373,8 +373,17 @@ export default function RunsPage() {
       />
 
       <FilterBar>
-        {/* Filters read left to right from the source hierarchy (schedule -> batch -> kind -> flow name), through
-            the run's state and history scope (status, last/all), to the display toggle (group). */}
+        {/* Free-text search leads the row (DESIGN.md 7.1), then the filters read left to right down the source
+            hierarchy (schedule -> batch -> kind), through the run's state and history scope (status, last/all), to
+            the display toggle (group). */}
+        <Input
+          value={flowNameInput}
+          onChange={(e) => setFlowNameInput(e.target.value)}
+          placeholder="Flow name"
+          aria-label="Flow name"
+          data-testid="filter-flow-name"
+          className={cn("h-8 w-44", flowNameInput !== "" && activeFilterClass)}
+        />
         <FilterCombobox
           options={scheduleOptions}
           value={scheduleId}
@@ -407,14 +416,6 @@ export default function RunsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Input
-          value={flowNameInput}
-          onChange={(e) => setFlowNameInput(e.target.value)}
-          placeholder="Flow name"
-          aria-label="Flow name"
-          data-testid="filter-flow-name"
-          className={cn("h-8 w-44", flowNameInput !== "" && activeFilterClass)}
-        />
         <Select
           value={status ?? "all"}
           onValueChange={(value) => setStatus(value === "all" ? null : (value as RunStatus))}

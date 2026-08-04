@@ -182,6 +182,21 @@ export default function DatasourceBrowsePage() {
       />
 
       <FilterBar>
+        {/* Free-text search leads the row (DESIGN.md 7.1); the database and schema pickers that scope it follow. */}
+        <Input
+          value={nameLike}
+          onChange={(e) => setNameLike(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              setAppliedNameLike(nameLike.trim());
+            }
+          }}
+          onBlur={() => setAppliedNameLike(nameLike.trim())}
+          placeholder="Name filter"
+          aria-label="Name filter"
+          data-testid="browse-name-filter"
+          className={cn("h-8 w-full sm:w-44", nameLike !== "" && activeFilterClass)}
+        />
         <ComboBoxField
           ariaLabel="Database"
           options={databases.data?.databases.map((d) => d.name) ?? []}
@@ -218,20 +233,6 @@ export default function DatasourceBrowsePage() {
           loadingMessage="Loading from the source..."
           testId="browse-schema"
           className="w-full sm:w-50"
-        />
-        <Input
-          value={nameLike}
-          onChange={(e) => setNameLike(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              setAppliedNameLike(nameLike.trim());
-            }
-          }}
-          onBlur={() => setAppliedNameLike(nameLike.trim())}
-          placeholder="Name filter"
-          aria-label="Name filter"
-          data-testid="browse-name-filter"
-          className={cn("h-8 w-full sm:w-44", nameLike !== "" && activeFilterClass)}
         />
         <Label className="flex items-center gap-2 text-[13px] font-normal">
           <Switch

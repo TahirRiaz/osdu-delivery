@@ -107,6 +107,15 @@ export default function PipelinesPage() {
       <PageHeader title="Pipelines" />
 
       <FilterBar>
+        {/* Search leads the row: typing a name is the fastest way into a 472-pipeline tree, so it comes before the
+            dropdowns that narrow it. */}
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search by name, path, kind, project"
+          label="Search pipelines"
+          testId="filter-name"
+        />
         <Select
           value={repoFilter === "" ? ALL : repoFilter}
           onValueChange={(value) => setRepoFilter(value === ALL ? "" : value)}
@@ -148,16 +157,6 @@ export default function PipelinesPage() {
             <SelectItem value="inactive">inactive</SelectItem>
           </SelectContent>
         </Select>
-        {/* The dropdowns that shape the tree sit at the left; the free-text search sits at the far right, where it
-            does on the repo detail page, so the eye lands in the same place on both. */}
-        <SearchInput
-          value={search}
-          onChange={setSearch}
-          placeholder="Search by name, path, kind, project"
-          label="Search pipelines"
-          testId="filter-name"
-          className="sm:ml-auto"
-        />
       </FilterBar>
 
       <PipelinesTree
