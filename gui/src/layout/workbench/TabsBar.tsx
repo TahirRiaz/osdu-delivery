@@ -30,11 +30,11 @@ function copyLink(tab: WorkbenchTab): void {
 /**
  * The VS Code-style tab strip over the router (DESIGN.md section 6): one tab per visited route, the
  * active tab wearing the editor surface and a top accent line. Middle-click or the X closes a tab,
- * right-click opens the tab menu (close, close others, close to the right, close all), and the strip
+ * right-click opens the tab menu (close, close others, close to the left/right, close all), and the strip
  * ends in an overflow menu that lists every open tab so a long strip stays navigable.
  */
 export function TabsBar() {
-  const { tabs, activePath, activate, close, closeOthers, closeToRight, closeAll } = useWorkbenchTabs();
+  const { tabs, activePath, activate, close, closeOthers, closeToLeft, closeToRight, closeAll } = useWorkbenchTabs();
   const activeTabRef = useRef<HTMLDivElement | null>(null);
 
   // Tabs keep their natural width and the strip scrolls, so the routed page's tab is pulled into view
@@ -53,6 +53,7 @@ export function TabsBar() {
         {tabs.map((tab, index) => {
           const { icon: Icon } = routeTitle(tab.path);
           const isActive = tab.path === activePath;
+          const isFirst = index === 0;
           const isLast = index === tabs.length - 1;
           return (
             <ContextMenu key={tab.path}>
@@ -105,6 +106,9 @@ export function TabsBar() {
                 </ContextMenuItem>
                 <ContextMenuItem disabled={tabs.length < 2} onSelect={() => closeOthers(tab.path)}>
                   Close Others
+                </ContextMenuItem>
+                <ContextMenuItem disabled={isFirst} onSelect={() => closeToLeft(tab.path)}>
+                  Close to the Left
                 </ContextMenuItem>
                 <ContextMenuItem disabled={isLast} onSelect={() => closeToRight(tab.path)}>
                   Close to the Right

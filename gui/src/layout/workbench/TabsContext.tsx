@@ -26,6 +26,8 @@ interface TabsValue {
   close: (path: string) => void;
   /** Closes every tab except the given one. */
   closeOthers: (path: string) => void;
+  /** Closes every tab sitting to the left of the given one. */
+  closeToLeft: (path: string) => void;
   /** Closes every tab sitting to the right of the given one. */
   closeToRight: (path: string) => void;
   closeAll: () => void;
@@ -139,6 +141,15 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     closeTabs((tab) => tab.path !== path);
   }, [closeTabs]);
 
+  const closeToLeft = useCallback((path: string) => {
+    const index = tabs.findIndex((tab) => tab.path === path);
+    if (index < 0) {
+      return;
+    }
+
+    closeTabs((_tab, position) => position < index);
+  }, [tabs, closeTabs]);
+
   const closeToRight = useCallback((path: string) => {
     const index = tabs.findIndex((tab) => tab.path === path);
     if (index < 0) {
@@ -171,10 +182,11 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     activate,
     close,
     closeOthers,
+    closeToLeft,
     closeToRight,
     closeAll,
     setTitle,
-  }), [tabs, location.pathname, activate, close, closeOthers, closeToRight, closeAll, setTitle]);
+  }), [tabs, location.pathname, activate, close, closeOthers, closeToLeft, closeToRight, closeAll, setTitle]);
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;
 }
