@@ -224,15 +224,12 @@ interface DatabaseBranch { database: string | null; objectCount: number; schemas
 interface SchemaBranch { schema: string | null; objectCount: number; kinds: KindCount[] }
 interface KindCount { kind: string; objectCount: number }
 
-/** Folds the flat per-kind rows into database > schema > kind, excluding files (they live under Sources) and
- * subscribers (they live under Subscribers, and belong to no database), and merging connection-reference
- * aliases so one database reached via two refs is one node. */
+/** Folds the flat per-kind rows into database > schema > kind, merging connection-reference aliases so one
+ * database reached via two refs is one node. Files and subscribers are already absent: they belong to no
+ * database and the schema endpoint excludes them, so every client sees the database hierarchy alone. */
 function foldDatabases(rows: SchemaKindCount[]): DatabaseBranch[] {
   const databases = new Map<string | null, DatabaseBranch>();
   for (const row of rows) {
-    if (row.kind === "File" || row.kind === "Subscriber") {
-      continue;
-    }
     let database = databases.get(row.database);
     if (database === undefined) {
       database = { database: row.database, objectCount: 0, schemas: [] };

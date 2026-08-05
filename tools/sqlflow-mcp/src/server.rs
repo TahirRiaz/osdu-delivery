@@ -282,6 +282,16 @@ pub struct KeyInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SubscribersInput {
+    /// The consuming tool, exact: "PowerBI", "Tableau", "Excel", ... Omit for every type.
+    /// Free text by design, so read the types back from an unfiltered call rather than guessing.
+    #[serde(rename = "type")]
+    pub subscriber_type: Option<String>,
+    /// Substring filter over the subscriber's name, owner, and description.
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchInput {
     /// The search term.
     pub query: String,
@@ -1020,6 +1030,38 @@ impl SqlFlowMcp {
             ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
         ];
         self.get("/api/v1/search/definitions", &q).await
+    }
+
+    // ---- Data subscribers: the consumption side (read) -------------------
+
+    #[tool(
+        description = "List the data subscribers: the reports, workbooks, notebooks, and applications declared \
+            as CONSUMING the warehouse, which is where lineage ends. Each entry has the subscriber's key (pass \
+            it to describe_subscriber), name, type (the consuming tool: PowerBI / Tableau / Excel / ...), owner \
+            (who to tell before a breaking change), the subscribers.yaml that declares it, how many queries it \
+            runs, and how many distinct objects those queries read. Filter by `type` for one tool, or `search` \
+            over name/owner/description. Subscribers are NOT database objects and never appear in \
+            browse_catalog; this is their branch. For the reverse question, which subscribers consume a given \
+            table, use describe_object and read its `subscribers`."
+    )]
+    async fn list_subscribers(&self, Parameters(i): Parameters<SubscribersInput>) -> String {
+        let q = vec![
+            ("type", i.subscriber_type.unwrap_or_default()),
+            ("search", i.search.unwrap_or_default()),
+        ];
+        self.get("/api/v1/lineage/subscribers", &q).await
+    }
+
+    #[tool(
+        description = "Describe one data subscriber in a single payload: its identity and owner, every \
+            warehouse object its queries read (named and located from the object registry, with the level and \
+            the specific queries that reference each), and the query texts themselves. The consumption-side \
+            twin of describe_object: that answers 'who consumes this table', this answers 'what does this \
+            report consume'. Use it for impact analysis before changing a table, and to see the SQL a report \
+            actually runs. Takes the `key` from list_subscribers."
+    )]
+    async fn describe_subscriber(&self, Parameters(i): Parameters<KeyInput>) -> String {
+        self.get("/api/v1/lineage/subscribers/dossier", &[("key", i.key)]).await
     }
 
     // ---- Schedules, nodes, sources, summary (read) -----------------------

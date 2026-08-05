@@ -257,10 +257,20 @@ public static class LineageEndpoints
         return group;
     }
 
+    /// <summary>
+    /// The object kinds that are NOT part of the database hierarchy and must never fold into it: a file
+    /// endpoint belongs to a storage account, and a data subscriber belongs to no server at all. Both carry a
+    /// null database and schema, so leaving them in makes the schema endpoints invent a nameless "unresolved"
+    /// database holding them. Each has its own branch (<c>/lineage/file-tree</c> and
+    /// <c>/lineage/subscribers</c>), so this is where the split belongs: filtering it in one client leaves
+    /// every other caller, the MCP server included, showing the phantom.
+    /// </summary>
+    private static readonly string[] NonDatabaseKinds = ["File", "Subscriber"];
+
     private static async Task<Ok<IReadOnlyList<SchemaDto>>> ListSchemasAsync(
         CatalogDbContext db, string? serverRef, string? database, CancellationToken ct)
     {
-        var query = db.Objects.AsNoTracking().AsQueryable();
+        var query = db.Objects.AsNoTracking().Where(o => !NonDatabaseKinds.Contains(o.Kind));
         if (!string.IsNullOrWhiteSpace(serverRef))
         {
             query = query.Where(o => o.ServerRef == serverRef);
@@ -290,7 +300,7 @@ public static class LineageEndpoints
     private static async Task<Ok<IReadOnlyList<SchemaKindCountDto>>> ListSchemaKindsAsync(
         CatalogDbContext db, string? serverRef, string? database, string? schema, CancellationToken ct)
     {
-        var query = db.Objects.AsNoTracking().AsQueryable();
+        var query = db.Objects.AsNoTracking().Where(o => !NonDatabaseKinds.Contains(o.Kind));
         if (!string.IsNullOrWhiteSpace(serverRef))
         {
             query = query.Where(o => o.ServerRef == serverRef);
