@@ -67,7 +67,21 @@ subscribers:
 
 ## Where the file lives
 
-A subscriber library is any file named `subscribers.yaml` or ending in `.subscribers.yaml`, anywhere under the scanned folder. One file for the whole estate is the intended shape; several are allowed (`analyse.subscribers.yaml`, `drift.subscribers.yaml`) and are merged. Like `schedules.yaml`, the file is NOT a flow document: it is excluded from the flow parse, never becomes a pipeline, never joins a schedule, and never appears in an execution wave. A subscriber that leaked into the flow set would sit in a wave forever waiting to run a Power BI report.
+A subscriber library is any file named `subscribers.yaml` or ending in `.subscribers.yaml`, anywhere under the scanned folder, and every match is merged into one set.
+
+**One file per subscriber is the convention**, named for the subscriber and gathered in a `subscribers/` folder:
+
+```
+subscribers/analyse_sanntid.subscribers.yaml
+subscribers/dashboard_mpc.subscribers.yaml
+subscribers/baatbooking_report.subscribers.yaml
+```
+
+A consumer is an independently owned thing: it is added, retired, and re-pointed on its own schedule, by whoever owns the report rather than by whoever owns the estate. One file per subscriber keeps that ownership legible in the diff, and keeps a change to one report out of everyone else's blame. Each file is parsed on its own, so each declares its own `connections:` block. A single file holding several subscribers still works and is the right shape for a handful of them.
+
+A subscriber name is the estate's identity for a consumer, so the same name in two files is a collision, not a merge: the first wins and the second is reported.
+
+Like `schedules.yaml`, these files are NOT flow documents: they are excluded from the flow parse, never become pipelines, never join a schedule, and never appear in an execution wave. A subscriber that leaked into the flow set would sit in a wave forever waiting to run a Power BI report.
 
 ## Keys
 

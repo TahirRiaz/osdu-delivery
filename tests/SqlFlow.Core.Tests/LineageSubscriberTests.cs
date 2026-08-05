@@ -193,6 +193,59 @@ public sealed class LineageSubscriberTests : IDisposable
     }
 
     [Fact]
+    public void OneFilePerSubscriber_InAFolder_MergesIntoIndependentNodes()
+    {
+        // The estate convention: a consumer is independently owned, so it gets its own file under
+        // subscribers/. Each file is parsed on its own (its own connections block) and they merge into one set
+        // of INDEPENDENT nodes, never into a combined one; a report's edges must stay its own.
+        Directory.CreateDirectory(Path.Combine(_root, "subscribers"));
+        Write("10_ing.yaml", Ingestion);
+        Write(Path.Combine("subscribers", "analyse_bysykkel.subscribers.yaml"), string.Join('\n',
+            "connections:",
+            $"  dwh: {Ods}",
+            "subscribers:",
+            "  Analyse_Bysykkel:",
+            "    type: PowerBI",
+            "    server: dwh",
+            "    queries:",
+            "      - name: Turer",
+            "        sql: SELECT * FROM [OdsDb].[arc].[Bysykkel_Bikes];") + '\n');
+        Write(Path.Combine("subscribers", "drift_rapport.subscribers.yaml"), string.Join('\n',
+            "connections:",
+            $"  dwh: {Ods}",
+            "subscribers:",
+            "  Drift_Rapport:",
+            "    type: Excel",
+            "    server: dwh",
+            "    queries:",
+            "      - name: Stasjoner",
+            "        sql: SELECT * FROM [OdsDb].[arc].[Bysykkel_Stations];") + '\n');
+
+        var report = Build();
+
+        Assert.Equal(2, report.Subscribers.Count);
+        Assert.Equal(
+            ["subscribers/analyse_bysykkel.subscribers.yaml", "subscribers/drift_rapport.subscribers.yaml"],
+            report.Subscribers.Select(s => s.File).OrderBy(f => f, StringComparer.Ordinal));
+
+        // Two nodes, and each one's read edges belong to it alone.
+        var bysykkelKey = NodeKey.For(ServerIdentity.Subscriber, null, null, "Analyse_Bysykkel");
+        var driftKey = NodeKey.For(ServerIdentity.Subscriber, null, null, "Drift_Rapport");
+        Assert.Contains(report.Objects, o => o.Key == bysykkelKey && o.Kind == LineageNodeKind.Subscriber);
+        Assert.Contains(report.Objects, o => o.Key == driftKey && o.Kind == LineageNodeKind.Subscriber);
+
+        var bikes = NodeKey.For(Ods, "OdsDb", "arc", "Bysykkel_Bikes");
+        var stations = NodeKey.For(Ods, "OdsDb", "arc", "Bysykkel_Stations");
+        Assert.Contains(report.Edges, e => e.ViaModule == bysykkelKey && e.ObjectKey == bikes);
+        Assert.DoesNotContain(report.Edges, e => e.ViaModule == bysykkelKey && e.ObjectKey == stations);
+        Assert.Contains(report.Edges, e => e.ViaModule == driftKey && e.ObjectKey == stations);
+        Assert.DoesNotContain(report.Edges, e => e.ViaModule == driftKey && e.ObjectKey == bikes);
+
+        // A per-subscriber file is still not a flow document.
+        Assert.DoesNotContain(report.Flows, f => f.Name is "Analyse_Bysykkel" or "Drift_Rapport");
+    }
+
+    [Fact]
     public void Subscriber_DeclaredTwice_KeepsTheFirstAndWarns()
     {
         Write("a.subscribers.yaml", Subscribers("SELECT * FROM [OdsDb].[arc].[Bysykkel_Bikes];"));
