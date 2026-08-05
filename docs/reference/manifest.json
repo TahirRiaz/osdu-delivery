@@ -1262,6 +1262,34 @@
       ]
     },
     {
+      "id": "concept-shared-target-watermarks",
+      "path": "concepts/shared-target-watermarks.md",
+      "title": "Incremental watermarks when several flows share one target table",
+      "type": "concept",
+      "summary": "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert.",
+      "keywords": [
+        "watermark",
+        "incremental",
+        "shared target",
+        "fan-in",
+        "incrementalclause",
+        "overlapdays",
+        "datecolumn",
+        "discriminator",
+        "silent data loss"
+      ],
+      "related": [
+        "guide-incremental-and-backfill",
+        "flow-incremental",
+        "concept-ingestion-run-pipeline",
+        "concept-upsert-and-change-detection"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs",
+        "src/SqlFlow.Yaml/IngestionYaml.cs"
+      ]
+    },
+    {
       "id": "concept-type-inference",
       "path": "concepts/type-inference.md",
       "title": "Type inference: profiling, decision rules, and server locale",
