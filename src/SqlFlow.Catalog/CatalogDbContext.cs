@@ -60,6 +60,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogScheduleMember> ScheduleMembers => Set<CatalogScheduleMember>();
 
+    public DbSet<CatalogScheduleParent> ScheduleParents => Set<CatalogScheduleParent>();
+
     public DbSet<CatalogNode> Nodes => Set<CatalogNode>();
 
     public DbSet<CatalogWorkerPoolDesired> WorkerPools => Set<CatalogWorkerPoolDesired>();
@@ -401,7 +403,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.Source).HasMaxLength(16).IsRequired();
             entity.Property(s => s.DefinitionPath).HasMaxLength(1024);
             entity.Property(s => s.DefinitionFlow).HasMaxLength(400);
-            entity.Property(s => s.AfterSchedule).HasMaxLength(400);
+            entity.Property(s => s.LastStaleParents).HasMaxLength(2000);
             entity.HasIndex(s => s.RepoId);
             // A name is what flows join, so it identifies exactly one schedule in a repo. The estate scan already
             // collapses a redefined name to the first definition; the unique index is what keeps two sync paths (or
@@ -410,11 +412,25 @@ public sealed class CatalogDbContext : DbContext
             // The scheduler scans for due, active schedules ordered by when they are next due:
             // WHERE Enabled = 1 AND Paused = 0 AND NextFireUtc <= now.
             entity.HasIndex(s => s.NextFireUtc);
-            // The chained scan is the other half of the scheduler tick: WHERE Enabled = 1 AND Paused = 0 AND
-            // AfterSchedule IS NOT NULL, resolved against the parent by (RepoId, Name). Chained schedules are a small
-            // minority of the table, so the filtered index keeps that scan off the clock-driven rows entirely.
-            entity.HasIndex(s => new { s.RepoId, s.AfterSchedule })
-                  .HasFilter("[AfterSchedule] IS NOT NULL");
+        });
+
+        modelBuilder.Entity<CatalogScheduleParent>(entity =>
+        {
+            entity.ToTable("ScheduleParent");
+            // A schedule names a given parent at most once; the composite key makes a repeated declaration idempotent
+            // rather than a duplicate that would make the fan-in wait on the same parent twice and stall nothing but
+            // still read wrong in the API.
+            entity.HasKey(p => new { p.ScheduleId, p.ParentName });
+            entity.Property(p => p.ParentName).HasMaxLength(400).IsRequired();
+            entity.HasIndex(p => p.RepoId);
+            // The chained scan is the other half of the scheduler tick, and it drives from this table: every parent
+            // row joins to its parent schedule by (RepoId, ParentName). Chained schedules are a small minority of the
+            // estate, so scanning this table rather than filtering the whole Schedule table keeps the tick cheap.
+            entity.HasIndex(p => new { p.RepoId, p.ParentName });
+            entity.HasOne(p => p.Schedule)
+                  .WithMany(s => s.Parents)
+                  .HasForeignKey(p => p.ScheduleId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<CatalogScheduleMember>(entity =>

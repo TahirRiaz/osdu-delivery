@@ -25,20 +25,25 @@ Genuine caution still applies to exactly two things:
 | ACR | `sqlflowv3acrprod` (`sqlflowv3acrprod.azurecr.io`) |
 | Catalog DB | `dw-sqlflow-prod` on `dw-mi-sql-prod.public.6b122fbc620a.database.windows.net,3342` |
 | Key Vault | `sqlflow-v3-secrets` |
-| GUI | https://sqlflow-v3-gui.lemonfield-bf9c546d.westeurope.azurecontainerapps.io |
-| Control plane | https://sqlflow-v3-control-plane.lemonfield-bf9c546d.westeurope.azurecontainerapps.io |
+| GUI | https://sqlflow-gui.wonderfulsea-cf44760f.westeurope.azurecontainerapps.io |
+| Control plane | https://sqlflow-control-plane.wonderfulsea-cf44760f.westeurope.azurecontainerapps.io |
 
 Container apps, and the Dockerfile each is built from (repo root = `C:\Projects\SQLFlowV3`):
 
-| App | Dockerfile | Build context |
-|---|---|---|
-| `sqlflow-v3-control-plane` | `Dockerfile` | `.` |
-| `sqlflow-v3-worker` | `Dockerfile.worker` | `.` |
-| `sqlflow-v3-gui` | `gui/Dockerfile` | `gui/` |
-| `sqlflow-v3-mcp` | `Dockerfile.mcp` | `.` |
-| `sqlflow-v3-slack-bot` | `Dockerfile.slackbot` | `.` |
+**The container app name and the image repository name are NOT the same.** The app has no `v3-` infix,
+the image does. Passing the image name to `-n` fails with `The containerapp '...' does not exist`: that is
+`az containerapp update` refusing to create anything, not a missing resource. Confirm with
+`az containerapp list -o tsv --query "[].name"` before deploying.
 
-Pipeline YAML lives in a **separate repo**: `C:\Projects\dwh-pipelines-prod` →
+| App (the `-n` argument) | Image repository | Dockerfile | Build context |
+|---|---|---|---|
+| `sqlflow-control-plane` | `sqlflow-v3-control-plane` | `Dockerfile` | `.` |
+| `sqlflow-worker` | `sqlflow-v3-worker` | `Dockerfile.worker` | `.` |
+| `sqlflow-gui` | `sqlflow-v3-gui` | `gui/Dockerfile` | `gui/` |
+| `sqlflow-mcp` | `sqlflow-v3-mcp` | `Dockerfile.mcp` | `.` |
+| `sqlflow-slack-bot` | `sqlflow-v3-slack-bot` | `Dockerfile.slackbot` | `.` |
+
+Pipeline YAML lives in a **separate repo**: `C:\Projects\V3Upgrade\dwh-pipelines-prod` →
 `https://bitbucket.org/kolumbuscode/dwh-pipelines-prod.git` (branch `main`, the only branch).
 
 **Image tags are the git short SHA** of the SQLFlowV3 commit (`git rev-parse --short HEAD`).
@@ -61,14 +66,14 @@ az acr task list-runs -r sqlflowv3acrprod --top 5 -o tsv \
   --query "[].{id:runId,status:status,image:outputImages[0].repository,tag:outputImages[0].tag}"
 
 # 3. Deploy.
-for app in sqlflow-v3-control-plane sqlflow-v3-worker sqlflow-v3-gui; do
-  az containerapp update -n $app -g datawarehouse-west-rg-prod-v2 \
-    --image sqlflowv3acrprod.azurecr.io/$app:$TAG \
+for app in control-plane worker gui; do
+  az containerapp update -n sqlflow-$app -g datawarehouse-west-rg-prod-v2 \
+    --image sqlflowv3acrprod.azurecr.io/sqlflow-v3-$app:$TAG \
     --query "properties.template.containers[0].image" -o tsv
 done
 
 # 4. Wait for Running (never chain sleeps; use an until-loop).
-until [ "$(az containerapp revision list -n sqlflow-v3-control-plane -g datawarehouse-west-rg-prod-v2 \
+until [ "$(az containerapp revision list -n sqlflow-control-plane -g datawarehouse-west-rg-prod-v2 \
   --query "[?properties.active] | [0].properties.runningState" -o tsv)" = "Running" ]; do sleep 10; done
 ```
 
@@ -83,7 +88,7 @@ YAML, then let the sync land. Both orders have a bad window; this one's worst ca
 the other's is flows running in the wrong order and corrupting a merge.
 
 ```bash
-cd /c/Projects/dwh-pipelines-prod
+cd /c/Projects/V3Upgrade/dwh-pipelines-prod
 TOK=$(az keyvault secret show --vault-name sqlflow-v3-secrets --name bitbucket-git-token --query value -o tsv)
 GIT_TERMINAL_PROMPT=0 git push "https://x-bitbucket-api-token-auth:${TOK}@bitbucket.org/kolumbuscode/dwh-pipelines-prod.git" main
 ```
@@ -97,11 +102,11 @@ which need no auth and are the fastest signal:
 
 ```bash
 # Did it start, migrate, and sync?
-az containerapp logs show -n sqlflow-v3-control-plane -g datawarehouse-west-rg-prod-v2 --tail 300 --type console 2>&1 \
+az containerapp logs show -n sqlflow-control-plane -g datawarehouse-west-rg-prod-v2 --tail 300 --type console 2>&1 \
   | grep -iE "Bootstrap provisioning completed|Synced repo source|warn|error|exception"
 
 # Only errors AFTER bootstrap completed are real (see the startup race below).
-az containerapp logs show -n sqlflow-v3-control-plane -g datawarehouse-west-rg-prod-v2 --tail 400 --type console 2>&1 \
+az containerapp logs show -n sqlflow-control-plane -g datawarehouse-west-rg-prod-v2 --tail 400 --type console 2>&1 \
   | awk -F'"' '$4 > "<bootstrap-completed-timestamp>"' | grep -iE "warn|error"
 ```
 
@@ -112,26 +117,44 @@ green light: it means every flow is attached to a schedule, no schedule is membe
 Also verify engine behaviour locally against the real YAML, before deploying anything:
 
 ```bash
-dotnet run --project src/SqlFlow.Cli -- lineage --dir "C:/Projects/dwh-pipelines-prod/Baatbooking" --no-connect
+dotnet run --project src/SqlFlow.Cli -- lineage --dir "C:/Projects/V3Upgrade/dwh-pipelines-prod/Baatbooking" --no-connect
 ```
 It prints the wave plan. For Baatbooking the correct answer is wave 1 `_00_cpy` → wave 2 the four
 `_01_csv` → wave 3 the four `_02_ing`.
 
 ## Gotchas that cost real time
 
+**Do NOT run the repo-root builds concurrently.** `Dockerfile`, `Dockerfile.worker`, and `Dockerfile.mcp`
+all use the repo root as context, and `az acr build` walks the whole 13 GB tree to apply `.dockerignore`
+before it uploads anything. Three of those at once thrash: each `az` process sits CPU-bound for 10+ minutes
+with flat memory and never submits a run, so `az acr task list-runs` shows nothing at all and there is no
+error to read. Run them **sequentially** (the small `gui/` context is fine alongside them). A local
+`cargo build --release` makes this markedly worse by inflating `tools/target`.
+
+Related: `next-app/` (460 MB), `_probe_sql/` (55 MB), and `data/` (19 MB) are NOT in `.dockerignore`, so
+they are tarred into every .NET image context for no reason. Worth excluding, but note that editing
+`.dockerignore` changes the commit and therefore the image tag.
+
 **`az acr build` exit code lies.** On this Windows box it dies with
 `UnicodeEncodeError: 'charmap' codec can't encode character '✓'` (cp1252 cannot print its `✓`)
 *after* the build succeeds server-side. It can also report exit 0 having printed nothing. **Always**
 confirm with `az acr task list-runs`, never trust the exit code or the tail output.
 
-**Node is NOT installed.** `node`, `npm`, `npx` do not exist; `gui/node_modules/.bin/tsc` fails with
-`exec: node: not found`. To typecheck the GUI, let Docker do it (`gui/Dockerfile` has a
-`node:22-alpine` build stage that runs `npm run build`, i.e. `tsc`):
+**Node IS installed, but not on PATH.** It lives at `C:\Program Files
+odejs` (v24). A bare `node` /
+`npm` / `npx` fails with `exec: node: not found`, which reads as "not installed" and is not. Call it by
+full path and the GUI typechecks and builds locally in seconds:
 
-```bash
-docker build -f gui/Dockerfile -t sqlflow-gui-check gui/    # errors show as "error TS...."
+```powershell
+& "C:\Program Files
+odejs
+pm.cmd" run typecheck   # tsc -b, the fast signal
+& "C:\Program Files
+odejs
+pm.cmd" run build       # tsc + vite build
 ```
-Do this **before** `az acr build`; it is much faster to iterate on and gives identical errors.
+Do this **before** `az acr build`: identical errors, and it iterates far faster than a container build.
+Docker (`docker build -f gui/Dockerfile gui/`) is the fallback when the local toolchain is unavailable.
 
 **Bare `git fetch`/`git push` on `dwh-pipelines-prod` hangs forever.** `credential.helper` is
 `manager` with no stored credential, so it blocks on an invisible prompt until killed. Always embed

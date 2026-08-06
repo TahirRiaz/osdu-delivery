@@ -46,7 +46,12 @@ public sealed class YamlScheduleLibraryLoader
 
         public int? IntervalSeconds { get; set; }
 
-        public string? After { get; set; }
+        /// <summary>Deliberately typed as <see cref="object"/>: <c>after:</c> is written either as one name
+        /// (<c>after: nightly</c>) or as a list of them (<c>after: [a, b, c]</c>), and YamlDotNet cannot bind both
+        /// shapes to one typed property. <see cref="NormalizeAfter"/> collapses whichever arrived.</summary>
+        public object? After { get; set; }
+
+        public int? ParentFreshnessHours { get; set; }
 
         public string? Timezone { get; set; }
 
@@ -90,26 +95,30 @@ public sealed class YamlScheduleLibraryLoader
                 continue;
             }
 
-            var after = string.IsNullOrWhiteSpace(entry?.After) ? null : entry.After.Trim();
+            var after = NormalizeAfter(entry?.After);
+            var chained = after.Count > 0;
             var hasClock = entry is not null && (!string.IsNullOrWhiteSpace(entry.Cron) || entry.IntervalSeconds is not null);
 
-            if (entry is null || (!hasClock && after is null))
+            if (entry is null || (!hasClock && !chained))
             {
                 warnings.Add(
                     $"{source}: schedule '{name}' declares neither a cron, an intervalSeconds, nor an after; ignored.");
                 continue;
             }
 
-            // A schedule is driven by the clock or by a parent, never both: honouring a cron on a chained schedule
-            // would fire it twice per cycle, once on the clock and once behind its parent.
-            if (hasClock && after is not null)
+            // A schedule is driven by the clock or by its parents, never both: honouring a cron on a chained schedule
+            // would fire it twice per cycle, once on the clock and once behind its parents.
+            if (hasClock && chained)
             {
                 warnings.Add(
-                    $"{source}: schedule '{name}' sets 'after: {after}' together with a cron/intervalSeconds; "
-                    + "a chained schedule has no cadence of its own, so the cron is ignored.");
+                    $"{source}: schedule '{name}' sets 'after: {string.Join(", ", after)}' together with a "
+                    + "cron/intervalSeconds; a chained schedule has no cadence of its own, so the cron is ignored.");
             }
 
-            if (after is not null && string.Equals(after, name, StringComparison.OrdinalIgnoreCase))
+            // Naming itself is the one cycle worth catching here: it is always a mistake, and it is the only one
+            // visible without resolving the whole repo. Longer cycles are left to stall quietly at fire time, which
+            // is what ScheduleStore.ListChainedReadyAsync documents.
+            if (after.Any(a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase)))
             {
                 warnings.Add($"{source}: schedule '{name}' chains after itself; ignored.");
                 continue;
@@ -118,9 +127,10 @@ public sealed class YamlScheduleLibraryLoader
             schedules.Add(new NamedSchedule(name, new ScheduleSpec
             {
                 Name = name,
-                Cron = after is not null || string.IsNullOrWhiteSpace(entry.Cron) ? null : entry.Cron.Trim(),
-                IntervalSeconds = after is not null ? null : entry.IntervalSeconds,
+                Cron = chained || string.IsNullOrWhiteSpace(entry.Cron) ? null : entry.Cron.Trim(),
+                IntervalSeconds = chained ? null : entry.IntervalSeconds,
                 After = after,
+                ParentFreshnessHours = NormalizeFreshness(entry.ParentFreshnessHours, name, source, warnings),
                 Timezone = string.IsNullOrWhiteSpace(entry.Timezone) ? "UTC" : entry.Timezone.Trim(),
                 Enabled = entry.Enabled ?? true,
                 Catchup = entry.Catchup ?? false,
@@ -145,5 +155,51 @@ public sealed class YamlScheduleLibraryLoader
         }
 
         return resolved;
+    }
+
+    /// <summary>
+    /// Collapses the two shapes <c>after:</c> is written in, a single name or a sequence of them, into one ordered
+    /// list. Blanks are dropped and repeats collapsed (first spelling wins), because the fan-in readiness rule counts
+    /// parents: a name listed twice would be counted twice and could never be satisfied.
+    /// </summary>
+    internal static IReadOnlyList<string> NormalizeAfter(object? raw)
+    {
+        List<string?> names = raw switch
+        {
+            null => [],
+            string scalar => [scalar],
+            IEnumerable<object?> sequence => sequence.Select(v => v as string ?? v?.ToString()).ToList(),
+            _ => [raw.ToString()],
+        };
+
+        var result = new List<string>(names.Count);
+        foreach (var candidate in names)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+            var trimmed = candidate.Trim();
+            if (!result.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                result.Add(trimmed);
+        }
+
+        return result;
+    }
+
+    /// <summary>Resolves the declared parent-freshness window: omitted takes the product default, <c>0</c> opts out
+    /// of the check, and a negative value is meaningless so the default applies with a warning.</summary>
+    internal static int NormalizeFreshness(int? value, string name, string source, List<string> warnings)
+    {
+        switch (value)
+        {
+            case null:
+                return ScheduleDefaults.ParentFreshnessHours;
+            case >= 0:
+                return value.Value;
+            default:
+                warnings.Add(
+                    $"{source}: schedule '{name}' sets parentFreshnessHours to {value}, which is not a usable window; "
+                    + $"using the default of {ScheduleDefaults.ParentFreshnessHours} (use 0 to disable the check).");
+                return ScheduleDefaults.ParentFreshnessHours;
+        }
     }
 }

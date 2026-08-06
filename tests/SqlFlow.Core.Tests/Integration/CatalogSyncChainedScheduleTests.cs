@@ -58,11 +58,13 @@ public sealed class CatalogSyncChainedScheduleTests : IDisposable
 
                 var head = schedules.Single(s => s.Name == "head_daily");
                 Assert.Equal("10 20 * * *", head.Cron);
-                Assert.Null(head.AfterSchedule);
+                Assert.Empty(await db.ScheduleParents.AsNoTracking().Where(p => p.ScheduleId == head.Id).ToListAsync());
                 Assert.NotNull(head.NextFireUtc);
 
                 var tail = schedules.Single(s => s.Name == "tail_daily");
-                Assert.Equal("head_daily", tail.AfterSchedule);
+                var tailParents = await db.ScheduleParents.AsNoTracking()
+                    .Where(p => p.ScheduleId == tail.Id).OrderBy(p => p.Ordinal).Select(p => p.ParentName).ToListAsync();
+                Assert.Equal(["head_daily"], tailParents);
                 Assert.Null(tail.Cron);
                 Assert.Null(tail.IntervalSeconds);
                 // A null next fire is what keeps a shadow schedule out of the clock-driven due scan.

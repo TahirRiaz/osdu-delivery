@@ -1339,24 +1339,47 @@ public class CatalogSchedule
     public string? Cron { get; set; }
 
     /// <summary>A fixed interval in seconds between fires. Null when the schedule is cron-based. Exactly one of
-    /// <see cref="Cron"/> / <see cref="IntervalSeconds"/> / <see cref="AfterSchedule"/> is set.</summary>
+    /// <see cref="Cron"/> / <see cref="IntervalSeconds"/> / <see cref="Parents"/> drives a schedule.</summary>
     public int? IntervalSeconds { get; set; }
 
     /// <summary>
-    /// The name of the schedule this one chains behind, within the same repo, or null for a clock-driven schedule.
-    /// When set this is a SHADOW schedule: it has no cadence, <see cref="NextFireUtc"/> stays null so the clock scan
-    /// never sees it, and it fires once each time the parent's fire completes. Stored by NAME rather than by id
-    /// because git is the source of truth and a sync rewrites rows: a name survives a parent being deleted and
-    /// re-created, and it is what the YAML actually said.
+    /// The schedules this one chains behind, within the same repo; empty for a clock-driven schedule. When any exist
+    /// this is a SHADOW schedule: it has no cadence, <see cref="NextFireUtc"/> stays null so the clock scan never
+    /// sees it, and it fires once its parents' fires complete. One parent is a chain link; several is a FAN-IN, where
+    /// the fire waits for all of them.
+    /// <para>
+    /// Parents are stored by NAME rather than by id because git is the source of truth and a sync rewrites rows: a
+    /// name survives a parent being deleted and re-created, and it is what the YAML actually said. A named parent
+    /// that does not exist simply never becomes ready, which is the same quiet stall a mis-declared cycle produces.
+    /// </para>
     /// </summary>
-    public string? AfterSchedule { get; set; }
+    public ICollection<CatalogScheduleParent> Parents { get; set; } = [];
 
     /// <summary>
-    /// The parent's <see cref="LastFireUtc"/> that this chained schedule has already reacted to, or null if it has
-    /// never fired behind its current parent. This is the idempotence key of the chain: the scheduler fires a child
-    /// only when the parent's last fire is complete AND differs from this value, then stamps it, so one parent fire
-    /// triggers each child exactly once no matter how many scheduler ticks observe the completed parent. Null on a
-    /// clock-driven schedule.
+    /// How recently every parent must have fired for the fire to count as fed by current data, in hours; 0 disables
+    /// the check. Staleness never blocks: it is recorded on <see cref="LastStaleParents"/> and logged. See
+    /// <c>ScheduleSpec.ParentFreshnessHours</c> for why reporting beats blocking here.
+    /// </summary>
+    public int ParentFreshnessHours { get; set; } = 24;
+
+    /// <summary>
+    /// The parents that were older than <see cref="ParentFreshnessHours"/> at the most recent fire, comma separated,
+    /// or null when the last fire found all of them current. Purely diagnostic, and rewritten on every fire, so it
+    /// answers "was this rebuild fed by everything" without reading the run history of four other schedules.
+    /// </summary>
+    public string? LastStaleParents { get; set; }
+
+    /// <summary>
+    /// The newest parent <see cref="LastFireUtc"/> this chained schedule has already reacted to, or null if it has
+    /// never fired behind its current parents. This is the idempotence key of the chain: the scheduler fires only
+    /// when the OLDEST of the parents' last fires is newer than this value, then stamps the NEWEST of them.
+    /// <para>
+    /// Those two ends are deliberately different, and a fan-in is wrong with either alone. Requiring the oldest to
+    /// have advanced is what makes the fire wait for every parent rather than react to whichever fired first;
+    /// stamping the newest is what stops the next tick seeing the same completed set as new. With a single parent
+    /// both reduce to that parent's last fire, so the original chain semantics are unchanged.
+    /// </para>
+    /// Null on a clock-driven schedule.
     /// </summary>
     public DateTime? LastParentFireUtc { get; set; }
 
@@ -1419,6 +1442,32 @@ public class CatalogSchedule
     public DateTime CreatedUtc { get; set; }
 
     public DateTime UpdatedUtc { get; set; }
+}
+
+/// <summary>
+/// One schedule this schedule chains behind: a single row of a <c>after:</c> declaration. A table rather than a
+/// column because a fan-in step names several parents, and because the readiness rule is a set operation over them
+/// (every parent complete, oldest fire newer than what was consumed) which a delimited string could not express in
+/// the database. Soft links, no FKs, like the rest of the catalog: reconciled from git on every sync.
+/// </summary>
+public class CatalogScheduleParent
+{
+    /// <summary>The chained (child) schedule (<see cref="CatalogSchedule.Id"/>).</summary>
+    public Guid ScheduleId { get; set; }
+
+    /// <summary>The repo both schedules live in. Parents resolve within one repo only, so this is part of the join
+    /// key rather than a convenience column.</summary>
+    public Guid RepoId { get; set; }
+
+    /// <summary>The parent schedule's <see cref="CatalogSchedule.Name"/>, as the YAML wrote it.</summary>
+    public string ParentName { get; set; } = string.Empty;
+
+    /// <summary>The parent's position in the declaration, preserved so the API and GUI can render the list the way
+    /// the author wrote it rather than in whatever order the database returns.</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>The chained schedule this row belongs to.</summary>
+    public CatalogSchedule? Schedule { get; set; }
 }
 
 /// <summary>

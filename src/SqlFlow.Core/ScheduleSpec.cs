@@ -13,6 +13,14 @@ public static class ScheduleDefaults
     public const int MaxConcurrency = 4;
 
     /// <summary>
+    /// How recently a chained schedule's parents must have fired for the fire to count as fed by current data, when
+    /// the schedule does not say. Twenty-four hours, because the overwhelming majority of parents are daily: a
+    /// window shorter than the parent's own cadence would report every fire as stale, and a much longer one would
+    /// stay quiet through several missed days. A schedule whose parents run on another cadence sets its own.
+    /// </summary>
+    public const int ParentFreshnessHours = 24;
+
+    /// <summary>
     /// Resolves a declared <c>maxConcurrency</c> to the effective bound, where null means UNBOUNDED. The one
     /// implementation both YAML loaders and the API create path use, so a schedule means the same thing however it
     /// was declared:
@@ -83,24 +91,47 @@ public sealed record ScheduleSpec
     public int? IntervalSeconds { get; init; }
 
     /// <summary>
-    /// The name of the schedule this one CHAINS BEHIND, making it a shadow schedule: it has no cadence of its own
-    /// and never becomes due on the clock. It fires once each time the named parent's fire COMPLETES, which is how a
-    /// chain like <c>a -> b -> c</c> is written (each link names the one before it).
+    /// The names of the schedules this one CHAINS BEHIND, making it a shadow schedule: it has no cadence of its own
+    /// and never becomes due on the clock. Written as a scalar for a single parent (<c>after: nightly</c>) or a
+    /// sequence for several (<c>after: [apc_daily, norled_daily, mpc_daily]</c>); both land here, so a chain like
+    /// <c>a -> b -> c</c> and a fan-in of four sources are the same mechanism.
+    /// <para>
+    /// With ONE parent it fires once each time that parent's fire completes. With SEVERAL it is a FAN-IN: it fires
+    /// once all of them have completed a fire newer than the one it last reacted to, which is what a step reading
+    /// several independent sources needs. A cross-source fact whose inputs land on four different schedules cannot
+    /// express its real dependency as a single link, and pinning it to one parent's clock and hoping the other three
+    /// have run is not ordering, it is a coincidence that usually holds.
+    /// </para>
     /// <para>
     /// Completion means every run the parent's last fire enqueued has reached a terminal state, whatever that state
     /// is. The chain deliberately does NOT require the parent to have SUCCEEDED: these links exist to serialise work
     /// that must not overlap, and gating on success would let one failed link park every downstream schedule
     /// indefinitely, which is a far worse operational failure than running the next link after a bad one. A link that
     /// genuinely must not run on bad upstream data belongs in the same schedule as its parent, where wave ordering
-    /// already skips a member whose dependency failed.
+    /// already skips a member whose dependency failed. <see cref="ParentFreshnessHours"/> applies the same reasoning
+    /// to staleness: a parent that has not run lately is reported, never blocking.
     /// </para>
     /// Mutually exclusive with <see cref="Cron"/> and <see cref="IntervalSeconds"/>: a schedule is driven by the
-    /// clock or by a parent, never both. Null for an ordinary scheduled or referencing declaration.
+    /// clock or by its parents, never both. Empty for an ordinary scheduled or referencing declaration.
     /// </summary>
-    public string? After { get; init; }
+    public IReadOnlyList<string> After { get; init; } = [];
 
-    /// <summary>Whether this schedule is driven by a parent's completion rather than by the clock.</summary>
-    public bool IsChained => !string.IsNullOrWhiteSpace(After);
+    /// <summary>
+    /// How recently every parent must have fired for this schedule's fire to be considered fed by current data, in
+    /// hours; <see cref="ScheduleDefaults.ParentFreshnessHours"/> when the YAML says nothing, and <c>0</c> to opt out
+    /// of the check entirely.
+    /// <para>
+    /// A parent older than the window does NOT hold the fire back. The fire proceeds and the stale parents are named
+    /// on the schedule row and in the scheduler log, because the alternative is worse: blocking would let one quiet
+    /// upstream silently stop a downstream fact updating, with nothing failing anywhere to show it. A fan-in step is
+    /// almost always a rebuild that self-corrects on its next run, so a stale parent costs one cycle of accuracy,
+    /// while blocking costs every cycle until somebody notices the absence.
+    /// </para>
+    /// </summary>
+    public int ParentFreshnessHours { get; init; } = ScheduleDefaults.ParentFreshnessHours;
+
+    /// <summary>Whether this schedule is driven by its parents' completion rather than by the clock.</summary>
+    public bool IsChained => After.Count > 0;
 
     /// <summary>The IANA time zone the cron is evaluated in (for example <c>Europe/Oslo</c>); <c>UTC</c> by default.</summary>
     public string Timezone { get; init; } = "UTC";

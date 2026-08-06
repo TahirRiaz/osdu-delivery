@@ -28,7 +28,7 @@ public sealed class ScheduleLibraryChainingTests
 
         var child = Assert.Single(lib.Schedules, s => s.Name == "apc_haugalandet_daily").Spec;
         Assert.True(child.IsChained);
-        Assert.Equal("apc_dalane_daily", child.After);
+        Assert.Equal(["apc_dalane_daily"], child.After);
         Assert.Null(child.Cron);
         Assert.Null(child.IntervalSeconds);
     }
@@ -88,5 +88,49 @@ public sealed class ScheduleLibraryChainingTests
         var spec = Assert.Single(lib.Schedules).Spec;
         Assert.True(spec.IsChained);
         Assert.False(spec.Enabled);
+    }
+
+    [Fact]
+    public void After_AcceptsASequence_ForAStepThatWaitsOnSeveralSources()
+    {
+        var lib = new YamlScheduleLibraryLoader().Parse("""
+            schedules:
+              ferry_rebuild:
+                after: [apc_daily, norled_daily, mpc_daily]
+                parentFreshnessHours: 36
+            """);
+
+        var spec = Assert.Single(lib.Schedules, s => s.Name == "ferry_rebuild").Spec;
+        Assert.True(spec.IsChained);
+        Assert.Equal(["apc_daily", "norled_daily", "mpc_daily"], spec.After);
+        Assert.Equal(36, spec.ParentFreshnessHours);
+    }
+
+    [Fact]
+    public void After_CollapsesRepeats_SoTheFanInCountCanBeSatisfied()
+    {
+        // A name listed twice would be counted twice by the readiness rule and the schedule could never become ready.
+        var lib = new YamlScheduleLibraryLoader().Parse("""
+            schedules:
+              c:
+                after: [a, A, b, "  a  "]
+            """);
+
+        var spec = Assert.Single(lib.Schedules, s => s.Name == "c").Spec;
+        Assert.Equal(["a", "b"], spec.After);
+        Assert.Equal(24, spec.ParentFreshnessHours);
+    }
+
+    [Fact]
+    public void After_ListingItself_IsIgnored()
+    {
+        var lib = new YamlScheduleLibraryLoader().Parse("""
+            schedules:
+              c:
+                after: [a, c]
+            """);
+
+        Assert.Empty(lib.Schedules);
+        Assert.Contains(lib.Warnings, w => w.Contains("chains after itself", StringComparison.Ordinal));
     }
 }

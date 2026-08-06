@@ -16,9 +16,12 @@ namespace SqlFlow.ControlPlane.Api;
 /// <paramref name="LastCounts"/> is how the last fire actually ended: its members tallied by lifecycle state (the one
 /// run's own state for a single-member fire), null when the schedule has never fired or its runs have aged out. It is
 /// what makes "did the last execution succeed" answerable from the list without opening the run board.
-/// <para><paramref name="AfterSchedule"/> is the schedule this one CHAINS BEHIND, or null when it is clock driven. A
-/// chained schedule has no cadence of its own and a null <paramref name="NextFireUtc"/>: it becomes due once, when the
-/// named parent's fire completes. <paramref name="TriggersSchedules"/> is the other direction, the schedules this one
+/// <para><paramref name="AfterSchedules"/> are the schedules this one CHAINS BEHIND, empty when it is clock driven. A
+/// chained schedule has no cadence of its own and a null <paramref name="NextFireUtc"/>: it becomes due once, when its
+/// parents' fires complete, and with several parents it waits for all of them.
+/// <paramref name="LastStaleParents"/> names any parent that had not run within
+/// <paramref name="ParentFreshnessHours"/> at the last fire, which proceeded anyway; it is null when everything was
+/// current. <paramref name="TriggersSchedules"/> is the other direction, the schedules this one
 /// sets off when it finishes, in chain order. It is on the DTO so a client can tell an operator what starting this
 /// schedule will actually run: firing the head of a five-link chain dispatches all five, and a run dialog that shows
 /// only the head's own members would understate what was just asked for. Each link keeps its OWN wave-ordered run
@@ -27,8 +30,9 @@ public sealed record ScheduleDto(
     Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds, string Timezone,
     bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc, DateTime? LastFireUtc, Guid? LastRunId,
     Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc, int? MaxConcurrency,
-    RunGroupCountsDto? LastCounts, string? AfterSchedule = null,
-    IReadOnlyList<ScheduleChainLinkDto>? TriggersSchedules = null);
+    RunGroupCountsDto? LastCounts, IReadOnlyList<string>? AfterSchedules = null,
+    IReadOnlyList<ScheduleChainLinkDto>? TriggersSchedules = null,
+    int ParentFreshnessHours = 24, string? LastStaleParents = null);
 
 /// <summary>One link a schedule sets off, in chain order: the schedule that will fire, how many flows it runs, and
 /// whether it is currently able to (a disabled or paused link stops the chain there, and an operator about to start
@@ -434,7 +438,7 @@ public static class ScheduleEndpoints
         Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds,
         string Timezone, bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc,
         DateTime? LastFireUtc, Guid? LastRunId, Guid? LastGroupId, DateTime CreatedUtc, DateTime UpdatedUtc,
-        int? MaxConcurrency, string? AfterSchedule);
+        int? MaxConcurrency, IReadOnlyList<string> AfterSchedules, int ParentFreshnessHours, string? LastStaleParents);
 
     // An expression (not a method body) so EF Core translates the projection into the SELECT column list. It takes the
     // context because the member count is a correlated subquery over the member table: a schedule's whole meaning is
@@ -444,7 +448,9 @@ public static class ScheduleEndpoints
         db.ScheduleMembers.Where(m => m.ScheduleId == s.Id).Select(m => m.PipelineId).ToList(),
         s.Cron, s.IntervalSeconds, s.Timezone,
         s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.LastGroupId,
-        s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency, s.AfterSchedule);
+        s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency,
+        db.ScheduleParents.Where(p => p.ScheduleId == s.Id).OrderBy(p => p.Ordinal).Select(p => p.ParentName).ToList(),
+        s.ParentFreshnessHours, s.LastStaleParents);
 
     /// <summary>
     /// Walks the chain forward from each schedule on the page: which schedules its completion sets off, theirs in
@@ -466,14 +472,17 @@ public static class ScheduleEndpoints
         }
 
         var repoIds = rows.Select(r => r.RepoId).Distinct().ToList();
-        var chained = await db.Schedules.AsNoTracking()
-            .Where(s => repoIds.Contains(s.RepoId) && s.AfterSchedule != null)
-            .Select(s => new
+        // One row per (child, parent) pair, so a fan-in child appears once under each parent that sets it off. That
+        // is what the forward walk wants: an operator starting one schedule needs to see everything its completion
+        // can contribute to, even where the child also waits on others.
+        var chained = await db.ScheduleParents.AsNoTracking()
+            .Where(p => repoIds.Contains(p.RepoId))
+            .Join(db.Schedules.AsNoTracking(), p => p.ScheduleId, s => s.Id, (p, s) => new
             {
                 s.Id,
                 s.RepoId,
                 s.Name,
-                Parent = s.AfterSchedule!,
+                Parent = p.ParentName,
                 s.Enabled,
                 s.Paused,
                 MemberCount = db.ScheduleMembers.Count(m => m.ScheduleId == s.Id),
@@ -598,7 +607,8 @@ public static class ScheduleEndpoints
                 // Whether the last scoped fire's group is still executing, so the list can surface a live re-entry
                 // point to it. A single-member fire has no group, so this is always false there.
                 r.LastGroupId is not null && counts is { } c && c.Queued + c.Running > 0,
-                r.CreatedUtc, r.UpdatedUtc, r.MaxConcurrency, counts, r.AfterSchedule, triggers);
+                r.CreatedUtc, r.UpdatedUtc, r.MaxConcurrency, counts, r.AfterSchedules, triggers,
+                r.ParentFreshnessHours, r.LastStaleParents);
         }).ToList();
     }
 

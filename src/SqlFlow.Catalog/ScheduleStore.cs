@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SqlFlow.Core;
 
 namespace SqlFlow.Catalog;
 
@@ -40,8 +41,8 @@ public static class ScheduleStore
     }
 
     /// <summary>
-    /// The chained (shadow) schedules that are ready to fire: active, driven by a parent rather than the clock, whose
-    /// parent's most recent fire has COMPLETED and has not already triggered this child.
+    /// The chained (shadow) schedules that are ready to fire: active, driven by parents rather than the clock, where
+    /// EVERY declared parent has COMPLETED a fire newer than the one this child last reacted to.
     /// <para>
     /// Readiness is evaluated entirely in the database so the scheduler never pulls the run table into memory. A
     /// parent fire counts as complete when the parent has fired at all and no run it enqueued is still queued or
@@ -49,40 +50,121 @@ public static class ScheduleStore
     /// <see cref="CatalogSchedule.LastRunId"/> for a single-member one. Whether those runs succeeded is deliberately
     /// not considered; see <c>ScheduleSpec.After</c> for why a chain must not be parked by one bad link.
     /// </para>
+    /// <para>
+    /// THE FAN-IN RULE, which is where one parent and several differ. The child is ready when the OLDEST of its
+    /// parents' last fires is newer than <see cref="CatalogSchedule.LastParentFireUtc"/>. Testing the oldest is what
+    /// makes it wait for all of them: as long as one parent has not fired since the last consumption, that parent's
+    /// instant is the minimum and the test fails. Testing "any parent is newer" instead would fire once per parent
+    /// per cycle, which is exactly the coincidence-ordering this replaces. The scheduler then stamps the NEWEST of
+    /// the parents' fires, so the next tick sees the same completed set as already consumed.
+    /// </para>
     /// A parent that is itself chained is handled by the same rule applied to it, so a chain of any length advances
-    /// one link per tick. A cycle simply never becomes ready (no link's parent ever completes a fire the child has
-    /// not already consumed), so a mis-declared loop stalls quietly instead of firing forever.
+    /// one link per tick. A cycle simply never becomes ready (no link's parents ever complete a fire the child has
+    /// not already consumed), so a mis-declared loop stalls quietly instead of firing forever. A parent named but not
+    /// defined stalls the child the same quiet way, because it can never contribute a fire instant.
     /// </summary>
     public static async Task<IReadOnlyList<CatalogSchedule>> ListChainedReadyAsync(
         CatalogDbContext catalog, int max, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
+        // Per child: how many parents it declares, how many of those are resolvable and complete, and the oldest and
+        // newest fire instants among them. The counts are what enforce "every parent", including the unresolvable
+        // ones: a named parent with no schedule row contributes to Declared but not to Ready, so the child never
+        // clears the bar.
+        var readiness =
+            from p in catalog.ScheduleParents.AsNoTracking()
+            join parent in catalog.Schedules.AsNoTracking()
+                on new { p.RepoId, Name = p.ParentName } equals new { parent.RepoId, parent.Name } into resolved
+            from parent in resolved.DefaultIfEmpty()
+            select new
+            {
+                p.ScheduleId,
+                Complete = parent != null
+                           && parent.LastFireUtc != null
+                           && !catalog.Runs.Any(r =>
+                                  (parent.LastGroupId != null && r.GroupId == parent.LastGroupId
+                                   || parent.LastGroupId == null && r.RunId == parent.LastRunId)
+                                  && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running)),
+                FireUtc = parent != null ? parent.LastFireUtc : null,
+            };
+
+        var aggregated =
+            from r in readiness
+            group r by r.ScheduleId into g
+            select new
+            {
+                ScheduleId = g.Key,
+                Declared = g.Count(),
+                Complete = g.Count(x => x.Complete),
+                OldestFireUtc = g.Min(x => x.FireUtc),
+                NewestFireUtc = g.Max(x => x.FireUtc),
+            };
+
         var query =
             from child in catalog.Schedules.AsNoTracking()
-            where child.Enabled && !child.Paused && child.AfterSchedule != null
-            join parent in catalog.Schedules.AsNoTracking()
-                on new { child.RepoId, Name = child.AfterSchedule! } equals new { parent.RepoId, parent.Name }
-            where parent.LastFireUtc != null
-               && (child.LastParentFireUtc == null || child.LastParentFireUtc != parent.LastFireUtc)
-               && !catalog.Runs.Any(r =>
-                      (parent.LastGroupId != null && r.GroupId == parent.LastGroupId
-                       || parent.LastGroupId == null && r.RunId == parent.LastRunId)
-                      && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
-            orderby parent.LastFireUtc
+            where child.Enabled && !child.Paused
+            join a in aggregated on child.Id equals a.ScheduleId
+            where a.Declared == a.Complete
+               && a.OldestFireUtc != null
+               && (child.LastParentFireUtc == null || a.OldestFireUtc > child.LastParentFireUtc)
+            orderby a.NewestFireUtc
             select child;
 
         return await query.Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Atomically claims a chained schedule's fire by stamping the parent fire it is reacting to, from the value the
-    /// caller observed (normally null, or the previous parent fire). Returns true only for the winner, so when several
-    /// control-plane nodes see the same completed parent exactly one child fire is enqueued.
+    /// Everything a chained schedule's fire turns on, in one read: the NEWEST of its parents' last fires, which is
+    /// what the child stamps as consumed; the names of any parent older than <paramref name="freshnessHours"/>, which
+    /// the fire records and logs without being held back by; and the full parent list in declaration order for the
+    /// log line. Returns nulls and an empty label when the schedule declares no parents.
+    /// </summary>
+    public static async Task<(DateTime? NewestFireUtc, string? StaleParents, string ParentLabel)> GetParentFireStateAsync(
+        CatalogDbContext catalog, Guid scheduleId, int freshnessHours, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        var parents = await (
+            from p in catalog.ScheduleParents.AsNoTracking()
+            where p.ScheduleId == scheduleId
+            join parent in catalog.Schedules.AsNoTracking()
+                on new { p.RepoId, Name = p.ParentName } equals new { parent.RepoId, parent.Name } into resolved
+            from parent in resolved.DefaultIfEmpty()
+            orderby p.Ordinal
+            select new { p.ParentName, FireUtc = parent != null ? parent.LastFireUtc : null })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        if (parents.Count == 0)
+            return (null, null, string.Empty);
+
+        var newest = parents.Max(p => p.FireUtc);
+        var label = string.Join(", ", parents.Select(p => p.ParentName));
+
+        // freshnessHours <= 0 opts out. A parent that has never fired is not reported as stale here: it cannot be,
+        // because the child is not ready in the first place until every parent has a fire instant.
+        if (freshnessHours <= 0)
+            return (newest, null, label);
+
+        var cutoff = nowUtc.AddHours(-freshnessHours);
+        var stale = parents.Where(p => p.FireUtc != null && p.FireUtc < cutoff).Select(p => p.ParentName).ToList();
+
+        return (newest, stale.Count == 0 ? null : string.Join(", ", stale), label);
+    }
+
+    /// <summary>
+    /// Atomically claims a chained schedule's fire by stamping the newest parent fire it is reacting to, from the
+    /// value the caller observed (normally null, or the previous consumed instant). Returns true only for the winner,
+    /// so when several control-plane nodes see the same completed parent set exactly one child fire is enqueued.
+    /// <para>
+    /// <paramref name="staleParents"/> is recorded on the same update rather than in a second write, so the row never
+    /// shows a fire whose staleness has not caught up with it, and a fire that found everything current clears the
+    /// previous reading instead of leaving a stale warning to be misread as current.
+    /// </para>
     /// </summary>
     public static async Task<bool> TryClaimChainedFireAsync(
         CatalogDbContext catalog, Guid id, DateTime? observedLastParentFireUtc, DateTime parentFireUtc,
-        DateTime nowUtc, CancellationToken ct = default)
+        DateTime nowUtc, string? staleParents = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         var affected = await catalog.Schedules
@@ -92,6 +174,7 @@ public static class ScheduleStore
                                 : s.LastParentFireUtc == observedLastParentFireUtc))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.LastParentFireUtc, parentFireUtc)
+                .SetProperty(x => x.LastStaleParents, staleParents)
                 .SetProperty(x => x.LastFireUtc, nowUtc)
                 .SetProperty(x => x.UpdatedUtc, nowUtc), ct)
             .ConfigureAwait(false);
@@ -113,8 +196,17 @@ public static class ScheduleStore
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentException.ThrowIfNullOrWhiteSpace(parentName);
+        // Only children for which this parent is their ONLY parent are suppressed. A fan-in child is left alone on
+        // purpose: stamping it here would mark its whole parent set as consumed on the strength of one parent that
+        // chose not to run, and the fire it is actually waiting for (all of them) would be skipped rather than
+        // deferred. Such a child simply stays unready until this parent fires for real.
+        var soleParentChildren = catalog.ScheduleParents
+            .Where(p => p.RepoId == repoId && p.ParentName == parentName
+                        && !catalog.ScheduleParents.Any(o => o.ScheduleId == p.ScheduleId && o.ParentName != parentName))
+            .Select(p => p.ScheduleId);
+
         return catalog.Schedules
-            .Where(s => s.RepoId == repoId && s.AfterSchedule == parentName)
+            .Where(s => soleParentChildren.Contains(s.Id))
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastParentFireUtc, parentFireUtc), ct);
     }
 
@@ -196,10 +288,11 @@ public static class ScheduleStore
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
         int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
         DateTime computedNextFireUtc, DateTime nowUtc, ScheduleDefinitionSource? definition = null,
-        string? afterSchedule = null, CancellationToken ct = default)
+        IReadOnlyList<string>? afterSchedules = null, int parentFreshnessHours = ScheduleDefaults.ParentFreshnessHours,
+        CancellationToken ct = default)
         => CatalogTransaction.InSerializableAsync(
             catalog,
-            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, definition, afterSchedule, ct),
+            () => StageYamlUpsertAsync(catalog, repoId, scheduleName, members, cron, intervalSeconds, timezone, enabled, catchup, maxConcurrency, computedNextFireUtc, nowUtc, definition, afterSchedules, parentFreshnessHours, ct),
             ct);
 
     /// <summary>The transaction-free core of the YAML upsert: it stages the insert/update on the context but does
@@ -209,16 +302,22 @@ public static class ScheduleStore
         CatalogDbContext catalog, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string? cron,
         int? intervalSeconds, string timezone, bool enabled, bool catchup, int? maxConcurrency,
         DateTime computedNextFireUtc, DateTime nowUtc, ScheduleDefinitionSource? definition = null,
-        string? afterSchedule = null, CancellationToken ct = default)
+        IReadOnlyList<string>? afterSchedules = null, int parentFreshnessHours = ScheduleDefaults.ParentFreshnessHours,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(members);
         ArgumentException.ThrowIfNullOrWhiteSpace(scheduleName);
 
-        // A chained schedule is driven by its parent, never by the clock: it keeps no cadence and, crucially, a null
-        // next fire, which is what keeps it out of the due scan entirely.
-        var chained = !string.IsNullOrWhiteSpace(afterSchedule);
-        var parent = chained ? afterSchedule!.Trim() : null;
+        // A chained schedule is driven by its parents, never by the clock: it keeps no cadence and, crucially, a null
+        // next fire, which is what keeps it out of the due scan entirely. Duplicates and blanks are dropped here so
+        // the stored set is exactly what the readiness count expects; the first spelling wins, preserving order.
+        var parents = (afterSchedules ?? [])
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Select(a => a.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var chained = parents.Count > 0;
         var effectiveCron = chained ? null : cron;
         var effectiveInterval = chained ? null : intervalSeconds;
         DateTime? effectiveNextFire = chained ? null : computedNextFireUtc;
@@ -235,7 +334,7 @@ public static class ScheduleStore
                 Name = scheduleName,
                 Cron = effectiveCron,
                 IntervalSeconds = effectiveInterval,
-                AfterSchedule = parent,
+                ParentFreshnessHours = parentFreshnessHours,
                 Timezone = timezone,
                 Enabled = enabled,
                 Catchup = catchup,
@@ -256,13 +355,19 @@ public static class ScheduleStore
             var definitionChanged = existing.Cron != effectiveCron
                 || existing.IntervalSeconds != effectiveInterval
                 || existing.Timezone != timezone;
-            var chainChanged = !string.Equals(existing.AfterSchedule, parent, StringComparison.Ordinal);
+
+            var currentParents = await catalog.ScheduleParents.AsNoTracking()
+                .Where(p => p.ScheduleId == id)
+                .Select(p => p.ParentName)
+                .ToListAsync(ct).ConfigureAwait(false);
+            var chainChanged = !currentParents.OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(parents.OrderBy(p => p, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
 
             existing.RepoId = repoId;
             existing.Name = scheduleName;
             existing.Cron = effectiveCron;
             existing.IntervalSeconds = effectiveInterval;
-            existing.AfterSchedule = parent;
+            existing.ParentFreshnessHours = parentFreshnessHours;
             existing.Timezone = timezone;
             existing.Enabled = enabled;
             existing.Catchup = catchup;
@@ -275,11 +380,13 @@ public static class ScheduleStore
             existing.DefinitionYaml = definition?.Yaml;
             existing.UpdatedUtc = nowUtc;
 
-            // Re-pointing the chain restarts it: the consumed-parent stamp refers to the OLD parent's fire clock and
-            // would be meaningless (and could suppress the first fire) against a different one.
+            // Re-pointing the chain restarts it: the consumed-parent stamp refers to the OLD parent set's fire clock
+            // and would be meaningless (and could suppress the first fire) against a different one. The recorded
+            // staleness goes with it, since it describes a fire that no longer means anything.
             if (chainChanged)
             {
                 existing.LastParentFireUtc = null;
+                existing.LastStaleParents = null;
             }
 
             if (chained)
@@ -296,7 +403,54 @@ public static class ScheduleStore
         }
 
         await StageMembersAsync(catalog, repoId, id, members, ct).ConfigureAwait(false);
+        await StageParentsAsync(catalog, repoId, id, parents, ct).ConfigureAwait(false);
         return id;
+    }
+
+    /// <summary>
+    /// Replaces a schedule's parent set with exactly <paramref name="parents"/>, in declaration order. Git is the
+    /// authority on what a schedule chains behind, so a parent dropped from the YAML stops holding the fire back and
+    /// a new one starts to. Rows already correct are left untouched rather than deleted and reinserted, so an
+    /// unchanged sync writes nothing.
+    /// </summary>
+    private static async Task StageParentsAsync(
+        CatalogDbContext catalog, Guid repoId, Guid scheduleId, IReadOnlyList<string> parents, CancellationToken ct)
+    {
+        var existing = await catalog.ScheduleParents.AsTracking()
+            .Where(p => p.ScheduleId == scheduleId)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var wanted = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < parents.Count; i++)
+            wanted[parents[i]] = i;
+
+        foreach (var row in existing)
+        {
+            if (wanted.TryGetValue(row.ParentName, out var ordinal))
+            {
+                // Keep the row, but let a reordered declaration re-render in the API the way the author wrote it.
+                if (row.Ordinal != ordinal)
+                    row.Ordinal = ordinal;
+                if (row.RepoId != repoId)
+                    row.RepoId = repoId;
+                wanted.Remove(row.ParentName);
+            }
+            else
+            {
+                catalog.ScheduleParents.Remove(row);
+            }
+        }
+
+        foreach (var (name, ordinal) in wanted)
+        {
+            catalog.ScheduleParents.Add(new CatalogScheduleParent
+            {
+                ScheduleId = scheduleId,
+                RepoId = repoId,
+                ParentName = name,
+                Ordinal = ordinal,
+            });
+        }
     }
 
     /// <summary>

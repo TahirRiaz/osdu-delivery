@@ -570,7 +570,8 @@ public sealed class CatalogSync
             var scheduleId = await ScheduleStore.StageYamlUpsertAsync(
                 context, repoId, schedule.Name, schedule.Members, schedule.Spec.Cron, schedule.Spec.IntervalSeconds,
                 schedule.Spec.Timezone, schedule.Spec.Enabled, schedule.Spec.Catchup, schedule.Spec.MaxConcurrency,
-                schedule.NextFireUtc, nowUtc, schedule.Definition, schedule.Spec.After, ct).ConfigureAwait(false);
+                schedule.NextFireUtc, nowUtc, schedule.Definition, schedule.Spec.After,
+                schedule.Spec.ParentFreshnessHours, ct).ConfigureAwait(false);
             scheduleKeep.Add(scheduleId);
         }
 

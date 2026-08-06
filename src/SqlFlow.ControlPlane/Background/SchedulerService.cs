@@ -143,31 +143,37 @@ public sealed partial class SchedulerService : BackgroundService
     }
 
     /// <summary>
-    /// Fires a chained schedule behind its completed parent. The claim stamps the parent fire being consumed rather
-    /// than advancing a next-fire, which is what makes one parent fire trigger the child exactly once however many
-    /// nodes or ticks observe the same completed parent.
+    /// Fires a chained schedule behind its completed parents. The claim stamps the newest parent fire being consumed
+    /// rather than advancing a next-fire, which is what makes one round of parent fires trigger the child exactly once
+    /// however many nodes or ticks observe the same completed set.
+    /// <para>
+    /// Parents older than the schedule's freshness window are recorded and logged as a warning, and the fire proceeds
+    /// regardless. See <c>ScheduleSpec.ParentFreshnessHours</c>: a fan-in step is normally a rebuild that corrects
+    /// itself next cycle, so a stale parent costs one cycle of accuracy, while blocking would stop the step updating
+    /// for as long as the quiet parent stays quiet, with nothing failing anywhere to show it.
+    /// </para>
     /// </summary>
     private async Task FireChainedAsync(CatalogDbContext catalog, CatalogSchedule schedule, DateTime now, CancellationToken ct)
     {
-        if (schedule.AfterSchedule is not { Length: > 0 } parentName)
+        // Re-read the parents' fire state on this scope: the scan that selected this child ran on another scope, and
+        // the value stamped must be the one readiness was judged against.
+        var (newestFire, staleParents, parentLabel) = await ScheduleStore.GetParentFireStateAsync(
+            catalog, schedule.Id, schedule.ParentFreshnessHours, now, ct).ConfigureAwait(false);
+        if (newestFire is not { } parentFireUtc || parentFireUtc == schedule.LastParentFireUtc)
         {
-            return; // not actually chained (defensive against a concurrent change)
-        }
-
-        // Re-read the parent's fire instant on this scope: the scan that selected this child ran on another scope,
-        // and the value stamped must be the one readiness was judged against.
-        var parentFire = await ScheduleStore.GetParentLastFireUtcAsync(catalog, schedule.RepoId, parentName, ct)
-            .ConfigureAwait(false);
-        if (parentFire is not { } parentFireUtc || parentFireUtc == schedule.LastParentFireUtc)
-        {
-            return; // the parent was re-declared, or another node already consumed this fire
+            return; // the parents were re-declared, or another node already consumed this fire
         }
 
         var won = await ScheduleStore.TryClaimChainedFireAsync(
-            catalog, schedule.Id, schedule.LastParentFireUtc, parentFireUtc, now, ct).ConfigureAwait(false);
+            catalog, schedule.Id, schedule.LastParentFireUtc, parentFireUtc, now, staleParents, ct).ConfigureAwait(false);
         if (!won)
         {
             return;
+        }
+
+        if (staleParents is not null)
+        {
+            LogStaleParents(schedule.Id, schedule.Name, staleParents, schedule.ParentFreshnessHours);
         }
 
         var fire = await ScheduleFire.EnqueueAsync(catalog, _dispatcher, schedule, now, ct).ConfigureAwait(false);
@@ -177,10 +183,10 @@ public sealed partial class SchedulerService : BackgroundService
                 LogScopeEmpty(schedule.Id, schedule.Name);
                 break;
             case ScheduleFire.Outcome.Enqueued:
-                LogChainedFired(schedule.Id, schedule.Name, parentName, fire.RunId);
+                LogChainedFired(schedule.Id, schedule.Name, parentLabel, fire.RunId);
                 break;
             case ScheduleFire.Outcome.EnqueuedGroup:
-                LogChainedFiredGroup(schedule.Id, fire.MemberCount, schedule.Name, parentName, fire.GroupId ?? Guid.Empty);
+                LogChainedFiredGroup(schedule.Id, fire.MemberCount, schedule.Name, parentLabel, fire.GroupId ?? Guid.Empty);
                 break;
         }
     }
@@ -274,6 +280,9 @@ public sealed partial class SchedulerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} ('{ScheduleName}') resolved to no runnable flow: nothing joins it, or every member is deactivated or mode: manual. Nothing enqueued this occurrence.")]
     private partial void LogScopeEmpty(Guid scheduleId, string scheduleName);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} ('{ScheduleName}') fired with stale parents: {StaleParents} last ran more than {FreshnessHours}h ago. The fire proceeded; whatever it rebuilds is fed by those parents' previous data until they run again.")]
+    private partial void LogStaleParents(Guid scheduleId, string scheduleName, string staleParents, int freshnessHours);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Schedule {ScheduleId} ('{ScheduleName}') has no computable next fire (invalid cron/timezone or exhausted) and was parked.")]
     private partial void LogParked(Guid scheduleId, string scheduleName);
