@@ -1,3 +1,4 @@
+using MySqlConnector;
 using SqlFlow.Core;
 using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Connections;
@@ -42,6 +43,7 @@ public sealed class SourceProviderTests
     [InlineData("time(3)", "time(3)")]
     [InlineData("year", "smallint")]
     [InlineData("char(10)", "nchar(10)")]
+    [InlineData("char(36)", "nchar(36)")]                     // MySQL has no UUID type: char(36) stays text
     [InlineData("varchar(255)", "nvarchar(255)")]
     [InlineData("varchar(5000)", "nvarchar(max)")]
     [InlineData("tinytext", "nvarchar(255)")]
@@ -224,6 +226,23 @@ public sealed class SourceProviderTests
         Assert.Contains("Password", canonical.Canonical, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Password=p", canonical.Redacted, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("SQLFlow Source", canonical.Canonical, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Server=db;Database=erp;User ID=u;Password=p")]
+    [InlineData("Server=db;Database=erp;User ID=u;Password=p;GuidFormat=Char36")]
+    [InlineData("Server=db;Database=erp;User ID=u;Password=p;OldGuids=True")]
+    public void MySqlCanonicalizer_ReadsChar36AsText(string connectionString)
+    {
+        // A CHAR(36) column must arrive as the nchar the type mapper declared for it, not as a CLR Guid the
+        // bulk copy into that column would reject. The engine owns the mapping, so a caller's GuidFormat or
+        // the deprecated OldGuids never reinstates the reinterpretation.
+        var canonical = new MySqlConnectionStringCanonicalizer()
+            .Canonicalize(connectionString, ConnectionRole.Source, SecretlessPolicy.Trusted);
+
+        var settings = new MySqlConnectionStringBuilder(canonical.Canonical);
+        Assert.Equal(MySqlGuidFormat.None, settings.GuidFormat);
+        Assert.False(settings.OldGuids);
     }
 
     [Fact]

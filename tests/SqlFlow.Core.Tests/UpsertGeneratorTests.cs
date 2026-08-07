@@ -58,6 +58,121 @@ public sealed class UpsertGeneratorTests
         => Assert.Throws<SqlFlowException>(() => UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"),
             new UpsertOptions { DataColumns = ["Id", "Name"], KeyColumns = ["Id"], HashAlgorithm = "CRC32" }));
 
+    // ---- Change detection compares the value the TARGET stores ----
+
+    private static IReadOnlyDictionary<string, ChecksumColumnType> Types(params (string Column, string Staging, string Target)[] columns)
+        => columns.ToDictionary(
+            c => c.Column,
+            c => new ChecksumColumnType { Staging = SqlDataType.Parse(c.Staging), Target = SqlDataType.Parse(c.Target) },
+            StringComparer.OrdinalIgnoreCase);
+
+    [Fact]
+    public void DifferingType_IsConvertedOnTheStagingSideOnly()
+    {
+        // The staged nchar(36) renders '2828ca9b-...' and the stored uniqueidentifier '2828CA9B-...', so
+        // without the conversion every matched row hashes as changed and is rewritten on every run.
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "Uuid", "Name"],
+            KeyColumns = ["Id"],
+            ChecksumColumnTypes = Types(("Uuid", "nchar(36)", "uniqueidentifier"), ("Name", "nvarchar(50)", "nvarchar(50)")),
+        };
+
+        var update = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)[0];
+        Assert.Contains("CONVERT(uniqueidentifier, src.[Uuid])", update, StringComparison.Ordinal);
+        Assert.DoesNotContain("CONVERT(uniqueidentifier, trg.[Uuid])", update, StringComparison.Ordinal);
+        Assert.Contains("trg.[Uuid]", update, StringComparison.Ordinal);
+
+        // A column whose two types already agree is hashed as it always was, on both sides.
+        Assert.Contains("src.[Name]", update, StringComparison.Ordinal);
+        Assert.Equal(1, update.Split("CONVERT(", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void UndeclaredColumns_AreHashedAsTheyAre()
+    {
+        var update = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), Options(["Id", "Name"], ["Id"]))[0];
+        Assert.DoesNotContain("CONVERT(", update, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // CONCAT prints a datetime to the minute, so a second-level change would hash as no change at all.
+    [InlineData("datetime", "datetime", "CONVERT(nvarchar(40), src.[V], 126)", "CONVERT(nvarchar(40), trg.[V], 126)")]
+    // A differing type is converted first, then rendered by the target's style.
+    [InlineData("datetime2(0)", "datetime", "CONVERT(nvarchar(40), CONVERT(datetime, src.[V]), 126)", "CONVERT(nvarchar(40), trg.[V], 126)")]
+    // float defaults to six significant digits, money to two of its four decimals.
+    [InlineData("float(53)", "float(53)", "CONVERT(nvarchar(40), src.[V], 3)", "CONVERT(nvarchar(40), trg.[V], 3)")]
+    [InlineData("money", "money", "CONVERT(nvarchar(40), src.[V], 2)", "CONVERT(nvarchar(40), trg.[V], 2)")]
+    // An exactly-rendered family keeps the bare column reference on both sides.
+    [InlineData("int", "int", "src.[V]", "trg.[V]")]
+    [InlineData("decimal(18, 2)", "decimal(18, 2)", "src.[V]", "trg.[V]")]
+    public void LossyTypes_AreRenderedWithALosslessStyle(string staging, string target, string expectedSource, string expectedTarget)
+    {
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "V"],
+            KeyColumns = ["Id"],
+            ChecksumColumnTypes = Types(("V", staging, target)),
+        };
+
+        var update = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)[0];
+        Assert.Contains(expectedSource, update, StringComparison.Ordinal);
+        Assert.Contains(expectedTarget, update, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ColumnTypes_ApplyToTheBatchedApply()
+    {
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "Stamp"],
+            KeyColumns = ["Id"],
+            BatchToAvoidLockEscalation = true,
+            BatchRowCount = 500,
+            ChecksumColumnTypes = Types(("Stamp", "datetime2(0)", "datetime")),
+        };
+
+        var update = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)[0];
+        Assert.Contains("CONVERT(nvarchar(40), CONVERT(datetime, src.[Stamp]), 126)", update, StringComparison.Ordinal);
+        Assert.Contains("CONVERT(nvarchar(40), trg.[Stamp], 126)", update, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ColumnTypes_ApplyToTheDataSetLoop()
+    {
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "Stamp", "Ds"],
+            KeyColumns = ["Id"],
+            DataSetColumn = "Ds",
+            ChecksumColumnTypes = Types(("Stamp", "datetime2(7)", "datetime2(3)")),
+        };
+
+        var script = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)[0];
+        Assert.Contains("CONVERT(nvarchar(40), CONVERT(datetime2(3), src.[Stamp]), 126)", script, StringComparison.Ordinal);
+        Assert.Contains("CONVERT(nvarchar(40), trg.[Stamp], 126)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ColumnTypes_ApplyToTheScd2Close()
+    {
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "Amount"],
+            KeyColumns = ["Id"],
+            Scd2Enabled = true,
+            Scd2ValidFromColumn = "ValidFrom_DW",
+            Scd2ValidToColumn = "ValidTo_DW",
+            Scd2CurrentFlagColumn = "IsCurrent_DW",
+            Scd2AsOfLiteral = "2026-06-16 11:22:33.444",
+            ChecksumColumnTypes = Types(("Amount", "decimal(18, 4)", "decimal(18, 2)")),
+        };
+
+        var close = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)[1];
+        Assert.Contains("CONVERT(decimal(18, 2), src.[Amount])", close, StringComparison.Ordinal);
+        Assert.DoesNotContain("CONVERT(decimal(18, 2), trg.[Amount])", close, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void SystemDateColumns_AreStamped()
     {

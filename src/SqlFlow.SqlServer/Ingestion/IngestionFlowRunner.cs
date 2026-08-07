@@ -503,7 +503,12 @@ public sealed class IngestionFlowRunner
             // 7. Apply staging to the target: the keyed two-step upsert (anti-join safe), or a blind
             //    insert-all for a keyless flow. The default runs in one transaction; the batched
             //    (lock-escalation-avoiding) apply commits per key window. Counts attribute by statement kind.
-            var loadStatements = BuildLoadStatements(flow, staging, dataColumnNames, stagingColumns, nameMap, events);
+            // The target's ACTUAL column types, read after the evolve so they are this run's truth. Change
+            // detection needs them: a target the flow did not create (schema sync off) stores columns under
+            // types of its own, and hashing a staged row against a target row without accounting for that
+            // compares two renderings of the same value and rewrites every matched row on every run.
+            var targetColumnTypes = await ReadColumnTypesAsync(targetCatalog, targetConnectionString, flow.Target.Table, ct).ConfigureAwait(false);
+            var loadStatements = BuildLoadStatements(flow, staging, dataColumnNames, stagingColumns, nameMap, targetColumnTypes, events);
             foreach (var statement in loadStatements)
             {
                 Trace(statement.Kind switch
@@ -1100,6 +1105,7 @@ public sealed class IngestionFlowRunner
         IReadOnlyList<string> dataColumnNames,
         IReadOnlyList<SqlColumn> stagingColumns,
         IReadOnlyDictionary<string, string> nameMap,
+        IReadOnlyDictionary<string, SqlDataType> targetColumnTypes,
         IRunEventSink events)
     {
         // Per-file replace (load.reloadColumn): purge the batch's datasets from the target, then insert the
@@ -1142,6 +1148,10 @@ public sealed class IngestionFlowRunner
             }
         }
 
+        // How each checksummed column is stored on both sides, so change detection can compare the value the
+        // target holds instead of two renderings of it.
+        var checksumColumnTypes = new Dictionary<string, ChecksumColumnType>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var column in stagingColumns)
         {
             // SqlFlow-generated columns (file provenance, audit stamps, the surrogate-key hashes, and the SCD2
@@ -1149,16 +1159,41 @@ public sealed class IngestionFlowRunner
             // so on - so hashing them would make every matched row look changed and force a no-op UPDATE each
             // run, needlessly dirtying pages and bloating differential and transaction-log backups. Exclude
             // them, and any column whose type cannot be concatenated into the checksum, exactly as the legacy
-            // engine's IgnoreChecksumColumns / InvalidChecksumDataTypes rules did.
-            if (IsSqlFlowSystemColumn(column.Name) || NonChecksumTypes.Contains(column.DataType.BaseType))
+            // engine's IgnoreChecksumColumns / InvalidChecksumDataTypes rules did. The target's type disqualifies
+            // a column just as the staging type does: CONCAT reads BOTH sides, so a target column stored as text
+            // or xml cannot be hashed even when staging carries it as nvarchar.
+            targetColumnTypes.TryGetValue(column.Name, out var targetType);
+            if (IsSqlFlowSystemColumn(column.Name)
+                || NonChecksumTypes.Contains(column.DataType.BaseType)
+                || (targetType is not null && NonChecksumTypes.Contains(targetType.BaseType)))
             {
                 excludeFromChecksum.Add(column.Name);
+                continue;
+            }
+
+            // Both sides' types drive the comparison: the staged value is converted to the target's type when
+            // the two differ (the pre-created target of a migrated source stores nchar(36) as uniqueidentifier,
+            // datetime2 as datetime), and a lossy family is rendered with an explicit style. Types SqlFlow does
+            // not model (CLR/UDT and friends) are left alone: CONVERT cannot express them.
+            if (targetType is not null && targetType.Family != SqlTypeFamily.Other)
+            {
+                checksumColumnTypes[column.Name] = new ChecksumColumnType { Staging = column.DataType, Target = targetType };
             }
         }
 
         if (excludeFromChecksum.Count > 0)
         {
             events.Log(RunLogLevel.Debug, "upsert.plan", "excluded from change detection: " + string.Join(", ", excludeFromChecksum.Order(StringComparer.OrdinalIgnoreCase)));
+        }
+
+        var restyped = checksumColumnTypes
+            .Where(p => !string.Equals(p.Value.Staging.Render(), p.Value.Target.Render(), StringComparison.OrdinalIgnoreCase))
+            .OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (restyped.Count > 0)
+        {
+            events.Log(RunLogLevel.Debug, "upsert.plan", "change detection compares these as the target stores them: "
+                + string.Join(", ", restyped.Select(p => $"{p.Key} {p.Value.Staging.Render()} -> {p.Value.Target.Render()}")));
         }
 
         // SCD2 tracked attributes are declared with SOURCE names; map them to target names like the hash
@@ -1186,6 +1221,7 @@ public sealed class IngestionFlowRunner
             UpdatedDateColumn = flow.SystemColumns.UpdatedDate ? "UpdatedDate_DW" : null,
             RowStatusColumn = flow.SystemColumns.RowStatus ? "RowStatus_DW" : null,
             ExcludeFromChecksum = excludeFromChecksum,
+            ChecksumColumnTypes = checksumColumnTypes,
             BatchToAvoidLockEscalation = flow.Load.BatchUpsertToAvoidLockEscalation,
             BatchRowCount = flow.Load.BatchUpsertRowCount,
             Scd2Enabled = scd2.Enabled,
@@ -1433,6 +1469,22 @@ public sealed class IngestionFlowRunner
 
     private static Task DropStagingAsync(string connectionString, RelationalObject staging, CancellationToken ct)
         => ExecuteAsync(connectionString, $"DROP TABLE IF EXISTS {SchemaQualified(staging)};", ct);
+
+    /// <summary>The declared type of every column of a table, keyed by column name. An absent table (the target
+    /// this run is about to create, or one a keyless flow never matches against) yields an empty map, which the
+    /// callers read as "nothing to reconcile": a target SqlFlow creates carries the staging types by
+    /// construction.</summary>
+    private static async Task<IReadOnlyDictionary<string, SqlDataType>> ReadColumnTypesAsync(
+        ICatalogReader catalog, string connectionString, RelationalObject table, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        var introspected = await catalog.IntrospectObjectAsync(connection, ToName(table), ct).ConfigureAwait(false);
+        return introspected is null
+            ? new Dictionary<string, SqlDataType>(StringComparer.OrdinalIgnoreCase)
+            : CatalogSchemaAdapter.ToColumns(introspected)
+                .ToDictionary(c => c.Name, c => c.DataType, StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>Raised by <see cref="ApplyLoadAsync"/> when one load statement fails, carrying the offending
     /// statement so the run's failure is attributed to the exact trace entry rather than "the last one". The

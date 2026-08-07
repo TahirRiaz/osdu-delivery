@@ -50,6 +50,19 @@ public sealed class MySqlIngestionFidelityTests
         Assert.Equal(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }, bytes);
     }
 
+    // CHAR(36) is MySQL's UUID idiom, but MySQL has no UUID type: the value is text and lands as the nchar the
+    // type mapper declared. Reinterpreting it as a CLR Guid failed the bulk copy into that column outright, and
+    // a CHAR(36) holding anything but a GUID (second case) never parsed at all.
+    [SkippableFact]
+    public async Task Char36_Uuid_SurvivesAsText()
+        => Assert.Equal("2828ca9b-fd72-11ea-80a9-42010a1b3007",
+            await RoundTripAsync<string?>("CHAR(36)", "'2828ca9b-fd72-11ea-80a9-42010a1b3007'"));
+
+    [SkippableFact]
+    public async Task Char36_NonGuid_SurvivesAsText()
+        => Assert.Equal("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            await RoundTripAsync<string?>("CHAR(36)", "'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'"));
+
     [SkippableFact]
     public async Task Datetime_SurvivesToMillisecond()
         => Assert.Equal(new DateTime(2024, 5, 6, 7, 8, 9, 123),

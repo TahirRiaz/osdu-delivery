@@ -197,10 +197,13 @@ MySQL (src/SqlFlow.Providers/MySql/MySqlSourceTypeMapper.cs) follows the SSMA de
 | `decimal(p, s)` (p <= 38) | `decimal(p, s)` |
 | `datetime(n)` / `timestamp(n)` | `datetime2(n)` (timestamp deliberately not legacy datetime) |
 | `varchar(n)` (n <= 4000) | `nvarchar(n)` |
+| `char(n)` (n <= 4000) | `nchar(n)`, including the `char(36)` UUID idiom (see below) |
 | `text` / `mediumtext` / `longtext` | `nvarchar(max)` |
 | `enum(...)` | `nvarchar(255)` |
 | `json` | `nvarchar(max)` |
 | `blob` / `mediumblob` / `longblob` / spatial types | `varbinary(max)` |
+
+MySQL has no UUID type, so a `char(36)` is text and stays text: it lands as `nchar(36)` holding the source's exact characters. The engine enforces that on the connection itself (`GuidFormat=None`, set by the canonicalizer and not overridable from the connection string), because the driver's default reinterprets every `char(36)` column as a CLR `Guid`, which the bulk copy into an `nchar` column rejects outright and which fails to parse for a `char(36)` that is not a UUID at all. A target column that really is `uniqueidentifier` (a pre-created table with `schema.sync: false`) still gets one: SQL Server converts the string on the insert. PostgreSQL is the contrasting case above, where `uuid` is a real type and maps to `uniqueidentifier`.
 
 PostgreSQL (src/SqlFlow.Providers/Postgres/PostgresSourceTypeMapper.cs):
 

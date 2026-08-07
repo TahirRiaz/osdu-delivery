@@ -38,6 +38,18 @@ public sealed record UpsertStatement
     public bool CountFromResultSet { get; init; }
 }
 
+/// <summary>The type one checksummed column carries in staging and the type the target stores it under. They
+/// differ whenever the target was not created from this staging shape (a pre-created table loaded with schema
+/// sync off), and change detection has to account for that to compare stored values.</summary>
+public sealed record ChecksumColumnType
+{
+    /// <summary>The column's type in the staging table, which mirrors the source.</summary>
+    public required SqlDataType Staging { get; init; }
+
+    /// <summary>The column's type in the target table, which is what the load actually stores.</summary>
+    public required SqlDataType Target { get; init; }
+}
+
 /// <summary>Settings for a staging-to-target upsert.</summary>
 public sealed record UpsertOptions
 {
@@ -73,6 +85,15 @@ public sealed record UpsertOptions
     /// are still copied by the SET list. When every comparable column is excluded, the UPDATE drops its change
     /// predicate and rewrites all matched rows (legacy semantics: better to over-update than never update).</summary>
     public IReadOnlySet<string> ExcludeFromChecksum { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>How each checksummed column is stored on the two sides, keyed by column name. It makes change
+    /// detection compare the value the target STORES rather than two renderings of it: the staging value is
+    /// converted to the target's type when the two differ, and a type whose default string form is lossy is
+    /// rendered with an explicit lossless style. A column absent from the map is hashed as-is (the caller omits
+    /// the types it cannot reconcile, and a target SqlFlow is about to create has nothing to reconcile
+    /// against).</summary>
+    public IReadOnlyDictionary<string, ChecksumColumnType> ChecksumColumnTypes { get; init; } =
+        new Dictionary<string, ChecksumColumnType>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Apply through key-windowed batches to keep each DML under the lock-escalation threshold
     /// (the legacy #UpdateKeys / #InsertKeys pattern). Each batch commits on its own, trading the single-
@@ -229,7 +250,7 @@ public static class UpsertGenerator
 
             // No comparable column left to detect change on: rewrite all matched rows (legacy semantics).
             var changePredicate = checksumColumns.Count > 0
-                ? $"{Checksum("src", checksumColumns, options.HashAlgorithm)} <> {Checksum("trg", checksumColumns, options.HashAlgorithm)}"
+                ? $"{Checksum("src", checksumColumns, options, staging: true)} <> {Checksum("trg", checksumColumns, options, staging: false)}"
                 : null;
 
             statements.Add(options.BatchToAvoidLockEscalation
@@ -417,7 +438,7 @@ public static class UpsertGenerator
                 Sql =
                     $"UPDATE trg SET {closeSets} FROM {stg} AS src INNER JOIN {trg} AS trg ON {keyEquality} " +
                     $"WHERE trg.[{cf}] = 1 AND " +
-                    $"{Checksum("src", tracked, options.HashAlgorithm)} <> {Checksum("trg", tracked, options.HashAlgorithm)};",
+                    $"{Checksum("src", tracked, options, staging: true)} <> {Checksum("trg", tracked, options, staging: false)};",
             });
         }
 
@@ -488,7 +509,7 @@ public static class UpsertGenerator
         var doInsert = !options.SkipInsert;
 
         var changePredicate = checksumColumns.Count > 0
-            ? $"{Checksum("src", checksumColumns, options.HashAlgorithm)} <> {Checksum("trg", checksumColumns, options.HashAlgorithm)}"
+            ? $"{Checksum("src", checksumColumns, options, staging: true)} <> {Checksum("trg", checksumColumns, options, staging: false)}"
             : null;
 
         var setList = doUpdate ? string.Join(", ", UpdateSetClauses(nonKey, options)) : string.Empty;
@@ -760,8 +781,40 @@ public static class UpsertGenerator
 
     // CONCAT requires at least two arguments, so a leading N'' guards the single-column case; non-key values
     // are interleaved with a separator so two distinct rows cannot collide on concatenation.
-    private static string Checksum(string alias, IReadOnlyList<string> columns, string algorithm)
-        => $"HASHBYTES('{algorithm}', CONCAT(N'', {string.Join(", N'|', ", columns.Select(c => $"{alias}.[{Escape(c)}]"))}))";
+    private static string Checksum(string alias, IReadOnlyList<string> columns, UpsertOptions options, bool staging)
+        => $"HASHBYTES('{options.HashAlgorithm}', CONCAT(N'', " +
+           string.Join(", N'|', ", columns.Select(c => ChecksumTerm(alias, c, options, staging))) + "))";
+
+    // What a column contributes to its side's checksum: the value the TARGET stores, rendered so that equal
+    // values always produce equal text and different values never collide. Two things are needed for that, and
+    // both are corrections of a comparison that otherwise silently misfires:
+    //   - The staging value is converted to the target's type first when the two differ, or the same value
+    //     renders as two different strings and every matched row hashes as changed on every run (an nchar(36)
+    //     '2828ca9b-...' against a uniqueidentifier '2828CA9B-...').
+    //   - A family whose default string form is LOSSY gets an explicit lossless style, or a real change hashes
+    //     as no change: CONCAT prints a datetime to the minute (style 0, 'May  6 2024  7:08AM'), a float to six
+    //     significant digits, and money to two decimals of its four.
+    private static string ChecksumTerm(string alias, string column, UpsertOptions options, bool staging)
+    {
+        var term = $"{alias}.[{Escape(column)}]";
+        if (!options.ChecksumColumnTypes.TryGetValue(column, out var types))
+        {
+            return term;
+        }
+
+        if (staging && !string.Equals(types.Staging.Render(), types.Target.Render(), StringComparison.OrdinalIgnoreCase))
+        {
+            term = $"CONVERT({types.Target.Render()}, {term})";
+        }
+
+        return types.Target.Family switch
+        {
+            SqlTypeFamily.DateTime => $"CONVERT(nvarchar(40), {term}, 126)",  // ISO 8601, every fractional digit
+            SqlTypeFamily.Approximate => $"CONVERT(nvarchar(40), {term}, 3)", // all 17 significant digits
+            SqlTypeFamily.Money => $"CONVERT(nvarchar(40), {term}, 2)",       // all four decimals
+            _ => term,
+        };
+    }
 
     private static string Qualify(RelationalObject relationalObject) => $"[{Escape(relationalObject.Schema)}].[{Escape(relationalObject.Name)}]";
 

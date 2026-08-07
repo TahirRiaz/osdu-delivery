@@ -34,6 +34,9 @@ public sealed class MySqlProviderConnectionFactory : IProviderConnectionFactory
 /// secretless gate. MySQL has no self-authenticating connection-string mode, so a literal inline string can
 /// never satisfy <see cref="SecretlessPolicy.RequireSelfAuthenticating"/>: a MySQL connection must arrive as a
 /// whole <c>${...}</c> secret reference or through a registry entry whose credential mode trusts the value.
+/// The engine also owns the wire-to-CLR mapping rather than leaving it to the caller's string: the canonical
+/// form always reads CHAR(36) as text (<c>GuidFormat=None</c>), so values arrive as the type their declared
+/// column type promises.
 /// </summary>
 public sealed class MySqlConnectionStringCanonicalizer : IConnectionStringCanonicalizer
 {
@@ -68,6 +71,18 @@ public sealed class MySqlConnectionStringCanonicalizer : IConnectionStringCanoni
         }
 
         builder.ApplicationName = role == ConnectionRole.Source ? "SQLFlow Source" : "SQLFlow Target";
+
+        // The reader must hand back the CLR type the source catalog's DECLARED type promises, because the
+        // staging table is built from that declaration (char(36) -> nchar(36), per MySqlSourceTypeMapper).
+        // MySqlConnector's default reinterprets every CHAR(36) column as a CLR Guid, which breaks that contract
+        // two ways: SqlBulkCopy refuses to write a Guid into the nchar staging column ("The given value ... of
+        // type Guid from the data source cannot be converted to type nchar"), and a CHAR(36) that is not a GUID
+        // at all fails to parse in the reader. MySQL has no UUID type - a CHAR(36) is text - so it is read as
+        // text and lands verbatim; a target column that really is uniqueidentifier still gets one, converted by
+        // SQL Server on the insert. OldGuids is the deprecated spelling of the same reinterpretation and is
+        // rejected alongside an explicit GuidFormat, so it is cleared with it.
+        builder.OldGuids = false;
+        builder.GuidFormat = MySqlGuidFormat.None;
         var canonical = builder.ConnectionString;
 
         var safe = new MySqlConnectionStringBuilder(canonical) { Password = string.Empty, UserID = string.Empty };

@@ -66,7 +66,22 @@ Columns are excluded from the checksum in two ways (`IngestionFlowRunner.BuildLo
 - Automatically, when the column's type cannot participate in `CONCAT`: `xml`, `geography`, `geometry`, `hierarchyid`, `image`, `text`, `ntext`, `varbinary`, `binary`, `rowversion`, `timestamp`, `sql_variant` (the `NonChecksumTypes` set). Such a column would raise "Argument data type ... is invalid" at run time.
 - Explicitly, via `change.ignoreColumnsInHash` (source column names, mapped to target names).
 
-Excluded columns are still copied by the UPDATE's SET list; they just do not count as "changed". When every comparable column is excluded, the UPDATE drops its change predicate entirely and rewrites all matched rows (legacy semantics: better to over-update than never update). The exclusion list is logged at debug level as `upsert.plan`.
+Excluded columns are still copied by the UPDATE's SET list; they just do not count as "changed". When every comparable column is excluded, the UPDATE drops its change predicate entirely and rewrites all matched rows (legacy semantics: better to over-update than never update). The exclusion list is logged at debug level as `upsert.plan`. A column the TARGET stores under a non-concatenable type is excluded the same way, since `CONCAT` reads both sides.
+
+### The checksum compares the value the target STORES
+
+The two sides of the comparison are two different tables, and a checksum of raw column references silently misreads that in two ways. Both are corrected by reading the target's actual column types after the schema evolve (`IngestionFlowRunner.ReadColumnTypesAsync`) and rendering each term accordingly:
+
+- **The target may store a column under a different type than staging carries it.** A pre-created target loaded with `schema.sync: false` (the migrated-source pattern) is the usual case: a MySQL `char(36)` staged as `nchar(36)` into a `uniqueidentifier` column, or a `datetime2` staged into a `datetime`. `CONCAT` then renders the same value two ways (`2828ca9b-...` against `2828CA9B-...`), so every matched row hashes as changed and the flow rewrites its whole matched set on every run. The staging side is converted to the target's type first.
+- **Some types have a lossy default string form,** so a real change can hash as no change. `CONCAT` prints a `datetime` to the minute (style 0, `May  6 2024  7:08AM`), a `float` to six significant digits, and `money` to two of its four decimals. Those families are rendered with an explicit lossless style: `126` (ISO 8601) for the date/time family, `3` (all 17 digits) for `float`/`real`, `2` (all four decimals) for `money`/`smallmoney`.
+
+```sql
+-- staged datetime2(0) against a stored datetime, and a uniqueidentifier target
+HASHBYTES('SHA2_256', CONCAT(N'', CONVERT(uniqueidentifier, src.[Uuid]), N'|', CONVERT(nvarchar(40), CONVERT(datetime, src.[Stamp]), 126))) <>
+HASHBYTES('SHA2_256', CONCAT(N'', trg.[Uuid], N'|', CONVERT(nvarchar(40), trg.[Stamp], 126)))
+```
+
+Columns whose two types agree and render exactly (`int`, `decimal`, the character types, `uniqueidentifier`, `bit`) keep the bare column reference on both sides. Types SqlFlow does not model are left alone. The reconciled columns are logged at debug level as `upsert.plan`.
 
 Staging is collapsed to one row per business key on insert with `ROW_NUMBER() OVER (PARTITION BY <keys>)`, keeping `_rn = 1`. This matters because an incremental read over an append-mode landing source legitimately returns several rows with the same key (the same key landed by more than one file or window); the target enforces one row per key, so the anti-join INSERT must add exactly one or it fails with a duplicate-key violation. Partitioning on the key columns (always comparable) collapses them and carries any non-comparable data column (`xml`, `geography`, `image` and kin) along unpartitioned, so it holds for every staging shape. The SCD2 and dataset-loop inserts use the same collapse.
 
