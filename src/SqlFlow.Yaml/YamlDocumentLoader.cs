@@ -87,6 +87,13 @@ public sealed record SftpFlowDocument : FlowDocument
     public required SqlFlow.Core.Sftp.SftpFlow Flow { get; init; }
 }
 
+/// <summary>A calendar-dimension flow document (<c>flowType: cal</c>): generate a date dimension for a declared
+/// range and merge it into a table. The only flow kind with no data source: its rows are computed.</summary>
+public sealed record CalendarFlowDocument : FlowDocument
+{
+    public required CalendarDocument Document { get; init; }
+}
+
 /// <summary>
 /// The single entry point for loading any flow document: it sniffs the root <c>flowType</c> key with a cheap
 /// probe pass, then delegates to the matching loader. No key (the long-standing default) means a file flow;
@@ -216,6 +223,7 @@ public sealed class YamlDocumentLoader
     private readonly YamlAcquireFlowLoader _acquireFlows;
     private readonly YamlCopyFlowLoader _copyFlows;
     private readonly YamlSftpFlowLoader _sftpFlows;
+    private readonly YamlCalendarFlowLoader _calendarFlows;
 
     public YamlDocumentLoader(
         YamlFlowLoader fileFlows,
@@ -228,7 +236,8 @@ public sealed class YamlDocumentLoader
         YamlBatchFlowLoader batchFlows,
         YamlAcquireFlowLoader acquireFlows,
         YamlCopyFlowLoader copyFlows,
-        YamlSftpFlowLoader sftpFlows)
+        YamlSftpFlowLoader sftpFlows,
+        YamlCalendarFlowLoader calendarFlows)
     {
         ArgumentNullException.ThrowIfNull(fileFlows);
         ArgumentNullException.ThrowIfNull(ingestionFlows);
@@ -241,6 +250,7 @@ public sealed class YamlDocumentLoader
         ArgumentNullException.ThrowIfNull(acquireFlows);
         ArgumentNullException.ThrowIfNull(copyFlows);
         ArgumentNullException.ThrowIfNull(sftpFlows);
+        ArgumentNullException.ThrowIfNull(calendarFlows);
         _fileFlows = fileFlows;
         _ingestionFlows = ingestionFlows;
         _exportFlows = exportFlows;
@@ -252,6 +262,7 @@ public sealed class YamlDocumentLoader
         _acquireFlows = acquireFlows;
         _copyFlows = copyFlows;
         _sftpFlows = sftpFlows;
+        _calendarFlows = calendarFlows;
     }
 
     public FlowDocument LoadFile(string path)
@@ -335,12 +346,18 @@ public sealed class YamlDocumentLoader
             return new SftpFlowDocument { Flow = _sftpFlows.Parse(yaml, source), Schedule = schedule };
         }
 
+        if (string.Equals(flowType, "cal", StringComparison.OrdinalIgnoreCase))
+        {
+            return new CalendarFlowDocument { Document = _calendarFlows.Parse(yaml, source), Schedule = schedule };
+        }
+
         throw new FlowValidationException(
             $"{source}: unknown flowType '{flowType}'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a " +
             "file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML " +
             "health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, " +
             "'api' for a generic acquisition flow (HTTP / SFTP / Azure Table), 'cpy' for a file-copy flow "
-            + "(local / Azure storage / S3, with optional zip/unzip), or omit flowType for a file flow.");
+            + "(local / Azure storage / S3, with optional zip/unzip), 'cal' for a generated calendar dimension, "
+            + "or omit flowType for a file flow.");
     }
 
     private static ScheduleSpec? MapSchedule(ScheduleYaml? schedule)

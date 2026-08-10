@@ -20,7 +20,7 @@ public sealed class FlowSetCollector
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
         new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-        new YamlCopyFlowLoader(), new YamlSftpFlowLoader());
+        new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
 
     private readonly YamlScheduleLibraryLoader _scheduleLibraries = new();
 
@@ -529,6 +529,16 @@ public sealed class FlowSetCollector
                 RegisterServers(result, doc.Document.Connections);
                 result.Facts.Add(ObjectFact(
                     headers[0].Name, LineageRelation.Reads, headers[0].TargetServerRef, doc.Document.Flow.Target, LineageNodeKind.Unknown));
+                break;
+            }
+
+            case CalendarFlowDocument doc:
+            {
+                // The generator reads nothing: the dimension is computed, so the flow is a pure producer and
+                // its table is a root of the graph that every conforming fact joins to.
+                RegisterServers(result, doc.Document.Connections);
+                result.Facts.Add(ObjectFact(
+                    headers[0].Name, LineageRelation.Writes, headers[0].TargetServerRef, doc.Document.Flow.Table, LineageNodeKind.Table));
                 break;
             }
 

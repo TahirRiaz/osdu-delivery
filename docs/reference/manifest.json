@@ -1388,6 +1388,43 @@
       ]
     },
     {
+      "id": "flow-cal",
+      "path": "flow/cal.md",
+      "title": "Calendar flow (flowType: cal): a generated date dimension",
+      "type": "flow-reference",
+      "summary": "flowType: cal generates a date dimension for a declared range from rules alone (no source), then merges it so the target holds exactly that range.",
+      "keywords": [
+        "calendar",
+        "cal",
+        "date dimension",
+        "dim_calendar",
+        "holidays",
+        "observances",
+        "fiscal year",
+        "easter",
+        "equinox",
+        "daylight saving"
+      ],
+      "related": [
+        "flow-overview",
+        "flow-schedule",
+        "flow-ing",
+        "concept-connections-and-secrets"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Calendar/CalendarFlow.cs",
+        "src/SqlFlow.Core/Calendar/CalendarRow.cs",
+        "src/SqlFlow.Core/Calendar/CalendarDimensionBuilder.cs",
+        "src/SqlFlow.Core/Calendar/CountryCalendar.cs",
+        "src/SqlFlow.Core/Calendar/NorwegianCalendar.cs",
+        "src/SqlFlow.Core/Calendar/SeasonEvents.cs",
+        "src/SqlFlow.Core/Calendar/Observance.cs",
+        "src/SqlFlow.SqlServer/Calendar/CalendarFlowRunner.cs",
+        "src/SqlFlow.SqlServer/Calendar/CalendarTable.cs",
+        "src/SqlFlow.Yaml/YamlCalendarFlowLoader.cs"
+      ]
+    },
+    {
       "id": "flow-connections",
       "path": "flow/connections.md",
       "title": "connections block and endpoint resolution",
@@ -1841,9 +1878,9 @@
     {
       "id": "flow-overview",
       "path": "flow/overview.md",
-      "title": "Anatomy of a flow file: the eight document kinds",
+      "title": "Anatomy of a flow file: the twelve document kinds",
       "type": "flow-reference",
-      "summary": "How the top-level flowType key selects one of eight flow document kinds, what each kind contains, and how loading and validation behave.",
+      "summary": "How the top-level flowType key selects one of twelve flow document kinds, what each kind contains, and how loading and validation behave.",
       "keywords": [
         "flowtype",
         "document kinds",

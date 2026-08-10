@@ -23,9 +23,13 @@
         "inv",
         "hc",
         "scm",
-        "batch"
+        "batch",
+        "api",
+        "cpy",
+        "sftp",
+        "cal"
       ],
-      "description": "Document-kind discriminator. Omit for a file flow (source/target/schema/load, as in this schema). ing/exp/sp/inv/hc/scm/batch each parse as a different document shape not covered by this schema file. Matched case-insensitively; an unrecognized value fails to load."
+      "description": "Document-kind discriminator. Omit for a file flow (source/target/schema/load, as in this schema). Each value parses as a different document shape not covered by this schema file: ing a table-to-table ingestion, exp a file export, sp a stored procedure, inv an ADF/Automation trigger, hc an ML health check, scm a database source-control snapshot, batch an ordered multi-flow batch, api a generic acquisition (HTTP/SFTP/Azure Table), cpy a file copy, sftp an SFTP transfer, cal a generated calendar dimension. Matched case-insensitively; an unrecognized value fails to load."
     },
     "batch": {
       "type": "string",

@@ -1,8 +1,8 @@
 ---
 id: flow-overview
-title: "Anatomy of a flow file: the eight document kinds"
+title: "Anatomy of a flow file: the twelve document kinds"
 type: flow-reference
-summary: How the top-level flowType key selects one of eight flow document kinds, what each kind contains, and how loading and validation behave.
+summary: How the top-level flowType key selects one of twelve flow document kinds, what each kind contains, and how loading and validation behave.
 keywords:
   - flowtype
   - document kinds
@@ -32,9 +32,9 @@ sourceRefs:
   - src/SqlFlow.Cli/Program.cs
 ---
 
-# Anatomy of a flow file: the eight document kinds
+# Anatomy of a flow file: the twelve document kinds
 
-Every SQLFlow pipeline is a single YAML document. There is no control database and no registration step: the file is the whole pipeline. One root key, `flowType`, decides which of eight document kinds the file is, and therefore which loader parses it, which keys are recognized, and which engine runs it. This page is the map: what the eight kinds are, how dispatch works, what every kind shares, and where each kind's full key reference lives.
+Every SQLFlow pipeline is a single YAML document. There is no control database and no registration step: the file is the whole pipeline. One root key, `flowType`, decides which of twelve document kinds the file is, and therefore which loader parses it, which keys are recognized, and which engine runs it. This page is the map: what the twelve kinds are, how dispatch works, what every kind shares, and where each kind's full key reference lives.
 
 ## The flowType discriminator
 
@@ -50,11 +50,15 @@ Every SQLFlow pipeline is a single YAML document. There is no control database a
 | `hc` | health check | `YamlHealthCheckFlowLoader` | ML health check: learns per-date metric behavior and reports anomalies, level shifts, and missing data |
 | `scm` | source control | `YamlSourceControlFlowLoader` | Scripts a SQL Server database's objects with SMO into a git working tree, commits, and pushes over HTTPS |
 | `batch` | batch | `YamlBatchFlowLoader` | Ordered multi-flow run: lineage computes concurrency waves over member flows and runs them wave by wave |
+| `api` | acquisition | `YamlAcquireFlowLoader` | Fetches from a third-party system over any transport (HTTP, SFTP, S3, Azure Table) and lands the raw payloads in the lake |
+| `cpy` | copy | `YamlCopyFlowLoader` | Copies files byte-for-byte between storage endpoints (local disk, Azure Blob/ADLS, S3), with optional zip/unzip |
+| `sftp` | SFTP transfer | `YamlSftpFlowLoader` | Downloads files from an SFTP server into the lake/local, or uploads the other way |
+| `cal` | calendar | `YamlCalendarFlowLoader` | Generates a date dimension for a declared range from rules alone (no source) and merges it into a table |
 
 Any other value fails fast at parse time with a `FlowValidationException` carrying the full menu, instead of a confusing downstream validation failure:
 
 ```text
-<file>: unknown flowType '<x>'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, or omit flowType for a file flow.
+<file>: unknown flowType '<x>'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, 'api' for a generic acquisition flow (HTTP / SFTP / Azure Table), 'cpy' for a file-copy flow (local / Azure storage / S3, with optional zip/unzip), 'cal' for a generated calendar dimension, or omit flowType for a file flow.
 ```
 
 ## What every document kind shares
@@ -76,7 +80,7 @@ Every validation failure is a `FlowValidationException` (a subclass of `SqlFlowE
 
 ### The schedule envelope
 
-Every document kind may carry a top-level `schedule:` block. It is captured on the `FlowDocument` envelope record itself, not inside any kind-specific model, so all eight kinds declare a schedule the same way. The engine never schedules anything; the control plane turns the declared schedule into runs.
+Every document kind may carry a top-level `schedule:` block. It is captured on the `FlowDocument` envelope record itself, not inside any kind-specific model, so all twelve kinds declare a schedule the same way. The engine never schedules anything; the control plane turns the declared schedule into runs.
 
 ```yaml
 schedule:

@@ -14,6 +14,7 @@ using SqlFlow.Azure.Invoke;
 using SqlFlow.HealthCheck;
 using SqlFlow.Providers;
 using SqlFlow.SourceControl;
+using SqlFlow.SqlServer.Calendar;
 using SqlFlow.SqlServer.Export;
 using SqlFlow.SqlServer.Ingestion;
 using SqlFlow.SqlServer.Invoke;
@@ -177,6 +178,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             CopyFlowDocument doc => await ExecuteCopyAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             SftpFlowDocument doc => await ExecuteSftpAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             SourceControlFlowDocument doc => await ExecuteSourceControlAsync(doc, flowFile, options, ct).ConfigureAwait(false),
+            CalendarFlowDocument doc => await ExecuteCalendarAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             _ => throw new SqlFlowException($"Cannot run document kind '{document.GetType().Name}'."),
         };
     }
@@ -453,6 +455,39 @@ public sealed class DocumentExecutor : IDocumentRunner
             Result = result,
             SqlTraceText = SqlTrace.Render(result.SqlTrace),
             HealthCheckReport = outcome.Report,
+        };
+    }
+
+    private async Task<DocumentExecutionResult> ExecuteCalendarAsync(CalendarFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
+    {
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, doc.Document.Flow.SysAlias);
+        NoteInapplicableParameters(eventSink, options.Parameters, "cal");
+        var runner = WithoutDatabaseCalendar.BuildRunner(
+            doc.Document.Connections, _provider.GetRequiredService<ISecretResolver>());
+        var result = await runner.RunAsync(
+            doc.Document.Flow,
+            new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, StatementSink = options.StatementSink },
+            ct).ConfigureAwait(false);
+
+        var flowName = doc.Document.Flow.SysAlias;
+        var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["run.json"] = JsonSerializer.Serialize(Artifact("cal", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
+            ["run.log"] = runLogger.Render(),
+            ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
+        }, _warningSink);
+
+        return new DocumentExecutionResult
+        {
+            FlowName = flowName,
+            FlowKind = "cal",
+            Success = result.Success,
+            Error = result.Error,
+            RunId = result.RunId,
+            RunDirectory = runDirectory,
+            DurationSeconds = result.DurationSeconds,
+            Result = result,
+            SqlTraceText = SqlTrace.Render(result.SqlTrace),
         };
     }
 

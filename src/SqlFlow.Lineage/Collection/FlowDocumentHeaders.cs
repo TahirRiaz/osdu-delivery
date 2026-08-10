@@ -87,6 +87,18 @@ public static class FlowDocumentHeaders
                 ];
             }
 
+            case CalendarFlowDocument doc:
+            {
+                // A calendar flow has no source: it generates its rows. Its declared server is therefore both
+                // sides of the header, exactly as an export flow's is.
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                return
+                [
+                    new DocumentFlowHeader(flow.SysAlias, "cal", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), document.Schedule, Lifecycle: flow.Lifecycle),
+                ];
+            }
+
             case FileFlowDocument doc:
                 return
                 [

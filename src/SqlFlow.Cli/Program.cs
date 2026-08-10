@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Batch;
+using SqlFlow.Core.Calendar;
 using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Engine;
@@ -156,6 +157,16 @@ internal static class Program
                             var flow = doc.Document.Flow;
                             var target = flow.Repository.Remote is { } remote ? remote : "(local history only)";
                             Console.WriteLine($"OK  '{flow.SysAlias}' is valid (source control: database on '{flow.Server}' -> {target} [{flow.Repository.Branch}]).");
+                            return 0;
+                        }
+
+                        case CalendarFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            var days = flow.To.DayNumber - flow.From.DayNumber + 1;
+                            Console.WriteLine(
+                                $"OK  '{flow.SysAlias}' is valid (calendar: {flow.From:yyyy-MM-dd} to {flow.To:yyyy-MM-dd}, " +
+                                $"{days} day(s), country {flow.Country} -> {flow.Table.QualifiedName} on '{flow.Server}').");
                             return 0;
                         }
 
@@ -2685,6 +2696,22 @@ internal static class Program
             case SourceControlFlowDocument:
                 PrintSourceControlResult((SourceControlResult)exec.Result);
                 break;
+            case CalendarFlowDocument doc:
+            {
+                var result = (CalendarRunResult)exec.Result;
+                if (!result.Success)
+                {
+                    Console.WriteLine($"FAILED  {result.Error}");
+                    break;
+                }
+
+                var createdNote = result.TableCreated ? " (table created)" : string.Empty;
+                Console.WriteLine(
+                    $"OK  calendar {doc.Document.Flow.Table.QualifiedName}{createdNote}: {result.RowsGenerated} day(s) generated, " +
+                    $"{result.RowsInserted} inserted, {result.RowsUpdated} updated, {result.RowsDeleted} deleted, " +
+                    $"{result.ObservedDays} observed in {result.DurationSeconds}s");
+                break;
+            }
         }
 
         // The file flow already prints its own trace via PrintResult; every other kind points at its run folder.
