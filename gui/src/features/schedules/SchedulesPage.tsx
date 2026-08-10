@@ -1,4 +1,4 @@
-import { type MouseEvent, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, formatDistanceToNow } from "date-fns";
@@ -20,11 +20,14 @@ import type { RunGroupCounts, RunStatus, Schedule } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
+import { FilterBar } from "../../components/FilterBar";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
+import { SearchInput } from "../../components/SearchInput";
 import { IconBadge, RunStatusBadge, rollupStatus, ScheduleStateBadge } from "../../components/StatusBadge";
+import { readLocalStorageState, useLocalStorageState } from "../../hooks/useLocalStorageState";
 import { cronSummary, intervalSummary, shortZone } from "./cadence";
 import { RunScheduleDialog } from "./RunScheduleDialog";
 import { ScheduleDefinitionSheet } from "./ScheduleDefinitionSheet";
@@ -382,6 +385,9 @@ function CreateScheduleSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Where the list's search term is remembered, so it survives navigating away and reloading. */
+const SEARCH_KEY = "sqlflow.filters.schedules.name";
+
 /** All schedules: state at a glance, pause/resume/delete inline, and creation of API-sourced schedules. */
 export default function SchedulesPage() {
   const navigate = useNavigate();
@@ -394,6 +400,17 @@ export default function SchedulesPage() {
   // The schedule whose defining YAML is open: the cadence is declared in git, so the list can show the document
   // behind it rather than sending an operator to the repo to find out why a schedule fires when it does.
   const [definitionTarget, setDefinitionTarget] = useState<Schedule | null>(null);
+  // Free-text search over the schedule name, remembered like every other list filter. An estate runs hundreds of
+  // schedules, so typing a fragment of the name is the only practical way to reach one.
+  const [searchInput, setSearchInput] = useLocalStorageState(SEARCH_KEY, "");
+  // The term the query actually uses, debounced so a keystroke is not a request. Seeded from the same remembered
+  // text so the first fetch is already filtered, with no flash of the whole list.
+  const [search, setSearch] = useState(() => readLocalStorageState(SEARCH_KEY, "").trim());
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
 
   const pauseResume = useMutation({
     mutationFn: (row: Schedule) => (row.paused ? scheduleApi.resume(row.id) : scheduleApi.pause(row.id)),
@@ -733,13 +750,24 @@ export default function SchedulesPage() {
         )}
       />
 
+      <FilterBar>
+        <SearchInput
+          value={searchInput}
+          onChange={setSearchInput}
+          placeholder="Search schedules by name"
+          label="Search schedules"
+          testId="filter-schedule-name"
+        />
+      </FilterBar>
+
       <PagedTable
-        queryKey={["schedules", "list"]}
-        fetchPage={(page, pageSize) => scheduleApi.list({ page, pageSize })}
+        queryKey={["schedules", "list", search]}
+        fetchPage={(page, pageSize) =>
+          scheduleApi.list({ search: search === "" ? undefined : search, page, pageSize })}
         columns={columns}
         rowKey={(row) => row.id}
         pollMs={15000}
-        emptyMessage="No schedules exist yet."
+        emptyMessage={search === "" ? "No schedules exist yet." : `No schedule name contains "${search}".`}
       />
 
       {createOpen && <CreateScheduleSheet onClose={() => setCreateOpen(false)} />}

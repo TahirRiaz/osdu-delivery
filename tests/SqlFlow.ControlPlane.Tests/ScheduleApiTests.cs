@@ -511,6 +511,69 @@ public sealed class ScheduleApiTests
         }
     }
 
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task ListSchedules_WithSearch_MatchesTheNameAcrossPages()
+    {
+        // The list page's search box: it must narrow the QUERY, not the page in hand, or a match sitting on page 4 of
+        // an estate's schedules would look like no match at all. Proved with a page of one: the term selects its
+        // schedule out of three even though only one row fits on a page, and the total counts only the matches.
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await SeedActivePipeline(cs, repoId, flowName);
+            var now = DateTime.UtcNow;
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                foreach (var suffix in new[] { "_alpha_daily", "_beta_daily", "_beta_hourly" })
+                {
+                    db.Schedules.Add(new CatalogSchedule
+                    {
+                        Id = Guid.NewGuid(), RepoId = repoId, Name = flowName + suffix, Cron = "0 4 * * *",
+                        Timezone = "UTC", Enabled = true, Source = "yaml", NextFireUtc = now.AddYears(1),
+                        CreatedUtc = now, UpdatedUtc = now,
+                    });
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["read"]);
+
+            var beta = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&search=beta&pageSize=1");
+            Assert.Equal(2L, beta.Total);
+            Assert.Single(beta.Items);
+            Assert.Equal(flowName + "_beta_daily", beta.Items[0].Name);
+
+            // The second page of the same filtered list is the other match, not an unfiltered row.
+            var betaPageTwo = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&search=beta&pageSize=1&page=2");
+            Assert.Equal(flowName + "_beta_hourly", Assert.Single(betaPageTwo.Items).Name);
+
+            // A term nothing carries is an empty page, never a silent fall back to the whole list.
+            var none = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&search=nosuchschedule");
+            Assert.Equal(0L, none.Total);
+            Assert.Empty(none.Items);
+
+            // Whitespace is not a filter: a blank term lists everything, so clearing the box restores the list.
+            var blank = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&search=%20");
+            Assert.Equal(3L, blank.Total);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
     private static CatalogRun SeedGroupRun(
         Guid runId, Guid pipelineId, Guid repoId, string flowName, Guid groupId, string status, DateTime writtenUtc)
         => new()

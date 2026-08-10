@@ -56,6 +56,25 @@ test.describe.serial("schedules", () => {
     await adminPage.keyboard.press("Escape");
   });
 
+  test("the search box narrows the list to the matching schedule", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-schedules").click();
+    const search = adminPage.getByTestId("filter-schedule-name");
+
+    await search.fill("Csv_Basic");
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+      .toBeVisible({ timeout: 15_000 });
+
+    // A term no schedule carries empties the table rather than quietly ignoring the filter.
+    await search.fill("no_such_schedule_name");
+    await expect(adminPage.getByTestId("table-row")).toHaveCount(0, { timeout: 15_000 });
+
+    // Clearing restores the full list. The term is remembered across visits, so leaving one set here would hand the
+    // next test an empty board.
+    await adminPage.getByTestId("filter-schedule-name-clear").click();
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+      .toBeVisible({ timeout: 15_000 });
+  });
+
   test("delete removes the schedule after confirmation", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
     const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();

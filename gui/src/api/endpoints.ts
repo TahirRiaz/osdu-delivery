@@ -213,6 +213,8 @@ export interface ScheduleListQuery extends PageQuery {
   pipelineId?: string;
   source?: string;
   enabled?: boolean;
+  /** Free-text substring of the schedule name, matched server-side so it spans every page, not just the one shown. */
+  search?: string;
 }
 
 export const scheduleApi = {

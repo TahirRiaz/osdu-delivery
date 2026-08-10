@@ -112,8 +112,14 @@ public static class ScheduleEndpoints
         return group;
     }
 
+    /// <summary>
+    /// The schedules, paged and ordered by name, narrowed by repo, membership (<c>pipelineId</c>), origin
+    /// (<c>source</c>), <c>enabled</c>, and a free-text <c>search</c> over the name. The search is server-side
+    /// because the paging is: an estate runs hundreds of schedules, so filtering only the rows of the page in hand
+    /// would hide every match on the pages behind it.
+    /// </summary>
     private static async Task<Ok<PagedResult<ScheduleDto>>> ListSchedulesAsync(
-        CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? source, bool? enabled,
+        CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? source, bool? enabled, string? search,
         int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
@@ -140,6 +146,15 @@ public static class ScheduleEndpoints
         if (enabled is { } e)
         {
             query = query.Where(s => s.Enabled == e);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            // The name is what a person knows a schedule by (it is what a flow joins with 'schedule: <name>', and
+            // names are source-prefixed), so a substring of it is the whole search. Matching is left to the column's
+            // case-insensitive collation rather than a ToLower() that would defeat the index.
+            var term = search.Trim();
+            query = query.Where(s => s.Name.Contains(term));
         }
 
         var ordered = query.OrderBy(s => s.Name).ThenBy(s => s.Id);

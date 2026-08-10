@@ -40,6 +40,17 @@ export function PagedTable<T>({
   const [page, setPage] = useState(0); // rendered 0-based; the API is 1-based
   const [pageSize, setPageSize] = useState(50);
 
+  // A filter change is a different list, so the offset into the old one is meaningless: narrowing 400 rows to 3 while
+  // parked on page 3 would render an empty table over a filter that matched. The key identifies the list (every
+  // filter value is in it by contract), and resetting during render means the first request is for page 1, not a
+  // discarded fetch of a page past the end.
+  const listKey = JSON.stringify(queryKey);
+  const [shownList, setShownList] = useState(listKey);
+  if (listKey !== shownList) {
+    setShownList(listKey);
+    setPage(0);
+  }
+
   const query = useQuery({
     queryKey: [...queryKey, page, pageSize],
     queryFn: () => fetchPage(page + 1, pageSize),
