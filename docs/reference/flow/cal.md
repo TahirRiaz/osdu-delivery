@@ -54,9 +54,8 @@ calendar:
   country: NO
 
 schedule:
-  name: calendar_yearly
-  cron: "0 3 2 1 *"
-  timezone: Europe/Oslo
+  name: calendar_manual
+  enabled: false
 ```
 
 ## The `calendar:` block
@@ -78,9 +77,17 @@ schedule:
 
 ## The range is explicit, never rolling
 
-`from` and `to` are literal dates. The flow never extends its own horizon. A date dimension should hold exactly the span its facts can reference, so widening it is a deliberate edit to the flow file, not a silent side effect of the schedule firing. The engine refuses a range wider than 200 years (`CalendarDimensionBuilder.MaxYears`).
+`from` and `to` are literal dates. The flow never extends its own horizon. A date dimension should hold exactly the span its facts can reference, so widening it is a deliberate edit to the flow file, not a silent side effect of a schedule firing. The engine refuses a range wider than 200 years (`CalendarDimensionBuilder.MaxYears`).
 
-Because the range is fixed, a scheduled run is an **assertion**, not an extension: it regenerates the declared range and merges, so the table is repaired if anything drifted and left alone otherwise.
+**This makes a calendar flow a manual one.** With a fixed range there is nothing a recurring fire could discover: it would re-assert rows it already wrote and report `0 inserted, 0 updated` forever. The dimension changes when a person decides to generate or extend it, and the edit to `to:` is the trigger. Declare the estate's manual idiom, a named schedule with `enabled: false` and no cron, so the flow validates and can be triggered by hand but nothing fires it:
+
+```yaml
+schedule:
+  name: calendar_manual
+  enabled: false
+```
+
+A cron is still accepted if an estate wants a periodic self-repair, and behaves as an **assertion** rather than an extension: it regenerates the declared range and merges, so the table is repaired if anything drifted and left alone otherwise.
 
 - Generation is deterministic, so a re-run over an unchanged range reports `0 inserted, 0 updated`.
 - Widening the range in the file inserts only the new days on the next run.
