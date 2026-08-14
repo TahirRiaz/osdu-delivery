@@ -40,6 +40,8 @@ set "PYTHONIOENCODING=utf-8"
 
 set "APPS=%*"
 if "%APPS%"=="" set "APPS=control-plane worker gui"
+REM 'all' deploys every app, mcp and slack-bot included.
+if /i "%APPS%"=="all" set "APPS=control-plane worker gui mcp slack-bot"
 
 set "TAG="
 for /f "delims=" %%i in ('git rev-parse --short HEAD') do set "TAG=%%i"

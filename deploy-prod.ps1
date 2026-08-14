@@ -47,8 +47,12 @@
     Build + deploy control-plane, worker, and gui.
 
 .EXAMPLE
+    .\deploy-prod.ps1 all
+    Build + deploy every app: control-plane, worker, gui, mcp, and slack-bot.
+
+.EXAMPLE
     .\deploy-prod.ps1 control-plane worker
-    Only those apps. Known: control-plane worker gui mcp slack-bot
+    Only those apps. Known: control-plane worker gui mcp slack-bot (or 'all' for every one)
 
 .EXAMPLE
     .\deploy-prod.ps1 -WhatIf
@@ -110,9 +114,14 @@ $Config = [ordered]@{
 if (-not $Apps -or $Apps.Count -eq 0) {
     $Apps = @('control-plane', 'worker', 'gui')
 }
+# 'all' deploys every configured app, mcp and slack-bot included; they are not in the bare
+# default because most deploys are backend/GUI iterations that do not touch them.
+if ($Apps -contains 'all') {
+    $Apps = @($Config.Keys)
+}
 foreach ($a in $Apps) {
     if (-not $Config.Contains($a)) {
-        throw "Unknown app '$a'. Known: $($Config.Keys -join ', ')"
+        throw "Unknown app '$a'. Known: $($Config.Keys -join ', '), or 'all' for every one."
     }
 }
 
