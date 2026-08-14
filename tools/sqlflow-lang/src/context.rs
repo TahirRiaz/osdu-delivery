@@ -128,7 +128,7 @@ pub fn context_at(idx: &LineIndex, pos: Position) -> CompletionContext {
     // Value position: the current line already has `key:` before the cursor.
     if let Some((key, _)) = split_key(&content_before) {
         // Everything after the first ": " is the value being typed.
-        if let Some(rest) = content_before.splitn(2, ':').nth(1) {
+        if let Some((_, rest)) = content_before.split_once(':') {
             let mut path = parent;
             path.push(AuthoredSeg::Key(key));
             return CompletionContext::Value {

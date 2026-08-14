@@ -860,6 +860,18 @@ internal static partial class RemoteVerbs
                 return PrintHits(json, hits, h => $"  {h.Kind,-5} {h.Name,-40} [{h.RepoName}] {h.RelativePath} (matched {h.MatchedIn})");
             }
 
+            if (args.Contains("--flow-columns"))
+            {
+                var hits = await client.SearchAsync<FlowColumnHitDto>("flow-columns", "name", term, page, pageSize, ct).ConfigureAwait(false);
+                return PrintHits(json, hits, h => $"  {h.ColumnName,-32} {h.DataType ?? "-",-16} {h.FlowName,-32} ({h.Kind}, matched {h.MatchedIn})");
+            }
+
+            if (args.Contains("--statements"))
+            {
+                var hits = await client.SearchAsync<StatementHitDto>("statements", "q", term, page, pageSize, ct).ConfigureAwait(false);
+                return PrintHits(json, hits, h => $"  {h.FlowName,-40} {h.Step,-20} {FormatCount(h.Occurrences),8}x  ...{Truncate(h.Snippet, 60)}...");
+            }
+
             var all = await client.SearchAllAsync(term, ct).ConfigureAwait(false);
             if (json)
             {
@@ -897,7 +909,28 @@ internal static partial class RemoteVerbs
                 Console.WriteLine($"  {hit.Kind,-5} {hit.Name}  [{hit.RepoName}] {hit.RelativePath}");
             }
 
-            Console.Error.WriteLine("NOTE  narrow to one paged category with --objects, --columns, --definitions, --files, or --flows.");
+            Console.WriteLine($"flow columns ({all.FlowColumns.Total}):");
+            foreach (var hit in all.FlowColumns.Items)
+            {
+                Console.WriteLine($"  {hit.ColumnName,-32} {hit.FlowName}  ({hit.Kind}, matched {hit.MatchedIn})");
+            }
+
+            Console.WriteLine($"executed sql ({all.Statements.Total}, last {all.StatementWindowDays} day(s)):");
+            foreach (var hit in all.Statements.Items)
+            {
+                Console.WriteLine($"  {hit.FlowName,-40} {hit.Step}  ({FormatCount(hit.Occurrences)}x)");
+            }
+
+            // A multi-word term is matched word by word, so echoing the parsed tokens explains a surprising result
+            // without the reader having to know the rule.
+            if (all.Tokens.Count > 1)
+            {
+                Console.Error.WriteLine($"NOTE  matched every word of: {string.Join(" + ", all.Tokens)}");
+            }
+
+            Console.Error.WriteLine(
+                "NOTE  narrow to one paged category with --objects, --columns, --definitions, --files, --flows, "
+                + "--flow-columns, or --statements.");
             return 0;
         }).ConfigureAwait(false);
     }

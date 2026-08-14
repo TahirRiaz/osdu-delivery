@@ -1164,19 +1164,58 @@ export interface FlowHit {
   snippet: string;
 }
 
+// A column a FLOW produces: its output name, the raw source column behind it, or the expression computing it.
+// Unlike ColumnHit this needs no warehouse schema sync, so it sees columns that exist only inside a pipeline.
+export interface FlowColumnHit {
+  pipelineId: string;
+  flowName: string;
+  flowKind: string;
+  batch: string | null;
+  repoId: string;
+  repoName: string;
+  // "declared" (authored in the YAML) or "detected" (inferred by a run from the raw data).
+  kind: string;
+  ordinal: number;
+  columnName: string;
+  sourceColumn: string | null;
+  dataType: string | null;
+  expression: string | null;
+  // Where the term matched: "Column", "Source", or "Expression".
+  matchedIn: string;
+}
+
+// SQL a flow actually executed, collapsed to one row per (flow, step) with an occurrence count.
+export interface StatementHit {
+  pipelineId: string;
+  flowName: string;
+  flowKind: string;
+  step: string;
+  occurrences: number;
+  runId: string;
+  lastSeenUtc: string | null;
+  snippet: string;
+}
+
 // One category of a combined search: the full match count plus a short preview of the top hits.
 export interface SearchCategory<T> {
   total: number;
   items: T[];
 }
 
-// The combined result of a single global search across every catalog surface.
+// The combined result of a single global search across every catalog surface. `tokens` is how the raw query was
+// parsed (a multi-word query matches word by word, not as a literal phrase); `statementWindowDays` is how far back
+// the executed-SQL surface reached.
 export interface AllSearchResult {
+  query: string;
+  tokens: string[];
+  statementWindowDays: number;
   objects: SearchCategory<ObjectHit>;
   columns: SearchCategory<ColumnHit>;
   definitions: SearchCategory<DefinitionHit>;
   files: SearchCategory<FileHit>;
   flows: SearchCategory<FlowHit>;
+  flowColumns: SearchCategory<FlowColumnHit>;
+  statements: SearchCategory<StatementHit>;
 }
 
 // ---- Users ---------------------------------------------------------------------------------------------------------------

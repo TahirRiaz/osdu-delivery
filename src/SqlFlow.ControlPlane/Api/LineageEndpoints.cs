@@ -84,6 +84,37 @@ public sealed record ObjectDossierDto(
     IReadOnlyList<ObjectRelationshipDto> ReferencedBy,
     IReadOnlyList<ObjectSubscriberDto> Subscribers);
 
+/// <summary>The latest run of a producing flow: did the last population attempt work, when, and how much landed.</summary>
+public sealed record ProducerRunDto(
+    string RunId, string Status, DateTime? StartUtc, DateTime? EndUtc, long? RowsLoaded);
+
+/// <summary>One schedule that fires a producing flow: the cadence behind "how often does this table update".
+/// <c>Cron</c>/<c>IntervalSeconds</c> carry the clock (exactly one is set for a clock-driven schedule);
+/// <c>AfterSchedules</c> is set instead when this schedule chains behind others (it fires when they complete, so
+/// its cadence is theirs). <c>NextFireUtc</c> is the concrete next update time.</summary>
+public sealed record ProducerScheduleDto(
+    string ScheduleId, string Name, string? Cron, int? IntervalSeconds, string Timezone,
+    bool Enabled, bool Paused, DateTime? NextFireUtc, DateTime? LastFireUtc,
+    IReadOnlyList<string> AfterSchedules);
+
+/// <summary>One flow that WRITES the object, with its latest run and the schedules that fire it. The unit of the
+/// "how is this table populated" answer: the flow is the mechanism, the run is the last outcome, the schedules
+/// are the cadence.</summary>
+public sealed record ObjectProducerDto(
+    string PipelineId, string FlowName, string FlowKind, string? Batch, Guid RepoId, string? RepoName,
+    string Relation, string Tier, ProducerRunDto? LastRun, IReadOnlyList<ProducerScheduleDto> Schedules);
+
+/// <summary>
+/// How an object is populated and how often it updates, in one payload: every flow that writes it, each with its
+/// latest run and firing schedules, plus the module edges (<c>ViaModules</c>) when the object is a view/procedure
+/// whose content derives from other objects rather than from a flow. An object with no producers and no modules is
+/// populated outside SQLFlow's knowledge (a manual load, an external writer), and that absence is the answer.
+/// </summary>
+public sealed record ObjectRefreshDto(
+    string Key, string Name, string Kind,
+    IReadOnlyList<ObjectProducerDto> Producers,
+    IReadOnlyList<string> ViaModules);
+
 /// <summary>One data subscriber that consumes an object: the answer to "who breaks if I change this table",
 /// resolved from the object's read edges to the consumer behind them. <c>Queries</c> names the subscriber's
 /// queries that actually reference this object, so the link is evidence rather than assertion.</summary>
@@ -242,6 +273,7 @@ public static class LineageEndpoints
         lineage.MapGet("/objects/columns", GetObjectColumnsAsync).WithName("GetLineageObjectColumns");
         lineage.MapGet("/objects/repos", ListObjectReposAsync).WithName("ListLineageObjectRepos");
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
+        lineage.MapGet("/objects/refresh", GetObjectRefreshAsync).WithName("GetLineageObjectRefresh");
         lineage.MapGet("/file-pipelines", MatchFilePipelinesAsync).WithName("MatchFilePipelines");
         lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
         lineage.MapGet("/subscribers", ListSubscribersAsync).WithName("ListLineageSubscribers");
@@ -900,6 +932,150 @@ public static class LineageEndpoints
         var subscribers = await LoadObjectSubscribersAsync(db, key, ct).ConfigureAwait(false);
 
         return TypedResults.Ok(new ObjectDossierDto(detail, columns, edges, references, referencedBy, subscribers));
+    }
+
+    /// <summary>The lineage relations that mean a flow POPULATES the object (as opposed to reading or merely
+    /// requiring it).</summary>
+    private static readonly string[] WritingRelations = ["Writes", "Creates"];
+
+    /// <summary>The newest run of each of the given pipelines, resolved server-side (a grouped top-1, translated
+    /// to a windowed query; internal so the translation test can render it to SQL).</summary>
+    internal static IQueryable<CatalogRun> LatestRunsQuery(CatalogDbContext db, List<Guid> pipelineIds)
+        => db.Runs.AsNoTracking()
+            .Where(r => pipelineIds.Contains(r.PipelineId))
+            .GroupBy(r => r.PipelineId)
+            .Select(g => g.OrderByDescending(r => r.StartUtc).ThenByDescending(r => r.RunId).First());
+
+    /// <summary>
+    /// How an object is populated and how often it updates: the writing flows resolved from the object's lineage
+    /// edges, each joined to its latest run and to every schedule that fires it (including chained schedules,
+    /// whose cadence is their parents'). A view or procedure with no writing flow reports its module edges
+    /// instead, pointing the caller at the derivation to read.
+    /// </summary>
+    private static async Task<Results<Ok<ObjectRefreshDto>, ProblemHttpResult>> GetObjectRefreshAsync(
+        string key, CatalogDbContext db, CancellationToken ct)
+    {
+        var identity = await db.Objects.AsNoTracking().Where(o => o.Key == key)
+            .Select(o => new { o.Key, o.Name, o.Kind })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (identity is null)
+        {
+            return NotFound("object", key);
+        }
+
+        // Flow-attributed writing edges: one producer per distinct flow, keeping the strongest edge per flow
+        // (a flow can carry both a Declared and an Observed fact for the same object).
+        var writeEdges = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.ObjectKey == key && e.PipelineId != null && WritingRelations.Contains(e.Relation))
+            .OrderBy(e => e.Flow).ThenBy(e => e.Id)
+            .Take(MaxDossierRows)
+            .Select(e => new { PipelineId = e.PipelineId!.Value, e.Flow, e.RepoId, e.Relation, e.Tier })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var producers = writeEdges
+            .GroupBy(e => e.PipelineId)
+            .Select(g => g.First())
+            .ToList();
+
+        // Module-derived write edges (a view's SELECT, a procedure's INSERT) have no pipeline; naming the module
+        // tells the caller where the derivation lives when no flow writes the object directly.
+        var viaModules = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.ObjectKey == key && e.PipelineId == null && e.ViaModule != null
+                && WritingRelations.Contains(e.Relation))
+            .OrderBy(e => e.ViaModule)
+            .Select(e => e.ViaModule!)
+            .Distinct()
+            .Take(MaxDossierRows)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        if (producers.Count == 0)
+        {
+            return TypedResults.Ok(new ObjectRefreshDto(
+                identity.Key, identity.Name, identity.Kind, [], viaModules));
+        }
+
+        var pipelineIds = producers.Select(p => p.PipelineId).ToList();
+
+        // The flow identities behind the edges; a producer whose pipeline has left the estate still reports from
+        // its edge (name from the edge, no batch/repo detail), so history does not hide a former writer.
+        var pipelines = await db.Pipelines.AsNoTracking()
+            .Where(p => pipelineIds.Contains(p.Id))
+            .Select(p => new { p.Id, p.Name, p.Kind, p.Batch, p.RepoId })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var pipelineById = pipelines.ToDictionary(p => p.Id);
+
+        var repoIds = pipelines.Select(p => p.RepoId)
+            .Concat(producers.Select(p => p.RepoId))
+            .Distinct()
+            .ToList();
+        var repoNames = await db.Repos.AsNoTracking()
+            .Where(r => repoIds.Contains(r.Id))
+            .ToDictionaryAsync(r => r.Id, r => r.Name, ct).ConfigureAwait(false);
+
+        // Latest run per producing pipeline, resolved server-side (one row per pipeline, newest StartUtc).
+        var latestRuns = await LatestRunsQuery(db, pipelineIds).ToListAsync(ct).ConfigureAwait(false);
+        var runByPipeline = latestRuns.ToDictionary(r => r.PipelineId);
+
+        // Every schedule each producer is a member of, with the schedule's cadence and its parents (a chained
+        // schedule has no clock of its own; its parents are its cadence).
+        var memberships = await (
+                from m in db.ScheduleMembers.AsNoTracking()
+                join s in db.Schedules.AsNoTracking() on m.ScheduleId equals s.Id
+                where pipelineIds.Contains(m.PipelineId)
+                select new
+                {
+                    m.PipelineId,
+                    s.Id, s.Name, s.Cron, s.IntervalSeconds, s.Timezone, s.Enabled, s.Paused,
+                    s.NextFireUtc, s.LastFireUtc,
+                })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var scheduleIds = memberships.Select(m => m.Id).Distinct().ToList();
+        var parents = await db.ScheduleParents.AsNoTracking()
+            .Where(p => scheduleIds.Contains(p.ScheduleId))
+            .OrderBy(p => p.Ordinal)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var parentsBySchedule = parents
+            .GroupBy(p => p.ScheduleId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<string>)g.Select(p => p.ParentName).ToList());
+
+        var schedulesByPipeline = memberships
+            .GroupBy(m => m.PipelineId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<ProducerScheduleDto>)g
+                    .Select(m => new ProducerScheduleDto(
+                        m.Id.ToString(), m.Name, m.Cron, m.IntervalSeconds, m.Timezone, m.Enabled, m.Paused,
+                        m.NextFireUtc, m.LastFireUtc,
+                        parentsBySchedule.GetValueOrDefault(m.Id, [])))
+                    .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+
+        var producerDtos = producers
+            .Select(p =>
+            {
+                var pipeline = pipelineById.GetValueOrDefault(p.PipelineId);
+                var run = runByPipeline.GetValueOrDefault(p.PipelineId);
+                var repoId = pipeline?.RepoId ?? p.RepoId;
+                return new ObjectProducerDto(
+                    p.PipelineId.ToString(),
+                    pipeline?.Name ?? p.Flow ?? string.Empty,
+                    pipeline?.Kind ?? run?.FlowKind ?? string.Empty,
+                    pipeline?.Batch,
+                    repoId,
+                    repoNames.GetValueOrDefault(repoId),
+                    p.Relation,
+                    p.Tier,
+                    run is null
+                        ? null
+                        : new ProducerRunDto(
+                            run.RunId.ToString(), run.Status, run.StartUtc, run.EndUtc, run.RowsLoaded),
+                    schedulesByPipeline.GetValueOrDefault(p.PipelineId, []));
+            })
+            .OrderBy(p => p.FlowName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return TypedResults.Ok(new ObjectRefreshDto(
+            identity.Key, identity.Name, identity.Kind, producerDtos, viaModules));
     }
 
     /// <summary>

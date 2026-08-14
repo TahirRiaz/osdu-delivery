@@ -293,11 +293,33 @@ pub struct SubscribersInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchInput {
-    /// The search term.
+    /// The search term. Prefer ONE identifier token ("SourceRank", "FerryPassengers") over an English
+    /// phrase: a multi-word query must match EVERY word (in any field of a row), so a stray word empties
+    /// the result. Matching is case-insensitive substring, so a fragment works.
     pub query: String,
     pub page: Option<i64>,
     #[serde(rename = "pageSize")]
     pub page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchStatementsInput {
+    /// The search term, matched against the executed SQL text, the step name, and the flow name.
+    pub query: String,
+    /// How many days back to search (default 90). Pass 0 for all retained history: statements are pruned by the
+    /// estate's trace retention, so "all history" still means "as far back as retention kept".
+    pub days: Option<i64>,
+    pub page: Option<i64>,
+    #[serde(rename = "pageSize")]
+    pub page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchAllInput {
+    /// The term to look for. Prefer ONE identifier token ("SourceRank", "FerryPassengers") over an English
+    /// phrase: a multi-word query must match EVERY word, so a stray word empties the result. The reply
+    /// echoes back the tokens it actually searched for, so check them when a result looks wrong.
+    pub query: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -418,6 +440,134 @@ fn truncate_long_strings(value: &mut Value, max: usize) {
             }
         }
         _ => {}
+    }
+}
+
+/// The surfaces `/api/v1/search/all` reports, each paired with the tool that pages it in full and the
+/// follow-up that turns one hit into an answer. This is the map that makes a search iterative: the model
+/// gets counts per surface plus the exact next call for each, instead of a wall of hits it has to guess
+/// what to do with.
+const SEARCH_SURFACES: [(&str, &str, &str); 7] = [
+    (
+        "objects",
+        "search_objects",
+        "A warehouse table/view/proc matched by NAME. Take a hit's `key` to describe_object(key) for its \
+         columns, interpreted key, generating code, lineage edges, and join relationships, or to \
+         describe_object_refresh(key) for how it is populated and how often it updates.",
+    ),
+    (
+        "columns",
+        "search_columns",
+        "A column on a SYNCED warehouse object matched. Take `objectKey` to describe_object(key) to see the \
+         column in context and which flows write it. Note the object must have been schema-synced to appear \
+         here; a column that only exists inside a flow shows up under flowColumns instead.",
+    ),
+    (
+        "definitions",
+        "search_definitions",
+        "The term appears in an object's CODE (its module body or the DDL that created it). Take `key` to \
+         describe_object(key) for the full body; `source` says whether the live module or the emitted script \
+         carried the match.",
+    ),
+    (
+        "files",
+        "search_files",
+        "A file some run processed matched by name or path. Take `runId` to get_run / run_files for that \
+         delivery, `pipelineId` to get_pipeline for the flow that ingested it, or file_provenance for the \
+         producer/consumer chain of the file endpoint itself.",
+    ),
+    (
+        "flows",
+        "search_flows",
+        "The term appears in a flow's YAML (its name, its repo path, or its BODY: a source query, a selectExp, \
+         an embedded statement). `matchedIn` says which. Take `id` to pipeline_definition(id) for the \
+         normalized flow, get_pipeline(id) for its identity, list_runs(pipelineId) for what it has done.",
+    ),
+    (
+        "flowColumns",
+        "search_flow_columns",
+        "The term is a COLUMN A FLOW PRODUCES. This is the surface that answers \"where is <column> computed\": \
+         matchedIn=Expression means this flow COMPUTES the value, Column means it emits it under that name, \
+         Source means it reads it from the raw data. Take `pipelineId` to pipeline_definition(pipelineId) for \
+         the transform and pipeline_columns(id) for the flow's whole column set.",
+    ),
+    (
+        "statements",
+        "search_statements",
+        "The term is in SQL a run ACTUALLY EXECUTED, collapsed to one row per (flow, step) with an occurrence \
+         count. This is ground truth that exists nowhere else: an expression the engine composes at run time is \
+         in no YAML and in no stored module body. `statementWindowDays` says how far back this looked; \
+         search_statements(days=0) searches all retained history. Take `runId` to run_statements(runId) for the \
+         full trace of that run.",
+    ),
+];
+
+/// The ordered checklist a caller works through when a global search matched nothing. Each step names the
+/// tool that widens the net in a different direction, so an empty result becomes the start of the next
+/// query rather than a dead end (and, at the end, an honest "not in the catalog" with the reason).
+fn no_match_guidance(query: &str) -> Vec<String> {
+    vec![
+        format!(
+            "Nothing matched '{query}' on any surface. Every word of a multi-word query must match, so first \
+             retry with a SINGLE identifier token, or with a distinctive fragment of one."
+        ),
+        "If the name is a warehouse object, it is only searchable once the schema sync has imported it: call \
+         list_schemas to see which (server, database, schema) groupings the catalog actually covers, and \
+         catalog_tree / lineage_objects to browse the one it should be in. An uncovered schema explains a \
+         miss without meaning the object does not exist."
+            .to_string(),
+        "If it is a column produced inside a pipeline rather than a synced table, search_flow_columns is the \
+         surface for it; if it is a value computed in SQL text, search_flows (flow YAML), search_definitions \
+         (object code), and search_statements (the SQL runs actually executed) are the three places that text \
+         can live. Executed SQL is searched over a recent window by default, so retry search_statements with \
+         days=0 before ruling it out."
+            .to_string(),
+        "If it names a report, workbook, or application rather than a warehouse object, it is on the \
+         consumption side: list_subscribers(search=<term>), then describe_subscriber(key)."
+            .to_string(),
+        "If it is a SQLFlow product term rather than an estate name (a flow key, a CLI verb, a concept), \
+         search_docs is the corpus for it."
+            .to_string(),
+        "Only after those come back empty is it correct to answer that the catalog has no such name, and the \
+         answer should say which surfaces were checked."
+            .to_string(),
+    ]
+}
+
+/// Adds the follow-up plan to a `/search/all` payload: per non-empty surface, the tool that pages it and
+/// the tool that turns a hit into an answer; or, when nothing matched, the widen-the-net checklist.
+fn annotate_search_all(value: &mut Value, query: &str) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+
+    let mut steps: Vec<Value> = Vec::new();
+    let mut hits = 0i64;
+    for (surface, page_tool, follow_up) in SEARCH_SURFACES {
+        let total = map.get(surface).and_then(|c| c.get("total")).and_then(Value::as_i64).unwrap_or(0);
+        hits += total;
+        if total > 0 {
+            steps.push(json!({
+                "surface": surface,
+                "total": total,
+                "pageEveryHitWith": page_tool,
+                "thenCall": follow_up,
+            }));
+        }
+    }
+
+    if hits == 0 {
+        map.insert("nothingMatched".to_string(), json!(no_match_guidance(query)));
+    } else {
+        map.insert("nextSteps".to_string(), json!(steps));
+        map.insert(
+            "readingThis".to_string(),
+            json!(
+                "Each surface reports its FULL total with only the top few items previewed. Work the surface \
+                 whose description fits the question, page it with its own tool if the preview is not enough, \
+                 then make the drill-down call named in thenCall. `tokens` is what was actually searched for."
+            ),
+        );
     }
 }
 
@@ -909,6 +1059,20 @@ impl SqlFlowMcp {
     }
 
     #[tool(
+        description = "How an object is populated and HOW OFTEN it updates, in one call: every flow that WRITES \
+            the table, each with its latest run (status, when, rows loaded) and the schedules that fire it \
+            (cron/interval, timezone, enabled/paused, next and last fire; a chained schedule reports the \
+            schedules it fires after instead of a clock). The one-call answer to \"when does <table> update\", \
+            \"how is <table> loaded\", and \"did its last load work\". A view with no writing flow reports \
+            viaModules instead: the derivation lives in that module's body (describe_object shows it). An \
+            object with neither producers nor modules is loaded outside SQLFlow, and that absence IS the \
+            answer. Takes the object `key` from search_all / describe_object / lineage_objects."
+    )]
+    async fn describe_object_refresh(&self, Parameters(i): Parameters<KeyInput>) -> String {
+        self.get("/api/v1/lineage/objects/refresh", &[("key", i.key)]).await
+    }
+
+    #[tool(
         description = "List the file sources of the catalog: every file endpoint decomposed to its canonical \
             parent, so files group by the system they live in exactly as tables group by their database. Each \
             entry has an originKind, which is also the PROVIDER to group under (AzureStorage / AmazonS3 / \
@@ -1002,7 +1166,35 @@ impl SqlFlowMcp {
 
     // ---- Search (read) ---------------------------------------------------
 
-    #[tool(description = "Full-text search catalog objects by name.")]
+    #[tool(
+        description = "START HERE for any \"where does this name live / where is X computed / what is X\" \
+            question about the estate. One term fanned across every catalog surface at once - warehouse \
+            objects, their columns, their code, processed files, flow YAML, and the columns flows produce - \
+            returning each surface's FULL match count with a preview of its top hits, plus a nextSteps plan \
+            naming the tool that pages each surface and the tool that turns a hit into an answer. A term \
+            absent from the synced warehouse schema is routinely present in a flow's YAML or in a flow's \
+            computed columns, which is exactly what the single-surface search tools miss; this call checks \
+            all of them in one round trip. When nothing matches, the reply carries an ordered checklist for \
+            widening the search instead of a bare empty result: work it before answering that the name does \
+            not exist."
+    )]
+    async fn search_all(&self, Parameters(i): Parameters<SearchAllInput>) -> String {
+        done(
+            self.cp
+                .get("/api/v1/search/all", &[("q", i.query.clone())])
+                .await
+                .map(|mut v| {
+                    annotate_search_all(&mut v, &i.query);
+                    json_str(&v)
+                }),
+        )
+    }
+
+    #[tool(
+        description = "Full-text search catalog objects by name (tables, views, procedures, functions). \
+            Follow a hit with describe_object(key). Prefer search_all when you do not already know the term \
+            names a warehouse object."
+    )]
     async fn search_objects(&self, Parameters(i): Parameters<SearchInput>) -> String {
         let q = vec![
             ("name", i.query),
@@ -1012,7 +1204,13 @@ impl SqlFlowMcp {
         self.get("/api/v1/search/objects", &q).await
     }
 
-    #[tool(description = "Full-text search catalog columns by name.")]
+    #[tool(
+        description = "Full-text search the columns of SYNCED warehouse objects by name; a token may match \
+            either the column or the object carrying it, so \"ferrypassengers sourcerank\" finds the one \
+            column on the one table. Follow a hit with describe_object(objectKey). This surface only knows \
+            objects the schema sync has imported: for a column that exists inside a pipeline, use \
+            search_flow_columns."
+    )]
     async fn search_columns(&self, Parameters(i): Parameters<SearchInput>) -> String {
         let q = vec![
             ("name", i.query),
@@ -1022,7 +1220,11 @@ impl SqlFlowMcp {
         self.get("/api/v1/search/columns", &q).await
     }
 
-    #[tool(description = "Full-text search object definitions (module bodies).")]
+    #[tool(
+        description = "Full-text search object CODE: the live module body and the generating DDL the engine \
+            emitted, with an excerpt per hit and a `source` saying which body matched. This finds a value \
+            computed in a view or procedure. Follow a hit with describe_object(key)."
+    )]
     async fn search_definitions(&self, Parameters(i): Parameters<SearchInput>) -> String {
         let q = vec![
             ("q", i.query),
@@ -1030,6 +1232,75 @@ impl SqlFlowMcp {
             ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
         ];
         self.get("/api/v1/search/definitions", &q).await
+    }
+
+    #[tool(
+        description = "Full-text search flow YAML: matches a flow's name, its repo-relative path, or any term \
+            in its BODY (a source query, a selectExp, an embedded statement, an option value), with `matchedIn` \
+            and an excerpt per hit. This is how you find WHICH PIPELINE mentions a term when the term is not a \
+            warehouse object name. Follow a hit with pipeline_definition(id) for the normalized flow, \
+            get_pipeline(id) for its identity, or list_runs(pipelineId) for its run history."
+    )]
+    async fn search_flows(&self, Parameters(i): Parameters<SearchInput>) -> String {
+        let q = vec![
+            ("q", i.query),
+            ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
+            ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/search/flows", &q).await
+    }
+
+    #[tool(
+        description = "Full-text search the columns FLOWS PRODUCE by output name, by the raw source column \
+            behind them, or by the SQL expression that computes them. The surface for \"where is <column> \
+            computed / which pipeline produces <column>\": matchedIn=Expression means the flow COMPUTES the \
+            value, Column that it emits it under that name, Source that it reads it from the raw data; `kind` \
+            is declared (authored in the YAML) or detected (inferred by a run from the data). Follow a hit with \
+            pipeline_definition(pipelineId) for the transform and pipeline_columns(id) for the flow's whole \
+            column set. Unlike search_columns this needs no warehouse schema sync, so it sees columns that \
+            exist only inside a pipeline."
+    )]
+    async fn search_flow_columns(&self, Parameters(i): Parameters<SearchInput>) -> String {
+        let q = vec![
+            ("name", i.query),
+            ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
+            ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/search/flow-columns", &q).await
+    }
+
+    #[tool(
+        description = "Full-text search the files runs have processed, by name or path. Answers \"which runs \
+            processed <file>\". Follow a hit with get_run(runId) / run_files(runId) for the delivery, or \
+            get_pipeline(pipelineId) for the flow that ingested it."
+    )]
+    async fn search_files(&self, Parameters(i): Parameters<SearchInput>) -> String {
+        let q = vec![
+            ("name", i.query),
+            ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
+            ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/search/files", &q).await
+    }
+
+    #[tool(
+        description = "Full-text search the SQL runs ACTUALLY EXECUTED, collapsed to one row per (flow, step) \
+            with an occurrence count, the newest run that ran it, and an excerpt. Use it when a term is not in \
+            any flow YAML or stored module body but must exist somewhere: the engine composes statements at run \
+            time (staging DDL, merge projections, generated casts, resolved watermarks), and this is the only \
+            record of that text. Searches the last 90 days by default because statement rows are the catalog's \
+            heaviest table and are pruned by trace retention; pass days=0 for all retained history before \
+            concluding a term was never executed. Follow a hit with run_statements(runId) for that run's full \
+            trace, or insights_steps(pipelineId) for the step's timings."
+    )]
+    async fn search_statements(&self, Parameters(i): Parameters<SearchStatementsInput>) -> String {
+        let q = vec![
+            ("q", i.query),
+            ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+            ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
+            ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/search/statements", &q).await
     }
 
     // ---- Data subscribers: the consumption side (read) -------------------
@@ -1563,8 +1834,19 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
 - Read: list_repos, list_pipelines, get_pipeline, pipeline_definition, pipeline_columns,
   pipeline_file_stats, list_runs,
   get_run, run_statements/assertions/files/health_metrics, lineage_objects/_detail/_columns/_edges/
-  _waves/_dependencies, search_objects/_columns/_definitions, list_schedules, get_schedule,
-  get_schedule_plan, list_nodes, list_repo_sources, summary.
+  _waves/_dependencies, search_all and search_objects/_columns/_definitions/_flows/_flow_columns/_files/
+  _statements, list_schedules, get_schedule, get_schedule_plan, list_nodes, list_repo_sources, summary.
+- \"Where does <name> live / where is <X> computed / what is <X>?\": call search_all FIRST. It fans one term
+  across all seven surfaces at once and answers with each surface's full count plus a nextSteps plan naming
+  the tool that pages it and the tool that turns a hit into an answer; work that plan rather than guessing a
+  single-surface tool. The reason to start here is that the surfaces disagree about what exists: a name absent
+  from the synced warehouse schema is routinely present in a flow's YAML (search_flows), in the columns a flow
+  produces (search_flow_columns), or only in the SQL a run executed (search_statements). Searching one surface
+  and reporting \"no mention in the catalog\" is how a real answer gets missed.
+  Search matches word by word, not as a phrase: prefer a single identifier token, and read back the `tokens`
+  field to see what was actually searched. When nothing matches, the reply carries an ordered checklist for
+  widening the search (uncovered schemas, the flow surfaces, subscribers, the docs corpus); work it before
+  answering that the name does not exist, and say which surfaces you checked.
 - \"When does <source> update?\": list_schedules finds the schedule (its cron/timezone/next fire), then
   get_schedule_plan returns both the cadence AND the wave-ordered flows that fire runs. A schedule whose
   scope is 'node'/'batch' runs a whole set resolved through lineage, so the plan (not the schedule's own
@@ -1579,6 +1861,21 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
 - Ask about an object (text-to-query): describe_object returns one object's identity, columns, generating
   script, module body, and lineage edges in one call: start here to reason about, or author SQL against, a
   specific table or view.
+- \"When does <table> update / how is it populated / did its last load work?\": describe_object_refresh(key)
+  answers all three at once: the writing flows, each flow's latest run, and the schedules that fire it with
+  the next fire time. For a view it names the modules the content derives from instead; read them with
+  describe_object.
+- \"Which tables does this dashboard/report use?\": subscribers are the consumption side. list_subscribers
+  (filter by type or search by name/owner) finds the report; describe_subscriber(key) lists every object its
+  queries read and the SQL itself. The reverse (\"who consumes this table\") is in describe_object's
+  `subscribers`. Then answer \"and how are those tables populated\" per table with describe_object_refresh.
+- \"What is the computation formula for <column>?\": three places compute values, check in this order:
+  search_flow_columns (an expression in a flow's transform), the owning view/procedure body via
+  describe_object or search_definitions, and search_statements (SQL the engine composed at run time).
+- \"It looks like data is missing\": never conclude from metadata silence. Locate the table (search_all),
+  walk to its producers (describe_object_refresh), read their recent runs (list_runs, run_files) and compare
+  the newest delivery against the flow's own norm (pipeline_file_stats: median, spread, recent window).
+  insights_attention lists flows already failing, silent, or delivering zero rows.
 - Performance and optimization: insights_recommendations is the one-call briefing (run-history advisories
   merged with warehouse DMV findings, each with ready-to-review SQL); insights_flows ranks flows by
   processing time with trends; insights_attention lists what is failing/degrading/silent; insights_steps
@@ -1589,3 +1886,100 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
 
 SQLFlow authors T-SQL against SQL Server and orchestrates it with `.flow.yaml` documents. It is a
 distinct product from DeltaForge; use these tools and the embedded corpus as the source of truth.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `/search/all` payload with the given per-surface totals; items are irrelevant to the annotation.
+    fn payload(totals: &[(&str, i64)]) -> Value {
+        let mut map = serde_json::Map::new();
+        map.insert("query".into(), json!("SourceRank"));
+        map.insert("tokens".into(), json!(["SourceRank"]));
+        for (surface, total) in totals {
+            map.insert((*surface).to_string(), json!({ "total": total, "items": [] }));
+        }
+        Value::Object(map)
+    }
+
+    #[test]
+    fn annotate_plans_only_the_surfaces_that_matched() {
+        // The miss this whole surface exists for: nothing in the warehouse schema, but the term is a column a
+        // flow produces. The plan must point at the flow surfaces and stay silent about the empty ones.
+        let mut value = payload(&[
+            ("objects", 0),
+            ("columns", 0),
+            ("definitions", 0),
+            ("files", 0),
+            ("flows", 2),
+            ("flowColumns", 1),
+            ("statements", 0),
+        ]);
+
+        annotate_search_all(&mut value, "SourceRank");
+
+        let steps = value["nextSteps"].as_array().expect("nextSteps");
+        let surfaces: Vec<&str> = steps.iter().map(|s| s["surface"].as_str().unwrap()).collect();
+        assert_eq!(surfaces, ["flows", "flowColumns"]);
+        assert_eq!(steps[0]["total"], json!(2));
+        assert_eq!(steps[0]["pageEveryHitWith"], json!("search_flows"));
+        assert_eq!(steps[1]["pageEveryHitWith"], json!("search_flow_columns"));
+        assert!(value["nothingMatched"].is_null());
+        assert!(value["readingThis"].is_string());
+    }
+
+    #[test]
+    fn annotate_returns_the_widening_checklist_when_nothing_matched() {
+        let mut value = payload(&[("objects", 0), ("columns", 0), ("flows", 0)]);
+
+        annotate_search_all(&mut value, "ferry passengers");
+
+        let guidance = value["nothingMatched"].as_array().expect("nothingMatched");
+        // An empty result has to hand back the next query, not a dead end: every widening direction is named.
+        assert!(guidance.len() >= 5);
+        let joined = guidance.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+        assert!(joined.contains("ferry passengers"), "the checklist echoes the query back");
+        for tool in ["list_schemas", "search_flow_columns", "list_subscribers", "search_docs"] {
+            assert!(joined.contains(tool), "the checklist names {tool}");
+        }
+        assert!(value["nextSteps"].is_null());
+    }
+
+    #[test]
+    fn annotate_treats_a_missing_surface_as_empty_rather_than_panicking() {
+        // An older control plane answers without the newest surfaces; the plan must degrade, not fail.
+        let mut value = payload(&[("objects", 3)]);
+
+        annotate_search_all(&mut value, "orders");
+
+        let steps = value["nextSteps"].as_array().expect("nextSteps");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["surface"], json!("objects"));
+    }
+
+    #[test]
+    fn annotate_leaves_a_non_object_payload_alone() {
+        let mut value = json!("Error: the control plane is unreachable");
+        annotate_search_all(&mut value, "orders");
+        assert_eq!(value, json!("Error: the control plane is unreachable"));
+    }
+
+    #[test]
+    fn every_search_surface_names_a_real_paging_tool() {
+        // The plan is only useful if the tool names it hands back are callable; a renamed tool must be caught
+        // here rather than by a model trying to call a tool that does not exist.
+        const TOOLS: [&str; 7] = [
+            "search_objects",
+            "search_columns",
+            "search_definitions",
+            "search_files",
+            "search_flows",
+            "search_flow_columns",
+            "search_statements",
+        ];
+        for (_, page_tool, follow_up) in SEARCH_SURFACES {
+            assert!(TOOLS.contains(&page_tool), "{page_tool} is not a tool on this server");
+            assert!(!follow_up.is_empty());
+        }
+    }
+}

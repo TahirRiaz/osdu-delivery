@@ -286,13 +286,31 @@ internal sealed record FlowHitDto(
     string Id, string Name, string Kind, string? Batch, string RelativePath, string RepoId, string RepoName,
     string MatchedIn, string Snippet);
 
+/// <summary>A column a flow produces, matched by output name, source column, or the expression computing it.</summary>
+internal sealed record FlowColumnHitDto(
+    string PipelineId, string FlowName, string FlowKind, string? Batch, string RepoId, string RepoName,
+    string Kind, int Ordinal, string ColumnName, string? SourceColumn, string? DataType, string? Expression,
+    string MatchedIn);
+
+/// <summary>SQL a flow executed, collapsed to one row per (flow, step) with an occurrence count.</summary>
+internal sealed record StatementHitDto(
+    string PipelineId, string FlowName, string FlowKind, string Step,
+    long Occurrences, string RunId, DateTime? LastSeenUtc, string Snippet);
+
 /// <summary>One category of a combined search: the full count plus a preview of top hits.</summary>
 internal sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items);
 
-/// <summary>The combined result of one global search across every catalog surface.</summary>
+/// <summary>The combined result of one global search across every catalog surface. <c>Tokens</c> is how the raw
+/// term was parsed (a multi-word query matches word by word), and <c>StatementWindowDays</c> how far back the
+/// executed-SQL surface reached.</summary>
 internal sealed record AllSearchDto(
+    string Query,
+    IReadOnlyList<string> Tokens,
+    int StatementWindowDays,
     SearchCategoryDto<ObjectHitDto> Objects,
     SearchCategoryDto<ColumnHitDto> Columns,
     SearchCategoryDto<DefinitionHitDto> Definitions,
     SearchCategoryDto<FileHitDto> Files,
-    SearchCategoryDto<FlowHitDto> Flows);
+    SearchCategoryDto<FlowHitDto> Flows,
+    SearchCategoryDto<FlowColumnHitDto> FlowColumns,
+    SearchCategoryDto<StatementHitDto> Statements);

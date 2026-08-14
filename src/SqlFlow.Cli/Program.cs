@@ -2243,8 +2243,13 @@ internal static class Program
                                                  The remote twins of 'catalog'/'detect-unique-key': queued compute
                                                  tasks executed by a worker node INSIDE the network (no direct DB
                                                  reachability needed here); the worker's JSON result prints on stdout.
-              sqlflow search <term> [--objects|--columns|--definitions|--files|--flows]
+              sqlflow search <term> [--objects|--columns|--definitions|--files|--flows|--flow-columns|--statements]
                                                  Global catalog search; default shows every category's count + top hits.
+                                                 A multi-word term matches every word (anywhere in a row), so
+                                                 "ferry passengers" finds FerryPassengers_PerDeparture.
+                                                 --flow-columns searches the columns FLOWS produce (name, source
+                                                 column, or computing expression); --statements searches the SQL
+                                                 runs actually executed, last 90 days.
               sqlflow lineage objects|edges|waves|script ...
                                                  The synced lineage graph as DATA (a console cannot draw the GUI's
                                                  graph, but the dataset prints and --json feeds an LLM or a test):

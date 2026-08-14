@@ -174,22 +174,30 @@ public sealed class McpOptions
     public string ServerLabel { get; set; } = "sqlflow";
 
     /// <summary>
-    /// The MCP tools the assistant may call. The default is the read-only surface: no trigger_run or
-    /// cancel_run (everyone in a channel shares the bot's identity, so writes stay off this path),
-    /// and no stdio-only or sign-in tools (inert over HTTP anyway). An empty list means all tools,
-    /// so leave this populated unless the MCP server itself is restricted.
+    /// The MCP tools the assistant may call. The default is the WHOLE read-only surface: everything that only
+    /// reads the catalog belongs here, because a missing reader is an answer the assistant cannot give (a tool
+    /// absent from this list looks to the model like a capability the product lacks). Excluded on purpose: the
+    /// operate tools (trigger_run, cancel_run, analyze_warehouse_health; everyone in a channel shares the bot's
+    /// identity, so writes and probe execution stay off this path), the authoring tool (propose_pipelines), and
+    /// the stdio-only or sign-in tools (inert over HTTP anyway). An empty list means all tools, so leave this
+    /// populated unless the MCP server itself is restricted.
     /// </summary>
     public List<string> AllowedTools { get; set; } =
     [
         "search_docs", "get_doc", "get_doc_by_yaml_path", "get_doc_by_cli_command", "related_docs", "list_docs",
         "validate_flow", "list_flow_keys", "describe_flow_key",
         "check_connectivity", "get_control_plane_url",
-        "list_repos", "get_repo", "list_pipelines", "get_pipeline", "pipeline_definition", "pipeline_columns",
+        "list_repos", "get_repo", "list_pipelines", "list_flow_batches", "get_pipeline", "pipeline_definition",
+        "pipeline_file_stats", "pipeline_columns",
         "list_runs", "get_run", "run_statements", "run_assertions", "run_files", "run_health_metrics",
-        "list_schemas", "lineage_objects", "lineage_object_detail", "lineage_object_columns", "describe_object",
+        "list_schemas", "catalog_tree", "lineage_objects", "lineage_object_detail", "lineage_object_columns",
+        "describe_object", "describe_object_refresh", "list_file_sources", "file_provenance",
         "lineage_edges", "lineage_waves", "lineage_dependencies",
-        "search_objects", "search_columns", "search_definitions",
-        "list_schedules", "get_schedule", "list_nodes", "list_repo_sources", "summary",
+        "list_subscribers", "describe_subscriber",
+        "search_all", "search_objects", "search_columns", "search_definitions", "search_flows",
+        "search_flow_columns", "search_files", "search_statements",
+        "list_schedules", "get_schedule", "get_schedule_plan", "list_nodes", "list_repo_sources", "summary",
+        "insights_flows", "insights_attention", "insights_recommendations", "insights_steps",
     ];
 }
 

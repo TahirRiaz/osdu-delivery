@@ -11,7 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { searchApi } from "../../api/endpoints";
 import { isApiError } from "../../api/client";
 import type {
-  ColumnHit, DefinitionHit, FileHit, FlowHit, ObjectHit, SearchCategory,
+  ColumnHit, DefinitionHit, FileHit, FlowColumnHit, FlowHit, ObjectHit, SearchCategory, StatementHit,
 } from "../../api/types";
 import { LineageJumpButton, type LineageJumpTarget } from "../../components/LineageJumpButton";
 import { ConnectionRef } from "../../components/ConnectionRef";
@@ -59,6 +59,10 @@ const flowTarget = (row: FlowHit): LineageJumpTarget => ({
   kind: "node", repoId: row.repoId, repoName: row.repoName, focusId: row.id, label: row.name,
   sublabel: `${row.kind} flow · ${row.repoName}`,
 });
+const flowColumnTarget = (row: FlowColumnHit): LineageJumpTarget => ({
+  kind: "node", repoId: row.repoId, repoName: row.repoName, focusId: row.pipelineId, label: row.flowName,
+  sublabel: `column: ${row.columnName}`,
+});
 // A file focuses the flow that ingests it, resolved by matching the file against the flow source specs in the
 // catalog (works from the file's full path when known, else its name).
 const fileTarget = (row: FileHit): LineageJumpTarget => ({
@@ -67,8 +71,8 @@ const fileTarget = (row: FileHit): LineageJumpTarget => ({
 });
 
 // Tab order; index 0 (All) is the landing view for every search.
-const TABS = ["All", "Objects", "Columns", "Definitions", "Files", "Flows"] as const;
-type TabIndex = 0 | 1 | 2 | 3 | 4 | 5;
+const TABS = ["All", "Objects", "Columns", "Definitions", "Files", "Flows", "Flow columns", "Executed SQL"] as const;
+type TabIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /** An object/column/flow/file name cell: data wears mono (DESIGN.md section 4), the hit name emphasized. */
 function NameCell({ children }: { children: ReactNode }) {
@@ -169,6 +173,40 @@ const flowColumns: Column<FlowHit>[] = [
   },
 ];
 
+const flowColumnColumns: Column<FlowColumnHit>[] = [
+  { id: "columnName", header: "Column", render: (row) => <NameCell>{row.columnName}</NameCell> },
+  { id: "dataType", header: "Data type", render: (row) => <Mono>{row.dataType ?? "-"}</Mono> },
+  { id: "flowName", header: "Flow", render: (row) => <Mono>{row.flowName}</Mono> },
+  { id: "kind", header: "Set", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "matchedIn", header: "Matched", render: (row) => <Badge variant="outline">{row.matchedIn}</Badge> },
+  {
+    id: "expression",
+    header: "Source / expression",
+    render: (row) => <TruncatedText text={row.expression ?? row.sourceColumn} mono maxWidth={420} />,
+  },
+];
+
+const statementColumns: Column<StatementHit>[] = [
+  { id: "flowName", header: "Flow", render: (row) => <NameCell>{row.flowName}</NameCell> },
+  { id: "step", header: "Step", render: (row) => <Badge variant="secondary">{row.step}</Badge> },
+  {
+    id: "occurrences",
+    header: "Times run",
+    align: "right",
+    render: (row) => <span className="font-mono tabular-nums">{row.occurrences.toLocaleString()}</span>,
+  },
+  {
+    id: "lastSeenUtc",
+    header: "Last seen",
+    render: (row) => <Mono>{row.lastSeenUtc ? parseUtc(row.lastSeenUtc).toLocaleString() : "-"}</Mono>,
+  },
+  {
+    id: "snippet",
+    header: "SQL",
+    render: (row) => <Mono className="whitespace-pre-wrap">{row.snippet}</Mono>,
+  },
+];
+
 /**
  * Global search over the whole catalog: objects and columns by name, code (module bodies and emitted DDL),
  * processed files by name or path, and flow YAML by name, path, or body text. The title-bar search box lands here
@@ -237,7 +275,7 @@ export default function SearchPage() {
       {q === "" && (
         <EmptyState
           icon={<Search />}
-          title="Type a term to search objects, columns, code, processed files, and flows"
+          title="Type a term to search objects, columns, code, processed files, flows, flow columns, and executed SQL"
           data-testid="search-hint"
         />
       )}
@@ -311,6 +349,30 @@ export default function SearchPage() {
           data-testid="search-flows-table"
         />
       )}
+
+      {q !== "" && tab === 6 && (
+        <PagedTable<FlowColumnHit>
+          queryKey={["search", "flow-columns", q]}
+          fetchPage={(page, pageSize) => searchApi.flowColumns(q, { page, pageSize })}
+          columns={[...flowColumnColumns, lineageColumn<FlowColumnHit>(flowColumnTarget)]}
+          rowKey={(row) => `${row.pipelineId}::${row.kind}::${row.ordinal}::${row.columnName}`}
+          onRowClick={(row) => openPipeline(row.pipelineId)}
+          emptyMessage={`No flow columns match "${q}".`}
+          data-testid="search-flow-columns-table"
+        />
+      )}
+
+      {q !== "" && tab === 7 && (
+        <PagedTable<StatementHit>
+          queryKey={["search", "statements", q]}
+          fetchPage={(page, pageSize) => searchApi.statements(q, { page, pageSize })}
+          columns={statementColumns}
+          rowKey={(row) => `${row.pipelineId}::${row.step}`}
+          onRowClick={(row) => openRun(row.runId)}
+          emptyMessage={`No executed SQL matches "${q}" in the searched window.`}
+          data-testid="search-statements-table"
+        />
+      )}
     </Page>
   );
 }
@@ -348,7 +410,7 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
   }
 
   const totalHits = data.objects.total + data.columns.total + data.definitions.total
-    + data.files.total + data.flows.total;
+    + data.files.total + data.flows.total + data.flowColumns.total + data.statements.total;
 
   if (totalHits === 0) {
     return <EmptyState title={`Nothing matches "${q}".`} data-testid="search-all-empty" />;
@@ -392,6 +454,22 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
         jumpTarget={flowTarget}
         primary={(row) => row.name}
         secondary={(row) => `${row.matchedIn}: ${row.snippet}`}
+      />
+      <CategorySection<FlowColumnHit>
+        title="Flow columns" tab={6} category={data.flowColumns} onSelectTab={onSelectTab}
+        rowKey={(row) => `${row.pipelineId}::${row.kind}::${row.ordinal}::${row.columnName}`}
+        onRowClick={(row) => openPipeline(row.pipelineId)}
+        jumpTarget={flowColumnTarget}
+        primary={(row) => row.columnName}
+        secondary={(row) => [
+          row.dataType ?? "", `produced by ${row.flowName}`, `matched ${row.matchedIn}`,
+        ].filter(Boolean).join(" · ")}
+      />
+      <CategorySection<StatementHit>
+        title="Executed SQL" tab={7} category={data.statements} onSelectTab={onSelectTab}
+        rowKey={(row) => `${row.pipelineId}::${row.step}`} onRowClick={(row) => openRun(row.runId)}
+        primary={(row) => `${row.flowName} · ${row.step}`}
+        secondary={(row) => row.snippet}
       />
     </div>
   );

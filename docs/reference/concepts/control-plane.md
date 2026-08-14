@@ -88,8 +88,13 @@ Read surface (policy `read`):
 | `GET /pipelines/{pipelineId}/trace`, `/trace/text` | The pipeline's LATEST run's trace (paged JSON or plain text) without resolving a run id first: the entry point for "show me what its last run did" when debugging a pipeline, by hand or from an LLM tool |
 | `GET /runs/groups/{groupId}/stream` | The run group as Server-Sent Events while it executes: a `member` frame (a run summary with its newest trace event as the "last action") whenever a member changes, a full snapshot on connect, one `end` frame with the final rollup once every member is terminal |
 | `GET /lineage/objects`, `/lineage/objects/detail`, `/lineage/objects/columns` | Lineage objects |
+| `GET /lineage/objects/refresh` | How an object is populated and how often it updates: the flows that write it, each with its latest run and the schedules that fire it (cadence, next fire); a view with no writing flow reports the modules its content derives from |
 | `GET /repos/{repoId}/lineage/edges`, `/repos/{repoId}/waves`, `/repos/{repoId}/dependencies` | Repo-scoped lineage |
-| `GET /search/objects`, `/search/columns`, `/search/definitions` | Cross-repo data dictionary and code search |
+| `GET /search/all` | One global search fanned across every surface below, each category counted in full with a preview of top hits; the reply echoes the parsed `tokens` (a multi-word term matches word by word, every word required, so "ferry passengers" finds `FerryPassengers_PerDeparture`) |
+| `GET /search/objects`, `/search/columns`, `/search/definitions` | Cross-repo data dictionary and code search (objects by name, synced columns by name, module bodies and emitted DDL) |
+| `GET /search/files`, `/search/flows` | Processed files by name/path; flow YAML by name, path, or body text |
+| `GET /search/flow-columns` | The columns FLOWS produce, matched by output name, source column, or the SQL expression computing them: the reverse "which pipeline computes column X" lookup, independent of any warehouse schema sync |
+| `GET /search/statements` | The SQL runs actually executed, grouped to one row per (flow, step) with an occurrence count and the newest sample; searches a 90-day window by default (`days=0` for all retained history) |
 | `GET /schedules`, `GET /schedules/{id}` | Schedules |
 | `GET /nodes` | Worker fleet with a derived online flag |
 | `GET /repos/sources` | Managed repo sources |

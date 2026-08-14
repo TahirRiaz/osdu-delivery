@@ -7,7 +7,7 @@ import type {
   ComputeTaskSummary, CreateAccessTokenRequest, CreateNotificationSubscriptionRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   FlowInsights, Recommendations, StepInsights,
-  DiscoverRepoRequest, FileHit, FlowDependency, FlowHit,
+  DiscoverRepoRequest, FileHit, FlowDependency, FlowColumnHit, FlowHit, StatementHit,
   FilePipelineMatch,
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodePurgeResult, NodeScript,
   ObjectDossier, PipelineBatch, SchemaKindCount, FileNode, FileFlows,
@@ -431,6 +431,10 @@ export const searchApi = {
     get<PagedResult<FileHit>>("/api/v1/search/files", { name, ...query } as QueryParams),
   flows: (q: string, query: PageQuery = {}) =>
     get<PagedResult<FlowHit>>("/api/v1/search/flows", { q, ...query } as QueryParams),
+  flowColumns: (name: string, query: PageQuery = {}) =>
+    get<PagedResult<FlowColumnHit>>("/api/v1/search/flow-columns", { name, ...query } as QueryParams),
+  statements: (q: string, query: PageQuery = {}) =>
+    get<PagedResult<StatementHit>>("/api/v1/search/statements", { q, ...query } as QueryParams),
 };
 
 // ---- Users ---------------------------------------------------------------------------------------------------------------------
