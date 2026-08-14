@@ -47,6 +47,20 @@ public sealed partial class RunWorker
     /// online across several beats even if one is missed, without heartbeating so often it is noise.</summary>
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
 
+    /// <summary>How long a stopping node keeps executing the work it has ALREADY claimed before severing it. A stop
+    /// is routine and frequent in an autoscaled fleet - the scaler reclaims a replica, a revision swaps, an operator
+    /// restarts a node - and it means "stop claiming and finish what you hold", never "drop it". Severing a run
+    /// records no outcome at all, so it is recovered only by the reaper's requeue, which consumes one of the run's
+    /// <see cref="RunQueueStore.MaxExecutionAttempts"/> executions and repeats all of its work; a run unlucky enough
+    /// to be caught by three stops is then failed outright and blamed for dying, though nothing was ever wrong with
+    /// it. Draining is what keeps a scale-in from manufacturing those failures. The default sits under the ten-minute
+    /// termination grace the worker's container app declares, so the drain ends on the node's own terms with an
+    /// outcome recorded, rather than being cut off mid-statement by the platform's kill.</summary>
+    public static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromMinutes(9);
+
+    /// <summary>How often the drain re-checks its in-flight work, and re-polls operator cancels, while it waits.</summary>
+    private static readonly TimeSpan DrainPollInterval = TimeSpan.FromSeconds(5);
+
     private readonly IServiceProvider _services;
     private readonly DocumentExecutor _executor;
     private readonly TimeProvider _clock;
@@ -110,17 +124,26 @@ public sealed partial class RunWorker
     /// <paramref name="maxConcurrentRuns"/> bounds how many claimed runs execute at once on this node (minimum 1):
     /// the queue's atomic claim already supports concurrent claimants, so the bound only sizes this node's own
     /// in-flight work, and a saturated node stops claiming so queued runs stay available to other nodes.
+    /// <para><paramref name="stoppingToken"/> stops this node CLAIMING; it does not sever what the node is already
+    /// executing. Once it trips, the in-flight runs keep going (and the node keeps heartbeating, so the reaper does
+    /// not mistake a draining node for a dead one and requeue the very work it is finishing) for up to
+    /// <paramref name="drainTimeout"/>, defaulting to <see cref="DefaultDrainTimeout"/>. Only when that window
+    /// expires are the survivors cancelled and left <c>running</c> for recovery. Pass <see cref="TimeSpan.Zero"/> to
+    /// sever immediately.</para>
     /// </summary>
     public async Task RunAsync(
         TimeSpan pollInterval, IReadOnlyList<string> pools, Func<TimeSpan, CancellationToken, Task> waitForWork,
         CancellationToken stoppingToken, int maxConcurrentRuns = DefaultMaxConcurrentRuns,
         int maxConcurrentComputeTasks = DefaultMaxConcurrentComputeTasks,
-        Func<CancellationToken, Task>? onRestartRequested = null)
+        Func<CancellationToken, Task>? onRestartRequested = null,
+        TimeSpan? drainTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(pools);
         ArgumentNullException.ThrowIfNull(waitForWork);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentRuns, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentComputeTasks, 1);
+        var drain = drainTimeout ?? DefaultDrainTimeout;
+        ArgumentOutOfRangeException.ThrowIfLessThan(drain, TimeSpan.Zero);
 
         _startedUtc = _clock.GetUtcNow().UtcDateTime;
         _onRestartRequested = onRestartRequested;
@@ -130,13 +153,22 @@ public sealed partial class RunWorker
 
         await RecoverOrphansAsync(stoppingToken).ConfigureAwait(false);
 
+        // The abort token for work this node has already claimed. Deliberately NOT linked to stoppingToken: a stop
+        // means "stop claiming", and the run keeps executing so it can record its own outcome. This source trips
+        // only when the drain window below expires (or at once when the caller granted no window), which is the one
+        // case where a run is abandoned mid-flight for the reaper to requeue.
+        using var abortCts = new CancellationTokenSource();
+
         // The fleet heartbeat runs on its own cadence, decoupled from draining. A fully-saturated node blocks inside
         // DrainAsync waiting for a concurrency slot and never returns to the top of this loop, so a heartbeat welded
         // to the loop would stall for the whole of a long run and the node would falsely age out to "offline" while
         // healthy and busy. Running it as an independent task keeps a node's liveness truthful under any load, which
         // is also what lets the control-plane orphan reaper safely tell a dead node from a merely busy one. It
-        // observes stoppingToken, never throws (HeartbeatAsync is best-effort), and is awaited on shutdown below.
-        var heartbeat = HeartbeatLoopAsync(stoppingToken);
+        // observes the ABORT token, not stoppingToken, so a node that is draining keeps beating: a draining node is
+        // very much alive, and going silent for the drain would invite the reaper to requeue (and a sibling node to
+        // re-execute) the runs it is in the middle of finishing. It never throws (HeartbeatAsync is best-effort) and
+        // is awaited after the drain below.
+        var heartbeat = HeartbeatLoopAsync(abortCts.Token);
 
         using var gate = new SemaphoreSlim(maxConcurrentRuns, maxConcurrentRuns);
         using var computeGate = new SemaphoreSlim(maxConcurrentComputeTasks, maxConcurrentComputeTasks);
@@ -151,8 +183,8 @@ public sealed partial class RunWorker
             {
                 // Compute tasks drain FIRST: they are interactive (an operator waiting in the GUI) and bounded by
                 // their own gate, so serving them ahead of the run queue costs flow throughput nothing.
-                await DrainComputeAsync(pools, computeGate, computeInFlight, stoppingToken).ConfigureAwait(false);
-                await DrainAsync(pools, gate, inFlight, stoppingToken).ConfigureAwait(false);
+                await DrainComputeAsync(pools, computeGate, computeInFlight, stoppingToken, abortCts.Token).ConfigureAwait(false);
+                await DrainAsync(pools, gate, inFlight, stoppingToken, abortCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -174,19 +206,68 @@ public sealed partial class RunWorker
             }
         }
 
-        // Shutdown: claiming has stopped; wait for the in-flight runs and compute tasks. Each either finishes
-        // cleanly (recording its outcome) or observes the cancellation and leaves its row 'running' for the next
-        // start's recovery. The tasks never fault (the execute wrappers catch everything), so this wait cannot
-        // throw, and it keeps both gates alive until every slot is released.
+        // Shutdown: claiming has stopped; now DRAIN the work this node already holds so each run records its own
+        // outcome instead of being abandoned. The tasks never fault (the execute wrappers catch everything), so
+        // this cannot throw, and it keeps both gates alive until every slot is released.
         var pending = inFlight.Values.Concat(computeInFlight.Values).ToArray();
         if (pending.Length > 0)
         {
-            await Task.WhenAll(pending).ConfigureAwait(false);
+            await DrainInFlightAsync(pending, drain, abortCts).ConfigureAwait(false);
         }
 
-        // The heartbeat loop observes the same stoppingToken and never throws, so this just joins it before the
-        // method returns (leaving no background task running past the worker's lifetime).
+        // Every run is finished (or severed): stop the heartbeat and join it, so the node stops advertising itself
+        // as alive the moment it stops holding work, and no background task outlives the worker.
+        await abortCts.CancelAsync().ConfigureAwait(false);
         await heartbeat.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits out the work this node already claimed after claiming has stopped, so a routine stop (an autoscaler
+    /// reclaiming the replica, a revision swap, an operator restart) costs no run its progress: each in-flight run
+    /// finishes and records its own outcome. The node keeps heartbeating throughout, so the orphan reaper leaves the
+    /// draining work alone rather than requeueing runs that are about to complete.
+    /// <para>Bounded by <paramref name="drainTimeout"/>: a node cannot drain forever, because the platform that asked
+    /// it to stop will eventually kill it outright, and a run severed by that kill is strictly worse off than one
+    /// cancelled here (the same requeue, minus the log line saying why). When the window expires the survivors are
+    /// cancelled through <paramref name="abort"/> and left <c>running</c> for recovery. Operator cancels are still
+    /// polled while waiting, so a drain can never trap a run an operator has asked to kill.</para>
+    /// </summary>
+    /// <param name="pending">The in-flight run and compute-task executions to wait on. They never fault (their
+    /// execute wrappers catch everything), so this never throws.</param>
+    /// <param name="drainTimeout">How long to keep waiting; <see cref="TimeSpan.Zero"/> severs at once.</param>
+    /// <param name="abort">The source every in-flight execution runs under, tripped when the window expires.</param>
+    /// <remarks>Internal for the test suite; only <see cref="RunAsync"/> calls it in production.</remarks>
+    internal async Task DrainInFlightAsync(Task[] pending, TimeSpan drainTimeout, CancellationTokenSource abort)
+    {
+        var all = Task.WhenAll(pending);
+        if (drainTimeout <= TimeSpan.Zero)
+        {
+            await abort.CancelAsync().ConfigureAwait(false);
+            await all.ConfigureAwait(false);
+            return;
+        }
+
+        LogDraining(pending.Length, (int)drainTimeout.TotalSeconds);
+        var deadline = _clock.GetUtcNow() + drainTimeout;
+        while (!all.IsCompleted)
+        {
+            var remaining = deadline - _clock.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+            {
+                LogDrainTimedOut((int)drainTimeout.TotalSeconds);
+                await abort.CancelAsync().ConfigureAwait(false);
+                break;
+            }
+
+            // CancellationToken.None on the delay: the whole point of the drain is that it outlives the stop signal,
+            // so nothing here may abandon the wait early.
+            var slice = remaining < DrainPollInterval ? remaining : DrainPollInterval;
+            await Task.WhenAny(all, Task.Delay(slice, CancellationToken.None)).ConfigureAwait(false);
+            await PollCancellationsAsync(abort.Token).ConfigureAwait(false);
+        }
+
+        await all.ConfigureAwait(false);
+        LogDrained();
     }
 
     /// <summary>Refreshes the fleet heartbeat on <see cref="HeartbeatInterval"/>, independent of the drain loop, until
@@ -356,8 +437,14 @@ public sealed partial class RunWorker
         }
     }
 
+    /// <param name="pools">The pools this node serves, alongside untargeted runs.</param>
+    /// <param name="gate">The node's run-concurrency gate; a slot is held before each claim.</param>
+    /// <param name="inFlight">The executing runs, for the shutdown drain to wait on.</param>
+    /// <param name="ct">Stops CLAIMING: a tripped token ends this loop at once, leaving queued runs for other nodes.</param>
+    /// <param name="abortCt">The token the claimed run executes under, tripped only when the drain window expires.</param>
     private async Task DrainAsync(
-        IReadOnlyList<string> pools, SemaphoreSlim gate, ConcurrentDictionary<Guid, Task> inFlight, CancellationToken ct)
+        IReadOnlyList<string> pools, SemaphoreSlim gate, ConcurrentDictionary<Guid, Task> inFlight, CancellationToken ct,
+        CancellationToken abortCt)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -384,8 +471,9 @@ public sealed partial class RunWorker
 
                 // Each claimed run executes on its own task with its own DI scope (a scope and its CatalogDbContext
                 // are never shared across tasks). From here the task owns the slot and releases it when the run
-                // reaches its end state; the continuation only prunes the in-flight map used by shutdown.
-                var task = ExecuteClaimedAsync(claimed, gate, ct);
+                // reaches its end state; the continuation only prunes the in-flight map used by shutdown. It runs
+                // under the abort token, never the claim loop's: a stop must not sever a run this node just started.
+                var task = ExecuteClaimedAsync(claimed, gate, abortCt);
                 slotOwnedByRun = true;
                 inFlight[claimed.RunId] = task;
                 _ = task.ContinueWith(
@@ -404,26 +492,30 @@ public sealed partial class RunWorker
     }
 
     /// <summary>Executes one claimed run on its own DI scope and releases the concurrency slot when the run reaches
-    /// its end state. Never throws: a shutdown cancellation leaves the run <c>running</c> for the next start's
-    /// recovery, and every other failure has already been driven terminal (best-effort) by
+    /// its end state. Never throws: an abort (the drain window expired) leaves the run <c>running</c> for recovery,
+    /// and every other failure has already been driven terminal (best-effort) by
     /// <see cref="RunClaimedAsync"/>, so one run can never kill the drain loop or a sibling run.</summary>
-    private async Task ExecuteClaimedAsync(ClaimedRun claim, SemaphoreSlim gate, CancellationToken stoppingToken)
+    /// <param name="claim">The claimed run's id and the claim's attempt (the fencing token for its outcome write).</param>
+    /// <param name="gate">The node's run-concurrency gate; this run's slot is released when it ends.</param>
+    /// <param name="abortCt">Trips only when a stopping node's drain window expires, never merely because the node
+    /// was asked to stop; see <see cref="DrainInFlightAsync"/>.</param>
+    private async Task ExecuteClaimedAsync(ClaimedRun claim, SemaphoreSlim gate, CancellationToken abortCt)
     {
-        // A per-run source linked to the shutdown token: an operator cancel trips only this one (aborting just this
-        // run), while shutdown trips every run through the link. Registered before execution so a cancel arriving
-        // the instant after the claim is still observed. Disposed only after the run ends, so a late cancel never
-        // races a disposed source.
-        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        // A per-run source linked to the abort token: an operator cancel trips only this one (aborting just this
+        // run), while an expired drain trips every run through the link. Registered before execution so a cancel
+        // arriving the instant after the claim is still observed. Disposed only after the run ends, so a late cancel
+        // never races a disposed source.
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(abortCt);
         _running[claim.RunId] = runCts;
         try
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            await RunClaimedAsync(scope.ServiceProvider, catalog, claim, stoppingToken, runCts.Token).ConfigureAwait(false);
+            await RunClaimedAsync(scope.ServiceProvider, catalog, claim, abortCt, runCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (abortCt.IsCancellationRequested)
         {
-            // Shutdown cancelled this run mid-flight: it stays 'running' so the next start's recovery requeues it.
+            // The drain window expired and severed this run mid-flight: it stays 'running' so recovery requeues it.
         }
         catch (Exception ex)
         {
@@ -442,7 +534,8 @@ public sealed partial class RunWorker
     /// a slot is free (a saturated node leaves queued tasks claimable by other nodes), execute each claimed task on
     /// its own task with its own DI scope, and hand a finishing task's slot straight to the next one.</summary>
     private async Task DrainComputeAsync(
-        IReadOnlyList<string> pools, SemaphoreSlim gate, ConcurrentDictionary<Guid, Task> inFlight, CancellationToken ct)
+        IReadOnlyList<string> pools, SemaphoreSlim gate, ConcurrentDictionary<Guid, Task> inFlight, CancellationToken ct,
+        CancellationToken abortCt)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -463,7 +556,7 @@ public sealed partial class RunWorker
                     return; // queue drained
                 }
 
-                var task = ExecuteClaimedTaskAsync(taskId.Value, gate, ct);
+                var task = ExecuteClaimedTaskAsync(taskId.Value, gate, abortCt);
                 slotOwnedByTask = true;
                 inFlight[taskId.Value] = task;
                 _ = task.ContinueWith(
@@ -481,21 +574,21 @@ public sealed partial class RunWorker
     }
 
     /// <summary>Executes one claimed compute task on its own DI scope and releases the slot when it reaches its
-    /// end state. Never throws, mirroring <see cref="ExecuteClaimedAsync"/>: a shutdown cancellation leaves the
-    /// task <c>running</c> for the next start's recovery; every other failure is driven terminal here.</summary>
-    private async Task ExecuteClaimedTaskAsync(Guid taskId, SemaphoreSlim gate, CancellationToken stoppingToken)
+    /// end state. Never throws, mirroring <see cref="ExecuteClaimedAsync"/>: an abort (the drain window expired)
+    /// leaves the task <c>running</c> for recovery; every other failure is driven terminal here.</summary>
+    private async Task ExecuteClaimedTaskAsync(Guid taskId, SemaphoreSlim gate, CancellationToken abortCt)
     {
-        using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        using var taskCts = CancellationTokenSource.CreateLinkedTokenSource(abortCt);
         _runningTasks[taskId] = taskCts;
         try
         {
             await using var scope = _services.CreateAsyncScope();
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
-            await RunClaimedTaskAsync(scope.ServiceProvider, catalog, taskId, stoppingToken, taskCts.Token).ConfigureAwait(false);
+            await RunClaimedTaskAsync(scope.ServiceProvider, catalog, taskId, abortCt, taskCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (abortCt.IsCancellationRequested)
         {
-            // Shutdown cancelled the task mid-flight: it stays 'running' so the next start's recovery requeues it.
+            // The drain window expired and severed the task: it stays 'running' so recovery requeues it.
         }
         catch (Exception ex)
         {
@@ -511,7 +604,8 @@ public sealed partial class RunWorker
     /// <param name="scope">The claimed task's own DI scope, never shared with another task.</param>
     /// <param name="catalog">The catalog context resolved from <paramref name="scope"/>.</param>
     /// <param name="taskId">The claimed compute task's id.</param>
-    /// <param name="shutdownCt">The node's shutdown token: a trip leaves the task <c>running</c> for recovery.</param>
+    /// <param name="shutdownCt">The abort token: a trip (the drain window expired) leaves the task <c>running</c>
+    /// for recovery.</param>
     /// <param name="taskCt">The per-task token (linked to shutdown): an operator cancel trips this alone, aborting
     /// the in-flight query so the task records <c>cancelled</c> rather than requeued.</param>
     private async Task RunClaimedTaskAsync(
@@ -608,8 +702,8 @@ public sealed partial class RunWorker
     /// attempt: the fencing token every outcome write below presents, so if crash recovery requeues this run out
     /// from under a node presumed dead, that node's late writes are dropped instead of clobbering the successor
     /// execution's outcome.</param>
-    /// <param name="shutdownCt">The node's shutdown token: when it trips, the run is left <c>running</c> for the next
-    /// start's recovery (never recorded terminal), so a stop-then-start never loses in-flight work.</param>
+    /// <param name="shutdownCt">The abort token: it trips only when a stopping node's drain window expired, and the
+    /// run is then left <c>running</c> for recovery (never recorded terminal), so severed work is never lost.</param>
     /// <param name="runCt">The per-run token (linked to shutdown): an operator cancel trips this alone, aborting the
     /// flow's in-flight statement so the run is recorded <c>cancelled</c> rather than requeued.</param>
     private async Task RunClaimedAsync(
@@ -1104,6 +1198,15 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Recovered {Count} run(s) left running by a previous worker incarnation; requeued.")]
     private partial void LogRecovered(int count);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Stopping: no longer claiming; draining {Count} in-flight item(s) so each records its own outcome (up to {DrainSeconds}s).")]
+    private partial void LogDraining(int count, int drainSeconds);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Drained: every in-flight item finished and recorded its outcome.")]
+    private partial void LogDrained();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Drain window of {DrainSeconds}s expired with work still in flight; cancelling it. Each severed run stays 'running' and is requeued by the reaper, which consumes one of its execution attempts. Raise the drain window, or the platform's termination grace period, if this recurs.")]
+    private partial void LogDrainTimedOut(int drainSeconds);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId}: outcome write dropped by the claim fence (attempt {Attempt}): the run was requeued out from under this node while it executed, so the successor execution's outcome is authoritative. This node's heartbeats went unseen for the reaper's whole stale window; check for catalog connectivity gaps or a paused container.")]
     private partial void LogStaleClaim(Guid runId, int attempt);

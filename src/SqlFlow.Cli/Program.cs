@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -564,13 +565,16 @@ internal static class Program
     }
 
     /// <summary>
-    /// Runs this host as a self-hosted compute node: <c>sqlflow worker [--db &lt;ref&gt;] [--poll-seconds N]</c>. It
+    /// Runs this host as a self-hosted compute node: <c>sqlflow worker [--db &lt;ref&gt;] [--poll-seconds N]
+    /// [--drain-seconds N]</c>. It
     /// drains the durable run queue in the shadow catalog - atomically claiming queued runs, executing them through
     /// the same engine a direct CLI run uses, and recording each outcome under the id the trigger returned - so a
     /// node inside a private network runs the flows the control plane queued without the control plane ever reaching
     /// the node. The queue's atomic claim makes any number of workers safe to run at once. Every credential is
-    /// resolved from THIS node's own environment, so nothing sensitive travels through the queue. Runs until Ctrl+C,
-    /// finishing the in-flight run.
+    /// resolved from THIS node's own environment, so nothing sensitive travels through the queue. Runs until a stop
+    /// signal (Ctrl+C, or the SIGTERM an orchestrator sends when it reclaims the replica), which stops claiming and
+    /// then DRAINS: the runs already in flight keep executing and record their own outcomes, for up to
+    /// <c>--drain-seconds</c>.
     /// </summary>
     private static async Task<int> RunWorkerAsync(IServiceProvider provider, string[] args, bool verbose)
     {
@@ -587,6 +591,10 @@ internal static class Program
         }
 
         var pollSeconds = Math.Max(1, ParseIntOption(args, 5, "--poll-seconds"));
+        // How long a stopping node keeps finishing the runs it already claimed before severing them. It must stay
+        // under the orchestrator's termination grace period, or the platform's kill lands mid-drain and severs the
+        // work anyway; zero severs at once (the pre-drain behavior).
+        var drainSeconds = Math.Max(0, ParseIntOption(args, (int)RunWorker.DefaultDrainTimeout.TotalSeconds, "--drain-seconds"));
         // The pools this node serves (comma-separated). Empty means it drains only untargeted runs.
         var pools = (GetOption(args, "--pool") ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -617,30 +625,54 @@ internal static class Program
 
         var worker = workerProvider.GetRequiredService<RunWorker>();
         using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, eventArgs) =>
+
+        // Stop signals. SIGTERM is the one that matters in production: it is what an autoscaler reclaiming this
+        // replica, a revision swap, or a `docker stop` sends, and .NET's DEFAULT handling of it terminates the
+        // process immediately. That default is what turns a routine scale-in into lost work - every run this node
+        // is executing dies mid-statement with no outcome recorded, so each is recovered only by the reaper's
+        // requeue, which consumes one of its execution attempts and repeats all of its work; a run caught by three
+        // such stops is failed outright and blamed for dying. Handling the signal (Cancel = true suppresses the
+        // default termination) hands control back here, where the worker stops claiming and drains what it holds
+        // within the orchestrator's termination grace period. SIGINT is the interactive Ctrl+C and drains the same
+        // way, rather than killing the process.
+        var stopRequested = 0;
+        void RequestStop(PosixSignalContext context)
         {
-            eventArgs.Cancel = true; // intercept Ctrl+C: drain to a clean stop rather than killing the process
+            // A SECOND signal means the sender is not willing to wait out the drain (an impatient operator, or an
+            // orchestrator escalating). Leave Cancel false so the runtime terminates as it normally would: the
+            // severed runs stay 'running' and the reaper requeues them, which is the honest outcome of refusing the
+            // drain, and it keeps a worker from ever feeling unkillable.
+            if (Interlocked.Exchange(ref stopRequested, 1) != 0)
+            {
+                return;
+            }
+
+            context.Cancel = true;
             cts.Cancel();
-        };
+        }
+
+        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, RequestStop);
+        using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, RequestStop);
 
         var poolLabel = pools.Length > 0 ? string.Join(", ", pools) : "untargeted runs only";
-        Console.WriteLine($"SQLFlow worker '{worker.NodeName}' draining the run queue (poll {pollSeconds}s, pools: {poolLabel}). Press Ctrl+C to stop.");
+        Console.WriteLine($"SQLFlow worker '{worker.NodeName}' draining the run queue (poll {pollSeconds}s, pools: {poolLabel}, drain {drainSeconds}s). Press Ctrl+C to stop, again to stop without draining.");
         try
         {
-            // An operator restart request (observed on the heartbeat) trips the same token Ctrl+C does: the loop
-            // drains its in-flight work and returns, the process exits cleanly, and the orchestrator recreates the
-            // replica.
+            // An operator restart request (observed on the heartbeat) trips the same token a stop signal does: the
+            // loop stops claiming, drains its in-flight work, and returns, the process exits cleanly, and the
+            // orchestrator recreates the replica.
             await worker.RunAsync(
                 TimeSpan.FromSeconds(pollSeconds), pools, (timeout, ct) => Task.Delay(timeout, ct), cts.Token,
                 onRestartRequested: _ =>
                 {
                     cts.Cancel();
                     return Task.CompletedTask;
-                }).ConfigureAwait(false);
+                },
+                drainTimeout: TimeSpan.FromSeconds(drainSeconds)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            // Ctrl+C or an honored restart request: a clean stop.
+            // A stop signal or an honored restart request: a clean stop.
         }
 
         Console.WriteLine("SQLFlow worker stopped.");
@@ -2118,12 +2150,15 @@ internal static class Program
                                                  database, linking flows across repos through shared objects);
                                                  'status' lists applied vs pending migrations.
                                                  --db defaults to ${env:SQLFLOW_CATALOG_DB}.
-              sqlflow worker   [--db <conn-ref>] [--poll-seconds N] [--pool a,b]
+              sqlflow worker   [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--drain-seconds N]
                                                  Run as a self-hosted compute node: drain the shadow catalog's
                                                  durable run queue, executing queued/scheduled runs through the same
                                                  engine on THIS host (resolving every credential from this node's own
                                                  environment) and recording each outcome. The atomic claim makes any
-                                                 number of workers safe at once; runs until Ctrl+C. --pool sets the
+                                                 number of workers safe at once. Runs until Ctrl+C or SIGTERM, which
+                                                 stops claiming and then lets the in-flight runs finish and record
+                                                 their outcomes (--drain-seconds, default 540; keep it under the
+                                                 orchestrator's termination grace period). --pool sets the
                                                  pools this node serves (it always drains untargeted runs; with
                                                  --pool it also drains runs routed to those pools). --db defaults to
                                                  ${env:SQLFLOW_CATALOG_DB}.

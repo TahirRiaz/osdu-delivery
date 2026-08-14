@@ -70,6 +70,13 @@ builder.Services.AddSingleton<RunWorker>();
 if (options.Worker.Enabled)
 {
     builder.Services.AddHostedService<RunExecutionWorker>();
+
+    // Give the node its drain window at the host level too. On a stop the worker keeps its in-flight runs going so
+    // each records its own outcome, but the generic host stops waiting after HostOptions.ShutdownTimeout and tears
+    // the process down regardless - which would sever exactly the runs the drain exists to save. Set only where a
+    // worker is actually hosted: an API-only replica has nothing to drain and should still exit promptly.
+    builder.Services.Configure<HostOptions>(
+        host => host.ShutdownTimeout = RunWorker.DefaultDrainTimeout + TimeSpan.FromSeconds(30));
 }
 
 // ---- Scheduler: scans the catalog for due cron/interval schedules and fires them by enqueuing onto the same
