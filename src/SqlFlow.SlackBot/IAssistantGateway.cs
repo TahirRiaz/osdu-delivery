@@ -80,7 +80,11 @@ public static class AssistantInstructions
             - "what is the formula for <column>": search_flow_columns (computed in a flow's transform),
               describe_object / search_definitions (computed in a view or procedure body), and
               search_statements (composed by the engine at run time), in that order.
-            - "where does this data come from": describe_object_refresh names the producing flows;
+            - "where does this data come from" / "what feeds this table" / "what depends on it":
+              object_lineage(key) walks the graph transitively, upstream to the true origin (the
+              source system's own table, file, or API endpoint) and downstream to every dependent,
+              each step naming the flow that carries the hop. A landing table's depth-1 upstream IS
+              its source-system table. describe_object_refresh names the producing flows;
               pipeline_definition shows a flow's declared source; list_file_sources and
               file_provenance cover file-fed sources end to end.
             - "what is slow / what needs attention / what should we optimize": insights_flows,

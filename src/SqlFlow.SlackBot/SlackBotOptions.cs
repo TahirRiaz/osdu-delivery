@@ -191,7 +191,7 @@ public sealed class McpOptions
         "pipeline_file_stats", "pipeline_columns",
         "list_runs", "get_run", "run_statements", "run_assertions", "run_files", "run_health_metrics",
         "list_schemas", "catalog_tree", "lineage_objects", "lineage_object_detail", "lineage_object_columns",
-        "describe_object", "describe_object_refresh", "list_file_sources", "file_provenance",
+        "describe_object", "describe_object_refresh", "object_lineage", "list_file_sources", "file_provenance",
         "lineage_edges", "lineage_waves", "lineage_dependencies",
         "list_subscribers", "describe_subscriber",
         "search_all", "search_objects", "search_columns", "search_definitions", "search_flows",

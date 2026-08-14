@@ -150,6 +150,25 @@ public sealed class SearchTranslationTests
     }
 
     [Fact]
+    public void TraversalQueries_TranslateBothLevelsServerSide()
+    {
+        using var db = Context();
+
+        // The two set queries one BFS level performs: who connects to the frontier, and what sits on the far
+        // side. Both fail only at runtime if EF cannot translate them, and a traversal endpoint that falls over
+        // on its first level answers nothing.
+        var connectors = LineageEndpoints.ConnectorsQuery(db, ["a|b|c"], ["Writes", "Creates"]).ToQueryString();
+        Assert.Contains("[LineageEdge]", connectors, StringComparison.Ordinal);
+        Assert.Contains("DISTINCT", connectors, StringComparison.Ordinal);
+
+        var farSide = LineageEndpoints.FarSideQuery(
+            db, [Guid.NewGuid()], ["dbo.v_Some_View"], ["Reads"]).ToQueryString();
+        Assert.Contains("[LineageEdge]", farSide, StringComparison.Ordinal);
+        Assert.Contains("[PipelineId]", farSide, StringComparison.Ordinal);
+        Assert.Contains("[ViaModule]", farSide, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void StatementCutoff_TreatsZeroDaysAsAllHistory()
     {
         Assert.Null(SearchEndpoints.StatementCutoff(TimeProvider.System, 0));

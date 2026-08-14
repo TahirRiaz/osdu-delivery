@@ -84,6 +84,27 @@ public sealed record ObjectDossierDto(
     IReadOnlyList<ObjectRelationshipDto> ReferencedBy,
     IReadOnlyList<ObjectSubscriberDto> Subscribers);
 
+/// <summary>
+/// One step of a lineage traversal: an object reached at <see cref="Depth"/> hops from the origin, and the flow
+/// (or module body) that carries the data across the hop. Reading upstream, the via-flow WRITES the previous
+/// level's object and READS this one; downstream mirrors it.
+/// </summary>
+public sealed record LineageStepDto(
+    int Depth, string? PipelineId, string? FlowName, string? ViaModule,
+    string ObjectKey, string ObjectName, string? Database, string? Schema, string? Kind);
+
+/// <summary>
+/// The transitive lineage of one object: everything upstream (where its data comes FROM, walked source-ward
+/// through the flows and modules that write each level) and everything downstream (where its data GOES, walked
+/// consumer-ward through the flows and modules that read each level), each as depth-annotated steps in BFS order.
+/// <see cref="Truncated"/> reports that a cap cut the walk, so absence of a node is then not proof of absence.
+/// </summary>
+public sealed record ObjectLineageDto(
+    string Key, string Name, string Kind, int Depth,
+    IReadOnlyList<LineageStepDto> Upstream,
+    IReadOnlyList<LineageStepDto> Downstream,
+    bool Truncated);
+
 /// <summary>The latest run of a producing flow: did the last population attempt work, when, and how much landed.</summary>
 public sealed record ProducerRunDto(
     string RunId, string Status, DateTime? StartUtc, DateTime? EndUtc, long? RowsLoaded);
@@ -274,6 +295,7 @@ public static class LineageEndpoints
         lineage.MapGet("/objects/repos", ListObjectReposAsync).WithName("ListLineageObjectRepos");
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
         lineage.MapGet("/objects/refresh", GetObjectRefreshAsync).WithName("GetLineageObjectRefresh");
+        lineage.MapGet("/objects/graph", GetObjectLineageAsync).WithName("GetLineageObjectGraph");
         lineage.MapGet("/file-pipelines", MatchFilePipelinesAsync).WithName("MatchFilePipelines");
         lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
         lineage.MapGet("/subscribers", ListSubscribersAsync).WithName("ListLineageSubscribers");
@@ -937,6 +959,172 @@ public static class LineageEndpoints
     /// <summary>The lineage relations that mean a flow POPULATES the object (as opposed to reading or merely
     /// requiring it).</summary>
     private static readonly string[] WritingRelations = ["Writes", "Creates"];
+
+    /// <summary>The deepest transitive walk the graph endpoint performs; deeper requests are clamped, and the
+    /// answer says the depth it actually used.</summary>
+    private const int MaxTraversalDepth = 8;
+
+    /// <summary>The most steps one direction of a traversal returns. A hub object (an audit table every flow
+    /// touches) would otherwise explode the walk; past this the answer is marked truncated instead of unbounded.</summary>
+    private const int MaxTraversalSteps = 400;
+
+    /// <summary>
+    /// The transitive lineage of one object, walked breadth-first through the edge table. Each hop alternates
+    /// between objects and the flows/modules that connect them: upstream finds who WRITES the frontier objects and
+    /// then what those writers READ; downstream finds who READS the frontier and then what those readers WRITE.
+    /// This is the traversal behind "where does this table's data come from" and "what breaks downstream", which
+    /// the single-object dossier cannot answer: its edges stop at one hop.
+    /// </summary>
+    private static async Task<Results<Ok<ObjectLineageDto>, ProblemHttpResult>> GetObjectLineageAsync(
+        string key, CatalogDbContext db, string? direction, int? depth, CancellationToken ct)
+    {
+        var identity = await db.Objects.AsNoTracking().Where(o => o.Key == key)
+            .Select(o => new { o.Key, o.Name, o.Kind })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (identity is null)
+        {
+            return NotFound("object", key);
+        }
+
+        var dir = (direction ?? "both").Trim().ToUpperInvariant();
+        if (dir is not ("BOTH" or "UPSTREAM" or "DOWNSTREAM"))
+        {
+            return TypedResults.Problem(
+                detail: "direction must be 'upstream', 'downstream', or 'both' (the default).",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid lineage request");
+        }
+
+        var levels = Math.Clamp(depth ?? 3, 1, MaxTraversalDepth);
+        var truncated = false;
+
+        List<LineageStepDto> upstream = [];
+        List<LineageStepDto> downstream = [];
+        if (dir is "BOTH" or "UPSTREAM")
+        {
+            (upstream, var cut) = await TraverseAsync(db, key, upstream: true, levels, ct).ConfigureAwait(false);
+            truncated |= cut;
+        }
+
+        if (dir is "BOTH" or "DOWNSTREAM")
+        {
+            (downstream, var cut) = await TraverseAsync(db, key, upstream: false, levels, ct).ConfigureAwait(false);
+            truncated |= cut;
+        }
+
+        return TypedResults.Ok(new ObjectLineageDto(
+            identity.Key, identity.Name, identity.Kind, levels, upstream, downstream, truncated));
+    }
+
+    /// <summary>
+    /// One direction of the walk. Per level, two set queries (never per-node queries): the connecting flows and
+    /// modules of the whole frontier, then everything on their far side. Objects already visited are not re-walked,
+    /// so a diamond (two flows landing in one table) reports each object once, at its shortest distance.
+    /// </summary>
+    private static async Task<(List<LineageStepDto> Steps, bool Truncated)> TraverseAsync(
+        CatalogDbContext db, string originKey, bool upstream, int levels, CancellationToken ct)
+    {
+        // Walking upstream: who WRITES the frontier, and what do those writers READ. Downstream mirrors it.
+        var frontierRelations = upstream ? WritingRelations : new[] { "Reads" };
+        var farSideRelations = upstream ? new[] { "Reads" } : WritingRelations;
+
+        var steps = new List<LineageStepDto>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { originKey };
+        var frontier = new List<string> { originKey };
+        var truncated = false;
+
+        for (var level = 1; level <= levels && frontier.Count > 0 && !truncated; level++)
+        {
+            // The flows and modules touching the frontier from the connecting side.
+            var connectors = await ConnectorsQuery(db, frontier, frontierRelations)
+                .Take(MaxTraversalSteps + 1)
+                .ToListAsync(ct).ConfigureAwait(false);
+            if (connectors.Count > MaxTraversalSteps)
+            {
+                truncated = true;
+                connectors.RemoveAt(connectors.Count - 1);
+            }
+
+            var pipelineIds = connectors.Where(c => c.PipelineId != null).Select(c => c.PipelineId!.Value)
+                .Distinct().ToList();
+            var modules = connectors.Where(c => c.PipelineId == null && c.ViaModule != null).Select(c => c.ViaModule!)
+                .Distinct().ToList();
+            if (pipelineIds.Count == 0 && modules.Count == 0)
+            {
+                break;
+            }
+
+            // Everything on those connectors' far side.
+            var farEdges = await FarSideQuery(db, pipelineIds, modules, farSideRelations)
+                .Take(MaxTraversalSteps + 1)
+                .ToListAsync(ct).ConfigureAwait(false);
+            if (farEdges.Count > MaxTraversalSteps)
+            {
+                truncated = true;
+                farEdges.RemoveAt(farEdges.Count - 1);
+            }
+
+            var next = new List<string>();
+            var levelSteps = new List<(string? PipelineId, string? Flow, string? ViaModule, string Key, string Name)>();
+            foreach (var edge in farEdges)
+            {
+                if (!visited.Add(edge.ObjectKey))
+                {
+                    continue;
+                }
+
+                next.Add(edge.ObjectKey);
+                levelSteps.Add((edge.PipelineId?.ToString(), edge.Flow, edge.ViaModule, edge.ObjectKey, edge.ObjectName));
+            }
+
+            // One identity lookup for the whole level, so each step names where its object lives.
+            var locations = await LoadObjectLocationsAsync(db, next, ct).ConfigureAwait(false);
+            foreach (var (pipelineId, flow, viaModule, objectKey, objectName) in levelSteps)
+            {
+                var found = locations.TryGetValue(objectKey, out var location);
+                steps.Add(new LineageStepDto(
+                    level, pipelineId, flow, viaModule, objectKey,
+                    found ? location.Name : objectName,
+                    location.Database, location.Schema, location.Kind));
+
+                if (steps.Count >= MaxTraversalSteps)
+                {
+                    return (steps, Truncated: true);
+                }
+            }
+
+            frontier = next;
+        }
+
+        return (steps, truncated);
+    }
+
+    /// <summary>The distinct flows/modules relating to any frontier object with one of the given relations
+    /// (internal so the translation test can render it to SQL).</summary>
+    internal static IQueryable<TraversalConnector> ConnectorsQuery(
+        CatalogDbContext db, List<string> frontier, string[] relations)
+        => db.LineageEdges.AsNoTracking()
+            .Where(e => frontier.Contains(e.ObjectKey) && relations.Contains(e.Relation))
+            .Select(e => new TraversalConnector(e.PipelineId, e.Flow, e.ViaModule))
+            .Distinct();
+
+    /// <summary>The edges on the far side of a set of connectors: what those flows/modules relate to with the
+    /// given relations (internal so the translation test can render it to SQL).</summary>
+    internal static IQueryable<TraversalEdge> FarSideQuery(
+        CatalogDbContext db, List<Guid> pipelineIds, List<string> modules, string[] relations)
+        => db.LineageEdges.AsNoTracking()
+            .Where(e => relations.Contains(e.Relation)
+                && ((e.PipelineId != null && pipelineIds.Contains(e.PipelineId.Value))
+                    || (e.PipelineId == null && e.ViaModule != null && modules.Contains(e.ViaModule))))
+            .OrderBy(e => e.ObjectName).ThenBy(e => e.Id)
+            .Select(e => new TraversalEdge(e.PipelineId, e.Flow, e.ViaModule, e.ObjectKey, e.ObjectName));
+
+    /// <summary>One distinct flow/module attribution in a traversal level.</summary>
+    internal sealed record TraversalConnector(Guid? PipelineId, string? Flow, string? ViaModule);
+
+    /// <summary>One far-side edge of a traversal level.</summary>
+    internal sealed record TraversalEdge(
+        Guid? PipelineId, string? Flow, string? ViaModule, string ObjectKey, string ObjectName);
 
     /// <summary>The newest run of each of the given pipelines, resolved server-side (a grouped top-1, translated
     /// to a windowed query; internal so the translation test can render it to SQL).</summary>

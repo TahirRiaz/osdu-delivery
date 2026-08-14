@@ -282,6 +282,18 @@ pub struct KeyInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ObjectLineageInput {
+    /// The object key (from search_all, describe_object, or lineage_objects).
+    pub key: String,
+    /// Which way to walk: "upstream" (where the data comes from), "downstream" (where it goes), or
+    /// "both" (default).
+    pub direction: Option<String>,
+    /// How many hops to walk (default 3, max 8). One hop is one flow/module crossing: source table ->
+    /// landing table is depth 1.
+    pub depth: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SubscribersInput {
     /// The consuming tool, exact: "PowerBI", "Tableau", "Excel", ... Omit for every type.
     /// Free text by design, so read the types back from an unfiltered call rather than guessing.
@@ -452,8 +464,9 @@ const SEARCH_SURFACES: [(&str, &str, &str); 7] = [
         "objects",
         "search_objects",
         "A warehouse table/view/proc matched by NAME. Take a hit's `key` to describe_object(key) for its \
-         columns, interpreted key, generating code, lineage edges, and join relationships, or to \
-         describe_object_refresh(key) for how it is populated and how often it updates.",
+         columns, interpreted key, generating code, lineage edges, and join relationships; to \
+         describe_object_refresh(key) for how it is populated and how often it updates; or to \
+         object_lineage(key) to walk where its data comes from and what depends on it.",
     ),
     (
         "columns",
@@ -1056,6 +1069,26 @@ impl SqlFlowMcp {
     )]
     async fn describe_object(&self, Parameters(i): Parameters<KeyInput>) -> String {
         self.get("/api/v1/lineage/objects/dossier", &[("key", i.key)]).await
+    }
+
+    #[tool(
+        description = "Walk an object's lineage TRANSITIVELY: upstream is where its data comes FROM (each hop \
+            names the flow or module that writes the level below and the object it reads: a landing table's \
+            depth-1 upstream is the source system's own table or file it is loaded from), downstream is where \
+            the data GOES and what breaks if the object changes. Steps come back depth-annotated in BFS order, \
+            each object reported once at its shortest distance. THE tool for \"where does <table> get its data\", \
+            \"what feeds this\", \"what depends on this\", and impact analysis beyond one hop; describe_object's \
+            edges stop at the object itself, this crosses the flows. `truncated: true` means a cap cut the walk, \
+            so absence of a node is then not proof of absence; re-ask with a smaller depth or one direction. \
+            Takes the object `key` from search_all / describe_object / lineage_objects."
+    )]
+    async fn object_lineage(&self, Parameters(i): Parameters<ObjectLineageInput>) -> String {
+        let q = vec![
+            ("key", i.key),
+            ("direction", i.direction.unwrap_or_default()),
+            ("depth", i.depth.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/lineage/objects/graph", &q).await
     }
 
     #[tool(
@@ -1865,6 +1898,10 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
   answers all three at once: the writing flows, each flow's latest run, and the schedules that fire it with
   the next fire time. For a view it names the modules the content derives from instead; read them with
   describe_object.
+- \"Where does <table>'s data come from / what feeds it / what depends on it?\": object_lineage(key) walks
+  the graph transitively, upstream to the true origin (the source system's table, file, or API endpoint) and
+  downstream to every dependent, each step naming the flow that carries the hop. Use it whenever the answer
+  is more than one hop away; describe_object's edge list stops at the object itself.
 - \"Which tables does this dashboard/report use?\": subscribers are the consumption side. list_subscribers
   (filter by type or search by name/owner) finds the report; describe_subscriber(key) lists every object its
   queries read and the SQL itself. The reverse (\"who consumes this table\") is in describe_object's
