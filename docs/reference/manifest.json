@@ -500,7 +500,12 @@
         "crash recovery",
         "attempt budget",
         "claim fence",
-        "busy heartbeat"
+        "busy heartbeat",
+        "graceful shutdown",
+        "drain",
+        "SIGTERM",
+        "termination grace period",
+        "scale-in"
       ],
       "cliCommand": "worker",
       "related": [

@@ -14,6 +14,11 @@ keywords:
   - attempt budget
   - claim fence
   - busy heartbeat
+  - graceful shutdown
+  - drain
+  - SIGTERM
+  - termination grace period
+  - scale-in
 cliCommand: worker
 related:
   - concept-control-plane
@@ -39,7 +44,7 @@ sourceRefs:
 ## Synopsis
 
 ```bash
-sqlflow worker [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [-v]
+sqlflow worker [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--drain-seconds N] [-v]
 ```
 
 ## Description
@@ -50,7 +55,7 @@ The queue is the catalog's `[catalog].[Run]` table itself, so queued and running
 
 The control plane hosts the very same drain loop in-process (`RunExecutionWorker` in src/SqlFlow.ControlPlane/Background/RunExecutionWorker.cs), so standalone workers are only needed when compute must live somewhere else: closer to the data, inside a network boundary, or scaled out horizontally.
 
-The command runs until Ctrl+C.
+The command runs until it receives a stop signal (SIGINT from Ctrl+C, or the SIGTERM an orchestrator sends when it reclaims the replica). A stop means "stop claiming and finish what you already hold": the in-flight runs keep executing and record their own outcomes, for up to `--drain-seconds`. See "Shutdown and the drain" below, which is the difference between a routine scale-in costing nothing and it destroying a run's progress.
 
 ## Arguments
 
@@ -63,6 +68,7 @@ The worker verb takes no positional argument. `worker` is in the parser's no-fil
 | `--db <conn-ref>` | connection reference | `${env:SQLFLOW_CATALOG_DB}` | The catalog database connection, as a secret reference (`${env:NAME}`, `${keyvault:vault/secret}`), resolved through the secret resolver. A resolution failure prints `ERROR  <redacted message>` to stderr and exits 1. |
 | `--poll-seconds N` | integer | `5` | Queue poll cadence in seconds, with a floor of 1: `0` is raised to 1, and a negative or non-numeric value falls back to the default of 5. |
 | `--pool a,b` | comma-separated list | empty | The pools this node serves. The node always drains untargeted runs; with `--pool` it additionally drains runs routed to any of the listed pools. Entries are trimmed and empty entries are dropped. |
+| `--drain-seconds N` | integer | `540` | How long a stopping node keeps executing the runs it already claimed before severing them, with a floor of 0. Keep it BELOW the orchestrator's termination grace period, or the platform's kill lands mid-drain and severs the work anyway. `0` restores the pre-drain behavior (sever at once). |
 | `-v`, `--verbose` | flag | off | Sets the console minimum log level to Debug (default is Information). |
 
 ## Behavior
@@ -74,7 +80,7 @@ The worker verb takes no positional argument. `worker` is in the parser's no-fil
 3. The worker prints its banner and starts the drain loop:
 
    ```text
-   SQLFlow worker 'ETL-NODE-01' draining the run queue (poll 5s, pools: untargeted runs only). Press Ctrl+C to stop.
+   SQLFlow worker 'ETL-NODE-01' draining the run queue (poll 5s, pools: untargeted runs only, drain 540s). Press Ctrl+C to stop, again to stop without draining.
    ```
 
    With pools the banner lists them instead: `pools: onprem, finance`.
@@ -155,9 +161,25 @@ Every recovery write is a conditional update guarded on the exact orphaned claim
 
 The fence closes the zombie race: a node that was only presumed dead (its heartbeats blocked, its process alive) may finish after its run was requeued and re-claimed. Its outcome writes present the old attempt and are dropped; the successor's writes present the current attempt and land. Requeue is safe because every flow's load is idempotent: keyed merges collapse re-runs, landing skips byte-identical files, and wave gates hold group dependents while the requeued member is `queued`.
 
-### Shutdown
+### Shutdown and the drain
 
-Ctrl+C is intercepted (the process is not killed abruptly): the worker stops claiming, cancels the loop, prints `SQLFlow worker stopped.` and exits 0. If cancellation interrupts an in-flight run, that run is left in status `running` and is requeued by the same node's next startup recovery.
+Both stop signals are intercepted, so the process is never killed abruptly:
+
+- **SIGTERM**, which is what an autoscaler reclaiming this replica, a revision swap, or `docker stop` sends. This is the one that matters in production; the runtime's default handling of it terminates the process on the spot.
+- **SIGINT**, the interactive Ctrl+C.
+
+Both are registered through `PosixSignalRegistration` with `Cancel = true` (src/SqlFlow.Cli/Program.cs), which suppresses the default termination and hands control back to the worker. It then:
+
+1. **Stops claiming.** The queue is left alone, so queued runs stay available to other nodes.
+2. **Drains.** Runs already in flight keep executing under a cancellation token that is deliberately NOT linked to the stopping token, so they finish and record their own outcomes. The node keeps heartbeating for the whole drain, which is load-bearing: a silent node is declared dead by the liveness reaper after `StaleAfterSeconds` and its runs are requeued, so a draining node that stopped beating would have the very work it is finishing re-executed underneath it.
+3. **Severs only on timeout.** If work is still in flight after `--drain-seconds`, it is cancelled and left `running` for recovery, with a warning naming the expired window. A node cannot drain forever, because the platform that asked it to stop will kill it regardless.
+4. Prints `SQLFlow worker stopped.` and exits 0.
+
+A **second** stop signal skips the drain: it falls through to the runtime's default termination, so a worker is never unkillable. The severed runs are then requeued exactly as a crash would leave them.
+
+Why this matters: a severed run records no outcome at all, so it is recovered only by the reaper's requeue, which **consumes one of its three execution attempts** and repeats all of its work. In an autoscaled fleet where replicas are reclaimed routinely, three unlucky stops inside one run's life will fail a perfectly healthy run and report that the run itself was the cause. The drain is what stops routine scale-in from manufacturing those failures.
+
+**Operational requirement:** the drain window is only real if the orchestrator waits for it. Set the platform's termination grace period ABOVE `--drain-seconds` (Container Apps `terminationGracePeriodSeconds`, Kubernetes `terminationGracePeriodSeconds`; both default to 30 seconds, which is far too short for a bulk copy). With the default 540 second drain, the estate uses 600. If the grace period is left at the default, the drain starts correctly and is then killed 30 seconds in, which rescues only the runs that were nearly finished.
 
 ## Environment variables
 
@@ -185,7 +207,7 @@ sqlflow worker --poll-seconds 5
 ```
 
 ```text
-SQLFlow worker 'ETL-NODE-01' draining the run queue (poll 5s, pools: untargeted runs only). Press Ctrl+C to stop.
+SQLFlow worker 'ETL-NODE-01' draining the run queue (poll 5s, pools: untargeted runs only, drain 540s). Press Ctrl+C to stop, again to stop without draining.
 ```
 
 Serve two pools with a faster poll and debug logging:
@@ -221,7 +243,7 @@ docker compose -f deploy/compose/docker-compose.yml up -d --scale worker=3
 
 | Condition | Exit code | Output |
 | --- | --- | --- |
-| Clean stop via Ctrl+C | 0 | `SQLFlow worker stopped.` on stdout |
+| Clean stop via SIGINT (Ctrl+C) or SIGTERM, after the drain | 0 | `SQLFlow worker stopped.` on stdout |
 | The `--db` reference fails to resolve | 1 | `ERROR  <redacted message>` on stderr (two spaces after `ERROR`) |
 
 Per-run failures do not affect the exit code; they are recorded on the run rows and logged, and the loop continues.

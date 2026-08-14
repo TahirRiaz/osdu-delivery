@@ -109,10 +109,26 @@ The entrypoint, `deploy/docker/worker-entrypoint.sh`, composes the `sqlflow work
 | `SQLFLOW_CATALOG_DB` | yes | the CLI's default `--db` reference | Catalog database connection string. |
 | `SQLFLOW_WORKER_POOL` | no | `--pool` | Comma-separated pools this node serves; empty means untargeted runs only. |
 | `SQLFLOW_WORKER_POLL_SECONDS` | no | `--poll-seconds` | Queue poll cadence; the CLI default is 5. |
+| `SQLFLOW_WORKER_DRAIN_SECONDS` | no | `--drain-seconds` | How long a stopping node finishes the runs it already claimed; the CLI default is 540. Must stay below the platform's termination grace period (see below). |
 | `SQLFLOW_GIT_TOKEN` | no | (read by git materialization) | Token for private git remotes. |
 | every `${env:...}` reference the flows use | per estate | secret resolver | Source and target connection strings resolve on the node, never in the control plane. |
 
-The underlying CLI command is `sqlflow worker [--db <conn-ref>] [--poll-seconds N] [--pool a,b]` (see `src/SqlFlow.Cli/Program.cs`). The queue's atomic claim makes any number of concurrent workers safe.
+The underlying CLI command is `sqlflow worker [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--drain-seconds N]` (see `src/SqlFlow.Cli/Program.cs`). The queue's atomic claim makes any number of concurrent workers safe.
+
+### Scale-in must not sever runs: the grace period is not optional
+
+Workers are scaled in routinely, and the platform picks its victims blindly: a replica executing a six-minute bulk copy is as likely to be reclaimed as an idle one. The worker handles SIGTERM by draining (it stops claiming and lets the runs it already holds finish and record their outcomes), but that only works if the orchestrator actually waits.
+
+**Set the termination grace period above `--drain-seconds` on every worker workload.** Both Kubernetes and Container Apps default to 30 seconds, which is shorter than most real loads:
+
+| Platform | Setting | Estate value |
+|---|---|---|
+| Kubernetes | `spec.template.spec.terminationGracePeriodSeconds` (`deploy/k8s/worker-pool.yaml`) | 600 |
+| Azure Container Apps | `properties.template.terminationGracePeriodSeconds` (`deploy/bicep/worker.bicep`, or `az containerapp update --termination-grace-period`) | 600 |
+
+Leaving it at the default does not disable the drain, it truncates it: the worker begins draining, the platform kills it 30 seconds later, and every run that needed longer is severed with no outcome recorded. Each severed run is then requeued by the reaper, which **consumes one of its three execution attempts**. A run caught by three scale-ins is failed permanently and reported as though the run itself were at fault. This is the single most common way a healthy flow acquires a mysterious "Run interrupted" failure.
+
+Note that `az containerapp update --image` (what most deploy scripts run) does **not** set this property. It has to be applied through the bicep or an explicit `--termination-grace-period` update, and it survives subsequent image swaps once set.
 
 ## Kubernetes: deploy/k8s
 
