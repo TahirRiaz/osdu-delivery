@@ -1,14 +1,27 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    SQLFlow V3 prod container deploy: build images in ACR (fast + parallel), point the
-    container apps at the new tag, verify the new revision is actually serving, and roll
-    back automatically if it is not.
+    SQLFlow V3 prod container deploy: detect which images actually changed since the
+    tag each app is serving, build those in ACR (fast + parallel), point the container
+    apps at the new tag, verify the new revision is actually serving, and roll back
+    automatically if it is not.
 
 .DESCRIPTION
     The image tag is the current commit's short SHA (what the apps actually run).
     Keep this script at the repo root. Do NOT run it while a manual deploy is in
     flight: it wipes .deploy-ctx on start.
+
+    Change detection (the single interface: run it bare and it deploys what is required):
+      * Each app declares the paths its image is built from (its Dockerfile plus the
+        source trees that Dockerfile copies). The tag an app currently serves IS a
+        commit SHA, so `git diff <servingTag> HEAD -- <paths>` decides whether the
+        image needs a rebuild. Unchanged apps are skipped, with the reason printed.
+      * Bare invocation considers control-plane, worker, and gui; mcp and slack-bot
+        join only via 'all' or by being named. Naming apps explicitly deploys them
+        unconditionally (no change filter): an explicit ask is an order, and it is
+        also the escape hatch when detection must be bypassed.
+      * An app with no serving image, a foreign image, or a tag that is not a commit
+        in this clone counts as changed: when the baseline cannot be trusted, deploy.
 
     Fast path (why this is not just `az acr build .`):
       * Context is a `git archive` of TRACKED files only, extracted to .deploy-ctx.
@@ -44,15 +57,15 @@
 
 .EXAMPLE
     .\deploy-prod.ps1
-    Build + deploy control-plane, worker, and gui.
+    Deploy whichever of control-plane, worker, and gui changed since the tag each serves.
 
 .EXAMPLE
     .\deploy-prod.ps1 all
-    Build + deploy every app: control-plane, worker, gui, mcp, and slack-bot.
+    Same change detection, but across every app: control-plane, worker, gui, mcp, slack-bot.
 
 .EXAMPLE
     .\deploy-prod.ps1 control-plane worker
-    Only those apps. Known: control-plane worker gui mcp slack-bot (or 'all' for every one)
+    Force exactly those apps, changed or not. Known: control-plane worker gui mcp slack-bot
 
 .EXAMPLE
     .\deploy-prod.ps1 -WhatIf
@@ -101,23 +114,33 @@ $NamePrefix = [ordered]@{
     'legacy' = 'sqlflow-v3-'
 }
 
-# app -> Dockerfile name (as it sits at the root of that app's context) and which context it uses.
+# app -> Dockerfile name (as it sits at the root of that app's context), which context it uses,
+# and the repo paths that feed the image (what that Dockerfile's build actually reads). Paths
+# drive change detection: an app is rebuilt only when `git diff <servingTag> HEAD -- <Paths>`
+# is non-empty. The .NET images COPY the whole repo but publish from src/ plus the root build
+# inputs, so that is what they watch; a docs- or pipeline-only commit deploys nothing.
 # 'repo' is the whole-repo archive; 'gui' is the gui/ subtree archive (its Dockerfile is at the subtree root).
+$DotnetBuildInputs = @('src', 'SqlFlow.sln', 'Directory.Build.props', 'Directory.Packages.props', 'global.json')
 $Config = [ordered]@{
-    'control-plane' = @{ Dockerfile = 'Dockerfile';          Sub = 'repo' }
-    'worker'        = @{ Dockerfile = 'Dockerfile.worker';   Sub = 'repo' }
-    'gui'           = @{ Dockerfile = 'Dockerfile';          Sub = 'gui'  }
-    'mcp'           = @{ Dockerfile = 'Dockerfile.mcp';      Sub = 'repo' }
-    'slack-bot'     = @{ Dockerfile = 'Dockerfile.slackbot'; Sub = 'repo' }
+    'control-plane' = @{ Dockerfile = 'Dockerfile';          Sub = 'repo'; Paths = @('Dockerfile') + $DotnetBuildInputs }
+    'worker'        = @{ Dockerfile = 'Dockerfile.worker';   Sub = 'repo'; Paths = @('Dockerfile.worker', 'deploy/docker/worker-entrypoint.sh') + $DotnetBuildInputs }
+    'gui'           = @{ Dockerfile = 'Dockerfile';          Sub = 'gui';  Paths = @('gui') }
+    'mcp'           = @{ Dockerfile = 'Dockerfile.mcp';      Sub = 'repo'; Paths = @('Dockerfile.mcp', 'tools', 'docs/reference') }
+    'slack-bot'     = @{ Dockerfile = 'Dockerfile.slackbot'; Sub = 'repo'; Paths = @('Dockerfile.slackbot') + $DotnetBuildInputs }
 }
 
+# Explicitly named apps deploy unconditionally; the bare default and 'all' are candidate sets
+# that change detection narrows to what is actually required.
+$ExplicitSelection = $true
 if (-not $Apps -or $Apps.Count -eq 0) {
+    # mcp and slack-bot are not in the bare default because most deploys are backend/GUI
+    # iterations that do not touch them; 'all' or naming them opts them in.
     $Apps = @('control-plane', 'worker', 'gui')
+    $ExplicitSelection = $false
 }
-# 'all' deploys every configured app, mcp and slack-bot included; they are not in the bare
-# default because most deploys are backend/GUI iterations that do not touch them.
 if ($Apps -contains 'all') {
     $Apps = @($Config.Keys)
+    $ExplicitSelection = $false
 }
 foreach ($a in $Apps) {
     if (-not $Config.Contains($a)) {
@@ -132,16 +155,18 @@ $Tag = (git rev-parse --short HEAD).Trim()
 if (-not $Tag) { throw 'Could not read git HEAD. Run this from the SQLFlow V3 repo.' }
 
 # A dirty tree means the image would NOT contain the working changes. That has burned
-# enough deploys to be an error rather than a warning.
-$dirty = git status --porcelain -- src gui
+# enough deploys to be an error rather than a warning. Checked over the watch paths of
+# every app in play, so an mcp deploy trips on uncommitted tools/ changes too.
+$watchPaths = @($Apps | ForEach-Object { $Config[$_].Paths } | Sort-Object -Unique)
+$dirty = git status --porcelain -- @watchPaths
 if ($dirty) {
     if (-not $Force) {
         Write-Host ''
-        Write-Host 'Uncommitted changes in src/ or gui/:' -ForegroundColor Yellow
-        Write-Host $dirty
+        Write-Host "Uncommitted changes in the paths these images are built from:" -ForegroundColor Yellow
+        Write-Host ($dirty | Out-String)
         throw "Refusing to deploy: image $Tag is built from the COMMITTED tree and would not include the changes above. Commit them, or pass -Force to deploy $Tag anyway."
     }
-    Write-Warning "Uncommitted changes in src/ or gui/ - image $Tag is built from the committed tree and will NOT include them (-Force given)."
+    Write-Warning "Uncommitted changes in image build paths - image $Tag is built from the committed tree and will NOT include them (-Force given)."
 }
 
 # Every az call goes through this. PowerShell 5.1 turns ANY stderr output from a native
@@ -233,10 +258,46 @@ function Resolve-Target {
     return $found[0]
 }
 
+function Get-ChangeStatus {
+    <#
+        Decides whether an app's image needs a rebuild by diffing its watch paths between
+        the commit it is SERVING (the tag on its current image is a short SHA) and HEAD.
+        Any baseline that cannot be trusted (no image, a foreign image, a tag that is not
+        a commit in this clone) counts as changed: guessing "unchanged" there would skip
+        a deploy that is in fact required, which is the one wrong answer.
+    #>
+    param([string] $App, [pscustomobject] $Record)
+
+    if (-not $Record.Image) {
+        return [pscustomobject]@{ Changed = $true; Reason = 'nothing deployed yet' }
+    }
+    if ($Record.Image -notmatch "/sqlflow-v3-$([regex]::Escape($App)):([^:/]+)$") {
+        return [pscustomobject]@{ Changed = $true; Reason = "serving a foreign image ($($Record.Image))" }
+    }
+    $baseTag = $Matches[1]
+
+    git rev-parse --quiet --verify "$baseTag^{commit}" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{ Changed = $true; Reason = "serving tag $baseTag is not a commit in this clone" }
+    }
+
+    $paths = @($Config[$App].Paths)
+    git diff --quiet $baseTag HEAD -- @paths
+    if ($LASTEXITCODE -eq 0) {
+        return [pscustomobject]@{ Changed = $false; Reason = "no changes vs serving tag $baseTag" }
+    }
+    if ($LASTEXITCODE -eq 1) {
+        $files = @(git diff --name-only $baseTag HEAD -- @paths)
+        return [pscustomobject]@{ Changed = $true; Reason = "$($files.Count) file(s) changed since $baseTag" }
+    }
+    return [pscustomobject]@{ Changed = $true; Reason = "git diff vs $baseTag failed (exit $LASTEXITCODE), assuming changed" }
+}
+
 Write-Host ''
 Write-Host '=== SQLFlow V3 deploy ===' -ForegroundColor Cyan
 Write-Host "   tag:  $Tag"
-Write-Host "   apps: $($Apps -join ', ')"
+$mode = if ($ExplicitSelection) { 'forced (named explicitly)' } else { 'candidates (change-filtered below)' }
+Write-Host "   apps: $($Apps -join ', ') [$mode]"
 Write-Host "   rg:   $Rg"
 Write-Host "   target: $Target"
 Write-Host ''
@@ -249,15 +310,39 @@ foreach ($a in $Apps) {
     Write-Host ("   {0,-14} -> {1,-28} env {2,-22} now: {3}" -f $a, $rec.Name, $rec.Environment, $rec.Image)
 }
 
+# Explicit names are an order; candidate sets (bare default, 'all') get narrowed to the
+# apps whose build inputs actually changed since the tag each one is serving.
+if (-not $ExplicitSelection) {
+    Write-Host ''
+    Write-Host '=== Change detection (build inputs vs each serving tag) ===' -ForegroundColor Cyan
+    $selected = @()
+    foreach ($a in $Apps) {
+        $st = Get-ChangeStatus -App $a -Record $targets[$a]
+        if ($st.Changed) {
+            Write-Host ("   {0,-14} deploy  {1}" -f $a, $st.Reason)
+            $selected += $a
+        }
+        else {
+            Write-Host ("   {0,-14} skip    {1}" -f $a, $st.Reason) -ForegroundColor DarkGray
+        }
+    }
+    if ($selected.Count -eq 0) {
+        Write-Host ''
+        Write-Host "Nothing to deploy: every candidate app already serves its build inputs at HEAD ($Tag)." -ForegroundColor Green
+        return
+    }
+    $Apps = $selected
+}
+
 # Deploying half the estate to one environment and half to another is never intended.
-$envs = @($targets.Values | ForEach-Object { $_.Environment } | Sort-Object -Unique)
+$envs = @($Apps | ForEach-Object { $targets[$_].Environment } | Sort-Object -Unique)
 if ($envs.Count -gt 1) {
     throw "Selected apps span more than one environment ($($envs -join ', ')). Re-run with an explicit -Target."
 }
 
 if ($WhatIf) {
     Write-Host ''
-    Write-Host "-WhatIf: nothing built or deployed. Would deploy tag $Tag to the apps above." -ForegroundColor Yellow
+    Write-Host "-WhatIf: nothing built or deployed. Would deploy tag $Tag to: $($Apps -join ', ')." -ForegroundColor Yellow
     return
 }
 
