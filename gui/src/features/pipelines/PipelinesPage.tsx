@@ -21,7 +21,7 @@ import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { groupByProject, pipelineMatches, ProjectGroup } from "./ProjectGroup";
 
 /** Every flow kind the loader recognises, acquisition-first then transform/utility (see YamlDocumentLoader). */
-const kinds = ["file", "ing", "api", "cpy", "sftp", "exp", "sp", "inv", "hc", "scm", "batch"];
+const kinds = ["file", "ing", "api", "cpy", "sftp", "exp", "trl", "sp", "inv", "hc", "scm", "batch", "cal"];
 
 /** The radix Select cannot carry an empty-string item value, so "all" stands in for the unfiltered choice. */
 const ALL = "all";

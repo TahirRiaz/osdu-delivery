@@ -25,6 +25,7 @@ public static class DocumentLoader
         {
             FileFlowDocument doc => new FileFlowDocument { Flow = ResolveRelativeLocation(doc.Flow, file) },
             ExportFlowDocument doc => new ExportFlowDocument { Document = ResolveRelativeExportPath(doc.Document, file) },
+            TranslateFlowDocument doc => new TranslateFlowDocument { Document = ResolveRelativeTranslatePath(doc.Document, file) },
             var other => other,
         };
 
@@ -48,6 +49,7 @@ public static class DocumentLoader
             HealthCheckFlowDocument doc => doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)),
             SourceControlFlowDocument doc => doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)),
             CalendarFlowDocument doc => doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)),
+            TranslateFlowDocument doc => doc.Document.Connections.Select(c => (c.Alias, c.ConnectionRef)),
             FileFlowDocument doc => [("target", doc.Flow.Target.Connection)],
             _ => Enumerable.Empty<(string, string)>(),
         };
@@ -59,6 +61,19 @@ public static class DocumentLoader
                 onSecretWarning(SecretHygiene.Warning(alias, file));
             }
         }
+    }
+
+    private static TranslateDocument ResolveRelativeTranslatePath(TranslateDocument document, string file)
+    {
+        var path = document.Flow.Output.Path;
+        if (!path.Contains("://", StringComparison.Ordinal) && !Path.IsPathRooted(path))
+        {
+            var baseDir = Path.GetDirectoryName(Path.GetFullPath(file)) ?? Directory.GetCurrentDirectory();
+            var resolved = Path.GetFullPath(Path.Combine(baseDir, path));
+            document = document with { Flow = document.Flow with { Output = document.Flow.Output with { Path = resolved } } };
+        }
+
+        return document;
     }
 
     private static ExportDocument ResolveRelativeExportPath(ExportDocument document, string file)

@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Calendar;
 using SqlFlow.Yaml;
 using Xunit;
@@ -121,7 +121,7 @@ public sealed class YamlCalendarFlowLoaderTests
             new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
             new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
             new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
+            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
 
         var doc = Assert.IsType<CalendarFlowDocument>(documents.Parse(Minimal));
         Assert.Equal("dwh_dim_calendar_00_cal", doc.Document.Flow.SysAlias);
@@ -134,7 +134,7 @@ public sealed class YamlCalendarFlowLoaderTests
             new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
             new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
             new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
+            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
 
         var doc = documents.Parse(Minimal + """
 

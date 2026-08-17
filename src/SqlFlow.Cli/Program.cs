@@ -206,6 +206,17 @@ internal static class Program
                             return 0;
                         }
 
+                        case TranslateFlowDocument doc:
+                        {
+                            var flow = doc.Document.Flow;
+                            var grain = flow.DocumentsPer == SqlFlow.Core.Translate.TranslateDocumentGrain.Row ? "per row" : "per result set";
+                            Console.WriteLine(
+                                $"OK  '{flow.SysAlias}' is valid (translate: query -> {flow.Output.Path} " +
+                                $"[{flow.Output.Mode}, one document {grain}]" +
+                                (flow.Invoke is null ? ")." : $", then {flow.Invoke.Method} {flow.Invoke.Url})."));
+                            return 0;
+                        }
+
                         default:
                             throw new SqlFlowException("Unhandled document kind.");
                     }
@@ -2750,6 +2761,30 @@ internal static class Program
                     $"OK  calendar {doc.Document.Flow.Table.QualifiedName}{createdNote}: {result.RowsGenerated} day(s) generated, " +
                     $"{result.RowsInserted} inserted, {result.RowsUpdated} updated, {result.RowsDeleted} deleted, " +
                     $"{result.ObservedDays} observed in {result.DurationSeconds}s");
+                break;
+            }
+
+            case TranslateFlowDocument doc:
+            {
+                var result = (SqlFlow.Core.Translate.TranslateRunResult)exec.Result;
+                if (!result.Success)
+                {
+                    Console.WriteLine($"FAILED  {result.Error}");
+                    break;
+                }
+
+                var delivery = doc.Document.Flow.Invoke is null
+                    ? string.Empty
+                    : $", {result.RequestsSent} request(s) delivered" +
+                      (result.RequestsSkipped > 0 ? $" ({result.RequestsSkipped} skipped)" : string.Empty);
+                Console.WriteLine(
+                    $"OK  translate '{doc.Document.Flow.SysAlias}': {result.TotalRows} row(s) -> {result.Documents} document(s) " +
+                    $"in {result.Files.Count} file(s){delivery} in {result.DurationSeconds}s");
+                foreach (var outputFile in result.Files)
+                {
+                    Console.WriteLine($"  {outputFile.Path}: {outputFile.Rows} document(s), {outputFile.Bytes} byte(s)");
+                }
+
                 break;
             }
         }

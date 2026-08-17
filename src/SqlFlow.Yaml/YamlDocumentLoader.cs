@@ -94,6 +94,13 @@ public sealed record CalendarFlowDocument : FlowDocument
     public required CalendarDocument Document { get; init; }
 }
 
+/// <summary>A translation flow document (<c>flowType: trl</c>): map a SQL query result through a declared JSON
+/// template into shaped documents, write them to a destination, and optionally deliver them to a remote API.</summary>
+public sealed record TranslateFlowDocument : FlowDocument
+{
+    public required TranslateDocument Document { get; init; }
+}
+
 /// <summary>
 /// The single entry point for loading any flow document: it sniffs the root <c>flowType</c> key with a cheap
 /// probe pass, then delegates to the matching loader. No key (the long-standing default) means a file flow;
@@ -224,6 +231,7 @@ public sealed class YamlDocumentLoader
     private readonly YamlCopyFlowLoader _copyFlows;
     private readonly YamlSftpFlowLoader _sftpFlows;
     private readonly YamlCalendarFlowLoader _calendarFlows;
+    private readonly YamlTranslateFlowLoader _translateFlows;
 
     public YamlDocumentLoader(
         YamlFlowLoader fileFlows,
@@ -237,7 +245,8 @@ public sealed class YamlDocumentLoader
         YamlAcquireFlowLoader acquireFlows,
         YamlCopyFlowLoader copyFlows,
         YamlSftpFlowLoader sftpFlows,
-        YamlCalendarFlowLoader calendarFlows)
+        YamlCalendarFlowLoader calendarFlows,
+        YamlTranslateFlowLoader translateFlows)
     {
         ArgumentNullException.ThrowIfNull(fileFlows);
         ArgumentNullException.ThrowIfNull(ingestionFlows);
@@ -251,6 +260,7 @@ public sealed class YamlDocumentLoader
         ArgumentNullException.ThrowIfNull(copyFlows);
         ArgumentNullException.ThrowIfNull(sftpFlows);
         ArgumentNullException.ThrowIfNull(calendarFlows);
+        ArgumentNullException.ThrowIfNull(translateFlows);
         _fileFlows = fileFlows;
         _ingestionFlows = ingestionFlows;
         _exportFlows = exportFlows;
@@ -263,6 +273,7 @@ public sealed class YamlDocumentLoader
         _copyFlows = copyFlows;
         _sftpFlows = sftpFlows;
         _calendarFlows = calendarFlows;
+        _translateFlows = translateFlows;
     }
 
     public FlowDocument LoadFile(string path)
@@ -351,12 +362,18 @@ public sealed class YamlDocumentLoader
             return new CalendarFlowDocument { Document = _calendarFlows.Parse(yaml, source), Schedule = schedule };
         }
 
+        if (string.Equals(flowType, "trl", StringComparison.OrdinalIgnoreCase))
+        {
+            return new TranslateFlowDocument { Document = _translateFlows.Parse(yaml, source), Schedule = schedule };
+        }
+
         throw new FlowValidationException(
             $"{source}: unknown flowType '{flowType}'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a " +
             "file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML " +
             "health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, " +
             "'api' for a generic acquisition flow (HTTP / SFTP / Azure Table), 'cpy' for a file-copy flow "
             + "(local / Azure storage / S3, with optional zip/unzip), 'cal' for a generated calendar dimension, "
+            + "'trl' for a JSON translation flow (query result to shaped documents, optionally delivered to an API), "
             + "or omit flowType for a file flow.");
     }
 

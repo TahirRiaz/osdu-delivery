@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Yaml;
 using Xunit;
 
@@ -132,7 +132,7 @@ public sealed class ScheduleMaxConcurrencyTests
             new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
             new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
             new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
+            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
 
         var document = loader.Parse(yaml);
         Assert.NotNull(document.Schedule);

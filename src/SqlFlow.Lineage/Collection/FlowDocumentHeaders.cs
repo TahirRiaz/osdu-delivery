@@ -67,6 +67,16 @@ public static class FlowDocumentHeaders
                 return [new DocumentFlowHeader(flow.SysAlias, "exp", flow.Batch, server, server, document.Schedule, Lifecycle: flow.Lifecycle)];
             }
 
+            case TranslateFlowDocument doc:
+            {
+                // A translation reads its declared query on the source server and writes files (and optionally
+                // an API endpoint); like an export, its one relational server is both sides of the header.
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                var server = ServerIdentity.From(refs[flow.SrcServer]);
+                return [new DocumentFlowHeader(flow.SysAlias, "trl", flow.Batch, server, server, document.Schedule, Lifecycle: flow.Lifecycle)];
+            }
+
             case StoredProcedureFlowDocument doc:
             {
                 var flow = doc.Document.Flow;

@@ -88,5 +88,6 @@ public sealed class ExportZipTests
         public Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default) => Task.FromResult<Stream>(new MemoryStream());
         public Task DeleteIfExistsAsync(string location, CancellationToken ct = default) => Task.CompletedTask;
         public Task<long> GetSizeAsync(string location, CancellationToken ct = default) => Task.FromResult(0L);
+        public Task<Stream> OpenReadAsync(string location, CancellationToken ct = default) => Task.FromResult<Stream>(new MemoryStream());
     }
 }

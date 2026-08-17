@@ -85,6 +85,19 @@ public sealed class AzureBlobExportDestination : IExportDestination
         }
     }
 
+    public async Task<Stream> OpenReadAsync(string location, CancellationToken ct = default)
+    {
+        var loc = AzureBlobLocation.Parse(location);
+        try
+        {
+            return await ContainerClient(loc).GetBlobClient(loc.BlobPath).OpenReadAsync(cancellationToken: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not SqlFlowException and not OperationCanceledException)
+        {
+            throw Translate(loc, ex);
+        }
+    }
+
     /// <summary>
     /// Replaces the blob with a single-entry <c>.zip</c> (legacy zipTrg): download to a temp file, zip it, upload
     /// the archive to the same path with a <c>.zip</c> extension, then delete the original blob. Both temp files

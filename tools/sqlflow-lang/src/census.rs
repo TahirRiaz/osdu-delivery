@@ -220,6 +220,8 @@ impl Census {
             Some("api") => API,
             Some("cpy") => CPY,
             Some("sftp") => SFTP,
+            Some("cal") => CAL,
+            Some("trl") => TRL,
             // Unknown flowType: fall back to the file flow so hover/completion
             // still work on the shared and root keys while diagnostics flag the
             // bad discriminator.
@@ -360,6 +362,8 @@ const BATCH: &str = include_str!("../../../docs/reference/flow/keys.batch.json")
 const API: &str = include_str!("../../../docs/reference/flow/keys.api.json");
 const CPY: &str = include_str!("../../../docs/reference/flow/keys.cpy.json");
 const SFTP: &str = include_str!("../../../docs/reference/flow/keys.sftp.json");
+const CAL: &str = include_str!("../../../docs/reference/flow/keys.cal.json");
+const TRL: &str = include_str!("../../../docs/reference/flow/keys.trl.json");
 const SHARED: &str = include_str!("../../../docs/reference/flow/keys.shared.json");
 
 #[cfg(test)]

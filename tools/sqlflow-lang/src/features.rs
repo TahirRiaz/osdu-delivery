@@ -104,7 +104,8 @@ pub struct SemanticToken {
     pub kind: SemanticTokenKind,
 }
 
-const KNOWN_FLOW_TYPES: &[&str] = &["ing", "exp", "sp", "inv", "hc", "scm", "batch", "api"];
+const KNOWN_FLOW_TYPES: &[&str] =
+    &["ing", "exp", "sp", "inv", "hc", "scm", "batch", "api", "cpy", "sftp", "cal", "trl"];
 
 // --- Rendering -------------------------------------------------------------
 
@@ -349,7 +350,7 @@ pub fn diagnostics(doc: &FlowDocument) -> Vec<Diagnostic> {
                     range: loc.value_range,
                     severity: Severity::Error,
                     message: format!(
-                        "unknown flowType '{ft}'. Use one of: ing, exp, sp, inv, hc, scm, batch, or omit flowType for a file flow."
+                        "unknown flowType '{ft}'. Use one of: ing, exp, sp, inv, hc, scm, batch, api, cpy, sftp, cal, trl, or omit flowType for a file flow."
                     ),
                     code: Some("flow-unknown-flowtype".to_string()),
                 });

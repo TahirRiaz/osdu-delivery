@@ -20,7 +20,8 @@ public sealed class FlowSetCollector
         new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
         new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
         new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-        new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
+        new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(),
+        new YamlTranslateFlowLoader());
 
     private readonly YamlScheduleLibraryLoader _scheduleLibraries = new();
 
@@ -513,6 +514,36 @@ public sealed class FlowSetCollector
                 break;
             }
 
+            case TranslateFlowDocument doc:
+            {
+                var flow = doc.Document.Flow;
+                RegisterServers(result, doc.Document.Connections);
+                var server = headers[0].TargetServerRef;
+
+                // The flow's true inbound is whatever tables its declared SQL reads: the primary query and every
+                // dataset query go through the same T-SQL extraction as authored hook scripts, so the graph
+                // shows source table -> translate flow instead of the flow floating as an output-only root.
+                ExtractHook(result, headers[0].Name, server, flow.Query, $"{file}: source.query", defaultDatabase: null);
+                foreach (var dataset in flow.Datasets)
+                {
+                    ExtractHook(result, headers[0].Name, server, dataset.Query, $"{file}: datasets.{dataset.Name}", defaultDatabase: null);
+                }
+
+                // The saved documents are a declared file drop: the writes fact records the folder, and the
+                // producer registration lets reconciliation bind any downstream file flow watching it.
+                result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, flow.Output.Path, root));
+                producers.Add(new FileProducer(headers[0].Name, [new FileOutput { Location = flow.Output.Path }]));
+
+                // The optional delivery endpoint is an outbound the flow writes, mirroring how an acquisition
+                // records its inbound endpoints, so the graph carries where the documents actually go.
+                if (flow.Invoke is not null)
+                {
+                    result.Facts.Add(FileFact(headers[0].Name, LineageRelation.Writes, flow.Invoke.Url, root));
+                }
+
+                break;
+            }
+
             case StoredProcedureFlowDocument doc:
             {
                 RegisterServers(result, doc.Document.Connections);
@@ -712,7 +743,7 @@ public sealed class FlowSetCollector
     /// <summary>A document hook is raw author T-SQL: the same operation-wise extractor derives what it
     /// touches, attributed to the flow as declared lineage through the shared fact mapping.</summary>
     private static void ExtractHook(
-        CollectionResult result, string flow, string serverRef, string? sql, string label, string defaultDatabase)
+        CollectionResult result, string flow, string serverRef, string? sql, string label, string? defaultDatabase)
     {
         if (string.IsNullOrWhiteSpace(sql))
         {

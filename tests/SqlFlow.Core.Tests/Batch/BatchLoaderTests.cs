@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Batch;
 using SqlFlow.Yaml;
 using Xunit;
@@ -67,7 +67,7 @@ public sealed class BatchLoaderTests
         var documents = new YamlDocumentLoader(
             new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
             new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-            new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
+            new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
 
         var doc = Assert.IsType<BatchFlowDocument>(documents.Parse("""
             flowType: batch

@@ -49,6 +49,18 @@ public sealed class LocalExportDestination : IExportDestination
         return Task.FromResult(File.Exists(path) ? new FileInfo(path).Length : 0);
     }
 
+    public Task<Stream> OpenReadAsync(string location, CancellationToken ct = default)
+    {
+        var path = Normalize(location);
+        if (!File.Exists(path))
+        {
+            throw new SqlFlowException($"Cannot read '{path}': the file does not exist.");
+        }
+
+        Stream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: true);
+        return Task.FromResult(stream);
+    }
+
     public Task<string> ZipAsync(string location, CancellationToken ct = default)
     {
         var path = Normalize(location);

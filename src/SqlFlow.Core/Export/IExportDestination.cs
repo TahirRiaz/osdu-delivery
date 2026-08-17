@@ -23,6 +23,11 @@ public interface IExportDestination
     /// <summary>The size in bytes of the file at the location (0 if absent), read after the write completes.</summary>
     Task<long> GetSizeAsync(string location, CancellationToken ct = default);
 
+    /// <summary>Opens a readable stream over a file this destination previously wrote. The translate flow's
+    /// delivery step reads the saved documents back through this, so what is posted to the remote API is
+    /// byte-for-byte what was landed. A missing file is an error, not an empty stream.</summary>
+    Task<Stream> OpenReadAsync(string location, CancellationToken ct = default);
+
     /// <summary>Compress the file at the location in place, replacing it with a single-entry <c>.zip</c> and
     /// returning the new location (legacy ZipTrg). The default is unsupported: a destination that cannot
     /// compress surfaces a clear error rather than silently ignoring a requested zip, so no flow believes it

@@ -1430,6 +1430,43 @@
       ]
     },
     {
+      "id": "flow-trl",
+      "path": "flow/trl.md",
+      "title": "Translate flow (flowType: trl): query results to shaped JSON, saved and delivered",
+      "type": "flow-reference",
+      "summary": "flowType: trl maps a SQL query result through a declared JSON template into arbitrarily shaped documents, always saves them to a destination first (deterministic overwrite), and optionally delivers exactly the saved documents to a remote HTTP API.",
+      "keywords": [
+        "translate",
+        "trl",
+        "json template",
+        "document mapping",
+        "osdu",
+        "api delivery",
+        "envelope",
+        "forEach",
+        "datasets",
+        "jsonl"
+      ],
+      "related": [
+        "flow-overview",
+        "flow-exp",
+        "flow-api",
+        "flow-schedule",
+        "concept-connections-and-secrets"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Translate/TranslateFlow.cs",
+        "src/SqlFlow.Core/Translate/TranslateTemplate.cs",
+        "src/SqlFlow.Core/Translate/TranslateTemplateText.cs",
+        "src/SqlFlow.Translate/TranslateFlowRunner.cs",
+        "src/SqlFlow.Translate/JsonTemplateRenderer.cs",
+        "src/SqlFlow.Translate/TranslateDatasetIndex.cs",
+        "src/SqlFlow.Translate/TranslateOutputWriter.cs",
+        "src/SqlFlow.Translate/TranslateInvoker.cs",
+        "src/SqlFlow.Yaml/YamlTranslateFlowLoader.cs"
+      ]
+    },
+    {
       "id": "flow-connections",
       "path": "flow/connections.md",
       "title": "connections block and endpoint resolution",

@@ -179,6 +179,7 @@ public sealed class DocumentExecutor : IDocumentRunner
             SftpFlowDocument doc => await ExecuteSftpAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             SourceControlFlowDocument doc => await ExecuteSourceControlAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             CalendarFlowDocument doc => await ExecuteCalendarAsync(doc, flowFile, options, ct).ConfigureAwait(false),
+            TranslateFlowDocument doc => await ExecuteTranslateAsync(doc, flowFile, options, ct).ConfigureAwait(false),
             _ => throw new SqlFlowException($"Cannot run document kind '{document.GetType().Name}'."),
         };
     }
@@ -379,6 +380,43 @@ public sealed class DocumentExecutor : IDocumentRunner
         {
             FlowName = flowName,
             FlowKind = "exp",
+            Success = result.Success,
+            Error = result.Error,
+            RunId = result.RunId,
+            RunDirectory = runDirectory,
+            DurationSeconds = result.DurationSeconds,
+            Result = result,
+            SqlTraceText = SqlTrace.Render(result.SqlTrace),
+        };
+    }
+
+    private async Task<DocumentExecutionResult> ExecuteTranslateAsync(TranslateFlowDocument doc, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
+    {
+        var flowName = doc.Document.Flow.SysAlias;
+        var (runLogger, events, eventSink) = BuildEventPlumbing(options, flowName);
+        NoteInapplicableParameters(eventSink, options.Parameters, "trl");
+        var runner = SqlFlow.Translate.WithoutDatabaseTranslate.BuildRunner(
+            doc.Document.Connections,
+            _provider.GetRequiredService<ISecretResolver>(),
+            // Local plus the Azure blob/ADLS destination, exactly as the export flow composes them: the runner
+            // selects by CanHandle, and the delivery step reads the saved files back through the same seam.
+            destinations: [new LocalExportDestination(), new AzureBlobExportDestination(_provider.GetRequiredService<IAzureCredentialFactory>())]);
+        var result = await runner.RunAsync(
+            doc.Document.Flow,
+            new IngestionRunOptions { ExecMode = "cli", Events = eventSink, RunId = options.RunId, StatementSink = options.StatementSink },
+            ct).ConfigureAwait(false);
+
+        var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["run.json"] = JsonSerializer.Serialize(Artifact("trl", flowName, result.RunId, result.Success, result.Error, result, events.Records), ExecutionJson.Options),
+            ["run.log"] = runLogger.Render(),
+            ["trace.sql"] = SqlTrace.Render(result.SqlTrace),
+        }, _warningSink);
+
+        return new DocumentExecutionResult
+        {
+            FlowName = flowName,
+            FlowKind = "trl",
             Success = result.Success,
             Error = result.Error,
             RunId = result.RunId,

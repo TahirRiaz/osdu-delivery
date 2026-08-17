@@ -54,11 +54,12 @@ Every SQLFlow pipeline is a single YAML document. There is no control database a
 | `cpy` | copy | `YamlCopyFlowLoader` | Copies files byte-for-byte between storage endpoints (local disk, Azure Blob/ADLS, S3), with optional zip/unzip |
 | `sftp` | SFTP transfer | `YamlSftpFlowLoader` | Downloads files from an SFTP server into the lake/local, or uploads the other way |
 | `cal` | calendar | `YamlCalendarFlowLoader` | Generates a date dimension for a declared range from rules alone (no source) and merges it into a table |
+| `trl` | translate | `YamlTranslateFlowLoader` | Maps a SQL query result through a declared JSON template into arbitrarily shaped documents, saves them to a destination, and optionally delivers the saved documents to a remote API |
 
 Any other value fails fast at parse time with a `FlowValidationException` carrying the full menu, instead of a confusing downstream validation failure:
 
 ```text
-<file>: unknown flowType '<x>'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, 'api' for a generic acquisition flow (HTTP / SFTP / Azure Table), 'cpy' for a file-copy flow (local / Azure storage / S3, with optional zip/unzip), 'cal' for a generated calendar dimension, or omit flowType for a file flow.
+<file>: unknown flowType '<x>'. Use 'ing' for a table-to-table ingestion flow, 'exp' for a file export, 'sp' for a stored-procedure flow, 'inv' for an ADF/Automation trigger, 'hc' for an ML health check, 'scm' for a database source-control snapshot, 'batch' for an ordered multi-flow batch, 'api' for a generic acquisition flow (HTTP / SFTP / Azure Table), 'cpy' for a file-copy flow (local / Azure storage / S3, with optional zip/unzip), 'cal' for a generated calendar dimension, 'trl' for a JSON translation flow (query result to shaped documents, optionally delivered to an API), or omit flowType for a file flow.
 ```
 
 ## What every document kind shares
@@ -134,6 +135,11 @@ Every run writes its artifacts to a timestamped run folder under `.sqlflow/runs/
 | `flowType: inv` | `inv` |
 | `flowType: scm` | `scm` |
 | `flowType: batch` | `batch` |
+| `flowType: api` | `api` |
+| `flowType: cpy` | `cpy` |
+| `flowType: sftp` | `sftp` |
+| `flowType: cal` | `cal` |
+| `flowType: trl` | `trl` |
 
 Global run options that apply across kinds: `--show-sql` prints the generated SQL to the console after any run; `--log-level info|debug|trace` sets the `run.log` detail for ing/exp/sp/hc runs (trace weaves every statement into the timeline); `--json` outputs the run result as JSON. `--dry-run` and `--no-push` apply to scm runs.
 
@@ -190,7 +196,7 @@ Two identity behaviors worth knowing:
 - `name` derives `FlowDefinition.FlowId`, a deterministic GUID computed from the name. It is not authored in YAML, it is identical on every execution, and renaming the flow yields a new identity by design. Logs, lineage, and run history join on it.
 - The loader injects `options["flowId"]` (the derived GUID string) into `source.options`, so metadata records carry the identity too.
 
-## The seven flowType kinds, at a glance
+## The flowType kinds, at a glance
 
 Each kind has its own document shape and its own reference page; the snippets below show the minimal discriminating shape, adapted from samples/.
 
@@ -314,6 +320,25 @@ members:
 
 Member paths are globs relative to the batch document's directory. Lineage computes concurrency waves over the members, each wave runs concurrently, and the whole wave finishes before the next starts. A batch cannot be a member of another batch; attempting it fails the member with `a batch cannot be a member of another batch.` Full sample: samples/seed/seed-batch.flow.yaml.
 
+### flowType: trl
+
+```yaml
+flowType: trl
+name: osdu-dataset-translate
+source:
+  connection: ${env:SQLFLOW_DW}
+  query: SELECT DatasetId, FileName FROM DW.edw.DatasetFile
+template:
+  id: "kolumbus:dataset--File.Generic:{DatasetId}"
+  kind: osdu:wks:dataset--File.Generic:1.1.0
+  data:
+    Name: "{FileName}"
+output:
+  path: ./out/osdu/dataset
+```
+
+One document per query row (or one per result set), shaped by the template: plain keys are object properties, sequences are arrays, `"{Column}"` substitutes a row value (a whole-string token keeps the column's native JSON type), and `$`-prefixed directives cover typing, null handling, and `$forEach` arrays over bound child datasets. The documents are always saved first (deterministic overwrite), and an optional `invoke:` block then delivers the saved files to an HTTP API through the same auth/reliability surface as an api flow. Full sample: samples/translate/osdu-dataset-translate.flow.yaml. Reference: [Translate flows (flowType: trl)](./trl.md).
+
 ## Working with any document kind
 
 ```bash
@@ -335,5 +360,6 @@ sqlflow plan samples/quickstart/orders.flow.yaml
 - [File flow source section](./source.md)
 - [Ingestion flows (flowType: ing)](./ing.md)
 - [Batch flows (flowType: batch)](./batch.md)
+- [Translate flows (flowType: trl)](./trl.md)
 - [Flow identity](../concepts/flow-identity.md)
 - [sqlflow validate](../cli/validate.md)

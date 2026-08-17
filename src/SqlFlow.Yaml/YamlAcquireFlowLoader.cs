@@ -224,7 +224,9 @@ public sealed class YamlAcquireFlowLoader
         return result;
     }
 
-    private static AcquireAuth MapAuth(AcquireAuthYaml? y, string source)
+    /// <summary>Maps an <c>auth:</c> block. Internal because the translate loader reuses the exact same auth
+    /// surface (and mapping) for its <c>invoke.auth</c>, so there is one auth dialect engine-wide.</summary>
+    internal static AcquireAuth MapAuth(AcquireAuthYaml? y, string source, string fieldPrefix = "source.auth")
     {
         if (y is null)
         {
@@ -233,17 +235,17 @@ public sealed class YamlAcquireFlowLoader
 
         return new AcquireAuth
         {
-            Type = ParseEnum(y.Type, AcquireAuthType.None, "source.auth.type", source),
+            Type = ParseEnum(y.Type, AcquireAuthType.None, $"{fieldPrefix}.type", source),
             SecretRef = YamlDocumentParts.NullIfBlank(y.SecretRef),
             SecondarySecretRef = YamlDocumentParts.NullIfBlank(y.SecondarySecretRef),
             HeaderName = YamlDocumentParts.NullIfBlank(y.HeaderName),
             ParamName = YamlDocumentParts.NullIfBlank(y.ParamName),
             ValuePrefix = y.ValuePrefix,
-            Token = MapToken(y.Token, source),
+            Token = MapToken(y.Token, source, fieldPrefix),
         };
     }
 
-    private static AcquireTokenEndpoint? MapToken(AcquireTokenYaml? y, string source)
+    private static AcquireTokenEndpoint? MapToken(AcquireTokenYaml? y, string source, string fieldPrefix)
     {
         if (y is null)
         {
@@ -255,7 +257,7 @@ public sealed class YamlAcquireFlowLoader
             Url = YamlDocumentParts.NullIfBlank(y.Url),
             DiscoveryUrl = YamlDocumentParts.NullIfBlank(y.DiscoveryUrl),
             Method = string.IsNullOrWhiteSpace(y.Method) ? "POST" : y.Method!.Trim(),
-            BodyKind = ParseEnum(y.BodyKind, AcquireBodyKind.Form, "source.auth.token.bodyKind", source),
+            BodyKind = ParseEnum(y.BodyKind, AcquireBodyKind.Form, $"{fieldPrefix}.token.bodyKind", source),
             Body = y.Body ?? new Dictionary<string, string>(StringComparer.Ordinal),
             RawBody = YamlDocumentParts.NullIfBlank(y.RawBody),
             Headers = y.Headers ?? new Dictionary<string, string>(StringComparer.Ordinal),
@@ -358,7 +360,7 @@ public sealed class YamlAcquireFlowLoader
     /// <summary>Validates <c>reliability.skipStatusCodes</c>. A code outside 100-599 is a typo, and a 2xx can never
     /// reach the skip path (a success is landed, not thrown), so both fail at parse rather than silently doing
     /// nothing at run time.</summary>
-    private static IReadOnlyList<int> MapSkipStatusCodes(List<int>? codes, string source)
+    private static IReadOnlyList<int> MapSkipStatusCodes(List<int>? codes, string source, string fieldPrefix)
     {
         if (codes is null || codes.Count == 0)
         {
@@ -370,36 +372,39 @@ public sealed class YamlAcquireFlowLoader
             if (code is < 100 or > 599)
             {
                 throw new FlowValidationException(
-                    $"{source}: 'source.reliability.skipStatusCodes' holds {code}, which is not an HTTP status code (100-599).");
+                    $"{source}: '{fieldPrefix}.skipStatusCodes' holds {code}, which is not an HTTP status code (100-599).");
             }
 
             if (code is >= 200 and <= 299)
             {
                 throw new FlowValidationException(
-                    $"{source}: 'source.reliability.skipStatusCodes' holds {code}; a 2xx response is landed, never skipped. " +
-                    "List only the non-2xx statuses a single fan-out request may be tolerated to fail with (e.g. 400, 404, 410).");
+                    $"{source}: '{fieldPrefix}.skipStatusCodes' holds {code}; a 2xx response is a success, never skipped. " +
+                    "List only the non-2xx statuses a single request may be tolerated to fail with (e.g. 400, 404, 410).");
             }
         }
 
         return codes.Distinct().OrderBy(c => c).ToList();
     }
 
-    private static AcquireReliability MapReliability(AcquireReliabilityYaml? y, string source)
+    /// <summary>Maps a <c>reliability:</c> block. Internal because the translate loader reuses the exact same
+    /// reliability surface (and mapping) for its <c>invoke.reliability</c>.</summary>
+    internal static AcquireReliability MapReliability(
+        AcquireReliabilityYaml? y, string source, string fieldPrefix = "source.reliability", int defaultConcurrency = 8)
     {
         if (y is null)
         {
-            return new AcquireReliability();
+            return new AcquireReliability { Concurrency = Math.Max(1, defaultConcurrency) };
         }
 
         return new AcquireReliability
         {
             TimeoutSeconds = y.TimeoutSeconds ?? 100,
             RateLimitRps = y.RateLimitRps ?? 0,
-            Concurrency = Math.Max(1, y.Concurrency ?? 8),
+            Concurrency = Math.Max(1, y.Concurrency ?? defaultConcurrency),
             MaxResponseBytes = y.MaxResponseBytes ?? (500L * 1024 * 1024),
             VerifyTls = y.VerifyTls ?? true,
             UrlAllowlist = y.UrlAllowlist ?? [],
-            SkipStatusCodes = MapSkipStatusCodes(y.SkipStatusCodes, source),
+            SkipStatusCodes = MapSkipStatusCodes(y.SkipStatusCodes, source, fieldPrefix),
             Retry = y.Retry is null
                 ? new AcquireRetry()
                 : new AcquireRetry

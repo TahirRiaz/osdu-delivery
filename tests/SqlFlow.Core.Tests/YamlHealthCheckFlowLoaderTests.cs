@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.HealthChecks;
 using SqlFlow.Core.Runs;
@@ -284,7 +284,7 @@ public sealed class YamlHealthCheckFlowLoaderTests
     {
         var documents = new YamlDocumentLoader(
             new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
-            new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader());
+            new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(), new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
 
         var doc = Assert.IsType<HealthCheckFlowDocument>(documents.Parse(Minimal));
         Assert.Equal("orders-rowcount", doc.Document.Flow.SysAlias);
