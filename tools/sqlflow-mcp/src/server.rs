@@ -113,7 +113,7 @@ pub struct ValidateFlowInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FlowTypeInput {
-    /// The flow kind: omit for the file flow, or one of ing, exp, sp, inv, hc, scm, batch.
+    /// The flow kind: omit for the file flow, or one of ing, exp, sp, inv, hc, scm, batch, api, cpy, sftp, cal, trl.
     #[serde(rename = "flowType")]
     pub flow_type: Option<String>,
 }
