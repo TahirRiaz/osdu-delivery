@@ -331,7 +331,6 @@ public static class SearchEndpoints
         var query = StatementGroups(db, term, StatementCutoff(clock, window));
         var total = await query.LongCountAsync(ct).ConfigureAwait(false);
         var groups = await query
-            .OrderByDescending(g => g.LastStatementId)
             .Skip((p - 1) * size).Take(size).ToListAsync(ct).ConfigureAwait(false);
 
         var items = await MapStatementsAsync(db, groups, term, ct).ConfigureAwait(false);
@@ -374,8 +373,7 @@ public static class SearchEndpoints
 
         var stmtQuery = StatementGroups(db, term, StatementCutoff(clock, DefaultStatementWindowDays));
         var stmtTotal = await stmtQuery.LongCountAsync(ct).ConfigureAwait(false);
-        var stmtGroups = await stmtQuery
-            .OrderByDescending(g => g.LastStatementId).Take(PreviewSize).ToListAsync(ct).ConfigureAwait(false);
+        var stmtGroups = await stmtQuery.Take(PreviewSize).ToListAsync(ct).ConfigureAwait(false);
         var stmtItems = await MapStatementsAsync(db, stmtGroups, term, ct).ConfigureAwait(false);
 
         return TypedResults.Ok(new AllSearchDto(
@@ -556,7 +554,8 @@ public static class SearchEndpoints
         => windowDays <= 0 ? null : clock.GetUtcNow().UtcDateTime - TimeSpan.FromDays(windowDays);
 
     /// <summary>
-    /// Executed statements matching the term, collapsed to one group per (flow, step). The engine emits the same
+    /// Executed statements matching the term, collapsed to one group per (flow, step) and ordered newest group
+    /// first (callers page it as-is; see the ordering note inside). The engine emits the same
     /// statement shape every run, so grouping is what makes this surface readable: without it a term in a nightly
     /// merge returns one hit per night. Each group carries the newest matching statement's id, which the mapper
     /// resolves to its text in one round trip for the whole page.
@@ -582,11 +581,24 @@ public static class SearchEndpoints
                 || x.Run.FlowName.Contains(t));
         }
 
+        // Newest group first, ordered BEFORE the record projection: EF Core cannot see through a constructor
+        // projection, so an OrderBy a caller chains onto the projected record fails to translate at runtime.
+        // Ordering here on the anonymous shape keeps the whole query, including a caller's Skip/Take, in SQL.
         return rows
             .GroupBy(x => new { x.Run.PipelineId, x.Run.FlowName, x.Run.FlowKind, x.Statement.Step })
-            .Select(g => new StatementGroup(
-                g.Key.PipelineId, g.Key.FlowName, g.Key.FlowKind, g.Key.Step,
-                g.LongCount(), g.Max(x => x.Statement.Id), g.Max(x => x.Statement.TimestampUtc)));
+            .Select(g => new
+            {
+                g.Key.PipelineId,
+                g.Key.FlowName,
+                g.Key.FlowKind,
+                g.Key.Step,
+                Occurrences = g.LongCount(),
+                LastStatementId = g.Max(x => x.Statement.Id),
+                LastSeenUtc = g.Max(x => x.Statement.TimestampUtc),
+            })
+            .OrderByDescending(x => x.LastStatementId)
+            .Select(x => new StatementGroup(
+                x.PipelineId, x.FlowName, x.FlowKind, x.Step, x.Occurrences, x.LastStatementId, x.LastSeenUtc));
     }
 
     /// <summary>

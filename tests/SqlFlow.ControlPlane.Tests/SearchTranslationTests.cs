@@ -111,7 +111,11 @@ public sealed class SearchTranslationTests
         using var db = Context();
         var cutoff = SearchEndpoints.StatementCutoff(TimeProvider.System, 90);
 
-        var sql = SearchEndpoints.StatementGroups(db, Query("SourceRank"), cutoff).ToQueryString();
+        // Composed exactly as the endpoints consume it: paged on top of the builder. The ordering lives inside
+        // the builder because chaining an OrderBy onto the projected record is the untranslatable shape that
+        // took down /search/all in production.
+        var sql = SearchEndpoints.StatementGroups(db, Query("SourceRank"), cutoff)
+            .Skip(20).Take(20).ToQueryString();
 
         Assert.Contains("[RunStatement]", sql, StringComparison.Ordinal);
         // The collapse to one row per (flow, step) and the occurrence count must be the database's work: the
@@ -119,6 +123,9 @@ public sealed class SearchTranslationTests
         Assert.Contains("GROUP BY", sql, StringComparison.Ordinal);
         Assert.Contains("COUNT", sql, StringComparison.Ordinal);
         Assert.Contains("MAX(", sql, StringComparison.Ordinal);
+        // Newest-first paging must also be the database's work, on the aggregated id, not a client re-sort.
+        Assert.Contains("ORDER BY", sql, StringComparison.Ordinal);
+        Assert.Contains("DESC", sql, StringComparison.Ordinal);
     }
 
     [Fact]
