@@ -9,15 +9,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="SlackNet" />
-    <PackageReference Include="Azure.Identity" />
-    <!-- The official Anthropic SDK, used by the Anthropic provider mode (Messages API + MCP connector). -->
-    <PackageReference Include="Anthropic" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Single code path for Azure auth: the same credential factory the engine uses for Key Vault and
-         ADF/Automation also signs this service into the Foundry project (managed identity in Azure,
-         az login on a dev box). -->
+    <!-- The shared assistant core (gateways, instructions, provider settings): the same code path
+         that answers in the GUI chat answers here, with Slack formatting. It brings SqlFlow.Azure
+         along for the managed-identity Foundry sign-in. -->
+    <ProjectReference Include="..\SqlFlow.Assistant\SqlFlow.Assistant.csproj" />
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
   </ItemGroup>
 

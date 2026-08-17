@@ -2588,7 +2588,7 @@
         "concept-control-plane"
       ],
       "sourceRefs": [
-        "src/SqlFlow.SlackBot/FoundryAgentGateway.cs",
+        "src/SqlFlow.Assistant/ResponsesApiGateway.cs",
         "src/SqlFlow.SlackBot/SlackAssistantHandler.cs",
         "src/SqlFlow.SlackBot/SlackBotOptions.cs",
         "tools/sqlflow-mcp/src/http_server.rs",
@@ -2596,6 +2596,49 @@
         "deploy/bicep/mcp.bicep",
         "deploy/bicep/ai-foundry.bicep",
         "deploy/slack/manifest.yaml"
+      ]
+    },
+    {
+      "id": "guide-chat-assistant",
+      "path": "guides/chat-assistant.md",
+      "title": "The GUI chat assistant: the SQLFlow agent in the workbench, with per-user authority and voice input",
+      "type": "guide",
+      "summary": "How the GUI's Assistant page answers questions - the same assistant core as the Slack bot, streamed over SSE from the control plane, with tool calls made under the signed-in user's own token, persisted conversations, image paste, and voice input via server-side transcription.",
+      "keywords": [
+        "chat",
+        "assistant",
+        "gui",
+        "streaming",
+        "sse",
+        "conversations",
+        "foundry",
+        "responses api",
+        "mcp",
+        "per-user",
+        "voice",
+        "dictation",
+        "transcription",
+        "image",
+        "screenshot"
+      ],
+      "related": [
+        "guide-slack-assistant",
+        "guide-deployment",
+        "concept-authentication-and-identity",
+        "concept-control-plane"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Assistant/IAssistantGateway.cs",
+        "src/SqlFlow.Assistant/ResponsesApiGateway.cs",
+        "src/SqlFlow.Assistant/AnthropicGateway.cs",
+        "src/SqlFlow.Assistant/TranscriptionGateway.cs",
+        "src/SqlFlow.ControlPlane/Api/ChatEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs",
+        "src/SqlFlow.Catalog/CatalogEntities.cs",
+        "gui/src/features/chat/ChatPage.tsx",
+        "gui/src/features/chat/chatAdapters.ts",
+        "deploy/bicep/control-plane.bicep",
+        "deploy/bicep/ai-foundry.bicep"
       ]
     },
     {

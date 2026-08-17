@@ -114,6 +114,12 @@ param aiFoundryModelVersion string = ''
 @description('Capacity for the model deployment, in thousands of tokens per minute.')
 param aiFoundryModelCapacity int = 30
 
+@description('Optional audio-transcription model deployed beside the chat model (e.g. gpt-4o-mini-transcribe), enabling the GUI chat assistant\'s server-side voice input. Empty deploys none; the mic then falls back to the browser\'s built-in speech recognition.')
+param aiFoundryTranscriptionModelName string = ''
+
+@description('Version of the transcription model. Empty lets the service pick the current default version.')
+param aiFoundryTranscriptionModelVersion string = ''
+
 @description('Container image for the SQLFlow MCP server in HTTP mode, e.g. <registry>/sqlflow-mcp:latest (built from Dockerfile.mcp). Empty skips it, and with it the Slack assistant.')
 param mcpImage string = ''
 
@@ -227,6 +233,10 @@ var slackBotModelApiKeySecretName = 'sqlflow-slack-bot-model-api-key'
 // mode, or the provider API key in the OpenAI/Anthropic modes. Anything missing simply leaves the assistant
 // out of this deployment; the rest of the estate is unaffected.
 var mcpEnabled = !empty(mcpImage)
+// The GUI chat assistant rides on the same building blocks (a Foundry model + the MCP server) and
+// needs nothing else, so it lights up automatically once both exist. It shares the assistant core
+// with the Slack bot but not its identity: every chat run carries the signed-in user's own bearer.
+var chatAssistantEnabled = mcpEnabled && !empty(aiFoundryName) && !empty(aiFoundryModelName)
 var slackBotUsesApiKey = slackBotProvider != 'AzureFoundry'
 var slackBotProviderReady = slackBotUsesApiKey
   ? !empty(slackBotModelApiKey)
@@ -500,6 +510,12 @@ module controlPlane 'control-plane.bicep' = {
     azureAdDefaultRole: azureAdDefaultRole
     acrName: acrName
     acrLoginServer: acrLoginServer
+    // The GUI chat assistant, on the estate's own Foundry account and MCP server (see chatAssistantEnabled).
+    assistantEnabled: chatAssistantEnabled
+    assistantFoundryProjectEndpoint: chatAssistantEnabled ? aiFoundryProjectEndpoint : ''
+    assistantFoundryModelDeploymentName: chatAssistantEnabled ? aiFoundryModelName : ''
+    assistantFoundryTranscriptionDeploymentName: chatAssistantEnabled ? aiFoundryTranscriptionModelName : ''
+    assistantMcpServerUrl: chatAssistantEnabled ? mcp!.outputs.mcpUrl : ''
     minReplicas: controlPlaneMinReplicas
     maxReplicas: controlPlaneMaxReplicas
   }
@@ -584,15 +600,22 @@ module aiFoundry 'ai-foundry.bicep' = if (!empty(aiFoundryName)) {
     modelName: aiFoundryModelName
     modelVersion: aiFoundryModelVersion
     modelCapacity: aiFoundryModelCapacity
+    transcriptionModelName: aiFoundryTranscriptionModelName
+    transcriptionModelVersion: aiFoundryTranscriptionModelVersion
     userPrincipalIds: [
       controlPlane.outputs.identityPrincipalId
       worker.outputs.identityPrincipalId
     ]
-    // Foundry access matters only when the Slack assistant actually runs on Foundry; the key-based
+    // The OpenAI-inference role (Responses API + audio transcription): the Slack bot's identity when
+    // it runs on Foundry, and the control plane's when the GUI chat assistant is on. The key-based
     // providers never touch the account.
-    agentPrincipalIds: (slackBotEnabled && !slackBotUsesApiKey) ? [
-      slackBot!.outputs.identityPrincipalId
-    ] : []
+    agentPrincipalIds: concat(
+      (slackBotEnabled && !slackBotUsesApiKey) ? [
+        slackBot!.outputs.identityPrincipalId
+      ] : [],
+      chatAssistantEnabled ? [
+        controlPlane.outputs.identityPrincipalId
+      ] : [])
   }
 }
 

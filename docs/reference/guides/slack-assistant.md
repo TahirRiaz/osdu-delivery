@@ -20,11 +20,12 @@ keywords:
   - diagnose missing data
   - lineage
 related:
+  - guide-chat-assistant
   - guide-deployment
   - concept-authentication-and-identity
   - concept-control-plane
 sourceRefs:
-  - src/SqlFlow.SlackBot/FoundryAgentGateway.cs
+  - src/SqlFlow.Assistant/ResponsesApiGateway.cs
   - src/SqlFlow.SlackBot/SlackAssistantHandler.cs
   - src/SqlFlow.SlackBot/SlackBotOptions.cs
   - tools/sqlflow-mcp/src/http_server.rs
@@ -62,14 +63,14 @@ Each hop has one job. `sqlflow-slack-bot` (`SqlFlow.SlackBot`) is a Socket Mode 
 
 The bot drives Foundry through the **OpenAI Responses API**, not the older persistent-agents (Assistants) API. This is a hard requirement of the MCP tool, not a preference: current model deployments support the MCP tool only through the Responses API. A persistent-agents run with a current model fails - `gpt-5-mini` returns `unsupported_model: This model only supports Responses API compatible tools`, and `gpt-5.1` is accepted at create time but fails at run time - and the models the persistent-agents MCP tool did support (`gpt-4.1`, `gpt-4o`) are closed to new deployments. So the model deployment behind the assistant must be one that supports both the Responses API and its MCP tool. There is no built-in default: `aiFoundryModelName` is empty unless you set it (empty deploys no model), so the model must be chosen explicitly at deploy time. Any Responses-API + MCP-capable deployment works; the Bicep recommends `gpt-5.1`.
 
-The gateway (`FoundryAgentGateway`) builds each request as: the model deployment name, the instructions (the assistant persona and tool guidance, the single source of truth for behavior), an `input` (the new turn, or the replayed Slack transcript on a cold thread), and one `mcp` tool object carrying the MCP server URL, `require_approval: never`, the `Authorization` header, and the tool allowlist. There is no hosted agent object to create or converge; the definition lives entirely in the request.
+The gateway (`ResponsesApiGateway`, shared with the GUI chat assistant via the `SqlFlow.Assistant` library) builds each request as: the model deployment name, the instructions (the assistant persona and tool guidance, the single source of truth for behavior), an `input` (the new turn, or the replayed Slack transcript on a cold thread), and one `mcp` tool object carrying the MCP server URL, `require_approval: never`, the `Authorization` header, and the tool allowlist. There is no hosted agent object to create or converge; the definition lives entirely in the request.
 
 ## Read-only by construction (two independent guarantees)
 
-1. **The tool allowlist.** The MCP tool is sent with `allowed_tools` set to the read-only surface (`SlackBotOptions.Foundry.AllowedTools`): the docs tools, the catalog readers (`list_pipelines`, `list_runs`, `get_run`, `lineage_*`, `describe_object`, the `search_*` tools including `search_all` and the flow-side surfaces `search_flows`/`search_flow_columns`/`search_statements`, `summary`), and nothing that writes. `trigger_run`, `cancel_run`, and `propose_pipelines` are deliberately excluded.
+1. **The tool allowlist.** The MCP tool is sent with `allowed_tools` set to the read-only surface (`SlackBot:Mcp:AllowedTools`): the docs tools, the catalog readers (`list_pipelines`, `list_runs`, `get_run`, `lineage_*`, `describe_object`, the `search_*` tools including `search_all` and the flow-side surfaces `search_flows`/`search_flow_columns`/`search_statements`, `summary`), and nothing that writes. `trigger_run`, `cancel_run`, and `propose_pipelines` are deliberately excluded.
 2. **The token scope.** The bot's whole SQLFlow authority is one **read-scoped** personal access token, sent to the MCP server as the MCP tool's `Authorization` header and forwarded to the control plane per call. Even if a write tool were reachable, the control plane rejects it: a read token calling `cancel_run` returns `403 insufficient scope`.
 
-Everyone in a workspace shares this one bot identity, which is why the allowlist stays read-only: widening it (for example adding `trigger_run`) would let anyone in any channel the bot is in fire it. Do not, until a per-user identity model exists.
+Everyone in a workspace shares this one bot identity, which is why the allowlist stays read-only: widening it (for example adding `trigger_run`) would let anyone in any channel the bot is in fire it. Do not widen it here; the surface with a per-user identity is the [GUI chat assistant](chat-assistant.md), where every agent run carries the signed-in user's own token.
 
 ## Conversation state
 

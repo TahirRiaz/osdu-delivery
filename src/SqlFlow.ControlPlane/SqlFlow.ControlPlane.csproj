@@ -26,6 +26,9 @@
     <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />
     <ProjectReference Include="..\SqlFlow.Node\SqlFlow.Node.csproj" />
     <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
+    <!-- The shared assistant core behind /api/v1/chat: the exact code path the Slack bot answers
+         with, streamed to the GUI with per-user MCP authority. -->
+    <ProjectReference Include="..\SqlFlow.Assistant\SqlFlow.Assistant.csproj" />
   </ItemGroup>
 
   <ItemGroup>

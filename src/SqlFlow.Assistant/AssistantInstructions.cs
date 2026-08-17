@@ -1,51 +1,58 @@
-namespace SqlFlow.SlackBot;
-
-/// <summary>One prior message of a Slack thread, replayed when the model conversation must be rebuilt.</summary>
-/// <param name="FromBot">True when the message was posted by this bot (an assistant turn).</param>
-/// <param name="Text">The message text as Slack delivered it.</param>
-public readonly record struct ConversationTurn(bool FromBot, string Text);
+namespace SqlFlow.Assistant;
 
 /// <summary>
-/// The model-provider boundary: one implementation per <see cref="AssistantProvider"/>, all
-/// consuming the same SQLFlow MCP server as their tool source and the same instructions, so the
-/// Slack experience is identical regardless of which provider answers. The Slack side never knows
-/// which one it is talking to.
-/// </summary>
-public interface IAssistantGateway
-{
-    /// <summary>
-    /// Answers one question in the context of a Slack thread. <paramref name="priorTurns"/> is the
-    /// thread's transcript excluding the new question; providers with server-side conversation
-    /// state consume it only when rebuilding, stateless providers send it on every call.
-    /// <paramref name="imageDataUris"/> carries the message's image attachments as data URIs.
-    /// </summary>
-    Task<string> AskAsync(
-        string channel,
-        string threadTs,
-        IReadOnlyList<ConversationTurn> priorTurns,
-        string question,
-        IReadOnlyList<string> imageDataUris,
-        CancellationToken ct);
-}
-
-/// <summary>
-/// The assistant instructions shared by every provider, so switching providers never changes what
-/// the bot knows about SQLFlow or how it behaves in Slack.
+/// The assistant instructions shared by every provider and surface, so switching providers never
+/// changes what the assistant knows about SQLFlow, and switching surfaces (Slack, the GUI chat)
+/// changes only the output formatting and how entities are linked.
 /// </summary>
 public static class AssistantInstructions
 {
-    public static string Build(SlackBotOptions options)
+    public static string Build(AssistantSettings settings)
     {
-        var gui = options.SqlFlow.GuiBaseUrl.TrimEnd('/');
-        var linkGuidance = gui.Length > 0
-            ? $"""
-               When you reference a run, link it as <{gui}/runs/RUN_ID|the run>; a pipeline as
-               <{gui}/pipelines/PIPELINE_ID|the pipeline>. Use real ids from tool results.
-               """
-            : "Reference runs and pipelines by their names and ids from tool results.";
+        ArgumentNullException.ThrowIfNull(settings);
+        var gui = settings.GuiBaseUrl.TrimEnd('/');
+
+        string opening;
+        string linkGuidance;
+        string formatting;
+        string readOnlyGuidance;
+        if (settings.Surface == AssistantSurface.Slack)
+        {
+            opening = "You are the SQLFlow assistant in Slack.";
+            linkGuidance = gui.Length > 0
+                ? $"""
+                   When you reference a run, link it as <{gui}/runs/RUN_ID|the run>; a pipeline as
+                   <{gui}/pipelines/PIPELINE_ID|the pipeline>. Use real ids from tool results.
+                   """
+                : "Reference runs and pipelines by their names and ids from tool results.";
+            formatting = $"""
+                You are talking in Slack: format for Slack mrkdwn. *bold* for emphasis (never
+                double-asterisk), bullet lists with the - character, `inline code` for object and flow
+                names, code blocks only for SQL or YAML. Keep answers tight: lead with the finding,
+                then only the supporting detail a data engineer needs. {linkGuidance}
+                """;
+            readOnlyGuidance = "explain that this Slack assistant is read-only and point to the SQLFlow GUI or CLI";
+        }
+        else
+        {
+            opening = "You are the SQLFlow assistant, chatting inside the SQLFlow GUI.";
+            var linkBase = gui.Length > 0 ? gui : "";
+            linkGuidance = $"""
+                When you reference a run, link it as [the run]({linkBase}/runs/RUN_ID); a pipeline as
+                [the pipeline]({linkBase}/pipelines/PIPELINE_ID). Use real ids from tool results.
+                """;
+            formatting = $"""
+                Format answers as GitHub-flavored Markdown: **bold** for emphasis, bullet lists with
+                the - character, `inline code` for object and flow names, and fenced code blocks
+                tagged with their language (```sql, ```yaml) for SQL or YAML. Keep answers tight:
+                lead with the finding, then only the supporting detail a data engineer needs.
+                {linkGuidance}
+                """;
+            readOnlyGuidance = "explain that the chat assistant is read-only and link the GUI page where they can do it themselves (a run's page to cancel it, the schedules page to trigger or change one)";
+        }
 
         return $"""
-            You are the SQLFlow assistant in Slack. SQLFlow is a data-integration platform: T-SQL
+            {opening} SQLFlow is a data-integration platform: T-SQL
             against SQL Server, orchestrated by .flow.yaml documents, with a control plane that
             tracks repos, pipelines (flows), runs, lineage, schedules, and worker nodes.
 
@@ -113,17 +120,13 @@ public static class AssistantInstructions
             (for example `SELECT COUNT(*) AS rows, MAX([FileDate_DW]) AS latest FROM [schema].[table]`),
             the most recent batches, or a check for the values they suspect are missing. Put each query in
             a code block. If asked to trigger,
-            cancel, or change anything, explain that this Slack assistant is read-only and point to the
-            SQLFlow GUI or CLI.
+            cancel, or change anything, {readOnlyGuidance}.
 
             A message may include images (for example a screenshot of an error or a flow YAML). Read them:
             transcribe the relevant text, then answer the question using your tools as usual (look up the
             named run, table, or flow key rather than guessing from the picture alone).
 
-            You are talking in Slack: format for Slack mrkdwn. *bold* for emphasis (never
-            double-asterisk), bullet lists with the - character, `inline code` for object and flow
-            names, code blocks only for SQL or YAML. Keep answers tight: lead with the finding,
-            then only the supporting detail a data engineer needs. {linkGuidance}
+            {formatting}
 
             SQLFlow is a distinct product from DeltaForge; your tools and their docs corpus are the
             only source of truth.

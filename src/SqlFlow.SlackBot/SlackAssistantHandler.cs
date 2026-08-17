@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using SlackNet;
 using SlackNet.Events;
 using SlackNet.WebApi;
+using SqlFlow.Assistant;
 
 namespace SqlFlow.SlackBot;
 
@@ -148,8 +149,16 @@ public sealed partial class SlackAssistantHandler : IEventHandler<AppMention>, I
             await _concurrency.WaitAsync().ConfigureAwait(false);
             gated = true;
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(_options.RunTimeoutSeconds + 30));
-            var answer = await _gateway.AskAsync(channel, threadTs, priorTurns, question, images, timeout.Token)
-                .ConfigureAwait(false);
+            var answer = await _gateway.AskAsync(new AssistantRequest
+            {
+                ConversationKey = $"{channel}:{threadTs}",
+                PriorTurns = priorTurns,
+                Question = question,
+                ImageDataUris = images,
+                // The MCP server forwards this verbatim to the control plane, which enforces the
+                // token's scopes; the read-scoped bot token is the whole authority of every run.
+                McpBearer = _options.SqlFlow.AccessToken,
+            }, timeout.Token).ConfigureAwait(false);
 
             await PostAsync(channel, threadTs, SlackMrkdwn.FromMarkdown(answer)).ConfigureAwait(false);
         }

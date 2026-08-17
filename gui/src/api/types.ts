@@ -1801,3 +1801,72 @@ export interface TopQueriesResult {
   database: string | null;
   queries: ExpensiveQuery[];
 }
+
+// ---- Chat assistant (/api/v1/chat) ---------------------------------------------------------------------------------
+
+/** What the chat feature can do under the current deployment, so the GUI shows only affordances that work. */
+export interface ChatCapabilities {
+  enabled: boolean;
+  provider: string;
+  images: boolean;
+  transcription: boolean;
+  maxImages: number;
+  maxImageBytes: number;
+}
+
+export interface ChatConversation {
+  id: string;
+  title: string;
+  createdUtc: string;
+  updatedUtc: string;
+}
+
+/** One tool call an answer made (in call order); status is "started" | "completed" | "failed". */
+export interface ChatToolCall {
+  name: string;
+  status: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  ordinal: number;
+  role: "user" | "assistant";
+  text: string;
+  images: string[];
+  toolCalls: ChatToolCall[];
+  createdUtc: string;
+}
+
+export interface ChatAskRequest {
+  conversationId: string | null;
+  question: string;
+  images: string[];
+}
+
+/** The ask stream's first frame: which conversation the turn landed in (minted when the request named none). */
+export interface ChatStreamConversation {
+  id: string;
+  title: string;
+  userMessageId: number;
+  userMessageOrdinal: number;
+}
+
+export interface ChatStreamDelta {
+  text: string;
+}
+
+/** The ask stream's terminal frame: the persisted assistant message. */
+export interface ChatStreamDone {
+  messageId: number;
+  ordinal: number;
+  text: string;
+  toolCalls: ChatToolCall[];
+}
+
+export interface ChatStreamError {
+  message: string;
+}
+
+export interface ChatTranscription {
+  text: string;
+}

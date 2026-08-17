@@ -80,6 +80,10 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogNotificationEvent> NotificationEvents => Set<CatalogNotificationEvent>();
 
+    public DbSet<CatalogChatConversation> ChatConversations => Set<CatalogChatConversation>();
+
+    public DbSet<CatalogChatMessage> ChatMessages => Set<CatalogChatMessage>();
+
     public DbSet<CatalogNotificationSubscription> NotificationSubscriptions => Set<CatalogNotificationSubscription>();
 
     public DbSet<CatalogNotificationDelivery> NotificationDeliveries => Set<CatalogNotificationDelivery>();
@@ -604,6 +608,28 @@ public sealed class CatalogDbContext : DbContext
             entity.HasKey(w => w.Id);
             // The single row's id is assigned by code (WellKnownId), never by the database.
             entity.Property(w => w.Id).ValueGeneratedNever();
+        });
+
+        modelBuilder.Entity<CatalogChatConversation>(entity =>
+        {
+            entity.ToTable("ChatConversation");
+            entity.HasKey(c => c.Id);
+            entity.Property(c => c.Title).HasMaxLength(200).IsRequired();
+            // The owner's conversation list, newest activity first.
+            entity.HasIndex(c => new { c.UserId, c.UpdatedUtc });
+        });
+
+        modelBuilder.Entity<CatalogChatMessage>(entity =>
+        {
+            entity.ToTable("ChatMessage");
+            entity.HasKey(m => m.Id);
+            entity.Property(m => m.Role).HasMaxLength(16).IsRequired();
+            // Text / ImagesJson / ToolCallsJson are nvarchar(max): an answer, a set of pasted
+            // screenshots, or a long tool trail has no useful column bound.
+            entity.Property(m => m.Text).IsRequired();
+            // A transcript reads one conversation in emission order; unique because the appender
+            // computes the next ordinal inside the save, so a duplicate is a bug surfaced early.
+            entity.HasIndex(m => new { m.ConversationId, m.Ordinal }).IsUnique();
         });
 
         modelBuilder.Entity<CatalogAccessToken>(entity =>

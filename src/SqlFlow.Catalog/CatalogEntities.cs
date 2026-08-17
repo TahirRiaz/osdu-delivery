@@ -1746,3 +1746,68 @@ public class CatalogNotificationWatermark
 
     public DateTime UpdatedUtc { get; set; }
 }
+
+/// <summary>
+/// One GUI chat conversation with the SQLFlow assistant: the durable transcript the assistant's
+/// provider-side state is only a cache of (exactly as a Slack thread is for the Slack bot). Owned
+/// by one user; a conversation is never visible to anyone else. The title is derived from the
+/// first question and rename-able. Deleting a conversation deletes its messages.
+/// </summary>
+public class CatalogChatConversation
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The owning user (<see cref="CatalogUser.Id"/>); a soft link, matching the rest of the catalog.</summary>
+    public Guid UserId { get; set; }
+
+    /// <summary>The conversation's display title: the first question's opening words until renamed.</summary>
+    public string Title { get; set; } = string.Empty;
+
+    public DateTime CreatedUtc { get; set; }
+
+    /// <summary>When the conversation last gained a message; what the conversation list orders by.</summary>
+    public DateTime UpdatedUtc { get; set; }
+}
+
+/// <summary>The two author roles a <see cref="CatalogChatMessage"/> can carry, stored as short lowercase strings.</summary>
+public static class ChatMessageRoles
+{
+    public const string User = "user";
+    public const string Assistant = "assistant";
+}
+
+/// <summary>
+/// One message of a GUI chat conversation, append-only in <see cref="Ordinal"/> order: the user's
+/// questions (with their image attachments) and the assistant's answers (with the tool calls the
+/// answer made, for the transcript's tool-activity display). The persisted transcript is what
+/// rebuilds the model conversation when the provider-side chain is lost, so a control-plane
+/// restart or a re-opened browser loses nothing.
+/// </summary>
+public class CatalogChatMessage
+{
+    /// <summary>The append-only, monotonically increasing id (SQL Server IDENTITY).</summary>
+    public long Id { get; set; }
+
+    /// <summary>The conversation this message belongs to (soft link, like every catalog reference).</summary>
+    public Guid ConversationId { get; set; }
+
+    /// <summary>1-based position within the conversation (emission order).</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>Who authored the message (see <see cref="ChatMessageRoles"/>).</summary>
+    public string Role { get; set; } = string.Empty;
+
+    /// <summary>The message text: the user's question, or the assistant's answer as Markdown.</summary>
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>A JSON array of <c>data:&lt;mime&gt;;base64,...</c> image URIs attached to a user
+    /// question; null when the message carries no images.</summary>
+    public string? ImagesJson { get; set; }
+
+    /// <summary>A JSON array of the tool calls an assistant answer made (name and final status, in
+    /// call order), so a re-opened transcript still shows what the assistant looked at; null when
+    /// the answer used no tools (or for user messages).</summary>
+    public string? ToolCallsJson { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+}

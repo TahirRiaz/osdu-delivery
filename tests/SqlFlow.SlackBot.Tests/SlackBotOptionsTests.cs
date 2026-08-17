@@ -1,3 +1,4 @@
+using SqlFlow.Assistant;
 using SqlFlow.SlackBot;
 using Xunit;
 

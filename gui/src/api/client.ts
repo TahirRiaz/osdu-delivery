@@ -212,6 +212,7 @@ export interface SseFrame {
  * signal aborts. Built on fetch (not EventSource) so the bearer token travels in the Authorization header like
  * every other call; the caller owns reconnect policy. Heartbeat comments are consumed silently. Resolves when
  * the server ends the stream; rejects with an AbortError on cancellation and an ApiError on a failed handshake.
+ * An action stream (the chat assistant's answer) POSTs a JSON body via `init`; plain tails default to GET.
  */
 export async function streamSse(
   path: string,
@@ -219,6 +220,7 @@ export async function streamSse(
   onFrame: (frame: SseFrame) => void,
   signal: AbortSignal,
   onOpen?: () => void,
+  init?: { method?: "GET" | "POST"; body?: unknown },
 ): Promise<void> {
   const base = runtimeConfig().apiBaseUrl;
   const url = new URL(`${base}${path}`);
@@ -234,8 +236,16 @@ export async function streamSse(
   if (currentToken) {
     headers.Authorization = `Bearer ${currentToken}`;
   }
+  if (init?.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
 
-  const response = await fetch(url, { method: "GET", headers, signal });
+  const response = await fetch(url, {
+    method: init?.method ?? "GET",
+    headers,
+    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+    signal,
+  });
   if (response.status === 401 && currentToken) {
     onUnauthorized?.();
   }
@@ -299,6 +309,48 @@ function parseSseFrame(raw: string): SseFrame | null {
 
 export function post<T>(path: string, body?: unknown): Promise<T> {
   return request<T>({ method: "POST", path, body });
+}
+
+/**
+ * POST for a raw binary body (the chat voice recording): same auth and error shaping as every other
+ * call, but the payload travels as-is under its own content type instead of JSON.
+ */
+export async function postBinary<T>(
+  path: string,
+  body: Blob,
+  contentType: string,
+  query?: QueryParams,
+  signal?: AbortSignal,
+): Promise<T> {
+  const base = runtimeConfig().apiBaseUrl;
+  const url = new URL(`${base}${path}`);
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== null && value !== undefined && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+
+  const headers: Record<string, string> = { Accept: "application/json", "Content-Type": contentType };
+  if (currentToken) {
+    headers.Authorization = `Bearer ${currentToken}`;
+  }
+
+  const response = await fetch(url, { method: "POST", headers, body, signal: signal ?? null });
+  if (response.status === 401 && currentToken) {
+    onUnauthorized?.();
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("Retry-After");
+    pauseForRateLimit(retryAfter ? Number.parseInt(retryAfter, 10) || null : null);
+  }
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+
+  const text = await response.text();
+  return (text.length > 0 ? (JSON.parse(text) as T) : (undefined as T));
 }
 
 export function put<T>(path: string, body?: unknown): Promise<T> {

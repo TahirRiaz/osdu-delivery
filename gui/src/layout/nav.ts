@@ -2,6 +2,7 @@ import {
   Activity,
   Bell,
   BookOpen,
+  BotMessageSquare,
   Cable,
   CalendarClock,
   CalendarRange,
@@ -53,6 +54,7 @@ export const navGroups: NavGroup[] = [
     icon: Activity,
     items: [
       { label: "Dashboard", to: "/", icon: LayoutDashboard, testId: "nav-dashboard" },
+      { label: "Assistant", to: "/chat", icon: BotMessageSquare, testId: "nav-chat" },
       { label: "Insights", to: "/insights", icon: Gauge, testId: "nav-insights" },
       { label: "Runs", to: "/runs", icon: CirclePlay, testId: "nav-runs" },
       { label: "Nodes", to: "/nodes", icon: Server, testId: "nav-nodes" },

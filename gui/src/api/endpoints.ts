@@ -1,9 +1,11 @@
 // Thin, typed wrappers over the control plane's /api/v1 surface: one function per endpoint, nothing else.
 // Auth, error shaping, and rate-limit handling live in client.ts; pages compose these with TanStack Query.
 
-import { del, get, getAnonymous, getText, post, postAnonymous, put, streamSse, type QueryParams, type SseFrame } from "./client";
+import { del, get, getAnonymous, getText, post, postAnonymous, postBinary, put, streamSse, type QueryParams, type SseFrame } from "./client";
 import type {
-  AccessToken, AllSearchResult, Attention, AuthProviders, ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
+  AccessToken, AllSearchResult, Attention, AuthProviders,
+  ChatAskRequest, ChatCapabilities, ChatConversation, ChatMessage, ChatTranscription,
+  ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
   ComputeTaskSummary, CreateAccessTokenRequest, CreateNotificationSubscriptionRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   FlowInsights, Recommendations, StepInsights,
@@ -480,6 +482,23 @@ export const notificationApi = {
 };
 
 // ---- Maintenance (run-trace storage retention) ------------------------------------------------------------------
+
+// ---- Chat assistant (per-user conversations, streamed answers) ---------------------------------------------------
+
+export const chatApi = {
+  capabilities: () => get<ChatCapabilities>("/api/v1/chat/capabilities"),
+  listConversations: () => get<ChatConversation[]>("/api/v1/chat/conversations"),
+  renameConversation: (id: string, title: string) =>
+    put<ChatConversation>(`/api/v1/chat/conversations/${id}`, { title }),
+  deleteConversation: (id: string) => del<void>(`/api/v1/chat/conversations/${id}`),
+  messages: (id: string) => get<ChatMessage[]>(`/api/v1/chat/conversations/${id}/messages`),
+  /** One question, answered as SSE: a `conversation` frame, then `tool`/`delta` frames, then `done` (or `error`). */
+  ask: (request: ChatAskRequest, onFrame: (frame: SseFrame) => void, signal: AbortSignal, onOpen?: () => void) =>
+    streamSse("/api/v1/chat/ask", undefined, onFrame, signal, onOpen, { method: "POST", body: request }),
+  /** Sends a voice recording (as recorded by MediaRecorder) and returns its transcription. */
+  transcribe: (audio: Blob, fileName: string, signal?: AbortSignal) =>
+    postBinary<ChatTranscription>("/api/v1/chat/transcribe", audio, audio.type || "audio/webm", { fileName }, signal),
+};
 
 export const maintenanceApi = {
   traceStorage: () => get<RunTraceStorage>("/api/v1/maintenance/trace-storage"),

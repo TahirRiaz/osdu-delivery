@@ -8,6 +8,7 @@ import { lazyRoute } from "./lib/lazyRoute";
 
 // Feature pages are lazy so heavy dependencies (Monaco, React Flow, Recharts) load with their page, not at boot.
 const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
+const ChatPage = lazyRoute("ChatPage", () => import("./features/chat/ChatPage"));
 const InsightsPage = lazyRoute("InsightsPage", () => import("./features/insights/InsightsPage"));
 const RunsPage = lazyRoute("RunsPage", () => import("./features/runs/RunsPage"));
 const RunDetailPage = lazyRoute("RunDetailPage", () => import("./features/runs/RunDetailPage"));
@@ -53,6 +54,8 @@ export default function App() {
           )}
         >
           <Route path="/" element={<DashboardPage />} />
+          {/* The SQLFlow assistant: chat over the estate, tools served by the SQLFlow MCP server. */}
+          <Route path="/chat" element={<ChatPage />} />
           <Route path="/insights" element={<InsightsPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/groups/:groupId" element={<RunGroupPage />} />

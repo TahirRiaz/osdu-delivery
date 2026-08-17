@@ -38,6 +38,8 @@ public sealed class ControlPlaneOptions
 
     public RunTraceRetentionOptions RunTrace { get; set; } = new();
 
+    public AssistantChatOptions Assistant { get; set; } = new();
+
     /// <summary>Validates the options, throwing a clear startup error for any missing or unsafe required value.
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
     public void Validate()
@@ -120,6 +122,7 @@ public sealed class ControlPlaneOptions
         Proxy.Validate();
         Notifications.Validate();
         RunTrace.Validate();
+        Assistant.Validate();
     }
 }
 
@@ -746,6 +749,84 @@ public sealed class SlackNotificationOptions
             || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
         {
             throw new InvalidOperationException("ControlPlane:Notifications:Slack:BaseUrl must be an absolute http(s) URL.");
+        }
+    }
+}
+
+/// <summary>
+/// The GUI chat assistant (section <c>ControlPlane:Assistant</c>): the same SqlFlow.Assistant core
+/// the Slack bot runs, hosted behind the control plane's <c>/api/v1/chat</c> surface with GUI
+/// (Markdown) formatting and streaming. Disabled by default: the chat endpoints then report the
+/// feature as unavailable instead of failing startup, so an estate without an AI deployment runs
+/// unchanged. Unlike the Slack bot, no assistant access token is configured here: every agent run
+/// forwards the calling user's own bearer to the MCP server, so tool access is exactly that user's
+/// access. The <c>ApiKey</c> fields accept <c>${env:...}</c>/<c>${keyvault:...}</c> references,
+/// resolved through the engine's secret chain at first use.
+/// </summary>
+public sealed class AssistantChatOptions
+{
+    /// <summary>Turns the chat assistant on. Off, the chat endpoints answer with a clear
+    /// "not configured" problem and the capabilities endpoint reports it, so the GUI can hide chat.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>The model provider answering questions (AzureFoundry, OpenAI, Anthropic).</summary>
+    public SqlFlow.Assistant.AssistantProvider Provider { get; set; } = SqlFlow.Assistant.AssistantProvider.AzureFoundry;
+
+    public SqlFlow.Assistant.McpOptions Mcp { get; set; } = new();
+
+    public SqlFlow.Assistant.FoundryOptions Foundry { get; set; } = new();
+
+    public SqlFlow.Assistant.OpenAIOptions OpenAI { get; set; } = new();
+
+    public SqlFlow.Assistant.AnthropicOptions Anthropic { get; set; } = new();
+
+    /// <summary>Ceiling for one agent run before it is cancelled and reported as timed out.</summary>
+    public int RunTimeoutSeconds { get; set; } = 180;
+
+    /// <summary>How many prior conversation messages are replayed when the provider-side
+    /// conversation must be rebuilt (the persisted transcript is the durable record).</summary>
+    public int MaxReplayMessages { get; set; } = 20;
+
+    /// <summary>How many image attachments one question may carry. 0 disables image input.</summary>
+    public int MaxImages { get; set; } = 4;
+
+    /// <summary>Largest accepted image (bytes); a larger attachment is rejected with a clear error.</summary>
+    public long MaxImageBytes { get; set; } = 8_000_000;
+
+    /// <summary>Optional GUI base URL for absolute entity links in answers; empty links relative,
+    /// which is correct when the chat renders inside the GUI itself.</summary>
+    public string GuiBaseUrl { get; set; } = "";
+
+    /// <summary>Maps the bound configuration onto the shared assistant settings the gateways
+    /// consume (GUI surface). The nested option instances are shared, not copied.</summary>
+    public SqlFlow.Assistant.AssistantSettings ToAssistantSettings() => new()
+    {
+        Provider = Provider,
+        Surface = SqlFlow.Assistant.AssistantSurface.Gui,
+        Mcp = Mcp,
+        Foundry = Foundry,
+        OpenAI = OpenAI,
+        Anthropic = Anthropic,
+        RunTimeoutSeconds = RunTimeoutSeconds,
+        MaxReplayMessages = MaxReplayMessages,
+        MaxImages = MaxImages,
+        MaxImageBytes = MaxImageBytes,
+        GuiBaseUrl = GuiBaseUrl,
+    };
+
+    public void Validate()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        var missing = new List<string>();
+        ToAssistantSettings().CollectMissing("ControlPlane:Assistant", missing);
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Assistant is enabled but incomplete:\n  - " + string.Join("\n  - ", missing));
         }
     }
 }

@@ -74,6 +74,21 @@ param acrName string = ''
 @description('Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set.')
 param acrLoginServer string = ''
 
+@description('Enable the GUI chat assistant (/api/v1/chat): the same assistant core as the Slack bot, streamed to the GUI, with every agent run forwarding the calling user\'s own bearer to the MCP server. Requires the Foundry and MCP parameters below; the key-based providers are configured out of band via ControlPlane__Assistant__* env vars instead.')
+param assistantEnabled bool = false
+
+@description('The Foundry project endpoint the assistant runs against (https://<account>.services.ai.azure.com/api/projects/<project>). Required when assistantEnabled.')
+param assistantFoundryProjectEndpoint string = ''
+
+@description('The model deployment the assistant runs on. Required when assistantEnabled.')
+param assistantFoundryModelDeploymentName string = ''
+
+@description('Optional audio-transcription deployment in the same account; empty leaves voice input on the browser\'s built-in speech recognition.')
+param assistantFoundryTranscriptionDeploymentName string = ''
+
+@description('The deployed SQLFlow MCP server endpoint (https://<mcp host>/mcp), the assistant\'s tool source. Required when assistantEnabled.')
+param assistantMcpServerUrl string = ''
+
 @description('Minimum replicas. Keep at 1 so the API is warm (a trigger never waits on a cold start).')
 @minValue(1)
 param minReplicas int = 1
@@ -231,6 +246,33 @@ var proxyEnv = empty(proxyKnownNetworks) ? [] : concat([
   }
 ], proxyNetworkEnv)
 
+// The GUI chat assistant (Foundry mode: the identity above signs into the account, no API key). The chat
+// endpoints stay mapped when disabled and report the switch via /chat/capabilities, so this block is the
+// whole difference between an estate with chat and one without.
+var assistantEnv = !assistantEnabled ? [] : concat([
+  {
+    name: 'ControlPlane__Assistant__Enabled'
+    value: 'true'
+  }
+  {
+    name: 'ControlPlane__Assistant__Foundry__ProjectEndpoint'
+    value: assistantFoundryProjectEndpoint
+  }
+  {
+    name: 'ControlPlane__Assistant__Foundry__ModelDeploymentName'
+    value: assistantFoundryModelDeploymentName
+  }
+  {
+    name: 'ControlPlane__Assistant__Mcp__ServerUrl'
+    value: assistantMcpServerUrl
+  }
+], empty(assistantFoundryTranscriptionDeploymentName) ? [] : [
+  {
+    name: 'ControlPlane__Assistant__Foundry__TranscriptionDeploymentName'
+    value: assistantFoundryTranscriptionDeploymentName
+  }
+])
+
 // Entra SSO auto-enables in the control plane once a tenant id and client id are present, so supplying both is the
 // whole switch; either one missing leaves the login page offering local username/password only.
 var entraEnv = (empty(azureAdTenantId) || empty(azureAdClientId)) ? [] : [
@@ -283,7 +325,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('0.5')
             memory: '1.0Gi'
           }
-          env: concat(baseEnv, bootstrapEnv, gitTokenEnv, gitUsernameEnv, corsEnv, proxyEnv, entraEnv)
+          env: concat(baseEnv, bootstrapEnv, gitTokenEnv, gitUsernameEnv, corsEnv, proxyEnv, entraEnv, assistantEnv)
           probes: [
             {
               type: 'Liveness'

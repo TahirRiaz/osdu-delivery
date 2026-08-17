@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SlackNet;
 using SlackNet.Events;
+using SqlFlow.Assistant;
 
 namespace SqlFlow.SlackBot;
 

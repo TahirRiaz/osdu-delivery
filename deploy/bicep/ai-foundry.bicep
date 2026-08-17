@@ -42,6 +42,16 @@ param modelSkuName string = 'GlobalStandard'
 @minValue(1)
 param modelCapacity int = 30
 
+@description('Optional audio-transcription model deployed beside the chat model (e.g. gpt-4o-mini-transcribe or whisper), for the GUI chat assistant\'s voice input. Empty deploys none.')
+param transcriptionModelName string = ''
+
+@description('Version of the transcription model. Empty lets the service pick the current default version.')
+param transcriptionModelVersion string = ''
+
+@description('Capacity for the transcription deployment, in thousands of tokens per minute.')
+@minValue(1)
+param transcriptionModelCapacity int = 30
+
 @description('Disable key-based auth so only Entra identities can call the endpoint.')
 param disableLocalAuth bool = false
 
@@ -105,6 +115,29 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-
   ]
 }
 
+// Also serialized (behind the chat model deployment) for the same 409 reason; the account only
+// accepts one control-plane operation at a time.
+resource transcriptionDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = if (!empty(transcriptionModelName)) {
+  parent: account
+  name: transcriptionModelName
+  sku: {
+    name: modelSkuName
+    capacity: transcriptionModelCapacity
+  }
+  properties: {
+    model: union({
+      format: modelFormat
+      name: transcriptionModelName
+    }, empty(transcriptionModelVersion) ? {} : {
+      version: transcriptionModelVersion
+    })
+  }
+  dependsOn: [
+    project
+    modelDeployment
+  ]
+}
+
 resource userAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalId in userPrincipalIds: {
   scope: account
   name: guid(account.id, principalId, cognitiveServicesUserRoleId)
@@ -139,3 +172,6 @@ output projectName string = project.name
 
 @description('The model deployment name agents reference, or empty when no model was deployed.')
 output modelDeploymentName string = empty(modelName) ? '' : effectiveModelDeploymentName
+
+@description('The audio-transcription deployment name, or empty when none was deployed.')
+output transcriptionDeploymentName string = transcriptionModelName

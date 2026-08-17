@@ -4,6 +4,7 @@ import { expect, test } from "./helpers";
 
 const navTargets: Array<{ nav: string; page: string }> = [
   { nav: "nav-dashboard", page: "page-dashboard" },
+  { nav: "nav-chat", page: "page-chat" },
   { nav: "nav-insights", page: "page-insights" },
   { nav: "nav-runs", page: "page-runs" },
   { nav: "nav-nodes", page: "page-nodes" },
