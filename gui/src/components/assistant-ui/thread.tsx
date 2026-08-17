@@ -191,11 +191,12 @@ const ThreadWelcome: FC = () => {
   return (
     <div className="aui-thread-welcome-root mb-6 flex flex-col items-center px-4 text-center">
       <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-lg font-semibold duration-200">
-        Ask about your SQLFlow estate
+        Ask anything about your data
       </h1>
       <p className="fade-in slide-in-from-bottom-1 animate-in fill-mode-both mt-1 max-w-md text-[13px] text-muted-foreground duration-200">
-        Pipeline and run status, why a run failed, what a table contains, lineage, schedules, or how
-        a flow key works. Paste a screenshot, or hold the mic and just ask.
+        When was a dataset last updated, why does a number look wrong, where does this data come
+        from, which reports use it. Plain language is fine; paste a screenshot, or press the mic
+        and just ask.
       </p>
     </div>
   );
@@ -237,7 +238,7 @@ const Composer: FC = () => {
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Ask about pipelines, runs, tables, lineage..."
+            placeholder="Ask a question about your data..."
             className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[13px] leading-6 outline-none"
             rows={1}
             autoFocus
