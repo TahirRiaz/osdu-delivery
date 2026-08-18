@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, CircleAlert, Info, Loader2, ShieldCheck, Waypoints, Workflow } from "lucide-react";
+import { ChevronDown, CircleAlert, Info, Loader2, ShieldCheck, Sparkles, Waypoints, Workflow } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -48,11 +48,16 @@ const CAPABILITIES: ReadonlyArray<{ icon: LucideIcon; title: string; body: strin
     title: "Governed execution",
     body: "Managed identity, secrets from the vault, and an audited history of every run.",
   },
+  {
+    icon: Sparkles,
+    title: "AI built in",
+    body: "Ask the assistant about your flows, lineage, and runs; it answers from your own catalog.",
+  },
 ];
 
 /**
  * The branded left column, shown only on wide screens: the SQLFlow lockup, what the product does, and the
- * three capabilities worth naming, over a navy field carrying concentric arcs that echo the logo mark. It
+ * capabilities worth naming, over a navy field carrying concentric arcs that echo the logo mark. It
  * carries the page on large displays, where a lone card would otherwise float in an empty background.
  * Purely decorative, so it is hidden from assistive tech and never rendered on the narrow, form-only layout.
  */
