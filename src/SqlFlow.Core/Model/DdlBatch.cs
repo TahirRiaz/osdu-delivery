@@ -29,6 +29,16 @@ public sealed record DdlBatch
     public required string Table { get; init; }
     public required IReadOnlyList<DdlStatement> Statements { get; init; }
 
+    /// <summary>
+    /// True when the statements are semantically ORDERED and must run in list order. Schema evolution's
+    /// statements are independent, so the applier normally groups the metadata-only ones into a single
+    /// transaction and runs each rewrite alone afterwards, which reorders them. A batch whose statements
+    /// depend on each other (the temporal transition, where SYSTEM_VERSIONING cannot be turned on until the
+    /// SYSTEM_TIME period the previous statement adds exists) sets this instead: every statement runs in list
+    /// order, each in its own transaction, so a partial apply leaves a state the next run can resume from.
+    /// </summary>
+    public bool PreserveOrder { get; init; }
+
     public bool HasChanges => Statements.Count > 0;
 }
 

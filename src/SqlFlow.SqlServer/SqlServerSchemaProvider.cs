@@ -120,6 +120,29 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
         await AcquireAppLockOrThrowAsync(connection, resource, options.AppLockTimeoutMs, ct).ConfigureAwait(false);
         try
         {
+            // An ordered batch cannot be regrouped by cost: its statements depend on each other, so each runs
+            // in list order in its own transaction. A failure part way leaves the earlier statements committed,
+            // which is what makes the temporal transition resumable rather than all-or-nothing.
+            if (batch.PreserveOrder)
+            {
+                foreach (var statement in batch.Statements)
+                {
+                    await using var orderedTx = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
+                    try
+                    {
+                        await ExecuteStatementAsync(connection, orderedTx, statement, resource, ct).ConfigureAwait(false);
+                        await orderedTx.CommitAsync(ct).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        await orderedTx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                        throw;
+                    }
+                }
+
+                return;
+            }
+
             var metadataOnly = batch.Statements.Where(s => s.Cost == DdlCost.MetadataOnly).ToList();
             if (metadataOnly.Count > 0)
             {

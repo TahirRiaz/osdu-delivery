@@ -1430,43 +1430,6 @@
       ]
     },
     {
-      "id": "flow-trl",
-      "path": "flow/trl.md",
-      "title": "Translate flow (flowType: trl): query results to shaped JSON, saved and delivered",
-      "type": "flow-reference",
-      "summary": "flowType: trl maps a SQL query result through a declared JSON template into arbitrarily shaped documents, always saves them to a destination first (deterministic overwrite), and optionally delivers exactly the saved documents to a remote HTTP API.",
-      "keywords": [
-        "translate",
-        "trl",
-        "json template",
-        "document mapping",
-        "osdu",
-        "api delivery",
-        "envelope",
-        "forEach",
-        "datasets",
-        "jsonl"
-      ],
-      "related": [
-        "flow-overview",
-        "flow-exp",
-        "flow-api",
-        "flow-schedule",
-        "concept-connections-and-secrets"
-      ],
-      "sourceRefs": [
-        "src/SqlFlow.Core/Translate/TranslateFlow.cs",
-        "src/SqlFlow.Core/Translate/TranslateTemplate.cs",
-        "src/SqlFlow.Core/Translate/TranslateTemplateText.cs",
-        "src/SqlFlow.Translate/TranslateFlowRunner.cs",
-        "src/SqlFlow.Translate/JsonTemplateRenderer.cs",
-        "src/SqlFlow.Translate/TranslateDatasetIndex.cs",
-        "src/SqlFlow.Translate/TranslateOutputWriter.cs",
-        "src/SqlFlow.Translate/TranslateInvoker.cs",
-        "src/SqlFlow.Yaml/YamlTranslateFlowLoader.cs"
-      ]
-    },
-    {
       "id": "flow-connections",
       "path": "flow/connections.md",
       "title": "connections block and endpoint resolution",
@@ -1816,9 +1779,9 @@
     {
       "id": "flow-ing-versioning",
       "path": "flow/ing-versioning.md",
-      "title": "Ingestion flow: versioning and SCD2",
+      "title": "Ingestion flow: versioning, temporal history, and SCD2",
       "type": "flow-reference",
-      "summary": "The versioning section of an ingestion flow, including application-managed SCD Type 2 dimension history with ValidFrom_DW, ValidTo_DW, and IsCurrent_DW.",
+      "summary": "Target history for an ingestion flow: SQL Server system-versioned temporal tables, and application-managed SCD Type 2 dimension history.",
       "keywords": [
         "scd2",
         "versioning",
@@ -1827,6 +1790,12 @@
         "iscurrent_dw",
         "dimension history",
         "temporalhistory",
+        "temporal",
+        "system-versioned",
+        "system_time",
+        "history table",
+        "for system_time",
+        "retentiondays",
         "trackedcolumns"
       ],
       "yamlPath": "versioning (flowType: ing)",
@@ -1838,6 +1807,8 @@
         "src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs",
         "src/SqlFlow.Yaml/IngestionYaml.cs",
         "src/SqlFlow.Core/Ingestion/IngestionPolicies.cs",
+        "src/SqlFlow.SqlServer/Schema/TemporalTablePlanner.cs",
+        "src/SqlFlow.SqlServer/Schema/SchemaSyncService.cs",
         "src/SqlFlow.SqlServer/Schema/UpsertGenerator.cs",
         "src/SqlFlow.SqlServer/Schema/IngestionSchemaBuilder.cs",
         "src/SqlFlow.SqlServer/Ingestion/CanonicalIndexPlanner.cs",
@@ -2300,6 +2271,85 @@
       ]
     },
     {
+      "id": "flow-trl",
+      "path": "flow/trl.md",
+      "title": "Translate flow (flowType: trl): query results to shaped JSON, saved and delivered",
+      "type": "flow-reference",
+      "summary": "flowType: trl maps a SQL query result through a declared JSON template into arbitrarily shaped documents, always saves them to a destination first (determini...",
+      "keywords": [
+        "translate",
+        "trl",
+        "json template",
+        "document mapping",
+        "osdu",
+        "api delivery",
+        "envelope",
+        "forEach",
+        "datasets",
+        "jsonl"
+      ],
+      "related": [
+        "flow-overview",
+        "flow-exp",
+        "flow-schedule",
+        "concept-connections-and-secrets"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Translate/TranslateFlow.cs",
+        "src/SqlFlow.Core/Translate/TranslateTemplate.cs",
+        "src/SqlFlow.Core/Translate/TranslateTemplateText.cs",
+        "src/SqlFlow.Translate/TranslateFlowRunner.cs",
+        "src/SqlFlow.Translate/JsonTemplateRenderer.cs",
+        "src/SqlFlow.Translate/TranslateDatasetIndex.cs",
+        "src/SqlFlow.Translate/TranslateOutputWriter.cs",
+        "src/SqlFlow.Translate/TranslateInvoker.cs",
+        "src/SqlFlow.Yaml/YamlTranslateFlowLoader.cs"
+      ]
+    },
+    {
+      "id": "guide-chat-assistant",
+      "path": "guides/chat-assistant.md",
+      "title": "The GUI chat assistant: the SQLFlow agent in the workbench, with per-user authority and voice input",
+      "type": "guide",
+      "summary": "How the GUI's Assistant page answers questions - the same assistant core as the Slack bot, streamed over SSE from the control plane, with tool calls made und...",
+      "keywords": [
+        "chat",
+        "assistant",
+        "gui",
+        "streaming",
+        "sse",
+        "conversations",
+        "foundry",
+        "responses api",
+        "mcp",
+        "per-user",
+        "voice",
+        "dictation",
+        "transcription",
+        "image",
+        "screenshot"
+      ],
+      "related": [
+        "guide-slack-assistant",
+        "guide-deployment",
+        "concept-authentication-and-identity",
+        "concept-control-plane"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Assistant/IAssistantGateway.cs",
+        "src/SqlFlow.Assistant/ResponsesApiGateway.cs",
+        "src/SqlFlow.Assistant/AnthropicGateway.cs",
+        "src/SqlFlow.Assistant/TranscriptionGateway.cs",
+        "src/SqlFlow.ControlPlane/Api/ChatEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs",
+        "src/SqlFlow.Catalog/CatalogEntities.cs",
+        "gui/src/features/chat/ChatPage.tsx",
+        "gui/src/features/chat/chatAdapters.ts",
+        "deploy/bicep/control-plane.bicep",
+        "deploy/bicep/ai-foundry.bicep"
+      ]
+    },
+    {
       "id": "guide-deployment",
       "path": "guides/deployment.md",
       "title": "Deploying: docker compose, Kubernetes, and ADF integration",
@@ -2583,6 +2633,7 @@
         "lineage"
       ],
       "related": [
+        "guide-chat-assistant",
         "guide-deployment",
         "concept-authentication-and-identity",
         "concept-control-plane"
@@ -2596,49 +2647,6 @@
         "deploy/bicep/mcp.bicep",
         "deploy/bicep/ai-foundry.bicep",
         "deploy/slack/manifest.yaml"
-      ]
-    },
-    {
-      "id": "guide-chat-assistant",
-      "path": "guides/chat-assistant.md",
-      "title": "The GUI chat assistant: the SQLFlow agent in the workbench, with per-user authority and voice input",
-      "type": "guide",
-      "summary": "How the GUI's Assistant page answers questions - the same assistant core as the Slack bot, streamed over SSE from the control plane, with tool calls made under the signed-in user's own token, persisted conversations, image paste, and voice input via server-side transcription.",
-      "keywords": [
-        "chat",
-        "assistant",
-        "gui",
-        "streaming",
-        "sse",
-        "conversations",
-        "foundry",
-        "responses api",
-        "mcp",
-        "per-user",
-        "voice",
-        "dictation",
-        "transcription",
-        "image",
-        "screenshot"
-      ],
-      "related": [
-        "guide-slack-assistant",
-        "guide-deployment",
-        "concept-authentication-and-identity",
-        "concept-control-plane"
-      ],
-      "sourceRefs": [
-        "src/SqlFlow.Assistant/IAssistantGateway.cs",
-        "src/SqlFlow.Assistant/ResponsesApiGateway.cs",
-        "src/SqlFlow.Assistant/AnthropicGateway.cs",
-        "src/SqlFlow.Assistant/TranscriptionGateway.cs",
-        "src/SqlFlow.ControlPlane/Api/ChatEndpoints.cs",
-        "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs",
-        "src/SqlFlow.Catalog/CatalogEntities.cs",
-        "gui/src/features/chat/ChatPage.tsx",
-        "gui/src/features/chat/chatAdapters.ts",
-        "deploy/bicep/control-plane.bicep",
-        "deploy/bicep/ai-foundry.bicep"
       ]
     },
     {

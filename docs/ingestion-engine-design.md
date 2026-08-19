@@ -137,6 +137,10 @@ public sealed record VersioningPolicy
     /// <summary>Maintain a temporal history table for the target (legacy trgVersioning). Established on the
     /// first run; cannot be enabled on a preexisting flow.</summary>
     public bool TemporalHistory { get; init; }
+    // SHIPPED DIFFERENTLY: this became VersioningPolicy.Temporal, a TemporalPolicy record, and the
+    // "cannot be enabled on a preexisting flow" limitation was removed: the engine plans the transition
+    // from the live target state, so versioning can be turned on for an existing, populated table.
+    // See docs/reference/flow/ing-versioning.md.
 
     /// <summary>Insert an unknown-member row for dimension handling (legacy InsertUnknownDimRow).</summary>
     public bool InsertUnknownDimensionRow { get; init; }
@@ -269,7 +273,7 @@ Every `flw.Ingestion` and `flw.IngestionVirtual` column, with its V3 disposition
 | `Ingestion.ReplaceInvalidCharsWith` | `SchemaSyncPolicy.ReplaceInvalidCharsWith` | keep |
 | `Ingestion.OnSyncConvertUnicodeDataType` | `SchemaSyncPolicy.ConvertUnicodeToNonUnicode` | keep |
 | `Ingestion.CleanColumnNameSQLRegExp` | `SchemaSyncPolicy.CleanColumnNameRegex` | keep |
-| `Ingestion.trgVersioning` | `VersioningPolicy.TemporalHistory` | keep |
+| `Ingestion.trgVersioning` | `VersioningPolicy.Temporal` (shipped as a `TemporalPolicy` record) | keep |
 | `Ingestion.InsertUnknownDimRow` | `VersioningPolicy.InsertUnknownDimensionRow` | keep |
 | `Ingestion.TokenVersioning` | `VersioningPolicy` (token field) | keep but deferred (legacy marks it under development) |
 | `Ingestion.TokenRetentionDays` | `VersioningPolicy` (token field) | keep but deferred (same) |

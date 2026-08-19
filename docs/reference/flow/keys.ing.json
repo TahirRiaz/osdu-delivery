@@ -4,7 +4,7 @@
   "flowType": "ing",
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 112,
+  "keyCount": 121,
   "keys": [
     {
       "path": "assertions",
@@ -43,7 +43,10 @@
       "type": "string",
       "required": false,
       "default": "auto",
-      "enumValues": ["auto", "manual"],
+      "enumValues": [
+        "auto",
+        "manual"
+      ],
       "description": "When this assertion evaluates. 'auto' (the default) runs it as step 7c of every normal ingestion run; 'manual' reserves it for an on-demand assertions-only run (sqlflow run --assertions-only), which evaluates the flow's whole assertion list, auto and manual alike. Parsed by YamlDocumentParts.ParseExecutionMode into AssertionDefinition.Mode (mapped at src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:513), backed by the ExecutionMode enum (Auto=0, Manual=1). The normal load path passes includeManual:false so manual assertions are skipped there (AssertionRunner.cs:51-55, IngestionFlowRunner.cs:596); the assertions-only path passes includeManual:true (IngestionFlowRunner.cs:794).",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:189 (mapped at src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:513; model src/SqlFlow.Core/Ingestion/AssertionDefinition.cs:17, enum src/SqlFlow.Core/Runs/ExecutionMode.cs)"
     },
@@ -844,7 +847,7 @@
       "required": false,
       "default": "false",
       "description": "Truncates the target table immediately before staging is applied, for full-reload semantics (legacy 'TruncateTrg' column, IngestionFlow.cs:31 comment). Bound via `targetYaml.TruncateBeforeLoad ?? false` (YamlIngestionFlowLoader.cs:199) onto IngestionTarget.TruncateBeforeLoad. When true, IngestionFlowRunner emits and executes `TRUNCATE TABLE [schema].[table];` (two-part, schema-qualified, since the connection is already scoped to the target database) as run step 6 (IngestionFlowRunner.cs:396-402): after staging is filled and the target schema is evolved (and, on a create, after the canonical indexes and any SCD2 key index are applied), but before the keyed upsert / insert-all apply step. Unlike target.columnStoreIndex, target.identityColumn, and source.dataSetColumn (all consequential only on the run that creates the target), this flag is read and acted on EVERY run: any run with truncateBeforeLoad true wipes the table's rows immediately before every load, not just the first. The TRUNCATE statement carries no `IF OBJECT_ID(...) IS NOT NULL`-style guard, unlike the rest of the engine's DDL/DML in this runner (DropStagingAsync's `DROP TABLE IF EXISTS`, the canonical indexes' `IF NOT EXISTS`, EvolutionDdlGenerator's `IF OBJECT_ID(...) IS NULL`); so if `schema.sync` is off and the target has never been created, this statement fails against a nonexistent table. That failure is still caught by RunAsync's outer handler (IngestionFlowRunner.cs:602), so the run ends gracefully as `IngestionRunResult { Success = false }`, but `Error` carries the raw underlying SqlException text (e.g. an 'Invalid object name' message) rather than a curated SqlFlowException/FlowValidationException message the way most anticipated engine failures are reported. Cross-validated at parse time against SCD2 (see validation): 'versioning.scd2.enabled: true' cannot combine with this flag, because SCD2 appends a new dated version per change and a truncate would erase that whole history.",
-      "validation": "`versioning.scd2.enabled: true` combined with `target.truncateBeforeLoad: true` is rejected at parse time: FlowValidationException \"<source>: 'versioning.scd2' cannot be combined with 'target.truncateBeforeLoad'; truncating would erase the dimension history.\" (YamlIngestionFlowLoader.cs:133-137, only reached when versioning.scd2.enabled is true). No other validation on the key itself (a plain YAML bool).",
+      "validation": "`versioning.scd2.enabled: true` combined with `target.truncateBeforeLoad: true` is rejected at parse time: FlowValidationException \"<source>: 'versioning.scd2' cannot be combined with 'target.truncateBeforeLoad'; truncating would erase the dimension history.\" (YamlIngestionFlowLoader.cs:133-137, only reached when versioning.scd2.enabled is true). No other validation on the key itself (a plain YAML bool). Cross-validated the same way against system-versioned history: 'versioning.temporal.enabled: true' (or the 'versioning.temporalHistory: true' shorthand) cannot combine with this flag, because SQL Server does not allow TRUNCATE TABLE on a system-versioned table at all: FlowValidationException \"<source>: 'versioning.temporal' cannot be combined with 'target.truncateBeforeLoad'. ...\", repeated at run time by IngestionFlowRunner.EnsureSupportedFeatures for the non-YAML load paths.",
       "appliesWhen": "Applies on every run where the flag is true, not gated to the run that creates the target, unlike target.columnStoreIndex / target.identityColumn / source.dataSetColumn. On the very same run that creates the target the TRUNCATE is a harmless no-op against the just-created empty table.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:64 (mapped: src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:199, cross-validated: 133-137; model: src/SqlFlow.Core/Ingestion/IngestionFlow.cs:31; consumed: src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs:396-402)"
     },
@@ -860,9 +863,10 @@
       "path": "versioning",
       "type": "object",
       "required": false,
-      "default": "{ temporalHistory: false, insertUnknownDimensionRow: false, tokenVersioning: false, tokenRetentionDays: null, scd2: { enabled: false, validFromColumn: ValidFrom_DW, validToColumn: ValidTo_DW, currentFlagColumn: IsCurrent_DW, trackedColumns: [] } }",
-      "description": "Optional target-history block for a relational ingestion flow (flowType: ing). Binds to IngestionVersioningYaml and is mapped by YamlIngestionFlowLoader.MapVersioning into SqlFlow.Core.Ingestion.VersioningPolicy, carried on IngestionFlow.Versioning (src/SqlFlow.Core/Ingestion/IngestionFlow.cs:81) through the whole run. Of its three direct boolean flags (temporalHistory, insertUnknownDimensionRow, tokenVersioning), one direct integer (tokenRetentionDays), and one sub-block (scd2), only 'scd2' has engine behavior today: 'temporalHistory' and 'insertUnknownDimensionRow' are rejected when set to true, and 'tokenVersioning'/'tokenRetentionDays' are parsed and stored but read by no engine code. When the 'versioning' key itself is absent, MapVersioning still runs and returns the all-off default policy (YamlIngestionFlowLoader.cs:415-417).",
-      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:27 (model: src/SqlFlow.Core/Ingestion/IngestionPolicies.cs:230; mapper: src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:413-428)"
+      "default": "{ temporal: { enabled: false, historySchema: ver, historyTable: null, validFromColumn: ValidFrom_DW, validToColumn: ValidTo_DW, hiddenPeriodColumns: true, periodPrecision: 7, retentionDays: null }, insertUnknownDimensionRow: false, tokenVersioning: false, tokenRetentionDays: null, scd2: { enabled: false, validFromColumn: ValidFrom_DW, validToColumn: ValidTo_DW, currentFlagColumn: IsCurrent_DW, trackedColumns: [] } }",
+      "description": "Optional target-history block for a relational ingestion flow (flowType: ing). Binds to IngestionVersioningYaml and is mapped by YamlIngestionFlowLoader.MapVersioning into SqlFlow.Core.Ingestion.VersioningPolicy, carried on IngestionFlow.Versioning through the whole run. It offers two independent, MUTUALLY EXCLUSIVE history mechanisms. 'temporal' is SQL Server system-versioned temporal history (legacy trgVersioning): the database itself keeps every superseded row version in a paired history table, so the target is queryable as of any past instant with FOR SYSTEM_TIME, and because the period columns are HIDDEN by default the target's visible column list does not change. 'scd2' is application-managed SCD Type 2 history, keeping versions as ordinary rows inside the target itself. Enabling both is rejected, because each change would be recorded twice. The direct boolean 'temporalHistory' is the legacy shorthand for 'temporal.enabled' (it is the key a ported trgVersioning flow carries) and converges on the same TemporalPolicy, so there is one execution path and two authoring surfaces. Of the remaining direct keys, 'insertUnknownDimensionRow' is rejected when set to true, and 'tokenVersioning'/'tokenRetentionDays' are parsed and stored but read by no engine code. When the 'versioning' key itself is absent, MapVersioning still runs and returns the all-off default policy.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:27 (model: src/SqlFlow.Core/Ingestion/IngestionPolicies.cs:230; mapper: src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:413-428)",
+      "validation": "Load time (YamlIngestionFlowLoader.MapVersioning): FlowValidationException \"<source>: 'versioning.temporal' and 'versioning.scd2' cannot both be enabled. ... Choose one.\" Run time, for flows not built via this loader (IngestionFlowRunner.EnsureSupportedFeatures): the same combination, plus 'versioning.temporal' with 'target.truncateBeforeLoad', fail the run with SqlFlowException before any data work."
     },
     {
       "path": "versioning.insertUnknownDimensionRow",
@@ -878,9 +882,9 @@
       "type": "object",
       "required": false,
       "default": "{ enabled: false, validFromColumn: ValidFrom_DW, validToColumn: ValidTo_DW, currentFlagColumn: IsCurrent_DW, trackedColumns: [] }",
-      "description": "Application-managed slowly-changing-dimension Type 2 (period-based) target history: the engine keeps a validity period per business-key row instead of overwriting it, so unlike 'versioning.temporalHistory' the feature can be turned on for an already-created, already-populated target (the period columns are added through ordinary schema evolution, and every pre-existing row is backfilled as the current version the first time the flow runs with it on). Binds to IngestionScd2Yaml and is mapped, with validation, by YamlIngestionFlowLoader.MapScd2 into SqlFlow.Core.Ingestion.Scd2Policy. Consumed by three collaborators once 'enabled' is true: IngestionSchemaBuilder.AddScd2Columns adds the three period columns to the target's desired schema, UpsertGenerator.GenerateScd2Statements replaces the plain two-step upsert with a backfill, close, and insert load, and CanonicalIndexPlanner turns the business-key index into a filtered unique index. When the whole 'scd2' key is absent, MapScd2 returns the disabled default without running the distinct-name check below, since it never computes candidate names to check. The legacy/full-mode row mapper (src/SqlFlow.Core/Ingestion/Legacy/IngestionFlowMapper.cs:136-142) never sets this sub-object at all, so today 'versioning.scd2' is reachable only by authoring the YAML flowType: ing document; a full-mode or legacy-sourced flow always gets the disabled Scd2Policy default.",
+      "description": "Application-managed slowly-changing-dimension Type 2 (period-based) target history: the engine keeps a validity period per business-key row instead of overwriting it, so unlike 'versioning.temporal' (whose versions live in a separate, database-maintained history table reached through FOR SYSTEM_TIME) its versions are ordinary rows in the target that any SQL or BI tool can join; both can be turned on for an already-created, already-populated target (the period columns are added through ordinary schema evolution, and every pre-existing row is backfilled as the current version the first time the flow runs with it on). Binds to IngestionScd2Yaml and is mapped, with validation, by YamlIngestionFlowLoader.MapScd2 into SqlFlow.Core.Ingestion.Scd2Policy. Consumed by three collaborators once 'enabled' is true: IngestionSchemaBuilder.AddScd2Columns adds the three period columns to the target's desired schema, UpsertGenerator.GenerateScd2Statements replaces the plain two-step upsert with a backfill, close, and insert load, and CanonicalIndexPlanner turns the business-key index into a filtered unique index. When the whole 'scd2' key is absent, MapScd2 returns the disabled default without running the distinct-name check below, since it never computes candidate names to check. The legacy/full-mode row mapper (src/SqlFlow.Core/Ingestion/Legacy/IngestionFlowMapper.cs:136-142) never sets this sub-object at all, so today 'versioning.scd2' is reachable only by authoring the YAML flowType: ing document; a full-mode or legacy-sourced flow always gets the disabled Scd2Policy default.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:138 (model: src/SqlFlow.Core/Ingestion/IngestionPolicies.cs:254,266; mapper: src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs:430-458)",
-      "validation": "The three period-column names below (each independently defaulted first) must be pairwise distinct, case-insensitively, whenever the 'scd2' block itself is present, regardless of 'enabled' (YamlIngestionFlowLoader.cs:437-448): FlowValidationException \"<source>: 'versioning.scd2' validFromColumn, validToColumn, and currentFlagColumn must be three distinct names (got '<validFrom>', '<validTo>', '<current>').\""
+      "validation": "The three period-column names below (each independently defaulted first) must be pairwise distinct, case-insensitively, whenever the 'scd2' block itself is present, regardless of 'enabled' (YamlIngestionFlowLoader.cs:437-448): FlowValidationException \"<source>: 'versioning.scd2' validFromColumn, validToColumn, and currentFlagColumn must be three distinct names (got '<validFrom>', '<validTo>', '<current>').\" Additionally, 'versioning.scd2.enabled: true' cannot combine with 'versioning.temporal.enabled: true' (YamlIngestionFlowLoader.MapVersioning): two history mechanisms on one table would record every change twice."
     },
     {
       "path": "versioning.scd2.currentFlagColumn",
@@ -942,9 +946,88 @@
       "type": "bool",
       "required": false,
       "default": "false",
-      "description": "Would maintain a SQL Server system-versioned (temporal) history table for the target (legacy trgVersioning). NOT YET IMPLEMENTED: per the model's doc comment, system-versioning interacts with the schema-evolution engine and is treated as a dedicated, not-yet-built feature (src/SqlFlow.Core/Ingestion/IngestionPolicies.cs:232-236), so a flow that sets it to true is rejected rather than silently ignored. It is rejected twice: at YAML load, so an authored YAML flow never gets further, and again at run time by IngestionFlowRunner.EnsureSupportedFeatures, which runs before any connection is opened and guards flows assembled through the other loaders (full-mode control-DB, legacy migration) that skip this YAML loader (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs:205, 830-835).",
+      "description": "The legacy trgVersioning shorthand: identical to setting 'versioning.temporal.enabled' to the same value, with every other temporal setting left at its default. Both surfaces are OR-ed together by YamlIngestionFlowLoader.MapTemporal into the single TemporalPolicy the engine reads, so a ported legacy flow needs nothing else. The legacy control-DB mapper (IngestionFlowMapper.FromLegacy) maps flw.Ingestion.trgVersioning onto the same policy, additionally pinning periodPrecision to 0 because that is what flw.GetVersioningScript emitted. See 'versioning.temporal' for what the engine does with it.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:134 (model: src/SqlFlow.Core/Ingestion/IngestionPolicies.cs:236)",
-      "validation": "Load time (YamlIngestionFlowLoader.cs:110-115): FlowValidationException \"<source>: 'versioning.temporalHistory' (SQL Server system-versioned history) is not yet implemented. Use 'versioning.scd2' for engine-managed dimension history.\" Run time, for flows not built via this loader (IngestionFlowRunner.cs:830-835): SqlFlowException \"versioning.temporalHistory (SQL Server system-versioned history) is not yet implemented. Use versioning.scd2 for engine-managed dimension history, which works on an existing populated target.\""
+      "validation": "Load time (YamlIngestionFlowLoader.MapTemporal): an explicit 'temporalHistory: false' alongside 'temporal.enabled: true' is a contradiction and raises FlowValidationException \"<source>: 'versioning.temporalHistory: false' contradicts 'versioning.temporal.enabled: true'. 'temporalHistory' is the shorthand for 'temporal.enabled'; set one of them.\" An absent shorthand is not a contradiction. Every other guard is the one documented on 'versioning.temporal'."
+    },
+    {
+      "path": "versioning.temporal",
+      "type": "object",
+      "required": false,
+      "default": "{ enabled: false, historySchema: ver, historyTable: null, validFromColumn: ValidFrom_DW, validToColumn: ValidTo_DW, hiddenPeriodColumns: true, periodPrecision: 7, retentionDays: null }",
+      "description": "SQL Server system-versioned temporal history for the target (legacy trgVersioning, legacy flw.GetVersioningScript). SQL Server keeps every superseded version of a row in a paired history table that it maintains itself, so an UPDATE or DELETE on the target is never lossy and the table is queryable as of any past instant with FOR SYSTEM_TIME AS OF / ALL. Planned from the LIVE target state by src/SqlFlow.SqlServer/Schema/TemporalTablePlanner.cs and applied as run step 11, after schema evolution and the create-time indexes: SQL Server refuses to version a table with no PRIMARY KEY (which the create step supplies), and adding the SYSTEM_TIME period last keeps the period columns out of the schema the evolution planner diffs. Four outcomes depending on that live state: no period -> add the period then enable; period present but versioning off (a manual SET SYSTEM_VERSIONING = OFF leaves the period behind, as does a run interrupted between the two statements) -> only enable; already versioned into the declared history table -> nothing, unless retentionDays differs, which is re-applied; already versioned into a DIFFERENT history table -> the run fails, because re-pointing would orphan the history already recorded. Unlike the legacy engine, which applied versioning only in its create-a-new-table branch, this can be turned on for a target that already exists and already holds rows: the existing rows' ROW START is stamped one second in the past so no row's period is empty and every row stays visible to FOR SYSTEM_TIME AS OF. Turning the flag back OFF never un-versions the table and never drops history; that is an explicit operator action, not a side effect of an edited YAML. Ordinary dynamic schema evolution keeps working on a versioned target: SQL Server supports ADD, ALTER and DROP COLUMN while versioning is on and propagates each change to the history table, so the engine never toggles versioning off to fit a schema change through (which would open a window where changes go unrecorded). The period columns are GENERATED ALWAYS, so the engine excludes them from the schema diff (CatalogSchemaAdapter.ToEvolvableColumns), from the upsert column list, and from change detection.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Load time (YamlIngestionFlowLoader.MapTemporal / MapVersioning): rejected together with 'versioning.scd2.enabled: true' (two history mechanisms would record every change twice) and together with 'target.truncateBeforeLoad: true' (SQL Server does not allow TRUNCATE TABLE on a system-versioned table; legacy silently skipped the truncate, leaving the flow believing it had done a full reload when it had appended). Run time (IngestionFlowRunner.EnsureSupportedFeatures) repeats both for the control-DB and legacy load paths. Plan time (TemporalTablePlanner.Plan), before any DDL runs: the target must exist, must be a table not a view, and must have a PRIMARY KEY (\"SQL Server requires a system-versioned table to have a PRIMARY KEY, and the target has none. Set 'target.identityColumn' ...\"); a declared history table that differs from the live one is refused; a declared period column name that differs from an existing live period is refused (a period cannot be renamed in place); and a period column name that collides with a data column, on the live table or in the desired schema, is refused."
+    },
+    {
+      "path": "versioning.temporal.enabled",
+      "type": "bool",
+      "required": false,
+      "default": "false",
+      "description": "Turn on system-versioned history for the target. Equivalent to the 'versioning.temporalHistory' shorthand, which is OR-ed with this value; a flow may set either.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy"
+    },
+    {
+      "path": "versioning.temporal.historySchema",
+      "type": "string",
+      "required": false,
+      "default": "ver",
+      "description": "The schema holding the history table. It always resolves inside the TARGET's own database, because SQL Server accepts only a two-part history name. The default 'ver' is the schema legacy SQLFlow used via its flw.SysCFG 'Schema06Version' parameter, so a ported flow keeps its history where the old estate put it. The engine creates the schema when it is missing (an idempotent SCHEMA_ID-guarded CREATE SCHEMA, emitted as the first statement of the temporal batch).",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Load time: must be a plain, undotted name; a dotted value raises FlowValidationException \"<source>: 'versioning.temporal' historySchema/historyTable must be plain, undotted names. SQL Server requires the history table to live in the same database as the target and accepts only a two-part name.\" A blank value falls back to the default."
+    },
+    {
+      "path": "versioning.temporal.historyTable",
+      "type": "string",
+      "required": false,
+      "default": "the target table's own name",
+      "description": "The history table's name. Null (the default) mirrors the target's own table name, which is what legacy did. Set it only when two targets in different schemas would otherwise collide on one history name inside the shared history schema. When the named table already exists (for example a history migrated from an older estate) SQL Server links it rather than creating one, validating column names and ordinals against the current table because the engine always enables with DATA_CONSISTENCY_CHECK = ON.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Load time: must be a plain, undotted name (same message as historySchema). Trimmed; blank falls back to the target's name."
+    },
+    {
+      "path": "versioning.temporal.validFromColumn",
+      "type": "string",
+      "required": false,
+      "default": "ValidFrom_DW",
+      "description": "The period's ROW START column, added as datetime2(periodPrecision) GENERATED ALWAYS AS ROW START NOT NULL with a DEFAULT of DATEADD(SECOND, -1, SYSUTCDATETIME()). The one-second offset matters on a table that already holds rows: it puts every pre-existing row's period start strictly in the past, so the period is never empty and the row stays visible to FOR SYSTEM_TIME AS OF. This carries the legacy flw.GetVersioningScript semantic forward: history begins at the moment versioning was enabled.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Plan time: must differ from validToColumn (\"a SYSTEM_TIME period needs two distinct columns\"), must not collide with a data column on the live table or in the desired schema, and must match the live period's column name when the table already carries one (a period cannot be renamed in place)."
+    },
+    {
+      "path": "versioning.temporal.validToColumn",
+      "type": "string",
+      "required": false,
+      "default": "ValidTo_DW",
+      "description": "The period's ROW END column, added as datetime2(periodPrecision) GENERATED ALWAYS AS ROW END NOT NULL with a DEFAULT of the open-ended sentinel rendered at the declared scale (9999-12-31 23:59:59 at precision 0, 9999-12-31 23:59:59.9999999 at precision 7).",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Plan time: the same distinctness, collision, and no-rename checks as validFromColumn."
+    },
+    {
+      "path": "versioning.temporal.hiddenPeriodColumns",
+      "type": "bool",
+      "required": false,
+      "default": "true",
+      "description": "Declare the two period columns HIDDEN (the legacy behavior and the default), so SELECT *, result-set metadata, and every downstream consumer keep seeing the target's original column list. This is what makes enabling temporal history on a live table a NON-BREAKING change for its consumers. Set false to make the period columns part of the ordinary projection. Either way they remain GENERATED ALWAYS and unwritable, and either way sys.columns still reports them, which is why the engine filters on generated_always_type rather than on is_hidden.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy"
+    },
+    {
+      "path": "versioning.temporal.periodPrecision",
+      "type": "int",
+      "required": false,
+      "default": "7",
+      "description": "The datetime2 fractional-second scale (0-7) of the two period columns. The default is SQL Server's own datetime2 default of 7; legacy SQLFlow emitted 0, which cannot tell two updates to the same row inside one second apart. Set it to 0 when linking a history table migrated from a legacy estate, whose period columns must match the current table's types exactly. A flow sourced from the legacy control DB gets 0 automatically (IngestionFlowMapper.FromLegacy).",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Load time: FlowValidationException \"<source>: 'versioning.temporal.periodPrecision' must be between 0 and 7 (got <n>); it is the datetime2 fractional-second scale of the two period columns.\""
+    },
+    {
+      "path": "versioning.temporal.retentionDays",
+      "type": "int",
+      "required": false,
+      "default": "null (INFINITE)",
+      "description": "HISTORY_RETENTION_PERIOD in days: history rows older than this are removed by the engine's background cleanup task. Null (the default) keeps history forever, which the engine renders explicitly as HISTORY_RETENTION_PERIOD = INFINITE, so clearing the setting on a later run returns the table to keeping history forever. Changing it is the ONE difference the temporal planner still acts on once a table is already versioned: re-issuing SET (SYSTEM_VERSIONING = ON ...) is the supported way to change the period, so that statement is emitted unguarded in this case. Requires an engine that supports retention: Azure SQL Database, Azure SQL Managed Instance, or SQL Server 2025 and later; elsewhere SQL Server rejects the option and the engine surfaces that rather than swallowing it.",
+      "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs (IngestionTemporalYaml); mapped by YamlIngestionFlowLoader.MapTemporal into SqlFlow.Core.Ingestion.TemporalPolicy",
+      "validation": "Load time: FlowValidationException \"<source>: 'versioning.temporal.retentionDays' must be a positive number of days (got <n>); omit it to keep history forever.\""
     },
     {
       "path": "versioning.tokenRetentionDays",

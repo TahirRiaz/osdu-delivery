@@ -135,7 +135,16 @@ public static class IngestionFlowMapper
 
             Versioning = new VersioningPolicy
             {
-                TemporalHistory = row.trgVersioning ?? false,
+                // A legacy trgVersioning row carries no configuration beyond the flag: flw.GetVersioningScript
+                // hardcoded the ValidFrom_DW/ValidTo_DW period column names and took the history schema from
+                // flw.SysCFG's Schema06Version ("ver" in the estate), which are the TemporalPolicy defaults. The
+                // one legacy value that is not a default is the period precision: legacy emitted datetime2(0),
+                // so a control-DB-sourced flow keeps it for fidelity with the tables that engine produced.
+                Temporal = new TemporalPolicy
+                {
+                    Enabled = row.trgVersioning ?? false,
+                    PeriodPrecision = 0,
+                },
                 InsertUnknownDimensionRow = row.InsertUnknownDimRow ?? false,
                 TokenVersioning = row.TokenVersioning ?? false,
                 TokenRetentionDays = row.TokenRetentionDays,

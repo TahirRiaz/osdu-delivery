@@ -103,6 +103,8 @@ public sealed class Scd2LoaderTests
         Assert.Contains("truncate", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Two history mechanisms on one table would record every change twice: SQL Server's own row
+    /// versions AND an engine-maintained period row.</summary>
     [Fact]
     public void Rejects_Scd2WithTemporalHistory()
     {
@@ -112,7 +114,8 @@ public sealed class Scd2LoaderTests
               scd2:
                 enabled: true
             """)));
-        Assert.Contains("temporalHistory", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("versioning.temporal", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("versioning.scd2", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

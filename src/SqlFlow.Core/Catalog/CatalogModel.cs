@@ -29,6 +29,37 @@ public sealed record CatalogObject
     public IReadOnlyList<CatalogIndex> Indexes { get; init; } = [];
     public IReadOnlyList<CatalogConstraint> Constraints { get; init; } = [];
     public bool IsTemporal { get; init; }
+
+    /// <summary>True when the table carries a SYSTEM_TIME period (the pair of GENERATED ALWAYS columns),
+    /// which survives <c>SET (SYSTEM_VERSIONING = OFF)</c>. A table can therefore have a period without
+    /// being temporal, which is exactly the state a disabled-then-re-enabled target is in.</summary>
+    public bool HasSystemTimePeriod { get; init; }
+
+    /// <summary>The schema of the linked history table, when <see cref="IsTemporal"/>; otherwise null.</summary>
+    public string? HistorySchema { get; init; }
+
+    /// <summary>The name of the linked history table, when <see cref="IsTemporal"/>; otherwise null.</summary>
+    public string? HistoryTable { get; init; }
+
+    /// <summary>The configured HISTORY_RETENTION_PERIOD in days, or null for the INFINITE default. SQL Server
+    /// stores -1 for infinite and can express the period in days/weeks/months/years; the reader normalizes
+    /// every finite unit to days so callers compare one number.</summary>
+    public int? HistoryRetentionDays { get; init; }
+}
+
+/// <summary>Which half of a SYSTEM_TIME period a column is, for a system-versioned temporal table. A
+/// GENERATED ALWAYS column is maintained entirely by the engine: it can never be written by an INSERT or
+/// UPDATE, and it must never take part in schema evolution or change detection.</summary>
+public enum GeneratedAlwaysKind
+{
+    /// <summary>An ordinary column.</summary>
+    None,
+
+    /// <summary>GENERATED ALWAYS AS ROW START: the period's ValidFrom.</summary>
+    RowStart,
+
+    /// <summary>GENERATED ALWAYS AS ROW END: the period's ValidTo.</summary>
+    RowEnd,
 }
 
 /// <summary>One column of a catalog object, with the full metadata the planner needs to evolve it safely.</summary>
@@ -52,6 +83,15 @@ public sealed record CatalogColumn
     public bool ComputedPersisted { get; init; }
     public string? DefaultExpression { get; init; }
     public bool IsPrimaryKeyMember { get; init; }
+
+    /// <summary>Whether this column is one half of a SYSTEM_TIME period, and which half. Engine-maintained,
+    /// so it is excluded from schema evolution, the upsert column list, and change detection.</summary>
+    public GeneratedAlwaysKind GeneratedAlways { get; init; }
+
+    /// <summary>True for a period column declared HIDDEN, which <c>SELECT *</c> and result-set metadata omit
+    /// but <c>sys.columns</c> still reports. Purely informational: the engine keys off
+    /// <see cref="GeneratedAlways"/>, since a non-hidden period column is just as unwritable.</summary>
+    public bool IsHidden { get; init; }
 }
 
 /// <summary>An index on a catalog object.</summary>

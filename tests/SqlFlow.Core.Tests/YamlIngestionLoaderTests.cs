@@ -439,17 +439,20 @@ public sealed class YamlIngestionLoaderTests
         Assert.Contains(expectedFragment, ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>The legacy trgVersioning shorthand is accepted and maps onto the first-class temporal policy;
+    /// the full surface and its guards are covered by <c>TemporalLoaderTests</c>.</summary>
     [Fact]
-    public void TemporalHistory_IsRejectedAsNotImplemented()
+    public void TemporalHistory_MapsToTheTemporalPolicy()
     {
-        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+        var doc = Loader.Parse("""
             flowType: ing
             source: { connection: x, object: a.b.c }
             target: { connection: y, object: a.b.c }
             versioning: { temporalHistory: true }
-            """));
-        Assert.Contains("temporalHistory", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("not yet implemented", ex.Message, StringComparison.OrdinalIgnoreCase);
+            """);
+
+        Assert.True(doc.Flow.Versioning.Temporal.Enabled);
+        Assert.Equal("ver", doc.Flow.Versioning.Temporal.HistorySchema);
     }
 
     [Fact]

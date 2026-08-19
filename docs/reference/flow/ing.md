@@ -81,7 +81,7 @@ sqlflow run orders-ingestion.flow.yaml
 | `schema` | map | no | defaults | Schema sync: `sync` (default true), `cleanColumnNames`, `cleanColumnNameRegex`, `replaceInvalidCharsWith`, `convertUnicodeToNonUnicode`, `allowTableRewrite`. See [ing-schema-incremental.md](ing-schema-incremental.md). |
 | `incremental` | map | no | defaults | Watermark capture: `columns`, `dateColumn`, `overlapDays` (default 7), `fullLoad`, `fetchMinValuesFromSource`. See [ing-schema-incremental.md](ing-schema-incremental.md). |
 | `initLoad` | map | no | defaults | One-time backfill: `enabled`, `fromDate`, `toDate`, `batchBy` (single character: `M` month, `D` day, `K` key ranges), `batchSize`, `keyColumn`, `keyMaxValue`. |
-| `versioning` | map | no | defaults | `scd2` (engine-managed dimension history), `tokenVersioning`, `tokenRetentionDays`; `temporalHistory` and `insertUnknownDimensionRow` are rejected (see below). |
+| `versioning` | map | no | defaults | `temporal` (SQL Server system-versioned history, also reachable as the `temporalHistory` shorthand), `scd2` (engine-managed dimension history), `tokenVersioning`, `tokenRetentionDays`; `insertUnknownDimensionRow` is rejected (see below). |
 | `transform` | map | no | defaults | Pre-ingestion transform block, same shape as the file flow's `transform:`. |
 | `preProcess` | string | no | unset | Raw T-SQL run verbatim on the target before the load. |
 | `postProcess` | string | no | unset | Raw T-SQL run verbatim on the target after the load commits. |
@@ -158,7 +158,7 @@ target:
 |---|---|---|---|---|
 | `server` / `connection` | string | exactly one | none | Connection resolution as above; the resolved connection must be SQL Server. |
 | `object` | string | yes | none | Three-part `Database.Schema.Table` name; `table` is an accepted alias. Same parsing rules as `source.object`. |
-| `truncateBeforeLoad` | bool | no | `false` | Truncate the target before applying staging (full reload semantics). Not combinable with `versioning.scd2`. |
+| `truncateBeforeLoad` | bool | no | `false` | Truncate the target before applying staging (full reload semantics). Not combinable with `versioning.scd2`, nor with `versioning.temporal` (SQL Server does not allow TRUNCATE on a system-versioned table). |
 | `columnStoreIndex` | bool | no | `false` | Create a clustered columnstore index when the target is first created. |
 | `identityColumn` | string | no | unset | Identity column on the target. An identity primary key suppresses the columnstore index (the identity PK wins). |
 | `desiredIndexes` | string | no | unset | CREATE INDEX statements applied when the target is created. |
@@ -179,7 +179,10 @@ Every statement is guarded by an `IF NOT EXISTS` check against `sys.indexes`, so
 
 The loader enforces these at parse time (src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs):
 
-- `versioning.temporalHistory: true` is rejected: `'versioning.temporalHistory' (SQL Server system-versioned history) is not yet implemented. Use 'versioning.scd2' for engine-managed dimension history.`
+- `versioning.temporal.enabled: true` (or the `versioning.temporalHistory: true` shorthand) cannot combine with `versioning.scd2.enabled: true`: `'versioning.temporal' and 'versioning.scd2' cannot both be enabled. ... Choose one.`
+- `versioning.temporal.enabled: true` cannot combine with `target.truncateBeforeLoad: true`: `'versioning.temporal' cannot be combined with 'target.truncateBeforeLoad'. SQL Server does not allow TRUNCATE TABLE on a system-versioned table ...`
+- `versioning.temporalHistory: false` alongside `versioning.temporal.enabled: true` is rejected as a contradiction; `temporalHistory` is the shorthand for `temporal.enabled`.
+- `versioning.temporal.historySchema` / `historyTable` must be plain undotted names (SQL Server requires the history table to live in the target's own database); `periodPrecision` must be 0-7; `retentionDays` must be positive.
 - `versioning.insertUnknownDimensionRow: true` is rejected: `'versioning.insertUnknownDimensionRow' is not yet implemented; seed the unknown-member row explicitly for now.`
 - `versioning.scd2.enabled: true` requires `load.keyColumns`; missing them fails with: `'versioning.scd2' requires 'load.keyColumns' (the business key the dimension versions by).`
 - `versioning.scd2.enabled: true` cannot combine with `target.truncateBeforeLoad: true`: `'versioning.scd2' cannot be combined with 'target.truncateBeforeLoad'; truncating would erase the dimension history.`

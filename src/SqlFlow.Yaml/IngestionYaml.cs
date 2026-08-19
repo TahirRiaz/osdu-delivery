@@ -167,11 +167,26 @@ internal sealed class IngestionInitLoadYaml
 
 internal sealed class IngestionVersioningYaml
 {
+    /// <summary>The legacy trgVersioning shorthand: enables versioning.temporal with every default.</summary>
     public bool? TemporalHistory { get; set; }
+
+    public IngestionTemporalYaml? Temporal { get; set; }
     public bool? InsertUnknownDimensionRow { get; set; }
     public bool? TokenVersioning { get; set; }
     public int? TokenRetentionDays { get; set; }
     public IngestionScd2Yaml? Scd2 { get; set; }
+}
+
+internal sealed class IngestionTemporalYaml
+{
+    public bool? Enabled { get; set; }
+    public string? HistorySchema { get; set; }
+    public string? HistoryTable { get; set; }
+    public string? ValidFromColumn { get; set; }
+    public string? ValidToColumn { get; set; }
+    public bool? HiddenPeriodColumns { get; set; }
+    public int? PeriodPrecision { get; set; }
+    public int? RetentionDays { get; set; }
 }
 
 internal sealed class IngestionScd2Yaml

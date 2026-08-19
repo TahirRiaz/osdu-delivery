@@ -194,14 +194,24 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
         int objectId;
         ObjectType type;
         bool temporal;
+        bool hasPeriod;
+        string? historySchema;
+        string? historyTable;
 
         await using (var lookup = connection.CreateCommand())
         {
             lookup.CommandTimeout = NoClientTimeout;
+            // The SYSTEM_TIME period is read from sys.periods rather than inferred from temporal_type: the
+            // period outlives SET (SYSTEM_VERSIONING = OFF), so a table can carry one while not being
+            // temporal, and that is precisely the state the temporal planner must be able to resume from.
             lookup.CommandText = """
-                SELECT o.object_id AS ObjectId, o.[type] AS ObjectTypeCode, ISNULL(tb.temporal_type, 0) AS TemporalType
+                SELECT o.object_id AS ObjectId, o.[type] AS ObjectTypeCode, ISNULL(tb.temporal_type, 0) AS TemporalType,
+                       CASE WHEN p.object_id IS NULL THEN 0 ELSE 1 END AS HasPeriod,
+                       SCHEMA_NAME(h.schema_id) AS HistorySchema, h.[name] AS HistoryTable
                 FROM sys.objects AS o
                 LEFT JOIN sys.tables AS tb ON tb.object_id = o.object_id
+                LEFT JOIN sys.tables AS h ON h.object_id = tb.history_table_id
+                LEFT JOIN sys.periods AS p ON p.object_id = o.object_id AND p.period_type = 1
                 WHERE o.object_id = OBJECT_ID(@q) AND o.[type] IN ('U', 'V');
                 """;
             AddParam(lookup, "@q", name.SchemaQualified);
@@ -215,12 +225,72 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
             objectId = Int(reader, "ObjectId");
             type = TypeOf(Str(reader, "ObjectTypeCode"));
             temporal = Int(reader, "TemporalType") == 2;
+            hasPeriod = Int(reader, "HasPeriod") == 1;
+            historySchema = Str(reader, "HistorySchema");
+            historyTable = Str(reader, "HistoryTable");
         }
 
         var columns = await ReadColumnsAsync(connection, objectId, ct).ConfigureAwait(false);
         var indexes = await ReadIndexesAsync(connection, objectId, ct).ConfigureAwait(false);
+        var retentionDays = temporal
+            ? await ReadHistoryRetentionDaysAsync(connection, objectId, ct).ConfigureAwait(false)
+            : null;
 
-        return new CatalogObject { Name = name, Type = type, Columns = columns, Indexes = indexes, IsTemporal = temporal };
+        return new CatalogObject
+        {
+            Name = name,
+            Type = type,
+            Columns = columns,
+            Indexes = indexes,
+            IsTemporal = temporal,
+            HasSystemTimePeriod = hasPeriod,
+            HistorySchema = historySchema,
+            HistoryTable = historyTable,
+            HistoryRetentionDays = retentionDays,
+        };
+    }
+
+    /// <summary>
+    /// Reads HISTORY_RETENTION_PERIOD for a temporal table, normalized to days (null = INFINITE, which SQL
+    /// Server stores as -1). The <c>sys.tables</c> retention columns do not exist on every supported engine,
+    /// so the projection is built through sp_executesql behind a COL_LENGTH guard: on an engine without them
+    /// the query returns NULL instead of failing to compile the whole introspection.
+    /// </summary>
+    private static async Task<int?> ReadHistoryRetentionDaysAsync(DbConnection connection, int objectId, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
+        command.CommandText = """
+            DECLARE @sql nvarchar(max) =
+                CASE WHEN COL_LENGTH('sys.tables', 'history_retention_period') IS NULL
+                     THEN N'SELECT CONVERT(int, NULL) AS Period, CONVERT(nvarchar(20), NULL) AS Unit;'
+                     ELSE N'SELECT history_retention_period AS Period, history_retention_period_unit_desc AS Unit
+                            FROM sys.tables WHERE object_id = @id;' END;
+            EXEC sp_executesql @sql, N'@id int', @id = @objectId;
+            """;
+        AddParam(command, "@objectId", objectId);
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        var period = IntN(reader, "Period");
+        // -1 is INFINITE; 0 and null mean the engine does not express a finite retention here either.
+        if (period is null or <= 0)
+        {
+            return null;
+        }
+
+        return Str(reader, "Unit")?.ToUpperInvariant() switch
+        {
+            "DAY" => period,
+            "WEEK" => period * 7,
+            "MONTH" => period * 30,
+            "YEAR" => period * 365,
+            _ => null,
+        };
     }
 
     private static async Task<IReadOnlyList<CatalogColumn>> ReadColumnsAsync(DbConnection connection, int objectId, CancellationToken ct)
@@ -234,6 +304,7 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
                    ic.seed_value AS IdentitySeed, ic.increment_value AS IdentityIncrement,
                    cc.[definition] AS ComputedDefinition, cc.is_persisted AS ComputedPersisted,
                    dc.[definition] AS DefaultDefinition,
+                   c.generated_always_type AS GeneratedAlwaysType, c.is_hidden AS IsHidden,
                    CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS IsPkMember
             FROM sys.columns AS c
             JOIN sys.types AS t ON t.user_type_id = c.user_type_id
@@ -270,6 +341,15 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
                 ComputedPersisted = Bool(reader, "ComputedPersisted"),
                 DefaultExpression = Str(reader, "DefaultDefinition"),
                 IsPrimaryKeyMember = Int(reader, "IsPkMember") == 1,
+                // 1 = AS_ROW_START, 2 = AS_ROW_END; every other value (including the ledger ones) is an
+                // ordinary column as far as the ingestion engine is concerned.
+                GeneratedAlways = Int(reader, "GeneratedAlwaysType") switch
+                {
+                    1 => GeneratedAlwaysKind.RowStart,
+                    2 => GeneratedAlwaysKind.RowEnd,
+                    _ => GeneratedAlwaysKind.None,
+                },
+                IsHidden = Bool(reader, "IsHidden"),
             });
         }
 
@@ -376,6 +456,12 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
 
     private static long Long(DbDataReader reader, string column)
         => Convert.ToInt64(reader.GetValue(reader.GetOrdinal(column)), CultureInfo.InvariantCulture);
+
+    private static int? IntN(DbDataReader reader, string column)
+    {
+        var i = reader.GetOrdinal(column);
+        return reader.IsDBNull(i) ? null : Convert.ToInt32(reader.GetValue(i), CultureInfo.InvariantCulture);
+    }
 
     private static long? LongN(DbDataReader reader, string column)
     {

@@ -491,6 +491,43 @@ public sealed class IngestionFlowRunner
                 }
             }
 
+            // 5.7. System-versioned temporal history. This runs AFTER schema evolution and the create-time
+            //      indexes, for two reasons: SQL Server refuses to version a table with no PRIMARY KEY (which
+            //      the create step is what supplies), and adding the SYSTEM_TIME period last means the period
+            //      columns are never in the desired schema the evolution planner diffs. Ordinary evolution
+            //      keeps working afterwards: ADD, ALTER and DROP COLUMN are all supported while versioning is
+            //      on and SQL Server propagates each to the history table, so the engine never has to take
+            //      versioning off to fit a column change through.
+            if (flow.Versioning.Temporal.Enabled)
+            {
+                var temporalOutcome = await schemaSync.ApplyTemporalAsync(
+                    targetConnectionString,
+                    flow.Target.Table,
+                    flow.Versioning.Temporal,
+                    targetSchema.Columns,
+                    applyOptions,
+                    ct).ConfigureAwait(false);
+
+                Info("target.temporal", temporalOutcome.Plan.Action switch
+                {
+                    TemporalAction.AlreadyCurrent =>
+                        $"target {flow.Target.Table.QualifiedName} is already system-versioned into {temporalOutcome.Plan.HistoryName}",
+                    TemporalAction.AddPeriodAndEnable =>
+                        $"system versioning enabled on {flow.Target.Table.QualifiedName}: SYSTEM_TIME period added and history " +
+                        $"kept in {temporalOutcome.Plan.HistoryName}",
+                    TemporalAction.EnableOnExistingPeriod =>
+                        $"system versioning re-enabled on {flow.Target.Table.QualifiedName} over its existing SYSTEM_TIME " +
+                        $"period; history in {temporalOutcome.Plan.HistoryName}",
+                    _ => $"history retention on {temporalOutcome.Plan.HistoryName} set to " +
+                         (flow.Versioning.Temporal.RetentionDays is { } d ? $"{d} day(s)" : "INFINITE"),
+                });
+
+                foreach (var statement in temporalOutcome.AppliedStatements)
+                {
+                    Trace("target.temporal", statement.Text);
+                }
+            }
+
             // 6. Optional full-reload truncate.
             if (flow.Target.TruncateBeforeLoad)
             {
@@ -1076,19 +1113,29 @@ public sealed class IngestionFlowRunner
             ? flow.MatchKeys.KeyColumns
             : flow.Load.KeyColumns;
 
-    // Flags the loaders accept for fidelity but the engine does not yet implement. They are rejected with a
-    // clear, actionable message so a flow fails fast instead of silently doing nothing (and believing it did):
-    //   - temporalHistory (SQL Server system-versioned tables) fights the monotonic schema-evolution engine and
-    //     is a dedicated feature; versioning.scd2 provides application-managed dimension history today.
+    // Combinations the engine refuses, checked before any data work so a run fails fast instead of doing half
+    // the job. The YAML loader rejects the same combinations at parse time; this is the equivalent gate for the
+    // control-DB and legacy load paths, which never pass through that loader.
+    //   - temporal + truncateBeforeLoad: SQL Server does not allow TRUNCATE TABLE on a system-versioned table.
+    //     Legacy silently skipped the truncate, leaving the flow believing it had done a full reload when it
+    //     had appended; failing loudly is the honest behavior.
+    //   - temporal + scd2: two history mechanisms on one table record every change twice.
     //   - insertUnknownDimensionRow needs a defined sentinel-key convention plus exemption from the match-key
     //     delete pass and the upsert's key match, so it is a designed feature, not a silent best-effort insert.
     private static void EnsureSupportedFeatures(IngestionFlow flow)
     {
-        if (flow.Versioning.TemporalHistory)
+        if (flow.Versioning.Temporal.Enabled && flow.Target.TruncateBeforeLoad)
         {
             throw new SqlFlowException(
-                "versioning.temporalHistory (SQL Server system-versioned history) is not yet implemented. Use " +
-                "versioning.scd2 for engine-managed dimension history, which works on an existing populated target.");
+                "versioning.temporal cannot be combined with target.truncateBeforeLoad: SQL Server does not allow " +
+                "TRUNCATE TABLE on a system-versioned table, and a full reload contradicts keeping a complete row history.");
+        }
+
+        if (flow.Versioning.Temporal.Enabled && flow.Versioning.Scd2.Enabled)
+        {
+            throw new SqlFlowException(
+                "versioning.temporal and versioning.scd2 cannot both be enabled: system-versioned history and " +
+                "engine-managed SCD2 history would record every change twice. Choose one.");
         }
 
         if (flow.Versioning.InsertUnknownDimensionRow)
@@ -1482,7 +1529,9 @@ public sealed class IngestionFlowRunner
         var introspected = await catalog.IntrospectObjectAsync(connection, ToName(table), ct).ConfigureAwait(false);
         return introspected is null
             ? new Dictionary<string, SqlDataType>(StringComparer.OrdinalIgnoreCase)
-            : CatalogSchemaAdapter.ToColumns(introspected)
+            // Evolvable columns only: a period column is GENERATED ALWAYS, so it is never staged, never
+            // compared, and never written; letting it into the change-detection type map would be meaningless.
+            : CatalogSchemaAdapter.ToEvolvableColumns(introspected)
                 .ToDictionary(c => c.Name, c => c.DataType, StringComparer.OrdinalIgnoreCase);
     }
 

@@ -1,8 +1,8 @@
 ---
 id: flow-ing-versioning
-title: "Ingestion flow: versioning and SCD2"
+title: "Ingestion flow: versioning, temporal history, and SCD2"
 type: flow-reference
-summary: The versioning section of an ingestion flow, including application-managed SCD Type 2 dimension history with ValidFrom_DW, ValidTo_DW, and IsCurrent_DW.
+summary: "Target history for an ingestion flow: SQL Server system-versioned temporal tables, and application-managed SCD Type 2 dimension history."
 keywords:
   - scd2
   - versioning
@@ -11,6 +11,12 @@ keywords:
   - iscurrent_dw
   - dimension history
   - temporalhistory
+  - temporal
+  - system-versioned
+  - system_time
+  - history table
+  - for system_time
+  - retentiondays
   - trackedcolumns
 yamlPath: "versioning (flowType: ing)"
 related:
@@ -20,6 +26,8 @@ sourceRefs:
   - src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs
   - src/SqlFlow.Yaml/IngestionYaml.cs
   - src/SqlFlow.Core/Ingestion/IngestionPolicies.cs
+  - src/SqlFlow.SqlServer/Schema/TemporalTablePlanner.cs
+  - src/SqlFlow.SqlServer/Schema/SchemaSyncService.cs
   - src/SqlFlow.SqlServer/Schema/UpsertGenerator.cs
   - src/SqlFlow.SqlServer/Schema/IngestionSchemaBuilder.cs
   - src/SqlFlow.SqlServer/Ingestion/CanonicalIndexPlanner.cs
@@ -28,7 +36,14 @@ sourceRefs:
 
 # Ingestion flow: versioning and SCD2
 
-The `versioning` section of an ingestion flow (`flowType: ing`) controls target history. Its one implemented feature is `versioning.scd2`: application-managed slowly-changing-dimension Type 2 history, where the engine keeps a validity period per row instead of overwriting changed rows. When a tracked attribute of a keyed row changes, the current row is closed (its ValidTo stamped, its current flag cleared) and a new current version is inserted. The remaining keys are either rejected as not yet implemented (`temporalHistory`, `insertUnknownDimensionRow`) or reserved and inert (`tokenVersioning`, `tokenRetentionDays`).
+The `versioning` section of an ingestion flow (`flowType: ing`) controls target history. It offers two independent, mutually exclusive mechanisms:
+
+- **`versioning.temporal`** (legacy `trgVersioning`): SQL Server **system-versioned temporal history**. The database itself keeps every superseded version of a row in a paired history table, so an UPDATE or DELETE on the target is never lossy and the table is queryable as of any past instant with `FOR SYSTEM_TIME`. The target keeps its exact column list, because the period columns are `HIDDEN`.
+- **`versioning.scd2`**: **application-managed** slowly-changing-dimension Type 2 history, where the engine keeps a validity period per row inside the target itself. When a tracked attribute of a keyed row changes, the current row is closed (its ValidTo stamped, its current flag cleared) and a new current version is inserted.
+
+Enabling both on one flow is rejected: they would record every change twice. The remaining keys are either rejected as not yet implemented (`insertUnknownDimensionRow`) or reserved and inert (`tokenVersioning`, `tokenRetentionDays`).
+
+Which to choose: `temporal` when you want a complete, database-guaranteed audit trail of a fact or reference table with no change to what consumers query; `scd2` when you want a dimension whose versions are first-class rows that ordinary SQL (and a BI tool) can join to a date.
 
 ```yaml
 flowType: ing
@@ -58,7 +73,16 @@ versioning:
 
 | Key | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `versioning.temporalHistory` | bool | no | `false` | SQL Server system-versioned temporal history. Not yet implemented: a flow that enables it is rejected at validation. |
+| `versioning.temporalHistory` | bool | no | `false` | Shorthand for `versioning.temporal.enabled` (this is the key a ported legacy `trgVersioning` flow carries). |
+| `versioning.temporal` | block | no | disabled | SQL Server system-versioned temporal history (sub-keys below). |
+| `versioning.temporal.enabled` | bool | no | `false` | Turn on system-versioned history for the target. |
+| `versioning.temporal.historySchema` | string | no | `ver` | Schema holding the history table, in the target's own database. Created if missing. Legacy read this from `flw.SysCFG.Schema06Version`, which was `ver`. |
+| `versioning.temporal.historyTable` | string | no | target's name | History table name. Set it only when two targets in different schemas would collide on one history name. |
+| `versioning.temporal.validFromColumn` | string | no | `ValidFrom_DW` | The period's ROW START column (`GENERATED ALWAYS`, engine-added). |
+| `versioning.temporal.validToColumn` | string | no | `ValidTo_DW` | The period's ROW END column (`GENERATED ALWAYS`, engine-added). |
+| `versioning.temporal.hiddenPeriodColumns` | bool | no | `true` | Declare the period columns `HIDDEN`, so `SELECT *` returns the table's original column list and enabling history breaks no consumer. |
+| `versioning.temporal.periodPrecision` | int (0-7) | no | `7` | `datetime2` fractional-second scale of the period columns. Legacy emitted `0`; set `0` when linking a history table migrated from a legacy estate, whose period columns must match. |
+| `versioning.temporal.retentionDays` | int | no | none (INFINITE) | `HISTORY_RETENTION_PERIOD` in days. Needs Azure SQL Database, Azure SQL Managed Instance, or SQL Server 2025+. |
 | `versioning.insertUnknownDimensionRow` | bool | no | `false` | Insert an unknown-member dimension row. Not yet implemented: a flow that enables it is rejected at validation. |
 | `versioning.tokenVersioning` | bool | no | `false` | Reserved (legacy TokenVersioning), carried for fidelity; no engine behavior. |
 | `versioning.tokenRetentionDays` | int | no | none | Reserved (legacy TokenRetentionDays); no engine behavior. |
@@ -69,13 +93,89 @@ versioning:
 | `versioning.scd2.currentFlagColumn` | string | no | `IsCurrent_DW` | Current-row indicator (`bit`, engine-added): 1 for the live version, 0 for expired versions. |
 | `versioning.scd2.trackedColumns` | string list | no | `[]` | Source column names whose change opens a new version; empty means every comparable non-key data column. |
 
-## versioning.temporalHistory
+## versioning.temporal
 
-Enabling it is rejected at parse time by src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs rather than silently ignored:
+### Enabling
+
+The shorthand is enough for the common case, and is what a ported legacy `trgVersioning` flow carries:
+
+```yaml
+versioning:
+  temporalHistory: true      # identical to: temporal: { enabled: true }
+```
+
+The full block configures the rest:
+
+```yaml
+versioning:
+  temporal:
+    enabled: true
+    historySchema: ver              # history lives in [ver].[<target>], same database
+    retentionDays: 3650             # optional; omit to keep history forever
+```
+
+The target becomes system-versioned, and from then on SQL Server records the previous image of every row an UPDATE or DELETE touches:
+
+```sql
+-- what the row looked like at a past instant
+SELECT * FROM arc.SVV_Bilteller FOR SYSTEM_TIME AS OF '2026-01-15T00:00:00' WHERE Felt = 1;
+
+-- every version, current and historical
+SELECT * FROM arc.SVV_Bilteller FOR SYSTEM_TIME ALL WHERE Felt = 1;
+```
+
+### It can be turned on for a table that already exists and already holds rows
+
+This is the limitation legacy could not clear: legacy applied versioning only in its create-a-new-table branch, so an existing target could never gain history. V3 introspects the live target and plans the transition from whatever state it is in, so enabling the flag on a populated production table is an ordinary run. The engine adds the `SYSTEM_TIME` period, stamps the existing rows' ROW START one second in the past (so no row's period is empty and every row stays visible to `FOR SYSTEM_TIME AS OF`), and links the history table.
+
+### Enabling history does not change what consumers see
+
+The period columns are declared `HIDDEN` by default, so `SELECT *`, result-set metadata, and every downstream consumer keep seeing the target's original column list. That is what makes turning this on a non-breaking change. Set `hiddenPeriodColumns: false` if you want the period columns to be part of the ordinary projection.
+
+### What the engine will and will not do
+
+The transition is planned from the live state (src/SqlFlow.SqlServer/Schema/TemporalTablePlanner.cs), which gives four outcomes:
+
+| Live state | What happens |
+| --- | --- |
+| No `SYSTEM_TIME` period | The period is added, then versioning is turned on. |
+| Period present, versioning off | Only the enable runs. This is the resume path after a manual `SET (SYSTEM_VERSIONING = OFF)` (which leaves the period behind) or a run interrupted between the two statements. |
+| Already versioned into the declared history table | Nothing, unless the retention period differs, which is re-applied. |
+| Already versioned into a **different** history table | The run fails. Re-pointing would orphan the history already recorded. |
+
+Two things the engine deliberately never does:
+
+- **Turning the flag back off does not un-version the table** and does not drop history. History is data; discarding it is an explicit operator action, not a side effect of an edited YAML.
+- **It never takes versioning off to push a schema change through**, which would open a window where changes go unrecorded. It does not need to (see below).
+
+### Schema evolution keeps working while versioning is on
+
+`ALTER TABLE ... ADD`, `ALTER COLUMN` (including widenings that rewrite the table), and `DROP COLUMN` are all supported by SQL Server on a system-versioned table, and it propagates each change to the history table automatically. So dynamic schema evolution runs unchanged on a versioned target: a new source column lands on both halves, a widened column widens on both.
+
+### Limitations and how they surface
+
+SQL Server imposes real rules on a versioned table. Each is enforced up front with an actionable message rather than surfacing as a raw engine error mid-run:
+
+| Rule | How the engine handles it |
+| --- | --- |
+| The table must have a PRIMARY KEY | Rejected before any DDL: *"SQL Server requires a system-versioned table to have a PRIMARY KEY, and the target has none. Set 'target.identityColumn' ..."*. In V3 `target.identityColumn` is what makes the engine create a clustered primary key. |
+| `TRUNCATE TABLE` is not allowed | `versioning.temporal` combined with `target.truncateBeforeLoad` is rejected at parse time and again at run time. Legacy silently skipped the truncate, which left the flow believing it had done a full reload when it had appended. |
+| `DROP TABLE` is not allowed | Unlink versioning first (`ALTER TABLE ... SET (SYSTEM_VERSIONING = OFF)`), then drop both halves. |
+| The history table must be in the same database | `historySchema` / `historyTable` must be plain undotted names; a dotted one is rejected at parse time. |
+| The history table's columns must match the current table exactly | The enable uses `DATA_CONSISTENCY_CHECK = ON`, so linking a pre-existing (for example migrated) history table with a different shape fails with SQL Server's precise column-and-ordinal error instead of mislinking. |
+| Period columns are `GENERATED ALWAYS` | They can never be written, so the engine keeps them out of the schema diff, the upsert column list, and change detection entirely. A period column name that collides with a data column is rejected. |
+| A period cannot be renamed in place | Changing `validFromColumn`/`validToColumn` on an already-versioned table is rejected. |
+| `HISTORY_RETENTION_PERIOD` is not on every engine | It needs Azure SQL Database, Azure SQL Managed Instance, or SQL Server 2025+. Omit `retentionDays` elsewhere. |
+
+### Mutual exclusion with SCD2
 
 ```text
-'versioning.temporalHistory' (SQL Server system-versioned history) is not yet implemented. Use 'versioning.scd2' for engine-managed dimension history.
+'versioning.temporal' and 'versioning.scd2' cannot both be enabled. System-versioned history keeps every row version in a separate history table maintained by SQL Server, while SCD2 keeps versions in the target itself; enabling both records each change twice. Choose one.
 ```
+
+### Porting a legacy trgVersioning flow
+
+Legacy stored the flag as `flw.Ingestion.trgVersioning` and generated the DDL through `flw.GetVersioningScript`, taking the history schema from `flw.SysCFG.Schema06Version` and hardcoding the `ValidFrom_DW`/`ValidTo_DW` names at `datetime2(0)`. Those are the V3 defaults, so `versioning.temporalHistory: true` reproduces the legacy setup, with one difference: V3 defaults the period to `datetime2(7)`. Add `periodPrecision: 0` when the flow has to match tables the legacy engine created (a control-DB-sourced flow does this automatically).
 
 ## versioning.insertUnknownDimensionRow
 
@@ -185,6 +285,34 @@ Validate and run with the standard CLI verbs:
 ```bash
 sqlflow validate customer-dim.flow.yaml
 sqlflow run customer-dim.flow.yaml
+```
+
+### Full temporal example
+
+```yaml
+flowType: ing
+name: svv_bilteller_02_ing
+
+connections:
+  pre: ${env:SQLFLOW_CONN_DWPREPROD}
+  ods: ${env:SQLFLOW_CONN_DWDWHPROD}
+
+source:
+  server: pre
+  object: "[dw-pre-prod].[pre].[v_SVV_Bilteller]"
+
+target:
+  server: ods
+  object: "[dw-dwh-prod].[arc].[SVV_Bilteller_live]"
+  identityColumn: SVVBiltellerPK        # required: it is what gives the table its primary key
+
+load:
+  keyColumns: [Trafikkregistreringspunkt, Felt, Dato]
+
+versioning:
+  temporal:
+    enabled: true
+    historySchema: ver                  # history lands in [ver].[SVV_Bilteller_live]
 ```
 
 ## See also

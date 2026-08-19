@@ -229,11 +229,11 @@ public sealed record InitLoadPolicy
 /// <summary>Target history and dimension helpers (legacy trgVersioning, InsertUnknownDimRow, token family).</summary>
 public sealed record VersioningPolicy
 {
-    /// <summary>Maintain a SQL Server system-versioned temporal history table for the target (legacy
-    /// trgVersioning). NOT YET IMPLEMENTED: the engine rejects a flow that sets this rather than silently
-    /// ignoring it (system-versioning interacts with the schema-evolution engine and is a dedicated feature).
-    /// Use <see cref="Scd2"/> for engine-managed dimension history today.</summary>
-    public bool TemporalHistory { get; init; }
+    /// <summary>SQL Server system-versioned temporal history for the target (legacy trgVersioning): the
+    /// engine keeps a full row-version history in a separate history table that the database maintains, so
+    /// every UPDATE and DELETE is recoverable through <c>FOR SYSTEM_TIME</c>. Disabled by default; see
+    /// <see cref="TemporalPolicy"/> for what the engine will and will not do to a versioned table.</summary>
+    public TemporalPolicy Temporal { get; init; } = new();
 
     /// <summary>Insert an unknown-member row for dimension handling (legacy InsertUnknownDimRow). NOT YET
     /// IMPLEMENTED: the engine rejects a flow that sets this rather than silently ignoring it (a correct
@@ -248,10 +248,82 @@ public sealed record VersioningPolicy
     public int? TokenRetentionDays { get; init; }
 
     /// <summary>Application-managed slowly-changing-dimension (Type 2) history: period columns the engine
-    /// maintains itself, so unlike <see cref="TemporalHistory"/> it can be enabled on an already-created,
-    /// already-populated target (the period columns are added through normal schema evolution and existing
-    /// rows are backfilled as the current version).</summary>
+    /// maintains itself, so unlike <see cref="Temporal"/> its history lives in the target table itself and is
+    /// queryable with ordinary SQL. Both can be enabled on an already-created, already-populated target;
+    /// they are mutually exclusive, because two history mechanisms on one table double-record every change.</summary>
     public Scd2Policy Scd2 { get; init; } = new();
+}
+
+/// <summary>
+/// SQL Server system-versioned temporal history (legacy <c>trgVersioning</c>). The database itself keeps
+/// every superseded version of a row in a paired history table, so an UPDATE or DELETE on the target is
+/// never lossy and the table is queryable as of any past instant with <c>FOR SYSTEM_TIME</c>.
+///
+/// The engine drives the target to the declared state and stops there. What that means in practice, and the
+/// hard SQL Server rules behind it (each one verified against the engine, not assumed):
+/// <list type="bullet">
+/// <item>The target must have a PRIMARY KEY. SQL Server refuses to enable versioning without one, so a flow
+/// that asks for temporal history on a target with no key is rejected before any DDL runs.</item>
+/// <item>The history table must live in the SAME database as the target: SQL Server only accepts a two-part
+/// history name, so <see cref="HistorySchema"/> names a schema in the target's database and nothing else.</item>
+/// <item>The period columns are GENERATED ALWAYS: they can never be written, and the engine therefore keeps
+/// them out of schema evolution, the upsert column list, and change detection entirely.</item>
+/// <item>TRUNCATE TABLE is not a supported operation on a system-versioned table, so
+/// <c>target.truncateBeforeLoad</c> and temporal history are mutually exclusive by validation rather than
+/// silently ignored (legacy skipped the truncate and left the flow believing it had done a full reload).</item>
+/// <item>Ordinary schema evolution (ADD, ALTER and DROP COLUMN) IS supported while versioning is on and SQL
+/// Server propagates each change to the history table, so evolution runs unchanged and the engine never
+/// takes versioning off behind the operator's back to make a column fit.</item>
+/// <item>Turning the feature back OFF in the flow never un-versions the table or drops history: history is
+/// data, and destroying it is an explicit operator decision, not a side effect of an edited YAML.</item>
+/// </list>
+/// </summary>
+public sealed record TemporalPolicy
+{
+    /// <summary>Maintain system-versioned history for the target.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>The schema holding the history table, in the target's own database. Defaults to
+    /// <see cref="DefaultHistorySchema"/> ("ver"), which is the schema legacy SQLFlow used via its
+    /// <c>flw.SysCFG</c> <c>Schema06Version</c> parameter, so a ported flow keeps its history where the old
+    /// estate put it. The engine creates the schema when it is missing.</summary>
+    public string HistorySchema { get; init; } = DefaultHistorySchema;
+
+    /// <summary>The history table name. Null (the default) mirrors the target's own table name, matching
+    /// legacy. Set it only when two targets in different schemas would otherwise collide on one history name.</summary>
+    public string? HistoryTable { get; init; }
+
+    /// <summary>The period's ROW START column. Legacy named it <c>ValidFrom_DW</c>.</summary>
+    public string ValidFromColumn { get; init; } = DefaultValidFromColumn;
+
+    /// <summary>The period's ROW END column. Legacy named it <c>ValidTo_DW</c>.</summary>
+    public string ValidToColumn { get; init; } = DefaultValidToColumn;
+
+    /// <summary>Declare the period columns HIDDEN (the legacy behavior and the default), so <c>SELECT *</c>
+    /// and every downstream consumer see the table's original column list unchanged. This is what makes
+    /// enabling temporal history on a live table a non-breaking change for its consumers.</summary>
+    public bool HiddenPeriodColumns { get; init; } = true;
+
+    /// <summary>The fractional-second precision of the two period columns (0-7). The default is SQL Server's
+    /// own datetime2 default of 7; legacy SQLFlow used 0, which cannot tell two updates to the same row inside
+    /// one second apart. Set it to 0 when linking a history table migrated from a legacy estate, whose period
+    /// columns must match the current table's types exactly.</summary>
+    public int PeriodPrecision { get; init; } = DefaultPeriodPrecision;
+
+    /// <summary>HISTORY_RETENTION_PERIOD in days; null (the default) keeps history forever (INFINITE).
+    /// Retention is enforced by a background cleanup task on Azure SQL Database, Azure SQL Managed Instance
+    /// and SQL Server 2025 and later; an engine that does not support it rejects the setting, which the
+    /// engine surfaces rather than swallowing.</summary>
+    public int? RetentionDays { get; init; }
+
+    public const int DefaultPeriodPrecision = 7;
+    public const string DefaultHistorySchema = "ver";
+    public const string DefaultValidFromColumn = "ValidFrom_DW";
+    public const string DefaultValidToColumn = "ValidTo_DW";
+
+    /// <summary>The history table's effective name: the explicit override, or the target's own name.</summary>
+    public string ResolveHistoryTable(string targetTableName)
+        => string.IsNullOrWhiteSpace(HistoryTable) ? targetTableName : HistoryTable!.Trim();
 }
 
 /// <summary>

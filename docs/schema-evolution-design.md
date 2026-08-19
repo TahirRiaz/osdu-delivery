@@ -41,7 +41,10 @@ The per-run pipeline (before load):
 6. Generate DDL                         CREATE TABLE (+ PK / indexes / identity / columnstore) or ADD / ALTER COLUMN.
 7. Execute the DDL                       ISchemaProvider.ExecuteDdlAsync, wrapped in one transaction (an improvement
                                         over legacy's per-statement auto-commit, so a partial failure rolls back).
-8. Temporal versioning                   on first create when Versioning.TemporalHistory is set.
+8. Temporal versioning                   when Versioning.Temporal.Enabled is set. (SHIPPED DIFFERENTLY: not
+                                        limited to first create; the transition is planned from the live
+                                        target state, so it also turns an existing populated table into a
+                                        system-versioned one. See reference/flow/ing-versioning.md.)
 ```
 
 The staging build runs steps 1 to 7 against the staging table (always CreateTable, since it is dropped first); the target build runs steps 4 to 8 against the persistent target, with the staging table as its "desired" input.

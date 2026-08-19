@@ -113,20 +113,25 @@ public sealed class YamlIngestionFlowLoader
         var systemColumns = MapSystemColumns(y.SystemColumns);
         var versioning = MapVersioning(y.Versioning, source);
 
-        // These are accepted by the schema (and the control-DB / legacy loaders) for fidelity but are not yet
-        // implemented by the engine, so a flow that sets one is rejected at validation rather than silently doing
-        // nothing. (The engine also guards them at run time for the non-YAML load paths.)
-        if (versioning.TemporalHistory)
-        {
-            throw new FlowValidationException(
-                $"{source}: 'versioning.temporalHistory' (SQL Server system-versioned history) is not yet implemented. " +
-                "Use 'versioning.scd2' for engine-managed dimension history.");
-        }
-
+        // Accepted by the schema (and the control-DB / legacy loaders) for fidelity but not yet implemented by
+        // the engine, so a flow that sets it is rejected at validation rather than silently doing nothing.
+        // (The engine also guards it at run time for the non-YAML load paths.)
         if (versioning.InsertUnknownDimensionRow)
         {
             throw new FlowValidationException(
                 $"{source}: 'versioning.insertUnknownDimensionRow' is not yet implemented; seed the unknown-member row explicitly for now.");
+        }
+
+        // TRUNCATE TABLE is not a supported operation on a system-versioned table: SQL Server refuses it
+        // outright. Legacy silently skipped the truncate when trgVersioning was on, which left the flow author
+        // believing a full reload had happened when the load had in fact appended. Reject the contradiction
+        // instead of picking a winner behind their back.
+        if (versioning.Temporal.Enabled && (targetYaml.TruncateBeforeLoad ?? false))
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporal' cannot be combined with 'target.truncateBeforeLoad'. SQL Server does not " +
+                "allow TRUNCATE TABLE on a system-versioned table, and a full reload would in any case contradict keeping a " +
+                "complete row history. Remove one of the two.");
         }
 
         if (versioning.Scd2.Enabled)
@@ -491,13 +496,102 @@ public sealed class YamlIngestionFlowLoader
             return new VersioningPolicy();
         }
 
+        var temporal = MapTemporal(y, source);
+        var scd2 = MapScd2(y.Scd2, source);
+
+        // Two independent history mechanisms on one table would record every change twice: the database's own
+        // row versions AND an engine-maintained period row. They are also semantically different (system time
+        // versus the load's notion of validity), so one flow must choose.
+        if (temporal.Enabled && scd2.Enabled)
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporal' and 'versioning.scd2' cannot both be enabled. System-versioned history " +
+                "keeps every row version in a separate history table maintained by SQL Server, while SCD2 keeps versions in " +
+                "the target itself; enabling both records each change twice. Choose one.");
+        }
+
         return new VersioningPolicy
         {
-            TemporalHistory = y.TemporalHistory ?? false,
+            Temporal = temporal,
             InsertUnknownDimensionRow = y.InsertUnknownDimensionRow ?? false,
             TokenVersioning = y.TokenVersioning ?? false,
             TokenRetentionDays = y.TokenRetentionDays,
-            Scd2 = MapScd2(y.Scd2, source),
+            Scd2 = scd2,
+        };
+    }
+
+    /// <summary>
+    /// Maps the temporal block, honoring the legacy <c>temporalHistory: true</c> shorthand (which is what a
+    /// ported <c>trgVersioning</c> flow carries) as an alias for <c>temporal.enabled</c>. Both surfaces
+    /// converge on one <see cref="TemporalPolicy"/> before any engine code sees the flow, so there is a single
+    /// execution path; only the authoring surface is two-sided.
+    /// </summary>
+    private static TemporalPolicy MapTemporal(IngestionVersioningYaml y, string source)
+    {
+        var t = y.Temporal;
+
+        // An explicit `temporalHistory: false` next to `temporal.enabled: true` is a contradiction the author
+        // needs to resolve; a merely absent shorthand is not.
+        if (y.TemporalHistory == false && t?.Enabled == true)
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporalHistory: false' contradicts 'versioning.temporal.enabled: true'. " +
+                "'temporalHistory' is the shorthand for 'temporal.enabled'; set one of them.");
+        }
+
+        var enabled = (y.TemporalHistory ?? false) || (t?.Enabled ?? false);
+        if (t is null)
+        {
+            return new TemporalPolicy { Enabled = enabled };
+        }
+
+        var validFrom = NullIfBlank(t.ValidFromColumn) ?? TemporalPolicy.DefaultValidFromColumn;
+        var validTo = NullIfBlank(t.ValidToColumn) ?? TemporalPolicy.DefaultValidToColumn;
+
+        if (string.Equals(validFrom, validTo, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporal' validFromColumn and validToColumn must be two distinct names " +
+                $"(both are '{validFrom}'); a SYSTEM_TIME period needs one column for each end.");
+        }
+
+        var historySchema = NullIfBlank(t.HistorySchema) ?? TemporalPolicy.DefaultHistorySchema;
+        var historyTable = NullIfBlank(t.HistoryTable);
+
+        // SQL Server only accepts a two-part history name: the history table always lives in the target's own
+        // database, so a dotted name here is a misunderstanding worth catching at authoring time.
+        if (historySchema.Contains('.', StringComparison.Ordinal) || (historyTable?.Contains('.', StringComparison.Ordinal) ?? false))
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporal' historySchema/historyTable must be plain, undotted names. SQL Server " +
+                "requires the history table to live in the same database as the target and accepts only a two-part name.");
+        }
+
+        var precision = t.PeriodPrecision ?? TemporalPolicy.DefaultPeriodPrecision;
+        if (precision is < 0 or > 7)
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporal.periodPrecision' must be between 0 and 7 (got {precision}); it is the " +
+                "datetime2 fractional-second scale of the two period columns.");
+        }
+
+        if (t.RetentionDays is { } days && days <= 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: 'versioning.temporal.retentionDays' must be a positive number of days (got {days}); omit it " +
+                "to keep history forever.");
+        }
+
+        return new TemporalPolicy
+        {
+            Enabled = enabled,
+            HistorySchema = historySchema,
+            HistoryTable = historyTable,
+            ValidFromColumn = validFrom,
+            ValidToColumn = validTo,
+            HiddenPeriodColumns = t.HiddenPeriodColumns ?? true,
+            PeriodPrecision = precision,
+            RetentionDays = t.RetentionDays,
         };
     }
 

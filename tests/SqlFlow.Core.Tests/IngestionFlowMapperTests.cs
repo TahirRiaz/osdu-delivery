@@ -199,6 +199,10 @@ public sealed class IngestionFlowMapperTests
         Assert.Equal("AND SystemID = 13", flow.Source.IncrementalClause);
         Assert.Equal("stg.PreClean", flow.Process.PreProcessOnTarget);
         Assert.Equal("adf-refresh", flow.Process.PostInvokeAlias);
-        Assert.True(flow.Versioning.TemporalHistory);
+        // trgVersioning maps onto the first-class temporal policy, keeping the legacy engine's datetime2(0)
+        // period precision so a control-DB-sourced flow reproduces the tables that engine produced.
+        Assert.True(flow.Versioning.Temporal.Enabled);
+        Assert.Equal(0, flow.Versioning.Temporal.PeriodPrecision);
+        Assert.Equal("ver", flow.Versioning.Temporal.HistorySchema);
     }
 }

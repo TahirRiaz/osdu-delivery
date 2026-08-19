@@ -566,6 +566,38 @@ mod tests {
     }
 
     #[test]
+    fn ing_census_resolves_the_temporal_versioning_block() {
+        // versioning.temporal is what drives editor completion and hover for system-versioned history; the
+        // legacy temporalHistory shorthand must keep resolving alongside it, since ported flows carry it.
+        let c = Census::for_flow_type(Some("ing"));
+        assert!(matches!(c.resolve(&ak(&["versioning", "temporalHistory"])), Resolution::Exact(_)));
+        assert!(matches!(c.resolve(&ak(&["versioning", "temporal"])), Resolution::Exact(_) | Resolution::Container));
+        for leaf in [
+            "enabled",
+            "historySchema",
+            "historyTable",
+            "validFromColumn",
+            "validToColumn",
+            "hiddenPeriodColumns",
+            "periodPrecision",
+            "retentionDays",
+        ] {
+            assert!(
+                matches!(c.resolve(&ak(&["versioning", "temporal", leaf])), Resolution::Exact(_)),
+                "versioning.temporal.{leaf} should be a documented attribute"
+            );
+        }
+
+        // A boolean leaf offers true/false in value position, and an undocumented child is still flagged.
+        if let Resolution::Exact(entry) = c.resolve(&ak(&["versioning", "temporal", "enabled"])) {
+            assert!(entry.ty.to_lowercase().starts_with("bool"));
+        } else {
+            panic!("versioning.temporal.enabled should be a documented attribute");
+        }
+        assert!(matches!(c.resolve(&ak(&["versioning", "temporal", "bogusKey"])), Resolution::Unknown));
+    }
+
+    #[test]
     fn shared_invoke_hook_resolves_output_keys() {
         // Inline invokes: hooks (ing/exp/sp) accept output/outputs via the shared census.
         let c = Census::for_flow_type(Some("ing"));

@@ -20,14 +20,34 @@ public static class CatalogSchemaAdapter
 
         return catalogObject.Columns
             .OrderBy(c => c.Ordinal)
-            .Select(c => new SqlColumn
-            {
-                Name = c.Name,
-                DataType = SqlDataType.Parse(c.NativeType),
-                IsNullable = c.IsNullable,
-                IsIdentity = c.IsIdentity,
-                IsPrimaryKey = c.IsPrimaryKeyMember,
-            })
+            .Select(ToSqlColumn)
+            .ToList();
+    }
+
+    private static SqlColumn ToSqlColumn(CatalogColumn c) => new()
+    {
+        Name = c.Name,
+        DataType = SqlDataType.Parse(c.NativeType),
+        IsNullable = c.IsNullable,
+        IsIdentity = c.IsIdentity,
+        IsPrimaryKey = c.IsPrimaryKeyMember,
+    };
+
+    /// <summary>
+    /// The live columns that schema evolution may reason about: everything except the SYSTEM_TIME period
+    /// columns of a temporal table. Those are GENERATED ALWAYS, so they can never be written, altered by the
+    /// evolution planner, or diffed against a desired schema that (correctly) does not contain them. Leaving
+    /// them in would make every run report two phantom extra-column drift findings and, worse, would let them
+    /// reach the change-detection type map, where a target column with no staging counterpart has no meaning.
+    /// </summary>
+    public static IReadOnlyList<SqlColumn> ToEvolvableColumns(CatalogObject catalogObject)
+    {
+        ArgumentNullException.ThrowIfNull(catalogObject);
+
+        return catalogObject.Columns
+            .Where(c => c.GeneratedAlways == GeneratedAlwaysKind.None)
+            .OrderBy(c => c.Ordinal)
+            .Select(ToSqlColumn)
             .ToList();
     }
 
