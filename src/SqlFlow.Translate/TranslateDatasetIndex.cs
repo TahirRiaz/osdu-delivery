@@ -5,12 +5,13 @@ using SqlFlow.Core.Translate;
 namespace SqlFlow.Translate;
 
 /// <summary>
-/// The run's dataset rows, indexed for <c>$forEach</c> resolution: each declared dataset's rows are grouped by
-/// its bind-column values, and a lookup takes the same-named columns from the enclosing scope to select the
-/// matching group. The reserved name <c>rows</c> resolves to the primary query's rows (result-set grain).
-/// Key values compare by an invariant, type-normalized string representation (so an <c>int</c> key on one side
-/// matches a <c>bigint</c> on the other) with case-insensitive strings, matching SQL Server join semantics
-/// under the default collation.
+/// The run's dataset rows, indexed for <c>$forEach</c>/<c>$row</c> resolution: each declared dataset's rows are
+/// grouped by its bind-column values, and a lookup takes the same-named columns from the enclosing scope to
+/// select the matching group. A bind-less (single-instance) dataset groups under one empty key, so it resolves
+/// to all of its rows at any scope with no lookup. The reserved name <c>rows</c> resolves to the primary
+/// query's rows (result-set grain). Key values compare by an invariant, type-normalized string representation
+/// (so an <c>int</c> key on one side matches a <c>bigint</c> on the other) with case-insensitive strings,
+/// matching SQL Server join semantics under the default collation.
 /// </summary>
 public sealed class TranslateDatasetIndex
 {

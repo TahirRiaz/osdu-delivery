@@ -84,6 +84,21 @@ public static class JsonTemplateRenderer
                 return Rendered.Of(result);
             }
 
+            case TranslateRowNode row:
+            {
+                var rows = datasets.Resolve(row.Row, scope, path);
+                if (rows.Count != 1)
+                {
+                    throw new SqlFlowException(
+                        $"At {path}: '$row: {row.Row}' requires exactly one row, found {rows.Count}. " +
+                        (rows.Count == 0
+                            ? "A header dataset must return its row; a bound one-to-one dataset must have a match for this scope."
+                            : "Narrow the dataset query, or use '$forEach' if the block genuinely repeats."));
+                }
+
+                return RenderNode(row.Item, scope.Push(rows[0]), datasets, nulls, path);
+            }
+
             case TranslateValueNode leaf:
                 return RenderLeaf(leaf, scope, nulls, path);
 

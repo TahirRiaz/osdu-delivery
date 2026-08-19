@@ -157,17 +157,14 @@ public sealed class YamlTranslateFlowLoader
             var query = YamlDocumentParts.NullIfBlank(y.Query)
                 ?? throw new FlowValidationException($"{source}: 'datasets[{i}].query' is required.");
 
+            // An empty (or absent) bind is a deliberate shape, not an error: a single-instance dataset that
+            // resolves to all of its rows at any scope (a $row header block, or a global $forEach repeater).
             var bind = (y.Bind ?? [])
                 .Select(b => b?.Trim())
                 .Where(b => !string.IsNullOrEmpty(b))
                 .Select(b => b!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            if (bind.Count == 0)
-            {
-                throw new FlowValidationException(
-                    $"{source}: 'datasets[{i}].bind' needs at least one column (the join key matching a dataset row to its enclosing scope).");
-            }
 
             datasets.Add(new TranslateDataset { Name = name, Query = query.Trim(), Bind = bind });
         }
@@ -181,7 +178,7 @@ public sealed class YamlTranslateFlowLoader
 
     private static readonly string[] LeafDirectives = ["$column", "$value", "$template"];
     private static readonly string[] KnownDirectives =
-        ["$column", "$value", "$template", "$type", "$format", "$whenNull", "$default", "$forEach", "$item"];
+        ["$column", "$value", "$template", "$type", "$format", "$whenNull", "$default", "$forEach", "$row", "$item"];
 
     private static TranslateNode CompileNode(
         object? node, string path, IReadOnlySet<string> datasetNames, TranslateDocumentGrain grain, string source)
@@ -290,52 +287,68 @@ public sealed class YamlTranslateFlowLoader
                 "A node is either an object of plain properties or a single directive node.");
         }
 
-        return directives.ContainsKey("$forEach")
-            ? CompileArray(directives, path, datasetNames, grain, source)
+        var hasForEach = directives.ContainsKey("$forEach");
+        var hasRow = directives.ContainsKey("$row");
+        if (hasForEach && hasRow)
+        {
+            throw new FlowValidationException(
+                $"{source}: '{path}' declares both '$forEach' and '$row'; a node is a repeater (many rows) or a " +
+                "single-row block, never both.");
+        }
+
+        return hasForEach || hasRow
+            ? CompileDatasetNode(directives, hasRow ? "$row" : "$forEach", path, datasetNames, grain, source)
             : CompileLeaf(directives, path, source);
     }
 
-    private static TranslateNode CompileArray(
-        Dictionary<string, object?> directives, string path, IReadOnlySet<string> datasetNames,
+    /// <summary>Compiles the two dataset-driven shapes, which share one grammar: the directive names the dataset,
+    /// <c>$item</c> is the body. <c>$forEach</c> emits one array element per matching row (the repeater);
+    /// <c>$row</c> renders its body once in the scope of the single matching row (the header / one-to-one block).</summary>
+    private static TranslateNode CompileDatasetNode(
+        Dictionary<string, object?> directives, string directive, string path, IReadOnlySet<string> datasetNames,
         TranslateDocumentGrain grain, string source)
     {
         foreach (var key in directives.Keys)
         {
-            if (!key.Equals("$forEach", StringComparison.OrdinalIgnoreCase) && !key.Equals("$item", StringComparison.OrdinalIgnoreCase))
+            if (!key.Equals(directive, StringComparison.OrdinalIgnoreCase) && !key.Equals("$item", StringComparison.OrdinalIgnoreCase))
             {
                 throw new FlowValidationException(
-                    $"{source}: '{path}' combines '$forEach' with '{key}'; a data-driven array takes exactly '$forEach' and '$item'.");
+                    $"{source}: '{path}' combines '{directive}' with '{key}'; a dataset node takes exactly '{directive}' and '$item'.");
             }
         }
 
-        var forEach = (directives["$forEach"] as string)?.Trim();
-        if (string.IsNullOrEmpty(forEach))
+        var dataset = (directives[directive] as string)?.Trim();
+        if (string.IsNullOrEmpty(dataset))
         {
-            throw new FlowValidationException($"{source}: '{path}.$forEach' must name a dataset (or '{PrimaryRowsDataset}').");
+            throw new FlowValidationException($"{source}: '{path}.{directive}' must name a dataset (or '{PrimaryRowsDataset}').");
         }
 
-        if (string.Equals(forEach, PrimaryRowsDataset, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(dataset, PrimaryRowsDataset, StringComparison.OrdinalIgnoreCase))
         {
             if (grain != TranslateDocumentGrain.ResultSet)
             {
                 throw new FlowValidationException(
-                    $"{source}: '{path}.$forEach: {PrimaryRowsDataset}' addresses the whole primary result, which only exists at " +
+                    $"{source}: '{path}.{directive}: {PrimaryRowsDataset}' addresses the whole primary result, which only exists at " +
                     "'documents.per: resultSet'; a per-row document IS one primary row.");
             }
         }
-        else if (!datasetNames.Contains(forEach))
+        else if (!datasetNames.Contains(dataset))
         {
             throw new FlowValidationException(
-                $"{source}: '{path}.$forEach' references dataset '{forEach}', which is not declared under 'datasets:'." +
+                $"{source}: '{path}.{directive}' references dataset '{dataset}', which is not declared under 'datasets:'." +
                 (datasetNames.Count == 0 ? string.Empty : $" Declared: {string.Join(", ", datasetNames)}."));
         }
 
         if (!directives.TryGetValue("$item", out var item) || item is null)
         {
-            throw new FlowValidationException($"{source}: '{path}' declares '$forEach' and therefore requires '$item' (the element template).");
+            throw new FlowValidationException(
+                $"{source}: '{path}' declares '{directive}' and therefore requires '$item' (the body template).");
         }
 
-        return new TranslateArrayNode(forEach!, CompileNode(item, $"{path}.$item", datasetNames, grain, source));
+        var body = CompileNode(item, $"{path}.$item", datasetNames, grain, source);
+        return directive == "$row"
+            ? new TranslateRowNode(dataset!, body)
+            : new TranslateArrayNode(dataset!, body);
     }
 
     private static TranslateNode CompileLeaf(Dictionary<string, object?> directives, string path, string source)

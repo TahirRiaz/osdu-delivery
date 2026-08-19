@@ -388,4 +388,139 @@ public sealed class YamlTranslateFlowLoaderTests
             """));
         Assert.Contains("invoke.reliability.skipStatusCodes", ex.Message, StringComparison.Ordinal);
     }
+
+    // --- Header/repeater: bind-less (single-instance) datasets and the $row directive -----------------------
+
+    [Fact]
+    public void Parse_BindlessDataset_IsSingleInstance()
+    {
+        var flow = Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS A }
+            datasets:
+              - name: meta
+                query: SELECT SYSUTCDATETIME() AS ExtractedUtc, COUNT(*) AS RecordCount FROM edw.Trip
+            template:
+              header:
+                $row: meta
+                $item:
+                  extractedAt: { $column: ExtractedUtc, $type: dateTime }
+                  recordCount: "{RecordCount}"
+            output: { path: ./out }
+            """).Flow;
+
+        var dataset = Assert.Single(flow.Datasets);
+        Assert.Empty(dataset.Bind);
+
+        var header = Assert.IsType<TranslateObjectNode>(flow.Template).Properties.Single(p => p.Name == "header");
+        var row = Assert.IsType<TranslateRowNode>(header.Value);
+        Assert.Equal("meta", row.Row);
+        Assert.IsType<TranslateObjectNode>(row.Item);
+    }
+
+    [Fact]
+    public void Parse_RowOverBoundDataset_Compiles()
+    {
+        var flow = Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS OrderId }
+            datasets:
+              - name: shipping
+                query: SELECT OrderId, Carrier FROM edw.Shipping
+                bind: [OrderId]
+            template:
+              shipping:
+                $row: shipping
+                $item: { carrier: "{Carrier}" }
+            output: { path: ./out }
+            """).Flow;
+
+        Assert.IsType<TranslateRowNode>(
+            Assert.IsType<TranslateObjectNode>(flow.Template).Properties.Single().Value);
+    }
+
+    [Fact]
+    public void Parse_RowAndForEachTogether_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS A }
+            datasets:
+              - name: meta
+                query: SELECT 1 AS A
+            template:
+              block: { $row: meta, $forEach: meta, $item: { a: "{A}" } }
+            output: { path: ./out }
+            """));
+        Assert.Contains("both '$forEach' and '$row'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_RowWithoutItem_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS A }
+            datasets:
+              - name: meta
+                query: SELECT 1 AS A
+            template:
+              block: { $row: meta }
+            output: { path: ./out }
+            """));
+        Assert.Contains("requires '$item'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_RowCombinedWithLeafDirective_Fails()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS A }
+            datasets:
+              - name: meta
+                query: SELECT 1 AS A
+            template:
+              block: { $row: meta, $item: { a: "{A}" }, $type: string }
+            output: { path: ./out }
+            """));
+        Assert.Contains("combines '$row' with '$type'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_RowOverUnknownDataset_ListsDeclared()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS A }
+            datasets:
+              - name: meta
+                query: SELECT 1 AS A
+            template:
+              block: { $row: nope, $item: { a: "{A}" } }
+            output: { path: ./out }
+            """));
+        Assert.Contains("'nope'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("meta", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_RowOverPrimaryRows_RequiresResultSetGrain()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: trl
+            name: t
+            source: { connection: "${env:DWH}", query: SELECT 1 AS A }
+            template:
+              block: { $row: rows, $item: { a: "{A}" } }
+            output: { path: ./out }
+            """));
+        Assert.Contains("documents.per: resultSet", ex.Message, StringComparison.Ordinal);
+    }
 }

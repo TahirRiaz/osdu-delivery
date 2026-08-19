@@ -14,6 +14,7 @@ namespace SqlFlow.Core.Translate;
 [JsonDerivedType(typeof(TranslateObjectNode), "object")]
 [JsonDerivedType(typeof(TranslateListNode), "list")]
 [JsonDerivedType(typeof(TranslateArrayNode), "array")]
+[JsonDerivedType(typeof(TranslateRowNode), "row")]
 [JsonDerivedType(typeof(TranslateValueNode), "value")]
 public abstract record TranslateNode;
 
@@ -33,6 +34,15 @@ public sealed record TranslateListNode(IReadOnlyList<TranslateNode> Items) : Tra
 /// rows' columns behind them.
 /// </summary>
 public sealed record TranslateArrayNode(string ForEach, TranslateNode Item) : TranslateNode;
+
+/// <summary>
+/// A single-row block (<c>$row</c> + <c>$item</c>): the header/one-to-one counterpart of a repeater. The named
+/// dataset must resolve to EXACTLY one row at the enclosing scope (a bind-less header dataset, a one-to-one
+/// child keyed by its bind columns, or the reserved <c>rows</c> when the primary result is one row); the item
+/// renders with that row pushed onto the scope. Zero or several matching rows fail the run with the count, so
+/// a broken header query can never silently emit a wrong document.
+/// </summary>
+public sealed record TranslateRowNode(string Row, TranslateNode Item) : TranslateNode;
 
 /// <summary>How a leaf value is produced.</summary>
 public enum TranslateValueSource

@@ -86,7 +86,8 @@ A mapping that carries `$` keys is a directive node (mixing `$` keys with plain 
 - `$column: Name` emits the column's value. `$value: <anything>` emits a constant of any YAML shape verbatim (also the escape hatch for literal `$`-prefixed property names). `$template: "text {Col}"` emits a rendered string. Exactly one of the three per node.
 - `$type: auto|string|int|long|double|decimal|bool|date|dateTime|json` coerces the value (invariant culture). `json` parses a string column AS JSON and embeds the structure, so a stored GeoJSON fragment lands as an object, not an escaped string. `$format:` applies a .NET format string to `date`/`dateTime`.
 - `$whenNull: omit|null|default` overrides the document-level `documents.nulls` for one leaf; `default` emits the `$default:` constant (declaring `$default` alone implies it). A `$template` whose referenced columns are ALL null follows the null policy instead of emitting the bare literal skeleton.
-- `$forEach: <dataset>` + `$item: <node>` emits a data-driven array: one element per dataset row whose `bind` columns match the enclosing scope. The item renders with that row pushed onto the scope, so it sees its own columns first and the enclosing rows' columns behind them; nesting `$forEach` inside `$forEach` chains scopes naturally. At `documents.per: resultSet`, the reserved name `rows` iterates the primary query's rows.
+- `$forEach: <dataset>` + `$item: <node>` emits a data-driven array (the REPEATER): one element per dataset row whose `bind` columns match the enclosing scope. The item renders with that row pushed onto the scope, so it sees its own columns first and the enclosing rows' columns behind them; nesting `$forEach` inside `$forEach` chains scopes naturally. At `documents.per: resultSet`, the reserved name `rows` iterates the primary query's rows.
+- `$row: <dataset>` + `$item: <node>` is the single-instance counterpart (the HEADER / one-to-one block): the dataset must resolve to exactly one row at the enclosing scope, and the item renders once in that row's scope. Zero or several matching rows fail the run with the count, so a broken header query can never silently emit a wrong document. `$row: rows` wraps the single primary row at result-set grain.
 
 ### Datasets
 
@@ -98,6 +99,22 @@ datasets:
 ```
 
 Each dataset query runs once per flow run; its rows are grouped by the `bind` columns and matched to the enclosing scope's same-named columns. Key values compare by a type-normalized invariant form (an `int` matches a `bigint`; strings compare case-insensitively, matching the default SQL Server collation). A bind column the dataset query does not return fails the run naming the missing columns; a bind column absent from the enclosing scope fails naming the columns actually in scope.
+
+A dataset with NO `bind` is single-instance: it is not keyed to any scope and resolves to all of its rows anywhere. That is the header/transactional split made first-class: a one-row bind-less dataset feeds a `$row` header block, a bind-less list feeds a global `$forEach` repeater, and the classic envelope (one file per run: header metadata plus every transaction) is a result-set-grain document whose header is a `$row` over a bind-less dataset and whose transactions are `$forEach: rows`:
+
+```yaml
+datasets:
+  - name: meta
+    query: SELECT SYSUTCDATETIME() AS ExtractedUtc, COUNT(*) AS RecordCount FROM edw.Trip
+documents: { per: resultSet }
+template:
+  header:
+    $row: meta
+    $item: { extractedAt: {$column: ExtractedUtc, $type: dateTime}, recordCount: "{RecordCount}" }
+  transactions:
+    $forEach: rows
+    $item: { tripId: "{TripId}" }
+```
 
 ## Documents
 
@@ -156,4 +173,4 @@ A status listed in `reliability.skipStatusCodes` marks that one request a tolera
 
 ## Validation guarantees
 
-Everything checkable without a database fails at `validate`, not mid-run: an unknown `$` directive (with the known set listed), mixing directives and plain keys, `$forEach` over an undeclared dataset (declared names listed), `rows` outside result-set grain, a dataset named `rows`, `$value` combined with coercion/null directives, `$format` on a non-temporal type, `$whenNull: default` without `$default`, missing `output`, URL/fileName tokens in layouts that have no per-document row scope, `batchSize` on an array output, indentation on JSON Lines, and 2xx entries in `skipStatusCodes`.
+Everything checkable without a database fails at `validate`, not mid-run: an unknown `$` directive (with the known set listed), mixing directives and plain keys, `$forEach`/`$row` over an undeclared dataset (declared names listed), combining `$forEach` with `$row`, either without `$item`, `rows` outside result-set grain, a dataset named `rows`, `$value` combined with coercion/null directives, `$format` on a non-temporal type, `$whenNull: default` without `$default`, missing `output`, URL/fileName tokens in layouts that have no per-document row scope, `batchSize` on an array output, indentation on JSON Lines, and 2xx entries in `skipStatusCodes`.

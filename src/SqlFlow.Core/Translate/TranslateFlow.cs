@@ -79,10 +79,12 @@ public enum TranslateDocumentNulls
 }
 
 /// <summary>
-/// One named child result set: its rows are grouped by the bind columns, and a <c>$forEach</c> over this dataset
-/// selects the group whose bind values equal the same-named columns of the enclosing scope. Bind columns must
-/// exist in both the dataset's own result and the enclosing scope, which is what makes nesting datasets under
-/// datasets work without any extra declaration.
+/// One named child result set: its rows are grouped by the bind columns, and a <c>$forEach</c> or <c>$row</c>
+/// over this dataset selects the group whose bind values equal the same-named columns of the enclosing scope.
+/// Bind columns must exist in both the dataset's own result and the enclosing scope, which is what makes
+/// nesting datasets under datasets work without any extra declaration. An EMPTY bind declares a
+/// single-instance dataset: it is not keyed to any scope and resolves to all of its rows anywhere, which is
+/// what a header block (via <c>$row</c>) or a global repeater (via <c>$forEach</c>) reads from.
 /// </summary>
 public sealed record TranslateDataset
 {
@@ -92,8 +94,8 @@ public sealed record TranslateDataset
     public required string Query { get; init; }
 
     /// <summary>The join columns matching a dataset row to its enclosing scope, compared by invariant string
-    /// representation. At least one.</summary>
-    public required IReadOnlyList<string> Bind { get; init; }
+    /// representation. Empty means single-instance: the dataset resolves to all of its rows at any scope.</summary>
+    public IReadOnlyList<string> Bind { get; init; } = [];
 }
 
 /// <summary>How rendered documents are laid out on the destination.</summary>
