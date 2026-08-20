@@ -83,6 +83,63 @@ public sealed class CatalogReaderIntegrationTests
     }
 
     [SkippableFact]
+    public async Task Introspect_View_ReturnsItsDefinition()
+    {
+        var cs = IntegrationDb.Require();
+        const string table = "_SfCat_DefBase";
+        const string view = "_SfCat_DefView";
+        await IntegrationDb.ExecuteAsync(cs, $"DROP VIEW IF EXISTS [dbo].[{view}];");
+        await IntegrationDb.DropTableAsync(cs, table);
+        await IntegrationDb.ExecuteAsync(cs, $"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL, [Name] nvarchar(50) NULL);");
+        await IntegrationDb.ExecuteAsync(
+            cs, $"EXEC('CREATE VIEW [dbo].[{view}] AS SELECT [Id], [Name] FROM [dbo].[{table}] WHERE [Id] > 0;');");
+
+        try
+        {
+            await using var connection = await OpenAsync(cs);
+            var obj = await Reader.IntrospectObjectAsync(connection, new ThreePartName { Schema = "dbo", Name = view });
+
+            Assert.NotNull(obj);
+            Assert.Equal(ObjectType.View, obj!.Type);
+            Assert.Equal(DefinitionAvailability.Available, obj.DefinitionAvailability);
+            Assert.NotNull(obj.Definition);
+            // The engine stores the module text verbatim, so the body the view was created with comes back.
+            Assert.Contains($"CREATE VIEW [dbo].[{view}]", obj.Definition, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("[Id] > 0", obj.Definition, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await IntegrationDb.ExecuteAsync(cs, $"DROP VIEW IF EXISTS [dbo].[{view}];");
+            await IntegrationDb.DropTableAsync(cs, table);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Introspect_Table_ReportsNoDefinitionToRead()
+    {
+        var cs = IntegrationDb.Require();
+        const string table = "_SfCat_DefTable";
+        await IntegrationDb.DropTableAsync(cs, table);
+        await IntegrationDb.ExecuteAsync(cs, $"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL);");
+
+        try
+        {
+            await using var connection = await OpenAsync(cs);
+            var obj = await Reader.IntrospectObjectAsync(connection, new ThreePartName { Schema = "dbo", Name = table });
+
+            Assert.NotNull(obj);
+            // A table is not a view that failed to yield its source: the distinction is what stops the GUI
+            // showing "source unavailable" against every table in the browser.
+            Assert.Equal(DefinitionAvailability.NotApplicable, obj!.DefinitionAvailability);
+            Assert.Null(obj.Definition);
+        }
+        finally
+        {
+            await IntegrationDb.DropTableAsync(cs, table);
+        }
+    }
+
+    [SkippableFact]
     public async Task Introspect_MissingObject_ReturnsNull()
     {
         var cs = IntegrationDb.Require();

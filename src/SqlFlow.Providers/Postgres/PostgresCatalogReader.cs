@@ -226,12 +226,46 @@ public sealed class PostgresCatalogReader : IProviderCatalogReader
             return null;
         }
 
+        var isView = string.Equals(tableType, "VIEW", StringComparison.OrdinalIgnoreCase);
+        var (definition, availability) = isView
+            ? await ReadViewDefinitionAsync(connection, schema, name.Name, ct).ConfigureAwait(false)
+            : (null, DefinitionAvailability.NotApplicable);
+
         return new CatalogObject
         {
             Name = name,
-            Type = string.Equals(tableType, "VIEW", StringComparison.OrdinalIgnoreCase) ? ObjectType.View : ObjectType.Table,
+            Type = isView ? ObjectType.View : ObjectType.Table,
             Columns = columns,
+            Definition = definition,
+            DefinitionAvailability = availability,
         };
+    }
+
+    /// <summary>
+    /// Reads a view's SQL with <c>pg_get_viewdef</c>, pretty-printed.
+    /// <para>PostgreSQL has no separate view-definition privilege: a login that can see the relation can read its
+    /// body, so the denied state does not arise here. What PostgreSQL returns is its own normalized rendering of
+    /// the view rather than the text as originally typed, which is the canonical form and what psql's \d+ shows.</para>
+    /// </summary>
+    private static async Task<(string? Definition, DefinitionAvailability Availability)> ReadViewDefinitionAsync(
+        DbConnection connection, string schema, string viewName, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
+        command.CommandText = """
+            SELECT pg_get_viewdef(c.oid, true)
+            FROM pg_class AS c
+            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('v', 'm');
+            """;
+        AddParameter(command, schema);
+        AddParameter(command, viewName);
+
+        var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        var definition = value is null or DBNull ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
+        return string.IsNullOrWhiteSpace(definition)
+            ? (null, DefinitionAvailability.Unavailable)
+            : (definition, DefinitionAvailability.Available);
     }
 
     // The mapper consumes udt_name plus the relevant modifier: varchar(50), numeric(10,2), timestamptz(6).

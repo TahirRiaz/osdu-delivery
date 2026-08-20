@@ -235,6 +235,9 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
         var retentionDays = temporal
             ? await ReadHistoryRetentionDaysAsync(connection, objectId, ct).ConfigureAwait(false)
             : null;
+        var (definition, availability) = type == ObjectType.View
+            ? await ReadViewDefinitionAsync(connection, name, ct).ConfigureAwait(false)
+            : (null, DefinitionAvailability.NotApplicable);
 
         return new CatalogObject
         {
@@ -242,12 +245,54 @@ public sealed class SqlServerCatalogReader : IProviderCatalogReader
             Type = type,
             Columns = columns,
             Indexes = indexes,
+            Definition = definition,
+            DefinitionAvailability = availability,
             IsTemporal = temporal,
             HasSystemTimePeriod = hasPeriod,
             HistorySchema = historySchema,
             HistoryTable = historyTable,
             HistoryRetentionDays = retentionDays,
         };
+    }
+
+    /// <summary>
+    /// Reads a view's own SQL from <c>sys.sql_modules</c>.
+    /// <para>The privilege is checked first rather than inferred from a null definition, because SQL Server does
+    /// not raise on an unprivileged read: it silently returns no row, which is the same answer it gives for an
+    /// encrypted module. A reporting login commonly holds SELECT on a view without VIEW DEFINITION, so telling
+    /// the operator "your login may not read this view's source" instead of "this view has no source" is the
+    /// difference between asking for a grant and chasing a phantom.</para>
+    /// </summary>
+    private static async Task<(string? Definition, DefinitionAvailability Availability)> ReadViewDefinitionAsync(
+        DbConnection connection, ThreePartName name, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = NoClientTimeout;
+        command.CommandText = """
+            SELECT HAS_PERMS_BY_NAME(@q, 'OBJECT', 'VIEW DEFINITION') AS Permitted,
+                   (SELECT m.definition FROM sys.sql_modules AS m WHERE m.object_id = OBJECT_ID(@q)) AS Definition;
+            """;
+        AddParam(command, "@q", name.SchemaQualified);
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return (null, DefinitionAvailability.Unavailable);
+        }
+
+        // HAS_PERMS_BY_NAME itself returns NULL for a name it cannot resolve; treat that as denied rather than
+        // granted, so an ambiguous answer never reads as "this view genuinely has no source".
+        var permittedOrdinal = reader.GetOrdinal("Permitted");
+        var permitted = !reader.IsDBNull(permittedOrdinal) && reader.GetInt32(permittedOrdinal) == 1;
+        if (!permitted)
+        {
+            return (null, DefinitionAvailability.PermissionDenied);
+        }
+
+        var definition = Str(reader, "Definition");
+        return string.IsNullOrWhiteSpace(definition)
+            ? (null, DefinitionAvailability.Unavailable)
+            : (definition, DefinitionAvailability.Available);
     }
 
     /// <summary>

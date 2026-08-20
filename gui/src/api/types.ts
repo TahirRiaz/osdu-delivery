@@ -1424,11 +1424,20 @@ export interface IntrospectedIndex {
   keyColumns: string[];
 }
 
+/** Why a view's SQL is or is not present. "PermissionDenied" is the common one: a reporting login may read a
+ *  view's rows without holding the privilege to read its source (VIEW DEFINITION on SQL Server, SHOW VIEW on
+ *  MySQL), and that calls for asking someone for a grant rather than concluding the view has no body. */
+export type DefinitionAvailability = "NotApplicable" | "Available" | "PermissionDenied" | "Unavailable";
+
 export interface IntrospectedObject {
   name: { database: string | null; schema: string; name: string; schemaQualified: string; qualifiedName: string };
   type: "Table" | "View";
   columns: IntrospectedColumn[];
   indexes: IntrospectedIndex[];
+  /** A view's own SQL. Null for a table, and for a view whose source could not be read; always read
+   *  definitionAvailability to know which. */
+  definition: string | null;
+  definitionAvailability: DefinitionAvailability;
   isTemporal: boolean;
 }
 

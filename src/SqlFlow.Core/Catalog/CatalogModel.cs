@@ -7,6 +7,28 @@ public enum ObjectType
     View,
 }
 
+/// <summary>
+/// Why a view's SQL is or is not present on an introspection result. A view whose definition simply came back
+/// null is indistinguishable from one the caller was not allowed to read, and those call for opposite
+/// responses: the first is a fact about the object, the second is a grant somebody has to make. Reading a
+/// definition requires a privilege that a least-privilege reporting login frequently lacks (VIEW DEFINITION on
+/// SQL Server, SHOW VIEW on MySQL), so the distinction is common rather than exotic.
+/// </summary>
+public enum DefinitionAvailability
+{
+    /// <summary>The object is a table, so there is no definition to read.</summary>
+    NotApplicable,
+
+    /// <summary>The definition was read and is in <see cref="CatalogObject.Definition"/>.</summary>
+    Available,
+
+    /// <summary>The connection's login may read the view's data but not its definition.</summary>
+    PermissionDenied,
+
+    /// <summary>A view whose source the engine does not expose (an encrypted or system-supplied module).</summary>
+    Unavailable,
+}
+
 /// <summary>The kind of a table constraint.</summary>
 public enum ConstraintKind
 {
@@ -28,6 +50,18 @@ public sealed record CatalogObject
     public required IReadOnlyList<CatalogColumn> Columns { get; init; }
     public IReadOnlyList<CatalogIndex> Indexes { get; init; } = [];
     public IReadOnlyList<CatalogConstraint> Constraints { get; init; } = [];
+
+    /// <summary>
+    /// A view's own SQL, verbatim as the engine stores it; null for a table and for a view whose source could
+    /// not be read. Always check <see cref="DefinitionAvailability"/> before reporting its absence: null means
+    /// "not shown", and only the availability says whether that is because there is nothing to show or because
+    /// the login lacks the privilege.
+    /// </summary>
+    public string? Definition { get; init; }
+
+    /// <summary>Why <see cref="Definition"/> is or is not populated.</summary>
+    public DefinitionAvailability DefinitionAvailability { get; init; }
+
     public bool IsTemporal { get; init; }
 
     /// <summary>True when the table carries a SYSTEM_TIME period (the pair of GENERATED ALWAYS columns),

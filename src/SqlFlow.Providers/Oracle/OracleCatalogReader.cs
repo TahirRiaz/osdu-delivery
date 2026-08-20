@@ -224,12 +224,50 @@ public sealed class OracleCatalogReader : IProviderCatalogReader
             return null;
         }
 
+        var isView = string.Equals(objectType, "VIEW", StringComparison.OrdinalIgnoreCase);
+        var (definition, availability) = isView
+            ? await ReadViewDefinitionAsync(connection, name, ct).ConfigureAwait(false)
+            : (null, DefinitionAvailability.NotApplicable);
+
         return new CatalogObject
         {
             Name = name,
-            Type = string.Equals(objectType, "VIEW", StringComparison.OrdinalIgnoreCase) ? ObjectType.View : ObjectType.Table,
+            Type = isView ? ObjectType.View : ObjectType.Table,
             Columns = columns,
+            Definition = definition,
+            DefinitionAvailability = availability,
         };
+    }
+
+    /// <summary>
+    /// Reads a view's SQL through <c>DBMS_METADATA.GET_DDL</c>.
+    /// <para>Not from <c>all_views</c>: its TEXT column is a LONG, which the managed driver truncates to
+    /// InitialLONGFetchSize, and its TEXT_VC alternative is VARCHAR2(4000). Both would hand back a silently
+    /// shortened view, which is worse than none at all. GET_DDL returns a CLOB and so is complete at any length.</para>
+    /// <para>Oracle signals a missing privilege by raising (ORA-31603 among others) rather than by returning
+    /// nothing, so that is the one provider where the denied state is recognised from the error.</para>
+    /// </summary>
+    private static async Task<(string? Definition, DefinitionAvailability Availability)> ReadViewDefinitionAsync(
+        DbConnection connection, ThreePartName name, CancellationToken ct)
+    {
+        await using var command = CreateCommand(connection);
+        command.CommandText = "SELECT DBMS_METADATA.GET_DDL('VIEW', :objectName, :owner) FROM dual";
+        AddParameter(command, "objectName", name.Name);
+        AddParameter(command, "owner", name.Schema);
+
+        try
+        {
+            var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            var definition = value is null or DBNull ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
+            return string.IsNullOrWhiteSpace(definition)
+                ? (null, DefinitionAvailability.Unavailable)
+                : (definition, DefinitionAvailability.Available);
+        }
+        catch (OracleException ex) when (ex.Number is 31603 or 31604 or 1031)
+        {
+            // 31603/31604: the object is not visible to GET_DDL for this login. 1031: insufficient privileges.
+            return (null, DefinitionAvailability.PermissionDenied);
+        }
     }
 
     // Tables and views unified so listing, counting, and search share one filtered projection. NUM_ROWS is the

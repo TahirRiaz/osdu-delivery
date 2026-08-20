@@ -216,12 +216,51 @@ public sealed class MySqlCatalogReader : IProviderCatalogReader
             return null;
         }
 
+        var isView = string.Equals(tableType, "VIEW", StringComparison.OrdinalIgnoreCase);
+        var (definition, availability) = isView
+            ? await ReadViewDefinitionAsync(connection, name, ct).ConfigureAwait(false)
+            : (null, DefinitionAvailability.NotApplicable);
+
         return new CatalogObject
         {
             Name = name,
-            Type = string.Equals(tableType, "VIEW", StringComparison.OrdinalIgnoreCase) ? ObjectType.View : ObjectType.Table,
+            Type = isView ? ObjectType.View : ObjectType.Table,
             Columns = columns,
+            Definition = definition,
+            DefinitionAvailability = availability,
         };
+    }
+
+    /// <summary>
+    /// Reads a view's SQL from <c>information_schema.VIEWS</c>.
+    /// <para>MySQL does not refuse an unprivileged read here: without SHOW VIEW on the object it returns the row
+    /// with VIEW_DEFINITION as an empty string. That empty answer is therefore reported as denied rather than as
+    /// a view without a body, so an operator is told to ask for the grant instead of doubting the view.</para>
+    /// </summary>
+    private static async Task<(string? Definition, DefinitionAvailability Availability)> ReadViewDefinitionAsync(
+        DbConnection connection, ThreePartName name, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = 0;
+        command.CommandText = """
+            SELECT VIEW_DEFINITION
+            FROM information_schema.VIEWS
+            WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @name;
+            """;
+        AddParameter(command, "@schema", name.Schema);
+        AddParameter(command, "@name", name.Name);
+
+        var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        if (value is null || value is DBNull)
+        {
+            // No row at all: the view is not visible to this login, which is the same practical answer.
+            return (null, DefinitionAvailability.PermissionDenied);
+        }
+
+        var definition = Convert.ToString(value, CultureInfo.InvariantCulture);
+        return string.IsNullOrWhiteSpace(definition)
+            ? (null, DefinitionAvailability.PermissionDenied)
+            : (definition, DefinitionAvailability.Available);
     }
 
     private static void AddParameter(DbCommand command, string name, object? value)

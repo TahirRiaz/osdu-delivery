@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import type {
   ComputeTaskRequest, DatasourceObject, IntrospectionResult, UniqueKeyReport,
 } from "../../api/types";
+import { CodeView } from "../../components/CodeView";
 import { CopyButton } from "../../components/CopyButton";
 import { DataTable, type Column } from "../../components/DataTable";
 import { Mono } from "../../components/Mono";
@@ -195,6 +196,44 @@ export function ObjectInspector({ reference, kind, database, object, onClose }: 
                       </div>
                     ))}
                   </div>
+                </>
+              )}
+
+              {introspected.type === "View" && (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium">View source</h3>
+                    {introspected.definition !== null && (
+                      <CopyButton
+                        label="Copy definition"
+                        text={() => introspected.definition ?? ""}
+                        testId="copy-view-definition"
+                      />
+                    )}
+                  </div>
+                  {introspected.definition !== null ? (
+                    <CodeView
+                      value={introspected.definition}
+                      language="sql"
+                      height={320}
+                      data-testid="view-definition"
+                    />
+                  ) : (
+                    // Saying WHY the source is absent is the point of this panel. "Permission denied" is an
+                    // action for the source's owner; anything else is a fact about the view. Reporting either
+                    // as a blank box would send someone looking for a problem that is not theirs.
+                    <Alert data-testid="view-definition-unavailable">
+                      <CircleAlert />
+                      <AlertDescription>
+                        {introspected.definitionAvailability === "PermissionDenied"
+                          ? "This connection may read the view's rows but not its source. Reading it needs "
+                            + "VIEW DEFINITION on SQL Server, SHOW VIEW on MySQL, or the equivalent grant, "
+                            + "which the source's owner has to give."
+                          : "The engine does not expose this view's source. Encrypted and system-supplied "
+                            + "views report themselves this way."}
+                      </AlertDescription>
+                    </Alert>
+                  )}
                 </>
               )}
 
