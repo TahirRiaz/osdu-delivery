@@ -82,21 +82,24 @@ function ChatWorkbench({ capabilities }: { capabilities: ChatCapabilities }) {
   const queryClient = useQueryClient();
   const conversations = useQuery({ queryKey: ["chat", "conversations"], queryFn: () => chatApi.listConversations() });
 
-  // Which conversation the thread shows (null = a fresh chat), and a mount key that changes only
-  // on an explicit open/new action. A conversation minted mid-stream updates `selected` WITHOUT
-  // bumping the key, so the running stream is never torn down by its own first answer.
+  // What the thread is MOUNTED on: the conversation the user explicitly opened (null = a fresh
+  // chat) plus a mount key that changes only on an explicit open/new action. This never follows a
+  // conversation minted mid-stream: the thread owns the running answer, and re-deriving its mount
+  // state from a freshly minted id would swap it for a transcript-loading skeleton and tear the
+  // stream down before its first answer arrived.
+  const [opened, setOpened] = useState<{ id: string | null; key: number }>({ id: null, key: 0 });
+  // Which conversation the rail highlights: the opened one, or the one the running thread minted.
   const [selected, setSelected] = useState<string | null>(null);
-  const [threadKey, setThreadKey] = useState(0);
 
   const openConversation = useCallback((id: string | null) => {
     setSelected(id);
-    setThreadKey((k) => k + 1);
+    setOpened((previous) => ({ id, key: previous.key + 1 }));
   }, []);
 
   const messages = useQuery({
-    queryKey: ["chat", "messages", selected],
-    queryFn: () => chatApi.messages(selected!),
-    enabled: selected !== null,
+    queryKey: ["chat", "messages", opened.id],
+    queryFn: () => chatApi.messages(opened.id!),
+    enabled: opened.id !== null,
   });
 
   const onConversationMinted = useCallback((conversation: ChatStreamConversation) => {
@@ -111,7 +114,7 @@ function ChatWorkbench({ capabilities }: { capabilities: ChatCapabilities }) {
 
   // The thread mounts once its transcript is known: immediately for a fresh chat, after the
   // messages load for a re-opened conversation (initial messages only apply at mount).
-  const initialMessages: ThreadMessageLike[] | null = selected === null
+  const initialMessages: ThreadMessageLike[] | null = opened.id === null
     ? []
     : messages.data !== undefined
       ? toThreadMessages(messages.data)
@@ -139,8 +142,8 @@ function ChatWorkbench({ capabilities }: { capabilities: ChatCapabilities }) {
           )
           : (
             <ChatThread
-              key={`${threadKey}`}
-              conversationId={selected}
+              key={`${opened.key}`}
+              conversationId={opened.id}
               initialMessages={initialMessages}
               capabilities={capabilities}
               onConversationMinted={onConversationMinted}
