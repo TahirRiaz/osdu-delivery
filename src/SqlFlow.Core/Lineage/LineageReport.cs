@@ -98,6 +98,11 @@ public sealed record LineageSubscriberNode
 
     public string? Description { get; init; }
 
+    /// <summary>Remarks about the subscriber's state: not refreshed since a given month, apparently superseded,
+    /// could not be opened, an open question. Distinct from <see cref="Description"/>, which says what the
+    /// subscriber is for.</summary>
+    public string? Notes { get; init; }
+
     /// <summary>Where the subscriber lives (report URL, workbook path, repository).</summary>
     public string? Url { get; init; }
 

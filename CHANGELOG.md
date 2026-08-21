@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `subscribers.<name>.notes`: free-form remarks about a consumer's STATE (stale, superseded,
+  unopenable, or an incomplete dataset naming what could not be resolved), kept apart from
+  `description`, which says what the consumer is for. Stored unbounded in `catalog.Subscriber`,
+  searchable from `GET /lineage/subscribers`, shown in the subscriber list and details.
+- Editor support for subscriber libraries: hover, key completion, and unknown-key diagnostics,
+  driven by a new `docs/reference/flow/keys.subscribers.json` key model. The analysis engine
+  detects a library by its root `subscribers:` key rather than by file name.
 - Initial v3 rebuild scaffold on .NET 9.
 - Stateless engine (lightweight mode): infer source schema → introspect target → diff →
   generate DDL → bulk load.

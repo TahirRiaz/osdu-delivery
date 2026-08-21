@@ -258,6 +258,10 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.File).HasMaxLength(1024).IsRequired();
             entity.Property(s => s.Owner).HasMaxLength(250);
             entity.Property(s => s.Description).HasMaxLength(1024);
+            // Notes is deliberately unbounded where Description is capped: a description is one authored line,
+            // whereas a note is whatever a reviewer wrote about the report's state, often several sentences and
+            // sometimes several lines. A cap here would turn a long remark into a failed sync.
+            entity.Property(s => s.Notes);
             entity.Property(s => s.Url).HasMaxLength(1024);
             // The hot queries: the per-repo replacement, a subscriber by name, and the join back from an edge's
             // ViaModule to the consumer it belongs to.

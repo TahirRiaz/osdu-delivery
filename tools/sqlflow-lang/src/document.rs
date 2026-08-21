@@ -42,10 +42,23 @@ pub struct ParseError {
     pub range: Range,
 }
 
+/// Which SQLFlow document kind a file is. A flow document is discriminated by its `flowType` (absent means
+/// the file flow), but a subscriber library has no `flowType` at all: it is a library of consumers, not a
+/// pipeline. Without this distinction a `subscribers.yaml` would be analysed against the file-flow census and
+/// every one of its keys reported as unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentKind {
+    /// A flow document: `flowType` selects the census, `None` meaning the file flow.
+    Flow,
+    /// A subscriber library: `subscribers.yaml` or `*.subscribers.yaml`, detected by its root key.
+    Subscribers,
+}
+
 /// A fully analysed flow document.
 pub struct FlowDocument {
     pub source: String,
     pub line_index: LineIndex,
+    pub kind: DocumentKind,
     pub flow_type: Option<String>,
     pub locations: Vec<Located>,
     pub parse_error: Option<ParseError>,
@@ -56,6 +69,7 @@ impl FlowDocument {
         let line_index = LineIndex::new(source);
         let mut locations = Vec::new();
         let mut flow_type = None;
+        let mut kind = DocumentKind::Flow;
         let mut parse_error = None;
 
         match marked_yaml::parse_yaml(0, source) {
@@ -66,6 +80,13 @@ impl FlowDocument {
                         if !t.is_empty() {
                             flow_type = Some(t.to_string());
                         }
+                    }
+                    // The root `subscribers:` key is the discriminator, not the file name: the engine analyses
+                    // buffers whose name it may not know, and a library is a library wherever it is saved.
+                    // A document carrying a flowType stays a flow even if something is called `subscribers`,
+                    // so a flow with a genuine `subscribers` attribute could never be misread as a library.
+                    if flow_type.is_none() && map.get_node("subscribers").is_some() {
+                        kind = DocumentKind::Subscribers;
                     }
                     walk_mapping(&node, &[], &line_index, &mut locations);
                 }
@@ -78,6 +99,7 @@ impl FlowDocument {
         FlowDocument {
             source: source.to_string(),
             line_index,
+            kind,
             flow_type,
             locations,
             parse_error,

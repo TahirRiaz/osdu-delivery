@@ -559,6 +559,12 @@ public class CatalogSubscriber
 
     public string? Description { get; set; }
 
+    /// <summary>Remarks about the subscriber's STATE rather than its purpose: last refreshed long ago, looks
+    /// superseded, could not be opened, an open question. Separate from <see cref="Description"/> because a
+    /// description holds for as long as the report exists while a remark is a review finding meant to be
+    /// resolved and removed.</summary>
+    public string? Notes { get; set; }
+
     /// <summary>Where the subscriber lives: report URL, workbook path, repository.</summary>
     public string? Url { get; set; }
 

@@ -948,6 +948,8 @@ export interface ObjectSubscriber {
   type: string;
   owner: string | null;
   description: string | null;
+  /** Remarks about the report's state (stale, superseded, unopenable), not what it is for. */
+  notes: string | null;
   url: string | null;
   queries: string[];
 }
@@ -959,6 +961,8 @@ export interface Subscriber {
   type: string;
   owner: string | null;
   description: string | null;
+  /** Remarks about the report's state (stale, superseded, unopenable), not what it is for. */
+  notes: string | null;
   url: string | null;
   repoId: string;
   /** The repo-relative subscribers.yaml that declares it. */

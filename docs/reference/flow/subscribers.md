@@ -18,6 +18,9 @@ keywords:
   - downstream
   - DataSubscriber
   - DataSubscriberQuery
+  - subscriber notes
+  - incomplete dataset
+  - stale report
 yamlPath: subscribers
 related:
   - concept-lineage-graph-and-plan
@@ -26,6 +29,7 @@ related:
   - flow-overview
 sourceRefs:
   - src/SqlFlow.Core/Subscribers/DataSubscriber.cs
+  - docs/reference/flow/keys.subscribers.json
   - src/SqlFlow.Yaml/YamlSubscriberLibraryLoader.cs
   - src/SqlFlow.Lineage/Collection/FlowSetCollector.cs
   - src/SqlFlow.Lineage/Collection/LineageFacts.cs
@@ -52,6 +56,8 @@ subscribers:
     type: PowerBI
     owner: analyse@kolumbus.no
     description: City bike usage and station occupancy
+    notes: |
+      Not refreshed since April 2024; owner asked whether it is superseded by Analyse_Bysykkel_statistikk.
     url: https://app.powerbi.com/groups/me/reports/abc123
     server: dwh
     queries:
@@ -91,7 +97,8 @@ Like `schedules.yaml`, these files are NOT flow documents: they are excluded fro
 | `subscribers` | yes | Maps a subscriber's NAME to its declaration. The name is its identity across the estate and the label on its graph node. |
 | `subscribers.<name>.type` | no (warns) | What consumes the data (legacy `SubscriberType`): `PowerBI`, `Tableau`, `Excel`, `Notebook`, `Application`, or any label the estate uses. Free text, as the legacy column was. Omitted records `Unknown` with a warning. |
 | `subscribers.<name>.owner` | no | Who to contact before a breaking change to a table it reads (legacy `CreatedBy`). |
-| `subscribers.<name>.description` | no | One line, for the catalog and the node's tooltip. |
+| `subscribers.<name>.description` | no | What the subscriber is FOR, in one line, for the catalog and the node's tooltip. |
+| `subscribers.<name>.notes` | no | Remarks about the subscriber's STATE rather than its purpose. Free text, multi-line via a block scalar. See [Notes](#notes). |
 | `subscribers.<name>.url` | no | Where the subscriber lives: report URL, workbook path, repository. |
 | `subscribers.<name>.server` | no | The default connection alias for every query that does not name its own. |
 | `subscribers.<name>.queries` | yes, in practice | The queries the subscriber runs. A subscriber with none is a node nothing connects to, which is warned. |
@@ -100,6 +107,30 @@ Like `schedules.yaml`, these files are NOT flow documents: they are excluded fro
 | `queries[].sql` | yes | The query text as the subscriber runs it (legacy `FullyQualifiedQuery`). Any T-SQL the parser accepts. |
 
 A malformed entry is dropped with a warning rather than throwing, exactly as an unparseable flow document is: one bad subscriber must not blind the estate's lineage. A query whose `server` is not declared in `connections:` is refused, because its objects would otherwise land on an invented identity and quietly build a second, wrong graph.
+
+## Notes
+
+`description` and `notes` answer different questions, and separating them is the point of having both. A description says what the report is FOR, and stays true for as long as the report exists. A note says what is currently WRONG or unresolved about it, and is expected to be fixed and deleted:
+
+```yaml
+subscribers:
+  Dashboard_Salg:
+    type: PowerBI
+    description: Sales over the Fara traffic income, the mobile-app sales fact, and the Reisefrihet tickets
+    notes: |
+      Inaktivitet. Men denne har jo jeg hatt apen denne uka?
+      Incomplete dataset. Not resolved in the new warehouse:
+        Archive VY_Pr_Dag_Enkeltbillett  (no such object)
+        Q_ZoneFra                        (Power BI query step, no warehouse object)
+```
+
+Two uses earn their own conventions, because a person scanning the subscriber list should be able to spot them without reading every note:
+
+**Stale or retired reports.** When a review finds a report has not refreshed in months, looks superseded, or could not be opened at all, the finding belongs here rather than in a spreadsheet that drifts away from the estate. The note travels with the declaration, so whoever next changes a table the report reads sees it.
+
+**Incomplete datasets.** A subscriber whose real report reads objects that could NOT be resolved in the warehouse is registering partial lineage, and that partiality must be visible. Start the note with `Incomplete dataset` and list what could not be identified and why. Without it, the graph quietly reads as complete: the report appears to consume exactly the tables that happened to resolve, and the missing ones look like they were never there. This is the normal state during a migration, where a report still names objects the new estate has not built or has retired.
+
+`notes` is unbounded in the catalog where `description` is capped at 1024 characters, so a long remark can never fail a sync. It is searchable from `GET /lineage/subscribers?search=` alongside the name, owner, and description, which is what makes `search=Incomplete dataset` a usable estate-wide audit.
 
 ## How a query becomes lineage
 
@@ -124,3 +155,9 @@ The consumption itself is not stored twice: the read edges are ordinary `catalog
 | `GET /lineage/subscribers` | What consumes the warehouse. Filter by `type` (the tool) or `search` (name, owner, description). Each row carries how many queries it runs and how many distinct objects those queries read. |
 | `GET /lineage/subscribers/dossier?key=<node key>` | What one subscriber consumes: its queries, and every object they read, named and located from the object registry, with the queries that reference each one. |
 | `GET /lineage/objects/dossier?key=<node key>` | Now also returns `subscribers`: who consumes THIS object, with the specific queries that name it. |
+
+## Editor support
+
+A subscriber library gets the same editor treatment as a flow document: hover documentation on every key, key completion, and unknown-key diagnostics, in both the workbench editor and the VSCode extension. The engine detects a library by its root `subscribers:` key rather than by file name, since it analyses buffers whose name it may not know, and a document carrying a `flowType` always stays a flow.
+
+The key model is `docs/reference/flow/keys.subscribers.json`, embedded into the analysis engine at compile time exactly like the per-flow-type censuses. The `connections:` block is not repeated there: it is merged in from `keys.shared.json`, so the block a library declares is documented in one place. The other shared blocks (the invoke hooks, the service principals) are deliberately excluded, because they belong to a pipeline and a library declares none.

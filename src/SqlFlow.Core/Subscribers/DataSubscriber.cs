@@ -26,6 +26,13 @@ public sealed record DataSubscriber
     /// <summary>What the subscriber is for, in one line, for the catalog and the lineage node's tooltip.</summary>
     public string? Description { get; init; }
 
+    /// <summary>Free-form remarks about the subscriber's STATE rather than its purpose: that it has not been
+    /// refreshed since a given month, that it looks superseded by another report, that it could not be opened,
+    /// that a question about it is still unanswered. Kept apart from <see cref="Description"/> because the two
+    /// age differently: a description is true for as long as the report exists, whereas a remark is a finding
+    /// from one review of the estate and is expected to be resolved and removed. Multi-line is fine.</summary>
+    public string? Notes { get; init; }
+
     /// <summary>Where the subscriber lives: the report URL, the workbook path, the repository. Null when there
     /// is no addressable location.</summary>
     public string? Url { get; init; }

@@ -53,6 +53,9 @@ public sealed class YamlSubscriberLibraryLoader
 
         public string? Description { get; set; }
 
+        /// <summary>Remarks about the subscriber's state, kept apart from <see cref="Description"/>.</summary>
+        public string? Notes { get; set; }
+
         public string? Url { get; set; }
 
         /// <summary>The default connection alias for every query that does not name its own.</summary>
@@ -157,6 +160,7 @@ public sealed class YamlSubscriberLibraryLoader
                 Type = type,
                 Owner = Trimmed(entry.Owner),
                 Description = Trimmed(entry.Description),
+                Notes = Trimmed(entry.Notes),
                 Url = Trimmed(entry.Url),
                 Queries = queries,
             });

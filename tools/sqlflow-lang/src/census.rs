@@ -206,6 +206,31 @@ impl Census {
 
     /// Build the census for a given `flowType` (None/"" selects the file flow),
     /// merging in the shared cross-cutting blocks.
+    /// The census for a parsed document. A subscriber library is not discriminated by `flowType`, so it
+    /// cannot be selected by [`Census::for_flow_type`]; analysing one against the file-flow census would
+    /// report every key it has as unknown.
+    pub fn for_document(doc: &crate::document::FlowDocument) -> Census {
+        match doc.kind {
+            crate::document::DocumentKind::Subscribers => Census::for_subscribers(),
+            crate::document::DocumentKind::Flow => Census::for_flow_type(doc.flow_type.as_deref()),
+        }
+    }
+
+    /// The subscriber library census: the library's own keys plus the shared `connections` block, which a
+    /// library uses exactly as a flow document does and which is therefore defined once, in keys.shared.json.
+    /// The other shared blocks (the invoke hooks, the service principals) are deliberately left out: they
+    /// belong to a pipeline, and a library declares none.
+    pub fn for_subscribers() -> Census {
+        let mut entries = Census::parse(SUBSCRIBERS).unwrap_or_default();
+        entries.extend(
+            Census::parse(SHARED)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| e.path == "connections" || e.path.starts_with("connections.")),
+        );
+        Census { entries }
+    }
+
     pub fn for_flow_type(flow_type: Option<&str>) -> Census {
         let ft = flow_type.map(str::trim).filter(|s| !s.is_empty());
         let primary = match ft {
@@ -365,6 +390,7 @@ const SFTP: &str = include_str!("../../../docs/reference/flow/keys.sftp.json");
 const CAL: &str = include_str!("../../../docs/reference/flow/keys.cal.json");
 const TRL: &str = include_str!("../../../docs/reference/flow/keys.trl.json");
 const SHARED: &str = include_str!("../../../docs/reference/flow/keys.shared.json");
+const SUBSCRIBERS: &str = include_str!("../../../docs/reference/flow/keys.subscribers.json");
 
 #[cfg(test)]
 mod tests {
@@ -401,6 +427,34 @@ mod tests {
         ));
         // Gibberish at the root is unknown.
         assert!(matches!(c.resolve(&ak(&["totallyBogusRootKey"])), Resolution::Unknown));
+    }
+
+    #[test]
+    fn subscriber_census_resolves_the_library_format() {
+        let c = Census::for_subscribers();
+        assert!(!c.entries.is_empty(), "subscriber census should load");
+        // The root block, an open-dict member, the new notes key, and a list element all resolve.
+        assert!(!matches!(c.resolve(&ak(&["subscribers"])), Resolution::Unknown));
+        assert!(matches!(
+            c.resolve(&ak(&["subscribers", "Dashboard_Salg", "type"])),
+            Resolution::Exact(_)
+        ));
+        assert!(matches!(
+            c.resolve(&ak(&["subscribers", "Dashboard_Salg", "notes"])),
+            Resolution::Exact(_)
+        ));
+        assert!(matches!(
+            c.resolve(&[
+                AuthoredSeg::Key("subscribers".into()),
+                AuthoredSeg::Key("Dashboard_Salg".into()),
+                AuthoredSeg::Key("queries".into()),
+                AuthoredSeg::List,
+                AuthoredSeg::Key("sql".into())
+            ]),
+            Resolution::Exact(_)
+        ));
+        // A flow-only key is NOT known here: a library is not a pipeline.
+        assert!(matches!(c.resolve(&ak(&["source"])), Resolution::Unknown));
     }
 
     #[test]

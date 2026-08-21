@@ -81,6 +81,15 @@ export function SubscriberDetails({ subscriberKey }: { subscriberKey: string }) 
       {subscriber.description !== null && (
         <p className="mb-3 text-[13px] text-muted-foreground">{subscriber.description}</p>
       )}
+      {/* Notes sit apart from the description because they say something different: the description is what
+          the report is for, a note is what someone found wrong with it. Whitespace is preserved so a
+          multi-line remark stays readable. */}
+      {subscriber.notes !== null && (
+        <div className="mb-3 rounded-md border bg-muted/50 p-3" data-testid="subscriber-notes">
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Notes</p>
+          <p className="whitespace-pre-wrap text-[13px]">{subscriber.notes}</p>
+        </div>
+      )}
 
       <div className="mb-4 grid grid-cols-2 gap-3">
         <DetailPair label="Owner">{subscriber.owner === null ? "-" : <Mono>{subscriber.owner}</Mono>}</DetailPair>

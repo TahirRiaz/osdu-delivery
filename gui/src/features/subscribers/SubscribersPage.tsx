@@ -51,6 +51,17 @@ const subscriberColumns: Column<Subscriber>[] = [
     ),
   },
   {
+    id: "notes",
+    header: "Notes",
+    // One line in the list, in full on the row's title: a note is often several sentences, and letting it wrap
+    // would push every other column off the useful part of the table.
+    render: (row) => (
+      <span className="block truncate text-[13px] text-muted-foreground" title={row.notes ?? undefined}>
+        {row.notes ?? "-"}
+      </span>
+    ),
+  },
+  {
     id: "objects",
     header: "Reads",
     align: "right",
@@ -119,7 +130,7 @@ export default function SubscribersPage() {
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search name, owner, description ..."
+          placeholder="Search name, owner, description, notes ..."
           className={search === "" ? undefined : activeFilterClass}
           data-testid="subscriber-search"
         />

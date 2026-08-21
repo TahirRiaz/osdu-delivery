@@ -140,13 +140,13 @@ public sealed record ObjectRefreshDto(
 /// resolved from the object's read edges to the consumer behind them. <c>Queries</c> names the subscriber's
 /// queries that actually reference this object, so the link is evidence rather than assertion.</summary>
 public sealed record ObjectSubscriberDto(
-    string Key, string Name, string Type, string? Owner, string? Description, string? Url,
+    string Key, string Name, string Type, string? Owner, string? Description, string? Notes, string? Url,
     IReadOnlyList<string> Queries);
 
 /// <summary>One data subscriber in the estate-wide list: what consumes the warehouse, who owns it, and how many
 /// distinct objects its queries read.</summary>
 public sealed record SubscriberDto(
-    string Key, string Name, string Type, string? Owner, string? Description, string? Url,
+    string Key, string Name, string Type, string? Owner, string? Description, string? Notes, string? Url,
     Guid RepoId, string File, int QueryCount, int ObjectCount, DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
 /// <summary>Everything known about one subscriber: its metadata, the queries it runs, and every warehouse
@@ -1285,7 +1285,8 @@ public static class LineageEndpoints
             var term = search.Trim();
             query = query.Where(s => s.Name.Contains(term)
                 || (s.Owner != null && s.Owner.Contains(term))
-                || (s.Description != null && s.Description.Contains(term)));
+                || (s.Description != null && s.Description.Contains(term))
+                || (s.Notes != null && s.Notes.Contains(term)));
         }
 
         var rows = await query
@@ -1318,7 +1319,7 @@ public static class LineageEndpoints
 
         var result = rows
             .Select(s => new SubscriberDto(
-                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Url, s.RepoId, s.File,
+                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Notes, s.Url, s.RepoId, s.File,
                 queryCounts.GetValueOrDefault(s.ObjectKey),
                 objectCounts.GetValueOrDefault(s.ObjectKey),
                 s.FirstSeenUtc, s.LastSeenUtc))
@@ -1394,7 +1395,7 @@ public static class LineageEndpoints
             .ToList();
 
         var subscriber = new SubscriberDto(
-            row.ObjectKey, row.Name, row.Type, row.Owner, row.Description, row.Url, row.RepoId, row.File,
+            row.ObjectKey, row.Name, row.Type, row.Owner, row.Description, row.Notes, row.Url, row.RepoId, row.File,
             queries.Count, objects.Count, row.FirstSeenUtc, row.LastSeenUtc);
         return TypedResults.Ok(new SubscriberDossierDto(subscriber, queries, objects));
     }
@@ -1447,7 +1448,7 @@ public static class LineageEndpoints
 
         return rows
             .Select(s => new ObjectSubscriberDto(
-                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Url,
+                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Notes, s.Url,
                 namingQueries.GetValueOrDefault(s.ObjectKey, [])))
             .ToList();
     }

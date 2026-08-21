@@ -4,7 +4,7 @@
 
 use crate::census::{AuthoredSeg, Census, KeyEntry, Resolution};
 use crate::context::{context_at, CompletionContext};
-use crate::document::{FlowDocument, NodeKind};
+use crate::document::{DocumentKind, FlowDocument, NodeKind};
 use crate::text::{Position, Range};
 
 // --- Result types ----------------------------------------------------------
@@ -155,7 +155,7 @@ fn first_line(text: &str) -> String {
 // --- Completion ------------------------------------------------------------
 
 pub fn completion(doc: &FlowDocument, pos: Position) -> Vec<CompletionItem> {
-    let census = Census::for_flow_type(doc.flow_type.as_deref());
+    let census = Census::for_document(doc);
     let ctx = context_at(&doc.line_index, pos);
     let mut items = Vec::new();
 
@@ -242,6 +242,23 @@ fn enum_candidates(entry: &KeyEntry) -> Vec<String> {
 fn root_snippets() -> Vec<CompletionItem> {
     let snippets = [
         (
+            "subscriber-library",
+            "Consumer registration skeleton (subscribers.yaml)",
+            "connections:
+  ${1:dwh}: ${env:SQLFLOW_CONN_${2:DWH}}
+
+subscribers:
+  ${3:Report_Name}:
+    type: ${4:PowerBI}
+    description: ${5:what the report is for}
+    server: ${1}
+    queries:
+      - name: ${6:Dataset}
+        sql: |
+          SELECT * FROM ${7:arc.SomeTable}
+$0",
+        ),
+        (
             "file-flow",
             "File flow skeleton (CSV/JSON/… → SQL Server)",
             "name: ${1:flowName}\nsource:\n  type: ${2:csv}\n  path: ${3:./data/*.csv}\ntarget:\n  server: ${4:dwh}\n  table: ${5:stg.${1}}\n$0",
@@ -293,7 +310,7 @@ fn existing_children(doc: &FlowDocument, parent: &[AuthoredSeg]) -> std::collect
 pub fn hover(doc: &FlowDocument, pos: Position) -> Option<Hover> {
     let offset = doc.line_index.offset_of(pos);
     let loc = doc.locate(offset)?;
-    let census = Census::for_flow_type(doc.flow_type.as_deref());
+    let census = Census::for_document(doc);
     match census.resolve(&loc.path) {
         Resolution::Exact(entry) => Some(Hover {
             markdown: render_entry(entry),
@@ -336,7 +353,7 @@ pub fn diagnostics(doc: &FlowDocument) -> Vec<Diagnostic> {
     }
 
     let mut out = Vec::new();
-    let census = Census::for_flow_type(doc.flow_type.as_deref());
+    let census = Census::for_document(doc);
 
     // Unknown flowType discriminator.
     if let Some(ft) = &doc.flow_type {
@@ -369,11 +386,15 @@ pub fn diagnostics(doc: &FlowDocument) -> Vec<Diagnostic> {
                     Some(AuthoredSeg::Key(k)) => k.clone(),
                     _ => String::new(),
                 };
+                let subject = match doc.kind {
+                    DocumentKind::Subscribers => "a subscriber library",
+                    DocumentKind::Flow => "this flow type",
+                };
                 out.push(Diagnostic {
                     range: key_range,
                     severity: Severity::Warning,
                     message: format!(
-                        "unknown key '{name}' for this flow type; it will be ignored by the loader"
+                        "unknown key '{name}' for {subject}; it will be ignored by the loader"
                     ),
                     code: Some("flow-unknown-key".to_string()),
                 });
@@ -466,7 +487,7 @@ pub fn semantic_tokens(doc: &FlowDocument) -> Vec<SemanticToken> {
         return Vec::new();
     }
 
-    let census = Census::for_flow_type(doc.flow_type.as_deref());
+    let census = Census::for_document(doc);
     let mut out = Vec::new();
 
     for loc in &doc.locations {
@@ -578,7 +599,7 @@ fn insert_symbol(roots: &mut Vec<DocumentSymbol>, path: &[AuthoredSeg], symbol: 
 // --- Code actions ----------------------------------------------------------
 
 pub fn code_actions(doc: &FlowDocument, range: Range) -> Vec<CodeAction> {
-    let census = Census::for_flow_type(doc.flow_type.as_deref());
+    let census = Census::for_document(doc);
     let ctx = context_at(&doc.line_index, range.start);
     let CompletionContext::Key { parent, .. } = ctx else {
         return Vec::new();
@@ -616,6 +637,45 @@ pub fn code_actions(doc: &FlowDocument, range: Range) -> Vec<CodeAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscriber_library_is_clean_and_still_catches_typos() {
+        let src = concat!(
+            "connections:
+  dwh: ${env:SQLFLOW_CONN_DWDWHPROD}
+
+",
+            "subscribers:
+  Dashboard_Salg:
+    type: PowerBI
+",
+            "    description: Sales dashboard
+",
+            "    notes: |
+      Inaktivitet.
+      Incomplete dataset.
+",
+            "    server: dwh
+    queries:
+      - name: Fara
+        sql: |
+",
+            "          SELECT * FROM [dw-dwh-prod].[arc].[Fara_Stattrafficincome]
+",
+        );
+        let doc = FlowDocument::parse(src);
+        assert_eq!(doc.kind, DocumentKind::Subscribers);
+        let diags = diagnostics(&doc);
+        assert!(diags.is_empty(), "a valid subscriber library should be clean, got: {diags:?}");
+
+        // A misspelt key is still reported, so the new census is real validation and not a blanket pass.
+        let typo = src.replace("    notes: |", "    notez: |");
+        let diags = diagnostics(&FlowDocument::parse(&typo));
+        assert!(
+            diags.iter().any(|d| d.message.contains("'notez'") && d.message.contains("subscriber library")),
+            "expected an unknown-key warning for 'notez', got: {diags:?}"
+        );
+    }
 
     #[test]
     fn diagnoses_unknown_key_and_bad_enum() {

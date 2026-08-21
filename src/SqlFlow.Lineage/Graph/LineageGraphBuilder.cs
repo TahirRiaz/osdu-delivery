@@ -528,6 +528,7 @@ public static class LineageGraphBuilder
                 File = s.File,
                 Owner = s.Subscriber.Owner,
                 Description = s.Subscriber.Description,
+                Notes = s.Subscriber.Notes,
                 Url = s.Subscriber.Url,
                 Queries = s.Queries
                     .Select(q => new LineageSubscriberQuery

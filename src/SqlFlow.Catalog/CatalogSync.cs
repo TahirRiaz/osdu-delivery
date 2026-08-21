@@ -1398,6 +1398,7 @@ public sealed class CatalogSync
                 File = subscriber.File,
                 Owner = subscriber.Owner,
                 Description = subscriber.Description,
+                Notes = subscriber.Notes,
                 Url = subscriber.Url,
                 FirstSeenUtc = firstSeenByKey.TryGetValue(subscriber.ObjectKey, out var seen) ? seen : nowUtc,
                 LastSeenUtc = nowUtc,

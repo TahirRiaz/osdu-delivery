@@ -115,6 +115,50 @@ public sealed class LineageSubscriberTests : IDisposable
     }
 
     [Fact]
+    public void Subscriber_Notes_AreCarriedSeparatelyFromDescription()
+    {
+        // 'description' says what the report is FOR; 'notes' says what is currently wrong with it. Keeping
+        // them apart is the whole point of the second field, so a multi-line remark must survive the loader
+        // intact rather than being folded into, or truncated against, the description.
+        Write("10_ing.yaml", Ingestion);
+        Write("subscribers.yaml", string.Join('\n',
+            "connections:",
+            $"  dwh: {Ods}",
+            "subscribers:",
+            "  Analyse_Bysykkel:",
+            "    type: PowerBI",
+            "    description: City bike usage dashboard",
+            "    notes: |",
+            "      Inaktivitet. Data oppdatert juni 2022.",
+            "      Incomplete dataset. Not resolved in the new warehouse:",
+            "        Q_ZoneFra  (Power BI query step)",
+            "    server: dwh",
+            "    queries:",
+            "      - name: Turer",
+            "        sql: |",
+            "          SELECT * FROM [OdsDb].[arc].[Bysykkel_Bikes];") + '\n');
+
+        var subscriber = Assert.Single(Build().Subscribers);
+
+        Assert.Equal("City bike usage dashboard", subscriber.Description);
+        Assert.NotNull(subscriber.Notes);
+        Assert.StartsWith("Inaktivitet. Data oppdatert juni 2022.", subscriber.Notes);
+        Assert.Contains("Incomplete dataset.", subscriber.Notes);
+        Assert.Contains("Q_ZoneFra  (Power BI query step)", subscriber.Notes);
+        // The gap named in the note is NOT invented as an edge: notes are prose, and only queries make lineage.
+        Assert.Single(subscriber.Queries);
+    }
+
+    [Fact]
+    public void Subscriber_WithoutNotes_LeavesThemNull()
+    {
+        Write("10_ing.yaml", Ingestion);
+        Write("subscribers.yaml", Subscribers("SELECT * FROM [OdsDb].[arc].[Bysykkel_Bikes];"));
+
+        Assert.Null(Assert.Single(Build().Subscribers).Notes);
+    }
+
+    [Fact]
     public void Subscriber_IsNotAFlow_AndNeverEntersTheExecutionPlan()
     {
         Write("10_ing.yaml", Ingestion);
