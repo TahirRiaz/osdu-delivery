@@ -52,11 +52,13 @@ public sealed class SearchTranslationTests
         var sql = SearchEndpoints.SubscribersQuery(db, Query("incomplete dataset")).ToQueryString();
 
         Assert.Contains("[Subscriber]", sql, StringComparison.Ordinal);
-        // Six searchable fields per token (name, type, owner, description, notes, file), two tokens, plus the
-        // phrase-first ranking probe. Notes being in the SQL is what makes "Incomplete dataset" an estate-wide
-        // audit of partial lineage rather than a term that quietly matches nothing.
-        Assert.Equal(13, CountOccurrences(sql, "LIKE "));
+        // Seven searchable fields per token (name, type, owner, description, notes, url, file), two tokens, plus
+        // the phrase-first ranking probe. Notes being in the SQL is what makes "Incomplete dataset" an estate-wide
+        // audit of partial lineage rather than a term that quietly matches nothing; Url is what lets a person who
+        // knows only where a report lives get back to what it reads.
+        Assert.Equal(15, CountOccurrences(sql, "LIKE "));
         Assert.Contains("[Notes]", sql, StringComparison.Ordinal);
+        Assert.Contains("[Url]", sql, StringComparison.Ordinal);
         Assert.Contains(" AND ", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY CASE", sql, StringComparison.Ordinal);
     }

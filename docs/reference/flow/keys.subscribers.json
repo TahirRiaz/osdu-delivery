@@ -48,10 +48,10 @@
     },
     {
       "path": "subscribers.<name>.url",
-      "type": "string",
+      "type": "string (URL or path)",
       "required": false,
       "default": "null",
-      "description": "Where the subscriber lives: the report URL, the workbook path, the repository.",
+      "description": "Where the subscriber LIVES, as opposed to what it reads: the report URL in the BI tool, the workbook's path on a share or OneDrive, the folder, the repository. Free text, because a consumer is as often a file somewhere as it is a hosted report; only an http/https value is rendered as a clickable link, anything else is shown as plain selectable text so a path never becomes a link that silently does nothing. Searchable, so a person who knows only where a report sits (a workspace, a share, a folder) can get from that back to the tables it reads.",
       "definedIn": "src/SqlFlow.Core/Subscribers/DataSubscriber.cs"
     },
     {

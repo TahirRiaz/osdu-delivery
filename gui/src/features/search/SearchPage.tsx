@@ -230,6 +230,7 @@ const subscriberColumns: Column<SubscriberHit>[] = [
     header: "Notes",
     render: (row) => <TruncatedText text={firstLine(row.notes)} maxWidth={360} />,
   },
+  { id: "url", header: "Location", render: (row) => <TruncatedText text={row.url} maxWidth={320} /> },
   { id: "file", header: "Declared in", render: (row) => <TruncatedText text={row.file} mono maxWidth={320} /> },
 ];
 

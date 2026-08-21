@@ -16,6 +16,13 @@ import { Mono } from "../../components/Mono";
 import { RelativeTime } from "../../components/RelativeTime";
 import { encodeNodeId } from "../catalog/nodeIds";
 
+/** Whether a subscriber's location can actually be opened from a browser. A location is free text and is just as
+ *  often a workbook path or a share as it is a Power BI URL, and only http(s) survives a click. */
+export function isFollowable(url: string): boolean {
+  const v = url.trim().toLowerCase();
+  return v.startsWith("http://") || v.startsWith("https://");
+}
+
 /** The objects one subscriber reads: where each lives, and which of its queries reference it. */
 const objectColumns: Column<SubscriberObject>[] = [
   {
@@ -94,8 +101,12 @@ export function SubscriberDetails({ subscriberKey }: { subscriberKey: string }) 
       <div className="mb-4 grid grid-cols-2 gap-3">
         <DetailPair label="Owner">{subscriber.owner === null ? "-" : <Mono>{subscriber.owner}</Mono>}</DetailPair>
         <DetailPair label="Declared in"><Mono>{subscriber.file}</Mono></DetailPair>
+        {/* A location is a URL or a PATH: the workbook on a share, the folder on OneDrive, the repo. Only http(s)
+            can be followed from a browser, so anything else is shown as selectable text. Rendering a UNC or file
+            path as an anchor produces a link that silently does nothing when clicked, which is worse than plain
+            text because it looks actionable. */}
         <DetailPair label="Location">
-          {subscriber.url === null ? "-" : (
+          {subscriber.url === null ? "-" : isFollowable(subscriber.url) ? (
             <a
               href={subscriber.url}
               target="_blank"
@@ -105,6 +116,8 @@ export function SubscriberDetails({ subscriberKey }: { subscriberKey: string }) 
               <ExternalLink className="size-3.5 shrink-0" />
               <span className="break-all">{subscriber.url}</span>
             </a>
+          ) : (
+            <Mono className="break-all">{subscriber.url}</Mono>
           )}
         </DetailPair>
         <DetailPair label="First seen"><RelativeTime value={subscriber.firstSeenUtc} absolute /></DetailPair>

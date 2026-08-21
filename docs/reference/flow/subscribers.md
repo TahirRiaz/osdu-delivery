@@ -99,7 +99,7 @@ Like `schedules.yaml`, these files are NOT flow documents: they are excluded fro
 | `subscribers.<name>.owner` | no | Who to contact before a breaking change to a table it reads (legacy `CreatedBy`). |
 | `subscribers.<name>.description` | no | What the subscriber is FOR, in one line, for the catalog and the node's tooltip. |
 | `subscribers.<name>.notes` | no | Remarks about the subscriber's STATE rather than its purpose. Free text, multi-line via a block scalar. See [Notes](#notes). |
-| `subscribers.<name>.url` | no | Where the subscriber lives: report URL, workbook path, repository. |
+| `subscribers.<name>.url` | no | Where the subscriber LIVES (as opposed to what it reads): the report URL, the workbook path, the share, the repository. Searchable. See [Location](#location). |
 | `subscribers.<name>.server` | no | The default connection alias for every query that does not name its own. |
 | `subscribers.<name>.queries` | yes, in practice | The queries the subscriber runs. A subscriber with none is a node nothing connects to, which is warned. |
 | `queries[].name` | no | The query's label (legacy `QueryName`): the dataset, page, or measure group. Defaults to `query<n>` by position. |
@@ -132,6 +132,22 @@ Two uses earn their own conventions, because a person scanning the subscriber li
 
 `notes` is unbounded in the catalog where `description` is capped at 1024 characters, so a long remark can never fail a sync. It is searchable from `GET /lineage/subscribers?search=` alongside the name, owner, and description, which is what makes `search=Incomplete dataset` a usable estate-wide audit.
 
+## Location
+
+`url` answers a different question from everything else in the file: not what the report reads, but where to go and look at it. That turns out to be most of what a person wants when a report surfaces in a search, so it is worth filling in even though nothing breaks without it.
+
+```yaml
+subscribers:
+  Dashboard_Salg:
+    url: https://app.powerbi.com/groups/<workspace-id>/reports/<report-id>
+  Analyse_Batbooking:
+    url: \\fileserver\BI\Rapporter\Analyse_Batbooking.pbix
+```
+
+It is free text on purpose, because a consumer is as often a workbook on a share as it is a hosted report. Only an `http`/`https` value renders as a clickable link; anything else is shown as plain selectable text, so a UNC or file path never becomes a link that silently does nothing when clicked.
+
+It is searched alongside the name, owner, description, and notes, which is what lets a person who knows only where a report sits (a workspace id, a share, a folder) get from that back to the tables it reads.
+
 ## How a query becomes lineage
 
 Each `sql` goes through the same `TSqlLineageExtractor` a stored-procedure body, a document hook, and a generated transform view go through. The resulting facts are attributed as MODULE facts: `Flow` is null and `ViaModule` is the subscriber's node key. That is precisely what a subscriber is to the graph, a body of SQL that reads objects but runs no pipeline, so nothing in the edge model, the execution plan, or the wave computation needed changing to hold it.
@@ -155,7 +171,7 @@ The consumption itself is not stored twice: the read edges are ordinary `catalog
 | `GET /lineage/subscribers` | What consumes the warehouse. Filter by `type` (the tool) or `search` (name, owner, description). Each row carries how many queries it runs and how many distinct objects those queries read. |
 | `GET /lineage/subscribers/dossier?key=<node key>` | What one subscriber consumes: its queries, and every object they read, named and located from the object registry, with the queries that reference each one. |
 | `GET /lineage/objects/dossier?key=<node key>` | Now also returns `subscribers`: who consumes THIS object, with the specific queries that name it. |
-| `GET /search/subscribers`, and the `subscribers` category of `GET /search/all` | Subscribers as a surface of the GLOBAL search, matched on name, type, owner, description, notes, or declaring file. A subscriber is neither a database object nor a flow, so without this a report searched for by name returned nothing and looked absent rather than unsearched. |
+| `GET /search/subscribers`, and the `subscribers` category of `GET /search/all` | Subscribers as a surface of the GLOBAL search, matched on name, type, owner, description, notes, location, or declaring file. A subscriber is neither a database object nor a flow, so without this a report searched for by name returned nothing and looked absent rather than unsearched. |
 
 ## Editor support
 

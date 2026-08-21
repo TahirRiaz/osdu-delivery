@@ -64,7 +64,7 @@ public sealed record StatementHitDto(
 /// a stale or superseded report is exactly what a person searching the estate needs to see about it.</summary>
 public sealed record SubscriberHitDto(
     string Key, string Name, string Kind, string? Owner, string? Description, string? Notes,
-    string RepoId, string File);
+    string? Url, string RepoId, string File);
 
 /// <summary>One category of a combined search: the full match count plus a small preview of the top hits, so the
 /// unified view can show "Files (37)" with the first few and a jump to the dedicated tab for the rest.</summary>
@@ -445,8 +445,10 @@ public static class SearchEndpoints
     // The consumption side of the estate. A subscriber is not a database object and not a flow, so neither of
     // those surfaces can find it; without its own builder, searching a report by name returns nothing and the
     // consumer looks absent rather than unsearched. Every field a person would search by is matched: the report's
-    // name, the tool, the owner, what it is for, the remarks about its state, and the file declaring it. Notes are
-    // in deliberately, because "Incomplete dataset" is the term that finds every consumer whose lineage is partial.
+    // name, the tool, the owner, what it is for, the remarks about its state, WHERE IT LIVES, and the file
+    // declaring it. Notes are in deliberately, because "Incomplete dataset" is the term that finds every consumer
+    // whose lineage is partial; Url is in because a person often knows only where a report lives (a workspace, a
+    // share, a folder) and needs to get from that back to what it reads.
     internal static IQueryable<SubscriberHitDto> SubscribersQuery(CatalogDbContext db, SearchQuery term)
     {
         var rows = db.Subscribers.AsNoTracking();
@@ -458,6 +460,7 @@ public static class SearchEndpoints
                 || (s.Owner != null && s.Owner.Contains(t))
                 || (s.Description != null && s.Description.Contains(t))
                 || (s.Notes != null && s.Notes.Contains(t))
+                || (s.Url != null && s.Url.Contains(t))
                 || s.File.Contains(t));
         }
 
@@ -466,7 +469,8 @@ public static class SearchEndpoints
             .OrderByDescending(s => s.Name.Contains(phrase))
             .ThenBy(s => s.Name).ThenBy(s => s.ObjectKey)
             .Select(s => new SubscriberHitDto(
-                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Notes, s.RepoId.ToString(), s.File));
+                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Notes, s.Url,
+                s.RepoId.ToString(), s.File));
     }
 
     // Each matching column joined to its owning object for the display name (a soft link on ObjectKey; no FK). A

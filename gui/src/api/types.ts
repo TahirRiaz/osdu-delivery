@@ -1211,6 +1211,8 @@ export interface SubscriberHit {
   owner: string | null;
   description: string | null;
   notes: string | null;
+  /** Where the report lives: a Power BI URL, a workbook path, a share, a repo. Free text; only http(s) is clickable. */
+  url: string | null;
   repoId: string;
   /** The repo-relative subscribers.yaml that declares it. */
   file: string;

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unopenable, or an incomplete dataset naming what could not be resolved), kept apart from
   `description`, which says what the consumer is for. Stored unbounded in `catalog.Subscriber`,
   searchable from `GET /lineage/subscribers`, shown in the subscriber list and details.
+- `subscribers.<name>.url` (the report URL or workbook path, which already existed) is now searchable
+  and shown in the subscriber list and search results. A non-http location renders as plain text
+  rather than a link that silently does nothing when clicked.
 - Subscribers are now a surface of the global search (`GET /search/subscribers` and the `subscribers`
   category of `/search/all`), matched on name, type, owner, description, notes, and declaring file.
   A subscriber is neither a database object nor a flow, so searching a report by name previously

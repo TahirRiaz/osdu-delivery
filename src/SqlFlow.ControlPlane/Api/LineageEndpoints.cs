@@ -1286,7 +1286,8 @@ public static class LineageEndpoints
             query = query.Where(s => s.Name.Contains(term)
                 || (s.Owner != null && s.Owner.Contains(term))
                 || (s.Description != null && s.Description.Contains(term))
-                || (s.Notes != null && s.Notes.Contains(term)));
+                || (s.Notes != null && s.Notes.Contains(term))
+                || (s.Url != null && s.Url.Contains(term)));
         }
 
         var rows = await query

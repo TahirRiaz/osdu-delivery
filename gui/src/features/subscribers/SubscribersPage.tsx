@@ -18,7 +18,7 @@ import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
-import { SubscriberDetails } from "./SubscriberDetails";
+import { isFollowable, SubscriberDetails } from "./SubscriberDetails";
 
 /** Local debounce for the free-text filter: the list re-queries 400ms after the user stops typing. */
 function useDebounced(value: string, delayMs: number): string {
@@ -59,6 +59,26 @@ const subscriberColumns: Column<Subscriber>[] = [
       <span className="block truncate text-[13px] text-muted-foreground" title={row.notes ?? undefined}>
         {row.notes ?? "-"}
       </span>
+    ),
+  },
+  {
+    id: "url",
+    header: "Location",
+    // Where the report lives, so the list answers "open it" as well as "what does it read".
+    render: (row) => (
+      row.url === null ? <span className="text-[13px] text-muted-foreground">-</span>
+        : isFollowable(row.url) ? (
+          <a
+            href={row.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            className="block truncate text-[13px] text-primary hover:underline"
+            title={row.url}
+          >
+            {row.url}
+          </a>
+        ) : <span className="block truncate font-mono text-[12px]" title={row.url}>{row.url}</span>
     ),
   },
   {
@@ -130,7 +150,7 @@ export default function SubscribersPage() {
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search name, owner, description, notes ..."
+          placeholder="Search name, owner, description, notes, location ..."
           className={search === "" ? undefined : activeFilterClass}
           data-testid="subscriber-search"
         />
