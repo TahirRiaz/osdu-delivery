@@ -70,6 +70,24 @@ test.describe("explore", () => {
     }
   });
 
+  test("the toolbar search reaches the whole catalog and seeds the graph on the hit", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-lineage").click();
+    await expect(adminPage.getByTestId("graph-empty")).toBeVisible();
+
+    // No project is chosen, so no node is drawn: every hit here comes from the catalog search, which is the point
+    // (the canvas holds one project, the estate holds everything).
+    await adminPage.getByTestId("graph-node-search").fill("Csv_Basic");
+    const flowHit = adminPage.getByTestId("graph-search-flow").first();
+    await expect(flowHit).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("graph-search-object").first()).toBeVisible();
+
+    // Picking a hit re-seeds the graph on that node: it becomes ?focus= and lands focused. The user got there
+    // without first having to guess which project the flow lives in.
+    await flowHit.click();
+    await expect(adminPage.getByTestId("graph-focus-panel")).toBeVisible({ timeout: 60_000 });
+    expect(new URL(adminPage.url()).searchParams.get("focus")).not.toBeNull();
+  });
+
   test("the objects view draws the data flow between file and table, colored per flow", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-lineage").click();
     await adminPage.getByTestId("graph-project-select").click();
