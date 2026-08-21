@@ -460,19 +460,13 @@ fn truncate_long_strings(value: &mut Value, max: usize) {
 /// follow-up that turns one hit into an answer. This is the map that makes a search iterative: the model
 /// gets counts per surface plus the exact next call for each, instead of a wall of hits it has to guess
 /// what to do with.
+///
+/// ORDER IS PRIORITY, and it is warehouse-first on purpose. A term someone searches for is far more often
+/// a table, a column, or the code computing one than it is the name of a report: the warehouse is the
+/// subject, and consumption is a convention layered on top of it. So `objects` leads and `subscribers`
+/// comes last, and a caller working the plan top-down reaches the answer without being steered into the
+/// reporting layer by a name that merely also appears there.
 const SEARCH_SURFACES: [(&str, &str, &str); 8] = [
-    (
-        "subscribers",
-        "list_subscribers",
-        "A DASHBOARD, REPORT, workbook, notebook, or application that CONSUMES the warehouse matched by its \
-         name, owner, description, or notes. This is the surface for a question phrased about a dashboard or \
-         a report: people name the thing they look at, not the catalog word for it, so a hit here is usually \
-         what they meant even though they never said \"subscriber\". Take `key` to describe_subscriber(key) \
-         for every object it reads and the SQL it runs; then describe_object_refresh on those objects for how \
-         each is populated. `notes` says what is wrong with it, and a note beginning \"Incomplete dataset\" \
-         means it also reads objects the warehouse does not have, so its object list is a floor, not the \
-         whole truth.",
-    ),
     (
         "objects",
         "search_objects",
@@ -525,6 +519,19 @@ const SEARCH_SURFACES: [(&str, &str, &str); 8] = [
          in no YAML and in no stored module body. `statementWindowDays` says how far back this looked; \
          search_statements(days=0) searches all retained history. Take `runId` to run_statements(runId) for the \
          full trace of that run.",
+    ),
+    (
+        "subscribers",
+        "list_subscribers",
+        "A DASHBOARD, REPORT, workbook, notebook, or application that CONSUMES the warehouse matched by its \
+         name, owner, description, notes, or location. LAST by priority: this is the consumption layer, and a \
+         term is more often a warehouse object than a report, so prefer a hit on the surfaces above when both \
+         matched. It is still the right answer for a question phrased about a dashboard or a report, because \
+         people name the thing they look at, not the catalog word for it. Take `key` to describe_subscriber(key) \
+         for every object it reads and the SQL it runs; then describe_object_refresh on those objects for how \
+         each is populated. `notes` says what is wrong with it, and a note beginning \"Incomplete dataset\" \
+         means it also reads objects the warehouse does not have, so its object list is a floor, not the \
+         whole truth.",
     ),
 ];
 
@@ -1356,8 +1363,10 @@ impl SqlFlowMcp {
             CONSUMING the warehouse, which is where lineage ends. These are what the catalog calls data \
             subscribers, but almost nobody asks for them by that word: a question about \"the sales dashboard\", \
             \"the Power BI report for X\", \"who looks at this data\", or \"what does <report name> use\" is a \
-            question about this tool. Reach for it whenever a name is a thing a person VIEWS rather than a \
-            table, and whenever a search for a name found no object. Each entry has the subscriber's key (pass \
+            question about this tool. It is the CONSUMPTION layer and ranks BELOW the warehouse: a bare term is \
+            far more often a table, a column, or the code computing one, so try the warehouse surfaces first and \
+            come here when the question is explicitly about a thing a person VIEWS, or when those surfaces found \
+            nothing. Each entry has the subscriber's key (pass \
             it to describe_subscriber), name, type (the consuming tool: PowerBI / Tableau / Excel / ...), owner \
             (who to tell before a breaking change), the subscribers.yaml that declares it, how many queries it \
             runs, and how many distinct objects those queries read, plus `notes`: remarks about the report's \
@@ -2022,6 +2031,25 @@ mod tests {
         let mut value = json!("Error: the control plane is unreachable");
         annotate_search_all(&mut value, "orders");
         assert_eq!(value, json!("Error: the control plane is unreachable"));
+    }
+
+    #[test]
+    fn search_surfaces_rank_the_warehouse_above_the_reporting_layer() {
+        // Order IS priority: the annotated plan is emitted in this order and a caller works it top-down. A bare
+        // term is far more often a warehouse object than the name of a report, so `objects` must lead and
+        // `subscribers` must trail. This regressed once by appending the consumption surface at the top.
+        let order: Vec<&str> = SEARCH_SURFACES.iter().map(|(name, _, _)| *name).collect();
+        assert_eq!(order.first(), Some(&"objects"), "the warehouse must be the first surface offered");
+        assert_eq!(order.last(), Some(&"subscribers"), "consumption must be the last surface offered");
+        // And the consumption surface must say so, so a model reading one entry in isolation still ranks it.
+        let (_, _, subscribers_doc) = SEARCH_SURFACES
+            .iter()
+            .find(|(name, _, _)| *name == "subscribers")
+            .expect("subscribers surface");
+        assert!(
+            subscribers_doc.contains("LAST by priority"),
+            "the subscribers surface should state its rank in its own description"
+        );
     }
 
     #[test]

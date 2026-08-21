@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `subscribers.<name>.url` (the report URL or workbook path, which already existed) is now searchable
   and shown in the subscriber list and search results. A non-http location renders as plain text
   rather than a link that silently does nothing when clicked.
+- Search ranks the warehouse above the reporting layer: `objects` leads every result set and
+  `subscribers` trails it, in the API payload, the workbench, and the MCP follow-up plan, because a
+  bare term is far more often a table or a column than the name of a report.
 - Subscribers are now a surface of the global search (`GET /search/subscribers` and the `subscribers`
   category of `/search/all`), matched on name, type, owner, description, notes, and declaring file.
   A subscriber is neither a database object nor a flow, so searching a report by name previously

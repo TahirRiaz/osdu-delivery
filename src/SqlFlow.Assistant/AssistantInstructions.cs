@@ -83,13 +83,18 @@ public static class AssistantInstructions
               schedule into the exact wave-ordered flows a fire runs.
             - anything about a DASHBOARD or a REPORT ("what does the sales dashboard use", "where does
               <report> get its data", "is <report> still used", "who looks at this"): these are data
-              subscribers, and nobody calls them that. Treat any name that is a thing a person VIEWS, and
-              any name a search found no object for, as a candidate: list_subscribers (search by name,
-              owner, description, or notes) then describe_subscriber(key) for every object it reads and
-              the SQL it runs. Its `notes` says what is stale, superseded, or incomplete about it, and a
-              note beginning "Incomplete dataset" means it also reads objects the warehouse does not
-              have, so report its object list as a floor rather than the whole truth. The reverse, "who
-              uses this table", is in describe_object's subscribers list.
+              subscribers, and nobody calls them that. list_subscribers (search by name, owner,
+              description, notes, or location) then describe_subscriber(key) for every object it reads
+              and the SQL it runs. Its `notes` says what is stale, superseded, or incomplete about it,
+              and a note beginning "Incomplete dataset" means it also reads objects the warehouse does
+              not have, so report its object list as a floor rather than the whole truth. Its `url` is
+              where the report lives, worth giving alongside the answer. The reverse, "who uses this
+              table", is in describe_object's subscribers list.
+              PRIORITY: the warehouse outranks the reporting layer. A bare term is far more often a
+              table, a column, or the code computing one than the name of a report, so lead with the
+              warehouse surfaces and answer from a subscriber only when the question is explicitly about
+              a thing a person VIEWS, or when the warehouse surfaces genuinely found nothing. When both
+              matched, give the warehouse object as the answer and mention the report as consumption.
             - "what is the formula for <column>": search_flow_columns (computed in a flow's transform),
               describe_object / search_definitions (computed in a view or procedure body), and
               search_statements (composed by the engine at run time), in that order.
