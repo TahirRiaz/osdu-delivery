@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
@@ -377,11 +377,27 @@ public static class ChatEndpoints
                     CancellationToken.None).ConfigureAwait(false);
             }
         }
-        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException or HttpRequestException)
+        catch (Exception ex)
         {
+            // Every failure of a started answer ends here, whatever the provider threw. The status
+            // code is long since committed, so an escaping exception would just drop the connection:
+            // the browser would see a stream that stopped after the conversation event and render an
+            // answer that never came, with nothing in the log to explain it. An error event says what
+            // happened, and the partial text survives exactly as a user-stopped answer does.
             logger.LogError(ex, "Chat answer failed for conversation {ConversationId}", conversation.Id);
+            if (streamedText.Length > 0)
+            {
+                await PersistAssistantMessageAsync(
+                    db, clock, conversation, userMessage.Ordinal, streamedText.ToString(), toolCalls,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            // A cancellation that is not the caller's is the run's own timeout ceiling firing.
+            var detail = ex is OperationCanceledException
+                ? $"The assistant did not finish within {options.RunTimeoutSeconds} seconds."
+                : ex.Message;
             await WriteSseAsync(response, "error", JsonSerializer.Serialize(
-                new ChatStreamErrorDto(ex.Message), serializer), ct).ConfigureAwait(false);
+                new ChatStreamErrorDto(detail), serializer), ct).ConfigureAwait(false);
         }
 
         return TypedResults.Empty;

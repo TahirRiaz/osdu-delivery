@@ -153,21 +153,27 @@ export function createChatModelAdapter(session: ChatSession): ChatModelAdapter {
         });
       }
 
+      // A user cancellation ends the run quietly (the server keeps the partial answer). The signal
+      // is the reliable tell: fetch rejects with whatever reason the caller aborted with, which is
+      // not always a DOMException.
+      if (abortSignal.aborted) {
+        return;
+      }
       if (failure !== null) {
-        // A user cancellation ends the run quietly (the server keeps the partial answer); anything
-        // else surfaces as the message's error state.
-        if (failure instanceof DOMException && failure.name === "AbortError") {
-          return;
-        }
         throw failure instanceof Error ? failure : new Error(String(failure));
       }
-      if (done !== null) {
-        session.onTurnCompleted();
-        yield {
-          content: buildContent(toolCalls, done.text),
-          status: { type: "complete", reason: "stop" },
-        };
+      if (done === null) {
+        // The stream ended without its terminal `done` frame: the connection dropped, or the server
+        // died mid-answer. Saying so beats returning quietly, which would leave an empty assistant
+        // bubble that reads as the assistant having ignored the question.
+        throw new Error("The answer stream ended before the assistant finished. Ask again.");
       }
+
+      session.onTurnCompleted();
+      yield {
+        content: buildContent(toolCalls, done.text),
+        status: { type: "complete", reason: "stop" },
+      };
     },
   };
 }
