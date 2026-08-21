@@ -113,7 +113,19 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
             ct.ThrowIfCancellationRequested();
             recordOrdinal++;
 
-            foreach (var rowPairs in flattener.FlattenRows(record))
+            // The flattener knows the record, not which file it came from, so the file name is attached
+            // here: an explode bound that trips is only actionable if the operator can find the document.
+            IReadOnlyList<IReadOnlyList<KeyValuePair<string, string?>>> flattened;
+            try
+            {
+                flattened = flattener.FlattenRows(record);
+            }
+            catch (SqlFlow.Core.SqlFlowException ex)
+            {
+                throw new SqlFlow.Core.SqlFlowException($"{file.Name} (record {recordOrdinal}): {ex.Message}", ex);
+            }
+
+            foreach (var rowPairs in flattened)
             {
                 var cells = new string?[columns.Count];
                 foreach (var (name, value) in rowPairs)
@@ -317,6 +329,12 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
     /// <summary>Builds the flatten configuration from the bound metadata, validating its option values.</summary>
     public static JsonFlattenConfig BuildFlattenConfig(PreIngestionJsn meta)
     {
+        if (meta.MaxRowsPerRecord < 1)
+        {
+            throw new SqlFlow.Core.SqlFlowException(
+                $"Invalid maxRowsPerRecord '{meta.MaxRowsPerRecord}'. Use a positive integer.");
+        }
+
         if (meta.MaxDepth < 1)
         {
             throw new SqlFlow.Core.SqlFlowException($"Invalid maxDepth '{meta.MaxDepth}'. Use a positive integer.");
@@ -332,6 +350,7 @@ public sealed class JsonSourceReader : FileSourceReaderBase, IFlattenIntrospecto
             PathAliasColumns = JsonFlattenConfig.ParsePathAliases(meta.PathAliases),
             ColumnMappings = JsonFlattenConfig.ParseColumnMappings(meta.ColumnMappings),
             MaxDepth = meta.MaxDepth,
+            MaxRowsPerRecord = meta.MaxRowsPerRecord,
             Separator = string.IsNullOrEmpty(meta.Separator) ? "_" : meta.Separator,
             ArrayHandling = JsonFlattenConfig.ParseArrayHandling(meta.ArrayHandling),
             JoinSeparator = meta.JoinSeparator,

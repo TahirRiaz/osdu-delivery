@@ -67,6 +67,9 @@ public sealed record JsonFlattenConfig
     /// <summary>Maximum nesting depth flattened into columns; deeper values become JSON strings.</summary>
     public int MaxDepth { get; init; } = 10;
 
+    /// <summary>Bound on how many rows one record may explode into before the read fails loudly.</summary>
+    public int MaxRowsPerRecord { get; init; } = JsonPathFlattener.DefaultMaxRowsPerRecord;
+
     /// <summary>Separator joining nested keys into a column name (e.g. <c>address_city</c>).</summary>
     public string Separator { get; init; } = "_";
 

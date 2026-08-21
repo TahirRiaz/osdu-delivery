@@ -56,6 +56,12 @@ public sealed record PreIngestionXml : IFlowMetadata
     /// <summary>Maximum nesting depth flattened into columns; deeper elements become XML strings.</summary>
     public int MaxDepth { get; init; } = 10;
 
+    /// <summary>
+    /// Bound on how many rows one record may explode into before the read fails loudly. Mirrors
+    /// <c>XmlPathFlattener.DefaultMaxRowsPerRecord</c> (SqlFlow.Sources cannot be referenced from here).
+    /// </summary>
+    public int MaxRowsPerRecord { get; init; } = 1_000_000;
+
     /// <summary>How repeating elements become a column: to_xml (default), first_element, last_element, join, count, skip, explode.</summary>
     public string RepeatHandling { get; init; } = "to_xml";
 
@@ -172,6 +178,7 @@ public sealed record PreIngestionXml : IFlowMetadata
             ColumnMappings = NullableOption(o, "columnMappings"),
             Separator = o.GetString("separator", "_"),
             MaxDepth = o.GetInt("maxDepth", 10),
+            MaxRowsPerRecord = o.GetInt("maxRowsPerRecord", 1_000_000),
             RepeatHandling = o.GetString("repeatHandling", "to_xml"),
             JoinSeparator = o.GetString("joinSeparator", ","),
             IncludeAttributes = o.GetBool("includeAttributes", true),

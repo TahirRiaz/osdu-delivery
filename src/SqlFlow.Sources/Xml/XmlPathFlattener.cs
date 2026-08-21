@@ -22,8 +22,13 @@ namespace SqlFlow.Sources.Xml;
 /// </summary>
 public sealed class XmlPathFlattener
 {
-    /// <summary>Safety bound on the cross-product size for one row, to fail loudly instead of exhausting memory.</summary>
-    public const int MaxRowsPerRecord = 1_000_000;
+    /// <summary>
+    /// Default bound on the cross-product size for one record, overridable per flow with the
+    /// <c>maxRowsPerRecord</c> option. It is counted in ROWS, which is a proxy for memory and not a
+    /// measure of it: a wide record costs far more per row than a narrow one, so a workload with hundreds
+    /// of columns should lower it and a narrow one may safely raise it.
+    /// </summary>
+    public const int DefaultMaxRowsPerRecord = 1_000_000;
 
     private readonly XmlFlattenConfig _config;
 
@@ -224,11 +229,12 @@ public sealed class XmlPathFlattener
             FlattenElement(elements[i], $"{path}[{i}]", depth + 1, clones, multiply: true);
             rows.AddRange(clones);
 
-            if (rows.Count > MaxRowsPerRecord)
+            if (rows.Count > _config.MaxRowsPerRecord)
             {
                 throw new SqlFlowException(
-                    $"Exploding '{path}' produced more than {MaxRowsPerRecord} rows for a single record. "
-                    + "Narrow the explode paths or pre-split the data.");
+                    $"Exploding '{path}' produced more than {_config.MaxRowsPerRecord} rows for a single record "
+                    + $"(the cross product of the explode paths, not the record's size). Narrow the explode "
+                    + $"paths, or raise the 'maxRowsPerRecord' option if the rows are narrow enough to fit.");
             }
         }
     }
@@ -286,16 +292,24 @@ public sealed class XmlPathFlattener
     }
 
     /// <summary>
-    /// The per-record assignment of a normalized source path to its final, de-collided column name, shared by
-    /// the schema and data passes. Built once during the schema traversal (document order) so the de-collision
-    /// of two distinct paths that map to the same base name is identical for every exploded output row.
-    /// Alias-source writes do not own a name here; they reserve their union-column name so a distinct natural
-    /// field colliding on it is suffixed away instead of merged.
+    /// The per-record column plan: the assignment of a normalized source path to its final, de-collided
+    /// column name, that name's stable ORDINAL, and the column's metadata. Built once during the schema
+    /// traversal (document order) so the de-collision of two distinct paths that map to the same base name is
+    /// identical for every exploded output row. Alias-source writes do not own a name here; they reserve their
+    /// union-column name so a distinct natural field colliding on it is suffixed away instead of merged.
+    ///
+    /// THE PLAN HOLDS THE SCHEMA SO A ROW DOES NOT HAVE TO. Column name, source path and large-text are facts
+    /// about a COLUMN, not about a row, and a record's rows all share this one instance. Keeping them here is
+    /// what lets <see cref="OrderedRow"/> be a bare value array: see the note on that type for why that
+    /// matters.
     /// </summary>
     private sealed class NamePlan
     {
         private readonly Dictionary<string, string> _nameByPath = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _ordinalByName = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _used = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _order = [];
+        private readonly List<ColumnMeta> _meta = [];
 
         /// <summary>
         /// Seeds the plan with the alias-target column names so a natural field colliding with one always
@@ -309,108 +323,140 @@ public sealed class XmlPathFlattener
             }
         }
 
-        /// <summary>Marks an alias union-column name as taken so natural collisions on it de-collide.</summary>
-        public void Reserve(string name) => _used.Add(name);
+        /// <summary>How many columns the plan has assigned so far.</summary>
+        public int Count => _order.Count;
 
-        /// <summary>The final column name for a normalized path: its first assignment, de-collided with a suffix.</summary>
-        public string Resolve(string normalizedPath, string baseName)
+        /// <summary>The assigned column names, in assignment (document) order.</summary>
+        public IReadOnlyList<string> Names => _order;
+
+        /// <summary>The metadata of the column at <paramref name="ordinal"/>.</summary>
+        public ColumnMeta MetaAt(int ordinal) => _meta[ordinal];
+
+        /// <summary>
+        /// The ordinal of an alias union column, assigning it on first use. The first contributing path wins
+        /// the recorded metadata, matching the coalescing rule in <see cref="OrderedRow.Write"/>.
+        /// </summary>
+        public int ReserveAlias(string name, string normalizedPath, bool largeText)
         {
-            if (_nameByPath.TryGetValue(normalizedPath, out var existing))
+            _used.Add(name);
+            return OrdinalOf(name, normalizedPath, largeText);
+        }
+
+        /// <summary>
+        /// The ordinal of a natural column: its final name for this path (first assignment wins, de-collided
+        /// with a suffix), then that name's position in the plan.
+        /// </summary>
+        public int Resolve(string normalizedPath, string baseName, bool largeText)
+        {
+            if (!_nameByPath.TryGetValue(normalizedPath, out var name))
             {
-                return existing;
+                name = baseName;
+                var suffix = 2;
+                while (!_used.Add(name))
+                {
+                    name = baseName + "_" + suffix.ToString(CultureInfo.InvariantCulture);
+                    suffix++;
+                }
+
+                _nameByPath[normalizedPath] = name;
             }
 
-            var name = baseName;
-            var suffix = 2;
-            while (!_used.Add(name))
+            return OrdinalOf(name, normalizedPath, largeText);
+        }
+
+        private int OrdinalOf(string name, string normalizedPath, bool largeText)
+        {
+            if (_ordinalByName.TryGetValue(name, out var ordinal))
             {
-                name = baseName + "_" + suffix.ToString(CultureInfo.InvariantCulture);
-                suffix++;
+                return ordinal;
             }
 
-            _nameByPath[normalizedPath] = name;
-            return name;
+            ordinal = _order.Count;
+            _ordinalByName[name] = ordinal;
+            _order.Add(name);
+            _meta.Add(new ColumnMeta(normalizedPath, largeText));
+            return ordinal;
         }
     }
 
     /// <summary>
-    /// An insertion-ordered, case-insensitive accumulator (matching SQL Server collation and the base
-    /// pipeline). Column names come from the shared <see cref="NamePlan"/>, so distinct source paths never
-    /// overwrite each other and the same path always folds to one column; each column also carries its source
-    /// path and large-text flag for the schema view.
+    /// One output row: nothing but its cell values, positioned by the shared <see cref="NamePlan"/>.
+    ///
+    /// THIS TYPE'S SIZE IS THE FLATTENER'S MEMORY PROFILE, because a cross-product explode clones it once per
+    /// element of every exploded repeat. It previously carried its own column-name list and TWO
+    /// case-insensitive dictionaries (values and metadata), all three deep-copied on every clone, so a
+    /// 96-column row cost on the order of 10 KB instead of the ~800 bytes its values actually need. A
+    /// settlement document that explodes to a million rows therefore needed roughly 12 GB and died with an
+    /// OutOfMemoryException (2026-08-20). The schema is per-column, so it lives on the plan and a row is a
+    /// bare array. Keep it that way: do not reintroduce per-row name or metadata storage.
     /// </summary>
     private sealed class OrderedRow
     {
         private readonly NamePlan _plan;
-        private readonly List<string> _order;
-        private readonly Dictionary<string, string?> _values;
-        private readonly Dictionary<string, ColumnMeta> _meta;
+        private string?[] _values;
 
         public OrderedRow(NamePlan plan)
         {
             _plan = plan;
-            _order = [];
-            _values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            _meta = new Dictionary<string, ColumnMeta>(StringComparer.OrdinalIgnoreCase);
+            _values = plan.Count == 0 ? [] : new string?[plan.Count];
         }
 
-        private OrderedRow(NamePlan plan, List<string> order, Dictionary<string, string?> values, Dictionary<string, ColumnMeta> meta)
+        private OrderedRow(NamePlan plan, string?[] values)
         {
             _plan = plan;
-            _order = order;
             _values = values;
-            _meta = meta;
         }
 
         public void Write(string baseName, string normalizedPath, string? value, bool largeText, bool aliasSource)
         {
             if (aliasSource)
             {
-                // Keep natural collisions off this union column, then coalesce: add, or upgrade a null, but
-                // never overwrite a non-null with null.
-                _plan.Reserve(baseName);
-                if (_values.TryGetValue(baseName, out var existing))
+                // Keep natural collisions off this union column, then coalesce: fill it, or upgrade a null,
+                // but never overwrite a non-null. An unwritten cell is already null, so "first write wins and
+                // nulls may be upgraded" is exactly "write only when the cell is still null".
+                var aliasOrdinal = _plan.ReserveAlias(baseName, normalizedPath, largeText);
+                EnsureCapacity(aliasOrdinal);
+                if (_values[aliasOrdinal] is null)
                 {
-                    if (existing is null && value is not null)
-                    {
-                        _values[baseName] = value;
-                    }
-                }
-                else
-                {
-                    _values[baseName] = value;
-                    _order.Add(baseName);
-                    _meta[baseName] = new ColumnMeta(normalizedPath, largeText);
+                    _values[aliasOrdinal] = value;
                 }
 
                 return;
             }
 
-            var name = _plan.Resolve(normalizedPath, baseName);
-            if (_values.TryAdd(name, value))
-            {
-                _order.Add(name);
-                _meta[name] = new ColumnMeta(normalizedPath, largeText);
-            }
-            else
-            {
-                // Same path written again (e.g. each element of an exploded repeat folds to one column).
-                _values[name] = value;
-            }
+            // A natural column: first write assigns the cell, and the same path written again (each element of
+            // an exploded repeat folds to one column) overwrites it.
+            var ordinal = _plan.Resolve(normalizedPath, baseName, largeText);
+            EnsureCapacity(ordinal);
+            _values[ordinal] = value;
         }
 
-        public OrderedRow Clone() => new(
-            _plan,
-            [.. _order],
-            new Dictionary<string, string?>(_values, StringComparer.OrdinalIgnoreCase),
-            new Dictionary<string, ColumnMeta>(_meta, StringComparer.OrdinalIgnoreCase));
+        /// <summary>Grows to cover <paramref name="ordinal"/>. The schema pass fixes the plan before any data
+        /// row exists, so in the data pass this is a no-op; it only fires while the plan is still growing.</summary>
+        private void EnsureCapacity(int ordinal)
+        {
+            if (ordinal < _values.Length)
+            {
+                return;
+            }
+
+            Array.Resize(ref _values, Math.Max(_plan.Count, ordinal + 1));
+        }
+
+        public OrderedRow Clone()
+        {
+            var copy = new string?[_values.Length];
+            Array.Copy(_values, copy, _values.Length);
+            return new OrderedRow(_plan, copy);
+        }
 
         public IReadOnlyList<KeyValuePair<string, string?>> ToPairs()
         {
-            var pairs = new List<KeyValuePair<string, string?>>(_order.Count);
-            foreach (var name in _order)
+            var names = _plan.Names;
+            var pairs = new List<KeyValuePair<string, string?>>(names.Count);
+            for (var i = 0; i < names.Count; i++)
             {
-                pairs.Add(new KeyValuePair<string, string?>(name, _values[name]));
+                pairs.Add(new KeyValuePair<string, string?>(names[i], i < _values.Length ? _values[i] : null));
             }
 
             return pairs;
@@ -418,16 +464,17 @@ public sealed class XmlPathFlattener
 
         public IReadOnlyList<XmlFlattenColumn> ToColumns()
         {
-            var columns = new List<XmlFlattenColumn>(_order.Count);
-            foreach (var name in _order)
+            var names = _plan.Names;
+            var columns = new List<XmlFlattenColumn>(names.Count);
+            for (var i = 0; i < names.Count; i++)
             {
-                var meta = _meta[name];
-                columns.Add(new XmlFlattenColumn(name, meta.SourcePath, meta.LargeText));
+                var meta = _plan.MetaAt(i);
+                columns.Add(new XmlFlattenColumn(names[i], meta.SourcePath, meta.LargeText));
             }
 
             return columns;
         }
-
-        private readonly record struct ColumnMeta(string SourcePath, bool LargeText);
     }
+
+    private readonly record struct ColumnMeta(string SourcePath, bool LargeText);
 }

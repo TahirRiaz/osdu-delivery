@@ -160,6 +160,49 @@ public sealed class XmlFlattenerTests
         Assert.Equal(new[] { "1-x", "1-y", "2-x", "2-y" }, combos);
     }
 
+    /// <summary>
+    /// The cross-product bound is per FLOW, not a hardcoded constant. Two independent repeats multiply, so a
+    /// document far smaller than the default cap can still be bounded deliberately (a wide row costs far more
+    /// memory than a narrow one, and the bound is counted in rows).
+    /// </summary>
+    [Fact]
+    public void Explode_BeyondConfiguredRowBound_FailsLoudlyNamingThePathAndTheOption()
+    {
+        var xml = "<r><a>1</a><a>2</a><a>3</a><b>x</b><b>y</b><b>z</b></r>";
+
+        // 3 x 3 = 9 rows, which the default cap would allow.
+        Assert.Equal(9, FlattenRows(xml, new XmlFlattenConfig { ExplodePaths = ["/a", "/b"] }).Count);
+
+        var ex = Assert.Throws<SqlFlowException>(() =>
+            FlattenRows(xml, new XmlFlattenConfig { ExplodePaths = ["/a", "/b"], MaxRowsPerRecord = 4 }));
+
+        Assert.Contains("more than 4 rows", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("maxRowsPerRecord", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("/b", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The rows of one record share a single column plan and carry only their values, so a row must still
+    /// report every column the record produces, including the ones it has no value for.
+    /// </summary>
+    [Fact]
+    public void Explode_RowsShareTheRecordColumnPlan_SoAbsentColumnsSurfaceAsNull()
+    {
+        var rows = FlattenRows(
+            "<r><id>1</id><a><x>1</x></a><a><y>2</y></a></r>",
+            new XmlFlattenConfig { ExplodePaths = ["/a"] });
+
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal("1", r["id"]));
+
+        // Both rows expose both exploded columns; the one that did not supply a value reports null, not a
+        // missing key. The positional row representation depends on this being true.
+        Assert.Equal("1", rows[0]["a_x"]);
+        Assert.Null(rows[0]["a_y"]);
+        Assert.Null(rows[1]["a_x"]);
+        Assert.Equal("2", rows[1]["a_y"]);
+    }
+
     [Fact]
     public void Explode_EmptyRepeat_KeepsParentRow()
     {

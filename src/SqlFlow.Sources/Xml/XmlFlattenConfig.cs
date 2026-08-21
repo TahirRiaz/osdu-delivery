@@ -75,6 +75,9 @@ public sealed record XmlFlattenConfig
     /// <summary>Maximum nesting depth flattened into columns; deeper elements become XML-fragment strings.</summary>
     public int MaxDepth { get; init; } = 10;
 
+    /// <summary>Bound on how many rows one record may explode into before the read fails loudly.</summary>
+    public int MaxRowsPerRecord { get; init; } = XmlPathFlattener.DefaultMaxRowsPerRecord;
+
     /// <summary>Separator joining nested element/attribute names into a column name (e.g. <c>address_city</c>).</summary>
     public string Separator { get; init; } = "_";
 

@@ -55,6 +55,12 @@ public sealed record PreIngestionJsn : IFlowMetadata
     /// <summary>Maximum nesting depth flattened into columns; deeper values become JSON strings.</summary>
     public int MaxDepth { get; init; } = 10;
 
+    /// <summary>
+    /// Bound on how many rows one record may explode into before the read fails loudly. Mirrors
+    /// <c>JsonPathFlattener.DefaultMaxRowsPerRecord</c> (SqlFlow.Sources cannot be referenced from here).
+    /// </summary>
+    public int MaxRowsPerRecord { get; init; } = 1_000_000;
+
     /// <summary>How unconfigured arrays become a column: to_json (default), first_element, join, count, skip.</summary>
     public string ArrayHandling { get; init; } = "to_json";
 
@@ -155,6 +161,7 @@ public sealed record PreIngestionJsn : IFlowMetadata
             ColumnMappings = NullableOption(o, "columnMappings"),
             Separator = o.GetString("separator", "_"),
             MaxDepth = o.GetInt("maxDepth", 10),
+            MaxRowsPerRecord = o.GetInt("maxRowsPerRecord", 1_000_000),
             ArrayHandling = o.GetString("arrayHandling", "to_json"),
             JoinSeparator = o.GetString("joinSeparator", ","),
             ExpectedColumnCount = o.GetInt("expectedColumnCount", 0),

@@ -18,8 +18,12 @@ namespace SqlFlow.Sources.Json;
 /// </summary>
 public sealed class JsonPathFlattener
 {
-    /// <summary>Safety bound on the cross-product size for one record, to fail loudly instead of exhausting memory.</summary>
-    public const int MaxRowsPerRecord = 1_000_000;
+    /// <summary>
+    /// Default bound on the cross-product size for one record, overridable per flow with the
+    /// <c>maxRowsPerRecord</c> option. It is counted in ROWS, which is a proxy for memory and not a
+    /// measure of it: a wide record costs far more per row than a narrow one.
+    /// </summary>
+    public const int DefaultMaxRowsPerRecord = 1_000_000;
 
     private static readonly JsonSerializerOptions CompactJson = new() { WriteIndented = false };
 
@@ -38,7 +42,7 @@ public sealed class JsonPathFlattener
     /// </summary>
     public IReadOnlyList<KeyValuePair<string, string?>> Flatten(JsonElement record)
     {
-        var rows = new List<OrderedRow> { new() };
+        var rows = new List<OrderedRow> { new(new ColumnPlan()) };
         FlattenInto(record, "$", 0, rows, multiply: false);
         return rows[0].ToPairs();
     }
@@ -49,7 +53,7 @@ public sealed class JsonPathFlattener
     /// </summary>
     public IReadOnlyList<IReadOnlyList<KeyValuePair<string, string?>>> FlattenRows(JsonElement record)
     {
-        var rows = new List<OrderedRow> { new() };
+        var rows = new List<OrderedRow> { new(new ColumnPlan()) };
         FlattenInto(record, "$", 0, rows, multiply: true);
 
         var result = new List<IReadOnlyList<KeyValuePair<string, string?>>>(rows.Count);
@@ -185,11 +189,12 @@ public sealed class JsonPathFlattener
             rows.AddRange(clones);
             index++;
 
-            if (rows.Count > MaxRowsPerRecord)
+            if (rows.Count > _config.MaxRowsPerRecord)
             {
                 throw new SqlFlowException(
-                    $"Exploding '{path}' produced more than {MaxRowsPerRecord} rows for a single record. "
-                    + "Narrow the explode paths or pre-split the data.");
+                    $"Exploding '{path}' produced more than {_config.MaxRowsPerRecord} rows for a single record "
+                    + $"(the cross product of the explode paths, not the record's size). Narrow the explode "
+                    + $"paths, or raise the 'maxRowsPerRecord' option if the rows are narrow enough to fit.");
             }
         }
     }
@@ -276,69 +281,112 @@ public sealed class JsonPathFlattener
     private static string AsJsonString(JsonElement value) => JsonSerializer.Serialize(value, CompactJson);
 
     /// <summary>
-    /// An insertion-ordered, name-keyed accumulator with last-write-wins on duplicate names. Column names
-    /// are compared case-insensitively, matching SQL Server's default collation and the shared pipeline's
-    /// column union, so two source keys that differ only in case (e.g. <c>Id</c> and <c>id</c>) deterministically
-    /// fold onto one column instead of being silently misassigned downstream.
+    /// The per-record column plan: every column name the record has produced so far, in first-seen order,
+    /// with a stable ordinal. Shared by all of a record's rows, which is what lets <see cref="OrderedRow"/>
+    /// be a bare value array. Names are compared case-insensitively, matching SQL Server's default collation
+    /// and the shared pipeline's column union, so two source keys differing only in case (e.g. <c>Id</c> and
+    /// <c>id</c>) deterministically fold onto one column instead of being silently misassigned downstream.
+    /// </summary>
+    private sealed class ColumnPlan
+    {
+        private readonly Dictionary<string, int> _ordinalByName = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _order = [];
+
+        public int Count => _order.Count;
+
+        public IReadOnlyList<string> Names => _order;
+
+        /// <summary>The ordinal of a column name, assigning the next one on first use.</summary>
+        public int Ordinal(string name)
+        {
+            if (_ordinalByName.TryGetValue(name, out var ordinal))
+            {
+                return ordinal;
+            }
+
+            ordinal = _order.Count;
+            _ordinalByName[name] = ordinal;
+            _order.Add(name);
+            return ordinal;
+        }
+    }
+
+    /// <summary>
+    /// One output row: nothing but its cell values, positioned by the shared <see cref="ColumnPlan"/>, with
+    /// last-write-wins on a repeated column.
+    ///
+    /// THIS TYPE'S SIZE IS THE FLATTENER'S MEMORY PROFILE, because a cross-product explode clones it once per
+    /// element of every exploded array. It previously carried its own column-name list and a case-insensitive
+    /// dictionary, both deep-copied on every clone, so a wide row cost roughly an order of magnitude more
+    /// than its values need. The XML flattener had the same defect and a single settlement document that
+    /// explodes to a million rows took it to ~12 GB and an OutOfMemoryException (2026-08-20); see
+    /// docs/flattener-memory-postmortem.md. Column names are per-record facts, so they live on the plan and a
+    /// row is a bare array. Keep it that way: do not reintroduce per-row name storage.
     /// </summary>
     private sealed class OrderedRow
     {
-        private readonly List<string> _order;
-        private readonly Dictionary<string, string?> _values;
+        private readonly ColumnPlan _plan;
+        private string?[] _values;
 
-        public OrderedRow()
+        public OrderedRow(ColumnPlan plan)
         {
-            _order = [];
-            _values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            _plan = plan;
+            _values = plan.Count == 0 ? [] : new string?[plan.Count];
         }
 
-        private OrderedRow(List<string> order, Dictionary<string, string?> values)
+        private OrderedRow(ColumnPlan plan, string?[] values)
         {
-            _order = order;
+            _plan = plan;
             _values = values;
         }
 
         public void Set(string name, string? value)
         {
-            if (_values.TryAdd(name, value))
-            {
-                _order.Add(name);
-            }
-            else
-            {
-                _values[name] = value;
-            }
+            var ordinal = _plan.Ordinal(name);
+            EnsureCapacity(ordinal);
+            _values[ordinal] = value;
         }
 
         /// <summary>
         /// Sets a value only if it improves the column: a new column is added, and an existing null is
         /// upgraded to a non-null, but an existing non-null is never overwritten (so a later missing/null
-        /// alias source path cannot blank out a value another path already supplied).
+        /// alias source path cannot blank out a value another path already supplied). An unwritten cell is
+        /// already null, so that rule is exactly "write only while the cell is still null".
         /// </summary>
         public void SetCoalesce(string name, string? value)
         {
-            if (_values.TryGetValue(name, out var existing))
+            var ordinal = _plan.Ordinal(name);
+            EnsureCapacity(ordinal);
+            if (_values[ordinal] is null)
             {
-                if (existing is null && value is not null)
-                {
-                    _values[name] = value;
-                }
-            }
-            else
-            {
-                _values[name] = value;
-                _order.Add(name);
+                _values[ordinal] = value;
             }
         }
 
-        public OrderedRow Clone() => new([.. _order], new Dictionary<string, string?>(_values, StringComparer.OrdinalIgnoreCase));
+        private void EnsureCapacity(int ordinal)
+        {
+            if (ordinal < _values.Length)
+            {
+                return;
+            }
+
+            Array.Resize(ref _values, Math.Max(_plan.Count, ordinal + 1));
+        }
+
+        public OrderedRow Clone()
+        {
+            var copy = new string?[_values.Length];
+            Array.Copy(_values, copy, _values.Length);
+            return new OrderedRow(_plan, copy);
+        }
 
         public IReadOnlyList<KeyValuePair<string, string?>> ToPairs()
         {
-            var pairs = new List<KeyValuePair<string, string?>>(_order.Count);
-            foreach (var name in _order)
+            var names = _plan.Names;
+            var pairs = new List<KeyValuePair<string, string?>>(names.Count);
+            for (var i = 0; i < names.Count; i++)
             {
-                pairs.Add(new KeyValuePair<string, string?>(name, _values[name]));
+                pairs.Add(new KeyValuePair<string, string?>(names[i], i < _values.Length ? _values[i] : null));
             }
 
             return pairs;
