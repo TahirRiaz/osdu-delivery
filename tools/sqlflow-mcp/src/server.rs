@@ -299,7 +299,8 @@ pub struct SubscribersInput {
     /// Free text by design, so read the types back from an unfiltered call rather than guessing.
     #[serde(rename = "type")]
     pub subscriber_type: Option<String>,
-    /// Substring filter over the subscriber's name, owner, and description.
+    /// Substring filter over the subscriber's name, owner, description, and notes. Searching
+    /// "Incomplete dataset" is the estate-wide audit of reports whose lineage is only partial.
     pub search: Option<String>,
 }
 
@@ -459,7 +460,19 @@ fn truncate_long_strings(value: &mut Value, max: usize) {
 /// follow-up that turns one hit into an answer. This is the map that makes a search iterative: the model
 /// gets counts per surface plus the exact next call for each, instead of a wall of hits it has to guess
 /// what to do with.
-const SEARCH_SURFACES: [(&str, &str, &str); 7] = [
+const SEARCH_SURFACES: [(&str, &str, &str); 8] = [
+    (
+        "subscribers",
+        "list_subscribers",
+        "A DASHBOARD, REPORT, workbook, notebook, or application that CONSUMES the warehouse matched by its \
+         name, owner, description, or notes. This is the surface for a question phrased about a dashboard or \
+         a report: people name the thing they look at, not the catalog word for it, so a hit here is usually \
+         what they meant even though they never said \"subscriber\". Take `key` to describe_subscriber(key) \
+         for every object it reads and the SQL it runs; then describe_object_refresh on those objects for how \
+         each is populated. `notes` says what is wrong with it, and a note beginning \"Incomplete dataset\" \
+         means it also reads objects the warehouse does not have, so its object list is a floor, not the \
+         whole truth.",
+    ),
     (
         "objects",
         "search_objects",
@@ -1339,12 +1352,20 @@ impl SqlFlowMcp {
     // ---- Data subscribers: the consumption side (read) -------------------
 
     #[tool(
-        description = "List the data subscribers: the reports, workbooks, notebooks, and applications declared \
-            as CONSUMING the warehouse, which is where lineage ends. Each entry has the subscriber's key (pass \
+        description = "List the DASHBOARDS, REPORTS, workbooks, notebooks, and applications declared as \
+            CONSUMING the warehouse, which is where lineage ends. These are what the catalog calls data \
+            subscribers, but almost nobody asks for them by that word: a question about \"the sales dashboard\", \
+            \"the Power BI report for X\", \"who looks at this data\", or \"what does <report name> use\" is a \
+            question about this tool. Reach for it whenever a name is a thing a person VIEWS rather than a \
+            table, and whenever a search for a name found no object. Each entry has the subscriber's key (pass \
             it to describe_subscriber), name, type (the consuming tool: PowerBI / Tableau / Excel / ...), owner \
             (who to tell before a breaking change), the subscribers.yaml that declares it, how many queries it \
-            runs, and how many distinct objects those queries read. Filter by `type` for one tool, or `search` \
-            over name/owner/description. Subscribers are NOT database objects and never appear in \
+            runs, and how many distinct objects those queries read, plus `notes`: remarks about the report's \
+            STATE rather than its purpose (not refreshed since a given month, apparently superseded, could not \
+            be opened, or an 'Incomplete dataset' naming objects it reads that the warehouse does not have). A \
+            subscriber carrying that last note registers PARTIAL lineage, so its object list is a floor rather \
+            than the whole truth. Filter by `type` for one tool, or `search` over name/owner/description/notes. \
+            Subscribers are NOT database objects and never appear in \
             browse_catalog; this is their branch. For the reverse question, which subscribers consume a given \
             table, use describe_object and read its `subscribers`."
     )]
@@ -1357,9 +1378,11 @@ impl SqlFlowMcp {
     }
 
     #[tool(
-        description = "Describe one data subscriber in a single payload: its identity and owner, every \
+        description = "Describe one dashboard, report, or other data subscriber in a single payload: its \
+            identity and owner, its notes (what is stale, superseded, or incomplete about it), every \
             warehouse object its queries read (named and located from the object registry, with the level and \
-            the specific queries that reference each), and the query texts themselves. The consumption-side \
+            the specific queries that reference each), and the query texts themselves. This is how you answer \
+            \"what does this dashboard use\" or \"where does this report get its data\". The consumption-side \
             twin of describe_object: that answers 'who consumes this table', this answers 'what does this \
             report consume'. Use it for impact analysis before changing a table, and to see the SQL a report \
             actually runs. Takes the `key` from list_subscribers."
@@ -2005,7 +2028,9 @@ mod tests {
     fn every_search_surface_names_a_real_paging_tool() {
         // The plan is only useful if the tool names it hands back are callable; a renamed tool must be caught
         // here rather than by a model trying to call a tool that does not exist.
-        const TOOLS: [&str; 7] = [
+        // The subscribers surface is paged by list_subscribers rather than a search_* twin: that tool already
+        // filters by the same fields, so a second one would be a parallel path to the same rows.
+        const TOOLS: [&str; 8] = [
             "search_objects",
             "search_columns",
             "search_definitions",
@@ -2013,6 +2038,7 @@ mod tests {
             "search_flows",
             "search_flow_columns",
             "search_statements",
+            "list_subscribers",
         ];
         for (_, page_tool, follow_up) in SEARCH_SURFACES {
             assert!(TOOLS.contains(&page_tool), "{page_tool} is not a tool on this server");

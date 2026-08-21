@@ -58,6 +58,14 @@ public sealed record StatementHitDto(
     string PipelineId, string FlowName, string FlowKind, string Step,
     long Occurrences, string RunId, DateTime? LastSeenUtc, string Snippet);
 
+/// <summary>One data subscriber matching a search: a report, workbook, notebook, or application that CONSUMES the
+/// warehouse. <see cref="Key"/> opens its dossier. <see cref="Notes"/> is carried because it is often the reason
+/// the row matched (searching "Incomplete dataset" finds every consumer whose lineage is only partial) and because
+/// a stale or superseded report is exactly what a person searching the estate needs to see about it.</summary>
+public sealed record SubscriberHitDto(
+    string Key, string Name, string Kind, string? Owner, string? Description, string? Notes,
+    string RepoId, string File);
+
 /// <summary>One category of a combined search: the full match count plus a small preview of the top hits, so the
 /// unified view can show "Files (37)" with the first few and a jump to the dedicated tab for the rest.</summary>
 public sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items);
@@ -80,7 +88,8 @@ public sealed record AllSearchDto(
     SearchCategoryDto<FileHitDto> Files,
     SearchCategoryDto<FlowHitDto> Flows,
     SearchCategoryDto<FlowColumnHitDto> FlowColumns,
-    SearchCategoryDto<StatementHitDto> Statements);
+    SearchCategoryDto<StatementHitDto> Statements,
+    SearchCategoryDto<SubscriberHitDto> Subscribers);
 
 /// <summary>
 /// A search term parsed into the raw phrase and the tokens actually matched. A query is matched token by token and
@@ -201,6 +210,7 @@ public static class SearchEndpoints
         search.MapGet("/flows", SearchFlowsAsync).WithName("SearchFlows");
         search.MapGet("/flow-columns", SearchFlowColumnsAsync).WithName("SearchFlowColumns");
         search.MapGet("/statements", SearchStatementsAsync).WithName("SearchStatements");
+        search.MapGet("/subscribers", SearchSubscribersAsync).WithName("SearchSubscribers");
 
         return group;
     }
@@ -255,6 +265,19 @@ public static class SearchEndpoints
         var rows = await query.Skip((p - 1) * size).Take(size).ToListAsync(ct).ConfigureAwait(false);
         var items = rows.Select(r => MapDefinition(r, term)).ToList();
         return TypedResults.Ok(new PagedResult<DefinitionHitDto>(items, p, size, total));
+    }
+
+    private static async Task<Results<Ok<PagedResult<SubscriberHitDto>>, ProblemHttpResult>> SearchSubscribersAsync(
+        CatalogDbContext db, string? q, int? page, int? pageSize, CancellationToken ct)
+    {
+        var term = SearchQuery.Parse(q);
+        if (term is null)
+        {
+            return BadRequest("A non-empty 'q' query parameter is required.");
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        return TypedResults.Ok(await PageAsync(SubscribersQuery(db, term), p, size, ct).ConfigureAwait(false));
     }
 
     private static async Task<Results<Ok<PagedResult<FileHitDto>>, ProblemHttpResult>> SearchFilesAsync(
@@ -355,6 +378,7 @@ public static class SearchEndpoints
         var objects = await PreviewAsync(ObjectsQuery(db, term), ct).ConfigureAwait(false);
         var columns = await PreviewAsync(ColumnsQuery(db, term), ct).ConfigureAwait(false);
         var files = await PreviewAsync(FilesQuery(db, term), ct).ConfigureAwait(false);
+        var subscribers = await PreviewAsync(SubscribersQuery(db, term), ct).ConfigureAwait(false);
 
         var defQuery = DefinitionRows(db, term);
         var defTotal = await defQuery.LongCountAsync(ct).ConfigureAwait(false);
@@ -386,7 +410,8 @@ public static class SearchEndpoints
             files,
             new SearchCategoryDto<FlowHitDto>(flowTotal, flowItems),
             new SearchCategoryDto<FlowColumnHitDto>(flowColTotal, flowColItems),
-            new SearchCategoryDto<StatementHitDto>(stmtTotal, stmtItems)));
+            new SearchCategoryDto<StatementHitDto>(stmtTotal, stmtItems),
+            subscribers));
     }
 
     // ---- Shared query builders (one definition per surface, used by both the paged and combined endpoints) --------
@@ -415,6 +440,33 @@ public static class SearchEndpoints
             .OrderByDescending(o => o.Name.Contains(phrase))
             .ThenBy(o => o.Name).ThenBy(o => o.Key)
             .Select(o => new ObjectHitDto(o.Key, o.Name, o.Kind, o.ServerRef, o.Database, o.Schema));
+    }
+
+    // The consumption side of the estate. A subscriber is not a database object and not a flow, so neither of
+    // those surfaces can find it; without its own builder, searching a report by name returns nothing and the
+    // consumer looks absent rather than unsearched. Every field a person would search by is matched: the report's
+    // name, the tool, the owner, what it is for, the remarks about its state, and the file declaring it. Notes are
+    // in deliberately, because "Incomplete dataset" is the term that finds every consumer whose lineage is partial.
+    internal static IQueryable<SubscriberHitDto> SubscribersQuery(CatalogDbContext db, SearchQuery term)
+    {
+        var rows = db.Subscribers.AsNoTracking();
+        foreach (var token in term.Tokens)
+        {
+            var t = token;
+            rows = rows.Where(s => s.Name.Contains(t)
+                || s.Type.Contains(t)
+                || (s.Owner != null && s.Owner.Contains(t))
+                || (s.Description != null && s.Description.Contains(t))
+                || (s.Notes != null && s.Notes.Contains(t))
+                || s.File.Contains(t));
+        }
+
+        var phrase = term.Phrase;
+        return rows
+            .OrderByDescending(s => s.Name.Contains(phrase))
+            .ThenBy(s => s.Name).ThenBy(s => s.ObjectKey)
+            .Select(s => new SubscriberHitDto(
+                s.ObjectKey, s.Name, s.Type, s.Owner, s.Description, s.Notes, s.RepoId.ToString(), s.File));
     }
 
     // Each matching column joined to its owning object for the display name (a soft link on ObjectKey; no FK). A

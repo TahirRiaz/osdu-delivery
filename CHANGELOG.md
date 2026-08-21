@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unopenable, or an incomplete dataset naming what could not be resolved), kept apart from
   `description`, which says what the consumer is for. Stored unbounded in `catalog.Subscriber`,
   searchable from `GET /lineage/subscribers`, shown in the subscriber list and details.
+- Subscribers are now a surface of the global search (`GET /search/subscribers` and the `subscribers`
+  category of `/search/all`), matched on name, type, owner, description, notes, and declaring file.
+  A subscriber is neither a database object nor a flow, so searching a report by name previously
+  returned nothing and the consumer looked absent rather than unsearched.
 - Editor support for subscriber libraries: hover, key completion, and unknown-key diagnostics,
   driven by a new `docs/reference/flow/keys.subscribers.json` key model. The analysis engine
   detects a library by its root `subscribers:` key rather than by file name.

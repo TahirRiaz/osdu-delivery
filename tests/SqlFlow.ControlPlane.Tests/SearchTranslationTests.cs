@@ -45,6 +45,23 @@ public sealed class SearchTranslationTests
     }
 
     [Fact]
+    public void SubscribersQuery_TranslatesAndSearchesEveryFieldIncludingNotes()
+    {
+        using var db = Context();
+
+        var sql = SearchEndpoints.SubscribersQuery(db, Query("incomplete dataset")).ToQueryString();
+
+        Assert.Contains("[Subscriber]", sql, StringComparison.Ordinal);
+        // Six searchable fields per token (name, type, owner, description, notes, file), two tokens, plus the
+        // phrase-first ranking probe. Notes being in the SQL is what makes "Incomplete dataset" an estate-wide
+        // audit of partial lineage rather than a term that quietly matches nothing.
+        Assert.Equal(13, CountOccurrences(sql, "LIKE "));
+        Assert.Contains("[Notes]", sql, StringComparison.Ordinal);
+        Assert.Contains(" AND ", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY CASE", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ColumnsQuery_TranslatesAndMatchesTokensAgainstColumnOrOwningObject()
     {
         using var db = Context();

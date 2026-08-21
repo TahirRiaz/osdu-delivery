@@ -12,6 +12,7 @@ import { searchApi } from "../../api/endpoints";
 import { isApiError } from "../../api/client";
 import type {
   ColumnHit, DefinitionHit, FileHit, FlowColumnHit, FlowHit, ObjectHit, SearchCategory, StatementHit,
+  SubscriberHit,
 } from "../../api/types";
 import { LineageJumpButton, type LineageJumpTarget } from "../../components/LineageJumpButton";
 import { ConnectionRef } from "../../components/ConnectionRef";
@@ -71,8 +72,8 @@ const fileTarget = (row: FileHit): LineageJumpTarget => ({
 });
 
 // Tab order; index 0 (All) is the landing view for every search.
-const TABS = ["All", "Objects", "Columns", "Definitions", "Files", "Flows", "Flow columns", "Executed SQL"] as const;
-type TabIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+const TABS = ["All", "Objects", "Columns", "Definitions", "Files", "Flows", "Flow columns", "Executed SQL", "Subscribers"] as const;
+type TabIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 /** An object/column/flow/file name cell: data wears mono (DESIGN.md section 4), the hit name emphasized. */
 function NameCell({ children }: { children: ReactNode }) {
@@ -207,10 +208,36 @@ const statementColumns: Column<StatementHit>[] = [
   },
 ];
 
+/** A note's first line, for the one-line summaries. Notes are multi-line by design (a remark, then often an
+ *  "Incomplete dataset" list), and the first line is the part that says what is wrong. */
+function firstLine(text: string | null): string | null {
+  if (text === null) return null;
+  const line = text.split("\n").map((s) => s.trim()).find((s) => s !== "");
+  return line ?? null;
+}
+
+const subscriberColumns: Column<SubscriberHit>[] = [
+  { id: "name", header: "Subscriber", render: (row) => <NameCell>{row.name}</NameCell> },
+  { id: "kind", header: "Type", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "owner", header: "Owner", render: (row) => <Mono>{row.owner ?? "-"}</Mono> },
+  {
+    id: "description",
+    header: "Description",
+    render: (row) => <TruncatedText text={row.description} maxWidth={360} />,
+  },
+  {
+    id: "notes",
+    header: "Notes",
+    render: (row) => <TruncatedText text={firstLine(row.notes)} maxWidth={360} />,
+  },
+  { id: "file", header: "Declared in", render: (row) => <TruncatedText text={row.file} mono maxWidth={320} /> },
+];
+
 /**
  * Global search over the whole catalog: objects and columns by name, code (module bodies and emitted DDL),
- * processed files by name or path, and flow YAML by name, path, or body text. The title-bar search box lands here
- * with ?q=; the All tab shows a grouped preview across every surface and each dedicated tab pages one surface.
+ * processed files by name or path, flow YAML by name, path, or body text, and the subscribers that consume the
+ * warehouse. The title-bar search box lands here with ?q=; the All tab shows a grouped preview across every
+ * surface and each dedicated tab pages one surface.
  */
 export default function SearchPage() {
   const navigate = useNavigate();
@@ -233,6 +260,7 @@ export default function SearchPage() {
   const openLineage = (name: string) => navigate(`/lineage/objects?name=${encodeURIComponent(name)}`);
   const openRun = (runId: string) => navigate(`/runs/${runId}`);
   const openPipeline = (id: string) => navigate(`/pipelines/${id}`);
+  const openSubscriber = (key: string) => navigate(`/subscribers?key=${encodeURIComponent(key)}`);
 
   return (
     <Page data-testid="page-search">
@@ -287,6 +315,7 @@ export default function SearchPage() {
           openLineage={openLineage}
           openRun={openRun}
           openPipeline={openPipeline}
+          openSubscriber={openSubscriber}
         />
       )}
 
@@ -373,6 +402,18 @@ export default function SearchPage() {
           data-testid="search-statements-table"
         />
       )}
+
+      {q !== "" && tab === 8 && (
+        <PagedTable<SubscriberHit>
+          queryKey={["search", "subscribers", q]}
+          fetchPage={(page, pageSize) => searchApi.subscribers(q, { page, pageSize })}
+          columns={subscriberColumns}
+          rowKey={(row) => row.key}
+          onRowClick={(row) => openSubscriber(row.key)}
+          emptyMessage={`No subscriber matches "${q}".`}
+          data-testid="search-subscribers-table"
+        />
+      )}
     </Page>
   );
 }
@@ -383,10 +424,11 @@ interface AllResultsProps {
   openLineage: (name: string) => void;
   openRun: (runId: string) => void;
   openPipeline: (id: string) => void;
+  openSubscriber: (key: string) => void;
 }
 
 /** The unified landing view: one query fanned across every surface, each category previewed with a jump to its tab. */
-function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllResultsProps) {
+function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline, openSubscriber }: AllResultsProps) {
   const query = useQuery({
     queryKey: ["search", "all", q],
     queryFn: () => searchApi.all(q),
@@ -410,7 +452,8 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
   }
 
   const totalHits = data.objects.total + data.columns.total + data.definitions.total
-    + data.files.total + data.flows.total + data.flowColumns.total + data.statements.total;
+    + data.files.total + data.flows.total + data.flowColumns.total + data.statements.total
+    + data.subscribers.total;
 
   if (totalHits === 0) {
     return <EmptyState title={`Nothing matches "${q}".`} data-testid="search-all-empty" />;
@@ -470,6 +513,16 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline }: AllR
         rowKey={(row) => `${row.pipelineId}::${row.step}`} onRowClick={(row) => openRun(row.runId)}
         primary={(row) => `${row.flowName} · ${row.step}`}
         secondary={(row) => row.snippet}
+      />
+      {/* The consumption side. A note is shown ahead of the description when there is one: a report that has not
+          refreshed since 2022, or whose dataset is incomplete, is the thing worth knowing about it at a glance. */}
+      <CategorySection<SubscriberHit>
+        title="Subscribers" tab={8} category={data.subscribers} onSelectTab={onSelectTab}
+        rowKey={(row) => row.key} onRowClick={(row) => openSubscriber(row.key)}
+        primary={(row) => row.name}
+        secondary={(row) => [
+          row.kind, row.owner ?? "", firstLine(row.notes) ?? row.description ?? "",
+        ].filter(Boolean).join(" · ")}
       />
     </div>
   );

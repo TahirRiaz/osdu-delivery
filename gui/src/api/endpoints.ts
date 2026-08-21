@@ -20,7 +20,7 @@ import type {
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
-  SourceDiscoverRequest, SourceDiscoverResult, Subscriber, SubscriberDossier,
+  SourceDiscoverRequest, SourceDiscoverResult, Subscriber, SubscriberDossier, SubscriberHit,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
 
@@ -437,6 +437,8 @@ export const searchApi = {
     get<PagedResult<FlowColumnHit>>("/api/v1/search/flow-columns", { name, ...query } as QueryParams),
   statements: (q: string, query: PageQuery = {}) =>
     get<PagedResult<StatementHit>>("/api/v1/search/statements", { q, ...query } as QueryParams),
+  subscribers: (q: string, query: PageQuery = {}) =>
+    get<PagedResult<SubscriberHit>>("/api/v1/search/subscribers", { q, ...query } as QueryParams),
 };
 
 // ---- Users ---------------------------------------------------------------------------------------------------------------------

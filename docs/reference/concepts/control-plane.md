@@ -96,6 +96,7 @@ Read surface (policy `read`):
 | `GET /search/files`, `/search/flows` | Processed files by name/path; flow YAML by name, path, or body text |
 | `GET /search/flow-columns` | The columns FLOWS produce, matched by output name, source column, or the SQL expression computing them: the reverse "which pipeline computes column X" lookup, independent of any warehouse schema sync |
 | `GET /search/statements` | The SQL runs actually executed, grouped to one row per (flow, step) with an occurrence count and the newest sample; searches a 90-day window by default (`days=0` for all retained history) |
+| `GET /search/subscribers` | The consumers of the warehouse (dashboards, reports, workbooks, applications) by name, tool, owner, description, notes, or declaring file. Searching `Incomplete dataset` lists every consumer whose registered lineage is only partial |
 | `GET /schedules`, `GET /schedules/{id}` | Schedules |
 | `GET /nodes` | Worker fleet with a derived online flag |
 | `GET /repos/sources` | Managed repo sources |

@@ -1200,6 +1200,22 @@ export interface StatementHit {
   snippet: string;
 }
 
+// One data subscriber matching a search: a report, workbook, or application that CONSUMES the warehouse. `key`
+// opens its dossier. `notes` is carried because it is often why the row matched (searching "Incomplete dataset"
+// finds every consumer whose lineage is only partial).
+export interface SubscriberHit {
+  key: string;
+  name: string;
+  /** The consuming tool: PowerBI, Tableau, Excel, ... */
+  kind: string;
+  owner: string | null;
+  description: string | null;
+  notes: string | null;
+  repoId: string;
+  /** The repo-relative subscribers.yaml that declares it. */
+  file: string;
+}
+
 // One category of a combined search: the full match count plus a short preview of the top hits.
 export interface SearchCategory<T> {
   total: number;
@@ -1220,6 +1236,7 @@ export interface AllSearchResult {
   flows: SearchCategory<FlowHit>;
   flowColumns: SearchCategory<FlowColumnHit>;
   statements: SearchCategory<StatementHit>;
+  subscribers: SearchCategory<SubscriberHit>;
 }
 
 // ---- Users ---------------------------------------------------------------------------------------------------------------

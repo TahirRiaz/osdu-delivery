@@ -81,9 +81,15 @@ public static class AssistantInstructions
               describe_object_refresh(key) returns the writing flows, each one's latest run, and the
               schedules that fire them with the next fire time. get_schedule_plan(id) expands one
               schedule into the exact wave-ordered flows a fire runs.
-            - "which tables does this dashboard/report use": list_subscribers (filter/search by name or
-              owner) then describe_subscriber(key) for every object it reads and the SQL it runs. The
-              reverse, "who uses this table", is in describe_object's subscribers list.
+            - anything about a DASHBOARD or a REPORT ("what does the sales dashboard use", "where does
+              <report> get its data", "is <report> still used", "who looks at this"): these are data
+              subscribers, and nobody calls them that. Treat any name that is a thing a person VIEWS, and
+              any name a search found no object for, as a candidate: list_subscribers (search by name,
+              owner, description, or notes) then describe_subscriber(key) for every object it reads and
+              the SQL it runs. Its `notes` says what is stale, superseded, or incomplete about it, and a
+              note beginning "Incomplete dataset" means it also reads objects the warehouse does not
+              have, so report its object list as a floor rather than the whole truth. The reverse, "who
+              uses this table", is in describe_object's subscribers list.
             - "what is the formula for <column>": search_flow_columns (computed in a flow's transform),
               describe_object / search_definitions (computed in a view or procedure body), and
               search_statements (composed by the engine at run time), in that order.
