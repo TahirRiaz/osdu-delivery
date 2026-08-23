@@ -18,7 +18,7 @@ import type {
   FlowParameters,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineFileStats, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
-  RunSummary, RunSurrogateKey, SchemaChange, SchemaChangeDatabase,
+  RunSummary, RunSurrogateKey, SchemaChange, SchemaChangeDatabase, SchemaObjectCompare,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
   SourceDiscoverRequest, SourceDiscoverResult, Subscriber, SubscriberDossier, SubscriberHit,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
@@ -140,6 +140,13 @@ export const schemaChangeApi = {
     get<PagedResult<SchemaChange>>("/api/v1/schema-changes", query as QueryParams),
   databases: (query: { repoId?: string; since?: string } = {}) =>
     get<SchemaChangeDatabase[]>("/api/v1/schema-changes/databases", query as QueryParams),
+  /**
+   * The DDL behind one change row, at both ends of the window: the object's whole script as it stood when the
+   * window opened against how it stands now. The row's id carries the object's identity, so no repository path
+   * is passed from the browser; omitting `since` compares against the start of the recorded history.
+   */
+  compare: (id: number, query: { since?: string } = {}) =>
+    get<SchemaObjectCompare>(`/api/v1/schema-changes/${id}/compare`, query as QueryParams),
 };
 
 // ---- Runs ----------------------------------------------------------------------------------------------------------------

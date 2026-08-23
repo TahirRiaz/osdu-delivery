@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { prettyPrintSql } from "@/lib/sql";
+import { defineSqlflowTheme, sqlflowEditorTheme } from "@/lib/monacoTheme";
 import { useThemeMode } from "../theme/ThemeModeContext";
 import "../lib/monacoSetup";
 import { markFlowModel, refreshDiagnostics, registerSqlflowYamlProviders } from "../lib/lsp/sqlflowLsp";
@@ -28,60 +29,6 @@ interface CodeViewProps {
   readOnly?: boolean;
   onChange?: (value: string) => void;
   "data-testid"?: string;
-}
-
-/** Resolves a design token to its current value, honouring light/dark; falls back if unset. */
-function cssVar(name: string, fallback: string): string {
-  if (typeof document === "undefined") {
-    return fallback;
-  }
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value || fallback;
-}
-
-/**
- * Defines the editor theme from the workbench tokens (index.css is the single colour source, so the code
- * view matches every other surface; DESIGN.md 7.6). Read live via getComputedStyle so it reflects the
- * active mode; re-defined whenever the app toggles light/dark. Rule colours are hex without '#'; editor
- * colours keep it.
- */
-function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
-  const color = (name: string, fallback: string) => cssVar(name, fallback);
-  const rule = (name: string, fallback: string) => color(name, fallback).replace("#", "");
-
-  monaco.editor.defineTheme("sqlflow", {
-    base: mode === "dark" ? "vs-dark" : "vs",
-    inherit: true,
-    rules: [
-      { token: "keyword", foreground: rule("--primary", "#2f6fce"), fontStyle: "bold" },
-      { token: "operator", foreground: rule("--muted-foreground", "#5b6b7f") },
-      { token: "type", foreground: rule("--info", "#0969da") },
-      { token: "predefined", foreground: rule("--info", "#0969da") },
-      { token: "string", foreground: rule("--success", "#1a7f37") },
-      { token: "number", foreground: rule("--warning", "#9a6700") },
-      { token: "comment", foreground: rule("--muted-foreground", "#5b6b7f"), fontStyle: "italic" },
-      { token: "delimiter", foreground: rule("--muted-foreground", "#5b6b7f") },
-      { token: "tag", foreground: rule("--primary", "#2f6fce") },
-      { token: "attribute.name", foreground: rule("--info", "#0969da") },
-      // Semantic tokens from the flow-YAML analysis engine (see lib/lsp). These
-      // carry census knowledge the YAML grammar cannot: a documented key, a key
-      // the loader will ignore, and valid vs invalid enum values.
-      { token: "property", foreground: rule("--info", "#0969da") },
-      { token: "unknownKey", foreground: rule("--warning", "#9a6700"), fontStyle: "italic" },
-      { token: "enumMember", foreground: rule("--success", "#1a7f37") },
-      { token: "invalidValue", foreground: rule("--destructive", "#d1242f"), fontStyle: "underline" },
-    ],
-    colors: {
-      "editor.background": color("--card", mode === "dark" ? "#16202f" : "#ffffff"),
-      "editor.foreground": color("--foreground", mode === "dark" ? "#dce6f2" : "#1d2733"),
-      "editorLineNumber.foreground": color("--muted-foreground", "#5b6b7f"),
-      "editorLineNumber.activeForeground": color("--primary", "#2f6fce"),
-      "editorCursor.foreground": color("--primary", "#2f6fce"),
-      "editorIndentGuide.background": color("--border", "#dfe5ee"),
-      "editorGutter.background": color("--card", mode === "dark" ? "#16202f" : "#ffffff"),
-      "editor.lineHighlightBorder": "#00000000",
-    },
-  });
 }
 
 /**
@@ -142,7 +89,7 @@ export function CodeView({
   useEffect(() => {
     if (monacoRef.current) {
       defineSqlflowTheme(monacoRef.current, mode);
-      monacoRef.current.editor.setTheme("sqlflow");
+      monacoRef.current.editor.setTheme(sqlflowEditorTheme);
     }
   }, [mode]);
 
@@ -204,7 +151,7 @@ export function CodeView({
         beforeMount={handleBeforeMount}
         onMount={handleMount}
         onChange={readOnly || !onChange ? undefined : (text) => onChange(text ?? "")}
-        theme="sqlflow"
+        theme={sqlflowEditorTheme}
         options={{
           readOnly,
           minimap: { enabled: false },

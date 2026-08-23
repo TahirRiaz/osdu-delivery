@@ -37,12 +37,28 @@ public sealed class GitHistoryTests
     }
 
     private static Commit Commit(Repository repo, string relativePath, string content, string message, string author)
+        => Commit(repo, relativePath, content, message, author, DateTimeOffset.UtcNow);
+
+    /// <summary>Commits at an explicit instant, which is what lets a window comparison be pinned: the base side is
+    /// chosen by commit date, so the test has to place its commits either side of the boundary.</summary>
+    private static Commit Commit(
+        Repository repo, string relativePath, string content, string message, string author, DateTimeOffset when)
     {
         var full = Path.Combine(repo.Info.WorkingDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllText(full, content);
         Commands.Stage(repo, "*");
-        var signature = new Signature(author, $"{author}@example.com", DateTimeOffset.UtcNow);
+        var signature = new Signature(author, $"{author}@example.com", when);
+        return repo.Commit(message, signature, signature);
+    }
+
+    /// <summary>Removes a file and commits the deletion, so a dropped object can be compared across the window.</summary>
+    private static Commit Drop(Repository repo, string relativePath, string message, DateTimeOffset when)
+    {
+        var full = Path.Combine(repo.Info.WorkingDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        File.Delete(full);
+        Commands.Stage(repo, "*");
+        var signature = new Signature("scm", "scm@example.com", when);
         return repo.Commit(message, signature, signature);
     }
 
@@ -201,6 +217,148 @@ public sealed class GitHistoryTests
         {
             DeleteDir(remote);
             DeleteDir(cache);
+        }
+    }
+
+    // ---- The window comparison (the schema page's before/after drill-down) --------------------------------
+
+    /// <summary>One table's snapshot path, in the layout an scm flow commits.</summary>
+    private const string TablePath = "dw-dwh-prod/Table/arc.Citybike_Bikes.sql";
+
+    private static readonly DateTimeOffset LongBefore = new(2026, 7, 1, 3, 30, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset InsideWindow = new(2026, 8, 20, 3, 30, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset Latest = new(2026, 8, 23, 3, 30, 0, TimeSpan.Zero);
+
+    /// <summary>The window boundary the tests compare against: later than <see cref="LongBefore"/>, earlier than
+    /// the rest, so exactly one commit sits on the "before" side.</summary>
+    private static readonly DateTime WindowStart = new(2026, 8, 16, 0, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void Compare_ReadsTheObjectAtBothEndsOfTheWindow_NotOneCommitAtATime()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            Repository.Init(dir);
+            using var repo = new Repository(dir);
+            Commit(repo, TablePath, "CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", "snapshot", "scm", LongBefore);
+            Commit(repo, TablePath, "CREATE TABLE arc.Citybike_Bikes (BikeId int, Lat decimal(9,6));\n", "snapshot", "scm", InsideWindow);
+            var tip = Commit(repo, TablePath, "CREATE TABLE arc.Citybike_Bikes (BikeId int, Lat decimal(9,6), Lon decimal(9,6));\n", "snapshot", "scm", Latest);
+
+            var comparison = GitHistoryEndpoints.Compare(repo, TablePath, WindowStart);
+
+            Assert.NotNull(comparison);
+            // Two snapshots moved the table inside the window; the answer is still ONE before and ONE after.
+            Assert.Equal("CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", comparison!.BeforeText);
+            Assert.Equal("CREATE TABLE arc.Citybike_Bikes (BikeId int, Lat decimal(9,6), Lon decimal(9,6));\n", comparison.AfterText);
+            Assert.Equal(tip.Sha, comparison.After.Sha);
+            Assert.NotNull(comparison.Before);
+            Assert.Equal(LongBefore.UtcDateTime, comparison.Before!.CommittedUtc);
+            Assert.Equal(8, comparison.Before.ShortSha.Length);
+            Assert.Equal(1, comparison.LinesAdded);
+            Assert.Equal(1, comparison.LinesDeleted);
+            Assert.False(comparison.Truncated);
+        }
+        finally
+        {
+            DeleteDir(dir);
+        }
+    }
+
+    [Fact]
+    public void Compare_WithNoWindow_ReadsTheWholeScriptAsAdded()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            Repository.Init(dir);
+            using var repo = new Repository(dir);
+            Commit(repo, TablePath, "CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", "snapshot", "scm", LongBefore);
+
+            // An all-time window has no earlier side to compare against, which is what "since this estate began
+            // snapshotting" means; the object must not read as unchanged just because nothing precedes it.
+            var comparison = GitHistoryEndpoints.Compare(repo, TablePath, since: null);
+
+            Assert.NotNull(comparison);
+            Assert.Null(comparison!.Before);
+            Assert.Null(comparison.BeforeText);
+            Assert.Equal("CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", comparison.AfterText);
+            Assert.Equal(1, comparison.LinesAdded);
+            Assert.Equal(0, comparison.LinesDeleted);
+        }
+        finally
+        {
+            DeleteDir(dir);
+        }
+    }
+
+    [Fact]
+    public void Compare_ObjectAddedInsideTheWindow_HasABaseCommitButNoBeforeText()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            Repository.Init(dir);
+            using var repo = new Repository(dir);
+            var baseCommit = Commit(repo, "dw-dwh-prod/Table/arc.Other.sql", "CREATE TABLE arc.Other (Id int);\n", "snapshot", "scm", LongBefore);
+            Commit(repo, TablePath, "CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", "snapshot", "scm", Latest);
+
+            var comparison = GitHistoryEndpoints.Compare(repo, TablePath, WindowStart);
+
+            Assert.NotNull(comparison);
+            // The window HAS a base commit; the object simply was not in it, which is an add, not a missing base.
+            Assert.Equal(baseCommit.Sha, comparison!.Before?.Sha);
+            Assert.Null(comparison.BeforeText);
+            Assert.Equal("CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", comparison.AfterText);
+        }
+        finally
+        {
+            DeleteDir(dir);
+        }
+    }
+
+    [Fact]
+    public void Compare_ObjectDroppedInsideTheWindow_KeepsTheBeforeTextAndHasNoAfterText()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            Repository.Init(dir);
+            using var repo = new Repository(dir);
+            Commit(repo, TablePath, "CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", "snapshot", "scm", LongBefore);
+            Commit(repo, "dw-dwh-prod/Table/arc.Other.sql", "CREATE TABLE arc.Other (Id int);\n", "snapshot", "scm", LongBefore);
+            Drop(repo, TablePath, "snapshot", Latest);
+
+            var comparison = GitHistoryEndpoints.Compare(repo, TablePath, WindowStart);
+
+            Assert.NotNull(comparison);
+            // A dropped object is the one nobody should scroll past: its last known script is what makes the
+            // deletion reviewable, so it survives on the before side.
+            Assert.Equal("CREATE TABLE arc.Citybike_Bikes (BikeId int);\n", comparison!.BeforeText);
+            Assert.Null(comparison.AfterText);
+            Assert.Equal(1, comparison.LinesDeleted);
+        }
+        finally
+        {
+            DeleteDir(dir);
+        }
+    }
+
+    [Fact]
+    public void Compare_OnARepositoryWithNoCommits_IsNull()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            Repository.Init(dir);
+            using var repo = new Repository(dir);
+
+            // Nothing to compare is not the same as nothing changed, so the caller gets null and answers 400.
+            Assert.Null(GitHistoryEndpoints.Compare(repo, TablePath, WindowStart));
+        }
+        finally
+        {
+            DeleteDir(dir);
         }
     }
 

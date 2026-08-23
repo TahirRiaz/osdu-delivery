@@ -288,6 +288,33 @@ export interface SchemaChange {
   occurredUtc: string;
 }
 
+/** One commit in the snapshot repository, as an endpoint of a comparison. */
+export interface GitRevision {
+  sha: string;
+  shortSha: string;
+  authorName: string;
+  committedUtc: string;
+  message: string;
+}
+
+/**
+ * One database object's DDL at the two ends of a window: what the snapshot repository held before the window
+ * opened, and what it holds now. `before` is null when the history itself begins inside the window; a null
+ * text on either side means the object's file was absent at that revision, so no `beforeText` is an object
+ * added during the window and no `afterText` one dropped in it.
+ */
+export interface SchemaObjectCompare {
+  path: string;
+  before: GitRevision | null;
+  after: GitRevision;
+  beforeText: string | null;
+  afterText: string | null;
+  linesAdded: number;
+  linesDeleted: number;
+  /** At least one side was cut at the server's inline limit, so it is not the whole script. */
+  truncated: boolean;
+}
+
 /** One tracked database's change tally over the requested window. */
 export interface SchemaChangeDatabase {
   database: string;

@@ -40,6 +40,36 @@ public sealed record GitDiffDto(
     string Patch,
     bool Truncated);
 
+/// <summary>One commit in a snapshot repository, named as an endpoint of a comparison: enough to say which
+/// snapshot a side of the diff came from, without the changed-path list a log entry carries.</summary>
+public sealed record GitRevisionDto(
+    string Sha,
+    string ShortSha,
+    string AuthorName,
+    DateTime CommittedUtc,
+    string Message);
+
+/// <summary>
+/// One database object's DDL at the two ends of a window: what the snapshot repository held before the window
+/// opened (<c>Before</c>) and what it holds now (<c>After</c>), so a reader sees the net change rather than
+/// replaying one commit at a time.
+///
+/// A null <c>Before</c> revision means the repository has no commit at or before the window start (the history
+/// begins inside the window), and a null text on either side means the object's file was absent at that
+/// revision: no <c>BeforeText</c> is an object added during the window, no <c>AfterText</c> one dropped in it.
+/// <c>Truncated</c> says at least one side was cut at the inline limit, so a clipped script is never mistaken
+/// for the whole of it.
+/// </summary>
+public sealed record SchemaObjectCompareDto(
+    string Path,
+    GitRevisionDto? Before,
+    GitRevisionDto After,
+    string? BeforeText,
+    string? AfterText,
+    int LinesAdded,
+    int LinesDeleted,
+    bool Truncated);
+
 /// <summary>One object a source-control snapshot found added, changed, or dropped, as the schema-history feed
 /// returns it. <c>CommitSha</c> links the row to the commit that carries the diff.</summary>
 public sealed record SchemaChangeDto(

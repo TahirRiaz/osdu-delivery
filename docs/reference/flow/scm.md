@@ -12,6 +12,7 @@ keywords:
   - scripting
   - schedule
   - schema history
+  - ddl comparison
 yamlPath: "(root, flowType: scm)"
 related:
   - flow-overview
@@ -28,6 +29,8 @@ sourceRefs:
   - src/SqlFlow.SourceControl/SmoDatabaseScripter.cs
   - src/SqlFlow.SourceControl/SnapshotWriter.cs
   - src/SqlFlow.SourceControl/LibGit2GitWorkspace.cs
+  - src/SqlFlow.ControlPlane/Api/GitHistoryEndpoints.cs
+  - src/SqlFlow.Catalog/CatalogProjection.cs
   - src/SqlFlow.Execution/DocumentExecutor.cs
   - src/SqlFlow.Cli/Program.cs
 ---
@@ -247,6 +250,28 @@ The GUI reads this at **Explore > Schema changes**: a database, schema, object t
 days by default), where selecting an object shows every time a snapshot saw it move, each linking to the run.
 The `/api/v1/schema-changes` endpoint serves the same data, with `database`, `changeType`, `since`, and `search`
 filters, and `/api/v1/schema-changes/databases` returns the per-database tally.
+
+Below the tree, the selected object's script is shown at both ends of the window, side by side (or as one inline
+patch), which is the "what actually changed" behind a row. The comparison is served by
+`/api/v1/schema-changes/{id}/compare?since=<iso>`:
+
+- The **after** side is the branch tip, the state the last snapshot left.
+- The **before** side is the newest commit at or before `since`, the state the window opened on. Omitting
+  `since` (an all-time window) leaves no earlier side, and the whole script reads as added, which is what
+  "since this estate began snapshotting" means.
+- However many snapshots touched the object inside the window, the answer stays ONE before and ONE after. A
+  table four nightly runs edited reads as one net change, not four patches to reconcile by hand.
+- An object added inside the window has no before text (its file was not in the base commit); one dropped
+  inside it has no after text, and its last known script stays on the before side so the drop is reviewable.
+- Either side is clipped at 200,000 characters and reported clipped, so a `scripting.data` snapshot of a large
+  reference table cannot turn one comparison into a multi-megabyte response.
+
+The row's id carries the object's identity, so no repository path is passed from the browser: the path is
+rebuilt server-side from the same `<database>/<category>/<schema>.<name>.sql` convention the snapshot writer
+emits, and the git credential is resolved in the control plane from the scm flow's stored `${...}` reference.
+A client never holds a token, and cannot address a file the schema history does not know about. A comparison
+needs `repository.remote` to be set: a local-only snapshot lives on the node that ran it and cannot be read
+back, which the page says rather than showing an empty diff.
 
 Two properties are worth knowing before reading the dates as gospel:
 

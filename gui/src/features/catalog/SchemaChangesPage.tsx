@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Database, FileCode, FilePlus2, FileX2, Folder, GitCommit } from "lucide-react";
+import { ArrowRight, Database, FileCode, FilePlus2, FileX2, Folder, GitCommit, GitCompareArrows } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,11 +10,14 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
+import { DiffView } from "@/components/DiffView";
 import { cn } from "@/lib/utils";
 import { NodeLabel, TreeContext, TreeNode, type TreeState } from "@/components/Tree";
+import { isApiError } from "../../api/client";
 import { schemaChangeApi } from "../../api/endpoints";
-import type { SchemaChange } from "../../api/types";
+import type { SchemaChange, SchemaObjectCompare } from "../../api/types";
 import { activeFilterClass, FilterBar } from "../../components/FilterBar";
+import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -162,6 +165,126 @@ function ObjectHistory({ branch, database }: { branch: ObjectBranch; database: s
   );
 }
 
+/** One end of the comparison, named by the commit it came from so a reader can trace it back to a snapshot. */
+function Revision({ label, commit }: { label: string; commit: SchemaObjectCompare["before"] }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span className="text-muted-foreground">{label}</span>
+      {commit === null
+        ? <span className="text-muted-foreground">the first snapshot</span>
+        : (
+          <>
+            <GitCommit className="size-3 shrink-0 text-muted-foreground" />
+            <span className="font-mono">{commit.shortSha}</span>
+            <RelativeTime value={commit.committedUtc} />
+          </>
+        )}
+    </span>
+  );
+}
+
+/**
+ * The DDL behind the selected object at both ends of the window: the script the snapshots held when the window
+ * opened, against the one they hold now. The history list above says an object moved; this says what actually
+ * moved inside it.
+ *
+ * However many snapshots touched the object, this stays ONE before and ONE after, because that is the question
+ * the window asks: not "what did each nightly run do" but "what is different now from then". The comparison is
+ * read from the snapshot repository by the control plane, which resolves the git credential server-side, so the
+ * browser never holds one.
+ */
+function ObjectCompare({
+  branch, database, windowLabel, since,
+}: { branch: ObjectBranch; database: string; windowLabel: string; since: string | undefined }) {
+  // The newest row carries the object's identity and the snapshot flow that recorded it; the server derives the
+  // repository path from it, so no path is built here.
+  const latest = branch.history[0];
+  const compareQuery = useQuery({
+    queryKey: ["schema-changes", "compare", latest.id, since],
+    queryFn: () => schemaChangeApi.compare(latest.id, since === undefined ? {} : { since }),
+    enabled: latest.pipelineId !== null,
+  });
+
+  const compare = compareQuery.data;
+  const title = branch.schema === null ? branch.name : `${branch.schema}.${branch.name}`;
+
+  return (
+    <Card className="gap-0 rounded-lg p-4" data-testid="schema-changes-compare">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <GitCompareArrows className="size-4 shrink-0 text-muted-foreground" />
+        <span className="text-sm font-medium">Before and after</span>
+        <span className="font-mono text-[12px] text-muted-foreground">{title}</span>
+        <span className="text-xs text-muted-foreground">over {windowLabel.toLowerCase()}</span>
+        {compare !== undefined && (
+          <span className="ml-auto font-mono text-xs tabular-nums">
+            <span className="text-success">+{compare.linesAdded}</span>
+            {" "}
+            <span className="text-destructive">-{compare.linesDeleted}</span>
+          </span>
+        )}
+      </div>
+
+      {latest.pipelineId === null
+        ? (
+          <Alert className="mt-3">
+            <AlertDescription>
+              This change was recorded before its snapshot flow reached the catalog, so the repository it was
+              committed to cannot be resolved. A later snapshot of
+              {" "}<span className="font-mono">{database}</span> records one that can.
+            </AlertDescription>
+          </Alert>
+        )
+        : compareQuery.isError
+          ? (
+            <div className="mt-3">
+              {isApiError(compareQuery.error)
+                ? <CorrelationError error={compareQuery.error} data-testid="schema-changes-compare-error" />
+                : <p className="text-[13px] text-destructive">{String(compareQuery.error)}</p>}
+            </div>
+          )
+          : compare === undefined
+            ? <Skeleton className="mt-3 h-64 w-full" />
+            : compare.beforeText === null && compare.afterText === null
+              ? (
+                <Alert className="mt-3">
+                  <AlertDescription>
+                    The snapshot repository holds no file at
+                    {" "}<span className="font-mono">{compare.path}</span> at either end of this window, so there
+                    is no script to compare. Widen the window to reach the snapshot that last carried it.
+                  </AlertDescription>
+                </Alert>
+              )
+              : (
+                <div className="mt-3 flex flex-col gap-3">
+                  {compare.truncated && (
+                    <Alert>
+                      <AlertDescription>
+                        One side of this comparison was cut at the server's inline limit, so what is shown is not
+                        the whole script. Read the file in the snapshot repository for the rest of it.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  <DiffView
+                    original={compare.beforeText ?? ""}
+                    modified={compare.afterText ?? ""}
+                    language="sql"
+                    height={520}
+                    data-testid="schema-changes-diff"
+                    caption={(
+                      <span className="flex min-w-0 items-center gap-2">
+                        <Revision label="from" commit={compare.before} />
+                        <ArrowRight className="size-3 shrink-0 text-muted-foreground" />
+                        <Revision label="to" commit={compare.after} />
+                        <span className="min-w-0 truncate font-mono text-muted-foreground">{compare.path}</span>
+                      </span>
+                    )}
+                  />
+                </div>
+              )}
+    </Card>
+  );
+}
+
 /**
  * The schema history of the managed databases as a browsable tree: database, then schema, then the objects that
  * moved, each expanding to every time a snapshot saw it change. Source-control (scm) flows write this as they
@@ -250,6 +373,7 @@ export default function SchemaChangesPage() {
     });
   }
 
+  const windowLabel = windows.find((w) => w.value === window)?.label ?? "this window";
   const summary = summaryQuery.data ?? [];
   const nothingEverRecorded = changesQuery.isSuccess
     && changesQuery.data.total === 0
@@ -355,7 +479,7 @@ export default function SchemaChangesPage() {
             ? (
               <EmptyState
                 title="Nothing changed"
-                description={`No object was added, changed, or dropped in ${windows.find((w) => w.value === window)?.label.toLowerCase() ?? "this window"}.`}
+                description={`No object was added, changed, or dropped in ${windowLabel.toLowerCase()}.`}
               />
             )
             : (
@@ -425,6 +549,18 @@ export default function SchemaChangesPage() {
                   : <ObjectHistory branch={selected.branch} database={selected.database} />}
               </div>
             )}
+
+      {/* Full width rather than beside the tree: a side-by-side of two DDL scripts needs the whole row to read
+          without wrapping every line. Keyed by the object so switching selection remounts the editor cleanly. */}
+      {selected !== null && (
+        <ObjectCompare
+          key={`${selected.database}/${selected.branch.key}`}
+          branch={selected.branch}
+          database={selected.database}
+          windowLabel={windowLabel}
+          since={since}
+        />
+      )}
     </Page>
   );
 }

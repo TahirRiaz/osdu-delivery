@@ -125,6 +125,28 @@ public sealed class SchemaChangeProjectionTests
         Assert.Empty(changes);
     }
 
+    [Theory]
+    [InlineData("dw-dwh-prod/Table/arc.Citybike_Bikes.sql")]
+    [InlineData("dw-dwh-prod/Schema/arc.sql")]
+    [InlineData("dw-pre-prod/View/pre.APC_Dalane_Calls.sql")]
+    [InlineData("dw-dwh-prod/Table/dbo.Order.Detail.sql")]
+    public void SnapshotPath_RebuildsTheFileARowWasParsedFrom(string path)
+    {
+        // The schema drill-down reads an object's DDL back out of the repository by rebuilding its path from the
+        // row, so the join has to be the exact inverse of the split. A dotted object name (only the FIRST dot
+        // separates the schema) is the case that would silently address the wrong file if the two ever diverged.
+        var changes = CatalogProjection.SchemaChanges(Json($$"""
+            {
+              "flowKind": "scm", "flowName": "s", "runId": "11111111-1111-1111-1111-111111111111",
+              "success": true, "writtenUtc": "2026-08-23T03:30:00Z",
+              "result": { "addedObjects": [ "{{path}}" ] }
+            }
+            """), Run, Repo, Pipeline);
+
+        var change = Assert.Single(changes);
+        Assert.Equal(path, CatalogProjection.SnapshotPath(change.Database, change.Category, change.Schema, change.Name));
+    }
+
     [Fact]
     public void NonSourceControlRun_ProjectsNothing()
     {

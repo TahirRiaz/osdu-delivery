@@ -480,6 +480,24 @@ public static class CatalogProjection
         return name.Length == 0 ? null : (segments[0], segments[1], schema, name);
     }
 
+    /// <summary>
+    /// The repository path one schema-change row's object occupies: <c>&lt;database&gt;/&lt;category&gt;/&lt;schema&gt;.&lt;name&gt;.sql</c>,
+    /// or a bare <c>&lt;name&gt;.sql</c> stem for a schema-less object. This is the exact inverse of the split
+    /// <c>ParsePath</c> performs, and the row's parts were produced by that split, so re-joining them reproduces
+    /// the committed path character for character. Reading an object's DDL back out of the snapshot repository
+    /// goes through here rather than re-deriving the layout, so the writer, the reader, and the drill-down all
+    /// agree on one filename convention.
+    /// </summary>
+    public static string SnapshotPath(string database, string category, string? schema, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(database);
+        ArgumentException.ThrowIfNullOrWhiteSpace(category);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        var stem = string.IsNullOrEmpty(schema) ? name : $"{schema}.{name}";
+        return $"{database}/{category}/{stem}.sql";
+    }
+
     /// <summary>The surrogate-key generation outcomes of a run (ingestion flows), read best-effort from the result.</summary>
     public static IReadOnlyList<CatalogRunSurrogateKey> RunSurrogateKeys(JsonElement root, Guid runId, Guid repoId)
     {
