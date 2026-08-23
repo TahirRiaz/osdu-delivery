@@ -65,3 +65,7 @@ _landing/
 
 # Clean build contexts produced by deploy-prod.ps1 (git-archive extracts)
 .deploy-ctx/
+
+# The TypeScript incremental-build cache: pure build output that every typecheck rewrites, so tracking it
+# dirties the tree on any machine that builds the GUI.
+gui/tsconfig.tsbuildinfo

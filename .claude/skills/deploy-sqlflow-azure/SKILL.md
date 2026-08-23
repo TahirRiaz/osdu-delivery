@@ -135,6 +135,18 @@ Related: `next-app/` (460 MB), `_probe_sql/` (55 MB), and `data/` (19 MB) are NO
 they are tarred into every .NET image context for no reason. Worth excluding, but note that editing
 `.dockerignore` changes the commit and therefore the image tag.
 
+**A loop of `az acr build` calls does NOT serialize them.** Because the CLI dies early (see below) instead of
+waiting for its run, the next iteration starts while the previous build is still going server-side. Several
+contexts then upload at once, which is the thrash the previous point warns about, and worse: each upload is a
+snapshot of the working tree AT THAT MOMENT, so a build dispatched mid-edit compiles a half-saved tree and fails
+with errors that do not reproduce locally (seen: `'RouteGroupBuilder' does not contain a definition for
+MapGitHistoryEndpoints`, from a context uploaded before the file was written). Wait on the real signal, the tag
+appearing in the registry, before dispatching the next one:
+
+```bash
+until az acr repository show-tags -n sqlflowv3acrprod --repository sqlflow-v3-control-plane | grep -q "\"$TAG\""; do sleep 20; done
+```
+
 **`az acr build` exit code lies.** On this Windows box it dies with
 `UnicodeEncodeError: 'charmap' codec can't encode character '✓'` (cp1252 cannot print its `✓`)
 *after* the build succeeds server-side. It can also report exit 0 having printed nothing. **Always**
