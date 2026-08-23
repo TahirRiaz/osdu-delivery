@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.SourceControl;
 using YamlDotNet.Core;
@@ -88,6 +88,7 @@ public sealed class YamlSourceControlFlowLoader
             FlowId = YamlDocumentParts.StableFlowId(name),
             SysAlias = name,
             Description = YamlDocumentParts.NullIfBlank(y.Description),
+            Batch = YamlDocumentParts.NullIfBlank(y.Batch),
             Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             Server = server,
             Database = YamlDocumentParts.NullIfBlank(sourceYaml.Database),
@@ -283,6 +284,7 @@ public sealed class YamlSourceControlFlowLoader
         public string? FlowType { get; set; }
         public string? Name { get; set; }
         public string? Description { get; set; }
+        public string? Batch { get; set; }
         public string? Lifecycle { get; set; }
         public Dictionary<string, object>? Connections { get; set; }
         public SourceControlSourceYaml? Source { get; set; }

@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Yaml;
 
@@ -10,6 +10,21 @@ namespace SqlFlow.Lineage.Collection;
 /// header is always the document's primary flow and carries the document's <c>schedule:</c> block; a derived sibling
 /// (an ingestion document's embedded <c>healthCheck:</c>) never carries it, following its own mode instead.
 /// </summary>
+/// <param name="Name">The flow's name: its pipeline identity and its run-history folder.</param>
+/// <param name="Kind">The flow kind (file / ing / api / cpy / sftp / exp / trl / sp / inv / hc / cal / scm).</param>
+/// <param name="Batch">The flow's grouping label, or null when it declares none.</param>
+/// <param name="SourceServerRef">The source-side server identity, when the kind reads one.</param>
+/// <param name="TargetServerRef">The server identity statements run against by default (the target side).</param>
+/// <param name="Schedule">The document's <c>schedule:</c> declaration, carried by the primary header only.</param>
+/// <param name="Mode">The flow's execution mode.</param>
+/// <param name="Lifecycle">The flow's declared lifecycle (production unless the document says otherwise).</param>
+/// <param name="ParticipatesInLineage">
+/// Whether this flow belongs in the lineage graph. True for every flow that moves catalog data. False for a
+/// maintenance flow that runs on the estate rather than through it (<c>scm</c>): it reads a database's
+/// definitions and writes a git tree, so it produces no data dependency, must never join a wave, and must never
+/// pull a batch into a false ordering. Such a flow is still a full pipeline row with its own schedule and run
+/// history; only the graph excludes it.
+/// </param>
 public sealed record DocumentFlowHeader(
     string Name,
     string Kind,
@@ -18,15 +33,18 @@ public sealed record DocumentFlowHeader(
     string TargetServerRef,
     ScheduleSpec? Schedule,
     ExecutionMode Mode = ExecutionMode.Auto,
-    FlowLifecycle Lifecycle = FlowLifecycle.Production);
+    FlowLifecycle Lifecycle = FlowLifecycle.Production,
+    bool ParticipatesInLineage = true);
 
 /// <summary>
 /// THE single authority for "what flows does this document contain": the estate scan builds its lineage flow
 /// nodes from this projection and the per-run catalog write-back builds its pipeline rows and schedule mirror
 /// from it, so every element of a parsed document is extracted identically no matter which path triggered the
-/// parse. Orchestration documents (scm/batch) declare no runnable flow and project to an empty list; a document
-/// kind this projection does not know is a programming error and throws, so a future kind can never be silently
-/// dropped by one consumer while the other handles it.
+/// parse. A batch document declares no runnable flow of its own and projects to an empty list; a source-control
+/// document projects a real flow marked <see cref="DocumentFlowHeader.ParticipatesInLineage"/> false, so it is a
+/// schedulable pipeline that stays out of the graph. A document kind this projection does not know is a
+/// programming error and throws, so a future kind can never be silently dropped by one consumer while the other
+/// handles it.
 /// </summary>
 public static class FlowDocumentHeaders
 {
@@ -145,9 +163,27 @@ public static class FlowDocumentHeaders
                     new DocumentFlowHeader(doc.Flow.Name, "sftp", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
                 ];
 
-            case SourceControlFlowDocument:
+            case SourceControlFlowDocument doc:
+            {
+                // A source-control snapshot is a real, schedulable flow: it reads one SQL Server database's
+                // object definitions and writes them into a git working tree, so its source is that server and
+                // its target is the file system. It carries no data between catalog objects, so it is marked out
+                // of the lineage graph (no node, no edges, no wave) while remaining a full pipeline row with its
+                // own schedule and run history.
+                var flow = doc.Document.Flow;
+                var refs = ConnectionRefs(doc.Document.Connections);
+                return
+                [
+                    new DocumentFlowHeader(
+                        flow.SysAlias, "scm", flow.Batch, ServerIdentity.From(refs[flow.Server]),
+                        ServerIdentity.FileSystem, document.Schedule,
+                        Lifecycle: flow.Lifecycle, ParticipatesInLineage: false),
+                ];
+            }
+
             case BatchFlowDocument:
-                // Orchestration/utility documents: they move no catalog data and never become pipeline rows.
+                // An orchestration document: a batch declares no flow of its own; its ordering is computed FROM
+                // lineage, so it never becomes a pipeline row.
                 return [];
 
             default:

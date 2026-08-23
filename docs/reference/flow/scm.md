@@ -10,12 +10,18 @@ keywords:
   - git snapshot
   - repository
   - scripting
+  - schedule
+  - schema history
 yamlPath: "(root, flowType: scm)"
 related:
   - flow-overview
+  - flow-schedule
   - concept-shadow-catalog
+  - concept-lineage-graph-and-plan
 sourceRefs:
   - src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs
+  - src/SqlFlow.Lineage/Collection/FlowDocumentHeaders.cs
+  - src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs
   - src/SqlFlow.Core/SourceControl/SourceControlFlow.cs
   - src/SqlFlow.Core/SourceControl/SourceControlObjectTypes.cs
   - src/SqlFlow.SourceControl/SourceControlService.cs
@@ -29,6 +35,13 @@ sourceRefs:
 # Source-control flow (flowType: scm)
 
 A `flowType: scm` document scripts the full object definition of one SQL Server database to disk with SMO and commits the snapshot to a git repository, so the schema's change history lives in version control. Re-running the flow over time is what produces the diff history: an unchanged database re-scripts to byte-identical files (objects sorted, line endings normalized to LF), so only real changes surface as git diffs. The database is a declared connection resolved through the same secretless pipeline as every other flow; the git credential is a `${...}` reference, never a literal in the document.
+
+This is the V3 port of the legacy `flw.SysSourceControl` / `flw.SysSourceControlType` pair and its `ExecSourceControl` runner: one document replaces one `SysSourceControl` row, and the git credentials that lived in `SysSourceControlType` are secret references instead of catalog columns.
+
+A snapshot is a maintenance flow: it runs ON the estate rather than THROUGH it. That shapes two behaviors worth knowing before authoring one:
+
+- It is a full pipeline. It registers in the shadow catalog with kind `scm`, carries a `schedule:`, is fired by the control plane's scheduler onto the normal run queue, and keeps run history like any other flow. Nothing extra needs to be installed to run snapshots unattended.
+- It is not part of lineage. It reads object DEFINITIONS and writes a git tree, so it moves no data between catalog objects. It contributes no lineage node, no edge, and no dependency, never joins an execution wave, and never pulls a batch into a false ordering. See [Catalog, scheduling, and lineage](#catalog-scheduling-and-lineage).
 
 ## Minimal example
 
@@ -52,6 +65,8 @@ This scripts the connection's default catalog into a local git repository at `./
 | `flowType` | string | yes | | Must be `scm` (case-insensitive, trimmed) to select this loader. |
 | `name` | string | yes | | The flow name (legacy SysAlias): the snapshot's identity, the run-history folder, and the seed for the stable flow id. |
 | `description` | string | no | null | Free-text description. |
+| `batch` | string | no | null | Grouping label (the legacy `SysSourceControl.Batch`). A filter only: no ordering, no effect on scheduling. |
+| `schedule` | map/string/list | no | none | The document-envelope schedule, identical to every other flow kind. This is how a snapshot runs unattended. |
 | `connections` | map | no | | Document-local named connections; a bare alias (`DW:`) resolves the conventional `${env:SQLFLOW_CONN_DW}`. |
 | `source` | map | yes | | The database to script. Exactly one of `server` or `connection`, plus optional `provider` and `database`. |
 | `source.server` | string | one of server/connection | | Name of a connection declared under `connections:`. |
@@ -175,6 +190,51 @@ Operational failures return a failed `SourceControlResult` (`Success=false`, wit
 
 The result records `RunId`, `DatabaseName`, `WorkingDirectory`, `Remote`, `Branch`, `DryRun`, `ObjectsScripted`, the `Added`/`Changed`/`Deleted`/`Unchanged` counts, `Committed`, `CommitSha`, `Pushed`, every scripted object's relative path, scripter warnings (an individual object that fails to script becomes a warning, not a failure), and `DurationSeconds`.
 
+## Catalog, scheduling, and lineage
+
+A source-control document is projected by the same header projection every other flow kind goes through (`FlowDocumentHeaders.Project`, src/SqlFlow.Lineage/Collection/FlowDocumentHeaders.cs), so it lands in the shadow catalog as a `CatalogPipeline` row with `Kind = "scm"`, its `Batch`, its `RelativePath`, its `Lifecycle`, the scripted server as `SourceServer`, and `file://` as `TargetServer` (a snapshot reads a database and writes a git tree). It is listed, filtered, and triggered like any other pipeline, in the GUI and from the CLI.
+
+### Scheduling
+
+The `schedule:` block is the document envelope's, parsed before the flowType dispatch, so it takes every form the [schedule reference](schedule.md) documents: an inline cron or interval, a named block other flows can join, or a reference joining an existing named schedule. The catalog sync mirrors it, and the control plane's `SchedulerService` fires it onto the same durable run queue a manual trigger uses. No separate service, timer, or agent runs snapshots; there is one scheduler and one run path.
+
+```yaml
+flowType: scm
+name: warehouse-scm
+batch: schema-history
+connections:
+  DW:
+source:
+  server: DW
+repository:
+  path: /var/sqlflow/scm/warehouse
+  remote: ${env:SCM_REMOTE}
+  username: ${env:SCM_USER}
+  secret: ${env:SCM_TOKEN}
+schedule:
+  cron: "0 3 * * *"
+  timezone: Europe/Oslo
+```
+
+That flow snapshots the warehouse every night at 03:00 Oslo time and commits only what actually changed.
+
+### Lineage
+
+A source-control flow is deliberately excluded from the lineage graph. The projected header carries `ParticipatesInLineage = false`, and `LineageGraphBuilder` drops such flows at a single gate before any node is built (src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs), so the exclusion is total and cannot be reached around:
+
+- no `LineageFlowNode` in `lineage.json`, so nothing shows in the lineage explorer or the graph dumps;
+- no edges and no flow dependencies, in the declared tier or the observed one (its run artifacts are recognized, so they raise no orphan warning, but contribute nothing);
+- no execution wave, so it can never delay or reorder a data flow, and its catalog `Wave` stays at the `-1` "not computed" sentinel;
+- no batch membership, since batches are computed FROM lineage.
+
+This is intentional and not a limitation: a snapshot reads `sys` catalog metadata to script definitions, which is not a data dependency. Treating it as one would order the estate around a flow that moves no data.
+
+Being out of the graph does not weaken anything else: the flow still has a lifecycle, run history, notifications on failure, and a schedule.
+
+### Running several databases
+
+One document snapshots one database. For an estate of databases, author one document per database, all pointing at the same `repository.path` and remote: each writes only its own `<database>/` subtree and each commit stages only that subtree, so they never cross-delete each other's folders. Give them a shared `batch:` to list them together, and have them join one named schedule so a single fire covers the estate.
+
 ## CLI
 
 An scm document runs through the same `validate`/`run` commands as every other flow document; two run flags are scm-specific:
@@ -197,6 +257,7 @@ The run writes its artifacts to a timestamped folder under `.sqlflow/runs/<name>
 flowType: scm
 name: warehouse-scm
 description: nightly schema snapshot
+batch: schema-history
 connections:
   DW:
 source:
@@ -217,6 +278,9 @@ scripting:
     - "[ref].[Calendar]"
   exclude:
     - SecurityPolicy
+schedule:
+  cron: "0 3 * * *"
+  timezone: Europe/Oslo
 ```
 
 The bare `DW:` connection resolves `${env:SQLFLOW_CONN_DW}`; `SCM_REMOTE`, `SCM_USER`, and `SCM_TOKEN` live in the process environment or the git-ignored `.sqlflow/env` file next to the document. Every object category except `SecurityPolicy` is scripted schema-only into `./scm/warehouse/Warehouse/...`, the rows of `dbo.Config` and `ref.Calendar` land under `Warehouse/Data/`, and each snapshot commits to the `release` branch and pushes to the remote.

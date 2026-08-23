@@ -134,6 +134,42 @@ public sealed class LibGit2GitWorkspaceTests : IDisposable
         Assert.Empty(remote.Branches); // nothing was pushed
     }
 
+    [Fact]
+    public void StaleWorkingTree_CatchesUpToTheRemote_AndStillPushes()
+    {
+        // The multi-writer case the deployed estate actually has: two workspaces (two worker replicas, or two scm
+        // flows sharing a remote) each hold their own clone. One pushes; the other is now behind. Without a fetch
+        // and reset its next push would be rejected as non-fast-forward, forever, so it must catch up on its own.
+        var bare = Path2("shared.git");
+        Repository.Init(bare, isBare: true);
+
+        var firstDir = Path2("writer-a");
+        var first = new LibGit2GitWorkspace(Config(firstDir, remote: bare));
+        first.EnsureReady();
+        WriteFile(firstDir, "Warehouse/Table/dbo.A.sql", "CREATE TABLE dbo.A;\n");
+        Assert.True(first.Commit("snapshot A").Pushed);
+
+        var secondDir = Path2("writer-b");
+        var second = new LibGit2GitWorkspace(Config(secondDir, remote: bare));
+        second.EnsureReady();
+        WriteFile(secondDir, "Warehouse/Table/dbo.B.sql", "CREATE TABLE dbo.B;\n");
+        Assert.True(second.Commit("snapshot B").Pushed);
+
+        // Writer A is now stale. It re-prepares (the start of its next run), which must fast-forward it onto
+        // B's commit, and its own next snapshot must land on top rather than be rejected.
+        first.EnsureReady();
+        WriteFile(firstDir, "Warehouse/Table/dbo.A.sql", "CREATE TABLE dbo.A (Id int);\n");
+        var third = first.Commit("snapshot A again");
+
+        Assert.True(third.Committed);
+        Assert.True(third.Pushed);
+
+        using var remote = new Repository(bare);
+        var main = remote.Branches["main"]!;
+        Assert.NotNull(main.Tip["Warehouse/Table/dbo.A.sql"]);
+        Assert.NotNull(main.Tip["Warehouse/Table/dbo.B.sql"]);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

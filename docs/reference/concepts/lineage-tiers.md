@@ -63,7 +63,8 @@ Each flow kind contributes fixed facts:
 | `sp` (stored procedure) | `Requires` the procedure only; the body's reads and writes are the procedure module's lineage, expanded by the derived tier. |
 | `hc` (health check) | `Reads` the target object. |
 | `inv` (invoke) | A lineage node with no facts; it triggers external compute and moves no catalog data. |
-| `scm`, `batch` | Nothing. A batch's ordering is computed FROM lineage, never part of it. |
+| `scm` | Nothing. A source-control snapshot is a schedulable pipeline but a maintenance one: it scripts object definitions to a git tree, so it declares no data dependency and is excluded from the graph entirely (no node, no edge, no wave). |
+| `batch` | Nothing. A batch's ordering is computed FROM lineage, never part of it. |
 
 The generated-view fact is what connects a landing flow to its downstream readers: the landing flow declares it writes the view, the downstream ingestion flow declares it reads the view, and the dependency resolves entirely at the declared tier.
 

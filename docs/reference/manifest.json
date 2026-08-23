@@ -2016,15 +2016,21 @@
         "smo",
         "git snapshot",
         "repository",
-        "scripting"
+        "scripting",
+        "schedule",
+        "schema history"
       ],
       "yamlPath": "(root, flowType: scm)",
       "related": [
         "flow-overview",
-        "concept-shadow-catalog"
+        "flow-schedule",
+        "concept-shadow-catalog",
+        "concept-lineage-graph-and-plan"
       ],
       "sourceRefs": [
         "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs",
+        "src/SqlFlow.Lineage/Collection/FlowDocumentHeaders.cs",
+        "src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs",
         "src/SqlFlow.Core/SourceControl/SourceControlFlow.cs",
         "src/SqlFlow.Core/SourceControl/SourceControlObjectTypes.cs",
         "src/SqlFlow.SourceControl/SourceControlService.cs",
@@ -2176,7 +2182,10 @@
         "impact analysis",
         "downstream",
         "DataSubscriber",
-        "DataSubscriberQuery"
+        "DataSubscriberQuery",
+        "subscriber notes",
+        "incomplete dataset",
+        "stale report"
       ],
       "yamlPath": "subscribers",
       "related": [
@@ -2187,6 +2196,7 @@
       ],
       "sourceRefs": [
         "src/SqlFlow.Core/Subscribers/DataSubscriber.cs",
+        "docs/reference/flow/keys.subscribers.json",
         "src/SqlFlow.Yaml/YamlSubscriberLibraryLoader.cs",
         "src/SqlFlow.Lineage/Collection/FlowSetCollector.cs",
         "src/SqlFlow.Lineage/Collection/LineageFacts.cs",

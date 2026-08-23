@@ -103,7 +103,7 @@ lifecycle: development   # production (default) | development
 
 `production` (the default when the key is absent) is a live pipeline: when one of its runs fails, is cancelled, is skipped by an upstream failure, or succeeds with failed assertions, the control plane records a notification event and alerts the users who subscribed. `development` marks a pipeline under construction: it executes, schedules, and records run history exactly like a production flow, but it never generates notification events, so iterating on a half-built flow cannot page anyone. Promotion is a one-line change with no behavioral side effects beyond alerting.
 
-The value is projected to `CatalogPipeline.Lifecycle` on every catalog sync and shown by `sqlflow pipeline <id>`. Any other value fails the load: `<file>: 'lifecycle' has unknown value '<x>'. Allowed: production, development.` On the two orchestration kinds (`scm`, `batch`) the key is accepted for vocabulary consistency but has no gating effect, because those documents never project as catalog pipelines.
+The value is projected to `CatalogPipeline.Lifecycle` on every catalog sync and shown by `sqlflow pipeline <id>`. Any other value fails the load: `<file>: 'lifecycle' has unknown value '<x>'. Allowed: production, development.` A source-control (`scm`) document projects as a catalog pipeline like any other flow, so its lifecycle gates alerting normally. On `batch`, which declares no flow of its own and never becomes a pipeline row, the key is accepted for vocabulary consistency but has no gating effect.
 
 ### One load path, one executor
 
@@ -295,6 +295,7 @@ Full sample: samples/healthcheck/orders-healthcheck.flow.yaml.
 ```yaml
 flowType: scm
 name: dw-schema-history
+batch: schema-history
 connections:
   dwh: ${env:SQLFLOW_DW}
 source:
@@ -304,9 +305,12 @@ repository:
   remote: https://github.com/example/dw-schema.git
   branch: main
   secret: ${env:SQLFLOW_GIT_TOKEN}
+schedule:
+  cron: "0 3 * * *"
+  timezone: Europe/Oslo
 ```
 
-Scripts the database's objects with SMO into the git working tree at `repository.path` (one folder per object type, the legacy layout), commits, and pushes over HTTPS. `repository.secret` and `repository.username` must be whole `${env:...}` or `${keyvault:...}` references; a literal fails validation with `'<field>' must be a ${env:NAME} or ${keyvault:vault/secret} reference, never a literal.` Setting `repository.remote` without `repository.secret` also fails at parse time (pushing needs a credential: a BitBucket app password or a GitHub token). On `run`, `--dry-run` scripts and writes the tree without committing; `--no-push` commits locally only. The document's `name` is required; a missing one fails with `'name' is required for a source-control flow (flowType: scm).`
+Scripts the database's objects with SMO into the git working tree at `repository.path` (one folder per object type, the legacy layout), commits, and pushes over HTTPS. A snapshot is a maintenance flow: it is a full catalog pipeline (it schedules on the existing scheduler and keeps run history like any other flow) but it is excluded from the lineage graph, because it moves no data between catalog objects. `repository.secret` and `repository.username` must be whole `${env:...}` or `${keyvault:...}` references; a literal fails validation with `'<field>' must be a ${env:NAME} or ${keyvault:vault/secret} reference, never a literal.` Setting `repository.remote` without `repository.secret` also fails at parse time (pushing needs a credential: a BitBucket app password or a GitHub token). On `run`, `--dry-run` scripts and writes the tree without committing; `--no-push` commits locally only. The document's `name` is required; a missing one fails with `'name' is required for a source-control flow (flowType: scm).`
 
 ### flowType: batch
 

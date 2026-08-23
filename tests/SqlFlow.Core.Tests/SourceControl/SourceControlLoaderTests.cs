@@ -15,6 +15,7 @@ public sealed class SourceControlLoaderTests
         flowType: scm
         name: warehouse-scm
         description: nightly schema snapshot
+        batch: schema-history
         connections:
           DW:
         source:
@@ -46,6 +47,7 @@ public sealed class SourceControlLoaderTests
 
         Assert.Equal("warehouse-scm", doc.Flow.SysAlias);
         Assert.Equal("nightly schema snapshot", doc.Flow.Description);
+        Assert.Equal("schema-history", doc.Flow.Batch);
         Assert.Equal("DW", doc.Flow.Server);
         Assert.Equal("@DW", doc.Flow.ConnectionReference);
         Assert.Equal("Warehouse", doc.Flow.Database);
@@ -81,6 +83,7 @@ public sealed class SourceControlLoaderTests
             """);
 
         Assert.Null(doc.Flow.Database);
+        Assert.Null(doc.Flow.Batch);
         Assert.Null(doc.Flow.Repository.Remote);
         Assert.Equal("main", doc.Flow.Repository.Branch);
         Assert.Equal("SQLFlow", doc.Flow.Repository.AuthorName);

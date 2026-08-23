@@ -56,7 +56,10 @@ Everything is deterministic by construction: objects, edges, warnings, and waves
 
 ### Flow nodes
 
-`LineageFlowNode`: `Name`, `Kind` (the document kind: `file`, `ing`, `exp`, `sp`, `inv`, `hc`), `File` (the document path relative to the scanned folder), and optional `Batch`. Orchestration documents (`batch`, `scm`) move no catalog data, so they are not lineage nodes and contribute no facts; a batch's ordering is computed from lineage, never part of it (src/SqlFlow.Lineage/Collection/FlowSetCollector.cs).
+`LineageFlowNode`: `Name`, `Kind` (the document kind: `file`, `ing`, `exp`, `sp`, `inv`, `hc`), `File` (the document path relative to the scanned folder), and optional `Batch`. Two document kinds move no catalog data and are therefore absent from the graph, for different reasons:
+
+- `batch` declares no flow of its own; a batch's ordering is computed FROM lineage, never part of it, so it projects no header at all (src/SqlFlow.Lineage/Collection/FlowDocumentHeaders.cs).
+- `scm` is a real, schedulable pipeline (it holds a schedule and keeps run history) but a maintenance one: it scripts object DEFINITIONS to a git tree, so it declares no data dependency. Its header carries `ParticipatesInLineage = false` and `LineageGraphBuilder` drops it at one gate before any node is built (src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs), so it acquires no node, no edge, no dependency, no wave, and no batch membership. Its run artifacts are recognized by the observed tier (no orphan warning) but contribute nothing.
 
 ### Object nodes
 

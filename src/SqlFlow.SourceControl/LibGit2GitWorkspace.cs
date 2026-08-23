@@ -1,4 +1,4 @@
-using LibGit2Sharp;
+﻿using LibGit2Sharp;
 using LibGit2Sharp.Handlers;
 using SqlFlow.Core;
 
@@ -49,6 +49,7 @@ public sealed class LibGit2GitWorkspace : IGitWorkspace
             using var repo = new Repository(workdir);
             EnsureRemote(repo);
             EnsureBranch(repo);
+            SyncWithRemote(repo);
         }
         catch (LibGit2SharpException ex)
         {
@@ -145,6 +146,41 @@ public sealed class LibGit2GitWorkspace : IGitWorkspace
 
         var created = repo.CreateBranch(branch);
         Commands.Checkout(repo, created);
+    }
+
+    /// <summary>
+    /// Brings an EXISTING working tree back in line with the remote before anything is scripted into it: fetch,
+    /// then hard-reset the branch onto the remote tip. A fresh clone is already there, so this only matters for a
+    /// reused directory, and that case is the whole point. The snapshot is regenerated from the database on every
+    /// run, so the working tree carries nothing worth preserving; without the reset a directory that fell behind
+    /// (a sibling flow, or another worker replica, pushed in the meantime) could never fast-forward again and
+    /// every later push would be rejected until someone deleted the folder by hand.
+    /// </summary>
+    private void SyncWithRemote(Repository repo)
+    {
+        if (_config.Remote is null)
+        {
+            return;
+        }
+
+        var origin = repo.Network.Remotes["origin"];
+        if (origin is null)
+        {
+            return;
+        }
+
+        var options = new FetchOptions { CredentialsProvider = CredentialsProvider() };
+        Commands.Fetch(repo, origin.Name, origin.FetchRefSpecs.Select(r => r.Specification), options, logMessage: null);
+
+        // No remote-tracking branch yet means the remote does not carry this branch (an empty repository, or a
+        // branch this flow is the first to publish): there is nothing to reset onto, and the first push creates it.
+        var remoteBranch = repo.Branches[$"{origin.Name}/{_config.Branch}"];
+        if (remoteBranch?.Tip is null)
+        {
+            return;
+        }
+
+        repo.Reset(ResetMode.Hard, remoteBranch.Tip);
     }
 
     private void Push(Repository repo)

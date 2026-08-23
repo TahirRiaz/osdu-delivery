@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using SqlFlow.Core.Lineage;
 
@@ -50,6 +50,12 @@ public sealed record CollectedFlow
     /// a membership reference to named schedules. Carried from the document so <see cref="CollectionResult.Schedules"/>
     /// can be resolved once the whole estate is in hand.</summary>
     public SqlFlow.Core.ScheduleSpec? Schedule { get; init; }
+
+    /// <summary>Whether this flow belongs in the lineage graph (see
+    /// <see cref="DocumentFlowHeader.ParticipatesInLineage"/>). A maintenance flow that runs on the estate rather
+    /// than through it (<c>scm</c>) is collected so it becomes a pipeline row and a schedule member, but the
+    /// graph builder leaves it out: no node, no edges, no wave, no batch membership.</summary>
+    public bool ParticipatesInLineage { get; init; } = true;
 
     public required DateTime FileWriteUtc { get; init; }
 }

@@ -4,8 +4,16 @@
   "flowType": "scm",
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 28,
+  "keyCount": 30,
   "keys": [
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "default": "null",
+      "description": "Optional grouping label (the legacy flw.SysSourceControl.Batch column), carried onto SourceControlFlow.Batch (src/SqlFlow.Core/SourceControl/SourceControlFlow.cs) and projected to CatalogPipeline.Batch by the shared header projection (FlowDocumentHeaders.Project, src/SqlFlow.Lineage/Collection/FlowDocumentHeaders.cs). Grouping and filtering only: it carries no ordering, and scheduling is by schedule membership, never by batch. Blank/whitespace-only values normalize to null.",
+      "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs (string? Batch, mapped in Map)"
+    },
     {
       "path": "connections",
       "type": "map<string,object>",
@@ -154,6 +162,14 @@
       "description": "A whole ${...} reference to the git username; maps to SourceControlRepository.Username (src/SqlFlow.Core/SourceControl/SourceControlFlow.cs:56-58). Optional even when pushing: a token-only credential is valid, since BuildCredentialsAsync resolves username only if it is non-null (src/SqlFlow.SourceControl/SourceControlService.cs:127-129). GitHub accepts any non-empty username alongside a personal-access-token secret; when this resolves to null or blank, LibGit2GitWorkspace substitutes the placeholder 'x-access-token' at push/clone time (CredentialsProvider, src/SqlFlow.SourceControl/LibGit2GitWorkspace.cs:163-174); BitBucket needs the real account username.",
       "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:306 (mapped at line 116; checked at line 122)",
       "validation": "A non-null value that is not a whole ${...} token: FlowValidationException \"{source}: 'repository.username' must be a ${env:NAME} or ${keyvault:vault/secret} reference, never a literal. Put the value in the git-ignored .sqlflow/env file or your secret store.\" (RequireReferenceNotLiteral, src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:263-279, called at line 122)."
+    },
+    {
+      "path": "schedule",
+      "type": "object|string|array",
+      "required": false,
+      "default": "none",
+      "description": "The document-envelope schedule, identical to every other flow kind: parsed by YamlDocumentLoader before the flowType dispatch (src/SqlFlow.Yaml/YamlDocumentLoader.cs), carried on the projected pipeline header, mirrored into the catalog by the estate sync, and fired by the control plane's SchedulerService onto the normal run queue. This is how a snapshot runs unattended: a nightly cron on the flow, or a reference joining a named schedule. A source-control flow is deliberately excluded from the lineage graph, so it never joins a wave; a schedule that names it fires it directly.",
+      "definedIn": "src/SqlFlow.Core/ScheduleSpec.cs"
     },
     {
       "path": "scripting",

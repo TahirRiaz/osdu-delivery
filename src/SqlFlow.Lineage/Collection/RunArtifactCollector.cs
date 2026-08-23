@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using SqlFlow.Core.Lineage;
 using SqlFlow.Core.Runs;
 using SqlFlow.Lineage.Extraction;
@@ -47,6 +47,14 @@ public static class RunArtifactCollector
                 {
                     result.Warnings.Add(
                         $"run history '{folderName}' has no matching flow document; its observations are not attributed (a renamed or deleted flow).");
+                    continue;
+                }
+
+                // A maintenance flow's run history is recognized (so it raises no orphan warning) but observed
+                // nothing about the data graph: its SQL reads system catalogs to script definitions, which is
+                // not lineage. Excluding it here matches the declared tier, which projects no node for it.
+                if (!flow.ParticipatesInLineage)
+                {
                     continue;
                 }
 

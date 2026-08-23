@@ -1,4 +1,4 @@
-using SqlFlow.Core.Lineage;
+﻿using SqlFlow.Core.Lineage;
 using SqlFlow.Lineage.Collection;
 
 namespace SqlFlow.Lineage.Graph;
@@ -355,7 +355,12 @@ public static class LineageGraphBuilder
         // it) and is warned about by the collector. The same grouping also yields the structured duplicate set
         // the report exposes, so a stricter consumer (batch membership) can refuse the collision without
         // parsing the warning text.
+        // Maintenance flows (scm) are dropped here, the single gate for the whole graph: they never become a
+        // node, so they cannot acquire an edge, a dependency, a wave, or batch membership downstream. A snapshot
+        // reads object DEFINITIONS and writes a git tree, so treating it as a data dependency would order the
+        // estate around a flow that moves no data.
         var byName = collected.Flows
+            .Where(f => f.ParticipatesInLineage)
             .GroupBy(f => f.Node.Name, StringComparer.OrdinalIgnoreCase)
             .OrderBy(g => g.First().Node.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();

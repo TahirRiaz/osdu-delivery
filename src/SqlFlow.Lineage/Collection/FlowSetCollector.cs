@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Core.Files;
 using SqlFlow.Core.Invoke;
 using SqlFlow.Core.Lineage;
@@ -438,6 +438,7 @@ public sealed class FlowSetCollector
                 SourceServerRef = header.SourceServerRef,
                 TargetServerRef = header.TargetServerRef,
                 Schedule = header.Schedule,
+                ParticipatesInLineage = header.ParticipatesInLineage,
                 FileWriteUtc = fileWriteUtc,
             });
         }
@@ -735,8 +736,10 @@ public sealed class FlowSetCollector
                 break;
             }
 
-                // SourceControlFlowDocument/BatchFlowDocument project no headers and contribute no facts: a batch's
-                // ordering is computed FROM lineage, never part of it.
+                // SourceControlFlowDocument contributes a flow node for the catalog but no facts: it reads object
+                // DEFINITIONS, not data, so it declares no dependency and the graph builder drops it entirely.
+                // BatchFlowDocument projects no header at all: a batch's ordering is computed FROM lineage,
+                // never part of it.
         }
     }
 

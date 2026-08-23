@@ -1,4 +1,4 @@
-namespace SqlFlow.Core.SourceControl;
+﻿namespace SqlFlow.Core.SourceControl;
 
 /// <summary>
 /// A source-control flow (flowType: scm): the V3 equivalent of one <c>flw.SysSourceControl</c> row. It scripts
@@ -21,6 +21,11 @@ public sealed record SourceControlFlow
     public Runs.FlowLifecycle Lifecycle { get; init; } = Runs.FlowLifecycle.Production;
 
     public string? Description { get; init; }
+
+    /// <summary>The grouping label (the legacy <c>flw.SysSourceControl.Batch</c>), a filter for listing and
+    /// triggering related snapshots together. Purely a label: it carries no ordering and no schedule, exactly as
+    /// it does on every other flow kind.</summary>
+    public string? Batch { get; init; }
 
     /// <summary>The name of the connection (declared under <c>connections:</c>) for the database to script.</summary>
     public required string Server { get; init; }
