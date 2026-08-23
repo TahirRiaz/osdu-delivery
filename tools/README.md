@@ -66,7 +66,7 @@ than merging into one ambiguous search:
 
 | Question | Tools | Reads |
 | --- | --- | --- |
-| What changed in a managed **database** (tables, views, procedures)? | `database_schema_changes`, `database_schema_history_databases`, `database_object_ddl` | The schema history the source-control (`scm`) flows record when they snapshot each database |
+| What changed in a managed **database** (tables, views, procedures)? | `database_schema_changes`, `database_schema_history_databases`, `database_object_compare`, `database_object_ddl` | The schema history the source-control (`scm`) flows record when they snapshot each database |
 | What changed in a **pipeline definition** (the flow YAML)? | `flow_definition_history`, `flow_definition_file_history`, `flow_definition_diff` | The git history of the repository the estate syncs |
 
 Both are served by the control plane, which resolves the git credential itself from the reference stored against

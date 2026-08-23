@@ -26,6 +26,8 @@ import { SearchInput } from "../../components/SearchInput";
 import { fetchSchemaChanges } from "./fetchSchemaChanges";
 
 const windows = [
+  { value: "1", label: "Last 24 hours" },
+  { value: "3", label: "Last 3 days" },
   { value: "7", label: "Last 7 days" },
   { value: "30", label: "Last 30 days" },
   { value: "90", label: "Last 90 days" },
@@ -290,12 +292,12 @@ function ObjectCompare({
  * moved, each expanding to every time a snapshot saw it change. Source-control (scm) flows write this as they
  * run, so the page reads what the catalog already holds and touches no tracked database.
  *
- * The window defaults to the last 30 days, which is the question this page exists to answer: what has changed
- * recently. A change is dated to the snapshot that first SAW it, so a daily cadence dates a change to the day,
- * not the minute, the DDL ran.
+ * The window defaults to the last 24 hours, which on a daily snapshot cadence is the last run: what moved in the
+ * estate overnight, with the wider windows a click away when a change has to be traced further back. A change is
+ * dated to the snapshot that first SAW it, so that cadence dates a change to the day, not the minute, the DDL ran.
  */
 export default function SchemaChangesPage() {
-  const [window, setWindow] = useLocalStorageState("schema-changes.window", "30");
+  const [window, setWindow] = useLocalStorageState("schema-changes.window", "1");
   const [changeType, setChangeType] = useState<"all" | ChangeType>("all");
   const [search, setSearch] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -414,7 +416,7 @@ export default function SchemaChangesPage() {
         <div className="flex items-center gap-2">
           <Label className="text-xs text-muted-foreground">Window</Label>
           <Select value={window} onValueChange={setWindow}>
-            <SelectTrigger className={cn("h-8 w-[150px]", window !== "30" && activeFilterClass)}>
+            <SelectTrigger className={cn("h-8 w-[150px]", window !== "1" && activeFilterClass)}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

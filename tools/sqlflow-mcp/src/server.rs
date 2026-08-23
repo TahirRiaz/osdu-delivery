@@ -1239,8 +1239,9 @@ impl SqlFlowMcp {
             object name, its schema, or its category). The history is recorded by source-control (scm) flows \
             that snapshot each managed database on a schedule, so a change is dated to the snapshot that \
             first SAW it: on a daily cadence that is the day, not the minute, the DDL ran, and a database \
-            with no scm flow has no history at all. For the actual DDL text of one change, follow up with \
-            database_object_ddl. Do NOT use this for pipeline/YAML edits: that is flow_definition_history."
+            with no scm flow has no history at all. For the actual DDL text, follow up with \
+            database_object_compare (the net change over a window) or database_object_ddl (what one single \
+            snapshot did). Do NOT use this for pipeline/YAML edits: that is flow_definition_history."
     )]
     async fn database_schema_changes(&self, Parameters(i): Parameters<SchemaChangesInput>) -> String {
         let q = vec![
@@ -1285,6 +1286,25 @@ impl SqlFlowMcp {
     async fn database_object_ddl(&self, Parameters(i): Parameters<ObjectDdlInput>) -> String {
         let q = vec![("pipelineId", i.pipeline_id), ("sha", i.sha), ("path", i.path)];
         self.get("/api/v1/schema-changes/ddl", &q).await
+    }
+
+    #[tool(
+        description = "Show ONE DATABASE OBJECT's whole DDL as it stood BEFORE a window against how it \
+            stands NOW: both scripts in full, the snapshot commits each side came from, and the line tally \
+            between them. Takes changeId (the id on a database_schema_changes row) and optional since (an \
+            ISO instant, the window start); omit since to compare against the start of the recorded \
+            history, which reads the whole script as added. Prefer this over database_object_ddl whenever \
+            the question is the NET change ('what is different about this table since last week'): several \
+            snapshots may have touched the object, and this stays one before and one after, where \
+            database_object_ddl answers only what ONE snapshot did. beforeText is null when the object did \
+            not exist at the window start (it was added inside the window) and afterText is null when it \
+            has since been dropped, in which case beforeText still carries its last known script so the \
+            drop stays reviewable. Reports truncated=true when a side was clipped, so a large generated \
+            script is never mistaken for a complete one."
+    )]
+    async fn database_object_compare(&self, Parameters(i): Parameters<ObjectCompareInput>) -> String {
+        let q = vec![("since", i.since.unwrap_or_default())];
+        self.get(&format!("/api/v1/schema-changes/{}/compare", i.change_id), &q).await
     }
 
     // ---- Change history: FLOW DEFINITIONS / YAML (read) ------------------
@@ -1904,6 +1924,17 @@ pub struct ObjectDdlInput {
     pub sha: String,
     /// The object's repository path: "<database>/<category>/<schema>.<name>.sql".
     pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ObjectCompareInput {
+    /// The schema-change row to compare (the id on a database_schema_changes row). It carries the object's
+    /// identity, so no repository path is passed: the server rebuilds it.
+    #[serde(rename = "changeId")]
+    pub change_id: i64,
+    /// ISO instant: the window start. The "before" side is the newest snapshot at or before it. Omit to
+    /// compare against the start of the recorded history.
+    pub since: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

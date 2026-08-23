@@ -241,13 +241,14 @@ the warehouse this week" is a query rather than a diff of commits nobody has clo
 the object category, its schema and name, whether it was added, changed, or dropped, the commit that holds the
 diff, and when the snapshot observed it. A run that finds nothing writes no rows.
 
-Two MCP tools read it, kept deliberately distinct from the pipeline-history tools so an assistant picks the right
-one: `database_schema_changes` searches what changed in a managed DATABASE, and `database_object_ddl` returns the
-actual DDL patch for one object at one snapshot. The pipeline YAML's own history is `flow_definition_history`, a
+Three MCP tools read it, kept deliberately distinct from the pipeline-history tools so an assistant picks the
+right one: `database_schema_changes` searches what changed in a managed DATABASE, `database_object_compare`
+returns one object's whole script at both ends of a window (the net change), and `database_object_ddl` returns
+the DDL patch for one object at one snapshot. The pipeline YAML's own history is `flow_definition_history`, a
 different question about a different artifact.
 
-The GUI reads this at **Explore > Schema changes**: a database, schema, object tree over a date window (last 30
-days by default), where selecting an object shows every time a snapshot saw it move, each linking to the run.
+The GUI reads this at **Explore > Schema changes**: a database, schema, object tree over a date window (last 24
+hours by default, which on a daily snapshot cadence is the last run), where selecting an object shows every time a snapshot saw it move, each linking to the run.
 The `/api/v1/schema-changes` endpoint serves the same data, with `database`, `changeType`, `since`, and `search`
 filters, and `/api/v1/schema-changes/databases` returns the per-database tally.
 
