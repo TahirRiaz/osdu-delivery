@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -359,6 +359,7 @@ v1.MapAuthEndpoints(options);
 // The authenticated read surface: repos/pipelines, runs, lineage, cross-repo search, and schedules.
 v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapCatalogEndpoints()
+    .MapGitHistoryEndpoints()
     .MapRunEndpoints()
     .MapActivityEndpoints()
     .MapLineageEndpoints()

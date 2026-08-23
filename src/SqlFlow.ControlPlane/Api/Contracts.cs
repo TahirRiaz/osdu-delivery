@@ -17,6 +17,29 @@ public static class PageRequest
         => (Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? DefaultPageSize, 1, MaxPageSize));
 }
 
+/// <summary>One commit in a synced repository's history: who changed what, when, and which paths it touched.</summary>
+public sealed record GitCommitDto(
+    string Sha,
+    string ShortSha,
+    string AuthorName,
+    string AuthorEmail,
+    DateTime CommittedUtc,
+    string Message,
+    IReadOnlyList<string> ChangedPaths);
+
+/// <summary>The patch one commit applied, optionally scoped to a single file. <c>Truncated</c> says the text was
+/// cut at the inline limit, so a reader never mistakes a clipped patch for a complete one.</summary>
+public sealed record GitDiffDto(
+    string Sha,
+    string AuthorName,
+    DateTime CommittedUtc,
+    string Message,
+    string? Path,
+    int LinesAdded,
+    int LinesDeleted,
+    string Patch,
+    bool Truncated);
+
 /// <summary>One object a source-control snapshot found added, changed, or dropped, as the schema-history feed
 /// returns it. <c>CommitSha</c> links the row to the commit that carries the diff.</summary>
 public sealed record SchemaChangeDto(

@@ -1222,6 +1222,122 @@ impl SqlFlowMcp {
         self.get(&format!("/api/v1/repos/{}/dependencies", i.repo_id), &q).await
     }
 
+    // ---- Change history: DATABASE SCHEMAS (read) -------------------------
+    //
+    // Two histories, two families of tool, deliberately not merged. This family answers "what changed in a
+    // DATABASE": tables, views, procedures in the SQL Server databases SQLFlow manages. The flow_definition_*
+    // family below answers "what changed in a PIPELINE": the YAML that defines the ETL. Picking the wrong one
+    // yields a confident answer to a question nobody asked.
+
+    #[tool(
+        description = "SEARCH WHAT CHANGED IN A MANAGED DATABASE (tables, views, procedures, functions). Use \
+            this for questions about DATABASE OBJECTS: 'what changed in the warehouse last week', 'when did \
+            this column appear', 'was anything dropped from arc', 'has pre.v_Bysykkel_Trips been edited'. \
+            Returns one row per object per change: database, category (Table/View/StoredProcedure/...), \
+            schema, name, changeType (Added|Changed|Deleted), the commit that holds the DDL diff, and \
+            occurredUtc. Filter with database, changeType, since (ISO instant), and search (matches the \
+            object name, its schema, or its category). The history is recorded by source-control (scm) flows \
+            that snapshot each managed database on a schedule, so a change is dated to the snapshot that \
+            first SAW it: on a daily cadence that is the day, not the minute, the DDL ran, and a database \
+            with no scm flow has no history at all. For the actual DDL text of one change, follow up with \
+            database_object_ddl. Do NOT use this for pipeline/YAML edits: that is flow_definition_history."
+    )]
+    async fn database_schema_changes(&self, Parameters(i): Parameters<SchemaChangesInput>) -> String {
+        let q = vec![
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("database", i.database.unwrap_or_default()),
+            ("changeType", i.change_type.unwrap_or_default()),
+            ("since", i.since.unwrap_or_default()),
+            ("search", i.search.unwrap_or_default()),
+            ("page", i.page.map(|n| n.to_string()).unwrap_or_default()),
+            ("pageSize", i.page_size.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/schema-changes", &q).await
+    }
+
+    #[tool(
+        description = "List which MANAGED DATABASES have a schema history and how much they have changed: per \
+            database, the total plus added/changed/deleted counts and when it last changed. Start here to \
+            learn which databases are tracked at all, then narrow with database_schema_changes(database). A \
+            database missing from this list has no source-control (scm) flow snapshotting it, which is a \
+            configuration answer, not an empty result. Optional since (ISO instant) scopes the tally."
+    )]
+    async fn database_schema_history_databases(
+        &self,
+        Parameters(i): Parameters<SchemaChangeDatabasesInput>,
+    ) -> String {
+        let q = vec![
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("since", i.since.unwrap_or_default()),
+        ];
+        self.get("/api/v1/schema-changes/databases", &q).await
+    }
+
+    #[tool(
+        description = "Show the actual DDL that changed for ONE DATABASE OBJECT at one snapshot, as a unified \
+            diff (the CREATE TABLE / CREATE VIEW text before and after). Arguments come straight from a \
+            database_schema_changes row: pipelineId (its scm flow), sha (its commitSha), and path (the \
+            object's file, '<database>/<category>/<schema>.<name>.sql'). Use it to answer 'what exactly \
+            changed about this table', after database_schema_changes has told you THAT it changed. Reports \
+            truncated=true when the patch was clipped, so a large generated snapshot is never mistaken for a \
+            complete one."
+    )]
+    async fn database_object_ddl(&self, Parameters(i): Parameters<ObjectDdlInput>) -> String {
+        let q = vec![("pipelineId", i.pipeline_id), ("sha", i.sha), ("path", i.path)];
+        self.get("/api/v1/schema-changes/ddl", &q).await
+    }
+
+    // ---- Change history: FLOW DEFINITIONS / YAML (read) ------------------
+
+    #[tool(
+        description = "SEARCH WHAT CHANGED IN THE PIPELINE DEFINITIONS (the flow YAML in git). Use this for \
+            questions about ETL CODE: 'what pipelines changed this week', 'who edited the citybike flows', \
+            'which commits mention watermark', 'what changed under the apc folder'. Returns commits newest \
+            first: sha, shortSha, author name and email, committedUtc, the message, and the paths each \
+            commit touched. Filter with path (a repo-relative file or folder prefix), author, message \
+            (substring), since/until (ISO instants) and limit. Pass repoId when more than one repository is \
+            synced. Do NOT use this for database tables, views, or procedures: that is \
+            database_schema_changes."
+    )]
+    async fn flow_definition_history(&self, Parameters(i): Parameters<FlowHistoryInput>) -> String {
+        let q = vec![
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("path", i.path.unwrap_or_default()),
+            ("author", i.author.unwrap_or_default()),
+            ("message", i.message.unwrap_or_default()),
+            ("since", i.since.unwrap_or_default()),
+            ("until", i.until.unwrap_or_default()),
+            ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
+        ];
+        self.get("/api/v1/flow-history/commits", &q).await
+    }
+
+    #[tool(
+        description = "The edit history of ONE FLOW's definition: every commit that touched that pipeline's \
+            own YAML file, newest first. Takes the pipelineId you already have from list_pipelines or \
+            get_pipeline, so you never need to know the file path. Use it for 'when was this flow last \
+            changed and by whom', then flow_definition_diff on a returned sha to see the edit itself."
+    )]
+    async fn flow_definition_file_history(&self, Parameters(i): Parameters<FlowFileHistoryInput>) -> String {
+        let q = vec![("limit", i.limit.map(|n| n.to_string()).unwrap_or_default())];
+        self.get(&format!("/api/v1/flow-history/flows/{}", i.pipeline_id), &q).await
+    }
+
+    #[tool(
+        description = "Show the YAML that changed in one pipeline commit, as a unified diff. Pass the sha \
+            from flow_definition_history or flow_definition_file_history, and optionally path to narrow a \
+            multi-file commit to one flow. Use it to answer 'what did this change actually do' about ETL \
+            code. For a database object's DDL, use database_object_ddl instead."
+    )]
+    async fn flow_definition_diff(&self, Parameters(i): Parameters<FlowDiffInput>) -> String {
+        let q = vec![
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("sha", i.sha),
+            ("path", i.path.unwrap_or_default()),
+        ];
+        self.get("/api/v1/flow-history/diff", &q).await
+    }
+
     // ---- Search (read) ---------------------------------------------------
 
     #[tool(
@@ -1752,6 +1868,79 @@ impl SqlFlowMcp {
 /// Tools that take no arguments still need a parameter type for the macro.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmptyInput {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SchemaChangesInput {
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// One managed database, exactly as database_schema_history_databases reports it (e.g. "dw-dwh-prod").
+    pub database: Option<String>,
+    /// Added | Changed | Deleted.
+    #[serde(rename = "changeType")]
+    pub change_type: Option<String>,
+    /// ISO instant; only changes observed at or after it are returned.
+    pub since: Option<String>,
+    /// Substring match on the object name, its schema, or its category.
+    pub search: Option<String>,
+    pub page: Option<i64>,
+    #[serde(rename = "pageSize")]
+    pub page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SchemaChangeDatabasesInput {
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// ISO instant; scopes the tally to changes at or after it.
+    pub since: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ObjectDdlInput {
+    /// The scm flow that recorded the change (the pipelineId on a database_schema_changes row).
+    #[serde(rename = "pipelineId")]
+    pub pipeline_id: String,
+    /// The snapshot commit (the commitSha on a database_schema_changes row).
+    pub sha: String,
+    /// The object's repository path: "<database>/<category>/<schema>.<name>.sql".
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FlowHistoryInput {
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// A repo-relative file or folder prefix, e.g. "citybike" or "citybike/citybike_00_api.yaml".
+    pub path: Option<String>,
+    /// Substring match on the commit author's name or email.
+    pub author: Option<String>,
+    /// Substring match on the commit message.
+    pub message: Option<String>,
+    /// ISO instant lower bound on the commit date.
+    pub since: Option<String>,
+    /// ISO instant upper bound on the commit date.
+    pub until: Option<String>,
+    /// Maximum commits to return (default 50, capped at 200).
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FlowFileHistoryInput {
+    #[serde(rename = "pipelineId")]
+    pub pipeline_id: String,
+    /// Maximum commits to return (default 50, capped at 200).
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FlowDiffInput {
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// The commit to diff, from flow_definition_history.
+    pub sha: String,
+    /// Narrow a multi-file commit to one file.
+    pub path: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiscoverSourceInput {

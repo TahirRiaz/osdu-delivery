@@ -59,6 +59,20 @@ kind, or name). Then, for a specific object, `describe_object` returns its
 identity, columns, generating script, module body, and lineage edges in one
 payload.
 
+### Two change histories, two tool families
+
+The estate versions two different things, so "what changed" has two answers and the tools stay separate rather
+than merging into one ambiguous search:
+
+| Question | Tools | Reads |
+| --- | --- | --- |
+| What changed in a managed **database** (tables, views, procedures)? | `database_schema_changes`, `database_schema_history_databases`, `database_object_ddl` | The schema history the source-control (`scm`) flows record when they snapshot each database |
+| What changed in a **pipeline definition** (the flow YAML)? | `flow_definition_history`, `flow_definition_file_history`, `flow_definition_diff` | The git history of the repository the estate syncs |
+
+Both are served by the control plane, which resolves the git credential itself from the reference stored against
+the repo source or the scm flow. The MCP server holds no git credential and cannot address an arbitrary remote:
+only repositories the estate already manages are readable.
+
 Every online result carries a `links` object per row: the GUI page for the row
 itself, its lineage graph, and the entities it references (its flow, the objects
 a lineage step touches, the run behind a file). Use them when an answer names a

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using LibGit2Sharp;
 using LibGit2Sharp.Handlers;
 using SqlFlow.Core.Secrets;
@@ -161,6 +161,92 @@ public sealed class GitMaterializer
                 TryDeleteDirectory(staging);
             }
         }
+    }
+
+    /// <summary>
+    /// Ensures a long-lived, read-only clone of <paramref name="remoteUrl"/> exists for HISTORY queries (git log,
+    /// diffs, file blame) and returns its working directory. Unlike <see cref="MaterializeBranch"/> this clone is
+    /// never torn down: it is created once and brought forward with a fetch when it is older than
+    /// <paramref name="maxAge"/>, so repeated history reads cost a fetch at most and usually nothing at all.
+    ///
+    /// It deliberately occupies its OWN cache directory rather than sharing the sync's branch checkout. The sync
+    /// re-clones that path on every pass, which would pull the tree out from under a reader mid-query; keeping the
+    /// history clone separate means the two never contend, at the cost of one extra checkout per repository.
+    /// </summary>
+    /// <param name="remoteUrl">The repository to read.</param>
+    /// <param name="branch">The branch to check out on first clone.</param>
+    /// <param name="credentials">The resolved git credential, or null for a public or local remote.</param>
+    /// <param name="maxAge">How stale the clone may be before a fetch is issued. <see cref="TimeSpan.Zero"/>
+    /// always fetches; <see cref="Timeout.InfiniteTimeSpan"/> never does.</param>
+    /// <param name="ct">Cancels before the clone or fetch begins.</param>
+    public string EnsureHistoryClone(
+        string remoteUrl, string branch, GitMaterializerCredentials? credentials, TimeSpan maxAge,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(remoteUrl);
+
+        var workingDir = Path.Combine(_cacheRoot, StableFolder(remoteUrl), "history");
+        ct.ThrowIfCancellationRequested();
+
+        lock (LockFor(workingDir))
+        {
+            try
+            {
+                if (!Repository.IsValid(workingDir))
+                {
+                    // A full (not shallow) clone: a history API whose answers stop at an arbitrary depth would be
+                    // worse than no answer, because the truncation is invisible to the caller.
+                    var staging = StagingPath(workingDir);
+                    try
+                    {
+                        DeleteDirectory(staging);
+                        Directory.CreateDirectory(staging);
+                        var options = new CloneOptions { BranchName = string.IsNullOrWhiteSpace(branch) ? null : branch };
+                        options.FetchOptions.CredentialsProvider = CredentialsProvider(credentials);
+                        Repository.Clone(remoteUrl, staging, options);
+                        PublishAtomically(staging, workingDir);
+                    }
+                    finally
+                    {
+                        TryDeleteDirectory(staging);
+                    }
+
+                    return workingDir;
+                }
+
+                if (maxAge != Timeout.InfiniteTimeSpan && FetchAge(workingDir) > maxAge)
+                {
+                    using var repo = new Repository(workingDir);
+                    var origin = repo.Network.Remotes["origin"];
+                    if (origin is not null)
+                    {
+                        var fetchOptions = new FetchOptions { CredentialsProvider = CredentialsProvider(credentials) };
+                        Commands.Fetch(
+                            repo, origin.Name, origin.FetchRefSpecs.Select(r => r.Specification), fetchOptions,
+                            logMessage: null);
+                    }
+                }
+
+                return workingDir;
+            }
+            catch (Exception ex) when (ex is LibGit2SharpException or IOException or UnauthorizedAccessException)
+            {
+                throw new SqlFlowNodeException($"could not read the history of '{remoteUrl}': {ex.Message}", ex);
+            }
+        }
+    }
+
+    /// <summary>How long since this clone last fetched, read from git's own FETCH_HEAD stamp (written by clone and
+    /// by every fetch). A clone with no stamp is treated as infinitely old, so the next read fetches it.</summary>
+    private static TimeSpan FetchAge(string workingDir)
+    {
+        var stamp = Path.Combine(workingDir, ".git", "FETCH_HEAD");
+        if (!File.Exists(stamp))
+        {
+            return TimeSpan.MaxValue;
+        }
+
+        return DateTime.UtcNow - File.GetLastWriteTimeUtc(stamp);
     }
 
     /// <summary>A private, per-attempt staging directory that is a sibling of <paramref name="workingDir"/>, so the
