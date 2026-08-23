@@ -61,6 +61,23 @@ GUI /chat -> control plane POST /api/v1/chat/ask (SSE stream)
 
 Conversations persist in the catalog (`ChatConversation` / `ChatMessage`): the transcript is the durable record, provider-side conversation state is only a cache of it, so a control-plane restart or a re-opened browser loses nothing. Deleting a conversation deletes its messages; conversations are strictly per-user.
 
+## Links in answers
+
+Answers are navigational: when the assistant names a table, flow, run, schedule, or report, it links the name to that thing's page in the workbench, and a table also gets a link to its lineage graph. The links are not composed by the model. Every online MCP tool result carries a `links` object on each row, built by the MCP server from the identity the row already had:
+
+| Row | `links` |
+| --- | --- |
+| a warehouse object | `page` (its catalog page), `lineage` (the graph focused on it) |
+| a flow | `page` (`/pipelines/<id>`), `lineage` (the graph focused on it, scoped to its repo) |
+| a run | `page` (`/runs/<id>`), `flow`, `runGroup` |
+| a schedule | `page` (its runs board, filtered to it) |
+| a subscriber (report/dashboard) | `page` (`/subscribers?key=...`); its own `url` still points at the report itself |
+| a lineage step, edge, or search hit | `object`, `objectLineage`, `flow`, `run` for whatever it references |
+
+Rows are recognised by the identity fields they carry rather than by the tool that returned them, so the same shape links identically wherever it appears, and a tool added later is linked without being wired up.
+
+`SQLFLOW_GUI_URL` on the MCP server decides the form: set it to the GUI's public base URL and the links are absolute, which is what Slack and any client rendering outside the GUI need. Left unset they are root-relative (`/catalog?node=...`), which resolves for the GUI chat and nowhere else. `main.bicep` sets it from the deployed GUI automatically.
+
 ## Voice input
 
 Two modes, picked automatically:

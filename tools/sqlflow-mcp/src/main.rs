@@ -10,6 +10,7 @@ mod config;
 mod control_plane;
 mod docs;
 mod http_server;
+mod links;
 mod server;
 
 use std::sync::Arc;
@@ -48,6 +49,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("loaded {} reference pages for {}", docs.len(), docs.product());
     let cp = Arc::new(ControlPlane::from_env());
     tracing::info!("control plane: {}", cp.base_url());
+    let gui = links::GuiLinks::from_env();
+    match gui.base() {
+        "" => tracing::info!(
+            "GUI links: root-relative (set SQLFLOW_GUI_URL to make them absolute for clients outside the GUI)"
+        ),
+        base => tracing::info!("GUI links: {base}"),
+    }
 
     if args.get(1).map(String::as_str) == Some("http") {
         let opts = parse_http_options(&args[2..])?;

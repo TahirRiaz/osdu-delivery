@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "9550112310161743548"
+      "templateHash": "12032643485495391681"
     }
   },
   "parameters": {
@@ -199,6 +199,20 @@
       "defaultValue": 30,
       "metadata": {
         "description": "Capacity for the model deployment, in thousands of tokens per minute."
+      }
+    },
+    "aiFoundryTranscriptionModelName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional audio-transcription model deployed beside the chat model (e.g. gpt-4o-mini-transcribe), enabling the GUI chat assistant's server-side voice input. Empty deploys none; the mic then falls back to the browser's built-in speech recognition."
+      }
+    },
+    "aiFoundryTranscriptionModelVersion": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Version of the transcription model. Empty lets the service pick the current default version."
       }
     },
     "mcpImage": {
@@ -418,6 +432,7 @@
     "slackBotSqlflowTokenSecretName": "sqlflow-slack-bot-access-token",
     "slackBotModelApiKeySecretName": "sqlflow-slack-bot-model-api-key",
     "mcpEnabled": "[not(empty(parameters('mcpImage')))]",
+    "chatAssistantEnabled": "[and(and(variables('mcpEnabled'), not(empty(parameters('aiFoundryName')))), not(empty(parameters('aiFoundryModelName'))))]",
     "slackBotUsesApiKey": "[not(equals(parameters('slackBotProvider'), 'AzureFoundry'))]",
     "slackBotProviderReady": "[if(variables('slackBotUsesApiKey'), not(empty(parameters('slackBotModelApiKey'))), and(not(empty(parameters('aiFoundryName'))), not(empty(parameters('aiFoundryModelName')))))]",
     "slackBotEnabled": "[and(and(and(and(and(variables('mcpEnabled'), not(empty(parameters('slackBotImage')))), not(empty(parameters('slackAppToken')))), not(empty(parameters('slackBotToken')))), not(empty(parameters('slackBotSqlflowToken')))), variables('slackBotProviderReady'))]",
@@ -911,6 +926,13 @@
           "acrLoginServer": {
             "value": "[parameters('acrLoginServer')]"
           },
+          "assistantEnabled": {
+            "value": "[variables('chatAssistantEnabled')]"
+          },
+          "assistantFoundryProjectEndpoint": "[if(variables('chatAssistantEnabled'), createObject('value', variables('aiFoundryProjectEndpoint')), createObject('value', ''))]",
+          "assistantFoundryModelDeploymentName": "[if(variables('chatAssistantEnabled'), createObject('value', parameters('aiFoundryModelName')), createObject('value', ''))]",
+          "assistantFoundryTranscriptionDeploymentName": "[if(variables('chatAssistantEnabled'), createObject('value', parameters('aiFoundryTranscriptionModelName')), createObject('value', ''))]",
+          "assistantMcpServerUrl": "[if(variables('chatAssistantEnabled'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-mcp-app'), '2025-04-01').outputs.mcpUrl.value), createObject('value', ''))]",
           "minReplicas": {
             "value": "[parameters('controlPlaneMinReplicas')]"
           },
@@ -925,7 +947,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "11624777409897010932"
+              "templateHash": "11748553356433298434"
             }
           },
           "parameters": {
@@ -1073,6 +1095,41 @@
                 "description": "Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set."
               }
             },
+            "assistantEnabled": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Enable the GUI chat assistant (/api/v1/chat): the same assistant core as the Slack bot, streamed to the GUI, with every agent run forwarding the calling user's own bearer to the MCP server. Requires the Foundry and MCP parameters below; the key-based providers are configured out of band via ControlPlane__Assistant__* env vars instead."
+              }
+            },
+            "assistantFoundryProjectEndpoint": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "The Foundry project endpoint the assistant runs against (https://<account>.services.ai.azure.com/api/projects/<project>). Required when assistantEnabled."
+              }
+            },
+            "assistantFoundryModelDeploymentName": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "The model deployment the assistant runs on. Required when assistantEnabled."
+              }
+            },
+            "assistantFoundryTranscriptionDeploymentName": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional audio-transcription deployment in the same account; empty leaves voice input on the browser's built-in speech recognition."
+              }
+            },
+            "assistantMcpServerUrl": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "The deployed SQLFlow MCP server endpoint (https://<mcp host>/mcp), the assistant's tool source. Required when assistantEnabled."
+              }
+            },
             "minReplicas": {
               "type": "int",
               "defaultValue": 1,
@@ -1129,6 +1186,7 @@
             "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
             "proxyEnv": "[if(empty(parameters('proxyKnownNetworks')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Proxy__Enabled', 'value', 'true')), variables('proxyNetworkEnv')))]",
+            "assistantEnv": "[if(not(parameters('assistantEnabled')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Assistant__Enabled', 'value', 'true'), createObject('name', 'ControlPlane__Assistant__Foundry__ProjectEndpoint', 'value', parameters('assistantFoundryProjectEndpoint')), createObject('name', 'ControlPlane__Assistant__Foundry__ModelDeploymentName', 'value', parameters('assistantFoundryModelDeploymentName')), createObject('name', 'ControlPlane__Assistant__Mcp__ServerUrl', 'value', parameters('assistantMcpServerUrl'))), if(empty(parameters('assistantFoundryTranscriptionDeploymentName')), createArray(), createArray(createObject('name', 'ControlPlane__Assistant__Foundry__TranscriptionDeploymentName', 'value', parameters('assistantFoundryTranscriptionDeploymentName'))))))]",
             "entraEnv": "[if(or(empty(parameters('azureAdTenantId')), empty(parameters('azureAdClientId'))), createArray(), createArray(createObject('name', 'ControlPlane__AzureAd__TenantId', 'value', parameters('azureAdTenantId')), createObject('name', 'ControlPlane__AzureAd__ClientId', 'value', parameters('azureAdClientId')), createObject('name', 'ControlPlane__AzureAd__DefaultRole', 'value', parameters('azureAdDefaultRole'))))]"
           },
           "resources": [
@@ -1199,7 +1257,7 @@
                         "cpu": "[json('0.5')]",
                         "memory": "1.0Gi"
                       },
-                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
+                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'), variables('assistantEnv'))]",
                       "probes": [
                         {
                           "type": "Liveness",
@@ -1267,6 +1325,7 @@
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('jwtSigningKeySecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'sqlflow-mcp-app')]",
         "[resourceId('Microsoft.Sql/servers/firewallRules', parameters('sqlServerName'), 'AllowAllWindowsAzureIps')]"
       ]
     },
@@ -1863,13 +1922,21 @@
           "modelCapacity": {
             "value": "[parameters('aiFoundryModelCapacity')]"
           },
+          "transcriptionModelName": {
+            "value": "[parameters('aiFoundryTranscriptionModelName')]"
+          },
+          "transcriptionModelVersion": {
+            "value": "[parameters('aiFoundryTranscriptionModelVersion')]"
+          },
           "userPrincipalIds": {
             "value": [
               "[reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-control-plane-app'), '2025-04-01').outputs.identityPrincipalId.value]",
               "[reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-worker-app'), '2025-04-01').outputs.identityPrincipalId.value]"
             ]
           },
-          "agentPrincipalIds": "[if(and(variables('slackBotEnabled'), not(variables('slackBotUsesApiKey'))), createObject('value', createArray(reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-slack-bot-app'), '2025-04-01').outputs.identityPrincipalId.value)), createObject('value', createArray()))]"
+          "agentPrincipalIds": {
+            "value": "[concat(if(and(variables('slackBotEnabled'), not(variables('slackBotUsesApiKey'))), createArray(reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-slack-bot-app'), '2025-04-01').outputs.identityPrincipalId.value), createArray()), if(variables('chatAssistantEnabled'), createArray(reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-control-plane-app'), '2025-04-01').outputs.identityPrincipalId.value), createArray()))]"
+          }
         },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
@@ -1878,7 +1945,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "9536245192722945617"
+              "templateHash": "14368204849936570258"
             }
           },
           "parameters": {
@@ -1966,6 +2033,28 @@
                 "description": "Deployment capacity in thousands of tokens per minute."
               }
             },
+            "transcriptionModelName": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional audio-transcription model deployed beside the chat model (e.g. gpt-4o-mini-transcribe or whisper), for the GUI chat assistant's voice input. Empty deploys none."
+              }
+            },
+            "transcriptionModelVersion": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Version of the transcription model. Empty lets the service pick the current default version."
+              }
+            },
+            "transcriptionModelCapacity": {
+              "type": "int",
+              "defaultValue": 30,
+              "minValue": 1,
+              "metadata": {
+                "description": "Capacity for the transcription deployment, in thousands of tokens per minute."
+              }
+            },
             "disableLocalAuth": {
               "type": "bool",
               "defaultValue": false,
@@ -2028,6 +2117,24 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
+                "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('name'), parameters('projectName'))]"
+              ]
+            },
+            {
+              "condition": "[not(empty(parameters('transcriptionModelName')))]",
+              "type": "Microsoft.CognitiveServices/accounts/deployments",
+              "apiVersion": "2025-06-01",
+              "name": "[format('{0}/{1}', parameters('name'), parameters('transcriptionModelName'))]",
+              "sku": {
+                "name": "[parameters('modelSkuName')]",
+                "capacity": "[parameters('transcriptionModelCapacity')]"
+              },
+              "properties": {
+                "model": "[union(createObject('format', parameters('modelFormat'), 'name', parameters('transcriptionModelName')), if(empty(parameters('transcriptionModelVersion')), createObject(), createObject('version', parameters('transcriptionModelVersion'))))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
+                "[resourceId('Microsoft.CognitiveServices/accounts/deployments', parameters('name'), variables('effectiveModelDeploymentName'))]",
                 "[resourceId('Microsoft.CognitiveServices/accounts/projects', parameters('name'), parameters('projectName'))]"
               ]
             },
@@ -2103,6 +2210,13 @@
                 "description": "The model deployment name agents reference, or empty when no model was deployed."
               },
               "value": "[if(empty(parameters('modelName')), '', variables('effectiveModelDeploymentName'))]"
+            },
+            "transcriptionDeploymentName": {
+              "type": "string",
+              "metadata": {
+                "description": "The audio-transcription deployment name, or empty when none was deployed."
+              },
+              "value": "[parameters('transcriptionModelName')]"
             }
           }
         }
@@ -2139,6 +2253,9 @@
           "controlPlaneUrl": {
             "value": "[format('https://{0}', format('{0}.{1}', parameters('controlPlaneName'), reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName')), '2024-03-01').defaultDomain))]"
           },
+          "guiUrl": {
+            "value": "[format('https://{0}', format('{0}.{1}', parameters('guiName'), reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName')), '2024-03-01').defaultDomain))]"
+          },
           "acrName": {
             "value": "[parameters('acrName')]"
           },
@@ -2153,7 +2270,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "17814081424046312209"
+              "templateHash": "4961288835625252752"
             }
           },
           "parameters": {
@@ -2187,6 +2304,13 @@
               "type": "string",
               "metadata": {
                 "description": "Base URL of the SQLFlow control plane the MCP tools proxy, e.g. https://sqlflow-control-plane.<env-domain>."
+              }
+            },
+            "guiUrl": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Public base URL of the SQLFlow GUI, e.g. https://sqlflow-gui.<env-domain>. Tool results carry deep links into it (an object's catalog page, its lineage graph, a run) so an assistant can hand the reader something to open. Empty emits root-relative links, which only resolve for a client rendering inside the GUI itself."
               }
             },
             "acrName": {
@@ -2283,6 +2407,10 @@
                         {
                           "name": "SQLFLOW_MCP_HTTP_BIND",
                           "value": "0.0.0.0:8080"
+                        },
+                        {
+                          "name": "SQLFLOW_GUI_URL",
+                          "value": "[parameters('guiUrl')]"
                         }
                       ],
                       "probes": [

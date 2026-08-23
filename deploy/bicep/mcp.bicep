@@ -8,7 +8,8 @@
 // plus TLS is the access control. /healthz serves the platform probes without auth.
 //
 //   az deployment group create -g <rg> -f mcp.bicep \
-//     -p managedEnvironmentId=<env-id> image=<registry>/sqlflow-mcp:latest controlPlaneUrl=https://...
+//     -p managedEnvironmentId=<env-id> image=<registry>/sqlflow-mcp:latest controlPlaneUrl=https://... \
+//        guiUrl=https://sqlflow-gui.<env-domain>
 
 @description('Azure region. Defaults to the resource group location.')
 param location string = resourceGroup().location
@@ -24,6 +25,9 @@ param image string
 
 @description('Base URL of the SQLFlow control plane the MCP tools proxy, e.g. https://sqlflow-control-plane.<env-domain>.')
 param controlPlaneUrl string
+
+@description('Public base URL of the SQLFlow GUI, e.g. https://sqlflow-gui.<env-domain>. Tool results carry deep links into it (an object\'s catalog page, its lineage graph, a run) so an assistant can hand the reader something to open. Empty emits root-relative links, which only resolve for a client rendering inside the GUI itself.')
+param guiUrl string = ''
 
 @description('Name of a container registry in THIS resource group: the template grants the app identity AcrPull on it and configures the pull. Leave empty for a public registry, or one you authorize yourself via acrLoginServer.')
 param acrName string = ''
@@ -105,6 +109,10 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'SQLFLOW_MCP_HTTP_BIND'
               value: '0.0.0.0:8080'
+            }
+            {
+              name: 'SQLFLOW_GUI_URL'
+              value: guiUrl
             }
           ]
           probes: [

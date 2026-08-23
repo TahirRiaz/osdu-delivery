@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "17814081424046312209"
+      "templateHash": "4961288835625252752"
     }
   },
   "parameters": {
@@ -39,6 +39,13 @@
       "type": "string",
       "metadata": {
         "description": "Base URL of the SQLFlow control plane the MCP tools proxy, e.g. https://sqlflow-control-plane.<env-domain>."
+      }
+    },
+    "guiUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Public base URL of the SQLFlow GUI, e.g. https://sqlflow-gui.<env-domain>. Tool results carry deep links into it (an object's catalog page, its lineage graph, a run) so an assistant can hand the reader something to open. Empty emits root-relative links, which only resolve for a client rendering inside the GUI itself."
       }
     },
     "acrName": {
@@ -135,6 +142,10 @@
                 {
                   "name": "SQLFLOW_MCP_HTTP_BIND",
                   "value": "0.0.0.0:8080"
+                },
+                {
+                  "name": "SQLFLOW_GUI_URL",
+                  "value": "[parameters('guiUrl')]"
                 }
               ],
               "probes": [

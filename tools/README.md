@@ -59,6 +59,13 @@ kind, or name). Then, for a specific object, `describe_object` returns its
 identity, columns, generating script, module body, and lineage edges in one
 payload.
 
+Every online result carries a `links` object per row: the GUI page for the row
+itself, its lineage graph, and the entities it references (its flow, the objects
+a lineage step touches, the run behind a file). Use them when an answer names a
+table, flow, or run, so the reader can open it instead of hunting for it.
+
 Environment: `SQLFLOW_CONTROL_PLANE_URL` (default `http://localhost:8080`),
-`SQLFLOW_CONTROL_PLANE_TOKEN` (optional token override), `SQLFLOW_MCP_LOG`
-(log filter). Config and token are persisted under `~/.sqlflow/`.
+`SQLFLOW_CONTROL_PLANE_TOKEN` (optional token override), `SQLFLOW_GUI_URL`
+(public GUI base URL; makes those links absolute instead of root-relative),
+`SQLFLOW_MCP_LOG` (log filter). Config and token are persisted under
+`~/.sqlflow/`.

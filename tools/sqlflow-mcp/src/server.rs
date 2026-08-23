@@ -19,12 +19,16 @@ use serde_json::{json, Value};
 
 use crate::control_plane::{ControlPlane, PollOutcome};
 use crate::docs::DocsIndex;
+use crate::links::GuiLinks;
 use sqlflow_lang::census::Census;
 
 #[derive(Clone)]
 pub struct SqlFlowMcp {
     docs: Arc<DocsIndex>,
     cp: Arc<ControlPlane>,
+    /// The GUI routes every online result is decorated with, so an answer can hand the reader a way
+    /// to open the thing it is about.
+    links: GuiLinks,
     /// True when serving over HTTP: every request carries the caller's own bearer
     /// (scoped around dispatch in `call_tool`), so the server-side sign-in tools are
     /// inert, the control-plane URL is operator-fixed, and tools that read files on
@@ -49,6 +53,7 @@ impl SqlFlowMcp {
         SqlFlowMcp {
             docs,
             cp,
+            links: GuiLinks::from_env(),
             http_mode,
             tool_router: Self::tool_router(),
         }
@@ -1238,6 +1243,7 @@ impl SqlFlowMcp {
                 .await
                 .map(|mut v| {
                     annotate_search_all(&mut v, &i.query);
+                    self.links.decorate(&mut v);
                     json_str(&v)
                 }),
         )
@@ -1660,9 +1666,13 @@ before returning it."
 }
 
 impl SqlFlowMcp {
-    /// Shared GET-and-render used by every read tool.
+    /// Shared GET-and-render used by every read tool: the control plane's payload with a `links`
+    /// object added to every row that names something the GUI can open.
     async fn get(&self, path: &str, query: &[(&str, String)]) -> String {
-        done(self.cp.get(path, query).await.map(|v| json_str(&v)))
+        done(self.cp.get(path, query).await.map(|mut v| {
+            self.links.decorate(&mut v);
+            json_str(&v)
+        }))
     }
 
     /// Enqueues one warehouse-health compute task and long-polls it to a terminal state. The default
@@ -1901,6 +1911,11 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
   get_run, run_statements/assertions/files/health_metrics, lineage_objects/_detail/_columns/_edges/
   _waves/_dependencies, search_all and search_objects/_columns/_definitions/_flows/_flow_columns/_files/
   _statements, list_schedules, get_schedule, get_schedule_plan, list_nodes, list_repo_sources, summary.
+- Every online result carries GUI deep links: each row gains a `links` object holding the page for the row
+  itself (`page`), its lineage graph (`lineage`), and the things it references (`flow`, `object`,
+  `objectLineage`, `otherObject`, `run`, `runGroup`). When an answer names a table, flow, run, schedule, or
+  report, link that name with the URL the row carried. Use them verbatim: never hand-build a SQLFlow URL, and
+  never invent one for a row that came back without links.
 - \"Where does <name> live / where is <X> computed / what is <X>?\": call search_all FIRST. It fans one term
   across all seven surfaces at once and answers with each surface's full count plus a nextSteps plan naming
   the tool that pages it and the tool that turns a hit into an answer; work that plan rather than guessing a

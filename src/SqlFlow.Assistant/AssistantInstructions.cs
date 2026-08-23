@@ -1,4 +1,4 @@
-namespace SqlFlow.Assistant;
+﻿namespace SqlFlow.Assistant;
 
 /// <summary>
 /// The assistant instructions shared by every provider and surface, so switching providers never
@@ -21,10 +21,14 @@ public static class AssistantInstructions
             opening = "You are the SQLFlow assistant in Slack.";
             linkGuidance = gui.Length > 0
                 ? $"""
-                   When you reference a run, link it as <{gui}/runs/RUN_ID|the run>; a pipeline as
-                   <{gui}/pipelines/PIPELINE_ID|the pipeline>. Use real ids from tool results.
+                   Every catalog tool result carries GUI deep links: each row has a `links` object with the
+                   page for the row itself (`page`), its lineage graph (`lineage`), and the things it
+                   references (`flow`, `object`, `objectLineage`, `run`, `runGroup`). When you name a table,
+                   flow, run, schedule, or report, link that name with the URL the row gave you, as
+                   <URL|the name>. A link that starts with / is relative to the GUI: prefix it with {gui}.
+                   Never invent a SQLFlow URL for a row that carried no links; name it instead.
                    """
-                : "Reference runs and pipelines by their names and ids from tool results.";
+                : "Reference runs, flows, and tables by their names and ids from tool results, without links.";
             formatting = $"""
                 You are talking in Slack: format for Slack mrkdwn. *bold* for emphasis (never
                 double-asterisk), bullet lists with the - character, `inline code` for object and flow
@@ -38,8 +42,15 @@ public static class AssistantInstructions
             opening = "You are the SQLFlow assistant, chatting inside the SQLFlow GUI.";
             var linkBase = gui.Length > 0 ? gui : "";
             linkGuidance = $"""
-                When you reference a run, link it as [the run]({linkBase}/runs/RUN_ID); a pipeline as
-                [the pipeline]({linkBase}/pipelines/PIPELINE_ID). Use real ids from tool results.
+                Every catalog tool result carries GUI deep links: each row has a `links` object with the page
+                for the row itself (`page`), its lineage graph (`lineage`), and the things it references
+                (`flow`, `object`, `objectLineage`, `run`, `runGroup`). Link the names you write with the URLs
+                those rows gave you: a table as [arc.Citybike_Bikes](CATALOG_PAGE_URL) with its
+                [lineage](LINEAGE_URL) when the question is about where data flows, a flow as
+                [citybike_00_api](FLOW_URL), a run as [the run](RUN_URL). Prefer the row's own link over
+                composing one; when a row carries none, fall back to [the run]({linkBase}/runs/RUN_ID) and
+                [the pipeline]({linkBase}/pipelines/PIPELINE_ID) with real ids, and never invent a URL for
+                anything else. Link a thing once, on its first mention, rather than on every repetition.
                 """;
             formatting = $"""
                 Format answers as GitHub-flavored Markdown: **bold** for emphasis, bullet lists with

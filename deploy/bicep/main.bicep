@@ -629,6 +629,7 @@ module mcp 'mcp.bicep' = if (mcpEnabled) {
     managedEnvironmentId: managedEnvironment.id
     image: mcpImage
     controlPlaneUrl: 'https://${controlPlaneFqdn}'
+    guiUrl: 'https://${guiFqdn}'
     acrName: acrName
     acrLoginServer: acrLoginServer
   }

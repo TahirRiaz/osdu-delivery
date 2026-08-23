@@ -5,6 +5,10 @@
 #
 # Configuration is environment-only:
 #   SQLFLOW_CONTROL_PLANE_URL        base URL of the control plane the tools proxy (required)
+#   SQLFLOW_GUI_URL                  public base URL of the SQLFlow GUI; tool results carry deep links into it
+#                                    (an object's catalog page, its lineage graph, a run) so an assistant can hand
+#                                    the reader something to open. Unset emits root-relative links, which resolve
+#                                    only for a client rendering inside the GUI itself
 #   SQLFLOW_MCP_HTTP_BIND            listen address (the image defaults it to 0.0.0.0:8080)
 #   SQLFLOW_MCP_HTTP_ALLOWED_HOSTS   optional Host-header allowlist; unset disables the check, which is safe
 #                                    here because every /mcp request must carry a bearer token
