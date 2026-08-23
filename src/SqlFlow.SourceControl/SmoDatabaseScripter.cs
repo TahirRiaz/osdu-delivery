@@ -1,4 +1,4 @@
-using System.Collections.Specialized;
+﻿using System.Collections.Specialized;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Management.Common;
@@ -74,7 +74,9 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
     /// data-table list. Returns every scripted object plus any warnings; throws only on a connection or
     /// missing-database error, since those make a snapshot meaningless.
     /// </summary>
-    public ScriptedDatabase Script(string connectionString, string? database, SourceControlScripting scripting, CancellationToken ct = default)
+    public ScriptedDatabase Script(
+        string connectionString, string? database, SourceControlScripting scripting,
+        Action<ScriptProgress>? progress = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scripting);
@@ -109,12 +111,12 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
             foreach (var (folder, select) in categories)
             {
                 ct.ThrowIfCancellationRequested();
-                ScriptCategory(folder, select(db), scripter, databaseName, objects, warnings);
+                ScriptCategory(folder, select(db), scripter, databaseName, objects, warnings, progress, ct);
             }
 
             if (dataTables.Count > 0)
             {
-                ScriptData(db, dataTables, server, databaseName, objects, warnings);
+                ScriptData(db, dataTables, server, databaseName, objects, warnings, progress);
             }
 
             // A stable, total order so the manifest and any diff of it are deterministic.
@@ -133,9 +135,13 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
         }
     }
 
+    /// <summary>How often a large category reports mid-walk. Every object would be thousands of events for one
+    /// database; a round number keeps the trace readable while still moving visibly.</summary>
+    private const int ProgressEvery = 100;
+
     private static void ScriptCategory(
         string folder, IEnumerable<NamedSmoObject> source, Scripter scripter, string databaseName,
-        List<ScriptedObject> objects, List<string> warnings)
+        List<ScriptedObject> objects, List<string> warnings, Action<ScriptProgress>? progress, CancellationToken ct)
     {
         // Materialize and order before scripting so the file set is identical run to run.
         var ordered = source
@@ -143,8 +149,15 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
             .ThenBy(o => o.Name, StringComparer.Ordinal)
             .ToList();
 
+        if (ordered.Count == 0)
+        {
+            return;
+        }
+
+        var done = 0;
         foreach (var obj in ordered)
         {
+            ct.ThrowIfCancellationRequested();
             var schema = obj is ScriptSchemaObjectBase ssob ? ssob.Schema : null;
             try
             {
@@ -159,16 +172,27 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
             }
             catch (Exception ex) when (ex is SmoException or SqlException)
             {
-                warnings.Add($"{folder} {Label(schema, obj.Name)}: not scripted ({ex.Message}).");
+                var warning = $"{folder} {Label(schema, obj.Name)}: not scripted ({ex.Message}).";
+                warnings.Add(warning);
+                progress?.Invoke(new ScriptProgress { Category = folder, Scripted = done, Total = ordered.Count, Message = warning });
+            }
+            finally
+            {
+                done++;
+                if (done % ProgressEvery == 0 || done == ordered.Count)
+                {
+                    progress?.Invoke(new ScriptProgress { Category = folder, Scripted = done, Total = ordered.Count });
+                }
             }
         }
     }
 
     private void ScriptData(
         Database db, HashSet<string> dataTables, Server server, string databaseName,
-        List<ScriptedObject> objects, List<string> warnings)
+        List<ScriptedObject> objects, List<string> warnings, Action<ScriptProgress>? progress)
     {
         var dataScripter = new Scripter(server) { Options = _dataOptions };
+        var scriptedTables = 0;
         foreach (Table table in db.Tables.Cast<Table>().Where(t => !t.IsSystemObject))
         {
             var key = $"{table.Schema}.{table.Name}";
@@ -189,10 +213,25 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
 
                 var sql = WrapData(table, inserts);
                 objects.Add(BuildObject(SourceControlObjectTypes.DataFolder, table.Schema, table.Name, databaseName, sql));
+                scriptedTables++;
+                progress?.Invoke(new ScriptProgress
+                {
+                    Category = SourceControlObjectTypes.DataFolder,
+                    Scripted = scriptedTables,
+                    Total = dataTables.Count,
+                });
             }
             catch (Exception ex) when (ex is SmoException or SqlException)
             {
-                warnings.Add($"Data {Label(table.Schema, table.Name)}: not scripted ({ex.Message}).");
+                var warning = $"Data {Label(table.Schema, table.Name)}: not scripted ({ex.Message}).";
+                warnings.Add(warning);
+                progress?.Invoke(new ScriptProgress
+                {
+                    Category = SourceControlObjectTypes.DataFolder,
+                    Scripted = scriptedTables,
+                    Total = dataTables.Count,
+                    Message = warning,
+                });
             }
         }
 

@@ -349,7 +349,7 @@ public static class CatalogProjection
     /// <summary>The canonical event timeline of a run, read from the artifact's top-level <c>events</c> array
     /// (see RunEventRecord in SqlFlow.Core): file progress, resolved watermarks, engine decisions, stage
     /// summaries, warnings. Ordinals are assigned in array (publication) order. Absent on artifacts that predate
-    /// the event stream and on kinds that publish no events (scm): both project to no rows, best-effort like
+    /// the event stream and on kinds that publish no events (batch): both project to no rows, best-effort like
     /// every other run detail.</summary>
     public static IReadOnlyList<CatalogRunEvent> RunEvents(JsonElement root, Guid runId, Guid repoId)
     {

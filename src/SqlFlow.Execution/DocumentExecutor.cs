@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Core;
@@ -670,12 +670,29 @@ public sealed class DocumentExecutor : IDocumentRunner
     {
         var flow = ResolveRelativeRepositoryPath(doc.Document.Flow, flowFile);
         var service = WithoutDatabaseSourceControl.BuildService(doc.Document.Connections, _provider.GetRequiredService<ISecretResolver>());
-        var result = await service.RunAsync(flow, new SourceControlRunOptions { DryRun = options.ScmDryRun, Push = options.ScmPush, RunId = options.RunId }, ct).ConfigureAwait(false);
+
+        // The snapshot narrates itself onto the run's canonical event stream, exactly as every other kind does:
+        // the collector forwards each event live (the node streams it into the catalog, which is what the trace
+        // panel tails) and keeps the records for run.json. Without this a run that walks thousands of objects
+        // for minutes shows nothing until it is over.
+        var events = new RunEventCollector(options.EventSink);
+        var result = await service.RunAsync(
+            flow,
+            new SourceControlRunOptions
+            {
+                DryRun = options.ScmDryRun,
+                Push = options.ScmPush,
+                RunId = options.RunId,
+                Events = events,
+            },
+            ct).ConfigureAwait(false);
 
         var flowName = flow.SysAlias;
         var runDirectory = RunHistory.Write(flowFile, flowName, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["run.json"] = JsonSerializer.Serialize(Artifact("scm", flowName, result.RunId, result.Success, result.Error, result), ExecutionJson.Options),
+            ["run.json"] = JsonSerializer.Serialize(
+                Artifact("scm", flowName, result.RunId, result.Success, result.Error, result, events.Records),
+                ExecutionJson.Options),
             ["run.log"] = RunLogRenderer.RenderSourceControlLog(result),
             ["trace.sql"] = string.Empty,
             ["scm.json"] = JsonSerializer.Serialize(result, ExecutionJson.Options),

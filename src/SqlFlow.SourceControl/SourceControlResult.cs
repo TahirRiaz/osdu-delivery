@@ -12,6 +12,11 @@ public sealed record SourceControlRunOptions
     /// control-plane trigger records the snapshot under the id it already handed the caller. Null mints a fresh
     /// id, preserving the existing direct-run behavior.</summary>
     public Guid? RunId { get; init; }
+
+    /// <summary>Where the run narrates itself: each stage publishes a <see cref="SqlFlow.Core.Model.FlowEvent"/>
+    /// here, which is the stream the live trace panel reads and <c>run.json</c> persists. Null runs silently,
+    /// which is what a direct call with no orchestrator wants.</summary>
+    public SqlFlow.Core.Abstractions.IFlowEventSink? Events { get; init; }
 }
 
 /// <summary>

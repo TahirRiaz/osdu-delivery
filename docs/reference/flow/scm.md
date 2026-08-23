@@ -262,6 +262,34 @@ accurate rather than noisy, but it does mean the window right after onboarding a
 
 One document snapshots one database. For an estate of databases, author one document per database, all pointing at the same `repository.path` and remote: each writes only its own `<database>/` subtree and each commit stages only that subtree, so they never cross-delete each other's folders. Give them a shared `batch:` to list them together, and have them join one named schedule so a single fire covers the estate.
 
+### Watching a run
+
+A snapshot walks every object in a database and then pushes a repository, so a large database takes minutes. It
+narrates itself onto the run's canonical event stream while it works, which is what the GUI's live trace panel
+tails and what `run.json` persists:
+
+```
+connect  Resolving the connection for 'dwh'.
+script   Scripting every object category from dw-dwh-prod.
+script   Table: 100 of 1,204 scripted.
+...
+script   Scripted 1,565 object(s) from dw-dwh-prod.
+git      Preparing https://bitbucket.org/... [main]: clone or fetch, then reset onto the remote.
+write    Writing the snapshot into the working tree.
+write    128 added, 296 changed, 442 deleted, 699 unchanged.
+commit   Committing 866 change(s).
+commit   Committed ebb7d85a and pushed to https://bitbucket.org/...
+done     Snapshot of dw-dwh-prod finished in 168.4s: 1,565 object(s) scripted, 128 added, 296 changed, 442 deleted, committed and pushed.
+```
+
+Progress is reported per object category on a round number rather than per object, so a database with thousands
+of objects stays readable. An object that cannot be scripted becomes a warning event and the run continues. A
+quiet day says so explicitly (`Nothing changed since the last snapshot, so there is nothing to commit`) rather
+than going silent, because no commit is the expected outcome once an estate settles, not a failure.
+
+`trace.sql` stays empty for an scm run, deliberately: the generated DDL IS the artifact and lands in the
+repository, so mirroring thousands of CREATE statements into the trace would bury the signal rather than add any.
+
 ## CLI
 
 An scm document runs through the same `validate`/`run` commands as every other flow document; two run flags are scm-specific:
