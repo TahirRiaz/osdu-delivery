@@ -231,6 +231,28 @@ This is intentional and not a limitation: a snapshot reads `sys` catalog metadat
 
 Being out of the graph does not weaken anything else: the flow still has a lifecycle, run history, notifications on failure, and a schedule.
 
+### Schema history in the catalog and the GUI
+
+Every difference a snapshot finds is also recorded in the shadow catalog, one row per object, so "what changed in
+the warehouse this week" is a query rather than a diff of commits nobody has cloned. The rows carry the database,
+the object category, its schema and name, whether it was added, changed, or dropped, the commit that holds the
+diff, and when the snapshot observed it. A run that finds nothing writes no rows.
+
+The GUI reads this at **Explore > Schema changes**: a database, schema, object tree over a date window (last 30
+days by default), where selecting an object shows every time a snapshot saw it move, each linking to the run.
+The `/api/v1/schema-changes` endpoint serves the same data, with `database`, `changeType`, `since`, and `search`
+filters, and `/api/v1/schema-changes/databases` returns the per-database tally.
+
+Two properties are worth knowing before reading the dates as gospel:
+
+- A change is dated to the snapshot that first SAW it, not to when the DDL ran. On a daily cadence that means the
+  day, not the minute.
+- A `--dry-run` records nothing. It writes a working tree nobody keeps, so dating a change to a rehearsal (and
+  then reporting it again on the next real run) would be worse than silence.
+
+The first snapshot of a database that was never tracked records every object it finds as `Added`. That is
+accurate rather than noisy, but it does mean the window right after onboarding a database is dominated by it.
+
 ### Running several databases
 
 One document snapshots one database. For an estate of databases, author one document per database, all pointing at the same `repository.path` and remote: each writes only its own `<database>/` subtree and each commit stages only that subtree, so they never cross-delete each other's folders. Give them a shared `batch:` to list them together, and have them join one named schedule so a single fire covers the estate.

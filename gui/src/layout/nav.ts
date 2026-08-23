@@ -8,6 +8,7 @@ import {
   CalendarRange,
   CirclePlay,
   Compass,
+  GitCompare,
   Database,
   FolderGit2,
   Gauge,
@@ -88,6 +89,7 @@ export const navGroups: NavGroup[] = [
     icon: Compass,
     items: [
       { label: "Catalog", to: "/catalog", icon: BookOpen, testId: "nav-catalog" },
+      { label: "Schema changes", to: "/schema-changes", icon: GitCompare, testId: "nav-schema-changes" },
       { label: "Lineage", to: "/lineage", icon: Network, testId: "nav-lineage" },
       { label: "Subscribers", to: "/subscribers", icon: MonitorPlay, testId: "nav-subscribers" },
       { label: "Search", to: "/search", icon: Search, testId: "nav-search" },

@@ -18,7 +18,7 @@ import type {
   FlowParameters,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineFileStats, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
-  RunSummary, RunSurrogateKey,
+  RunSummary, RunSurrogateKey, SchemaChange, SchemaChangeDatabase,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
   SourceDiscoverRequest, SourceDiscoverResult, Subscriber, SubscriberDossier, SubscriberHit,
   UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
@@ -122,6 +122,25 @@ export const pipelineApi = {
 export interface PipelineFilesQuery extends PageQuery {
   search?: string;
 }
+
+// ---- Schema history ------------------------------------------------------------------------------------------------
+
+export interface SchemaChangeQuery extends PageQuery {
+  repoId?: string;
+  database?: string;
+  changeType?: string;
+  /** ISO instant; only changes observed at or after it are returned. */
+  since?: string;
+  search?: string;
+}
+
+/** What the source-control snapshots found changing in the managed databases. */
+export const schemaChangeApi = {
+  list: (query: SchemaChangeQuery = {}) =>
+    get<PagedResult<SchemaChange>>("/api/v1/schema-changes", query as QueryParams),
+  databases: (query: { repoId?: string; since?: string } = {}) =>
+    get<SchemaChangeDatabase[]>("/api/v1/schema-changes/databases", query as QueryParams),
+};
 
 // ---- Runs ----------------------------------------------------------------------------------------------------------------
 

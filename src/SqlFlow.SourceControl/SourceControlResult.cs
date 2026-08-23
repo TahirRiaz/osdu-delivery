@@ -1,4 +1,4 @@
-namespace SqlFlow.SourceControl;
+﻿namespace SqlFlow.SourceControl;
 
 /// <summary>How a source-control run behaves: a dry run scripts and writes the working tree but never commits;
 /// <see cref="Push"/> controls whether a commit is pushed to the remote.</summary>
@@ -42,6 +42,17 @@ public sealed record SourceControlResult
     public bool Pushed { get; init; }
 
     public IReadOnlyList<string> Objects { get; init; } = [];
+
+    /// <summary>The repository-relative paths this run created, i.e. objects that did not exist in the previous
+    /// snapshot. Kept alongside the counts so the catalog can answer "what changed in this database, and when"
+    /// without anyone reading the git history.</summary>
+    public IReadOnlyList<string> AddedObjects { get; init; } = [];
+
+    /// <summary>The paths whose scripted definition differs from the previous snapshot: the actual schema edits.</summary>
+    public IReadOnlyList<string> ChangedObjects { get; init; } = [];
+
+    /// <summary>The paths removed because their object no longer exists in the database (a drop or a rename).</summary>
+    public IReadOnlyList<string> DeletedObjects { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
 
     public double DurationSeconds { get; init; }

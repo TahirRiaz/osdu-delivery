@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -593,7 +593,8 @@ public static class RunQueueStore
                         var maxStatementOrdinal = await catalog.RunStatements.Where(s => s.RunId == runId)
                             .Select(s => (int?)s.Ordinal).MaxAsync(ct).ConfigureAwait(false) ?? 0;
                         CatalogSync.AddRunDetail(
-                            catalog, document.RootElement, runId, repoId, maxEventOrdinal, maxStatementOrdinal);
+                            catalog, document.RootElement, runId, repoId, maxEventOrdinal, maxStatementOrdinal,
+                            target.PipelineId);
                         // A failed group member strands its dependents: skip them in the same transaction so the
                         // completion and its consequences commit together (a no-op for a standalone or succeeded run).
                         if (!projected.Success)

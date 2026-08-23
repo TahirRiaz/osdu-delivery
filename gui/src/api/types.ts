@@ -273,6 +273,31 @@ export interface PipelineFileStats {
   recent: PipelineRecentFiles | null;
 }
 
+/** One object a source-control snapshot found added, changed, or dropped in a managed database. */
+export interface SchemaChange {
+  id: number;
+  repoId: string;
+  runId: string;
+  pipelineId: string | null;
+  database: string;
+  category: string;
+  schema: string | null;
+  name: string;
+  changeType: "Added" | "Changed" | "Deleted";
+  commitSha: string | null;
+  occurredUtc: string;
+}
+
+/** One tracked database's change tally over the requested window. */
+export interface SchemaChangeDatabase {
+  database: string;
+  total: number;
+  added: number;
+  changed: number;
+  deleted: number;
+  lastChangeUtc: string;
+}
+
 export interface PipelineFile {
   name: string;
   path: string | null;

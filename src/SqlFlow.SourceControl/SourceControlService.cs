@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Core.SourceControl;
@@ -93,6 +93,9 @@ public sealed class SourceControlService
                 CommitSha = commit.CommitSha,
                 Pushed = commit.Pushed,
                 Objects = scripted.Objects.Select(o => o.RelativePath).ToList(),
+                AddedObjects = write.Added,
+                ChangedObjects = write.Changed,
+                DeletedObjects = write.Deleted,
                 Warnings = scripted.Warnings,
                 DurationSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3),
             };

@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SqlFlow.Core.Engine;
@@ -382,6 +382,102 @@ public static class CatalogProjection
         }
 
         return list;
+    }
+
+    /// <summary>
+    /// The schema differences a source-control run observed, read from its result's added/changed/deleted path
+    /// lists. Each path is the repository-relative
+    /// <c>&lt;database&gt;/&lt;category&gt;/&lt;schema&gt;.&lt;name&gt;.sql</c> the snapshot writer produced, so
+    /// the object's identity is recovered by splitting it rather than by re-reading the database. A dry run is
+    /// skipped: it writes a working tree nobody keeps, so recording its differences would date a change to a
+    /// rehearsal and then report it again for real on the next scheduled run. Anything that does not parse as
+    /// that layout is skipped rather than stored half-identified.
+    /// </summary>
+    public static IReadOnlyList<CatalogSchemaChange> SchemaChanges(
+        JsonElement root, Guid runId, Guid repoId, Guid? pipelineId)
+    {
+        if (Prop(root, "result") is not { } result)
+        {
+            return [];
+        }
+
+        if (Bool(result, "dryRun") == true)
+        {
+            return [];
+        }
+
+        var occurredUtc = Date(root, "writtenUtc") ?? Date(result, "writtenUtc") ?? DateTime.UtcNow;
+        var commitSha = Str(result, "commitSha");
+
+        var list = new List<CatalogSchemaChange>();
+        Collect(SchemaChangeKinds.Added, "addedObjects");
+        Collect(SchemaChangeKinds.Changed, "changedObjects");
+        Collect(SchemaChangeKinds.Deleted, "deletedObjects");
+        return list;
+
+        void Collect(string changeType, string property)
+        {
+            if (Prop(result, property) is not { ValueKind: JsonValueKind.Array } items)
+            {
+                return;
+            }
+
+            foreach (var item in items.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String || ParsePath(item.GetString()) is not { } parsed)
+                {
+                    continue;
+                }
+
+                list.Add(new CatalogSchemaChange
+                {
+                    RepoId = repoId,
+                    RunId = runId,
+                    PipelineId = pipelineId,
+                    Database = parsed.Database,
+                    Category = parsed.Category,
+                    Schema = parsed.Schema,
+                    Name = parsed.Name,
+                    ChangeType = changeType,
+                    CommitSha = commitSha,
+                    OccurredUtc = occurredUtc,
+                });
+            }
+        }
+    }
+
+    /// <summary>Splits a snapshot path into the object it names. The file stem is
+    /// <c>schema.name</c> for a schema-bound object and bare <c>name</c> for one without a schema, matching what
+    /// the snapshot writer emits; a name containing dots keeps them (only the FIRST dot separates the schema).
+    /// Returns null for anything that is not the three-segment layout.</summary>
+    private static (string Database, string Category, string? Schema, string Name)? ParsePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var segments = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length != 3)
+        {
+            return null;
+        }
+
+        var stem = segments[2];
+        if (stem.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+        {
+            stem = stem[..^4];
+        }
+
+        if (stem.Length == 0)
+        {
+            return null;
+        }
+
+        var dot = stem.IndexOf('.', StringComparison.Ordinal);
+        var schema = dot > 0 ? stem[..dot] : null;
+        var name = dot > 0 ? stem[(dot + 1)..] : stem;
+        return name.Length == 0 ? null : (segments[0], segments[1], schema, name);
     }
 
     /// <summary>The surrogate-key generation outcomes of a run (ingestion flows), read best-effort from the result.</summary>

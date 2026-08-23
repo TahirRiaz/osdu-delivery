@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 
 namespace SqlFlow.Catalog;
 
@@ -51,6 +51,8 @@ public sealed class CatalogDbContext : DbContext
     public DbSet<CatalogRunSurrogateKey> RunSurrogateKeys => Set<CatalogRunSurrogateKey>();
 
     public DbSet<CatalogRunHealthCheckMetric> RunHealthCheckMetrics => Set<CatalogRunHealthCheckMetric>();
+
+    public DbSet<CatalogSchemaChange> SchemaChanges => Set<CatalogSchemaChange>();
 
     public DbSet<CatalogObjectColumn> ObjectColumns => Set<CatalogObjectColumn>();
 
@@ -363,6 +365,26 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(m => m.Name).HasMaxLength(256).IsRequired();
             entity.Property(m => m.ModelTrainer).HasMaxLength(128);
             entity.HasIndex(m => m.RunId);
+        });
+
+        modelBuilder.Entity<CatalogSchemaChange>(entity =>
+        {
+            entity.ToTable("SchemaChange");
+            entity.HasKey(c => c.Id);
+            entity.Property(c => c.Database).HasMaxLength(256).IsRequired();
+            entity.Property(c => c.Category).HasMaxLength(64).IsRequired();
+            entity.Property(c => c.Schema).HasMaxLength(256);
+            entity.Property(c => c.Name).HasMaxLength(512).IsRequired();
+            entity.Property(c => c.ChangeType).HasMaxLength(16).IsRequired();
+            entity.Property(c => c.CommitSha).HasMaxLength(64);
+            // The feed query: the estate's changes newest first, optionally narrowed to one database. Descending
+            // on the date so the index serves the ordering, not just the filter.
+            entity.HasIndex(c => new { c.RepoId, c.OccurredUtc }).IsDescending(false, true);
+            entity.HasIndex(c => new { c.RepoId, c.Database, c.OccurredUtc }).IsDescending(false, false, true);
+            // The run drill-down, and the delete-by-run the re-record path needs to stay idempotent.
+            entity.HasIndex(c => c.RunId);
+            // "Everything that ever happened to this object", the history panel behind one table or view.
+            entity.HasIndex(c => new { c.RepoId, c.Database, c.Schema, c.Name });
         });
 
         modelBuilder.Entity<CatalogObjectColumn>(entity =>

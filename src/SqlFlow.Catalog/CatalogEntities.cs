@@ -1,4 +1,4 @@
-namespace SqlFlow.Catalog;
+﻿namespace SqlFlow.Catalog;
 
 /// <summary>
 /// The lifecycle states a <see cref="CatalogRun"/> moves through, stored as a short lowercase string so the value
@@ -662,6 +662,57 @@ public class CatalogRunFile
     /// flow does). Null for a flow that reports no hash. Lets the file view show whether a re-run actually changed the
     /// file, and a downstream reader compare byte-identity without re-reading the file.</summary>
     public string? Hash { get; set; }
+}
+
+/// <summary>
+/// One database object a source-control snapshot found added, changed, or dropped since the previous run: the
+/// schema history of the managed estate as a queryable table instead of a git log. An scm run writes one row per
+/// difference, so "what changed in the warehouse this week" is a date-ordered read rather than a diff of commits
+/// nobody has cloned. A run that finds nothing writes no rows, which is the honest answer, and the schema is
+/// unchanged.
+/// </summary>
+public class CatalogSchemaChange
+{
+    public long Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The scm run that observed the difference.</summary>
+    public Guid RunId { get; set; }
+
+    /// <summary>The snapshot flow's pipeline, so the change can be traced back to the document that found it.
+    /// Null when the run predates its pipeline row (a run recorded before the estate was synced).</summary>
+    public Guid? PipelineId { get; set; }
+
+    /// <summary>The database the object lives in, as the snapshot resolved it (the repository folder name).</summary>
+    public string Database { get; set; } = string.Empty;
+
+    /// <summary>The object category, which is also its repository folder: Table, View, StoredProcedure, and so on.</summary>
+    public string Category { get; set; } = string.Empty;
+
+    /// <summary>The object's schema, or null for a schema-less object (a database DDL trigger, a schema itself).</summary>
+    public string? Schema { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>What happened: <c>Added</c>, <c>Changed</c>, or <c>Deleted</c> (see <see cref="SchemaChangeKinds"/>).</summary>
+    public string ChangeType { get; set; } = string.Empty;
+
+    /// <summary>The commit the snapshot landed on, so a row links straight to the diff that proves it. Null when
+    /// the run committed nothing (a dry run) or pushed no remote.</summary>
+    public string? CommitSha { get; set; }
+
+    /// <summary>When the snapshot ran, in UTC: the resolution at which the change is dated. A daily snapshot dates
+    /// a change to the day it was first SEEN, which is not necessarily the day the DDL ran.</summary>
+    public DateTime OccurredUtc { get; set; }
+}
+
+/// <summary>The three differences a snapshot can record. Compared ordinally; stored as written here.</summary>
+public static class SchemaChangeKinds
+{
+    public const string Added = "Added";
+    public const string Changed = "Changed";
+    public const string Deleted = "Deleted";
 }
 
 /// <summary>One data-quality assertion a run evaluated: the drill-down detail under a <see cref="CatalogRun"/>.</summary>

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
@@ -35,6 +35,10 @@ public static class CatalogEndpoints
         pipelines.MapGet("/{id:guid}/columns", GetPipelineColumnsAsync).WithName("GetPipelineColumns");
         pipelines.MapGet("/{id:guid}/files", GetPipelineFilesAsync).WithName("GetPipelineFiles");
         pipelines.MapGet("/{id:guid}/files/stats", GetPipelineFileStatsAsync).WithName("GetPipelineFileStats");
+
+        var schema = group.MapGroup("/schema-changes").WithTags("SchemaChanges");
+        schema.MapGet("/", ListSchemaChangesAsync).WithName("ListSchemaChanges");
+        schema.MapGet("/databases", ListSchemaChangeDatabasesAsync).WithName("ListSchemaChangeDatabases");
 
         return group;
     }
@@ -485,6 +489,89 @@ public static class CatalogEndpoints
         }
 
         return TypedResults.Ok(await PipelineFileStats.ComputeAsync(db, id, ct).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// The estate's schema history, newest first: every object a source-control snapshot found added, changed, or
+    /// dropped. Filters narrow it to one database, one kind of change, or a time window, and a free-text term
+    /// matches the object's schema, name, or category so "where did Bysykkel_Trips change" is one query. This is
+    /// a read of what the snapshots already recorded; it touches no database being tracked.
+    /// </summary>
+    private static async Task<Ok<PagedResult<SchemaChangeDto>>> ListSchemaChangesAsync(
+        CatalogDbContext db, Guid? repoId, string? database, string? changeType, DateTime? since, string? search,
+        int? page, int? pageSize, CancellationToken ct)
+    {
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var query = db.SchemaChanges.AsNoTracking();
+
+        if (repoId is { } repo)
+        {
+            query = query.Where(c => c.RepoId == repo);
+        }
+
+        if (!string.IsNullOrWhiteSpace(database))
+        {
+            query = query.Where(c => c.Database == database);
+        }
+
+        if (!string.IsNullOrWhiteSpace(changeType))
+        {
+            query = query.Where(c => c.ChangeType == changeType);
+        }
+
+        if (since is { } from)
+        {
+            query = query.Where(c => c.OccurredUtc >= from);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(c => c.Name.Contains(term) || c.Schema!.Contains(term) || c.Category.Contains(term));
+        }
+
+        var total = await query.LongCountAsync(ct).ConfigureAwait(false);
+        var items = await query
+            .OrderByDescending(c => c.OccurredUtc).ThenBy(c => c.Database).ThenBy(c => c.Id)
+            .Skip((p - 1) * size).Take(size)
+            .Select(c => new SchemaChangeDto(
+                c.Id, c.RepoId, c.RunId, c.PipelineId, c.Database, c.Category, c.Schema, c.Name,
+                c.ChangeType, c.CommitSha, c.OccurredUtc))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<SchemaChangeDto>(items, p, size, total));
+    }
+
+    /// <summary>
+    /// One row per tracked database: how many changes it has recorded, split by kind, and when it was last seen to
+    /// change. This is the summary strip above the feed, and it doubles as the answer to "is this database still
+    /// being snapshotted at all".
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<SchemaChangeDatabaseDto>>> ListSchemaChangeDatabasesAsync(
+        CatalogDbContext db, Guid? repoId, DateTime? since, CancellationToken ct)
+    {
+        var query = db.SchemaChanges.AsNoTracking();
+        if (repoId is { } repo)
+        {
+            query = query.Where(c => c.RepoId == repo);
+        }
+
+        if (since is { } from)
+        {
+            query = query.Where(c => c.OccurredUtc >= from);
+        }
+
+        var rows = await query
+            .GroupBy(c => c.Database)
+            .Select(g => new SchemaChangeDatabaseDto(
+                g.Key,
+                g.Count(),
+                g.Count(c => c.ChangeType == SchemaChangeKinds.Added),
+                g.Count(c => c.ChangeType == SchemaChangeKinds.Changed),
+                g.Count(c => c.ChangeType == SchemaChangeKinds.Deleted),
+                g.Max(c => c.OccurredUtc)))
+            .OrderBy(d => d.Database)
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok((IReadOnlyList<SchemaChangeDatabaseDto>)rows);
     }
 
     private static ProblemHttpResult NotFound(string resource, Guid id)

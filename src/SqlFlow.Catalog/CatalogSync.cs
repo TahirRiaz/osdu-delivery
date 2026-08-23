@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core.Identity;
@@ -45,13 +45,17 @@ public sealed record CatalogSyncResult
     public int RunEventsAdded { get; init; }
     public int RunSurrogateKeysAdded { get; init; }
     public int RunHealthCheckMetricsAdded { get; init; }
+
+    /// <summary>Schema differences recorded from source-control runs in this pass.</summary>
+    public int SchemaChangesAdded { get; init; }
     public bool LineageConnected { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
 /// <summary>The per-pass tally of run artifacts and the drill-down detail rows projected from them.</summary>
 internal readonly record struct RunSyncTally(
-    int Added, int Skipped, int Failed, int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics);
+    int Added, int Skipped, int Failed, int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics,
+    int SchemaChanges);
 
 /// <summary>What a per-run write-back did to the flow's pipeline row.</summary>
 public enum PipelineChange
@@ -73,6 +77,9 @@ public sealed record RecordRunResult
     public int RunEventsAdded { get; init; }
     public int RunSurrogateKeysAdded { get; init; }
     public int RunHealthCheckMetricsAdded { get; init; }
+
+    /// <summary>Schema differences recorded from source-control runs in this pass.</summary>
+    public int SchemaChangesAdded { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
@@ -290,6 +297,7 @@ public sealed class CatalogSync
                     RunEventsAdded = runTally.Events,
                     RunSurrogateKeysAdded = runTally.SurrogateKeys,
                     RunHealthCheckMetricsAdded = runTally.Metrics,
+                    SchemaChangesAdded = runTally.SchemaChanges,
                     ObjectsUpserted = lineage.Objects,
                     ObjectsSuperseded = lineage.Superseded,
                     ObjectColumns = lineage.Columns,
@@ -688,6 +696,7 @@ public sealed class CatalogSync
         var events = 0;
         var surrogateKeys = 0;
         var metrics = 0;
+        var schemaChanges = 0;
 
         // The pre-transaction scan already dropped every run the catalog knew then; re-verify the survivors
         // INSIDE the transaction (in bounded chunks) so a run another node recorded in the meantime is skipped,
@@ -713,13 +722,15 @@ public sealed class CatalogSync
             // A run is immutable, so its drill-down detail is inserted exactly once, with the run itself.
             context.Runs.Add(prepared.Run);
             added++;
-            var detail = AddRunDetail(context, prepared.Document.RootElement, prepared.Run.RunId, repoId);
+            var detail = AddRunDetail(
+                context, prepared.Document.RootElement, prepared.Run.RunId, repoId, pipelineId: prepared.Run.PipelineId);
             files += detail.Files;
             assertions += detail.Assertions;
             statements += detail.Statements;
             events += detail.Events;
             surrogateKeys += detail.SurrogateKeys;
             metrics += detail.Metrics;
+            schemaChanges += detail.SchemaChanges;
 
             var detected = CatalogProjection.PipelineColumnsDetected(prepared.Document.RootElement, repoId, prepared.Run.PipelineId);
             if (detected.Count > 0
@@ -749,7 +760,8 @@ public sealed class CatalogSync
             }
         }
 
-        return new RunSyncTally(added, skipped, failedInScan, files, assertions, statements, events, surrogateKeys, metrics);
+        return new RunSyncTally(
+            added, skipped, failedInScan, files, assertions, statements, events, surrogateKeys, metrics, schemaChanges);
     }
 
     /// <summary>Adds the immutable drill-down detail of one run (files, assertions, generated SQL, canonical
@@ -766,9 +778,11 @@ public sealed class CatalogSync
     /// timeline is inserted.</param>
     /// <param name="existingMaxStatementOrdinal">The same for the generated-SQL stream: the highest statement
     /// ordinal already present as a live-streamed row, so only the missing tail is appended.</param>
-    internal static (int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics) AddRunDetail(
+    /// <param name="pipelineId">The run's pipeline, stamped onto the schema-change rows a source-control run
+    /// projects so a difference traces back to the snapshot document that found it.</param>
+    internal static (int Files, int Assertions, int Statements, int Events, int SurrogateKeys, int Metrics, int SchemaChanges) AddRunDetail(
         CatalogDbContext context, JsonElement root, Guid runId, Guid repoId,
-        int existingMaxEventOrdinal = 0, int existingMaxStatementOrdinal = 0)
+        int existingMaxEventOrdinal = 0, int existingMaxStatementOrdinal = 0, Guid? pipelineId = null)
     {
         var files = 0;
         var assertions = 0;
@@ -776,6 +790,7 @@ public sealed class CatalogSync
         var events = 0;
         var surrogateKeys = 0;
         var metrics = 0;
+        var schemaChanges = 0;
 
         foreach (var runFile in CatalogProjection.RunFiles(root, runId, repoId))
         {
@@ -823,7 +838,16 @@ public sealed class CatalogSync
             metrics++;
         }
 
-        return (files, assertions, statements, events, surrogateKeys, metrics);
+        // A source-control run's differences: the schema history of the managed estate, written by the same
+        // one-run-one-insert path as every other drill-down so the CLI, the full sync, and the live queue all
+        // record it identically. Non-scm runs project nothing here.
+        foreach (var change in CatalogProjection.SchemaChanges(root, runId, repoId, pipelineId))
+        {
+            context.SchemaChanges.Add(change);
+            schemaChanges++;
+        }
+
+        return (files, assertions, statements, events, surrogateKeys, metrics, schemaChanges);
     }
 
     /// <summary>
@@ -860,7 +884,7 @@ public sealed class CatalogSync
             var pipelineChange = await UpsertSinglePipelineAsync(context, root, fullFlowPath, repoId, nowUtc, warnings, ct).ConfigureAwait(false);
 
             var runRecorded = false;
-            var detail = (Files: 0, Assertions: 0, Statements: 0, Events: 0, SurrogateKeys: 0, Metrics: 0);
+            var detail = (Files: 0, Assertions: 0, Statements: 0, Events: 0, SurrogateKeys: 0, Metrics: 0, SchemaChanges: 0);
 
             // A corrupt, oversized, or unreadable run.json is reported as a warning and the run is simply not
             // recorded; the pipeline upsert above still commits (consistent with how the full sync treats a bad
@@ -884,7 +908,8 @@ public sealed class CatalogSync
                     {
                         context.Runs.Add(run);
                         runRecorded = true;
-                        detail = AddRunDetail(context, document.RootElement, run.RunId, repoId);
+                        detail = AddRunDetail(
+                            context, document.RootElement, run.RunId, repoId, pipelineId: run.PipelineId);
 
                         // Refresh the pipeline's detected view projection from this run ("latest run wins"),
                         // unless the catalog already knows a newer run for the pipeline (a stale artifact
@@ -925,6 +950,7 @@ public sealed class CatalogSync
                 RunEventsAdded = detail.Events,
                 RunSurrogateKeysAdded = detail.SurrogateKeys,
                 RunHealthCheckMetricsAdded = detail.Metrics,
+                SchemaChangesAdded = detail.SchemaChanges,
                 Warnings = warnings,
             };
         }, ct).ConfigureAwait(false);

@@ -47,6 +47,17 @@ All ids are computed, never allocated, so no database round-trip is needed to jo
 
 Pipeline names are unique per `(RepoId, Name)`, not globally. Cross-table links (`Run.PipelineId`, `PipelineColumn.PipelineId`, `Schedule.PipelineId`, `LineageEdge.PipelineId`) are soft links with no foreign keys, so run history and columns survive a pipeline row leaving the estate. The `(RepoId, Wave)` index lists a repo's pipelines in execution order.
 
+## Schema history
+
+Source-control (`scm`) runs additionally project into `SchemaChange`: one row per database object they found
+added, changed, or dropped, carrying the database, the object category, schema and name, the change kind, the
+commit that holds the diff, and when the snapshot observed it. It is written by the same one-run-one-insert path
+as every other run detail (`CatalogSync.AddRunDetail`), so the CLI, the full sync, and the live run queue record
+it identically. Non-scm runs project no rows, and a dry run is deliberately skipped.
+
+The rows are keyed by their own `RepoId` and outlive nothing else: they are not pruned with run history, because
+a change feed that forgets is not a history. They are removed only when their repo is deleted.
+
 ## Pipeline sync: hashing, redaction, soft deactivation
 
 Each present flow document is projected into a `CatalogPipeline` row. The hot dimensions are columns: `Kind` (`file` / `ing` / `api` / `cpy` / `sftp` / `exp` / `trl` / `sp` / `inv` / `hc` / `cal` / `scm`), `Batch`, `RelativePath` (forward-slashed), `SourceServer`, `TargetServer`, and `Wave`. Batch-orchestration (`batch`) documents declare no flow of their own, so they never get a `CatalogPipeline` row; a run recorded from one still lands in `Run` (artifact discovery accepts any `flowKind`), just with a `PipelineId` that never resolves to a pipeline row. Source-control (`scm`) documents DO get a pipeline row (so a snapshot schedules and runs like any other flow) but are excluded from the lineage graph, so their `Wave` stays at the `-1` "not computed" sentinel; see [Lineage graph and plan](lineage-graph-and-plan.md). The full definition is stored twice:

@@ -1,4 +1,4 @@
-using SqlFlow.Core.Runs;
+﻿using SqlFlow.Core.Runs;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -16,6 +16,30 @@ public static class PageRequest
     public static (int Page, int PageSize) Normalize(int? page, int? pageSize)
         => (Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? DefaultPageSize, 1, MaxPageSize));
 }
+
+/// <summary>One object a source-control snapshot found added, changed, or dropped, as the schema-history feed
+/// returns it. <c>CommitSha</c> links the row to the commit that carries the diff.</summary>
+public sealed record SchemaChangeDto(
+    long Id,
+    Guid RepoId,
+    Guid RunId,
+    Guid? PipelineId,
+    string Database,
+    string Category,
+    string? Schema,
+    string Name,
+    string ChangeType,
+    string? CommitSha,
+    DateTime OccurredUtc);
+
+/// <summary>One tracked database's change tally over the requested window, and when it last changed.</summary>
+public sealed record SchemaChangeDatabaseDto(
+    string Database,
+    int Total,
+    int Added,
+    int Changed,
+    int Deleted,
+    DateTime LastChangeUtc);
 
 /// <summary>A synced source repository.</summary>
 public sealed record RepoDto(
