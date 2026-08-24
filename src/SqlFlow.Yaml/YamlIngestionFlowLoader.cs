@@ -465,6 +465,7 @@ public sealed class YamlIngestionFlowLoader
             Columns = y.Columns ?? [],
             DateColumn = NullIfBlank(y.DateColumn),
             OverlapDays = y.OverlapDays ?? 7,
+            Lookback = y.Lookback ?? 0,
             FullLoad = y.FullLoad ?? false,
             FetchMinValuesFromSource = y.FetchMinValuesFromSource ?? false,
         };

@@ -52,6 +52,7 @@ public sealed class YamlIngestionLoaderTests
         Assert.True(flow.SystemColumns.UpdatedDate);
         Assert.True(flow.Load.StreamData);
         Assert.Equal(7, flow.Incremental.OverlapDays);
+        Assert.Equal(0, flow.Incremental.Lookback);   // no numeric rewind unless the flow asks for one
         Assert.False(flow.InitLoad.Enabled);
         Assert.Empty(flow.Assertions);
         Assert.Empty(flow.SurrogateKeys);
@@ -330,6 +331,7 @@ public sealed class YamlIngestionLoaderTests
               columns: [ModifiedDate]
               dateColumn: ModifiedDate
               overlapDays: 3
+              lookback: 250
               fullLoad: true
               fetchMinValuesFromSource: true
             initLoad:
@@ -400,6 +402,7 @@ public sealed class YamlIngestionLoaderTests
         Assert.True(flow.SchemaSync.AllowTableRewrite);
         Assert.Equal(["ModifiedDate"], flow.Incremental.Columns);
         Assert.Equal(3, flow.Incremental.OverlapDays);
+        Assert.Equal(250, flow.Incremental.Lookback);
         Assert.True(flow.Incremental.FullLoad);
         Assert.True(flow.Incremental.FetchMinValuesFromSource);
         Assert.True(flow.InitLoad.Enabled);

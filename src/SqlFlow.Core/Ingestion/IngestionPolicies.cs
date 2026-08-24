@@ -203,6 +203,20 @@ public sealed record IncrementalPolicy
     /// <summary>Days subtracted from the watermark to re-read a safety window (legacy NoOfOverlapDays, default 7).</summary>
     public int OverlapDays { get; init; } = 7;
 
+    /// <summary>Value subtracted from a NUMERIC watermark (a <see cref="Columns"/> entry whose source type is
+    /// integral or decimal) to re-read a safety window, the counterpart of <see cref="OverlapDays"/> for
+    /// non-date high-water columns. Default 0, which reproduces the legacy bare <c>MAX(col)</c>.
+    ///
+    /// Why a numeric watermark needs one at all: a monotonic key is only monotonic in the order ids are
+    /// ALLOCATED, not the order rows become VISIBLE. A database that hands out an identity/auto-increment
+    /// value when a row is inserted, then publishes the row when its transaction commits, lets a reader see
+    /// id N+k while N is still in flight. A watermark taken as the bare MAX of what is visible therefore
+    /// advances past N, and the strict <c>col &gt; watermark</c> of the next run can never reach it: the row
+    /// is skipped permanently and silently. Setting this to a value comfortably larger than the number of ids
+    /// that can be in flight at once re-reads that window every run, and the keyed merge dedupes it, exactly
+    /// as OverlapDays does for a date watermark.</summary>
+    public int Lookback { get; init; }
+
     /// <summary>Force a full load regardless of the incremental settings (legacy FullLoad, an int treated as
     /// truthy: non-zero means full).</summary>
     public bool FullLoad { get; init; }

@@ -331,9 +331,15 @@ public sealed class IncrementalWindowResolver
             return (true, NoMarks, null);
         }
 
+        // A date mark is moved back OverlapDays; a numeric mark is moved back Lookback. Both shifts happen
+        // inside the probe so the value the run reports as its watermark is the value the read was actually
+        // bounded by. The shift is applied to the aggregate, not the column, so it stays sargable-free of the
+        // source and costs nothing.
         var projections = marks.Select(m => m.IsDate
             ? $"DATEADD(day, -{flow.Incremental.OverlapDays}, MAX([{Escape(m.Column)}])) AS [{Escape(m.Column)}]"
-            : $"MAX([{Escape(m.Column)}]) AS [{Escape(m.Column)}]");
+            : NumericLookback(flow, m) is { } back
+                ? $"MAX([{Escape(m.Column)}]) - {back.ToString(CultureInfo.InvariantCulture)} AS [{Escape(m.Column)}]"
+                : $"MAX([{Escape(m.Column)}]) AS [{Escape(m.Column)}]");
         var sql = $"SELECT {string.Join(", ", projections)} FROM {SchemaQualified(probeObject)} WHERE 1=1{Clause(flow.Source.IncrementalClause)};";
 
         return (true, await ReadMarksAsync(connection, sql, marks, ct).ConfigureAwait(false), sql);
@@ -376,12 +382,15 @@ public sealed class IncrementalWindowResolver
 
         await using var connection = await _factory.OpenAsync(source, ct).ConfigureAwait(false);
 
-        // The date watermark gets the same overlap subtraction as the MAX probe, so the source MIN and target
-        // MAX are shifted equally and the strict-less comparison is symmetric (legacy applies DATEADD to both).
+        // The date watermark gets the same overlap subtraction as the MAX probe, and a numeric watermark the
+        // same lookback, so the source MIN and target MAX are shifted equally and the strict-less comparison
+        // is symmetric (legacy applies DATEADD to both).
         // This SQL runs ON THE SOURCE, so identifiers and date arithmetic come from the source dialect.
         var projections = marks.Select(m => m.IsDate
             ? $"{dialect.DateSubtractDays($"MIN({dialect.QuoteIdentifier(m.Column)})", flow.Incremental.OverlapDays)} AS {dialect.QuoteIdentifier(m.Column)}"
-            : $"MIN({dialect.QuoteIdentifier(m.Column)}) AS {dialect.QuoteIdentifier(m.Column)}");
+            : NumericLookback(flow, m) is { } back
+                ? $"MIN({dialect.QuoteIdentifier(m.Column)}) - {back.ToString(CultureInfo.InvariantCulture)} AS {dialect.QuoteIdentifier(m.Column)}"
+                : $"MIN({dialect.QuoteIdentifier(m.Column)}) AS {dialect.QuoteIdentifier(m.Column)}");
         var sql = $"SELECT {string.Join(", ", projections)} FROM {dialect.QualifyObject(flow.Source.Table)} WHERE 1=1{Clause(flow.Source.IncrementalClause)};";
         return (await ReadMarksAsync(connection, sql, marks, ct).ConfigureAwait(false), sql);
     }
@@ -506,6 +515,25 @@ public sealed class IncrementalWindowResolver
 
     private static bool IsNumeric(object value)
         => value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
+
+    /// <summary>The amount to subtract from a non-date watermark's aggregate, or null when no shift applies:
+    /// the flow declared no lookback, or the column is not one arithmetic can be done on. A string, binary or
+    /// rowversion high-water column is left alone rather than being fed to a subtraction the source would
+    /// reject; approximate types are excluded too, since shifting a float watermark is not a row count.</summary>
+    private static int? NumericLookback(IngestionFlow flow, Watermark mark)
+    {
+        var lookback = flow.Incremental.Lookback;
+        if (lookback <= 0 || mark.IsDate)
+        {
+            return null;
+        }
+
+        return mark.Type.BaseType.ToLowerInvariant() switch
+        {
+            "tinyint" or "smallint" or "int" or "bigint" or "decimal" or "numeric" or "money" or "smallmoney" => lookback,
+            _ => null,
+        };
+    }
 
     /// <summary>Formats a backfill window bound (always a UTC <see cref="DateTime"/>) as a temporal literal for
     /// the date column's declared type, through the source dialect. Kept separate from

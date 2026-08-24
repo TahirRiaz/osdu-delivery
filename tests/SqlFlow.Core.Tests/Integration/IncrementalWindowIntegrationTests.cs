@@ -404,6 +404,119 @@ public sealed class IncrementalWindowIntegrationTests
         }
     }
 
+    [SkippableFact]
+    public async Task NumericColumn_AppliesLookback()
+    {
+        // The numeric counterpart of DateColumn_AppliesOverlapDays: the watermark is rewound by Lookback
+        // before it bounds the read, so the predicate is MAX - lookback rather than the bare MAX.
+        const int flowId = 24;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc11_Src";
+        const string trg = "_SfInc11_Trg";
+        await Reset(cs, src, trg, flowId, "[Id] int NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (10,'a'),(20,'b'),(30,'c');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var flow = Flow(flowId, src, trg, new IncrementalPolicy { Columns = ["Id"], Lookback = 15 });
+
+            Assert.True((await runner.RunAsync(flow)).Success);
+            Assert.Equal(3, await IntegrationDb.RowCountAsync(cs, trg));
+
+            // MAX(Id)=30, minus a lookback of 15 => 15. Only Id 20 and 30 fall in the re-read window.
+            var second = await runner.RunAsync(flow);
+            Assert.True(second.Success, second.Error);
+            Assert.Equal(" AND [Id] > 15", second.SourceWhere);
+            Assert.Equal(2, second.RowsStaged);
+
+            // Re-reading is idempotent: the keyed upsert matches both rows, so nothing is duplicated.
+            Assert.Equal(3, await IntegrationDb.RowCountAsync(cs, trg));
+        }
+        finally
+        {
+            await Cleanup(cs, src, trg, flowId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task NumericLookback_RecoversRowThatCommittedBelowTheWatermark()
+    {
+        // The bug this exists for. An auto-increment id is allocated at INSERT but the row becomes visible at
+        // COMMIT, so a reader can see id N+k while N is still in flight. A bare MAX watermark advances past N
+        // and the next run's strict > can never reach back down to it: the row is skipped permanently.
+        // Id 4 below stands in for that late-committing row, inserted after the watermark has already moved to 5.
+        const int flowId = 25;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc12_Src";
+        const string trg = "_SfInc12_Trg";
+        await Reset(cs, src, trg, flowId, "[Id] int NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (1,'a'),(2,'b'),(3,'c'),(5,'e');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var noLookback = Flow(flowId, src, trg, new IncrementalPolicy { Columns = ["Id"] });
+
+            // The first run sees 1,2,3,5 and parks the watermark at 5, having jumped over the in-flight 4.
+            Assert.True((await runner.RunAsync(noLookback)).Success);
+            Assert.Equal(4, await IntegrationDb.RowCountAsync(cs, trg));
+
+            // The straggler commits.
+            await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES (4,'d');");
+
+            // Without a lookback the read is bounded at > 5, so Id 4 is invisible to every future run.
+            var bare = await runner.RunAsync(noLookback);
+            Assert.True(bare.Success, bare.Error);
+            Assert.Equal(" AND [Id] > 5", bare.SourceWhere);
+            Assert.Equal(0, bare.RowsStaged);
+            Assert.Equal(0, await IntegrationDb.ScalarAsync<int?>(cs, $"SELECT COUNT(*) FROM [dbo].[{trg}] WHERE [Id] = 4"));
+
+            // With a lookback the window reaches back below the high-water mark and the row is recovered.
+            var withLookback = Flow(flowId, src, trg, new IncrementalPolicy { Columns = ["Id"], Lookback = 3 });
+            var healed = await runner.RunAsync(withLookback);
+            Assert.True(healed.Success, healed.Error);
+            Assert.Equal(" AND [Id] > 2", healed.SourceWhere);
+            Assert.Equal(1, await IntegrationDb.ScalarAsync<int?>(cs, $"SELECT COUNT(*) FROM [dbo].[{trg}] WHERE [Id] = 4"));
+
+            // The rows already held (3 and 5) were re-read too and must not have been duplicated.
+            Assert.Equal(5, await IntegrationDb.RowCountAsync(cs, trg));
+        }
+        finally
+        {
+            await Cleanup(cs, src, trg, flowId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task NumericLookback_IsIgnoredForANonArithmeticWatermarkColumn()
+    {
+        // A high-water column can be a string (the NeTEx-style keys in the estate) or binary. Subtracting from
+        // its MAX would be invalid SQL, so the lookback is skipped for those types rather than failing the run.
+        const int flowId = 26;
+        var cs = IntegrationDb.Require();
+        const string src = "_SfInc13_Src";
+        const string trg = "_SfInc13_Trg";
+        await Reset(cs, src, trg, flowId, "[Id] nvarchar(40) NOT NULL, [Val] nvarchar(20) NULL");
+        await IntegrationDb.ExecuteAsync(cs, $"INSERT INTO [dbo].[{src}] VALUES ('NSR:Line:1','a'),('NSR:Line:2','b');");
+
+        try
+        {
+            var runner = RelationalIngestionHarness.BuildRunner();
+            var flow = Flow(flowId, src, trg, new IncrementalPolicy { Columns = ["Id"], Lookback = 10 });
+
+            Assert.True((await runner.RunAsync(flow)).Success);
+
+            var second = await runner.RunAsync(flow);
+            Assert.True(second.Success, second.Error);
+            Assert.Equal(" AND [Id] > 'NSR:Line:2'", second.SourceWhere);
+        }
+        finally
+        {
+            await Cleanup(cs, src, trg, flowId);
+        }
+    }
+
     private static async Task Reset(string cs, string src, string trg, int flowId, string sourceColumns)
     {
         await IntegrationDb.DropTableAsync(cs, src);

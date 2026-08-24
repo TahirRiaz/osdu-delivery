@@ -150,6 +150,7 @@ internal sealed class IngestionIncrementalYaml
     public List<string>? Columns { get; set; }
     public string? DateColumn { get; set; }
     public int? OverlapDays { get; set; }
+    public int? Lookback { get; set; }
     public bool? FullLoad { get; set; }
     public bool? FetchMinValuesFromSource { get; set; }
 }
