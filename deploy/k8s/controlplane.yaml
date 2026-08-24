@@ -53,8 +53,10 @@ spec:
             # Entra SSO: put entra-tenant-id and entra-client-id in the sqlflow-secrets secret and the login page
             # offers "Sign in with Microsoft" alongside local username/password. Both keys are optional here, so an
             # estate that leaves them out of the secret simply runs local sign-in only (no restart-time failure).
-            # The SPA app registration's redirect URI must be the GUI origin.
-            - name: ControlPlane__AzureAd__TenantId
+            # The SPA app registration's redirect URI must be the GUI origin, and must itself be a multi-tenant
+            # registration if more than one tenant is ever allowed. To trust more than one tenant, add further
+            # ControlPlane__AzureAd__AllowedTenantIds__1, __2, ... entries alongside this one.
+            - name: ControlPlane__AzureAd__AllowedTenantIds__0
               valueFrom:
                 secretKeyRef: { name: sqlflow-secrets, key: entra-tenant-id, optional: true }
             - name: ControlPlane__AzureAd__ClientId

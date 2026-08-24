@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
@@ -15,22 +16,29 @@ namespace SqlFlow.ControlPlane.Security;
 public interface IExternalTokenValidator
 {
     /// <summary>The validated profile, or null when the token is invalid (expired, wrong audience/issuer, bad
-    /// signature, or missing the identity claims). Never throws for an untrusted token; the caller answers 401.</summary>
+    /// signature, wrong tenant, or missing the identity claims). Never throws for an untrusted token; the caller
+    /// answers 401.</summary>
     Task<ExternalUserProfile?> ValidateAsync(string token, CancellationToken ct);
 }
 
 /// <summary>
-/// Validates Microsoft Entra ID tokens for the token-exchange sign-in: the SPA signs in with MSAL and posts the
-/// ID token here. Validation pins the tenant (issuer from the tenant authority's OIDC metadata), the app
-/// registration (audience = client id), the signature (tenant JWKS, refreshed on key rollover), and the lifetime.
+/// Validates Microsoft Entra ID tokens for the token-exchange sign-in: the SPA signs in with MSAL against the
+/// multi-tenant "organizations" authority and posts the ID token here. The token's own <c>tid</c> claim picks
+/// which tenant to validate against; that tenant must be in the configured allow-list, or the token is rejected
+/// before any metadata is even fetched. Validation then pins the app registration (audience = client id), the
+/// signature (that tenant's JWKS, refreshed on key rollover), the tenant's own issuer, and the lifetime.
 /// The profile is keyed on the immutable <c>oid</c> claim so a UPN rename never creates a duplicate user.
 /// </summary>
 public sealed class EntraTokenValidator : IExternalTokenValidator
 {
     private readonly AzureAdOptions _options;
-    private readonly ConfigurationManager<OpenIdConnectConfiguration> _metadata;
-    private readonly JsonWebTokenHandler _handler = new();
     private readonly ILogger<EntraTokenValidator> _logger;
+    private readonly JsonWebTokenHandler _handler = new();
+
+    // One metadata manager per allowed tenant, built lazily on first use and reused (and refreshed on key
+    // rollover) for the life of the process.
+    private readonly ConcurrentDictionary<string, ConfigurationManager<OpenIdConnectConfiguration>> _metadataByTenant
+        = new(StringComparer.OrdinalIgnoreCase);
 
     public EntraTokenValidator(IOptions<ControlPlaneOptions> options, ILogger<EntraTokenValidator> logger)
     {
@@ -38,25 +46,49 @@ public sealed class EntraTokenValidator : IExternalTokenValidator
         ArgumentNullException.ThrowIfNull(logger);
         _options = options.Value.AzureAd;
         _logger = logger;
-        var metadataAddress = $"{_options.ResolveAuthority()}/.well-known/openid-configuration";
-        _metadata = new ConfigurationManager<OpenIdConnectConfiguration>(
-            metadataAddress, new OpenIdConnectConfigurationRetriever());
     }
 
     public async Task<ExternalUserProfile?> ValidateAsync(string token, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
 
+        JsonWebToken unvalidated;
+        try
+        {
+            unvalidated = _handler.ReadJsonWebToken(token);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning("Entra token rejected: not a parseable JWT ({Reason}).", ex.GetType().Name);
+            return null;
+        }
+
+        var tenantId = unvalidated.Claims.FirstOrDefault(c => c.Type == "tid")?.Value;
+        var allowedTenantId = string.IsNullOrWhiteSpace(tenantId)
+            ? null
+            : _options.AllowedTenantIds.FirstOrDefault(id => string.Equals(id, tenantId, StringComparison.OrdinalIgnoreCase));
+        if (allowedTenantId is null)
+        {
+            _logger.LogWarning("Entra token rejected: tenant {TenantId} is not in the allowed tenant list.", tenantId);
+            return null;
+        }
+
+        var metadataManager = _metadataByTenant.GetOrAdd(allowedTenantId, id =>
+        {
+            var metadataAddress = $"{_options.TenantAuthority(id)}/.well-known/openid-configuration";
+            return new ConfigurationManager<OpenIdConnectConfiguration>(metadataAddress, new OpenIdConnectConfigurationRetriever());
+        });
+
         OpenIdConnectConfiguration metadata;
         try
         {
-            metadata = await _metadata.GetConfigurationAsync(ct).ConfigureAwait(false);
+            metadata = await metadataManager.GetConfigurationAsync(ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Metadata retrieval failing is an outage (network, authority misconfigured), not a bad token; it is
             // logged as such and the sign-in fails closed.
-            _logger.LogError(ex, "Entra OIDC metadata could not be retrieved from the configured authority.");
+            _logger.LogError(ex, "Entra OIDC metadata could not be retrieved for tenant {TenantId}.", allowedTenantId);
             return null;
         }
 
@@ -70,14 +102,14 @@ public sealed class EntraTokenValidator : IExternalTokenValidator
         {
             // Key rollover: the tenant published new signing keys since the metadata was cached. Refresh once and
             // re-validate; a still-unknown key is then a genuinely untrusted token.
-            _metadata.RequestRefresh();
+            metadataManager.RequestRefresh();
             try
             {
-                metadata = await _metadata.GetConfigurationAsync(ct).ConfigureAwait(false);
+                metadata = await metadataManager.GetConfigurationAsync(ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogError(ex, "Entra OIDC metadata refresh after a signature key miss failed.");
+                _logger.LogError(ex, "Entra OIDC metadata refresh after a signature key miss failed for tenant {TenantId}.", allowedTenantId);
                 return null;
             }
 
@@ -118,8 +150,8 @@ public sealed class EntraTokenValidator : IExternalTokenValidator
         var parameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            // The tenant authority's metadata carries the tenant-specific issuer; pinning to it means a token
-            // from any other tenant is rejected even though the signing keys are Microsoft-wide.
+            // The tenant authority's metadata carries that exact tenant's issuer; pinning to it means a token
+            // asserting any other tenant is rejected even though Microsoft's signing keys are directory-wide.
             ValidIssuer = metadata.Issuer,
             ValidateAudience = true,
             ValidAudience = _options.ClientId,

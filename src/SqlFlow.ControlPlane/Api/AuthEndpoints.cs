@@ -107,8 +107,8 @@ public static class AuthEndpoints
     {
         var value = options.Value;
         var entra = value.AzureAd.IsEnabled
-            ? new EntraProviderDto(true, value.AzureAd.TenantId, value.AzureAd.ClientId, value.AzureAd.ResolveAuthority())
-            : new EntraProviderDto(false, null, null, null);
+            ? new EntraProviderDto(true, value.AzureAd.ClientId, value.AzureAd.ResolveAuthority())
+            : new EntraProviderDto(false, null, null);
         return TypedResults.Ok(new AuthProvidersDto(
             Local: true,
             Bootstrap: !string.IsNullOrEmpty(value.Jwt.BootstrapSecret),

@@ -182,35 +182,45 @@ public sealed class AzureAdOptions
     /// present (a kill switch). The effective state is <see cref="IsEnabled"/>.</summary>
     public bool? Enabled { get; set; }
 
-    /// <summary>The directory (tenant) id of the Entra tenant whose users may sign in.</summary>
-    public string? TenantId { get; set; }
+    /// <summary>The directory (tenant) ids allowed to sign in. A token asserting any other tenant is rejected by
+    /// <see cref="Security.EntraTokenValidator"/> regardless of how it was signed, so this list is the actual
+    /// trust boundary: adding a tenant here is what grants its users access, not the app registration's own
+    /// single-tenant/multi-tenant setting.</summary>
+    public IReadOnlyList<string> AllowedTenantIds { get; set; } = [];
 
     /// <summary>The app registration (client) id the SPA signs in with; the audience the ID token must carry.</summary>
     public string? ClientId { get; set; }
 
-    /// <summary>The OIDC authority. Defaults to the public-cloud tenant authority
-    /// (<c>https://login.microsoftonline.com/{TenantId}/v2.0</c>); override only for sovereign clouds.</summary>
+    /// <summary>The OIDC authority host. Defaults to the public-cloud host (<c>https://login.microsoftonline.com</c>);
+    /// override only for sovereign clouds (e.g. <c>https://login.microsoftonline.us</c>).</summary>
     public string? Authority { get; set; }
 
     /// <summary>The role a first-time Entra user is provisioned with (least privilege by default; an admin raises
     /// it afterwards).</summary>
     public string DefaultRole { get; set; } = "viewer";
 
-    /// <summary>Whether both credentials Entra needs (tenant id and client id) are configured, i.e. SSO CAN be
-    /// offered. The auto-enable default keys on this.</summary>
+    /// <summary>Whether both credentials Entra needs (at least one allowed tenant id and a client id) are
+    /// configured, i.e. SSO CAN be offered. The auto-enable default keys on this.</summary>
     public bool HasCredentials
-        => !string.IsNullOrWhiteSpace(TenantId) && !string.IsNullOrWhiteSpace(ClientId);
+        => AllowedTenantIds.Any(id => !string.IsNullOrWhiteSpace(id)) && !string.IsNullOrWhiteSpace(ClientId);
 
     /// <summary>Whether Entra single sign-on is actually offered: the explicit <see cref="Enabled"/> flag when set,
     /// otherwise on automatically when <see cref="HasCredentials"/> is true. Local username/password sign-in is
     /// always available regardless; this only gates the additive Microsoft option.</summary>
     public bool IsEnabled => Enabled ?? HasCredentials;
 
-    /// <summary>The effective authority, with the public-cloud default applied.</summary>
-    public string ResolveAuthority()
-        => string.IsNullOrWhiteSpace(Authority)
-            ? $"https://login.microsoftonline.com/{TenantId}/v2.0"
-            : Authority.TrimEnd('/');
+    private string AuthorityHost
+        => string.IsNullOrWhiteSpace(Authority) ? "https://login.microsoftonline.com" : Authority.TrimEnd('/');
+
+    /// <summary>The authority the SPA authenticates against. Always the multi-tenant "organizations" endpoint, which
+    /// accepts a sign-in attempt from any Entra work/school tenant, so Microsoft's own login page never rejects an
+    /// allowed tenant before a token is even issued. The actual tenant restriction is enforced afterward, token by
+    /// token, in <see cref="Security.EntraTokenValidator"/> against <see cref="AllowedTenantIds"/>.</summary>
+    public string ResolveAuthority() => $"{AuthorityHost}/organizations/v2.0";
+
+    /// <summary>The concrete, tenant-specific authority used to fetch one allowed tenant's own OIDC metadata
+    /// (signing keys, issuer) so a token claiming to be from it can actually be verified against that tenant.</summary>
+    public string TenantAuthority(string tenantId) => $"{AuthorityHost}/{tenantId}/v2.0";
 
     public void Validate()
     {
@@ -220,12 +230,17 @@ public sealed class AzureAdOptions
         if (Enabled == true && !HasCredentials)
         {
             throw new InvalidOperationException(
-                "ControlPlane:AzureAd:Enabled is true but TenantId and/or ClientId are missing. Provide both, or leave Enabled unset to enable SSO automatically only when the credentials are present.");
+                "ControlPlane:AzureAd:Enabled is true but AllowedTenantIds and/or ClientId are missing. Provide at least one tenant id and a client id, or leave Enabled unset to enable SSO automatically only when the credentials are present.");
         }
 
         if (!IsEnabled)
         {
             return;
+        }
+
+        if (AllowedTenantIds.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidOperationException("ControlPlane:AzureAd:AllowedTenantIds must not contain a blank entry.");
         }
 
         if (string.IsNullOrWhiteSpace(DefaultRole))

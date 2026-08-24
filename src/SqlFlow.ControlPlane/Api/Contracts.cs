@@ -202,7 +202,7 @@ public sealed record SessionResponse(
 
 /// <summary>The Entra ID sign-in settings a browser client needs to run the MSAL flow. All values are public by
 /// design (a SPA's client id and tenant id ship in its bundle); secrets never appear here.</summary>
-public sealed record EntraProviderDto(bool Enabled, string? TenantId, string? ClientId, string? Authority);
+public sealed record EntraProviderDto(bool Enabled, string? ClientId, string? Authority);
 
 /// <summary>Which sign-in methods this control plane offers, so the login page renders only what works.</summary>
 public sealed record AuthProvidersDto(bool Local, bool Bootstrap, EntraProviderDto Entra);

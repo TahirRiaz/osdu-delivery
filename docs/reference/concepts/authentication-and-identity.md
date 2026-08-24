@@ -37,10 +37,10 @@ The control plane offers several ways to sign in and issues one predominant kind
 | Endpoint | Who | Availability |
 | --- | --- | --- |
 | `POST /api/v1/auth/login` | A local SQLFlow user (username and password held in the catalog) | Always mapped |
-| `POST /api/v1/auth/exchange` | Microsoft Entra ID single sign-on (the SPA exchanges an Entra ID token) | Mapped when Entra is enabled (automatic once `TenantId` and `ClientId` are set) |
+| `POST /api/v1/auth/exchange` | Microsoft Entra ID single sign-on (the SPA exchanges an Entra ID token) | Mapped when Entra is enabled (automatic once `AllowedTenantIds` and `ClientId` are set) |
 | `POST /api/v1/auth/token` | The break-glass bootstrap secret | Mapped only when `ControlPlane:Jwt:BootstrapSecret` is set |
 
-`GET /api/v1/auth/providers` is anonymous and tells the login page which of these are available. It returns `{ local, bootstrap, entra }`; when Entra is enabled, the `entra` object carries the `tenantId`, `clientId`, and resolved `authority` so the login page can configure MSAL without any client-side configuration file. All sign-in responses are sent with `Cache-Control: no-store` and `Pragma: no-cache` so an intermediary can never cache a bearer token.
+`GET /api/v1/auth/providers` is anonymous and tells the login page which of these are available. It returns `{ local, bootstrap, entra }`; when Entra is enabled, the `entra` object carries the `clientId` and resolved `authority` (always the multi-tenant `organizations` endpoint, so MSAL never rejects an allowed foreign tenant at Microsoft's own login page) so the login page can configure MSAL without any client-side configuration file. All sign-in responses are sent with `Cache-Control: no-store` and `Pragma: no-cache` so an intermediary can never cache a bearer token.
 
 Two further sign-in surfaces exist for clients that cannot drive an interactive login page:
 
@@ -126,13 +126,24 @@ Requested scopes are filtered against the allowed set `read`, `operate`, `author
 
 ## Microsoft Entra ID single sign-on
 
-Entra single sign-on turns on automatically once `ControlPlane:AzureAd:TenantId` and `ControlPlane:AzureAd:ClientId` are configured: supplying both credentials is the whole switch, with no separate enable flag to remember. (Set `ControlPlane:AzureAd:Enabled` explicitly only to override the default: `true` requires SSO and fails startup if a credential is missing, `false` forces it off even when credentials are present.) Local username/password sign-in is always available alongside it; enabling Entra only adds the "Sign in with Microsoft" option. When enabled, the SPA signs the user in against Entra with MSAL (authorization code + PKCE) and posts the resulting ID token to `POST /api/v1/auth/exchange` as `{ "token": "..." }`. The control plane validates the Entra token and issues its own SQLFlow session token, so downstream API calls use one token type regardless of sign-in method.
+Entra single sign-on turns on automatically once `ControlPlane:AzureAd:AllowedTenantIds` (at least one entry) and `ControlPlane:AzureAd:ClientId` are configured: supplying both credentials is the whole switch, with no separate enable flag to remember. (Set `ControlPlane:AzureAd:Enabled` explicitly only to override the default: `true` requires SSO and fails startup if a credential is missing, `false` forces it off even when credentials are present.) Local username/password sign-in is always available alongside it; enabling Entra only adds the "Sign in with Microsoft" option. When enabled, the SPA signs the user in against Entra with MSAL (authorization code + PKCE) and posts the resulting ID token to `POST /api/v1/auth/exchange` as `{ "token": "..." }`. The control plane validates the Entra token and issues its own SQLFlow session token, so downstream API calls use one token type regardless of sign-in method.
 
-`EntraTokenValidator` (src/SqlFlow.ControlPlane/Security/EntraTokenValidator.cs) pins validation to:
+### More than one tenant
 
-- **Issuer**: the tenant-specific issuer taken from the authority's OIDC metadata at `{authority}/.well-known/openid-configuration`, so a token from any other tenant is rejected even though Microsoft's signing keys are directory-wide
+`AllowedTenantIds` is a list, not a single value, so an estate can trust users from more than one Entra tenant at once (for example, the app registration's own home tenant plus a customer organization's corporate tenant). Two things have to agree for a foreign tenant to actually work:
+
+- **The app registration itself must be multi-tenant** (`signInAudience: AzureADMultipleOrgs`). MSAL always authenticates the SPA against the `organizations` authority (`ResolveAuthority()`, src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs), which accepts a sign-in attempt from any Entra work/school tenant — a single-tenant app registration rejects a foreign account at Microsoft's own login page before a token is ever issued, regardless of what the control plane is configured to allow.
+- **Each additional tenant's own admin must consent to the app once.** Consent is what creates that tenant's own local enterprise-application object; without it, Entra refuses to issue a token for that tenant at all. If the deployment also enforces app-role assignment (see below), that tenant's admin then assigns the role to their own users or groups, entirely within their own directory — this deployment's credentials never reach into a foreign tenant.
+
+The control plane's `AllowedTenantIds` is the actual trust boundary on the backend: a multi-tenant app registration will let *any* consenting tenant obtain a token, but `EntraTokenValidator` only accepts one whose `tid` claim is in this list, so unnamed tenants are rejected token by token even after they've consented to the app.
+
+`deploy/bicep/main.bicep` automates this: `provisionEntraApp` (default on) creates the app registration via `entra-app.bicep`, always trusting the deployment's own subscription tenant; `azureAdAdditionalAllowedTenantIds` names further tenants, which automatically flips the registration to multi-tenant and is surfaced back as the `entraForeignTenantReminder` output (the manual consent-then-assign step each named tenant's admin still has to do by hand).
+
+`EntraTokenValidator` (src/SqlFlow.ControlPlane/Security/EntraTokenValidator.cs) reads the token's own `tid` claim first (unvalidated) to pick which allowed tenant to validate against — rejecting outright, before any metadata fetch, if `tid` is not in `AllowedTenantIds` — then pins validation to that tenant specifically:
+
+- **Issuer**: that tenant's own issuer, taken from its OIDC metadata at `{TenantAuthority(tid)}/.well-known/openid-configuration`, so a token asserting any other tenant (even an allowed one, if it lied about `tid`) fails signature/issuer validation against the metadata actually fetched
 - **Audience**: `ControlPlane:AzureAd:ClientId`
-- **Signature**: the tenant JWKS, RS256 only, with a single refresh-and-revalidate when the key is unknown (key rollover); a still-unknown key after refresh is an untrusted token
+- **Signature**: that tenant's JWKS, RS256 only, with a single refresh-and-revalidate when the key is unknown (key rollover); a still-unknown key after refresh is an untrusted token. Each allowed tenant gets its own cached metadata manager, refreshed independently.
 - **Lifetime**: with 30 seconds of clock skew
 
 Any validation failure returns 401 `Invalid identity token`. An OIDC metadata outage (network failure, misconfigured authority) is logged as an outage and fails closed with the same 401; it never falls back to cached-forever keys or unsigned acceptance.
@@ -188,10 +199,10 @@ All settings live in the `ControlPlane` configuration section (appsettings or en
 | `ControlPlane:Jwt:AccessTokenMinutes` | `720` | One token's lifetime, 1 to 1440. Not how long a user stays signed in: the GUI rolls its token at `POST /auth/renew` |
 | `ControlPlane:Jwt:SessionMaxDays` | `30` | Absolute ceiling on a rolling session, measured from the actual sign-in, 1 to 365 |
 | `ControlPlane:Jwt:BootstrapSecret` | unset | Enables `POST /auth/token`; at least 32 bytes when set |
-| `ControlPlane:AzureAd:Enabled` | unset (auto) | Explicit override. Unset: SSO auto-enables when `TenantId` and `ClientId` are both set. `true`: require SSO (startup error if a credential is missing). `false`: force off even with credentials |
-| `ControlPlane:AzureAd:TenantId` | none | The Entra tenant whose users may sign in; setting this and `ClientId` auto-enables SSO |
-| `ControlPlane:AzureAd:ClientId` | none | The SPA app registration; the required token audience; setting this and `TenantId` auto-enables SSO |
-| `ControlPlane:AzureAd:Authority` | `https://login.microsoftonline.com/{TenantId}/v2.0` | Override only for sovereign clouds |
+| `ControlPlane:AzureAd:Enabled` | unset (auto) | Explicit override. Unset: SSO auto-enables when `AllowedTenantIds` and `ClientId` are both set. `true`: require SSO (startup error if a credential is missing). `false`: force off even with credentials |
+| `ControlPlane:AzureAd:AllowedTenantIds` | none | The Entra tenant(s) whose users may sign in (a list; `__0`, `__1`, ... in env-var form). Setting this and `ClientId` auto-enables SSO. More than one entry requires the app registration itself to be multi-tenant |
+| `ControlPlane:AzureAd:ClientId` | none | The SPA app registration; the required token audience; setting this and `AllowedTenantIds` auto-enables SSO |
+| `ControlPlane:AzureAd:Authority` | `https://login.microsoftonline.com` | The authority host. Override only for sovereign clouds (e.g. `https://login.microsoftonline.us`) |
 | `ControlPlane:AzureAd:DefaultRole` | `viewer` | Role JIT-provisioned Entra users receive |
 | `ControlPlane:Bootstrap:ApplyMigrations` | `true` | Whether startup applies pending catalog migrations |
 | `ControlPlane:Bootstrap:AdminUsername` | unset | Initial admin sign-in name; set with the password reference |

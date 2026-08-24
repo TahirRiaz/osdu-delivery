@@ -28,7 +28,6 @@ export interface TokenResponse {
 
 export interface EntraProviderInfo {
   enabled: boolean;
-  tenantId: string | null;
   clientId: string | null;
   authority: string | null;
 }

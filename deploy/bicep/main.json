@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12032643485495391681"
+      "templateHash": "14862530309986624600"
     }
   },
   "parameters": {
@@ -114,14 +114,14 @@
       "type": "bool",
       "defaultValue": true,
       "metadata": {
-        "description": "Let this template create and own the Entra app registration users sign in with (App Roles + \"Assignment required\" baked in, so only assigned group members can sign in), through the Microsoft Graph Bicep extension. On (the default) enables \"Sign in with Microsoft\" and ignores azureAdTenantId/azureAdClientId; the deploying principal then needs directory write (Application Administrator or Application.ReadWrite.All), and assigning a group needs Entra ID P1. Turn off for local-only sign-in, or to point at an externally managed registration via azureAdTenantId + azureAdClientId."
+        "description": "Let this template create and own the Entra app registration users sign in with (App Roles + \"Assignment required\" baked in, so only assigned group members can sign in), through the Microsoft Graph Bicep extension. On (the default) enables \"Sign in with Microsoft\" and ignores azureAdAllowedTenantIds/azureAdClientId; the deploying principal then needs directory write (Application Administrator or Application.ReadWrite.All), and assigning a group needs Entra ID P1. Turn off for local-only sign-in, or to point at an externally managed registration via azureAdAllowedTenantIds + azureAdClientId."
       }
     },
     "azureAdAllowedGroupObjectId": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Object id of the Entra security group whose members may sign in when provisionEntraApp is on. Only its members are assigned the app role and can obtain a token. Empty still enforces assignment required, so no one signs in until a group or users are assigned in the enterprise application. Ignored when provisionEntraApp is off."
+        "description": "Object id of the Entra security group whose members may sign in when provisionEntraApp is on. Only its members are assigned the app role and can obtain a token. Empty still enforces assignment required, so no one signs in until a group or users are assigned in the enterprise application. Reaches only this app's home tenant (subscription().tenantId); a tenant named in azureAdAdditionalAllowedTenantIds assigns its own users itself. Ignored when provisionEntraApp is off."
       }
     },
     "entraAppDisplayName": {
@@ -138,18 +138,25 @@
         "description": "Stable unique name (Graph identity key) for that registration, so redeploys update the same app. Lowercase, no spaces."
       }
     },
-    "azureAdTenantId": {
-      "type": "string",
-      "defaultValue": "",
+    "azureAdAdditionalAllowedTenantIds": {
+      "type": "array",
+      "defaultValue": [],
       "metadata": {
-        "description": "EXTERNAL app mode only (provisionEntraApp off): Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer \"Sign in with Microsoft\" against an app registration you manage yourself; leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on that SPA registration."
+        "description": "PROVISIONED app mode only (provisionEntraApp on): further Entra tenant (directory) ids, beyond this deployment's own home tenant (always trusted), whose users may also sign in. A non-empty list makes the app registration multi-tenant automatically; each named tenant's own admin must still consent to the app once and then assign the SqlFlow.User role to their own users/groups (this template has no directory access into a tenant it does not own) — see the entraForeignTenantReminder output for that step. Empty keeps the app single-tenant."
+      }
+    },
+    "azureAdAllowedTenantIds": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "EXTERNAL app mode only (provisionEntraApp off): Microsoft Entra tenant (directory) ids allowed for GUI single sign-on, against an app registration you manage yourself. Set together with azureAdClientId to offer \"Sign in with Microsoft\"; leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on that SPA registration, and make it multi-tenant yourself if this list has more than one entry."
       }
     },
     "azureAdClientId": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "EXTERNAL app mode only (provisionEntraApp off): client id of the SPA app registration users sign in with. Set together with azureAdTenantId to enable SSO. Ignored when provisionEntraApp is on (this template creates the registration and supplies the client id itself)."
+        "description": "EXTERNAL app mode only (provisionEntraApp off): client id of the SPA app registration users sign in with. Set together with azureAdAllowedTenantIds to enable SSO. Ignored when provisionEntraApp is on (this template creates the registration and supplies the client id itself)."
       }
     },
     "azureAdDefaultRole": {
@@ -439,7 +446,8 @@
     "quotedSqlAdminPassword": "[format('''{0}''', replace(parameters('sqlAdminPassword'), '''', ''''''))]",
     "scalerPasswordEncoded": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parameters('sqlAdminPassword'), '%', '%25'), '+', '%2B'), '/', '%2F'), '=', '%3D'), ' ', '%20'), '@', '%40'), ':', '%3A'), '?', '%3F'), '#', '%23'), '&', '%26'), ';', '%3B')]",
     "scalerConnectionSecretName": "sqlflow-catalog-db-scaler",
-    "effectiveAzureAdTenantId": "[if(parameters('provisionEntraApp'), subscription().tenantId, parameters('azureAdTenantId'))]",
+    "entraSignInAudience": "[if(empty(parameters('azureAdAdditionalAllowedTenantIds')), 'AzureADMyOrg', 'AzureADMultipleOrgs')]",
+    "effectiveAzureAdAllowedTenantIds": "[if(parameters('provisionEntraApp'), concat(createArray(subscription().tenantId), parameters('azureAdAdditionalAllowedTenantIds')), parameters('azureAdAllowedTenantIds'))]",
     "builtInFlowEnv": [
       {
         "name": "SQLFLOW_CONN_PRE",
@@ -719,6 +727,9 @@
           },
           "allowedGroupObjectId": {
             "value": "[parameters('azureAdAllowedGroupObjectId')]"
+          },
+          "signInAudience": {
+            "value": "[variables('entraSignInAudience')]"
           }
         },
         "template": {
@@ -729,7 +740,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "13603088384307135391"
+              "templateHash": "3564996844865373802"
             }
           },
           "parameters": {
@@ -757,7 +768,18 @@
               "type": "string",
               "defaultValue": "",
               "metadata": {
-                "description": "Object id of the Entra security group whose members may sign in. Its members are assigned the SqlFlow.User role. Empty leaves the app with assignment required but no members, so assign a group or users in the enterprise application before anyone can sign in."
+                "description": "Object id of the Entra security group whose members may sign in. Its members are assigned the SqlFlow.User role. Empty leaves the app with assignment required but no members, so assign a group or users in the enterprise application before anyone can sign in. Only reaches users in THIS app's home tenant; a foreign tenant assigns its own users itself once it has consented (see redeploy notes above)."
+              }
+            },
+            "signInAudience": {
+              "type": "string",
+              "defaultValue": "AzureADMyOrg",
+              "allowedValues": [
+                "AzureADMyOrg",
+                "AzureADMultipleOrgs"
+              ],
+              "metadata": {
+                "description": "AzureADMyOrg (default) restricts sign-in to this app's home tenant. AzureADMultipleOrgs additionally allows any tenant that has consented to the app; the control plane's own AllowedTenantIds is the actual gate on which of those tenants are trusted."
               }
             }
           },
@@ -779,7 +801,7 @@
               "properties": {
                 "uniqueName": "[parameters('uniqueName')]",
                 "displayName": "[parameters('displayName')]",
-                "signInAudience": "AzureADMyOrg",
+                "signInAudience": "[parameters('signInAudience')]",
                 "spa": {
                   "redirectUris": [
                     "[parameters('redirectUri')]"
@@ -913,8 +935,8 @@
           "gitUsername": {
             "value": "[parameters('gitUsername')]"
           },
-          "azureAdTenantId": {
-            "value": "[variables('effectiveAzureAdTenantId')]"
+          "azureAdAllowedTenantIds": {
+            "value": "[variables('effectiveAzureAdAllowedTenantIds')]"
           },
           "azureAdClientId": "[if(parameters('provisionEntraApp'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-entra-app'), '2025-04-01').outputs.clientId.value), createObject('value', parameters('azureAdClientId')))]",
           "azureAdDefaultRole": {
@@ -947,7 +969,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "11748553356433298434"
+              "templateHash": "10741321074227073934"
             }
           },
           "parameters": {
@@ -1060,18 +1082,18 @@
                 "description": "CIDRs of the ingress hops to trust for X-Forwarded-* headers. Leave empty to keep proxy trust off; per-client rate limiting then keys on the ingress hop address instead of the real client."
               }
             },
-            "azureAdTenantId": {
-              "type": "string",
-              "defaultValue": "",
+            "azureAdAllowedTenantIds": {
+              "type": "array",
+              "defaultValue": [],
               "metadata": {
-                "description": "Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer \"Sign in with Microsoft\" on the login page; leave empty for local username/password only."
+                "description": "Microsoft Entra tenant (directory) ids allowed to sign in to the GUI. Set together with azureAdClientId to offer \"Sign in with Microsoft\" on the login page; leave empty for local username/password only. Multiple tenants (e.g. the app registration's own tenant plus a customer's corporate tenant) are supported: the app registration itself must be multi-tenant, and each additional tenant's admin must consent to it."
               }
             },
             "azureAdClientId": {
               "type": "string",
               "defaultValue": "",
               "metadata": {
-                "description": "Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdTenantId to enable SSO."
+                "description": "Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdAllowedTenantIds to enable SSO."
               }
             },
             "azureAdDefaultRole": {
@@ -1163,6 +1185,14 @@
                   "name": "[format('ControlPlane__Proxy__KnownNetworks__{0}', copyIndex('proxyNetworkEnv'))]",
                   "value": "[parameters('proxyKnownNetworks')[copyIndex('proxyNetworkEnv')]]"
                 }
+              },
+              {
+                "name": "azureAdTenantEnv",
+                "count": "[length(parameters('azureAdAllowedTenantIds'))]",
+                "input": {
+                  "name": "[format('ControlPlane__AzureAd__AllowedTenantIds__{0}', copyIndex('azureAdTenantEnv'))]",
+                  "value": "[parameters('azureAdAllowedTenantIds')[copyIndex('azureAdTenantEnv')]]"
+                }
               }
             ],
             "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
@@ -1187,7 +1217,7 @@
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
             "proxyEnv": "[if(empty(parameters('proxyKnownNetworks')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Proxy__Enabled', 'value', 'true')), variables('proxyNetworkEnv')))]",
             "assistantEnv": "[if(not(parameters('assistantEnabled')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Assistant__Enabled', 'value', 'true'), createObject('name', 'ControlPlane__Assistant__Foundry__ProjectEndpoint', 'value', parameters('assistantFoundryProjectEndpoint')), createObject('name', 'ControlPlane__Assistant__Foundry__ModelDeploymentName', 'value', parameters('assistantFoundryModelDeploymentName')), createObject('name', 'ControlPlane__Assistant__Mcp__ServerUrl', 'value', parameters('assistantMcpServerUrl'))), if(empty(parameters('assistantFoundryTranscriptionDeploymentName')), createArray(), createArray(createObject('name', 'ControlPlane__Assistant__Foundry__TranscriptionDeploymentName', 'value', parameters('assistantFoundryTranscriptionDeploymentName'))))))]",
-            "entraEnv": "[if(or(empty(parameters('azureAdTenantId')), empty(parameters('azureAdClientId'))), createArray(), createArray(createObject('name', 'ControlPlane__AzureAd__TenantId', 'value', parameters('azureAdTenantId')), createObject('name', 'ControlPlane__AzureAd__ClientId', 'value', parameters('azureAdClientId')), createObject('name', 'ControlPlane__AzureAd__DefaultRole', 'value', parameters('azureAdDefaultRole'))))]"
+            "entraEnv": "[if(or(empty(parameters('azureAdAllowedTenantIds')), empty(parameters('azureAdClientId'))), createArray(), concat(variables('azureAdTenantEnv'), createArray(createObject('name', 'ControlPlane__AzureAd__ClientId', 'value', parameters('azureAdClientId')), createObject('name', 'ControlPlane__AzureAd__DefaultRole', 'value', parameters('azureAdDefaultRole')))))]"
           },
           "resources": [
             {
@@ -2886,6 +2916,13 @@
         "description": "Next step for Bicep-owned SSO: assignment is required, so no one can sign in until members are assigned. Set azureAdAllowedGroupObjectId to a security group to grant its members access, or assign users/groups in the enterprise application. Empty when a group was already assigned or SSO is off."
       },
       "value": "[if(and(parameters('provisionEntraApp'), empty(parameters('azureAdAllowedGroupObjectId'))), 'Assign a group via azureAdAllowedGroupObjectId (or in the enterprise application) so members can sign in; assignment is required and none are assigned yet.', '')]"
+    },
+    "entraForeignTenantReminder": {
+      "type": "string",
+      "metadata": {
+        "description": "Next step for each tenant named in azureAdAdditionalAllowedTenantIds: this template cannot grant role assignments outside its own home tenant, so an admin in that tenant must consent to the app (creates their own local enterprise application object) and then assign the SqlFlow.User role to their own users or groups on it. Empty when no additional tenant was configured or SSO is off."
+      },
+      "value": "[if(and(parameters('provisionEntraApp'), not(empty(parameters('azureAdAdditionalAllowedTenantIds')))), format('For each tenant in azureAdAdditionalAllowedTenantIds: an admin there must consent to app {0}, then assign the SqlFlow.User role to their own users/groups in their own enterprise application view.', if(parameters('provisionEntraApp'), reference(resourceId('Microsoft.Resources/deployments', 'sqlflow-entra-app'), '2025-04-01').outputs.clientId.value, parameters('azureAdClientId'))), '')]"
     },
     "controlPlaneBaseUrl": {
       "type": "string",

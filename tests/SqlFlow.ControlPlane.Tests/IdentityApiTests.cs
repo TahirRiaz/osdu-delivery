@@ -520,7 +520,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
         var host = inner.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ControlPlane:AzureAd:Enabled", "true");
-            builder.UseSetting("ControlPlane:AzureAd:TenantId", "00000000-0000-0000-0000-000000000001");
+            builder.UseSetting("ControlPlane:AzureAd:AllowedTenantIds:0", "00000000-0000-0000-0000-000000000001");
             builder.UseSetting("ControlPlane:AzureAd:ClientId", "00000000-0000-0000-0000-000000000002");
             builder.ConfigureTestServices(services =>
                 services.AddSingleton(validator));

@@ -59,10 +59,10 @@ param gitUsername string = ''
 @description('CIDRs of the ingress hops to trust for X-Forwarded-* headers. Leave empty to keep proxy trust off; per-client rate limiting then keys on the ingress hop address instead of the real client.')
 param proxyKnownNetworks array = []
 
-@description('Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer "Sign in with Microsoft" on the login page; leave empty for local username/password only.')
-param azureAdTenantId string = ''
+@description('Microsoft Entra tenant (directory) ids allowed to sign in to the GUI. Set together with azureAdClientId to offer "Sign in with Microsoft" on the login page; leave empty for local username/password only. Multiple tenants (e.g. the app registration\'s own tenant plus a customer\'s corporate tenant) are supported: the app registration itself must be multi-tenant, and each additional tenant\'s admin must consent to it.')
+param azureAdAllowedTenantIds array = []
 
-@description('Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdTenantId to enable SSO.')
+@description('Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdAllowedTenantIds to enable SSO.')
 param azureAdClientId string = ''
 
 @description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards).')
@@ -273,13 +273,16 @@ var assistantEnv = !assistantEnabled ? [] : concat([
   }
 ])
 
-// Entra SSO auto-enables in the control plane once a tenant id and client id are present, so supplying both is the
-// whole switch; either one missing leaves the login page offering local username/password only.
-var entraEnv = (empty(azureAdTenantId) || empty(azureAdClientId)) ? [] : [
-  {
-    name: 'ControlPlane__AzureAd__TenantId'
-    value: azureAdTenantId
-  }
+// Entra SSO auto-enables in the control plane once at least one allowed tenant id and a client id are present, so
+// supplying both is the whole switch; either one missing leaves the login page offering local username/password
+// only. Each allowed tenant becomes its own indexed env var, since the control plane binds AllowedTenantIds as a
+// list.
+var azureAdTenantEnv = [for (tenantId, i) in azureAdAllowedTenantIds: {
+  name: 'ControlPlane__AzureAd__AllowedTenantIds__${i}'
+  value: tenantId
+}]
+
+var entraEnv = (empty(azureAdAllowedTenantIds) || empty(azureAdClientId)) ? [] : concat(azureAdTenantEnv, [
   {
     name: 'ControlPlane__AzureAd__ClientId'
     value: azureAdClientId
@@ -288,7 +291,7 @@ var entraEnv = (empty(azureAdTenantId) || empty(azureAdClientId)) ? [] : [
     name: 'ControlPlane__AzureAd__DefaultRole'
     value: azureAdDefaultRole
   }
-]
+])
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name

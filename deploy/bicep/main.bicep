@@ -75,10 +75,10 @@ param gitToken string = ''
 @description('Username paired with gitToken when the host requires one: a Bitbucket app password takes the account username, a Bitbucket repository access token takes x-token-auth; GitHub ignores it. Empty sends the token alone.')
 param gitUsername string = ''
 
-@description('Let this template create and own the Entra app registration users sign in with (App Roles + "Assignment required" baked in, so only assigned group members can sign in), through the Microsoft Graph Bicep extension. On (the default) enables "Sign in with Microsoft" and ignores azureAdTenantId/azureAdClientId; the deploying principal then needs directory write (Application Administrator or Application.ReadWrite.All), and assigning a group needs Entra ID P1. Turn off for local-only sign-in, or to point at an externally managed registration via azureAdTenantId + azureAdClientId.')
+@description('Let this template create and own the Entra app registration users sign in with (App Roles + "Assignment required" baked in, so only assigned group members can sign in), through the Microsoft Graph Bicep extension. On (the default) enables "Sign in with Microsoft" and ignores azureAdAllowedTenantIds/azureAdClientId; the deploying principal then needs directory write (Application Administrator or Application.ReadWrite.All), and assigning a group needs Entra ID P1. Turn off for local-only sign-in, or to point at an externally managed registration via azureAdAllowedTenantIds + azureAdClientId.')
 param provisionEntraApp bool = true
 
-@description('Object id of the Entra security group whose members may sign in when provisionEntraApp is on. Only its members are assigned the app role and can obtain a token. Empty still enforces assignment required, so no one signs in until a group or users are assigned in the enterprise application. Ignored when provisionEntraApp is off.')
+@description('Object id of the Entra security group whose members may sign in when provisionEntraApp is on. Only its members are assigned the app role and can obtain a token. Empty still enforces assignment required, so no one signs in until a group or users are assigned in the enterprise application. Reaches only this app\'s home tenant (subscription().tenantId); a tenant named in azureAdAdditionalAllowedTenantIds assigns its own users itself. Ignored when provisionEntraApp is off.')
 param azureAdAllowedGroupObjectId string = ''
 
 @description('Display name for the app registration this template creates when provisionEntraApp is on.')
@@ -87,10 +87,13 @@ param entraAppDisplayName string = 'SQLFlow'
 @description('Stable unique name (Graph identity key) for that registration, so redeploys update the same app. Lowercase, no spaces.')
 param entraAppUniqueName string = 'sqlflow'
 
-@description('EXTERNAL app mode only (provisionEntraApp off): Microsoft Entra tenant (directory) id for GUI single sign-on. Set together with azureAdClientId to offer "Sign in with Microsoft" against an app registration you manage yourself; leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on that SPA registration.')
-param azureAdTenantId string = ''
+@description('PROVISIONED app mode only (provisionEntraApp on): further Entra tenant (directory) ids, beyond this deployment\'s own home tenant (always trusted), whose users may also sign in. A non-empty list makes the app registration multi-tenant automatically; each named tenant\'s own admin must still consent to the app once and then assign the SqlFlow.User role to their own users/groups (this template has no directory access into a tenant it does not own) — see the entraForeignTenantReminder output for that step. Empty keeps the app single-tenant.')
+param azureAdAdditionalAllowedTenantIds array = []
 
-@description('EXTERNAL app mode only (provisionEntraApp off): client id of the SPA app registration users sign in with. Set together with azureAdTenantId to enable SSO. Ignored when provisionEntraApp is on (this template creates the registration and supplies the client id itself).')
+@description('EXTERNAL app mode only (provisionEntraApp off): Microsoft Entra tenant (directory) ids allowed for GUI single sign-on, against an app registration you manage yourself. Set together with azureAdClientId to offer "Sign in with Microsoft"; leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on that SPA registration, and make it multi-tenant yourself if this list has more than one entry.')
+param azureAdAllowedTenantIds array = []
+
+@description('EXTERNAL app mode only (provisionEntraApp off): client id of the SPA app registration users sign in with. Set together with azureAdAllowedTenantIds to enable SSO. Ignored when provisionEntraApp is on (this template creates the registration and supplies the client id itself).')
 param azureAdClientId string = ''
 
 @description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards in the GUI).')
@@ -466,6 +469,10 @@ resource slackBotModelApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01
 var controlPlaneFqdn = '${controlPlaneName}.${managedEnvironment.properties.defaultDomain}'
 var guiFqdn = '${guiName}.${managedEnvironment.properties.defaultDomain}'
 
+// A non-empty azureAdAdditionalAllowedTenantIds means a second organization needs to sign in too, so the
+// registration itself must be multi-tenant; otherwise it stays single-tenant (the secure-by-default case).
+var entraSignInAudience = empty(azureAdAdditionalAllowedTenantIds) ? 'AzureADMyOrg' : 'AzureADMultipleOrgs'
+
 // The Entra app users sign in with: created and owned here (App Roles + assignment required) when
 // provisionEntraApp is on, otherwise an externally managed registration referenced by the azureAd* params.
 // The GUI origin is the SPA redirect URI, known up front from the environment's default domain.
@@ -476,13 +483,16 @@ module entraApp 'entra-app.bicep' = if (provisionEntraApp) {
     uniqueName: entraAppUniqueName
     redirectUri: 'https://${guiFqdn}'
     allowedGroupObjectId: azureAdAllowedGroupObjectId
+    signInAudience: entraSignInAudience
   }
 }
 
-// A single-tenant registration lives in this subscription's home tenant; in external mode the tenant and
-// client id come from the caller. Either way these two values are what the control plane validates tokens
+// This deployment's own subscription tenant is always trusted when the app is provisioned here; in external
+// mode the full allow-list comes from the caller. Either way this is what the control plane validates tokens
 // against, and an empty client id leaves SSO off (local sign-in only).
-var effectiveAzureAdTenantId = provisionEntraApp ? subscription().tenantId : azureAdTenantId
+var effectiveAzureAdAllowedTenantIds = provisionEntraApp
+  ? concat([subscription().tenantId], azureAdAdditionalAllowedTenantIds)
+  : azureAdAllowedTenantIds
 var effectiveAzureAdClientId = provisionEntraApp ? entraApp!.outputs.clientId : azureAdClientId
 
 module controlPlane 'control-plane.bicep' = {
@@ -505,7 +515,7 @@ module controlPlane 'control-plane.bicep' = {
     bootstrapAdminPasswordSecretName: adminPasswordSecretName
     gitTokenSecretName: empty(gitToken) ? '' : gitTokenSecretName
     gitUsername: gitUsername
-    azureAdTenantId: effectiveAzureAdTenantId
+    azureAdAllowedTenantIds: effectiveAzureAdAllowedTenantIds
     azureAdClientId: effectiveAzureAdClientId
     azureAdDefaultRole: azureAdDefaultRole
     acrName: acrName
@@ -681,6 +691,11 @@ output entraRedirectUri string = empty(effectiveAzureAdClientId) ? '' : gui.outp
 
 @description('Next step for Bicep-owned SSO: assignment is required, so no one can sign in until members are assigned. Set azureAdAllowedGroupObjectId to a security group to grant its members access, or assign users/groups in the enterprise application. Empty when a group was already assigned or SSO is off.')
 output entraAssignmentReminder string = (provisionEntraApp && empty(azureAdAllowedGroupObjectId)) ? 'Assign a group via azureAdAllowedGroupObjectId (or in the enterprise application) so members can sign in; assignment is required and none are assigned yet.' : ''
+
+@description('Next step for each tenant named in azureAdAdditionalAllowedTenantIds: this template cannot grant role assignments outside its own home tenant, so an admin in that tenant must consent to the app (creates their own local enterprise application object) and then assign the SqlFlow.User role to their own users or groups on it. Empty when no additional tenant was configured or SSO is off.')
+output entraForeignTenantReminder string = (provisionEntraApp && !empty(azureAdAdditionalAllowedTenantIds))
+  ? 'For each tenant in azureAdAdditionalAllowedTenantIds: an admin there must consent to app ${effectiveAzureAdClientId}, then assign the SqlFlow.User role to their own users/groups in their own enterprise application view.'
+  : ''
 
 @description('The API base URL: point the ADF pipeline (deploy/adf) and CLI remotes at this.')
 output controlPlaneBaseUrl string = controlPlane.outputs.controlPlaneBaseUrl
