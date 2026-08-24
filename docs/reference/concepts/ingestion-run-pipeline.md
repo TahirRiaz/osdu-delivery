@@ -111,7 +111,7 @@ The `WHERE 1=1` base exists so that fragments compose by raw append (the legacy 
 
 When `initLoad` is off, `IncrementalWindowResolver` (src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs) computes the `sourceWhere` fragment for the single read.
 
-For an incremental flow (`incremental.columns` or `incremental.dateColumn` set) it probes `SELECT MAX([col]) ... FROM <target>` on the TARGET, with `DATEADD(day, -<overlapDays>, MAX([dateColumn]))` for the date column, then builds the fragment. Predicate precedence matches the legacy engine exactly:
+For an incremental flow (`incremental.columns` or `incremental.dateColumn` set) it probes `SELECT MAX([col]) ... FROM <target>` on the TARGET, with `DATEADD(day, -<overlapDays>, MAX([dateColumn]))` for the date column and `MAX([col]) - <lookback>` for a numeric one, then builds the fragment. Predicate precedence matches the legacy engine exactly:
 
 1. A replace-filter (`source.filter` with `filterIsAppend: false`) wins over everything.
 2. The `incremental.fullLoad` flag yields an empty fragment (full read).
@@ -121,8 +121,8 @@ For an incremental flow (`incremental.columns` or `incremental.dateColumn` set) 
 
 Details:
 
-- `incremental.columns` build strict `>` predicates against the target MAX values; `incremental.dateColumn` has `incremental.overlapDays` (default 7) subtracted from its MAX before comparison.
-- `incremental.fetchMinValuesFromSource: true` additionally probes MIN on the SOURCE (with the same overlap subtraction, through the source dialect's date arithmetic). When the source minimum is below the target maximum, the window widens back to the source minimum and the operator becomes `>=` (reprocess history).
+- `incremental.columns` build strict `>` predicates against the target MAX values, rewound by `incremental.lookback` (default 0, so by default the bare MAX) when the column's type is one arithmetic applies to; `incremental.dateColumn` has `incremental.overlapDays` (default 7) subtracted from its MAX before comparison. Each shift applies only to its own kind of mark.
+- `incremental.fetchMinValuesFromSource: true` additionally probes MIN on the SOURCE (with the same overlap subtraction through the source dialect's date arithmetic, and the same numeric lookback subtraction, so both sides shift equally). When the source minimum is below the target maximum, the window widens back to the source minimum and the operator becomes `>=` (reprocess history).
 - `source.incrementalClause` is appended verbatim to both probe queries' `WHERE 1=1` (the legacy hard-coded probe predicate).
 - Watermark literals are typed from the introspected source column types: integers and decimals render raw, `bit` renders `1`/`0`, binary types go through the dialect's binary literal, date types through the dialect's temporal literal with `yyyy-MM-dd HH:mm:ss.fff` (date-only as `yyyy-MM-dd`, `datetimeoffset` with a zone offset), and strings are quoted with `''` escaping.
 - An incremental column missing from the source columns fails: `Incremental column '<col>' is not among the source columns.`
@@ -163,7 +163,7 @@ Every SQL statement the run generates is captured as a `SqlTraceEntry` (`Sequenc
 | Surface | Controls |
 | --- | --- |
 | `source.filter`, `source.filterIsAppend`, `source.incrementalClause`, `source.ignoreColumns` | Source SELECT shaping and the probe predicate |
-| `incremental.columns`, `incremental.dateColumn`, `incremental.overlapDays`, `incremental.fullLoad`, `incremental.fetchMinValuesFromSource` | The incremental window |
+| `incremental.columns`, `incremental.dateColumn`, `incremental.overlapDays`, `incremental.lookback`, `incremental.fullLoad`, `incremental.fetchMinValuesFromSource` | The incremental window |
 | `initLoad.enabled`, `initLoad.fromDate`, `initLoad.toDate`, `initLoad.batchBy`, `initLoad.batchSize`, `initLoad.keyColumn`, `initLoad.keyMaxValue` | The chunked backfill plan |
 | `load.keyColumns`, `load.batchUpsert`, `load.batchUpsertRowCount`, `load.threads`, `load.keepStagingTable`, `load.truncateStagingOnCompletion` | The apply and the staging lifecycle |
 | `load.truncateSourceWhenConsolidated` | The consolidation-gated truncate of the upstream `[pre]` landing table once the target's `MAX(watermark)` has caught up |
@@ -201,6 +201,7 @@ incremental:
   columns: [ModifiedDate]
   dateColumn: OrderDate
   overlapDays: 7
+  lookback: 0                          # numeric counterpart of overlapDays, in key units
 
 initLoad:
   enabled: true                        # one-time chunked backfill (disable after it runs)

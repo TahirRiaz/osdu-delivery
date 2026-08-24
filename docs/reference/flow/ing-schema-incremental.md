@@ -9,6 +9,7 @@ keywords:
   - allowtablerewrite
   - incremental
   - overlapdays
+  - lookback
   - initload
   - backfill
 yamlPath: "schema / incremental / initLoad (flowType: ing)"
@@ -76,6 +77,7 @@ incremental:
 | `columns` | list of string | no | `[]` | High-water columns whose MAX is probed from the target to bound the next read. |
 | `dateColumn` | string | no | null | Date column used with `overlapDays` to build an overlapping window. |
 | `overlapDays` | int | no | `7` | Days subtracted from the date watermark to re-read a safety window. |
+| `lookback` | int | no | `0` | Value subtracted from a non-date (numeric) watermark to re-read a safety window, in key units rather than days. |
 | `fullLoad` | bool | no | `false` | Force a full load regardless of the incremental settings. |
 | `fetchMinValuesFromSource` | bool | no | `false` | Also probe MIN from the source; when the source MIN is below the target MAX, widen the window back to the source minimum to reprocess history. |
 
@@ -142,7 +144,7 @@ When the target table does not exist yet or all probed watermarks are NULL, the 
 
 ### incremental.columns
 
-High-water columns (typically an identity, a rowversion-like counter, or a modified timestamp). Each run reads only rows where the column is strictly greater than the target's MAX. Blank and duplicate entries are ignored.
+High-water columns (typically an identity, a rowversion-like counter, or a modified timestamp). Each run reads only rows where the column is strictly greater than the target's MAX. Blank and duplicate entries are ignored. `overlapDays` never applies to these; their safety window is `lookback`.
 
 ### incremental.dateColumn and overlapDays
 
@@ -151,6 +153,24 @@ High-water columns (typically an identity, a rowversion-like counter, or a modif
 Caution: the ing-flow default for `overlapDays` is 7, but the file flow's incremental section defaults to 0 (compare `OverlapDays ?? 7` in src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs with `OverlapDays ?? 0` in src/SqlFlow.Yaml/YamlFlowLoader.cs). Do not assume the same default across flow types.
 
 `dateColumn` also names the chunking column for date-based `initLoad` plans and for a `--from`/`--to` backfill window at run time.
+
+### incremental.lookback
+
+The numeric counterpart of `overlapDays`, and the only safety window a non-date watermark has. The value is subtracted from the probed `MAX` of every `incremental.columns` mark, so the target probe reads `MAX([Id]) - 250` rather than a bare `MAX([Id])`, and with `fetchMinValuesFromSource` the source `MIN` probe is shifted by the same amount so the two stay symmetric. Like the `DATEADD` it mirrors, the shift happens inside the probe, so the watermark a run reports is the one the read was actually bounded by. The default is `0`, which reproduces the bare `MAX`.
+
+Why a monotonic key needs one: an id is allocated at `INSERT` but the row only becomes readable at `COMMIT`, so a reader can see id N+k while N is still in flight. A watermark taken as the bare `MAX` of what was visible advances past N, and the next run's strict `>` can never reach back down to it. The row is skipped permanently, and nothing reports it; the signature in the target is contiguous blocks of missing ids, each starting at exactly the previous run's watermark plus one.
+
+```yaml
+incremental:
+  columns: [Id]
+  lookback: 250      # key units, not days
+```
+
+Size it above the number of ids that can be in flight at once, and keep in mind:
+
+- The re-read window is reconciled by the keyed upsert, so a keyed flow re-reads rows it already holds and inserts nothing. A **keyless** flow (no `load.keyColumns`) appends them again; that is the one configuration where a lookback duplicates rows.
+- The shift is skipped silently for a watermark column arithmetic does not apply to. Only `tinyint`, `smallint`, `int`, `bigint`, `decimal`, `numeric`, `money` and `smallmoney` receive it; a string, binary, rowversion, or `float`/`real` high-water column keeps its bare `MAX` rather than being fed a subtraction the source would reject.
+- It is measured in the watermark's own units, and the subtraction is plain decimal arithmetic on the stored value. On a digit-packed stamp such as a `decimal` shaped `yyyyMMddHHmmss` that is not time arithmetic: subtracting 100 from `20260825120000` yields `20260825119900`, a value no row can hold, so the window rewinds to the start of that hour and no further. Size such a stamp's lookback generously, or put a real date column under `dateColumn` and use `overlapDays` when a true time window is what you want.
 
 ### incremental.fullLoad
 
@@ -257,6 +277,7 @@ incremental:
   columns: [ModifiedDate]
   dateColumn: OrderDate
   overlapDays: 7
+  lookback: 0
   fullLoad: false
   fetchMinValuesFromSource: false
 

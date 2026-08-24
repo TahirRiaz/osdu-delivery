@@ -79,7 +79,7 @@ sqlflow run orders-ingestion.flow.yaml
 | `change` | map | no | defaults | Hash-based change detection: `hashColumns`, `hashType`, `ignoreColumnsInHash`. |
 | `systemColumns` | map | no | defaults | Audit columns: `insertedDate` (default true), `updatedDate` (default true), `deletedDate` (default false), `rowStatus` (default false). |
 | `schema` | map | no | defaults | Schema sync: `sync` (default true), `cleanColumnNames`, `cleanColumnNameRegex`, `replaceInvalidCharsWith`, `convertUnicodeToNonUnicode`, `allowTableRewrite`. See [ing-schema-incremental.md](ing-schema-incremental.md). |
-| `incremental` | map | no | defaults | Watermark capture: `columns`, `dateColumn`, `overlapDays` (default 7), `fullLoad`, `fetchMinValuesFromSource`. See [ing-schema-incremental.md](ing-schema-incremental.md). |
+| `incremental` | map | no | defaults | Watermark capture: `columns`, `dateColumn`, `overlapDays` (default 7, date marks only), `lookback` (default 0, numeric marks only), `fullLoad`, `fetchMinValuesFromSource`. See [ing-schema-incremental.md](ing-schema-incremental.md). |
 | `initLoad` | map | no | defaults | One-time backfill: `enabled`, `fromDate`, `toDate`, `batchBy` (single character: `M` month, `D` day, `K` key ranges), `batchSize`, `keyColumn`, `keyMaxValue`. |
 | `versioning` | map | no | defaults | `temporal` (SQL Server system-versioned history, also reachable as the `temporalHistory` shorthand), `scd2` (engine-managed dimension history), `tokenVersioning`, `tokenRetentionDays`; `insertUnknownDimensionRow` is rejected (see below). |
 | `transform` | map | no | defaults | Pre-ingestion transform block, same shape as the file flow's `transform:`. |

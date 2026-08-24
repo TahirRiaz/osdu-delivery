@@ -181,7 +181,7 @@ Every source-side statement (the extract SELECT, the incremental MIN probe, init
 
 Oracle's temporal wrapping exists because an unquoted date string resolves through the session's NLS format, which is not ISO-8601 by default; a bare `'2024-01-03 10:00:00.000'` raises ORA-01843 under a non-ISO NLS setting. The explicit conversion makes the watermark comparison deterministic regardless of session settings (src/SqlFlow.Providers/Oracle/OracleSourceProvider.cs).
 
-Incremental loading uses these seams end to end: when `incremental.fetchMinValuesFromSource` is on, the MIN watermark probe runs against the source using the source's own quoting and date arithmetic, with `overlapDays` subtracted in the source's dialect (src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs).
+Incremental loading uses these seams end to end: when `incremental.fetchMinValuesFromSource` is on, the MIN watermark probe runs against the source using the source's own quoting and date arithmetic, with `overlapDays` subtracted in the source's dialect, and `incremental.lookback` subtracted from a numeric watermark's `MIN` as plain arithmetic that needs no dialect support (src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs).
 
 ## How types map to SQL Server
 

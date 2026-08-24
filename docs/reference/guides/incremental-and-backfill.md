@@ -134,6 +134,7 @@ load:
   keyColumns: [OrderID]
 incremental:
   columns: [OrderID]
+  lookback: 250
   dateColumn: ModifiedDate
   overlapDays: 7
 ```
@@ -143,12 +144,15 @@ Keys on the ingestion `incremental` block (src/SqlFlow.Yaml/IngestionYaml.cs):
 | Key | Meaning |
 | --- | --- |
 | `columns` | Non-date high-water mark columns; the target is probed with `MAX(column)` and the source read is bounded `column > MAX`. |
+| `lookback` | Safety re-read window subtracted from a NUMERIC watermark's `MAX` (and its source `MIN`), in key units rather than days. Default `0`. The counterpart of `overlapDays`, which never applies to `columns`. |
 | `dateColumn` | Date watermark column; probed with `DATEADD(day, -overlapDays, MAX(column))` on the target. |
-| `overlapDays` | Safety re-read window subtracted from the date watermark on both the MAX and MIN probes. |
+| `overlapDays` | Safety re-read window subtracted from the DATE watermark on both the MAX and MIN probes. Default `7`. Never applies to `columns`. |
 | `fullLoad` | Ignore the watermark and read the whole (optionally filtered) source. |
 | `fetchMinValuesFromSource` | Also probe `MIN` on the source; when the source minimum is below the target maximum, the window widens back to the source minimum with `>=` (reprocess re-loaded history). |
 
-The MIN probe runs on the source, so identifier quoting and date arithmetic come from the source's own SQL dialect; a foreign source (non SQL Server) uses its own `DateSubtractDays` for the overlap.
+The MIN probe runs on the source, so identifier quoting and date arithmetic come from the source's own SQL dialect; a foreign source (non SQL Server) uses its own `DateSubtractDays` for the overlap. The numeric `lookback` is plain subtraction and needs no dialect support.
+
+Set a `lookback` whenever the watermark is an id or counter the source allocates before the row commits: without it the bare `MAX` can advance past a row that was still in flight, and the strict `>` of every later run skips it permanently. Size it above the number of ids that can be in flight at once. The keyed upsert reconciles the re-read, so a keyed flow inserts nothing extra; a keyless flow appends the window again. It is skipped for a watermark type arithmetic does not apply to (string, binary, rowversion, `float`/`real`).
 
 An absent or empty target is a full load by definition; the filter precedence is: a replace `filter` wins, then the `fullLoad` flag, then an empty target, then the incremental-column predicate, then the date predicate, with an append filter concatenated last.
 

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `incremental.lookback` on an `ing` flow: the numeric counterpart of `incremental.overlapDays`, subtracted
+  from a non-date watermark's `MAX` (and, with `fetchMinValuesFromSource`, from the source `MIN`) inside the
+  probe itself. A monotonic id is allocated at `INSERT` but published at `COMMIT`, so a bare `MAX` can
+  advance past a row still in flight and the next run's strict `>` skips it permanently; a lookback re-reads
+  that window and the keyed upsert dedupes it. Sized in key units, defaults to `0` (the previous bare `MAX`),
+  and is skipped for a watermark type arithmetic does not apply to (string, binary, rowversion, float/real).
 - `subscribers.<name>.notes`: free-form remarks about a consumer's STATE (stale, superseded,
   unopenable, or an incomplete dataset naming what could not be resolved), kept apart from
   `description`, which says what the consumer is for. Stored unbounded in `catalog.Subscriber`,

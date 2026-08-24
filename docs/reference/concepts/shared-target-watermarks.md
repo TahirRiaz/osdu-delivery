@@ -2,7 +2,7 @@
 id: concept-shared-target-watermarks
 title: "Incremental watermarks when several flows share one target table"
 type: concept
-summary: "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert."
+summary: "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert on a numeric watermark."
 keywords:
   - watermark
   - incremental
@@ -10,6 +10,7 @@ keywords:
   - fan-in
   - incrementalclause
   - overlapdays
+  - lookback
   - datecolumn
   - discriminator
   - silent data loss
@@ -79,7 +80,7 @@ source:
 ```
 
 The probe becomes `SELECT MAX(watermark) FROM target WHERE 1=1 AND [SourceId] = 31`, so each flow tracks its
-own frontier and the flows stop interfering. The discriminator column must exist on the target — verify that
+own frontier and the flows stop interfering. The discriminator column must exist on the target; verify that
 before rolling the change out, not after.
 
 Recovery usually needs **no backfill**. Once the predicate is right, the first ordinary run selects
@@ -89,24 +90,30 @@ work for the same result.
 
 ## The related trap: `columns` is not `dateColumn`
 
-`overlapDays` re-reads a window behind the watermark so late-arriving rows are not missed. It applies to
-**date watermarks only**, and the distinction is silent:
+Both kinds of watermark can re-read a window behind the mark so late-arriving rows are not missed, but each
+kind has its OWN key for it, and using the wrong one is silent:
 
-| Declaration | `IsDate` | Probe expression |
-|---|---|---|
-| `incremental.columns: [X]` | `false` | `MAX(X)` |
-| `incremental.dateColumn: X` | `true` | `DATEADD(day, -overlapDays, MAX(X))` |
+| Declaration | `IsDate` | Probe expression | Its rewind key |
+|---|---|---|---|
+| `incremental.columns: [X]` | `false` | `MAX(X) - lookback` (bare `MAX(X)` unless a lookback is set on an arithmetic type) | `incremental.lookback` (key units, default 0) |
+| `incremental.dateColumn: X` | `true` | `DATEADD(day, -overlapDays, MAX(X))` | `incremental.overlapDays` (days, default 7) |
 
 `BuildMarkList` stamps every `incremental.columns` entry `IsDate = false`, and only an `IsDate` mark receives
-the `DATEADD`. So `columns: [X]` together with `overlapDays: 7` parses, validates, runs — and applies no
+the `DATEADD`. So `columns: [X]` together with `overlapDays: 7` parses, validates and runs while applying no
 overlap whatsoever. Nothing warns you.
 
 Choose deliberately:
 
-- A genuine date or datetime column that should tolerate late arrivals belongs under `dateColumn`.
+- A genuine date or datetime column that should tolerate late arrivals belongs under `dateColumn`, with
+  `overlapDays`.
 - A monotonic surrogate key, or a numeric stamp such as a `decimal` in `yyyyMMddHHmmss` form, belongs under
-  `columns`, where an overlap has no meaning anyway. Carrying an `overlapDays` alongside it is harmless but
-  misleading; it reads like a safety net that is not there.
+  `columns`, with `lookback`. Carrying an `overlapDays` alongside it is harmless but misleading; it reads
+  like a safety net that is not there, and the safety net that IS there is the one you did not set.
+
+A numeric watermark needs its rewind for the same reason a date one does, not as a nicety: an id is handed
+out at `INSERT` and the row becomes readable at `COMMIT`, so a bare `MAX` can advance past an id that is
+still in flight and the next run's strict `>` never reaches back down to it. See
+[incremental.lookback](../flow/ing-schema-incremental.md#incrementallookback).
 
 The two kinds compose: both sets of predicates are built from the same mark list and ANDed onto the source
 read (`BuildPredicates`).
@@ -123,5 +130,5 @@ read (`BuildPredicates`).
 ## When designing a fan-in
 
 Prefer giving each writer its own watermark scope from the start. If you introduce a shared target, add the
-scoping predicate in the same change — it is not a tuning knob, it is what makes the incremental contract
+scoping predicate in the same change. It is not a tuning knob, it is what makes the incremental contract
 correct when the target has more than one owner.

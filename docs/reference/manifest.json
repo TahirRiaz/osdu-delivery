@@ -1271,7 +1271,7 @@
       "path": "concepts/shared-target-watermarks.md",
       "title": "Incremental watermarks when several flows share one target table",
       "type": "concept",
-      "summary": "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert.",
+      "summary": "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert on a numeric watermark.",
       "keywords": [
         "watermark",
         "incremental",
@@ -1279,6 +1279,7 @@
         "fan-in",
         "incrementalclause",
         "overlapdays",
+        "lookback",
         "datecolumn",
         "discriminator",
         "silent data loss"
@@ -1755,6 +1756,7 @@
         "allowtablerewrite",
         "incremental",
         "overlapdays",
+        "lookback",
         "initload",
         "backfill"
       ],
