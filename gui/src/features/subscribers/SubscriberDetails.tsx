@@ -12,6 +12,7 @@ import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { DetailPair } from "../../components/DetailPair";
 import { EmptyState } from "../../components/EmptyState";
+import { LineageJumpButton } from "../../components/LineageJumpButton";
 import { Mono } from "../../components/Mono";
 import { RelativeTime } from "../../components/RelativeTime";
 import { encodeNodeId } from "../catalog/nodeIds";
@@ -84,6 +85,12 @@ export function SubscriberDetails({ subscriberKey }: { subscriberKey: string }) 
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <h2 className="min-w-0 break-words text-base font-medium">{subscriber.name}</h2>
         <Badge variant="secondary">{subscriber.type}</Badge>
+        <div className="ml-auto">
+          <LineageJumpButton
+            target={{ kind: "subscriber", subscriberKey: subscriber.key, label: subscriber.name }}
+            variant="outlined"
+          />
+        </div>
       </div>
       {subscriber.description !== null && (
         <p className="mb-3 text-[13px] text-muted-foreground">{subscriber.description}</p>

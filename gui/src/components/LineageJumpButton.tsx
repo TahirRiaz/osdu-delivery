@@ -6,6 +6,7 @@ import {
   FileText,
   Layers,
   Loader2,
+  MonitorPlay,
   Network,
   Split,
   Table2,
@@ -30,11 +31,15 @@ import { lineageApi } from "../api/endpoints";
 export type LineageJumpTarget =
   | { kind: "object"; objectKey: string; objectKind: string; label: string; sublabel?: string }
   | { kind: "node"; repoId: string; repoName: string; focusId: string; label: string; sublabel?: string }
-  | { kind: "file"; filePath: string; label: string; sublabel?: string };
+  | { kind: "file"; filePath: string; label: string; sublabel?: string }
+  | { kind: "subscriber"; subscriberKey: string; label: string; sublabel?: string };
 
 function TargetIcon({ target }: { target: LineageJumpTarget }) {
   if (target.kind === "node") {
     return <Network className="size-4 text-primary" />;
+  }
+  if (target.kind === "subscriber") {
+    return <MonitorPlay className="size-4 text-primary" />;
   }
   if (target.kind === "file") {
     return <FileText className="size-4 text-primary" />;
@@ -107,9 +112,15 @@ export function LineageJumpButton({
     enabled: open && target.kind === "file",
   });
 
-  const go = (repoId: string, focusId: string) => {
+  // repoId is optional: a subscriber's graph walk is repo-agnostic (it seeds on the subscriber's own node key,
+  // not a project), so no repo needs choosing for it, unlike an object (which can live in several repos' graphs).
+  const go = (focusId: string, repoId?: string) => {
     setOpen(false);
-    navigate(`/lineage?repoId=${encodeURIComponent(repoId)}&focus=${encodeURIComponent(focusId)}`);
+    const params = new URLSearchParams({ focus: focusId });
+    if (repoId !== undefined) {
+      params.set("repoId", repoId);
+    }
+    navigate(`/lineage?${params.toString()}`);
   };
 
   const objectRepos = target.kind === "object" ? (repos.data ?? []) : [];
@@ -156,7 +167,15 @@ export function LineageJumpButton({
           <JumpOption
             primary={target.repoName}
             secondary="Trace this flow in the graph"
-            onSelect={() => go(target.repoId, target.focusId)}
+            onSelect={() => go(target.focusId, target.repoId)}
+          />
+        )}
+
+        {target.kind === "subscriber" && (
+          <JumpOption
+            primary={target.label}
+            secondary="Trace what it reads and how those tables are populated"
+            onSelect={() => go(target.subscriberKey)}
           />
         )}
 
@@ -194,7 +213,7 @@ export function LineageJumpButton({
                   primary={repo.repoName}
                   secondary={`${repo.edgeCount} lineage reference${repo.edgeCount === 1 ? "" : "s"}`}
                   flag={repo.writes ? "populates" : undefined}
-                  onSelect={() => go(repo.repoId, target.objectKey)}
+                  onSelect={() => go(target.objectKey, repo.repoId)}
                 />
               ))}
             </>
@@ -225,7 +244,7 @@ export function LineageJumpButton({
                   primary={match.pipelineName}
                   secondary={`${match.repoName} matches ${match.pattern}`}
                   flag={match.pathConfirmed ? "path match" : undefined}
-                  onSelect={() => go(match.repoId, match.pipelineId)}
+                  onSelect={() => go(match.pipelineId, match.repoId)}
                 />
               ))}
             </>

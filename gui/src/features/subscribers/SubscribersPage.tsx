@@ -15,6 +15,7 @@ import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { EmptyState } from "../../components/EmptyState";
 import { activeFilterClass, FilterBar } from "../../components/FilterBar";
+import { LineageJumpButton } from "../../components/LineageJumpButton";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -96,6 +97,17 @@ const subscriberColumns: Column<Subscriber>[] = [
     align: "right",
     render: (row) => <span className="tabular-nums">{row.queryCount}</span>,
     width: 90,
+  },
+  {
+    id: "lineage",
+    header: "",
+    align: "right",
+    // Jumps straight into the lineage graph seeded on this subscriber: what it reads, and (one hop further) the
+    // flow that populates each of those tables, without first opening the drawer.
+    render: (row) => (
+      <LineageJumpButton target={{ kind: "subscriber", subscriberKey: row.key, label: row.name }} />
+    ),
+    width: 100,
   },
 ];
 
