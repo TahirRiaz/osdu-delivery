@@ -148,6 +148,93 @@ public sealed class LineageProjectGraphApiTests
         }
     }
 
+    /// <summary>
+    /// A subscriber's queries are attributed via <c>ViaModule</c>, never <c>PipelineId</c>/<c>ObjectKey</c> (a
+    /// subscriber is not a data object and runs no flow), so the graph's expand-by-object-key path must resolve
+    /// it differently than a table. Seeds one flow writing a table and one subscriber reading it, then expands
+    /// the graph directly on the SUBSCRIBER's node key - exactly what the GUI does when a user searches a
+    /// dashboard by name in the lineage graph and clicks the "Subscriber" hit - and asserts the table and its
+    /// producing flow come back, instead of the empty "no lineage references this node" result the bug produced.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProjectGraph_ExpandedFromSubscriberKey_ReturnsWhatItReadsAndThatObjectsProducer()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var serverRef = "${env:SQLFLOW_PG_SUB_" + suffix + "}";
+        var repo = Guid.NewGuid();
+        var repoName = "dwh_" + suffix;
+        var now = DateTime.UtcNow;
+
+        var p1 = Guid.NewGuid();
+        var o1 = $"{serverRef}|dw|mart|sales";
+        var subscriberName = "Dashboard_" + suffix;
+        var subscriberKey = $"subscriber|||{subscriberName.ToLowerInvariant()}";
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Repos.Add(new CatalogRepo { Id = repo, Name = repoName, FirstSeenUtc = now, LastSyncUtc = now });
+                db.Objects.Add(SeedTable(o1, serverRef, "DW", "mart", "Sales", now));
+                db.Pipelines.Add(SeedPipeline(p1, repo, "Sales_load", "ing", "Sales/pre/load.flow.yaml", 1, now));
+                db.LineageEdges.Add(Edge(repo, p1, "Sales_load", "Writes", o1, "Sales"));
+
+                // The subscriber's own row (what the GUI's search box matches on) plus its Reads edge, attributed
+                // via ViaModule with no PipelineId/Flow - the shape CatalogSync actually persists for a
+                // subscriber's query.
+                db.Subscribers.Add(new CatalogSubscriber
+                {
+                    RepoId = repo,
+                    Name = subscriberName,
+                    Type = "PowerBI",
+                    ObjectKey = subscriberKey,
+                    File = "subscribers/" + suffix + ".subscribers.yaml",
+                    FirstSeenUtc = now,
+                    LastSeenUtc = now,
+                });
+                db.LineageEdges.Add(new CatalogLineageEdge
+                {
+                    RepoId = repo,
+                    Flow = null,
+                    PipelineId = null,
+                    ViaModule = subscriberKey,
+                    Relation = "Reads",
+                    ObjectKey = o1,
+                    ObjectName = "Sales",
+                    Tier = "Declared",
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueReadTokenAsync(client);
+
+            var graph = await GetJsonAsync<ProjectGraphDto>(
+                client, token, $"/api/v1/lineage/project-graph?expand={Uri.EscapeDataString(subscriberKey)}");
+
+            // Before the fix this came back with no pipelines, no edges, and no objects: expanding an object key
+            // looked the subscriber up in dictionaries keyed by ObjectKey, which a subscriber's key never is.
+            Assert.Contains(p1, graph.Pipelines.Select(p => p.Id));
+            Assert.Contains(o1, graph.Edges.Select(e => e.ObjectKey));
+            var subscriberNode = Assert.Single(graph.Objects, obj => obj.Key == subscriberKey);
+            Assert.Equal("subscriber", subscriberNode.Kind);
+            Assert.Equal(subscriberName, subscriberNode.Name);
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.LineageEdges.Where(e => e.RepoId == repo).ExecuteDeleteAsync();
+            await db.Subscribers.Where(s => s.RepoId == repo).ExecuteDeleteAsync();
+            await db.Pipelines.Where(p => p.RepoId == repo).ExecuteDeleteAsync();
+            await db.Objects.Where(o => o.ServerRef == serverRef).ExecuteDeleteAsync();
+            await db.Repos.Where(r => r.Id == repo).ExecuteDeleteAsync();
+        }
+    }
+
     private static CatalogObject SeedTable(
         string key, string serverRef, string database, string schema, string name, DateTime now)
         => new()

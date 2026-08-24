@@ -1705,10 +1705,22 @@ public static class LineageEndpoints
         var readsByPipeline = new Dictionary<Guid, List<string>>();
         var consumersByObject = new Dictionary<string, List<Guid>>(StringComparer.Ordinal);
         var producersByObject = new Dictionary<string, List<Guid>>(StringComparer.Ordinal);
+        // A subscriber's reads are attributed via ViaModule, never ObjectKey (a subscriber is not a data object
+        // and carries no PipelineId), so they fall outside the pipeline-keyed dictionaries above. Indexed
+        // separately by subscriber key so an 'expand' seeded on a subscriber node (a graph-search hit) can find
+        // what it reads, mirroring how a normal object's producers/consumers are looked up below.
+        var readsBySubscriber = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var e in edgeRows)
         {
             if (e.PipelineId is not { } pid)
             {
+                if (e.Flow is null && e.ViaModule is not null && e.Relation == "Reads"
+                    && e.ViaModule.StartsWith(SubscriberKeyPrefix, StringComparison.Ordinal))
+                {
+                    (readsBySubscriber.TryGetValue(e.ViaModule, out var sr)
+                        ? sr : readsBySubscriber[e.ViaModule] = new List<string>()).Add(e.ObjectKey);
+                }
+
                 continue;
             }
 
@@ -1773,6 +1785,30 @@ public static class LineageEndpoints
 
         foreach (var key in expandObjectKeys)
         {
+            // A subscriber node is not a data object: it has no producers/consumers of its own, only queries
+            // that READ other objects (attributed via ViaModule). Expanding one must resolve THOSE read targets
+            // and pull each one's producer in, or the walk finds nothing and the graph renders empty, exactly as
+            // if the subscriber had no lineage at all.
+            if (key.StartsWith(SubscriberKeyPrefix, StringComparison.Ordinal))
+            {
+                if (readsBySubscriber.TryGetValue(key, out var readObjects))
+                {
+                    foreach (var objectKey in readObjects)
+                    {
+                        includedObjects.Add(objectKey);
+                        if (producersByObject.TryGetValue(objectKey, out var readObjectProducers))
+                        {
+                            foreach (var p in readObjectProducers)
+                            {
+                                TryEnqueue(p, 0);
+                            }
+                        }
+                    }
+                }
+
+                continue;
+            }
+
             includedObjects.Add(key);
             // Its producer(s) sit one hop upstream (seeded at depth 0 so their own sources come in too); its
             // consumer(s) one hop downstream. Seeding both makes a jumped-to object show its full local context and,
