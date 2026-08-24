@@ -73,7 +73,9 @@ public sealed record UpsertOptions
     /// column still gets a date the first time it is touched.</summary>
     public string? InsertedDateColumn { get; init; }
 
-    /// <summary>System column stamped on updated rows (for example UpdatedDate_DW); null to skip.</summary>
+    /// <summary>System column stamped whenever a row is written (for example UpdatedDate_DW): set on UPDATE, and
+    /// on INSERT too, so it always reads as "when did this row last change" rather than going NULL until the row
+    /// happens to be updated. Null to skip.</summary>
     public string? UpdatedDateColumn { get; init; }
 
     /// <summary>Row-status system column (for example RowStatus_DW): stamped 'I' on insert and 'U' on update;
@@ -280,6 +282,18 @@ public static class UpsertGenerator
                 selectColumns.Add("SYSUTCDATETIME()");
             }
 
+            // Legacy parity: an INSERTED row carries the merge timestamp in BOTH audit columns, which is what the
+            // old engine wrote (old production's arc tables have no NULL UpdatedDate_DW anywhere). Stamping it
+            // only on UPDATE looks harmless and is not: UpdatedDate_DW is read as "when did this row last change",
+            // so on an insert-only table MAX(UpdatedDate_DW) never advances and a `UpdatedDate_DW >= @since`
+            // predicate is UNKNOWN for precisely the rows that just landed, silently starving every downstream
+            // watermark and ported procedure built on it.
+            if (!string.IsNullOrEmpty(options.UpdatedDateColumn))
+            {
+                insertColumns.Add(options.UpdatedDateColumn);
+                selectColumns.Add("SYSUTCDATETIME()");
+            }
+
             if (!string.IsNullOrEmpty(options.RowStatusColumn))
             {
                 insertColumns.Add(options.RowStatusColumn);
@@ -341,6 +355,18 @@ public static class UpsertGenerator
             if (!string.IsNullOrEmpty(options.InsertedDateColumn))
             {
                 insertColumns.Add(options.InsertedDateColumn);
+                selectColumns.Add("SYSUTCDATETIME()");
+            }
+
+            // Legacy parity: an INSERTED row carries the merge timestamp in BOTH audit columns, which is what the
+            // old engine wrote (old production's arc tables have no NULL UpdatedDate_DW anywhere). Stamping it
+            // only on UPDATE looks harmless and is not: UpdatedDate_DW is read as "when did this row last change",
+            // so on an insert-only table MAX(UpdatedDate_DW) never advances and a `UpdatedDate_DW >= @since`
+            // predicate is UNKNOWN for precisely the rows that just landed, silently starving every downstream
+            // watermark and ported procedure built on it.
+            if (!string.IsNullOrEmpty(options.UpdatedDateColumn))
+            {
+                insertColumns.Add(options.UpdatedDateColumn);
                 selectColumns.Add("SYSUTCDATETIME()");
             }
 
@@ -452,6 +478,14 @@ public static class UpsertGenerator
         if (!string.IsNullOrEmpty(options.InsertedDateColumn))
         {
             insertColumns.Add(options.InsertedDateColumn);
+            selectColumns.Add($"'{asOf}'");
+        }
+
+        // Same legacy parity as the plain insert: a newly opened version is stamped in both audit columns, using
+        // this batch's as-of instant so every row of one SCD2 apply shares it.
+        if (!string.IsNullOrEmpty(options.UpdatedDateColumn))
+        {
+            insertColumns.Add(options.UpdatedDateColumn);
             selectColumns.Add($"'{asOf}'");
         }
 

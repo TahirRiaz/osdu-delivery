@@ -1,3 +1,4 @@
+using System.Linq;
 using SqlFlow.Core;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.SqlServer.Schema;
@@ -11,6 +12,47 @@ public sealed class UpsertGeneratorTests
 
     private static UpsertOptions Options(IReadOnlyList<string> data, IReadOnlyList<string> keys, bool skipUpdate = false, bool skipInsert = false)
         => new() { DataColumns = data, KeyColumns = keys, SkipUpdate = skipUpdate, SkipInsert = skipInsert };
+
+    /// <summary>
+    /// Legacy parity, and the reason this is pinned: an INSERTED row must carry the merge timestamp in BOTH audit
+    /// columns. Stamping UpdatedDate_DW only on UPDATE leaves it NULL on every freshly landed row, which silently
+    /// starves anything reading it as "when did this row last change": MAX(UpdatedDate_DW) over an insert-only
+    /// table never advances, and `UpdatedDate_DW >= @since` is UNKNOWN for exactly the new rows. That regression
+    /// cost edw.Fara_Fact_Validation 106,143 rows before it was found.
+    /// </summary>
+    [Fact]
+    public void Insert_StampsBothAuditColumns()
+    {
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "Name"],
+            KeyColumns = ["Id"],
+            InsertedDateColumn = "InsertedDate_DW",
+            UpdatedDateColumn = "UpdatedDate_DW",
+        };
+        var insert = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)
+            .Single(s => s.StartsWith("INSERT INTO", StringComparison.Ordinal));
+
+        Assert.Contains("[InsertedDate_DW]", insert, StringComparison.Ordinal);
+        Assert.Contains("[UpdatedDate_DW]", insert, StringComparison.Ordinal);
+        // One SYSUTCDATETIME() per stamped audit column, so both land with the same merge instant.
+        Assert.Equal(2, insert.Split("SYSUTCDATETIME()").Length - 1);
+    }
+
+    [Fact]
+    public void Insert_OmitsUpdatedDate_WhenTheFlowDoesNotDeclareIt()
+    {
+        var options = new UpsertOptions
+        {
+            DataColumns = ["Id", "Name"],
+            KeyColumns = ["Id"],
+            InsertedDateColumn = "InsertedDate_DW",
+        };
+        var insert = UpsertGenerator.Generate(Obj("Trg"), Obj("Stg"), options)
+            .Single(s => s.StartsWith("INSERT INTO", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("[UpdatedDate_DW]", insert, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void Generate_ProducesUpdateThenInsert()
