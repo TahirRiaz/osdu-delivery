@@ -32,7 +32,9 @@ INSERT #retired (sch, pattern, reason) VALUES
     ('edw', 'APC_MatchedTrip',     'Dropped in the APCEDW conversion'),
     ('edw', 'APC_PassengersPerLine',  'Not carried forward'),
     ('edw', 'APC_PassangersPerDay',   'Not carried forward'),
-    ('edw', 'APC_PassengersPerStop',  'Not carried forward');
+    ('edw', 'APC_PassengersPerStop',  'Not carried forward'),
+    ('arc', 'SVV_Monthtraffic',           'Not carried forward'),
+    ('edw', 'Dim_Calendar_edit',          'Not carried forward');
 
 SELECT sch, tbl, rowcnt
 INTO #old
