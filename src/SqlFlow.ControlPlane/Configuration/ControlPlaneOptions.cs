@@ -212,11 +212,21 @@ public sealed class AzureAdOptions
     private string AuthorityHost
         => string.IsNullOrWhiteSpace(Authority) ? "https://login.microsoftonline.com" : Authority.TrimEnd('/');
 
-    /// <summary>The authority the SPA authenticates against. Always the multi-tenant "organizations" endpoint, which
-    /// accepts a sign-in attempt from any Entra work/school tenant, so Microsoft's own login page never rejects an
-    /// allowed tenant before a token is even issued. The actual tenant restriction is enforced afterward, token by
-    /// token, in <see cref="Security.EntraTokenValidator"/> against <see cref="AllowedTenantIds"/>.</summary>
-    public string ResolveAuthority() => $"{AuthorityHost}/organizations/v2.0";
+    /// <summary>The authority the SPA authenticates against.
+    /// <para>With exactly one allowed tenant this is that tenant's own authority, which matters for more than
+    /// tidiness: a tenant-pinned authority resolves an external address (a consultant's <c>@partner.com</c>) as a
+    /// B2B GUEST of that tenant, delegating the password check to their home tenant but issuing the token from
+    /// this one. Sending the same person to the shared "organizations" endpoint instead resolves them to their own
+    /// home tenant, where this app is unknown and consent has never been granted, so guest sign-in breaks.</para>
+    /// <para>With more than one allowed tenant there is no single tenant to pin, so the shared endpoint is the only
+    /// option and each additional tenant must consent to the app itself. Either way the actual tenant restriction is
+    /// enforced afterward, token by token, in <see cref="Security.EntraTokenValidator"/> against
+    /// <see cref="AllowedTenantIds"/>.</para></summary>
+    public string ResolveAuthority()
+    {
+        var tenants = AllowedTenantIds.Where(id => !string.IsNullOrWhiteSpace(id)).ToList();
+        return tenants.Count == 1 ? TenantAuthority(tenants[0].Trim()) : $"{AuthorityHost}/organizations/v2.0";
+    }
 
     /// <summary>The concrete, tenant-specific authority used to fetch one allowed tenant's own OIDC metadata
     /// (signing keys, issuer) so a token claiming to be from it can actually be verified against that tenant.</summary>

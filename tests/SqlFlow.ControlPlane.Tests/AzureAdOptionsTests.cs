@@ -97,11 +97,29 @@ public sealed class AzureAdOptionsTests
         Assert.Contains("DefaultRole", error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>One allowed tenant pins the authority to it, which is what keeps B2B GUEST sign-in working: an
+    /// external address resolves as a guest of THIS tenant rather than as a member of its own home tenant, where
+    /// the app is unknown. Sending a single-tenant estate to the shared endpoint would silently break every
+    /// external consultant's sign-in.</summary>
     [Fact]
-    public void ResolveAuthority_IsAlwaysTheMultiTenantOrganizationsEndpoint()
+    public void ResolveAuthority_WithOneTenant_PinsToThatTenant()
+    {
+        var options = new AzureAdOptions { AllowedTenantIds = [TenantA], ClientId = Client };
+        Assert.Equal($"https://login.microsoftonline.com/{TenantA}/v2.0", options.ResolveAuthority());
+    }
+
+    [Fact]
+    public void ResolveAuthority_WithSeveralTenants_UsesTheOrganizationsEndpoint()
     {
         var options = new AzureAdOptions { AllowedTenantIds = [TenantA, TenantB], ClientId = Client };
         Assert.Equal("https://login.microsoftonline.com/organizations/v2.0", options.ResolveAuthority());
+    }
+
+    [Fact]
+    public void ResolveAuthority_IgnoresBlankEntriesWhenDecidingToPin()
+    {
+        var options = new AzureAdOptions { AllowedTenantIds = [TenantA, "  "], ClientId = Client };
+        Assert.Equal($"https://login.microsoftonline.com/{TenantA}/v2.0", options.ResolveAuthority());
     }
 
     [Fact]
@@ -109,11 +127,23 @@ public sealed class AzureAdOptionsTests
     {
         var options = new AzureAdOptions
         {
-            AllowedTenantIds = [TenantA],
+            AllowedTenantIds = [TenantA, TenantB],
             ClientId = Client,
             Authority = "https://login.microsoftonline.us/",
         };
         Assert.Equal("https://login.microsoftonline.us/organizations/v2.0", options.ResolveAuthority());
+    }
+
+    [Fact]
+    public void ResolveAuthority_HonoursOverride_WhenPinnedToOneTenant()
+    {
+        var options = new AzureAdOptions
+        {
+            AllowedTenantIds = [TenantA],
+            ClientId = Client,
+            Authority = "https://login.microsoftonline.us/",
+        };
+        Assert.Equal($"https://login.microsoftonline.us/{TenantA}/v2.0", options.ResolveAuthority());
     }
 
     [Fact]
