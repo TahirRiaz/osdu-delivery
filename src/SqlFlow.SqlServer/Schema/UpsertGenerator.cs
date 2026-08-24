@@ -557,6 +557,16 @@ public static class UpsertGenerator
             selectColumns.Add("SYSUTCDATETIME()");
         }
 
+        // Same legacy parity as the plain insert: an inserted row carries the merge timestamp in BOTH audit
+        // columns. This path is the one nearly every ported flow takes, because DataSetColumn is the legacy
+        // standard, so leaving it out here left UpdatedDate_DW NULL on exactly the loads that are supposed to
+        // reproduce old production row for row.
+        if (!string.IsNullOrEmpty(options.UpdatedDateColumn))
+        {
+            insertColumns.Add(options.UpdatedDateColumn);
+            selectColumns.Add("SYSUTCDATETIME()");
+        }
+
         if (!string.IsNullOrEmpty(options.RowStatusColumn))
         {
             insertColumns.Add(options.RowStatusColumn);

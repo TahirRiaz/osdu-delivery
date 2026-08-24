@@ -92,6 +92,36 @@ public sealed class DataSetLoopGeneratorTests
         Assert.Contains("WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Trg] AS trg WHERE src.[Id] = trg.[Id])", sql, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DataSetLoop_InsertStampsBothAuditColumns(bool batched)
+    {
+        // Legacy parity, same as the plain insert path: a row written by this loop carries the merge instant in
+        // InsertedDate_DW AND UpdatedDate_DW. This loop is the path nearly every ported flow takes, because
+        // DataSetColumn is the legacy standard, so omitting the update stamp here left UpdatedDate_DW NULL on
+        // exactly the loads meant to reproduce old production row for row, and froze any watermark reading it.
+        var sql = Single(Options(["Ds", "Id", "Name"], ["Id"], "Ds", batch: batched)).Sql;
+
+        var insert = sql.Split("INSERT INTO [dbo].[Trg] (")[1];
+        var insertColumnList = insert[..insert.IndexOf(')')];
+        Assert.Contains("[InsertedDate_DW]", insertColumnList, StringComparison.Ordinal);
+        Assert.Contains("[UpdatedDate_DW]", insertColumnList, StringComparison.Ordinal);
+        // One SYSUTCDATETIME() per stamped audit column, so both land with the same merge instant.
+        var selectList = insert[(insert.IndexOf("SELECT ", StringComparison.Ordinal))..];
+        selectList = selectList[..selectList.IndexOf("FROM #dsstg", StringComparison.Ordinal)];
+        Assert.Equal(2, selectList.Split("SYSUTCDATETIME()").Length - 1);
+    }
+
+    [Fact]
+    public void DataSetLoop_InsertOmitsUpdatedDate_WhenTheFlowDoesNotDeclareIt()
+    {
+        var options = Options(["Ds", "Id", "Name"], ["Id"], "Ds") with { UpdatedDateColumn = null };
+        var sql = Single(options).Sql;
+
+        Assert.DoesNotContain("[UpdatedDate_DW]", sql, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void DataSetLoop_ChangeDetectionUsesHashbytes()
     {
