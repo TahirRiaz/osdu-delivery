@@ -51,10 +51,29 @@ If the user gives only a readable name, derive the batch code by querying the me
   `tcp:dw-mi-sql-prod.public.6b122fbc620a.database.windows.net,3342`, user `SQLFlow` (connection strings +
   password in `.sqlflow/env`). Targets: pre landing -> **`dw-pre-prod`** (schema `pre`); ods/arc ->
   **`dw-dwh-prod`** (schema `arc`). Catalog: **`dw-sqlflow-prod`** (`SQLFLOW_CATALOG_DB` in `.sqlflow/env`).
-- Legacy source server: **`92.221.59.28`** (hosts the old SQLFlow control DB the migration reads from; NOT
-  localhost).
-- Legacy metadata DB: **`dw-sqlflow-prod-last`** on `92.221.59.28` (the old SQLFlow control DB; read-only,
-  never write to it). The generators read it via `sqlcmd` with the credentials they hardcode (`-U SQLFlow`).
+- **Legacy SQLFlow metadata DB (the old control DB, READ ONLY)**: the User-scoped environment variable
+  **`OldSQlFlowConStr`** (note the casing; read it with
+  `[Environment]::GetEnvironmentVariable('OldSQlFlowConStr','User')`, it is NOT inherited by the shell, so
+  `$env:OldSQlFlowConStr` is empty) holds the full connection string to the LIVE old SQLFlow control
+  database: server `dw-sql-server-prod.database.windows.net,1433`, database `dw-sqlflow-prod`, user
+  `dw-kolumbus-admin`. This is the authority for `flw.PreIngestionCSV/JSN/XLS/XML/PRQ/ADO`,
+  `flw.PreIngestionTransfrom`, `flw.Ingestion` and every other legacy metadata table a conversion reads
+  (Phases 1-3). **Read operations ONLY: never write to it.** Query it with sqlcmd by unpacking the
+  connection string, e.g.
+
+  ```powershell
+  $b = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+  # psbase is REQUIRED: the builder implements IDictionary, so a plain `$b.ConnectionString = ...` is routed
+  # to the indexer and stores the whole string under a key named 'ConnectionString', leaving every part empty.
+  $b.psbase.ConnectionString = [Environment]::GetEnvironmentVariable('OldSQlFlowConStr','User')
+  sqlcmd -S $b.psbase.DataSource -d $b.psbase.InitialCatalog -U $b.psbase.UserID -P $b.psbase.Password `
+         -C -h -1 -W -Q "SET NOCOUNT ON; <query>"
+  ```
+
+- Stale fallback: `dw-sqlflow-prod-last` on **`92.221.59.28`** (user `SQLFlow`) is an OLD RESTORE of that same
+  control DB. It lags the live estate, can be missing flows entirely, and as of 2026-08-24 does not even
+  answer on the network, so use it only if the live server is unreachable, and say so when you do (see the
+  `legacy-control-db-live-copy` memory).
 - Data lake (source files): account **`dwdatalakeprodv2`**, container `datalakev2`; storage URL base
   `https://dwdatalakeprodv2.dfs.core.windows.net/datalakev2`. **Always use `dwdatalakeprodv2`** for everything
   the V3 pipeline reads/writes. The old `dwdatalakestorev2prod` account is being retired: it appears ONLY as
@@ -64,7 +83,7 @@ If the user gives only a readable name, derive the batch code by querying the me
   (read it with `[Environment]::GetEnvironmentVariable('OldDwhConStr','User')`; it is NOT inherited by the
   shell, so `$env:OldDwhConStr` is empty) holds the full connection string to the actual old production DWH:
   server `dw-sql-server-prod.database.windows.net,1433`, database `dw-dwh-prod`, user `dw-kolumbus-admin`.
-  Use it when the `B:\` DDL drive is not mounted or the 92.221.59.28 restores are stale/missing a table
+  Use it when the `B:\` DDL drive is not mounted or the `92.221.59.28` restores are stale/missing a table
   (they lag the real estate; e.g. `arc.Frida_Vehicles` exists only here). **Read operations ONLY**: schema
   reads (`sys.columns`), row counts, reconciliation queries. Never write, never point a flow at it.
 - **Real OLD prod PRE (live truth, READ ONLY)**: the User-scoped environment variable **`OldPreConStr`**
@@ -75,7 +94,9 @@ If the user gives only a readable name, derive the batch code by querying the me
   push-fed source actually writes, and which principals were granted on them
   (`sys.database_principals`, `sys.database_permissions`, `sys.database_role_members`). **Read only.**
 - Generators: `migration/_tools/Generate-PreFlow.ps1`, `migration/_tools/Generate-OdsFlow.ps1`. Both read the
-  legacy metadata over the network and default `-Server` to `92.221.59.28`. Pass `-Server` only to override.
+  legacy metadata over the network and take their `-Server`/`-MetaDb`/`-User`/`-Password` from
+  `OldSQlFlowConStr` by default, falling back to the `92.221.59.28` restore only when that variable is unset.
+  Pass those parameters explicitly only to override.
 - Run the tooling from the SQLFlowV3 repo root `c:\Projects\SQLFlowV3`. Build the CLI first if needed. When
   the local control plane is running it locks the Debug bins: **build and run the CLI as Release**
   (`dotnet build SqlFlow.sln -c Release`, `dotnet run --project src/SqlFlow.Cli -c Release --no-build -- ...`).
@@ -104,6 +125,9 @@ here.
 Confirm the source is LIVE (not dead/retired/commented-out, not pointed at a test host). If it is dead or
 test-only, STOP and report; do not ship an acquisition for it.
 
+Run these against the legacy metadata DB reached through **`OldSQlFlowConStr`** (see Configuration), not the
+`92.221.59.28` restore:
+
 ```sql
 -- CSV pre flows:
 SELECT FlowID, srcPath, trgDBSchTbl FROM flw.PreIngestionCSV
@@ -114,6 +138,9 @@ SELECT FlowID, srcDBSchTbl, trgDBSchTbl FROM flw.Ingestion WHERE Batch = '<BATCH
 
 (Other pre-ingestion kinds exist too: `flw.PreIngestionADO/JSN/PRQ/XLS/XML` - query the one matching the
 source's native format.)
+
+A batch that returns nothing here is not automatically dead: confirm you queried the LIVE control DB via
+`OldSQlFlowConStr`, because the stale restore can simply be missing the flow.
 
 ### 1.2 Capture the FULL definition of every old table behind the flow (MANDATORY)
 

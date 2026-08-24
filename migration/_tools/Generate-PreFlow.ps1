@@ -7,10 +7,11 @@ param(
     [Parameter(Mandatory)] [int]    $FlowId,
     [Parameter(Mandatory)] [string] $OutDir,
     [Parameter(Mandatory)] [string] $StorageUrlBase,
-    [string] $Server   = '92.221.59.28',
-    [string] $MetaDb   = 'dw-sqlflow-prod-last',
-    [string] $User     = 'SQLFlow',
-    [string] $Password = 'fhin352',
+    # Legacy metadata connection; defaults come from the OldSQlFlowConStr environment variable (see below).
+    [string] $Server,
+    [string] $MetaDb,
+    [string] $User,
+    [string] $Password,
     [string] $TargetConnEnv = '${env:SQLFLOW_CONN_DWPREPROD}',
     # Overrides the flow name (and file name), which otherwise derives from the pre table.
     [string] $FlowName,
@@ -33,6 +34,29 @@ if ($FileDateFrom -ne 'modified' -and -not $FileDatePattern) {
 }
 
 $ErrorActionPreference = 'Stop'
+
+# Legacy metadata connection. The live old SQLFlow control DB is reached through the User-scoped
+# OldSQlFlowConStr environment variable (it is not inherited by the shell, so read it explicitly); the
+# 92.221.59.28 restore is only the fallback for when that variable is unset, because it lags the live estate.
+# Parameters passed on the command line always win.
+$legacyMeta = @{ Server = '92.221.59.28'; Database = 'dw-sqlflow-prod-last'; User = 'SQLFlow'; Password = 'fhin352' }
+$legacyConStr = [Environment]::GetEnvironmentVariable('OldSQlFlowConStr', 'User')
+if ($legacyConStr) {
+    # psbase is required: the builder implements IDictionary, so a plain property assignment would be routed
+    # to the indexer and store the whole connection string under a key named 'ConnectionString' instead.
+    $csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+    $csb.psbase.ConnectionString = $legacyConStr
+    $legacyMeta = @{
+        Server   = $csb.psbase.DataSource
+        Database = $csb.psbase.InitialCatalog
+        User     = $csb.psbase.UserID
+        Password = $csb.psbase.Password
+    }
+}
+if (-not $Server)   { $Server   = $legacyMeta.Server }
+if (-not $MetaDb)   { $MetaDb   = $legacyMeta.Database }
+if (-not $User)     { $User     = $legacyMeta.User }
+if (-not $Password) { $Password = $legacyMeta.Password }
 $TAB = [char]9
 
 # Runs a query via sqlcmd and returns rows as arrays of trimmed fields (tab-separated, no header).
