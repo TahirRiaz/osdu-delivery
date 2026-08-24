@@ -2210,7 +2210,8 @@ internal static class Program
               sqlflow logout                     Revoke the stored token server-side and remove it locally.
               sqlflow trigger  --repo <name|id> --flow <f> [--scope flow|node]
                                [--pool <p>] [--commit <sha>] [--full] [--from <date>] [--to <date>]
-                               [--file-pattern <glob>] [--assertions-only] [--preview] [--follow]
+                               [--file-pattern <glob>] [--source-filter <predicate>] [--assertions-only]
+                               [--preview] [--follow]
                                                  Enqueue a run on the fleet (POST /runs), exactly as the GUI's trigger
                                                  dialog does: scope flow (default) or node (the flow + its lineage
                                                  descendants). A whole source runs through its schedule ('schedules

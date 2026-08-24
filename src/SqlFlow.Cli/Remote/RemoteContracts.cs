@@ -60,7 +60,7 @@ internal sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret
 internal sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
     bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
-    string? Scope = null, string? Batch = null, bool AssertionsOnly = false);
+    string? Scope = null, string? Batch = null, bool AssertionsOnly = false, string? SourceFilter = null);
 
 /// <summary>The accepted-run acknowledgement for a single-flow trigger.</summary>
 internal sealed record RunTriggerAccepted(Guid RunId, string Status);

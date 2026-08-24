@@ -252,7 +252,8 @@ internal static partial class RemoteVerbs
                 BackfillTo: parameters.BackfillTo,
                 FilePattern: parameters.FilePattern,
                 Scope: scope,
-                AssertionsOnly: parameters.AssertionsOnly);
+                AssertionsOnly: parameters.AssertionsOnly,
+                SourceFilter: parameters.SourceFilter);
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
             if (outcome.Run is { } run)
