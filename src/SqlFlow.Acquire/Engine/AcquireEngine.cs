@@ -503,16 +503,26 @@ public sealed class AcquireEngine
                 stepEnd = to;
             }
 
+            // The bound upper edge may reach past the step boundary so that an event straddling it is fully inside
+            // this window (see AcquireIteration.OverlapMinutes). The CURSOR still advances by the plain step, so the
+            // windows stay aligned; and the overlap never reaches past the run's own upper bound, so it cannot pull
+            // in a period the caller did not ask for.
+            var boundEnd = iteration.OverlapMinutes > 0
+                ? Min(stepEnd.AddMinutes(iteration.OverlapMinutes), to)
+                : stepEnd;
+
             var stepStart = cursor;
             binders.Add(c => c
                 .WithDate(iteration.FromVariable, stepStart)
-                .WithDate(iteration.ToVariable, stepEnd)
+                .WithDate(iteration.ToVariable, boundEnd)
                 .WithReferenceDate(stepStart));
             cursor = stepEnd;
         }
 
         return binders;
     }
+
+    private static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;
 
     private static DateTimeOffset Step(DateTimeOffset from, AcquireWindowGranularity granularity) => granularity switch
     {

@@ -411,6 +411,21 @@ public sealed record AcquireIteration
     /// <summary>The context variable bound to each step's upper bound (default <c>window.to</c>).</summary>
     public string ToVariable { get; init; } = "window.to";
 
+    /// <summary>
+    /// Minutes by which each step's bound UPPER edge is pushed past the step boundary, making consecutive windows
+    /// overlap. The cursor still advances by a whole step, so the windows stay aligned and none is skipped; only the
+    /// value bound to <see cref="ToVariable"/> reaches further.
+    /// <para>This exists for an endpoint that returns only the records fully CONTAINED in the requested window. An
+    /// event straddling a step boundary (a session that starts on the last day of a month and ends on the first of
+    /// the next) is then in neither window and is lost with no error, permanently. An overlap of at least the longest
+    /// possible event duration puts every straddling event inside the earlier window. Overlapping windows return the
+    /// boundary records twice, which is harmless: the landed files are keyed by the step's own start, and the keyed
+    /// merge downstream is idempotent.</para>
+    /// <para>The last step is never extended past the window's own upper bound, so an overlap cannot make a run
+    /// request a period the caller did not ask for. 0 (the default) keeps the windows strictly abutting.</para>
+    /// </summary>
+    public int OverlapMinutes { get; init; }
+
     // --- List ---
     public IReadOnlyList<string> Values { get; init; } = [];
 

@@ -329,6 +329,7 @@ public sealed class YamlAcquireFlowLoader
             To = YamlDocumentParts.NullIfBlank(y.To),
             FromVariable = string.IsNullOrWhiteSpace(y.FromVariable) ? "window.from" : y.FromVariable!.Trim(),
             ToVariable = string.IsNullOrWhiteSpace(y.ToVariable) ? "window.to" : y.ToVariable!.Trim(),
+            OverlapMinutes = y.OverlapMinutes ?? 0,
             Values = y.Values ?? [],
             IdRequest = MapRequest(y.IdRequest, source),
             IdPath = YamlDocumentParts.NullIfBlank(y.IdPath),
@@ -341,6 +342,13 @@ public sealed class YamlAcquireFlowLoader
 
         switch (kind)
         {
+            // An overlap only has meaning on a window, and a negative one would pull the upper edge BELOW the step
+            // boundary and silently skip records instead of duplicating them, so both are typos worth failing on.
+            case AcquireIterationKind.DateWindow when iteration.OverlapMinutes < 0:
+                throw new FlowValidationException($"{source}: 'overlapMinutes' cannot be negative.");
+            case not AcquireIterationKind.DateWindow when iteration.OverlapMinutes != 0:
+                throw new FlowValidationException($"{source}: 'overlapMinutes' applies only to a dateWindow iteration.");
+
             case AcquireIterationKind.List when iteration.Variable is null || iteration.Values.Count == 0:
                 throw new FlowValidationException($"{source}: a list iteration requires 'variable' and non-empty 'values'.");
 
@@ -685,6 +693,7 @@ internal sealed class AcquireIterationYaml
     public string? To { get; set; }
     public string? FromVariable { get; set; }
     public string? ToVariable { get; set; }
+    public int? OverlapMinutes { get; set; }
     public List<string>? Values { get; set; }
     public AcquireRequestYaml? IdRequest { get; set; }
     public string? IdPath { get; set; }

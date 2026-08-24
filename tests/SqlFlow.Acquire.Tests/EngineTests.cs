@@ -305,6 +305,88 @@ public sealed class EngineTests
         Assert.Contains(h.Requests, r => Query(r.Uri, "to") == "2026-07-07");
     }
 
+    /// <summary>
+    /// An endpoint that returns only the records fully CONTAINED in the requested window loses every event that
+    /// straddles a step boundary, because such an event is inside neither of the two abutting windows. The overlap
+    /// pushes each step's upper edge past the boundary so the earlier window contains it.
+    /// </summary>
+    [Fact]
+    public async Task Date_window_overlap_extends_each_step_past_the_boundary()
+    {
+        var handler = new StubHttpHandler().Json("/trips", _ => """[{"t":1}]""");
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest
+            {
+                Path = "/trips",
+                Query = new Dictionary<string, string>
+                {
+                    ["from"] = "{window.from:yyyy-MM-ddTHH:mm}",
+                    ["to"] = "{window.to:yyyy-MM-ddTHH:mm}",
+                },
+            },
+            Iterations =
+            [
+                new AcquireIteration
+                {
+                    Kind = AcquireIterationKind.DateWindow,
+                    Granularity = AcquireWindowGranularity.Day,
+                    From = "now-3d",
+                    To = "now",
+                    OverlapMinutes = 90,
+                },
+            ],
+        };
+
+        var (result, _, h) = await RunAsync(handler, source, "data/{window.from:yyyyMMddHHmm}");
+
+        // Still 3 day steps: the cursor advances by a whole day, only the bound upper edge reaches further.
+        Assert.Equal(3, result.Iterations);
+        var windows = h.Requests.Select(r => (From: Query(r.Uri, "from"), To: Query(r.Uri, "to")))
+            .OrderBy(w => w.From, StringComparer.Ordinal).ToList();
+        Assert.Equal("2026-07-06T12:00", windows[0].From);
+        Assert.Equal("2026-07-07T13:30", windows[0].To);   // one day on, plus the 90-minute overlap
+        Assert.Equal("2026-07-07T12:00", windows[1].From); // the next step still starts on the boundary
+        Assert.Equal("2026-07-08T13:30", windows[1].To);
+    }
+
+    /// <summary>The overlap must not make a run reach past the window it was given, or a backfill bounded at a date
+    /// would quietly read beyond it.</summary>
+    [Fact]
+    public async Task Date_window_overlap_never_reaches_past_the_window_end()
+    {
+        var handler = new StubHttpHandler().Json("/trips", _ => """[{"t":1}]""");
+        var source = new AcquireSource
+        {
+            BaseUrl = BaseUrl,
+            Request = new AcquireRequest
+            {
+                Path = "/trips",
+                Query = new Dictionary<string, string>
+                {
+                    ["from"] = "{window.from:yyyy-MM-ddTHH:mm}",
+                    ["to"] = "{window.to:yyyy-MM-ddTHH:mm}",
+                },
+            },
+            Iterations =
+            [
+                new AcquireIteration
+                {
+                    Kind = AcquireIterationKind.DateWindow,
+                    Granularity = AcquireWindowGranularity.Day,
+                    From = "now-1d",
+                    To = "now",
+                    OverlapMinutes = 1440,
+                },
+            ],
+        };
+
+        var (_, _, h) = await RunAsync(handler, source, "data/{window.from:yyyyMMddHHmm}");
+
+        Assert.Equal("2026-07-09T12:00", Query(h.Requests.Single(r => r.Uri.Query.Contains("from=", StringComparison.Ordinal)).Uri, "to"));
+    }
+
     [Fact]
     public async Task IdsFrom_iteration_discovers_then_fetches_each_id()
     {
