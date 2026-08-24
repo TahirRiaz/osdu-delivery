@@ -1665,7 +1665,7 @@ public sealed class IngestionFlowRunner
             return new IncrementalSummary { Mode = IncrementalModes.Full, Filter = "full load (watermark bypassed by run parameter)" };
         }
 
-        if (options.Parameters.BackfillFrom is not null)
+        if (options.Parameters.BackfillFrom is not null || !string.IsNullOrWhiteSpace(options.Parameters.SourceFilter))
         {
             return new IncrementalSummary { Mode = IncrementalModes.Backfill, Filter = filter };
         }

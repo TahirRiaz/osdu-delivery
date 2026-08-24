@@ -2903,6 +2903,7 @@ internal static class Program
             BackfillTo = ParseDate(GetOption(args, "--to"), "--to"),
             FilePattern = GetOption(args, "--file-pattern"),
             AssertionsOnly = args.Contains("--assertions-only"),
+            SourceFilter = GetOption(args, "--source-filter"),
         };
         parameters.Validate();
         return parameters;
@@ -3042,7 +3043,7 @@ internal static class Program
         // The control-plane verbs (health/login/logout/trigger/runs/groups and the estate family).
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
         "--scope", "--batch", "--pool", "--poll-seconds", "--commit", "--flow", "--status", "--kind", "--group",
-        "--page", "--page-size", "--from", "--to", "--file-pattern",
+        "--page", "--page-size", "--from", "--to", "--file-pattern", "--source-filter",
         "--cron", "--interval", "--timezone", "--max-concurrency",
         "--remote-url", "--credential-ref", "--credential-user",
         "--ref", "--sample", "--max-columns", "--max-candidates", "--active", "--enabled",

@@ -1,4 +1,4 @@
-﻿namespace SqlFlow.Catalog;
+namespace SqlFlow.Catalog;
 
 /// <summary>
 /// The lifecycle states a <see cref="CatalogRun"/> moves through, stored as a short lowercase string so the value
@@ -244,6 +244,10 @@ public class CatalogRun
 
     /// <summary>Per-run substitution: a glob narrowing which files a file flow reads this run.</summary>
     public string? FilePattern { get; set; }
+
+    /// <summary>The raw source-read predicate this run was triggered with (<c>RunParameters.SourceFilter</c>), or
+    /// null. Persisted so an operational backfill states on the run record exactly which slice it read.</summary>
+    public string? SourceFilter { get; set; }
 
     /// <summary>Per-run substitution: evaluate the flow's data-quality assertions against the current target
     /// and load nothing (the on-demand path for <c>mode: manual</c> assertions). Recorded on the run so an

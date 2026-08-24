@@ -85,14 +85,32 @@ public sealed class IncrementalWindowResolver
         // FullLoad flag has always behaved).
         if (parameters.FullLoad)
         {
+            var fullWhere = AssembleWhere(flow.Source, fullLoadFlag: true, string.Empty, string.Empty, targetEmpty: true);
+
+            // A full load already ignores the watermark, so a source filter combined with it is not contradictory:
+            // it means "ignore the watermark, and read this slice of the source". Honoring it here keeps the two
+            // parameters composable instead of silently dropping one.
+            if (!string.IsNullOrWhiteSpace(parameters.SourceFilter))
+            {
+                fullWhere += " " + parameters.SourceFilter.Trim();
+            }
+
             return new IncrementalWindow
             {
-                SourceWhere = AssembleWhere(flow.Source, fullLoadFlag: true, string.Empty, string.Empty, targetEmpty: true),
+                SourceWhere = fullWhere,
                 // Keyed flows still take the upsert apply (idempotent reload); only a keyless full read is the
                 // insert-all path, exactly as an empty-target full load behaves.
                 RunFullLoad = keyless,
             };
         }
+
+        // An operator-supplied bound (a date window, a raw predicate, or both) replaces the probed watermark
+        // entirely, so the slice asked for is read whatever the target's high-water mark says. The two compose:
+        // a window narrows the declared date column, a source filter narrows anything else (a surrogate key, a
+        // status flag), and either alone is enough. The date-column requirement therefore applies ONLY to the
+        // window; a source filter needs no incremental declaration at all, which is what lets a flow with no
+        // usable date column still be backfilled.
+        var runtimePredicate = string.Empty;
 
         if (parameters.BackfillFrom is { } externalFrom)
         {
@@ -100,7 +118,8 @@ public sealed class IncrementalWindowResolver
             if (string.IsNullOrWhiteSpace(dateColumn))
             {
                 throw new SqlFlowException(
-                    "A backfill window needs incremental.dateColumn on the flow, so the engine knows which column to bound.");
+                    "A backfill window needs incremental.dateColumn on the flow, so the engine knows which column to bound. " +
+                    "To bound a run on a column the flow does not declare (a surrogate key, for example), use a source filter.");
             }
 
             var types = sourceColumns.ToDictionary(c => c.Name, c => c.DataType, StringComparer.OrdinalIgnoreCase);
@@ -114,15 +133,27 @@ public sealed class IncrementalWindowResolver
             var quoted = sourceDialect.QuoteIdentifier(dateColumn);
             // The bound is formatted directly through the source dialect's temporal literal, so it never depends
             // on the parameter value's CLR type (unlike the watermark path, which formats an introspected value).
-            var predicate = $" AND {quoted} >= {BackfillLiteral(externalFrom, columnType.BaseType, sourceDialect)}";
+            runtimePredicate = $" AND {quoted} >= {BackfillLiteral(externalFrom, columnType.BaseType, sourceDialect)}";
             if (parameters.BackfillTo is { } externalTo)
             {
-                predicate += $" AND {quoted} < {BackfillLiteral(externalTo, columnType.BaseType, sourceDialect)}";
+                runtimePredicate += $" AND {quoted} < {BackfillLiteral(externalTo, columnType.BaseType, sourceDialect)}";
             }
+        }
 
+        if (!string.IsNullOrWhiteSpace(parameters.SourceFilter))
+        {
+            // Appended verbatim, in the SOURCE's dialect: the fragment is composed into the source SELECT, not
+            // the target write, so its identifiers and functions are the source's and one parameter serves every
+            // relational provider. RunParameters.Validate has already established it is a predicate continuation
+            // (leading AND/OR, no statement terminator, no comment marker), which is the trust boundary for it.
+            runtimePredicate += " " + parameters.SourceFilter.Trim();
+        }
+
+        if (runtimePredicate.Length > 0)
+        {
             return new IncrementalWindow
             {
-                SourceWhere = AssembleWhere(flow.Source, fullLoadFlag: false, string.Empty, predicate, targetEmpty: false),
+                SourceWhere = AssembleWhere(flow.Source, fullLoadFlag: false, string.Empty, runtimePredicate, targetEmpty: false),
                 RunFullLoad = false,
             };
         }

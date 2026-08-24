@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 
 namespace SqlFlow.Catalog;
 
@@ -141,6 +141,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.CommitSha).HasMaxLength(64);
             entity.Property(r => r.FlowVersionHash).HasMaxLength(64);
             entity.Property(r => r.FilePattern).HasMaxLength(200);
+            entity.Property(r => r.SourceFilter).HasMaxLength(4000);
             entity.Property(r => r.Host).HasMaxLength(256);
             entity.Property(r => r.IncrementalMode).HasMaxLength(16);
             entity.Property(r => r.IncrementalFilter).HasMaxLength(2048);

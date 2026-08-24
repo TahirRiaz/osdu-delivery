@@ -15,6 +15,10 @@ public enum RunParameterInput
 
     /// <summary>A file-name glob narrowing selection (<c>filePattern</c>).</summary>
     Glob,
+
+    /// <summary>A raw SQL predicate fragment appended to a relational source read (<c>sourceFilter</c>). Rendered
+    /// as free text because the operator writes it in the SOURCE's dialect, which the client cannot model.</summary>
+    SqlPredicate,
 }
 
 /// <summary>
@@ -29,7 +33,8 @@ public sealed record RunParameterDescriptor(string Key, RunParameterInput Input,
 /// per-kind interpretation (the copy engine's modified-window resolution, and the file/relational/export executors):
 /// a copy or file flow takes a date backfill window, a relational ingestion takes an incremental-column window only
 /// when it declares a date column, file flows also take a glob, ingestion also takes assertions-only, export takes a
-/// window, and the kinds with no selection surface (stored procedure, health check, inventory) take none. A client
+/// window, and the kinds with no selection surface (stored procedure, health check, inventory) take none. A
+/// relational ingestion additionally always takes a raw source filter, which needs no declared column. A client
 /// renders exactly this set, so a user is never offered a control the run would ignore or reject.
 /// </summary>
 public static class RunParameterApplicability
@@ -48,6 +53,12 @@ public static class RunParameterApplicability
 
     private static RunParameterDescriptor BackfillWindow(string help)
         => new("backfillWindow", RunParameterInput.DateRange, "Backfill window", help);
+
+    private static readonly RunParameterDescriptor SourceFilter = new(
+        "sourceFilter", RunParameterInput.SqlPredicate, "Source filter",
+        "Extra predicate ANDed onto the source read for this run, in the source's own SQL dialect and starting "
+        + "with AND, for example \"AND pk > 92992\". It replaces the incremental watermark for the run, so it can "
+        + "reach rows already below the high-water mark, and needs no declared date column.");
 
     /// <summary>The applicable parameters for a flow, given its kind and (for relational ingestion) whether it
     /// declares an incremental date column a window can bound. An unknown kind returns an empty list.</summary>
@@ -75,6 +86,10 @@ public static class RunParameterApplicability
                     ing.Add(BackfillWindow("Reload the incremental date column bounded to this range (>= from, < to)."));
                 }
 
+                // Unlike the window, this is offered whatever the flow declares: it bounds the read on any column
+                // the SOURCE exposes, so a flow with no incremental date column (or one whose watermark sits past
+                // the rows being recovered) is still backfillable without a YAML edit.
+                ing.Add(SourceFilter);
                 ing.Add(AssertionsOnly);
                 return ing;
             case "exp":

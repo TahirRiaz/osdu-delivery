@@ -210,6 +210,8 @@ export interface RunDetail extends RunSummary {
   backfillFrom: string | null;
   backfillTo: string | null;
   filePattern: string | null;
+  /** The raw predicate this run appended to the source read, in the source's own dialect, or null. */
+  sourceFilter: string | null;
   /** True when this run evaluated the flow's data-quality assertions (manual-mode ones included) against the
    * current target without loading anything (the on-demand assertion run). */
   assertionsOnly: boolean;
@@ -429,10 +431,11 @@ export interface RunHealthCheckMetric {
   error: string | null;
 }
 
-export type RunParameterInput = "Toggle" | "DateRange" | "Glob";
+export type RunParameterInput = "Toggle" | "DateRange" | "Glob" | "SqlPredicate";
 
 /** One run parameter that applies to a flow, with the metadata the trigger form renders from. `key` maps back to
- *  the trigger request: "fullLoad", "backfillWindow" (backfillFrom/backfillTo), "filePattern", "assertionsOnly". */
+ *  the trigger request: "fullLoad", "backfillWindow" (backfillFrom/backfillTo), "filePattern", "sourceFilter",
+ *  "assertionsOnly". */
 export interface RunParameterDescriptor {
   key: string;
   input: RunParameterInput;
@@ -459,6 +462,10 @@ export interface RunTriggerRequest {
   backfillFrom?: string | null;
   backfillTo?: string | null;
   filePattern?: string | null;
+  /** An extra predicate ANDed onto the source read for this run, in the SOURCE's SQL dialect and starting with
+   * AND, e.g. "AND pk > 92992". Replaces the incremental watermark for the run, so it can reach rows already
+   * below the high-water mark, and needs no declared date column. Relational ingestion only. */
+  sourceFilter?: string | null;
   /** Evaluate the flow's data-quality assertions (manual-mode ones included) against the current target and
    * load nothing. Ingestion flows only; single-flow scope only. */
   assertionsOnly?: boolean;

@@ -28,6 +28,7 @@ export interface TriggerRunParameterValues {
   backfillFrom?: string | null;
   backfillTo?: string | null;
   filePattern?: string | null;
+  sourceFilter?: string | null;
   assertionsOnly?: boolean;
 }
 
@@ -109,6 +110,7 @@ export function TriggerRunDialog({
   const [backfillFrom, setBackfillFrom] = useState("");
   const [backfillTo, setBackfillTo] = useState("");
   const [filePattern, setFilePattern] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
   const [assertionsOnly, setAssertionsOnly] = useState(false);
 
   // A batch-locked launch (from the status board) carries no flow: force batch scope and keep it there.
@@ -121,6 +123,7 @@ export function TriggerRunDialog({
       setBackfillFrom(toLocalInput(initialParameters?.backfillFrom));
       setBackfillTo(toLocalInput(initialParameters?.backfillTo));
       setFilePattern(initialParameters?.filePattern ?? "");
+      setSourceFilter(initialParameters?.sourceFilter ?? "");
       setAssertionsOnly(initialParameters?.assertionsOnly ?? false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -257,6 +260,7 @@ export function TriggerRunDialog({
   const trimmedTo = backfillTo.trim();
   const hasWindow = trimmedFrom !== "" || trimmedTo !== "";
   const hasPattern = filePattern.trim() !== "";
+  const hasSourceFilter = sourceFilter.trim() !== "";
 
   // Client-side mirror of RunParameters.Validate (single-flow only), so obvious mistakes are caught before the round
   // trip (the server validates authoritatively and its ProblemDetails still renders if anything slips through).
@@ -292,6 +296,7 @@ export function TriggerRunDialog({
       backfillFrom: applies("backfillWindow") && trimmedFrom !== "" ? `${trimmedFrom}:00Z` : null,
       backfillTo: applies("backfillWindow") && trimmedTo !== "" ? `${trimmedTo}:00Z` : null,
       filePattern: applies("filePattern") && hasPattern ? filePattern.trim() : null,
+      sourceFilter: applies("sourceFilter") && hasSourceFilter ? sourceFilter.trim() : null,
       assertionsOnly: applies("assertionsOnly") ? assertionsOnly : false,
     });
   };
@@ -302,7 +307,7 @@ export function TriggerRunDialog({
         const isFull = desc.key === "fullLoad";
         const checked = isFull ? fullLoad : assertionsOnly;
         const onChange = isFull ? setFullLoad : setAssertionsOnly;
-        const disabled = isFull ? assertionsOnly : (fullLoad || hasWindow || hasPattern);
+        const disabled = isFull ? assertionsOnly : (fullLoad || hasWindow || hasPattern || hasSourceFilter);
         return (
           <div key={desc.key} className="flex flex-col gap-1">
             <Label className="flex items-center gap-2 text-[13px] font-normal">
@@ -347,6 +352,22 @@ export function TriggerRunDialog({
               onChange={(event) => setFilePattern(event.target.value)}
               disabled={assertionsOnly}
               data-testid="trigger-file-pattern"
+            />
+            <p className="text-xs text-muted-foreground">{desc.help}</p>
+          </div>
+        );
+      case "SqlPredicate":
+        return (
+          <div key={desc.key} className="flex flex-col gap-1.5">
+            <Label htmlFor={`${idPrefix}-source-filter`}>{desc.label}</Label>
+            <Input
+              id={`${idPrefix}-source-filter`}
+              className="h-8 font-mono"
+              placeholder="AND pk > 92992"
+              value={sourceFilter}
+              onChange={(event) => setSourceFilter(event.target.value)}
+              disabled={assertionsOnly}
+              data-testid="trigger-source-filter"
             />
             <p className="text-xs text-muted-foreground">{desc.help}</p>
           </div>

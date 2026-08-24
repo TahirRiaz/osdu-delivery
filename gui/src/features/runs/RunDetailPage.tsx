@@ -415,7 +415,7 @@ function RunDetailContent({ runId }: { runId: string }) {
         </Alert>
       )}
 
-      {(run.fullLoad || run.backfillFrom || run.filePattern) && (
+      {(run.fullLoad || run.backfillFrom || run.filePattern || run.sourceFilter) && (
         <Alert data-testid="run-backfill">
           <Info />
           <AlertDescription>
@@ -430,6 +430,9 @@ function RunDetailContent({ runId }: { runId: string }) {
                 </Badge>
               )}
               {run.filePattern && <Badge variant="secondary" className="font-mono">files '{run.filePattern}'</Badge>}
+              {run.sourceFilter && (
+                <Badge variant="secondary" className="font-mono">source filter '{run.sourceFilter}'</Badge>
+              )}
             </div>
           </AlertDescription>
         </Alert>
@@ -663,6 +666,7 @@ function RunDetailContent({ runId }: { runId: string }) {
             backfillFrom: run.backfillFrom,
             backfillTo: run.backfillTo,
             filePattern: run.filePattern,
+            sourceFilter: run.sourceFilter,
             assertionsOnly: run.assertionsOnly,
           }}
         />

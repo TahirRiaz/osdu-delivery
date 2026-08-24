@@ -736,6 +736,7 @@ public sealed partial class RunWorker
                         r.BackfillFrom,
                         r.BackfillTo,
                         r.FilePattern,
+                        r.SourceFilter,
                         r.AssertionsOnly,
                         r.ReprocessFromSourceMin,
                         RepoName = repo != null ? repo.Name : null,
@@ -838,6 +839,7 @@ public sealed partial class RunWorker
                 BackfillFrom = run.BackfillFrom,
                 BackfillTo = run.BackfillTo,
                 FilePattern = run.FilePattern,
+                SourceFilter = run.SourceFilter,
                 AssertionsOnly = run.AssertionsOnly,
                 ReprocessFromSourceMin = run.ReprocessFromSourceMin,
             };

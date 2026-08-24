@@ -1,3 +1,4 @@
+using System;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using Xunit;
@@ -11,6 +12,51 @@ namespace SqlFlow.Tests;
 /// </summary>
 public sealed class RunParametersTests
 {
+    [Theory]
+    [InlineData("AND pk > 92992")]
+    [InlineData("and Dat >= '2026-08-05'")]
+    [InlineData("  OR Status = 'X'  ")]
+    public void SourceFilter_AcceptsAPredicateContinuation(string filter)
+    {
+        var parameters = new RunParameters { SourceFilter = filter };
+        parameters.Validate(); // never throws
+        Assert.False(parameters.IsDefault);
+        Assert.Contains(filter.Trim(), parameters.Describe(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("pk > 92992")]                      // not a continuation: no leading connector
+    [InlineData("AND pk > 1; DROP TABLE x")]        // statement terminator
+    [InlineData("AND pk > 1 -- rest")]              // line comment
+    [InlineData("AND pk > 1 /* block */")]          // block comment
+    [InlineData("   ")]                             // blank
+    public void SourceFilter_RejectsAnythingThatIsNotAPlainPredicate(string filter)
+        => Assert.Throws<SqlFlowException>(() => new RunParameters { SourceFilter = filter }.Validate());
+
+    [Fact]
+    public void SourceFilter_RejectsOverlongValue()
+        => Assert.Throws<SqlFlowException>(() =>
+            new RunParameters { SourceFilter = "AND x = " + new string('9', RunParameters.MaxSourceFilterLength) }.Validate());
+
+    [Fact]
+    public void SourceFilter_CannotBeCombinedWithAssertionsOnly()
+        => Assert.Throws<SqlFlowException>(() =>
+            new RunParameters { AssertionsOnly = true, SourceFilter = "AND pk > 1" }.Validate());
+
+    [Fact]
+    public void SourceFilter_ComposesWithAFullLoadAndAWindow()
+    {
+        // Neither combination is contradictory: full load drops the watermark, the window and the filter narrow
+        // the read. Validate must not reject what the resolver honors.
+        new RunParameters { FullLoad = true, SourceFilter = "AND pk > 1" }.Validate();
+        new RunParameters
+        {
+            BackfillFrom = new DateTime(2026, 8, 4, 0, 0, 0, DateTimeKind.Utc),
+            BackfillTo = new DateTime(2026, 8, 13, 0, 0, 0, DateTimeKind.Utc),
+            SourceFilter = "AND pk > 1",
+        }.Validate();
+    }
+
     [Fact]
     public void None_IsDefault_AndDescribesAsNone()
     {

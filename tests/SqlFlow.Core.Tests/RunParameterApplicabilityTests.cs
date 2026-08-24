@@ -10,6 +10,29 @@ namespace SqlFlow.Core.Tests;
 /// </summary>
 public sealed class RunParameterApplicabilityTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Ingestion_AlwaysOffersTheSourceFilter_WhateverItDeclares(bool hasDateColumn)
+    {
+        // The window needs a declared date column; the raw filter does not. That is the whole point of it: a flow
+        // with no usable date column must still be backfillable without a YAML edit.
+        var keys = RunParameterApplicability.For("ing", hasDateColumn).Select(p => p.Key).ToList();
+        Assert.Contains("sourceFilter", keys);
+        Assert.Equal(hasDateColumn, keys.Contains("backfillWindow"));
+    }
+
+    [Fact]
+    public void SourceFilter_IsOfferedOnlyToRelationalIngestion()
+    {
+        foreach (var kind in new[] { "cpy", "file", "exp", "api", "sftp" })
+        {
+            Assert.DoesNotContain(
+                "sourceFilter",
+                RunParameterApplicability.For(kind, hasIncrementalDateColumn: true).Select(p => p.Key));
+        }
+    }
+
     [Fact]
     public void Copy_OffersFullLoadAndBackfillWindow()
     {

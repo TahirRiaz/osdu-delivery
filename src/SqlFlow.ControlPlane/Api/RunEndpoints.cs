@@ -45,7 +45,7 @@ public sealed record RunDetailDto(
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, string? Error, string? Host,
     bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern, bool AssertionsOnly,
-    bool ReprocessFromSourceMin,
+    bool ReprocessFromSourceMin, string? SourceFilter,
     string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
     string? DataSetConvention,
     int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);
@@ -379,7 +379,7 @@ public static class RunEndpoints
                     run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted,
                     db.RunFiles.Count(f => f.RunId == run.RunId), run.Error, run.Host,
                     run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern, run.AssertionsOnly,
-                    run.ReprocessFromSourceMin,
+                    run.ReprocessFromSourceMin, run.SourceFilter,
                     run.IncrementalMode, run.IncrementalFilter, run.IncrementalWatermark, run.IncrementalWatermarkSource,
                     run.DataSetConvention,
                     null, null, null, run.GroupId))

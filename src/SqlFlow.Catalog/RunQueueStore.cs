@@ -1,4 +1,4 @@
-﻿using System.Data.Common;
+using System.Data.Common;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -228,6 +228,7 @@ public static class RunQueueStore
                 BackfillFrom = parameters.BackfillFrom,
                 BackfillTo = parameters.BackfillTo,
                 FilePattern = string.IsNullOrWhiteSpace(parameters.FilePattern) ? null : parameters.FilePattern.Trim(),
+                SourceFilter = string.IsNullOrWhiteSpace(parameters.SourceFilter) ? null : parameters.SourceFilter.Trim(),
                 AssertionsOnly = parameters.AssertionsOnly,
                 ReprocessFromSourceMin = parameters.ReprocessFromSourceMin,
                 Status = RunStatuses.Queued,
@@ -338,6 +339,7 @@ public static class RunQueueStore
                     BackfillFrom = memberParameters.BackfillFrom,
                     BackfillTo = memberParameters.BackfillTo,
                     FilePattern = string.IsNullOrWhiteSpace(memberParameters.FilePattern) ? null : memberParameters.FilePattern.Trim(),
+                    SourceFilter = string.IsNullOrWhiteSpace(memberParameters.SourceFilter) ? null : memberParameters.SourceFilter.Trim(),
                     AssertionsOnly = memberParameters.AssertionsOnly,
                     ReprocessFromSourceMin = memberParameters.ReprocessFromSourceMin,
                     Status = RunStatuses.Queued,
