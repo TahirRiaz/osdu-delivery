@@ -22,11 +22,18 @@ public static class AssistantInstructions
             linkGuidance = gui.Length > 0
                 ? $"""
                    Every catalog tool result carries GUI deep links: each row has a `links` object with the
-                   page for the row itself (`page`), its lineage graph (`lineage`), and the things it
-                   references (`flow`, `object`, `objectLineage`, `run`, `runGroup`). When you name a table,
-                   flow, run, schedule, or report, link that name with the URL the row gave you, as
-                   <URL|the name>. A link that starts with / is relative to the GUI: prefix it with {gui}.
-                   Never invent a SQLFlow URL for a row that carried no links; name it instead.
+                   page for the row itself (`page`, whatever the row is: a table, a flow, a run, a run group,
+                   a schedule, a repo, a schema folder, a report, the fleet board), its lineage graph
+                   (`lineage`), and the things it references (`flow`, `object`, `objectLineage`, `run`,
+                   `runGroup`, `schedule`, `lastRun`, `fromFlow`, `toFlow`). Addresses that leave SQLFlow come
+                   under their own names and are already absolute: `url` (a report's own address in Power
+                   BI/Tableau), `remote` (a repo's git remote), `source` (a flow's source location). When you
+                   name a table, flow, run, schedule, repo, or report, link that name with the URL the row
+                   gave you, as <URL|the name>, and show an external address as <URL|the name> too rather than
+                   as bare text. A link that starts with / is relative to the GUI: prefix it with {gui}.
+                   A result about something your CALL named rather than about its rows (a flow's columns, a
+                   repo's edges, the insights boards) carries the subject's links on the envelope beside
+                   `items`. Never invent a SQLFlow URL for a row that carried no links; name it instead.
                    """
                 : "Reference runs, flows, and tables by their names and ids from tool results, without links.";
             formatting = $"""
@@ -43,14 +50,22 @@ public static class AssistantInstructions
             var linkBase = gui.Length > 0 ? gui : "";
             linkGuidance = $"""
                 Every catalog tool result carries GUI deep links: each row has a `links` object with the page
-                for the row itself (`page`), its lineage graph (`lineage`), and the things it references
-                (`flow`, `object`, `objectLineage`, `run`, `runGroup`). Link the names you write with the URLs
-                those rows gave you: a table as [arc.Citybike_Bikes](CATALOG_PAGE_URL) with its
+                for the row itself (`page`, whatever the row is: a table, a flow, a run, a run group, a
+                schedule, a repo, a schema folder, a report, the fleet board), its lineage graph (`lineage`),
+                and the things it references (`flow`, `object`, `objectLineage`, `run`, `runGroup`,
+                `schedule`, `lastRun`, `fromFlow`, `toFlow`). Addresses that leave SQLFlow come under their
+                own names and are already absolute: `url` (a report's own address in Power BI/Tableau),
+                `remote` (a repo's git remote), `source` (a flow's source location). Link the names you write
+                with the URLs those rows gave you: a table as [arc.Citybike_Bikes](CATALOG_PAGE_URL) with its
                 [lineage](LINEAGE_URL) when the question is about where data flows, a flow as
-                [citybike_00_api](FLOW_URL), a run as [the run](RUN_URL). Prefer the row's own link over
+                [citybike_00_api](FLOW_URL), a run as [the run](RUN_URL), a report as
+                [Analyse_Sanntid](REPORT_URL) beside its [catalog page](SUBSCRIBER_PAGE_URL). Never print a
+                URL as bare text or inline code when you can link it. Prefer the row's own link over
                 composing one; when a row carries none, fall back to [the run]({linkBase}/runs/RUN_ID) and
                 [the pipeline]({linkBase}/pipelines/PIPELINE_ID) with real ids, and never invent a URL for
-                anything else. Link a thing once, on its first mention, rather than on every repetition.
+                anything else. A result about something your call named rather than about its rows (a flow's
+                columns, a repo's edges, the insights boards) carries the subject's links on the envelope
+                beside `items`. Link a thing once, on its first mention, rather than on every repetition.
                 """;
             formatting = $"""
                 Format answers as GitHub-flavored Markdown: **bold** for emphasis, bullet lists with

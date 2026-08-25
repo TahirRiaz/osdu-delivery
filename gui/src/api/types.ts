@@ -627,6 +627,8 @@ export interface SchedulePlanMember {
   flowKind: string;
   wave: number;
   batch: string;
+  /** The flow itself, so a plan row can link to it; null when the expansion did not resolve its pipeline row. */
+  pipelineId: string | null;
 }
 
 /** When a schedule next runs and exactly what it executes: the cadence plus the lineage-resolved flows in wave
@@ -1265,7 +1267,7 @@ export interface SubscriberHit {
   key: string;
   name: string;
   /** The consuming tool: PowerBI, Tableau, Excel, ... */
-  kind: string;
+  type: string;
   owner: string | null;
   description: string | null;
   notes: string | null;

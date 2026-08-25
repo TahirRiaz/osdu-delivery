@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Database, FileCode, FilePlus2, FileX2, Folder, GitCommit, GitCompareArrows } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useLocalStorageState } from "@/hooks/useLocalStorageState";
+import { useLocalStorageState, useUrlSeed } from "@/hooks/useLocalStorageState";
 import { DiffView } from "@/components/DiffView";
 import { cn } from "@/lib/utils";
 import { NodeLabel, TreeContext, TreeNode, type TreeState } from "@/components/Tree";
@@ -302,6 +302,13 @@ export default function SchemaChangesPage() {
   const [search, setSearch] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+
+  // A deep link into one object's (or one database's) history: `q` seeds the filter and `window` widens it,
+  // because a change older than the default 24 hours would otherwise land on an empty page. Seeded once, so
+  // the controls stay the user's from the first keystroke on.
+  const [searchParams] = useSearchParams();
+  useUrlSeed(searchParams.get("q"), setSearch);
+  useUrlSeed(searchParams.get("window"), setWindow);
 
   const since = useMemo(() => sinceIso(window), [window]);
 

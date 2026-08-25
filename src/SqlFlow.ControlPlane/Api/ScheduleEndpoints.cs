@@ -67,8 +67,10 @@ public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
 public sealed record ScheduleRunAccepted(Guid RunId, Guid? GroupId = null, int MemberCount = 1);
 
 /// <summary>One flow a schedule runs: the wave that orders it within the fire and the batch it carries, so the run
-/// board can group or filter the plan by batch and a fire can be narrowed to one batch's flows.</summary>
-public sealed record SchedulePlanMemberDto(string FlowName, string FlowKind, int Wave, string Batch);
+/// board can group or filter the plan by batch and a fire can be narrowed to one batch's flows. <see cref="PipelineId"/>
+/// is the flow itself, so a reader of the plan can open it rather than searching for the name; null only for a member
+/// whose pipeline row the expansion did not resolve.</summary>
+public sealed record SchedulePlanMemberDto(string FlowName, string FlowKind, int Wave, string Batch, Guid? PipelineId);
 
 /// <summary>
 /// When a schedule next runs and exactly what it executes: the cadence (so "when does this source get updated" is
@@ -236,7 +238,7 @@ public static class ScheduleEndpoints
             .ExpandScheduleAsync(db, schedule.RepoId, schedule.Id, schedule.Name, batchFilter: null, ct).ConfigureAwait(false);
 
         var members = expansion.Members
-            .Select(m => new SchedulePlanMemberDto(m.FlowName, m.FlowKind, m.Wave, m.Batch))
+            .Select(m => new SchedulePlanMemberDto(m.FlowName, m.FlowKind, m.Wave, m.Batch, m.PipelineId))
             .ToList();
         return TypedResults.Ok(new SchedulePlanDto(
             schedule.Id, schedule.RepoId, schedule.Name, schedule.Cron,

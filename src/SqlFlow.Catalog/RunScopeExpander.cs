@@ -33,8 +33,11 @@ public static class RunScopes
 
 /// <summary>One flow selected by a scope expansion, with the wave that orders it within the set and the batch it
 /// carries (coalesced to <see cref="CatalogPipeline.DefaultBatch"/> when the flow declares none), so a caller can
-/// group or filter the set by batch without a second lookup.</summary>
-public sealed record RunScopeMember(string FlowName, string FlowKind, int Wave, string Batch);
+/// group or filter the set by batch without a second lookup. <see cref="PipelineId"/> travels with the name so a
+/// reader of the set can address the flow itself (its detail page, another lookup) instead of only naming it; the
+/// expansions all read it off the pipeline row they already join. It is optional because the queue's own callers
+/// construct members from a name alone.</summary>
+public sealed record RunScopeMember(string FlowName, string FlowKind, int Wave, string Batch, Guid? PipelineId = null);
 
 /// <summary>The result of expanding a set: what it was anchored on (the flow name for Flow/Node, the schedule name
 /// for a schedule's member set) and the ordered member flows.</summary>
@@ -110,7 +113,7 @@ public static class RunScopeExpander
             orderby pipeline.Wave < 0 ? 0 : pipeline.Wave, pipeline.Name
             select new RunScopeMember(
                 pipeline.Name, pipeline.Kind, pipeline.Wave < 0 ? 0 : pipeline.Wave,
-                pipeline.Batch ?? CatalogPipeline.DefaultBatch))
+                pipeline.Batch ?? CatalogPipeline.DefaultBatch, pipeline.Id))
             .ToListAsync(ct).ConfigureAwait(false);
 
         return new RunScopeExpansion(RunScope.Flow, scheduleName, DenseWaves(raw));
@@ -144,7 +147,7 @@ public static class RunScopeExpander
         var member = await catalog.Pipelines.AsNoTracking()
             .Where(p => p.Id == pipelineId && p.RepoId == repoId && p.Active)
             .Select(p => new RunScopeMember(
-                p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch))
+                p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch, p.Id))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         var members = member is null ? Array.Empty<RunScopeMember>() : new[] { member };
         return new RunScopeExpansion(RunScope.Flow, flowName, members);
@@ -223,7 +226,7 @@ public static class RunScopeExpander
                         && (p.Id == anchorId || p.ExecutionMode != PipelineExecutionModes.Manual))
             .OrderBy(p => p.Wave < 0 ? 0 : p.Wave).ThenBy(p => p.Name)
             .Select(p => new RunScopeMember(
-                p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch))
+                p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch, p.Id))
             .ToListAsync(ct).ConfigureAwait(false);
     }
 

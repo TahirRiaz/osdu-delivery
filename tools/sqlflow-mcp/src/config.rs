@@ -123,6 +123,17 @@ pub fn clear_token() -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn restrict_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &std::path::Path) {
+    // On Windows the file inherits the user profile ACL; no extra action.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,15 +178,4 @@ mod tests {
     fn never_expiring_managed_token_is_not_rotated() {
         assert!(!token(true, Some("id"), None).should_rotate(14));
     }
-}
-
-#[cfg(unix)]
-fn restrict_permissions(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &std::path::Path) {
-    // On Windows the file inherits the user profile ACL; no extra action.
 }

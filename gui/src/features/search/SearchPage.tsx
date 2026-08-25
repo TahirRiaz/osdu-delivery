@@ -218,7 +218,7 @@ function firstLine(text: string | null): string | null {
 
 const subscriberColumns: Column<SubscriberHit>[] = [
   { id: "name", header: "Subscriber", render: (row) => <NameCell>{row.name}</NameCell> },
-  { id: "kind", header: "Type", render: (row) => <Badge variant="secondary">{row.kind}</Badge> },
+  { id: "type", header: "Type", render: (row) => <Badge variant="secondary">{row.type}</Badge> },
   { id: "owner", header: "Owner", render: (row) => <Mono>{row.owner ?? "-"}</Mono> },
   {
     id: "description",
@@ -522,7 +522,7 @@ function AllResults({ q, onSelectTab, openLineage, openRun, openPipeline, openSu
         rowKey={(row) => row.key} onRowClick={(row) => openSubscriber(row.key)}
         primary={(row) => row.name}
         secondary={(row) => [
-          row.kind, row.owner ?? "", firstLine(row.notes) ?? row.description ?? "",
+          row.type, row.owner ?? "", firstLine(row.notes) ?? row.description ?? "",
         ].filter(Boolean).join(" · ")}
       />
     </div>

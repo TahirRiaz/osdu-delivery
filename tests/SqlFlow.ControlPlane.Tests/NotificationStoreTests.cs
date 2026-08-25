@@ -182,17 +182,22 @@ public sealed class NotificationStoreTests
             // The losing replica observed the same pre-claim value and must lose.
             Assert.False(await NotificationStore.TryClaimSubscriptionAsync(db, subscription.Id, null, cooldownEnd.AddMinutes(1), now));
 
+            // A new subscription starts at the estate's current event id, so the cursor this test moves is
+            // relative to that seed: hardcoding an absolute id fails the day the catalog passes it.
+            var seeded = (await Reload(db, subscription.Id)).LastEventId;
+            var advanced = seeded + 100;
+
             var delivery = NewDelivery(subscription, userId);
-            await NotificationStore.CompleteDispatchAsync(db, subscription.Id, newLastEventId: 500, sentUtc: now, delivery, now);
+            await NotificationStore.CompleteDispatchAsync(db, subscription.Id, advanced, sentUtc: now, delivery, now);
             var afterSend = await Reload(db, subscription.Id);
-            Assert.Equal(500, afterSend.LastEventId);
+            Assert.Equal(advanced, afterSend.LastEventId);
             Assert.Equal(cooldownEnd, afterSend.NextDueUtc);
             Assert.NotNull(afterSend.LastSentUtc);
             Assert.NotNull(await db.NotificationDeliveries.AsNoTracking().FirstOrDefaultAsync(d => d.Id == delivery.Id));
 
             // A stale completion (a crashed replica's leftover) can never pull the cursor backwards.
-            await NotificationStore.CompleteDispatchAsync(db, subscription.Id, newLastEventId: 400, sentUtc: null, null, now);
-            Assert.Equal(500, (await Reload(db, subscription.Id)).LastEventId);
+            await NotificationStore.CompleteDispatchAsync(db, subscription.Id, advanced - 100, sentUtc: null, null, now);
+            Assert.Equal(advanced, (await Reload(db, subscription.Id)).LastEventId);
 
             // A disabled subscription is never claimable, even when due.
             var disabled = await db.NotificationSubscriptions.AsTracking().FirstAsync(s => s.Id == subscription.Id);

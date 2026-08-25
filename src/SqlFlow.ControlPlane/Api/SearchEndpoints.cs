@@ -62,8 +62,11 @@ public sealed record StatementHitDto(
 /// warehouse. <see cref="Key"/> opens its dossier. <see cref="Notes"/> is carried because it is often the reason
 /// the row matched (searching "Incomplete dataset" finds every consumer whose lineage is only partial) and because
 /// a stale or superseded report is exactly what a person searching the estate needs to see about it.</summary>
+/// <para><see cref="Type"/> is the consuming tool (PowerBI / Tableau / Excel / ...). It is named the same here as
+/// on every other subscriber shape, and deliberately NOT "kind": a client that links rows by the identity fields
+/// they carry reads `key` + `kind` as a warehouse object, which a subscriber is not.</para>
 public sealed record SubscriberHitDto(
-    string Key, string Name, string Kind, string? Owner, string? Description, string? Notes,
+    string Key, string Name, string Type, string? Owner, string? Description, string? Notes,
     string? Url, string RepoId, string File);
 
 /// <summary>One category of a combined search: the full match count plus a small preview of the top hits, so the

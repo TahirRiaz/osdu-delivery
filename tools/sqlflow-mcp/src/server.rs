@@ -993,13 +993,21 @@ impl SqlFlowMcp {
             have changed size. A flow that has processed no files reports zeros (not an error)."
     )]
     async fn pipeline_file_stats(&self, Parameters(input): Parameters<GuidInput>) -> String {
-        self.get(&format!("/api/v1/pipelines/{}/files/stats", input.id), &[]).await
+        let links = json!({ "page": self.links.pipeline(&input.id) });
+        self.get_about(
+            &format!("/api/v1/pipelines/{}/files/stats", input.id), &[],
+            ("pipelineId", &input.id), links,
+        ).await
     }
 
     #[tool(description = "Get a pipeline's pre-ingestion transform columns (kind: declared|detected).")]
     async fn pipeline_columns(&self, Parameters(input): Parameters<PipelineColumnsInput>) -> String {
         let q = vec![("kind", input.kind.unwrap_or_default())];
-        self.get(&format!("/api/v1/pipelines/{}/columns", input.id), &q).await
+        let links = json!({ "page": self.links.pipeline(&input.id) });
+        self.get_about(
+            &format!("/api/v1/pipelines/{}/columns", input.id), &q,
+            ("pipelineId", &input.id), links,
+        ).await
     }
 
     // ---- Runs (read) -----------------------------------------------------
@@ -1080,7 +1088,14 @@ impl SqlFlowMcp {
 
     #[tool(description = "Get a lineage object's columns by catalog key.")]
     async fn lineage_object_columns(&self, Parameters(i): Parameters<KeyInput>) -> String {
-        self.get("/api/v1/lineage/objects/columns", &[("key", i.key)]).await
+        let links = json!({
+            "page": self.links.object(&i.key),
+            "lineage": self.links.object_lineage(&i.key),
+        });
+        self.get_about(
+            "/api/v1/lineage/objects/columns", &[("key", i.key.clone())],
+            ("key", &i.key), links,
+        ).await
     }
 
     #[tool(
@@ -1151,7 +1166,14 @@ impl SqlFlowMcp {
             the source-to-target chain for a file."
     )]
     async fn file_provenance(&self, Parameters(i): Parameters<KeyInput>) -> String {
-        self.get("/api/v1/lineage/file-flows", &[("key", i.key)]).await
+        let links = json!({
+            "page": self.links.object(&i.key),
+            "lineage": self.links.object_lineage(&i.key),
+        });
+        self.get_about(
+            "/api/v1/lineage/file-flows", &[("key", i.key.clone())],
+            ("key", &i.key), links,
+        ).await
     }
 
     #[tool(
@@ -1205,12 +1227,20 @@ impl SqlFlowMcp {
 
     #[tool(description = "List the lineage edges (read/write relations) for a repository.")]
     async fn lineage_edges(&self, Parameters(i): Parameters<RepoIdInput>) -> String {
-        self.get(&format!("/api/v1/repos/{}/lineage/edges", i.repo_id), &[]).await
+        let links = json!({ "page": self.links.repo(&i.repo_id) });
+        self.get_about(
+            &format!("/api/v1/repos/{}/lineage/edges", i.repo_id), &[],
+            ("repoId", &i.repo_id), links,
+        ).await
     }
 
     #[tool(description = "Get the execution waves (concurrency plan) for a repository's flows.")]
     async fn lineage_waves(&self, Parameters(i): Parameters<RepoIdInput>) -> String {
-        self.get(&format!("/api/v1/repos/{}/waves", i.repo_id), &[]).await
+        let links = json!({ "page": self.links.repo(&i.repo_id) });
+        self.get_about(
+            &format!("/api/v1/repos/{}/waves", i.repo_id), &[],
+            ("repoId", &i.repo_id), links,
+        ).await
     }
 
     #[tool(
@@ -1219,7 +1249,11 @@ impl SqlFlowMcp {
     )]
     async fn lineage_dependencies(&self, Parameters(i): Parameters<DependenciesInput>) -> String {
         let q = vec![("pipelineId", i.pipeline_id.unwrap_or_default())];
-        self.get(&format!("/api/v1/repos/{}/dependencies", i.repo_id), &q).await
+        let links = json!({ "page": self.links.repo(&i.repo_id) });
+        self.get_about(
+            &format!("/api/v1/repos/{}/dependencies", i.repo_id), &q,
+            ("repoId", &i.repo_id), links,
+        ).await
     }
 
     // ---- Change history: DATABASE SCHEMAS (read) -------------------------
@@ -1284,8 +1318,13 @@ impl SqlFlowMcp {
             complete one."
     )]
     async fn database_object_ddl(&self, Parameters(i): Parameters<ObjectDdlInput>) -> String {
+        let pipeline_id = i.pipeline_id.clone();
+        let links = json!({
+            "page": self.links.schema_changes(None),
+            "flow": self.links.pipeline(&pipeline_id),
+        });
         let q = vec![("pipelineId", i.pipeline_id), ("sha", i.sha), ("path", i.path)];
-        self.get("/api/v1/schema-changes/ddl", &q).await
+        self.get_about("/api/v1/schema-changes/ddl", &q, ("pipelineId", &pipeline_id), links).await
     }
 
     #[tool(
@@ -1304,7 +1343,12 @@ impl SqlFlowMcp {
     )]
     async fn database_object_compare(&self, Parameters(i): Parameters<ObjectCompareInput>) -> String {
         let q = vec![("since", i.since.unwrap_or_default())];
-        self.get(&format!("/api/v1/schema-changes/{}/compare", i.change_id), &q).await
+        let change_id = i.change_id.to_string();
+        let links = json!({ "page": self.links.schema_changes(None) });
+        self.get_about(
+            &format!("/api/v1/schema-changes/{}/compare", i.change_id), &q,
+            ("changeId", &change_id), links,
+        ).await
     }
 
     // ---- Change history: FLOW DEFINITIONS / YAML (read) ------------------
@@ -1340,7 +1384,11 @@ impl SqlFlowMcp {
     )]
     async fn flow_definition_file_history(&self, Parameters(i): Parameters<FlowFileHistoryInput>) -> String {
         let q = vec![("limit", i.limit.map(|n| n.to_string()).unwrap_or_default())];
-        self.get(&format!("/api/v1/flow-history/flows/{}", i.pipeline_id), &q).await
+        let links = json!({ "page": self.links.pipeline(&i.pipeline_id) });
+        self.get_about(
+            &format!("/api/v1/flow-history/flows/{}", i.pipeline_id), &q,
+            ("pipelineId", &i.pipeline_id), links,
+        ).await
     }
 
     #[tool(
@@ -1581,7 +1629,8 @@ impl SqlFlowMcp {
 
     #[tool(description = "Get the dashboard summary rollup (repos, pipelines, runs, health).")]
     async fn summary(&self, Parameters(_): Parameters<EmptyInput>) -> String {
-        self.get("/api/v1/summary", &[]).await
+        self.get_about("/api/v1/summary", &[], ("board", "dashboard"),
+            json!({ "page": self.links.dashboard() })).await
     }
 
     // ---- Insights (read) -------------------------------------------------
@@ -1600,7 +1649,8 @@ impl SqlFlowMcp {
             // A context-frugal default: the list is ordered by total time, so 25 rows carry the story.
             ("limit", i.limit.unwrap_or(25).to_string()),
         ];
-        self.get("/api/v1/insights/flows", &q).await
+        self.get_about("/api/v1/insights/flows", &q, ("board", "insights"),
+            json!({ "page": self.links.insights() })).await
     }
 
     #[tool(
@@ -1618,7 +1668,8 @@ impl SqlFlowMcp {
             ("batch", i.batch.unwrap_or_default()),
             ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
         ];
-        self.get("/api/v1/insights/attention", &q).await
+        self.get_about("/api/v1/insights/attention", &q, ("board", "insights"),
+            json!({ "page": self.links.insights() })).await
     }
 
     #[tool(
@@ -1639,7 +1690,8 @@ impl SqlFlowMcp {
             ("limit", i.limit.map(|n| n.to_string()).unwrap_or_default()),
             ("includeSql", i.include_sql.map(|b| b.to_string()).unwrap_or_default()),
         ];
-        self.get("/api/v1/insights/recommendations", &q).await
+        self.get_about("/api/v1/insights/recommendations", &q, ("board", "insights"),
+            json!({ "page": self.links.insights() })).await
     }
 
     #[tool(
@@ -1685,7 +1737,12 @@ impl SqlFlowMcp {
         if let Some(f) = i.backfill_from { body["backfillFrom"] = json!(f); }
         if let Some(t) = i.backfill_to { body["backfillTo"] = json!(t); }
         if let Some(fp) = i.file_pattern { body["filePattern"] = json!(fp); }
-        done(self.cp.post("/api/v1/runs", body).await.map(|v| json_str(&v)))
+        done(self.cp.post("/api/v1/runs", body).await.map(|mut v| {
+            // The acknowledgement carries the minted run (or group) id, so the answer can hand back a
+            // link to watch it rather than only the id.
+            self.links.decorate(&mut v);
+            json_str(&v)
+        }))
     }
 
     #[tool(description = "Cancel an in-flight or queued run (requires the 'operate' scope).")]
@@ -1801,6 +1858,19 @@ before returning it."
     }
 }
 
+/// Puts a subject's links on a payload's envelope: an object keeps any links it already carries (the row rules
+/// know the row better than the caller does), and a bare array is wrapped in an envelope naming the subject, so
+/// there is somewhere for them to live without touching the rows themselves.
+fn with_subject(value: Value, subject: (&str, &str), links: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            map.entry("links").or_insert(links);
+            Value::Object(map)
+        }
+        items => json!({ subject.0: subject.1, "links": links, "items": items }),
+    }
+}
+
 impl SqlFlowMcp {
     /// Shared GET-and-render used by every read tool: the control plane's payload with a `links`
     /// object added to every row that names something the GUI can open.
@@ -1808,6 +1878,25 @@ impl SqlFlowMcp {
         done(self.cp.get(path, query).await.map(|mut v| {
             self.links.decorate(&mut v);
             json_str(&v)
+        }))
+    }
+
+    /// The same, for a result that is ABOUT something the CALLER named rather than about the rows it
+    /// returns: a flow's columns, an object's columns, a repo's edges, one file's provenance. Those rows
+    /// carry no identity of their own (they are already scoped by the path), so without this the answer
+    /// has nothing to link even though the subject is known. The rows are decorated exactly as everywhere
+    /// else; the subject's links then go on the envelope, and a bare array is wrapped in one so there is
+    /// an envelope to put them on.
+    async fn get_about(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        subject: (&str, &str),
+        links: Value,
+    ) -> String {
+        done(self.cp.get(path, query).await.map(|mut v| {
+            self.links.decorate(&mut v);
+            json_str(&with_subject(v, subject, links))
         }))
     }
 
@@ -2132,10 +2221,17 @@ const INSTRUCTIONS_ONLINE_TAIL: &str = "\
   _waves/_dependencies, search_all and search_objects/_columns/_definitions/_flows/_flow_columns/_files/
   _statements, list_schedules, get_schedule, get_schedule_plan, list_nodes, list_repo_sources, summary.
 - Every online result carries GUI deep links: each row gains a `links` object holding the page for the row
-  itself (`page`), its lineage graph (`lineage`), and the things it references (`flow`, `object`,
-  `objectLineage`, `otherObject`, `run`, `runGroup`). When an answer names a table, flow, run, schedule, or
-  report, link that name with the URL the row carried. Use them verbatim: never hand-build a SQLFlow URL, and
-  never invent one for a row that came back without links.
+  itself (`page`, whatever it is: a table's catalog page, a flow, a run, a run group, a schedule's runs, a
+  repo, a schema or database folder, a report, the fleet board), its lineage graph (`lineage`), and the
+  things it references (`flow`, `object`, `objectLineage`, `otherObject`, `run`, `runGroup`, `schedule`,
+  `lastRun`, `sampleRun`, `fromFlow`, `toFlow`). Links that leave SQLFlow arrive under their own names and
+  are already absolute: `url` (a report's own address in Power BI/Tableau), `remote` (a repo's git remote),
+  `source` (a flow's source location). When an answer names a table, flow, run, schedule, repo, or report,
+  link that name with the URL the row carried, and render an external address as a link too rather than as
+  bare text or inline code. Use them verbatim: never hand-build a SQLFlow URL, and never invent one for a
+  row that came back without links. A result about something the CALL named rather than about its rows (a
+  flow's columns, an object's columns, a repo's edges, one file's provenance, the insights boards, summary)
+  carries the subject's links on the envelope beside `items`, so those answers have a destination too.
 - \"Where does <name> live / where is <X> computed / what is <X>?\": call search_all FIRST. It fans one term
   across all seven surfaces at once and answers with each surface's full count plus a nextSteps plan naming
   the tool that pages it and the tool that turns a hit into an answer; work that plan rather than guessing a
@@ -2259,6 +2355,24 @@ mod tests {
         let steps = value["nextSteps"].as_array().expect("nextSteps");
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0]["surface"], json!("objects"));
+    }
+
+    #[test]
+    fn a_subject_wraps_a_bare_array_and_leaves_an_envelope_alone() {
+        let links = json!({ "page": "/pipelines/p-1" });
+        let wrapped = with_subject(json!([{ "columnName": "bike_id" }]), ("pipelineId", "p-1"), links.clone());
+        assert_eq!(wrapped["pipelineId"], json!("p-1"));
+        assert_eq!(wrapped["links"], links);
+        assert_eq!(wrapped["items"][0]["columnName"], json!("bike_id"));
+
+        // An object result takes the subject's links on its envelope, without disturbing its own fields.
+        let envelope = with_subject(json!({ "fileCount": 12 }), ("pipelineId", "p-1"), links.clone());
+        assert_eq!(envelope["links"], links);
+        assert_eq!(envelope["fileCount"], json!(12));
+
+        // A row that already resolved its own links keeps them: the rows know better than the caller.
+        let own = json!({ "runId": "run-1", "links": { "page": "/runs/run-1" } });
+        assert_eq!(with_subject(own.clone(), ("pipelineId", "p-1"), links), own);
     }
 
     #[test]
