@@ -1,6 +1,5 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { CopyButton } from "./CopyButton";
+import { RichTooltip } from "./RichTooltip";
 import { TruncatedText } from "./TruncatedText";
 
 interface ConnectionRefProps {
@@ -63,22 +62,14 @@ export function ConnectionRef({ value, maxWidth = 200, placeholder = "-", copyTe
   return (
     <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 py-0.5 pr-0.5 pl-2 align-bottom text-[11px]">
       <span className="font-medium uppercase tracking-wide text-muted-foreground">{parsed.label}</span>
-      <Tooltip delayDuration={400}>
-        <TooltipTrigger asChild>
-          <span
-            className={cn(
-              "inline-block max-w-full overflow-hidden text-ellipsis whitespace-nowrap align-bottom",
-              "font-mono text-[11px] text-foreground",
-            )}
-            style={{ maxWidth }}
-          >
-            {parsed.display}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="start" className="max-w-lg break-all font-mono">
-          {value}
-        </TooltipContent>
-      </Tooltip>
+      <RichTooltip body={value} title="Reference" mono>
+        <span
+          className="inline-block max-w-full overflow-hidden text-ellipsis whitespace-nowrap align-bottom font-mono text-[11px] text-foreground"
+          style={{ maxWidth }}
+        >
+          {parsed.display}
+        </span>
+      </RichTooltip>
       <CopyButton iconOnly label="Copy reference" text={value} testId={copyTestId ?? "copy-connection-ref"} />
     </span>
   );

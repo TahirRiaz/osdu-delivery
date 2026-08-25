@@ -275,6 +275,44 @@ JetBrains Mono, no shadows, border hairline. YAML/SQL always in `CodeView`, neve
 delta with icon + success/destructive text, optional sparkline in slot-1 blue. Charts follow section
 3.4 and the dataviz skill's rules (form first, hover tooltips, legends for 2+ series, one axis).
 
+### 7.8 Tooltips, and the reference components
+
+Two tooltip surfaces, one component (`ui/tooltip.tsx`, `variant`):
+
+- **`chip`** (default): the inverted micro-label with an arrow, for a word or two. Every icon-only button
+  wears one (section 10). Unchanged from shadcn.
+- **`panel`**: a popover-surfaced card for a value too long or too structured for a pill. Wraps, preserves
+  line breaks, left-aligns, optional 11px uppercase caption, no arrow. Reach for it through `RichTooltip`,
+  never by hand: it sets `disableHoverableContent` and `pointer-events-none`, without which a panel opened
+  over a dense grid stays up after the pointer leaves and swallows the hovers of the rows it covers.
+
+A panel is display only. A Radix tooltip closes when the pointer leaves its trigger, so a button inside one
+could never be clicked: **actions live in the cell beside the trigger**, which is what the reference
+components below do. This is the same reasoning as 7.4a, and its opposite conclusion for the trace log
+stands: a hover reveal is right on a bounded grid of tens of rows, wrong on a scrolling log of thousands,
+where detail stays click-only.
+
+**Truncate at a pixel cap, never at the column.** Table cells are `whitespace-nowrap` on an auto layout, so
+an uncapped cell does not clip: it widens the table until the columns to its right leave the viewport. Every
+free-text cell therefore renders through a reference component, each of which caps its own width and reveals
+the full value in a panel:
+
+| Component | Shows | Reveals | Copies |
+|---|---|---|---|
+| `TruncatedText` | the value, clipped at `maxWidth` | on hover, when actually clipped | opt-in (`copy`) |
+| `PathRef` | the file name only | the whole path | always |
+| `ConnectionRef` | the `${env:}`/`${keyvault:}` identifier | the whole reference | always |
+| `LinkRef` | an open-in-new-tab glyph | the whole URL | always |
+
+`TruncatedText` attaches its panel only when the value is genuinely clipped, is multi-line, or was given a
+`title`. A short value already fully on screen gets no hover at all, so dragging a pointer across a table
+does not trail panels repeating text the reader can already see.
+
+`LinkRef` is the only way to render a location. A location is free text and is as often a UNC path or a
+share as a URL, so only `http(s)` becomes an anchor; anything else gets a muted `Link2Off` glyph and its
+copy button, never a link that silently does nothing when clicked. Its `icon` variant keeps a Location
+column two glyphs wide whatever the value; `inline` adds the clipped URL for a detail row with the room.
+
 ## 8. Feedback rules (non-negotiable)
 
 The old GUI's central failure was silence. These rules bind every feature:

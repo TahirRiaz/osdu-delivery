@@ -16,10 +16,11 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { EmptyState } from "../../components/EmptyState";
 import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { LineageJumpButton } from "../../components/LineageJumpButton";
-import { Mono } from "../../components/Mono";
+import { LinkRef } from "../../components/LinkRef";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
-import { isFollowable, SubscriberDetails } from "./SubscriberDetails";
+import { TruncatedText } from "../../components/TruncatedText";
+import { SubscriberDetails } from "./SubscriberDetails";
 
 /** Local debounce for the free-text filter: the list re-queries 400ms after the user stops typing. */
 function useDebounced(value: string, delayMs: number): string {
@@ -31,6 +32,11 @@ function useDebounced(value: string, delayMs: number): string {
   return debounced;
 }
 
+// Every free-text column is capped in pixels, because the table cells are `whitespace-nowrap` on an auto
+// layout: one uncapped 200-character report URL makes the table wider than the editor and pushes the counts
+// off-screen entirely, which is what this grid used to do. The caps are sized so all nine columns fit a
+// workbench window without horizontal scroll, and nothing is lost by clipping: every capped cell reveals its
+// full value in a hover panel and, where the exact string matters, hands it over with a copy button.
 const subscriberColumns: Column<Subscriber>[] = [
   {
     id: "name",
@@ -38,65 +44,60 @@ const subscriberColumns: Column<Subscriber>[] = [
     render: (row) => (
       <span className="flex min-w-0 items-center gap-1.5">
         <MonitorPlay className="size-4 shrink-0 text-muted-foreground" />
-        <span className="truncate text-[13px] font-medium">{row.name}</span>
+        <TruncatedText text={row.name} maxWidth={185} className="text-[13px] font-medium" />
       </span>
     ),
+    width: 220,
   },
-  { id: "type", header: "Type", render: (row) => <Badge variant="secondary">{row.type}</Badge>, width: 130 },
-  { id: "owner", header: "Owner", render: (row) => (row.owner === null ? "-" : <Mono>{row.owner}</Mono>) },
+  { id: "type", header: "Type", render: (row) => <Badge variant="secondary">{row.type}</Badge>, width: 92 },
+  {
+    id: "owner",
+    header: "Owner",
+    render: (row) => <TruncatedText text={row.owner} mono maxWidth={126} />,
+    width: 150,
+  },
+  // Description and notes say different things (what the report is FOR, versus what someone found wrong with
+  // it), so both stay visible. Description takes the slack, since it is the one a reader scans by.
   {
     id: "description",
     header: "Description",
     render: (row) => (
-      <span className="text-[13px] text-muted-foreground">{row.description ?? "-"}</span>
+      <TruncatedText text={row.description} maxWidth={230} title="Description" className="text-muted-foreground" />
     ),
   },
   {
     id: "notes",
     header: "Notes",
-    // One line in the list, in full on the row's title: a note is often several sentences, and letting it wrap
-    // would push every other column off the useful part of the table.
     render: (row) => (
-      <span className="block truncate text-[13px] text-muted-foreground" title={row.notes ?? undefined}>
-        {row.notes ?? "-"}
-      </span>
+      <TruncatedText text={row.notes} maxWidth={140} title="Notes" className="text-muted-foreground" />
     ),
+    width: 164,
   },
   {
     id: "url",
     header: "Location",
-    // Where the report lives, so the list answers "open it" as well as "what does it read".
-    render: (row) => (
-      row.url === null ? <span className="text-[13px] text-muted-foreground">-</span>
-        : isFollowable(row.url) ? (
-          <a
-            href={row.url}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(event) => event.stopPropagation()}
-            className="block truncate text-[13px] text-primary hover:underline"
-            title={row.url}
-          >
-            {row.url}
-          </a>
-        ) : <span className="block truncate font-mono text-[12px]" title={row.url}>{row.url}</span>
-    ),
+    // Where the report lives, so the list answers "open it" as well as "what does it read". A report URL is a
+    // couple of hundred characters of workspace and report GUIDs that nobody reads, so the cell carries the two
+    // things anyone actually does with it, follow and copy, and the string itself lives in the hover panel.
+    render: (row) => <LinkRef url={row.url} testId="subscriber-location" />,
+    align: "center",
+    width: 88,
   },
+  // The unit lives in the header, not in every row: "4" under "Reads" says as much as "4 objects" and leaves
+  // the width to the columns that carry text.
   {
     id: "objects",
     header: "Reads",
     align: "right",
-    render: (row) => (
-      <span className="tabular-nums">{`${row.objectCount} object${row.objectCount === 1 ? "" : "s"}`}</span>
-    ),
-    width: 110,
+    render: (row) => <span className="tabular-nums">{row.objectCount}</span>,
+    width: 74,
   },
   {
     id: "queries",
     header: "Queries",
     align: "right",
     render: (row) => <span className="tabular-nums">{row.queryCount}</span>,
-    width: 90,
+    width: 82,
   },
   {
     id: "lineage",
@@ -105,9 +106,9 @@ const subscriberColumns: Column<Subscriber>[] = [
     // Jumps straight into the lineage graph seeded on this subscriber: what it reads, and (one hop further) the
     // flow that populates each of those tables, without first opening the drawer.
     render: (row) => (
-      <LineageJumpButton target={{ kind: "subscriber", subscriberKey: row.key, label: row.name }} />
+      <LineageJumpButton target={{ kind: "subscriber", subscriberKey: row.key, label: row.name }} iconOnly />
     ),
-    width: 100,
+    width: 56,
   },
 ];
 

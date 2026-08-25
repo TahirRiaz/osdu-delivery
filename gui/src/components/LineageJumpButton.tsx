@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -88,12 +89,15 @@ function JumpOption({
  * is never a surprise. Selecting an option deep-links the graph focused on that node.
  */
 export function LineageJumpButton({
-  target, variant = "text", fullLabel = false,
+  target, variant = "text", fullLabel = false, iconOnly = false,
 }: {
   target: LineageJumpTarget;
   variant?: "text" | "outlined";
   /** When true, the trigger reads "View lineage"; otherwise the compact "Lineage" for dense rows. */
   fullLabel?: boolean;
+  /** Drop the word entirely, for a grid dense enough that a secondary row action can only afford its glyph.
+   * The label moves to the tooltip, which the aria-label already carried for assistive tech. */
+  iconOnly?: boolean;
 }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -126,20 +130,29 @@ export function LineageJumpButton({
   const objectRepos = target.kind === "object" ? (repos.data ?? []) : [];
   const multi = objectRepos.length > 1;
 
+  const trigger = (
+    <Button
+      variant={variant === "outlined" ? "outline" : "ghost"}
+      size={iconOnly ? "icon-xs" : "sm"}
+      aria-label="View in lineage graph"
+      data-testid="search-open-graph"
+      onClick={(event) => event.stopPropagation()}
+      className="shrink-0 whitespace-nowrap"
+    >
+      <Network />
+      {!iconOnly && (fullLabel ? "View lineage" : "Lineage")}
+    </Button>
+  );
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant={variant === "outlined" ? "outline" : "ghost"}
-          size="sm"
-          aria-label="View in lineage graph"
-          data-testid="search-open-graph"
-          onClick={(event) => event.stopPropagation()}
-          className="shrink-0 whitespace-nowrap"
-        >
-          <Network />
-          {fullLabel ? "View lineage" : "Lineage"}
-        </Button>
+        {iconOnly ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+            <TooltipContent>View in lineage graph</TooltipContent>
+          </Tooltip>
+        ) : trigger}
       </DropdownMenuTrigger>
 
       <DropdownMenuContent
