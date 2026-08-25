@@ -1,5 +1,6 @@
 using System.Globalization;
 using SqlFlow.Core;
+using SqlFlow.Core.Ingestion;
 using SqlFlow.SourceControl;
 using SqlFlow.Yaml;
 using Xunit;
@@ -477,6 +478,48 @@ public sealed class SourceControlEdgeCaseTests : IDisposable
 
         Assert.Equal(["Table", "View"], doc.Flow.Scripting.IncludeTypes);
         Assert.Equal(["SecurityPolicy"], doc.Flow.Scripting.ExcludeTypes);
+    }
+
+    // --- Loader: excluded schemas --------------------------------------------------------------
+
+    [Fact]
+    public void Parse_WithNoScriptingBlock_ExcludesTheEngineStagingSchema()
+    {
+        // The staging schema holds per-flow work tables that every run rebuilds and drops, so a snapshot that
+        // versioned them would churn on objects that are not part of the database's definition, and a table
+        // dropped mid-walk would fail the run.
+        var doc = EdgeLoader().Parse(EdgeDocument());
+
+        Assert.Equal([StagingConventions.SchemaName], doc.Flow.Scripting.ExcludeSchemas);
+    }
+
+    [Fact]
+    public void Parse_ExcludeSchemas_ReplacesTheDefault_AndNormalizesEachName()
+    {
+        var doc = EdgeLoader().Parse(EdgeDocument("""
+            scripting:
+              excludeSchemas:
+                - "[work]"
+                - "  scratch  "
+                - "   "
+                - WORK
+            """));
+
+        // Brackets stripped, blanks dropped, duplicates removed case-insensitively, and the staging default gone
+        // because the flow named its own list.
+        Assert.Equal(["work", "scratch"], doc.Flow.Scripting.ExcludeSchemas);
+    }
+
+    [Fact]
+    public void Parse_EmptyExcludeSchemas_ScriptsEverySchema()
+    {
+        // An explicitly empty list is the way to ask for the staging schema to be versioned after all.
+        var doc = EdgeLoader().Parse(EdgeDocument("""
+            scripting:
+              excludeSchemas: []
+            """));
+
+        Assert.Empty(doc.Flow.Scripting.ExcludeSchemas);
     }
 
     // --- Loader: data-table normalization ------------------------------------------------------

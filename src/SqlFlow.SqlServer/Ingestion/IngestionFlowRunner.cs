@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SqlFlow.Core;
@@ -99,8 +99,10 @@ public sealed record IngestionRunResult
 public sealed class IngestionFlowRunner
 {
     /// <summary>The schema hosting every flow's canonical staging and match-key work tables. The schema itself
-    /// marks its tables as staging, so the staging name carries no stg prefix.</summary>
-    public const string StagingSchemaName = "raw";
+    /// marks its tables as staging, so the staging name carries no stg prefix. The name lives in
+    /// <see cref="StagingConventions"/> so everything that must recognize an engine work table (the
+    /// source-control scripter skipping them, for one) reads the same value.</summary>
+    public const string StagingSchemaName = StagingConventions.SchemaName;
 
     // SQL Server's identifier length cap (sysname), which the composed work-table name must respect.
     private const int MaxIdentifierLength = 128;

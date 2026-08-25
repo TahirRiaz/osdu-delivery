@@ -1,5 +1,6 @@
 using LibGit2Sharp;
 using SqlFlow.Core.Connections;
+using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.SourceControl;
 using SqlFlow.SourceControl;
 using Xunit;
@@ -107,6 +108,64 @@ public sealed class SourceControlIntegrationTests : IDisposable
             await IntegrationDb.ExecuteAsync(cs, $"DROP VIEW IF EXISTS [dbo].[{view}];");
             await IntegrationDb.ExecuteAsync(cs, $"DROP PROCEDURE IF EXISTS [dbo].[{proc}];");
             await IntegrationDb.ExecuteAsync(cs, $"DROP TABLE IF EXISTS [dbo].[{table}];");
+        }
+    }
+
+    [SkippableFact]
+    public async Task StagingSchema_IsSkipped_UnlessTheFlowAsksForIt()
+    {
+        var cs = IntegrationDb.Require();
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var work = $"SCM_W_{tag}";
+        var kept = $"SCM_K_{tag}";
+        var staging = StagingConventions.SchemaName;
+        var database = await IntegrationDb.ScalarAsync<string>(cs, "SELECT DB_NAME();") ?? "master";
+
+        await IntegrationDb.ExecuteAsync(cs, $"IF SCHEMA_ID(N'{staging}') IS NULL EXEC(N'CREATE SCHEMA [{staging}]');");
+        await IntegrationDb.ExecuteAsync(cs, $"CREATE TABLE [{staging}].[{work}] (Id int NOT NULL, Payload nvarchar(50) NULL);");
+        await IntegrationDb.ExecuteAsync(cs, $"CREATE TABLE [dbo].[{kept}] (Id int NOT NULL);");
+
+        var envName = $"SQLFLOW_SCM_IT_{tag}";
+        Environment.SetEnvironmentVariable(envName, cs);
+
+        try
+        {
+            var connection = new DataSource
+            {
+                Alias = "DW",
+                Kind = DataSourceKind.MSSQL,
+                ConnectionRef = "${env:" + envName + "}",
+                Credential = new CredentialProfile { Mode = CredentialMode.InlineConnectionString },
+            };
+            var service = WithoutDatabaseSourceControl.BuildService([connection]);
+
+            SourceControlFlow Flow(SourceControlScripting scripting) => new()
+            {
+                FlowId = 2,
+                SysAlias = "scm-it-staging",
+                Server = "DW",
+                Repository = new SourceControlRepository { WorkingDirectory = _dir, AuthorName = "IT", AuthorEmail = "it@test.local" },
+                Scripting = scripting,
+            };
+
+            // The default: the engine's staging schema is not part of the database's tracked definition, so its
+            // work tables (and the schema itself) never reach the snapshot, while dbo is scripted as usual.
+            var defaults = await service.RunAsync(Flow(new SourceControlScripting { IncludeTypes = ["Schema", "Table"] }));
+            Assert.True(defaults.Success, defaults.Error);
+            Assert.False(File.Exists(Path.Combine(_dir, database, "Table", $"{staging}.{work}.sql")), "a staging work table was scripted");
+            Assert.False(File.Exists(Path.Combine(_dir, database, "Schema", $"{staging}.sql")), "the staging schema itself was scripted");
+            Assert.True(File.Exists(Path.Combine(_dir, database, "Table", $"dbo.{kept}.sql")), "the ordinary table was not scripted");
+
+            // An explicitly empty exclusion list opts back in, which is the only way to get them.
+            var everything = await service.RunAsync(Flow(new SourceControlScripting { IncludeTypes = ["Schema", "Table"], ExcludeSchemas = [] }));
+            Assert.True(everything.Success, everything.Error);
+            Assert.True(File.Exists(Path.Combine(_dir, database, "Table", $"{staging}.{work}.sql")), "an opted-in staging table was still skipped");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(envName, null);
+            await IntegrationDb.ExecuteAsync(cs, $"DROP TABLE IF EXISTS [{staging}].[{work}];");
+            await IntegrationDb.ExecuteAsync(cs, $"DROP TABLE IF EXISTS [dbo].[{kept}];");
         }
     }
 

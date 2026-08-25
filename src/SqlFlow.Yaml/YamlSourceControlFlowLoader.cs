@@ -156,12 +156,44 @@ public sealed class YamlSourceControlFlowLoader
         var include = ValidateTypes(y.Include, "scripting.include", source);
         var exclude = ValidateTypes(y.Exclude, "scripting.exclude", source);
 
-        return new SourceControlScripting
+        var scripting = new SourceControlScripting
         {
             DataTables = dataTables,
             IncludeTypes = include,
             ExcludeTypes = exclude,
         };
+
+        // An absent 'excludeSchemas' keeps the record's default (the engine's staging schema); an authored one
+        // replaces it outright, including an explicitly empty list, which is how a flow asks for the staging
+        // schema to be versioned after all.
+        return y.ExcludeSchemas is null
+            ? scripting
+            : scripting with { ExcludeSchemas = NormalizeSchemas(y.ExcludeSchemas) };
+    }
+
+    /// <summary>Normalizes the excluded-schema list: blanks dropped, each name trimmed and unbracketed, and
+    /// duplicates removed case-insensitively (the scripter compares schema names case-insensitively too).</summary>
+    private static IReadOnlyList<string> NormalizeSchemas(List<string> items)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>(items.Count);
+        foreach (var raw in items)
+        {
+            var value = YamlDocumentParts.NullIfBlank(raw);
+            if (value is null)
+            {
+                continue;
+            }
+
+            // A bracketed [raw] is the same schema as raw; strip a single surrounding pair, as data tables do.
+            var name = SplitQualifiedName(value)[^1];
+            if (name.Length > 0 && seen.Add(name))
+            {
+                result.Add(name);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Normalizes each data-table entry to a canonical <c>schema.table</c> form (the rightmost two
@@ -321,5 +353,6 @@ public sealed class YamlSourceControlFlowLoader
         public List<string>? Data { get; set; }
         public List<string>? Include { get; set; }
         public List<string>? Exclude { get; set; }
+        public List<string>? ExcludeSchemas { get; set; }
     }
 }

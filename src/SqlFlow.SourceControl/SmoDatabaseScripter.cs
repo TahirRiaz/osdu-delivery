@@ -14,8 +14,10 @@ namespace SqlFlow.SourceControl;
 /// category (<see cref="SourceControlObjectTypes"/>) is enumerated and each object emitted as a CREATE script
 /// into the legacy per-type folder layout (<c>&lt;database&gt;/&lt;category&gt;/&lt;schema&gt;.&lt;name&gt;.sql</c>).
 /// Output is made deterministic (objects sorted, line endings normalized) so an unchanged database re-scripts to
-/// byte-identical files and only real changes surface as git diffs. SMO runs sequentially against one server
-/// connection, so the thread-safety concern that keeps SMO out of the parallel lineage harvester does not apply.
+/// byte-identical files and only real changes surface as git diffs. Schemas the flow excludes (the engine's own
+/// staging schema by default) are skipped whole, so a snapshot tracks the database's definition and not the work
+/// tables a run happened to be holding. SMO runs sequentially against one server connection, so the
+/// thread-safety concern that keeps SMO out of the parallel lineage harvester does not apply.
 /// </summary>
 public sealed class SmoDatabaseScripter : IDatabaseScripter
 {
@@ -102,6 +104,9 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
                     $"Database '{databaseName}' was not found on the server, or the login cannot access it.");
 
             var categories = SelectedCategories(scripting);
+            var excludedSchemas = new HashSet<string>(
+                scripting.ExcludeSchemas.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()),
+                StringComparer.OrdinalIgnoreCase);
             var dataTables = new HashSet<string>(scripting.DataTables, StringComparer.OrdinalIgnoreCase);
 
             var objects = new List<ScriptedObject>();
@@ -111,12 +116,14 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
             foreach (var (folder, select) in categories)
             {
                 ct.ThrowIfCancellationRequested();
-                ScriptCategory(folder, select(db), scripter, databaseName, objects, warnings, progress, ct);
+                ScriptCategory(
+                    folder, select(db), excludedSchemas, scripter, databaseName, objects, warnings,
+                    () => serverConnection.IsOpen, progress, ct);
             }
 
             if (dataTables.Count > 0)
             {
-                ScriptData(db, dataTables, server, databaseName, objects, warnings, progress);
+                ScriptData(db, dataTables, excludedSchemas, server, databaseName, objects, warnings, progress);
             }
 
             // A stable, total order so the manifest and any diff of it are deterministic.
@@ -140,11 +147,13 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
     private const int ProgressEvery = 100;
 
     private static void ScriptCategory(
-        string folder, IEnumerable<NamedSmoObject> source, Scripter scripter, string databaseName,
-        List<ScriptedObject> objects, List<string> warnings, Action<ScriptProgress>? progress, CancellationToken ct)
+        string folder, IEnumerable<NamedSmoObject> source, HashSet<string> excludedSchemas, Scripter scripter,
+        string databaseName, List<ScriptedObject> objects, List<string> warnings, Func<bool> connectionIsOpen,
+        Action<ScriptProgress>? progress, CancellationToken ct)
     {
         // Materialize and order before scripting so the file set is identical run to run.
         var ordered = source
+            .Where(o => !IsInExcludedSchema(o, excludedSchemas))
             .OrderBy(o => o is ScriptSchemaObjectBase s ? s.Schema : string.Empty, StringComparer.Ordinal)
             .ThenBy(o => o.Name, StringComparer.Ordinal)
             .ToList();
@@ -170,8 +179,21 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
 
                 objects.Add(BuildObject(folder, schema, obj.Name, databaseName, sql));
             }
-            catch (Exception ex) when (ex is SmoException or SqlException)
+            catch (Exception ex) when (ex is SmoException or SqlException or ExecutionFailureException)
             {
+                // One object that cannot be scripted is a warning, not a failed snapshot, and the commonest cause
+                // is an object enumerated and then dropped by whoever owns it, which SMO reports as "Invalid
+                // object name". A lost connection raises the same exception for every remaining object, though,
+                // and scripting nothing would commit the whole database as deleted, so the connection is checked
+                // before the walk is allowed to continue.
+                if (!connectionIsOpen())
+                {
+                    throw new SqlFlowException(
+                        $"The connection to the scripted database was lost while scripting {folder} {Label(schema, obj.Name)}; " +
+                        "the snapshot is abandoned rather than committed with every object it never read.",
+                        ex);
+                }
+
                 var warning = $"{folder} {Label(schema, obj.Name)}: not scripted ({ex.Message}).";
                 warnings.Add(warning);
                 progress?.Invoke(new ScriptProgress { Category = folder, Scripted = done, Total = ordered.Count, Message = warning });
@@ -188,7 +210,7 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
     }
 
     private void ScriptData(
-        Database db, HashSet<string> dataTables, Server server, string databaseName,
+        Database db, HashSet<string> dataTables, HashSet<string> excludedSchemas, Server server, string databaseName,
         List<ScriptedObject> objects, List<string> warnings, Action<ScriptProgress>? progress)
     {
         var dataScripter = new Scripter(server) { Options = _dataOptions };
@@ -198,6 +220,14 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
             var key = $"{table.Schema}.{table.Name}";
             if (!dataTables.Contains(key))
             {
+                continue;
+            }
+
+            // An excluded schema is excluded outright: naming one of its tables under scripting.data would
+            // otherwise version the rows of a table whose definition the same run just refused to script.
+            if (excludedSchemas.Contains(table.Schema))
+            {
+                warnings.Add($"scripting.data names '{key}', which is in the excluded schema '{table.Schema}'; skipped.");
                 continue;
             }
 
@@ -282,6 +312,25 @@ public sealed class SmoDatabaseScripter : IDatabaseScripter
             => (include.Count == 0 || include.Contains(folder)) && !exclude.Contains(folder);
 
         return Categories.Where(c => Wanted(c.Folder)).ToList();
+    }
+
+    /// <summary>True when the object belongs to a schema the flow excludes. A schema object is judged by its own
+    /// name, so excluding a schema also keeps its CREATE SCHEMA script out of the snapshot; every other category
+    /// is judged by the schema it is qualified with. An object that belongs to no schema (a database DDL trigger)
+    /// is never excluded this way.</summary>
+    private static bool IsInExcludedSchema(NamedSmoObject obj, HashSet<string> excludedSchemas)
+    {
+        if (excludedSchemas.Count == 0)
+        {
+            return false;
+        }
+
+        return obj switch
+        {
+            Schema schema => excludedSchemas.Contains(schema.Name),
+            ScriptSchemaObjectBase qualified => excludedSchemas.Contains(qualified.Schema),
+            _ => false,
+        };
     }
 
     private static readonly (string Folder, Func<Database, IEnumerable<NamedSmoObject>> Select)[] Categories =

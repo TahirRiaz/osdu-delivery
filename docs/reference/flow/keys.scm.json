@@ -4,7 +4,7 @@
   "flowType": "scm",
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 30,
+  "keyCount": 32,
   "keys": [
     {
       "path": "batch",
@@ -175,8 +175,8 @@
       "path": "scripting",
       "type": "object",
       "required": false,
-      "default": "new SourceControlScripting() - every category in SourceControlObjectTypes.All scripted schema-only, no include/exclude filter, no table row data",
-      "description": "Optional block controlling what the SMO scripter captures: the object-category allowlist/denylist and which tables' row data to include. Binds to SourceControlScriptingYaml { Data, Include, Exclude } and is mapped, with validation, to SqlFlow.Core.SourceControl.SourceControlScripting by MapScripting; an absent block still produces the all-categories, schema-only default rather than skipping scripting entirely (src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:147-164).",
+      "default": "new SourceControlScripting() - every category in SourceControlObjectTypes.All scripted schema-only, no include/exclude filter, no table row data, and the engine staging schema excluded (SourceControlObjectTypes.DefaultExcludedSchemas)",
+      "description": "Optional block controlling what the SMO scripter captures: the object-category allowlist/denylist, the schemas skipped whole, and which tables' row data to include. Binds to SourceControlScriptingYaml { Data, Include, Exclude, ExcludeSchemas } and is mapped, with validation, to SqlFlow.Core.SourceControl.SourceControlScripting by MapScripting; an absent block still produces the all-categories, schema-only default (with the staging schema excluded) rather than skipping scripting entirely (src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:148-172).",
       "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:290 (mapped at line 84)"
     },
     {
@@ -231,6 +231,22 @@
       ],
       "description": "One object category to exclude, compared case-insensitively (but not trimmed) against SourceControlObjectTypes.All; the entry's original casing is preserved when it round-trips onto SourceControlScripting.ExcludeTypes (only the membership check is case-insensitive) - only 'membership' is folded, matching how the scripter itself re-wraps the list case-insensitively (SmoDatabaseScripter.SelectedCategories, src/SqlFlow.SourceControl/SmoDatabaseScripter.cs:239-240). The 'Schema' category additionally excludes well-known system schemas at scripting time regardless of this filter (dbo, sys, INFORMATION_SCHEMA, guest, and the fixed database roles: SmoDatabaseScripter.cs:250, 271-276, 278), and 'Table'/'View'/'StoredProcedure'/'UserDefinedFunction' each exclude system objects of their own kind (SmoDatabaseScripter.cs:257-260).",
       "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:321; enum source: src/SqlFlow.Core/SourceControl/SourceControlObjectTypes.cs:17-37"
+    },
+    {
+      "path": "scripting.excludeSchemas",
+      "type": "list<string>",
+      "required": false,
+      "default": "[\"raw\"] - SourceControlObjectTypes.DefaultExcludedSchemas, the engine staging schema (StagingConventions.SchemaName, src/SqlFlow.Core/Ingestion/StagingConventions.cs)",
+      "description": "Schemas skipped whole: the CREATE SCHEMA script itself and every schema-qualified object in them, applied before the category walk and independently of scripting.include/exclude (SmoDatabaseScripter.IsInExcludedSchema, src/SqlFlow.SourceControl/SmoDatabaseScripter.cs:321-336, applied at line 156). Maps to SourceControlScripting.ExcludeSchemas (src/SqlFlow.Core/SourceControl/SourceControlFlow.cs:100-108). The default exists because the staging schema holds each flow's canonical work tables ([raw].[<targetSchema>_<targetTable>_<flowId>], IngestionFlowRunner.StagingSchemaName), which every run rebuilds and drops: versioning them is churn over objects that are not part of the database's definition, and one dropped between SMO enumerating it and scripting it fails the run with \"Invalid object name 'raw.<table>'\". An authored list REPLACES the default rather than adding to it; an explicitly empty list (excludeSchemas: []) scripts every schema, including staging (src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:167-171). A table named by scripting.data that sits in an excluded schema is skipped with the warning \"scripting.data names '<schema>.<table>', which is in the excluded schema '<schema>'; skipped.\" (SmoDatabaseScripter.ScriptData).",
+      "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:356 (List<string>? ExcludeSchemas, mapped at 167-171)",
+      "validation": "No membership check: any name is accepted, since a schema is whatever the target database calls it. Blank entries are dropped, each remaining entry is trimmed and stripped of a single surrounding bracket pair (SplitQualifiedName, so [raw] equals raw), and duplicates are removed case-insensitively with the first spelling kept (NormalizeSchemas, src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:176-197). The scripter compares schema names with StringComparer.OrdinalIgnoreCase and trims again defensively (SmoDatabaseScripter.cs:107-109)."
+    },
+    {
+      "path": "scripting.excludeSchemas[]",
+      "type": "string",
+      "required": false,
+      "description": "One schema name to skip, matched case-insensitively against the object's schema (and, for the Schema category, against the schema's own name, so excluding a schema also keeps its CREATE SCHEMA out of the snapshot). An object that belongs to no schema (a database DDL trigger) is never excluded this way. System schemas are already excluded from the Schema category regardless of this list (dbo, sys, INFORMATION_SCHEMA, guest, and the fixed database roles), so naming one here only affects that schema's objects.",
+      "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:356; default value: src/SqlFlow.Core/SourceControl/SourceControlObjectTypes.cs:40-43"
     },
     {
       "path": "scripting.include",

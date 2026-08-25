@@ -84,10 +84,11 @@ This scripts the connection's default catalog into a local git repository at `./
 | `repository.secret` | string | no | null | A whole `${...}` reference to the git secret (BitBucket app password or GitHub token). Required when `remote` is set. Never a literal. |
 | `repository.author.name` | string | no | `SQLFlow` | Commit author/committer display name. |
 | `repository.author.email` | string | no | `sqlflow@localhost` | Commit author/committer email. |
-| `scripting` | map | no | all types, schema-only | What the scripter captures. |
+| `scripting` | map | no | all types, schema-only, staging schema skipped | What the scripter captures. |
 | `scripting.data` | list of string | no | `[]` | Tables whose row data is scripted as INSERTs, in addition to their schema. |
 | `scripting.include` | list of string | no | `[]` | If non-empty, only these object categories are scripted (allowlist). |
 | `scripting.exclude` | list of string | no | `[]` | Object categories to skip, applied after `include`. |
+| `scripting.excludeSchemas` | list of string | no | `[raw]` | Schemas skipped whole, the schema itself and every object in it. Defaults to the engine's staging schema. |
 
 Unmatched YAML keys are ignored (the loader is built with `IgnoreUnmatchedProperties`), so a typo in an optional key silently drops it; `sqlflow validate` confirms what actually parsed.
 
@@ -143,7 +144,7 @@ The references are resolved at run time, and only when a remote is set; local-on
 
 ## scripting
 
-Optional. With no `scripting` block every supported object category is scripted schema-only.
+Optional. With no `scripting` block every supported object category is scripted schema-only, except the engine's staging schema (see [scripting.excludeSchemas](#scriptingexcludeschemas)).
 
 ### scripting.include and scripting.exclude
 
@@ -156,6 +157,32 @@ Schema, UserDefinedDataType, UserDefinedType, XmlSchemaCollection, Sequence, Par
 An unknown entry fails at parse time: `'scripting.include' has unknown object type '<value>'. Allowed: <the list above>.` (Note the plural `Tables` is not a valid entry; the categories are singular.)
 
 `include` is an allowlist: when non-empty, only those categories are scripted. `exclude` is applied after `include` and removes categories. Blank entries in either list are skipped.
+
+### scripting.excludeSchemas
+
+Schemas the snapshot skips whole: the `CREATE SCHEMA` script itself, and every table, view, procedure, function, or other schema-qualified object in it. Names are compared case-insensitively, and each entry is trimmed and unbracketed (`[work]` is the same schema as `work`), blanks dropped, duplicates removed.
+
+It defaults to `raw`, the engine's own staging schema (`StagingConventions.SchemaName`, src/SqlFlow.Core/Ingestion/StagingConventions.cs). That schema holds each flow's canonical staging and match-key work tables (`[raw].[<targetSchema>_<targetTable>_<flowId>]`), which every run rebuilds and drops on success, so they are transient by construction and belong to no database's tracked definition. Versioning them would fill every snapshot with churn over objects nobody reviews, and a work table dropped between SMO enumerating it and scripting it fails the run outright with `Invalid object name 'raw.<table>'`.
+
+An authored list REPLACES the default rather than adding to it, so a flow that excludes its own scratch schema and still wants staging skipped must name both:
+
+```yaml
+scripting:
+  excludeSchemas:
+    - raw
+    - scratch
+```
+
+An explicitly empty list scripts every schema, including staging:
+
+```yaml
+scripting:
+  excludeSchemas: []
+```
+
+Excluding a schema also excludes it from `scripting.data`: naming one of its tables there is skipped with the warning `scripting.data names '<name>', which is in the excluded schema '<schema>'; skipped.` rather than versioning the rows of a table whose definition the same run refused to script.
+
+Two things this filter does not touch: system schemas (`dbo`, `sys`, `INFORMATION_SCHEMA`, `guest`, and the fixed database roles) are excluded from the `Schema` category regardless, and objects that belong to no schema at all (a database DDL trigger) are never excluded this way.
 
 ### scripting.data
 
@@ -175,7 +202,7 @@ One folder per object type, one file per object, under a folder named for the re
 <database>/<category>/<schema>.<name>.sql
 ```
 
-Objects without a schema (for example a database DDL trigger) use just `<name>.sql`. Row data from `scripting.data` lands under the distinct `Data` folder, kept separate from the schema-only `Table` folder so a data snapshot never collides with the table definition. System objects and system schemas are excluded.
+Objects without a schema (for example a database DDL trigger) use just `<name>.sql`. Row data from `scripting.data` lands under the distinct `Data` folder, kept separate from the schema-only `Table` folder so a data snapshot never collides with the table definition. System objects and system schemas are excluded, as are the schemas named by `scripting.excludeSchemas` (the engine's staging schema by default).
 
 Schema scripts carry full DRI, indexes, triggers, full-text indexes, and extended properties, with no drops, permissions, owners, or statistics, and no headers, so diffs stay clean. Each SMO batch is terminated with `GO`.
 
@@ -191,7 +218,7 @@ Schema scripts carry full DRI, indexes, triggers, full-text indexes, and extende
 
 Operational failures return a failed `SourceControlResult` (`Success=false`, with the error message redacted of secrets) rather than throwing, so the run still writes its artifact.
 
-The result records `RunId`, `DatabaseName`, `WorkingDirectory`, `Remote`, `Branch`, `DryRun`, `ObjectsScripted`, the `Added`/`Changed`/`Deleted`/`Unchanged` counts, `Committed`, `CommitSha`, `Pushed`, every scripted object's relative path, scripter warnings (an individual object that fails to script becomes a warning, not a failure), and `DurationSeconds`.
+The result records `RunId`, `DatabaseName`, `WorkingDirectory`, `Remote`, `Branch`, `DryRun`, `ObjectsScripted`, the `Added`/`Changed`/`Deleted`/`Unchanged` counts, `Committed`, `CommitSha`, `Pushed`, every scripted object's relative path, scripter warnings (an individual object that fails to script becomes a warning, not a failure: the commonest cause is an object enumerated and then dropped by whoever owns it, which SMO reports as `Invalid object name`), and `DurationSeconds`. The one exception is a lost connection, which would otherwise turn every remaining object into a warning and commit the whole database as deleted: the server connection is checked whenever an object fails, and a closed one abandons the snapshot instead.
 
 ## Catalog, scheduling, and lineage
 

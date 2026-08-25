@@ -1,4 +1,4 @@
-namespace SqlFlow.Core.SourceControl;
+﻿namespace SqlFlow.Core.SourceControl;
 
 /// <summary>
 /// The canonical set of database object categories the source-control scripter captures, in dependency-friendly
@@ -36,6 +36,11 @@ public static class SourceControlObjectTypes
         "FullTextCatalog",
         "SecurityPolicy",
     ];
+
+    /// <summary>The schemas a snapshot skips unless the flow says otherwise: the engine's staging schema
+    /// (<see cref="Ingestion.StagingConventions.SchemaName"/>), whose per-flow work tables are rebuilt and
+    /// dropped by every run and so belong to no database's tracked definition.</summary>
+    public static IReadOnlyList<string> DefaultExcludedSchemas { get; } = [Ingestion.StagingConventions.SchemaName];
 
     private static readonly HashSet<string> Known = new(All, StringComparer.OrdinalIgnoreCase);
 

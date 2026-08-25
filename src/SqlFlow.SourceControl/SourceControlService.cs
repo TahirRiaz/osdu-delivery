@@ -215,7 +215,10 @@ public sealed class SourceControlService
         var data = scripting.DataTables.Count > 0
             ? $", plus row data for {Count(scripting.DataTables.Count)} table(s)"
             : string.Empty;
-        return categories + excluded + data;
+        var schemas = scripting.ExcludeSchemas.Count > 0
+            ? $", skipping schema {string.Join(", ", scripting.ExcludeSchemas)}"
+            : string.Empty;
+        return categories + excluded + data + schemas;
     }
 
     private static string BuildCommitMessage(string flowName, ScriptedDatabase scripted, SnapshotWriteResult write)

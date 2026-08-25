@@ -79,7 +79,8 @@ public sealed record SourceControlRepository
 
 /// <summary>
 /// What the scripter captures. By default every supported object category (<see cref="SourceControlObjectTypes"/>)
-/// is scripted schema-only; <see cref="IncludeTypes"/>/<see cref="ExcludeTypes"/> narrow that, and
+/// is scripted schema-only, except the engine's own staging schema (<see cref="ExcludeSchemas"/>);
+/// <see cref="IncludeTypes"/>/<see cref="ExcludeTypes"/> narrow the categories, and
 /// <see cref="DataTables"/> additionally scripts the row data of the named tables (the legacy
 /// <c>ScriptDataForTables</c>), as INSERT statements, for reference/seed tables worth versioning.
 /// </summary>
@@ -95,4 +96,14 @@ public sealed record SourceControlScripting
 
     /// <summary>Object categories to skip, applied after <see cref="IncludeTypes"/>.</summary>
     public IReadOnlyList<string> ExcludeTypes { get; init; } = [];
+
+    /// <summary>
+    /// Schemas whose objects are not scripted at all (the schema itself, and every table, view, procedure, or
+    /// other schema-qualified object in it), compared case-insensitively. Defaults to
+    /// <see cref="SourceControlObjectTypes.DefaultExcludedSchemas"/>, the engine's staging schema: its tables
+    /// are per-flow work tables that each run rebuilds and drops, so versioning them would fill every snapshot
+    /// with churn over objects that are not part of the database's definition, and a table dropped mid-walk
+    /// would fail the run outright. Set the list explicitly (including to empty) to script them anyway.
+    /// </summary>
+    public IReadOnlyList<string> ExcludeSchemas { get; init; } = SourceControlObjectTypes.DefaultExcludedSchemas;
 }
