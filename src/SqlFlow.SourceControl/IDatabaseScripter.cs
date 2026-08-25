@@ -7,6 +7,11 @@ namespace SqlFlow.SourceControl;
 /// silent for minutes. <see cref="Scripted"/> counts objects finished in <see cref="Category"/> and
 /// <see cref="Total"/> how many that category holds, so a caller can render "412 of 1,204" without keeping its
 /// own tally. This restores the per-object progress the legacy runner published through OnObjectScripted.
+///
+/// The two counts also carry the stage a category is at, so one report type covers the whole walk: a
+/// <see cref="Total"/> of zero means the category is still being enumerated and its size is not yet known, a
+/// <see cref="Scripted"/> of zero with a known total means enumeration finished and scripting is starting, and
+/// anything else is a running tally.
 /// </summary>
 public sealed record ScriptProgress
 {
@@ -19,7 +24,7 @@ public sealed record ScriptProgress
 
     /// <summary>Set when the report carries something other than a count: the warning text of an object that
     /// could not be scripted.</summary>
-    public string? Message { get; init; }
+    public string? Warning { get; init; }
 }
 
 /// <summary>Scripts a database's objects to an in-memory snapshot. Abstracted so the orchestration service can

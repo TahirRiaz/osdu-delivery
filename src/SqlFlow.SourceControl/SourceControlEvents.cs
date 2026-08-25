@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using SqlFlow.Core;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Model;
@@ -21,10 +21,6 @@ internal sealed class SourceControlEvents
     private readonly Guid _runId;
     private readonly string _flowName;
 
-    /// <summary>The last category a progress report was published for, so a category change is announced even
-    /// when it lands between two round-number reports.</summary>
-    private string? _category;
-
     public SourceControlEvents(IFlowEventSink? sink, Guid runId, string flowName)
     {
         _sink = sink;
@@ -40,26 +36,34 @@ internal sealed class SourceControlEvents
     public void Error(string stage, string message) => Publish(FlowEventLevel.Error, stage, message);
 
     /// <summary>
-    /// The scripter's progress callback. A warning is republished as a warning event; a plain count reports as
-    /// "Table: 400 of 1,204 scripted", which is the legacy per-object progress in a form that does not flood the
-    /// trace (the scripter reports on a round number, not per object).
+    /// The scripter's progress callback. A warning is republished as a warning event; a count reports the stage
+    /// the category is at, which is the legacy per-object progress in a form that does not flood the trace (the
+    /// scripter throttles its reports to a readable pace rather than emitting one per object).
     /// </summary>
     public void Progress(ScriptProgress progress)
     {
         ArgumentNullException.ThrowIfNull(progress);
-        if (progress.Message is { Length: > 0 } warning)
+        if (progress.Warning is { Length: > 0 } warning)
         {
             Warn("script", warning);
             return;
         }
 
-        _category = progress.Category;
-        Publish(
-            FlowEventLevel.Debug,
-            "script",
-            $"{progress.Category}: {progress.Scripted.ToString("N0", CultureInfo.InvariantCulture)} of "
-            + $"{progress.Total.ToString("N0", CultureInfo.InvariantCulture)} scripted.",
-            progress.Scripted);
+        Publish(FlowEventLevel.Debug, "script", Describe(progress), progress.Scripted);
+    }
+
+    /// <summary>The one line a progress report renders as: which category, and where the walk has got to in it.
+    /// Enumerating a large collection is a multi-second call of its own, so it is said out loud rather than
+    /// leaving the gap before the first count looking like a stall.</summary>
+    private static string Describe(ScriptProgress progress)
+    {
+        var total = progress.Total.ToString("N0", CultureInfo.InvariantCulture);
+        return progress switch
+        {
+            { Total: 0 } => $"{progress.Category}: enumerating.",
+            { Scripted: 0 } => $"{progress.Category}: scripting {total} object(s).",
+            _ => $"{progress.Category}: {progress.Scripted.ToString("N0", CultureInfo.InvariantCulture)} of {total} scripted.",
+        };
     }
 
     private void Publish(FlowEventLevel level, string stage, string message, long? rows = null, double? elapsedMs = null)

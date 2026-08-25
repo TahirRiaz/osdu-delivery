@@ -119,7 +119,11 @@ public sealed class SourceControlServiceTests : IDisposable
         var stages = events.Events.Select(e => e.Stage).Distinct().ToList();
         Assert.Equal(["connect", "script", "git", "write", "commit", "done"], stages);
 
-        // The scripter's progress reaches the stream, which is the legacy per-object reporting restored.
+        // The scripter's progress reaches the stream, which is the legacy per-object reporting restored. All three
+        // stages of a category render, so the multi-second enumeration of a large collection is announced rather
+        // than showing as a gap before the first count.
+        Assert.Contains(events.Events, e => e.Stage == "script" && e.Message == "Table: enumerating.");
+        Assert.Contains(events.Events, e => e.Stage == "script" && e.Message == "Table: scripting 2 object(s).");
         Assert.Contains(events.Events, e => e.Stage == "script" && e.Message.Contains("2 of 2 scripted", StringComparison.Ordinal));
 
         // The last event summarizes the run on its own, so a reader who scrolls to the end learns the outcome
@@ -182,7 +186,11 @@ public sealed class SourceControlServiceTests : IDisposable
             string connectionString, string? database, SourceControlScripting scripting,
             Action<ScriptProgress>? progress = null, CancellationToken ct = default)
         {
-            // Report as the real scripter would, so a test asserting the run's narration sees a progress event.
+            // Report the three shapes the real scripter emits, so a test asserting the run's narration sees the
+            // whole progression: a category being enumerated (size unknown), one about to be scripted, and a
+            // running tally. A warning rides the same callback.
+            progress?.Invoke(new ScriptProgress { Category = "Table", Scripted = 0, Total = 0 });
+            progress?.Invoke(new ScriptProgress { Category = "Table", Scripted = 0, Total = snapshot.Objects.Count });
             progress?.Invoke(new ScriptProgress
             {
                 Category = "Table",

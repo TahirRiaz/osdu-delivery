@@ -89,6 +89,7 @@ This scripts the connection's default catalog into a local git repository at `./
 | `scripting.include` | list of string | no | `[]` | If non-empty, only these object categories are scripted (allowlist). |
 | `scripting.exclude` | list of string | no | `[]` | Object categories to skip, applied after `include`. |
 | `scripting.excludeSchemas` | list of string | no | `[raw]` | Schemas skipped whole, the schema itself and every object in it. Defaults to the engine's staging schema. |
+| `scripting.parallelism` | integer | no | `8` | How many connections script objects concurrently, 1 to 32. Changes wall-clock only, never the snapshot. |
 
 Unmatched YAML keys are ignored (the loader is built with `IgnoreUnmatchedProperties`), so a typo in an optional key silently drops it; `sqlflow validate` confirms what actually parsed.
 
@@ -183,6 +184,21 @@ scripting:
 Excluding a schema also excludes it from `scripting.data`: naming one of its tables there is skipped with the warning `scripting.data names '<name>', which is in the excluded schema '<schema>'; skipped.` rather than versioning the rows of a table whose definition the same run refused to script.
 
 Two things this filter does not touch: system schemas (`dbo`, `sys`, `INFORMATION_SCHEMA`, `guest`, and the fixed database roles) are excluded from the `Schema` category regardless, and objects that belong to no schema at all (a database DDL trigger) are never excluded this way.
+
+### scripting.parallelism
+
+How many connections script objects at the same time, between 1 and 32 (an authored value outside that range fails at parse time with `'scripting.parallelism' must be between 1 and 32, but was <value>.`). It defaults to 8.
+
+Scripting one object with full DRI, indexes, triggers, and extended properties costs SMO dozens of small round trips, so a snapshot's cost is round-trip latency, not server work: against a remote instance a single table takes roughly a second of wall-clock while the server is idle. Walked on one connection, a few hundred objects therefore take many minutes. Each lane is an independent connection with its own SMO `Server` and `Scripter` (SMO objects are not thread-safe, but separate instances on separate connections are), enumeration stays on the single lead connection, and each lane scripts by `Urn`, which resolves against whichever server it is handed. The emitted SQL and the resulting files are byte-identical to a single-lane walk; only the wall-clock and the connection count on the scripted server change.
+
+Lower it when the scripted server is connection-constrained, or set it to `1` to walk the database on the lead connection alone:
+
+```yaml
+scripting:
+  parallelism: 1
+```
+
+A category smaller than the lane count uses only as many lanes as it has objects, and a lane is opened on the first object it is handed, so a narrow `scripting.include` never opens connections it does not use.
 
 ### scripting.data
 
@@ -324,7 +340,12 @@ tails and what `run.json` persists:
 ```
 connect  Resolving the connection for 'dwh'.
 script   Scripting every object category from dw-dwh-prod.
-script   Table: 100 of 1,204 scripted.
+script   Schema: enumerating.
+script   Schema: scripting 10 object(s).
+script   Schema: 10 of 10 scripted.
+script   Table: enumerating.
+script   Table: scripting 1,204 object(s).
+script   Table: 63 of 1,204 scripted.
 ...
 script   Scripted 1,565 object(s) from dw-dwh-prod.
 git      Preparing https://bitbucket.org/... [main]: clone or fetch, then reset onto the remote.
@@ -335,8 +356,14 @@ commit   Committed ebb7d85a and pushed to https://bitbucket.org/...
 done     Snapshot of dw-dwh-prod finished in 168.4s: 1,565 object(s) scripted, 128 added, 296 changed, 442 deleted, committed and pushed.
 ```
 
-Progress is reported per object category on a round number rather than per object, so a database with thousands
-of objects stays readable. An object that cannot be scripted becomes a warning event and the run continues. A
+Progress is reported per object category and paced by the clock rather than by a round object count: running
+tallies go out at most once a second, so a database with thousands of objects stays readable while the trace never
+goes silent long enough to look hung, whatever the scripting rate happens to be. The lines that mark a boundary
+are never throttled, since a dropped one would leave a silent gap in front of it: each category is announced
+before it is enumerated (`Table: enumerating.`, a call that on a large collection blocks for many seconds) and
+again once its size is known, and each category's closing tally is forced so it always ends complete. A forced
+tally that would only repeat the previous line is dropped rather than printed twice. An object that cannot be
+scripted becomes a warning event and the run continues, and warnings are never throttled. A
 quiet day says so explicitly (`Nothing changed since the last snapshot, so there is nothing to commit`) rather
 than going silent, because no commit is the expected outcome once an estate settles, not a failure.
 

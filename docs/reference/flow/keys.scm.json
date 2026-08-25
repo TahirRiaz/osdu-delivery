@@ -4,7 +4,7 @@
   "flowType": "scm",
   "generatedFrom": "source code: src/SqlFlow.Yaml, src/SqlFlow.Core, and the matching runner project",
   "naming": "Every loader builds its YamlDotNet IDeserializer with new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build(). A C# PascalCase property binds to the camelCase YAML key. Dictionary keys are never renamed by the convention. Enum-like string values are parsed case-insensitively; some (like load.mode) additionally strip - and _ before matching, confirmed per-case in the file-flow census (docs/reference/flow/keys.json), not assumed for these new document kinds.",
-  "keyCount": 32,
+  "keyCount": 33,
   "keys": [
     {
       "path": "batch",
@@ -247,6 +247,15 @@
       "required": false,
       "description": "One schema name to skip, matched case-insensitively against the object's schema (and, for the Schema category, against the schema's own name, so excluding a schema also keeps its CREATE SCHEMA out of the snapshot). An object that belongs to no schema (a database DDL trigger) is never excluded this way. System schemas are already excluded from the Schema category regardless of this list (dbo, sys, INFORMATION_SCHEMA, guest, and the fixed database roles), so naming one here only affects that schema's objects.",
       "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:356; default value: src/SqlFlow.Core/SourceControl/SourceControlObjectTypes.cs:40-43"
+    },
+    {
+      "path": "scripting.parallelism",
+      "type": "integer",
+      "required": false,
+      "default": "8 (SourceControlScripting.DefaultParallelism, src/SqlFlow.Core/SourceControl/SourceControlFlow.cs:93)",
+      "description": "How many connections script objects at the same time. Maps to SourceControlScripting.Parallelism (src/SqlFlow.Core/SourceControl/SourceControlFlow.cs:120-124) and is handed to the scripter's connection pool (SmoDatabaseScripter.ScripterPool, src/SqlFlow.SourceControl/SmoDatabaseScripter.cs:80). It exists because scripting one object with full DRI, indexes, triggers, and extended properties costs SMO dozens of small round trips: the cost is round-trip latency, not server work, so against a remote instance a single table takes about a second of wall-clock while the server sits idle, and a few hundred objects walked on one connection take many minutes with the trace apparently frozen. Each lane is an independent connection with its own SMO Server and Scripter (SmoDatabaseScripter.ScriptingLane) because SMO objects are not thread-safe, though separate instances on separate connections are; enumeration stays on the single lead connection and each lane scripts by Urn, which resolves against whichever server it is handed. The snapshot is therefore byte-identical whatever this is set to (objects are re-sorted by relative path and warnings ordinally, so nothing depends on which lane finished first) and only the wall-clock and the connection count on the scripted server change. A category with fewer objects than lanes uses only as many lanes as it has objects, and a lane opens its connection on the first object it is handed, so a narrow scripting.include never opens connections it does not use. Lanes are reused across categories, so a snapshot pays the connect cost once per lane rather than once per category. Set it to 1 to walk the database on a single connection.",
+      "definedIn": "src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:378 (mapped at line 164 via ValidateParallelism, lines 178-192)",
+      "validation": "An absent value takes the default. An authored value below 1 or above SourceControlScripting.MaximumParallelism (32, src/SqlFlow.Core/SourceControl/SourceControlFlow.cs:97) fails at parse time: FlowValidationException \"{source}: 'scripting.parallelism' must be between 1 and 32, but was <value>.\" (src/SqlFlow.Yaml/YamlSourceControlFlowLoader.cs:185-190). A non-integer scalar fails in YamlDotNet's deserializer and surfaces as \"{source}: invalid YAML - ...\"."
     },
     {
       "path": "scripting.include",

@@ -1,6 +1,7 @@
-using System.Globalization;
+﻿using System.Globalization;
 using SqlFlow.Core;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.SourceControl;
 using SqlFlow.SourceControl;
 using SqlFlow.Yaml;
 using Xunit;
@@ -520,6 +521,47 @@ public sealed class SourceControlEdgeCaseTests : IDisposable
             """));
 
         Assert.Empty(doc.Flow.Scripting.ExcludeSchemas);
+    }
+
+    // --- Loader: scripting parallelism ---------------------------------------------------------
+
+    [Fact]
+    public void Parse_WithNoParallelism_FansOutOverTheDefaultLaneCount()
+    {
+        // SMO spends dozens of round trips on a single table, so a one-connection walk over a few hundred objects
+        // takes many minutes. The default exists so a flow that says nothing still gets a snapshot in reasonable
+        // wall-clock; the emitted files do not depend on it either way.
+        var doc = EdgeLoader().Parse(EdgeDocument());
+
+        Assert.Equal(SourceControlScripting.DefaultParallelism, doc.Flow.Scripting.Parallelism);
+    }
+
+    [Fact]
+    public void Parse_Parallelism_IsTakenAsAuthored()
+    {
+        var doc = EdgeLoader().Parse(EdgeDocument("""
+            scripting:
+              parallelism: 1
+            """));
+
+        Assert.Equal(1, doc.Flow.Scripting.Parallelism);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-4)]
+    [InlineData(33)]
+    public void Parse_ParallelismOutOfRange_Fails(int lanes)
+    {
+        // Zero or fewer lanes would script nothing at all, and an unbounded count would open as many connections
+        // to a production server as the author happened to type.
+        var ex = Assert.Throws<FlowValidationException>(() => EdgeLoader().Parse(EdgeDocument($"""
+            scripting:
+              parallelism: {lanes}
+            """)));
+
+        Assert.Contains("'scripting.parallelism' must be between 1 and 32", ex.Message, StringComparison.Ordinal);
+        Assert.Contains($"but was {lanes}", ex.Message, StringComparison.Ordinal);
     }
 
     // --- Loader: data-table normalization ------------------------------------------------------

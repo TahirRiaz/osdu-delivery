@@ -86,6 +86,16 @@ public sealed record SourceControlRepository
 /// </summary>
 public sealed record SourceControlScripting
 {
+    /// <summary>How many connections script objects at once when nothing says otherwise. SMO spends dozens of
+    /// small round trips on a single table, so a snapshot's cost is latency rather than server load and the walk
+    /// scales almost linearly with the lane count; eight is comfortably below any sane connection budget while
+    /// turning a several-minute walk over a few hundred objects into well under a minute.</summary>
+    public const int DefaultParallelism = 8;
+
+    /// <summary>The largest lane count a flow may ask for. Past this the added lanes stop buying wall-clock (the
+    /// enumeration and the writing dominate) and only add connections to a production server.</summary>
+    public const int MaximumParallelism = 32;
+
     /// <summary>Tables whose row data is scripted (in addition to their schema), each a <c>schema.table</c>
     /// name (case-insensitive). Empty means schema-only for every table.</summary>
     public IReadOnlyList<string> DataTables { get; init; } = [];
@@ -106,4 +116,10 @@ public sealed record SourceControlScripting
     /// would fail the run outright. Set the list explicitly (including to empty) to script them anyway.
     /// </summary>
     public IReadOnlyList<string> ExcludeSchemas { get; init; } = SourceControlObjectTypes.DefaultExcludedSchemas;
+
+    /// <summary>How many connections script objects concurrently, between 1 and
+    /// <see cref="MaximumParallelism"/>. Each lane is an independent connection with its own SMO server, so the
+    /// snapshot it produces is identical whatever this is set to; only the wall-clock and the load on the
+    /// scripted server change. Set it to 1 to walk the database on a single connection.</summary>
+    public int Parallelism { get; init; } = DefaultParallelism;
 }

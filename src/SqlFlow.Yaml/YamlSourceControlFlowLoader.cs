@@ -161,6 +161,7 @@ public sealed class YamlSourceControlFlowLoader
             DataTables = dataTables,
             IncludeTypes = include,
             ExcludeTypes = exclude,
+            Parallelism = ValidateParallelism(y.Parallelism, source),
         };
 
         // An absent 'excludeSchemas' keeps the record's default (the engine's staging schema); an authored one
@@ -169,6 +170,26 @@ public sealed class YamlSourceControlFlowLoader
         return y.ExcludeSchemas is null
             ? scripting
             : scripting with { ExcludeSchemas = NormalizeSchemas(y.ExcludeSchemas) };
+    }
+
+    /// <summary>The lane count the scripter fans out over, defaulted when absent and bounded when authored: a
+    /// zero or negative count would script nothing, and an unbounded one would open as many connections to a
+    /// production server as the author happened to type.</summary>
+    private static int ValidateParallelism(int? value, string source)
+    {
+        if (value is not { } lanes)
+        {
+            return SourceControlScripting.DefaultParallelism;
+        }
+
+        if (lanes < 1 || lanes > SourceControlScripting.MaximumParallelism)
+        {
+            throw new FlowValidationException(
+                $"{source}: 'scripting.parallelism' must be between 1 and " +
+                $"{SourceControlScripting.MaximumParallelism}, but was {lanes}.");
+        }
+
+        return lanes;
     }
 
     /// <summary>Normalizes the excluded-schema list: blanks dropped, each name trimmed and unbracketed, and
@@ -354,5 +375,6 @@ public sealed class YamlSourceControlFlowLoader
         public List<string>? Include { get; set; }
         public List<string>? Exclude { get; set; }
         public List<string>? ExcludeSchemas { get; set; }
+        public int? Parallelism { get; set; }
     }
 }
