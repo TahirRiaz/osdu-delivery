@@ -303,10 +303,20 @@ the full value in a panel:
 | `PathRef` | the file name only | the whole path | always |
 | `ConnectionRef` | the `${env:}`/`${keyvault:}` identifier | the whole reference | always |
 | `LinkRef` | an open-in-new-tab glyph | the whole URL | always |
+| `NoteRef` | a note glyph, when there is a note | the whole remark | no |
 
 `TruncatedText` attaches its panel only when the value is genuinely clipped, is multi-line, or was given a
 `title`. A short value already fully on screen gets no hover at all, so dragging a pointer across a table
 does not trail panels repeating text the reader can already see.
+
+**A glyph beats a clipped opener.** Where every value in a column starts the same way, the thirty characters
+a cell can show are the same string down the whole column: `NoteRef` shows that a remark EXISTS and hands the
+text to the panel, which is what scanning actually needs and costs a seventh of the width.
+
+**A bare count needs to say what it counts.** Two integer columns side by side ("Reads", "Queries") cannot be
+attributed while the eye is on a row, since neither number carries its unit and the header is a row away:
+`7  7` reads as one value rendered twice. A count column therefore leads with the glyph for the thing it
+counts and gives the words on hover and to assistive tech, rather than repeating the unit in every row.
 
 `LinkRef` is the only way to render a location. A location is free text and is as often a UNC path or a
 share as a URL, so only `http(s)` becomes an anchor; anything else gets a muted `Link2Off` glyph and its

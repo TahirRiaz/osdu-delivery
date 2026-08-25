@@ -146,14 +146,19 @@ export function LineageJumpButton({
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        {iconOnly ? (
-          <Tooltip>
-            <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-            <TooltipContent>View in lineage graph</TooltipContent>
-          </Tooltip>
-        ) : trigger}
-      </DropdownMenuTrigger>
+      {/* The tooltip wraps the trigger, never the other way round: `DropdownMenuTrigger asChild` clones its
+          props onto its child, and `Tooltip` is a context provider with no DOM node to receive them, so
+          nesting it inside silently drops the menu's own click handling and the button opens nothing. */}
+      {iconOnly ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>View in lineage graph</TooltipContent>
+        </Tooltip>
+      ) : (
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      )}
 
       <DropdownMenuContent
         align="end"

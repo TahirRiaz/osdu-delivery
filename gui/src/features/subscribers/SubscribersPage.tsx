@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { MonitorPlay, X } from "lucide-react";
+import { Code, MonitorPlay, Table2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { lineageApi } from "../../api/endpoints";
 import type { Subscriber } from "../../api/types";
@@ -17,6 +18,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { activeFilterClass, FilterBar } from "../../components/FilterBar";
 import { LineageJumpButton } from "../../components/LineageJumpButton";
 import { LinkRef } from "../../components/LinkRef";
+import { NoteRef } from "../../components/NoteRef";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -37,6 +39,24 @@ function useDebounced(value: string, delayMs: number): string {
 // off-screen entirely, which is what this grid used to do. The caps are sized so all nine columns fit a
 // workbench window without horizontal scroll, and nothing is lost by clipping: every capped cell reveals its
 // full value in a hover panel and, where the exact string matters, hands it over with a copy button.
+/** One count in the grid: the glyph for what is being counted, the number, and the words on hover. */
+function Count(
+  { icon, value, label, plural }: { icon: ReactNode; value: number; label: string; plural?: string },
+) {
+  const words = `${value} ${value === 1 ? label : plural ?? `${label}s`}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center justify-end gap-1.5 align-bottom" aria-label={words}>
+          <span className="text-muted-foreground [&>svg]:size-3.5">{icon}</span>
+          <span className="tabular-nums">{value}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{words}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 const subscriberColumns: Column<Subscriber>[] = [
   {
     id: "name",
@@ -62,16 +82,17 @@ const subscriberColumns: Column<Subscriber>[] = [
     id: "description",
     header: "Description",
     render: (row) => (
-      <TruncatedText text={row.description} maxWidth={230} title="Description" className="text-muted-foreground" />
+      <TruncatedText text={row.description} maxWidth={300} title="Description" className="text-muted-foreground" />
     ),
   },
   {
     id: "notes",
     header: "Notes",
-    render: (row) => (
-      <TruncatedText text={row.notes} maxWidth={140} title="Notes" className="text-muted-foreground" />
-    ),
-    width: 164,
+    // A glyph, not the first thirty characters: every note in this estate opens with the same boilerplate, so
+    // a clipped column reads as one repeated string and costs the width Description needs.
+    render: (row) => <NoteRef note={row.notes} testId="subscriber-note" />,
+    align: "center",
+    width: 72,
   },
   {
     id: "url",
@@ -83,21 +104,23 @@ const subscriberColumns: Column<Subscriber>[] = [
     align: "center",
     width: 88,
   },
-  // The unit lives in the header, not in every row: "4" under "Reads" says as much as "4 objects" and leaves
-  // the width to the columns that carry text.
+  // Two bare integers side by side cannot be told apart while scanning a row: "7  7" reads as one value
+  // rendered twice, since neither number carries what it counts and the header is a row away. Each count
+  // therefore leads with the glyph for the thing it counts, which is legible without moving the eye off the
+  // row, and says it in full on hover.
   {
     id: "objects",
     header: "Reads",
     align: "right",
-    render: (row) => <span className="tabular-nums">{row.objectCount}</span>,
-    width: 74,
+    render: (row) => <Count icon={<Table2 />} value={row.objectCount} label="object" />,
+    width: 92,
   },
   {
     id: "queries",
     header: "Queries",
     align: "right",
-    render: (row) => <span className="tabular-nums">{row.queryCount}</span>,
-    width: 82,
+    render: (row) => <Count icon={<Code />} value={row.queryCount} label="query" plural="queries" />,
+    width: 96,
   },
   {
     id: "lineage",
