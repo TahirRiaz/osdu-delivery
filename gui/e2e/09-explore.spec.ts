@@ -109,6 +109,16 @@ test.describe("explore", () => {
       await expect(adminPage.getByTestId("graph-focus-panel")).toBeVisible();
       await adminPage.getByTestId("graph-open-selected").click();
       await expect(adminPage.getByTestId("page-lineage")).toBeVisible({ timeout: 15_000 });
+
+      // ...and the explorer's Graph view button comes back to that same drawing, scope and view intact. The graph
+      // rewrites its query string in place, so without the remembered parameters the return lands on a blank map.
+      await adminPage.getByTestId("open-lineage-graph").click();
+      await expect(adminPage.getByTestId("page-lineage-graph")).toBeVisible();
+      const returned = new URL(adminPage.url()).searchParams;
+      expect(returned.get("repoId")).not.toBeNull();
+      expect(returned.get("project")).not.toBeNull();
+      expect(returned.get("view")).toBe("objects");
+      await expect(adminPage.locator(".react-flow__node").first()).toBeVisible({ timeout: 60_000 });
     }
   });
 

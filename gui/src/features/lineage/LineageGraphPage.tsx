@@ -52,6 +52,7 @@ import type { LineageProject, RunScope, WavePipeline } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
+import { rememberGraphSearch } from "./graphLocation";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { seriesColor } from "../../theme/branding";
 import { useThemeMode } from "../../theme/ThemeModeContext";
@@ -834,6 +835,14 @@ export default function LineageGraphPage() {
     [focusSeed, expand],
   );
   const graphEnabled = (repoId !== "" && project !== "") || focusSeed !== "";
+
+  // The graph rewrites its query string in place (replace: true), so history holds nothing to go back to. Remember
+  // the drawing's parameters while a scope is set, and forget them once it is cleared, so the object explorer's
+  // "Graph view" button returns to this same drawing instead of the bare landing.
+  const graphSearch = searchParams.toString();
+  useEffect(() => {
+    rememberGraphSearch(graphEnabled ? graphSearch : "");
+  }, [graphEnabled, graphSearch]);
 
   // The one graph query: a project's cross-repo downstream closure (or a focused node's local context). Both the
   // Flows and Objects views build from this single payload; the walk crosses repos freely via global object keys.

@@ -25,6 +25,7 @@ import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailPair } from "../../components/DetailPair";
 import { activeFilterClass, FilterBar } from "../../components/FilterBar";
+import { graphViewPath } from "./graphLocation";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
@@ -170,7 +171,9 @@ export default function LineagePage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => navigate("/lineage")}
+            // Back to the drawing the operator left, not the bare landing: the graph keeps its whole state in
+            // its query string, which this restores.
+            onClick={() => navigate(graphViewPath())}
             data-testid="open-lineage-graph"
           >
             <Network />
