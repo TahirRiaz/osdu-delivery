@@ -13,6 +13,10 @@ source's YAML coverage note so it stays known.
 This is the AFTER-conversion counterpart to `convert-sqlflow-source`. Use that skill to port a source; use
 this one when a ported table's numbers are questioned.
 
+**Start with Phase 0.** Two queries decide whether this is a defect worth measuring or a copy that simply
+stopped being refreshed. In this estate it is usually the latter, and the full Phase 1-5 measurement on a
+table nothing has written is wasted work.
+
 **The governing rule: `COUNT(*)` IS NOT THE COMPARISON.** Old prod and V3 legitimately hold different
 physical row counts for identical logical data, in both directions. Reaching for `COUNT(*)` and "fixing" the
 difference is how real data gets duplicated or deleted. Establish the logical key first (Phase 2); every
@@ -78,6 +82,24 @@ sqlcmd -S $b.psbase.DataSource -d $b.psbase.InitialCatalog -U $b.psbase.UserID -
        -C -h -1 -W -Q "SET NOCOUNT ON; <query>"
 ```
 
+The NEW estate's strings live in a file, not an env var, so read them differently:
+
+```powershell
+$p = (Get-Content 'c:\Projects\SQLFlowV3\.sqlflow\env' | Select-String '^SQLFLOW_CONN_DWDWHPROD=').ToString()
+$b = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+$b.psbase.ConnectionString = $p.Substring($p.IndexOf('=') + 1)
+```
+
+Three things that will cost you a round trip each if you guess:
+
+- **`-h -1` and `-y 0` are mutually exclusive.** Use `-y 0` (not `-h -1 -W`) when you need untruncated output,
+  such as `OBJECT_DEFINITION(...)` to read a procedure body.
+- **`head` / `tail` do not exist in PowerShell.** Pipe to `Select-Object -First N` / `-Last N`. In the Bash
+  tool they work normally; do not mix the two.
+- **To run the CLI against the pipelines repo you must load the env file into the process first**, because
+  `${env:SQLFLOW_CONN_*}` is resolved from the environment and the repo has no `.sqlflow/env` of its own:
+  `Get-Content ...\.sqlflow\env | ? { $_ -match '^[A-Z_]+=' } | % { $k,$v = $_ -split '=',2; [Environment]::SetEnvironmentVariable($k,$v.Trim(),'Process') }`
+
 ### Project rules that bind this work
 
 - **Never change a flow's source or destination.** Reconciliation NEVER repoints a flow. Diagnose, propose,
@@ -107,8 +129,91 @@ value parity with a per-column mismatch breakdown. Useful switches: `-OldTable` 
 to bound a large table, `-CompareColumns` to override value-parity columns, `-Period day` to localise a
 narrow divergence, `-SampleRows 0` to suppress examples.
 
+### Naming a cause is a claim. Verify the mechanism before you write it down.
+
+A cause that *sounds* like it explains the numbers is not a cause. Before naming one, state how it produces
+the observed value, then check that step against the code or the data. Two ways this goes wrong:
+
+- **Arithmetic you did not do.** GTFSEntur 2026-08-25: a hardcoded `@max` in the chunked transfer script was
+  named as the reason a re-run moved nothing. It was not. Chunks were 250,000 wide and `@max` only bounded
+  the loop, so the final chunk overshot to the next boundary and covered every missing row. One minute of
+  arithmetic would have caught it; instead a wrong diagnosis was committed and pushed, and had to be
+  retracted in a follow-up commit.
+- **A gap in your evidence read as a fact.** Whenever the data implies something impossible ("these rows
+  exist but nothing wrote them"), your query is wrong, not the database. Widen it.
+
+If a cause survives only because you have not tested it, mark it as unconfirmed in the write-up rather than
+asserting it.
+
 The tool does NOT decide anything. **Phase 2 (the key) is yours to establish and Phase 5 (classification) is
 yours to judge.** Feeding it a wrong key produces confident, wrong numbers.
+
+---
+
+## Phase 0 - Triage in two queries (do this BEFORE the tool)
+
+**Most reported gaps in this estate are not defects, and one query pair settles it.** The full measurement
+below costs several minutes of round trips; this costs seconds. Run it first, every time.
+
+```sql
+-- 1. Is the OLD side still loading, and is the NEW side frozen? Run on BOTH estates.
+SELECT MAX(FileDate_DW) AS max_file, MAX(UpdatedDate_DW) AS max_upd, COUNT(*) AS rows_ FROM arc.<Table>;
+```
+
+```sql
+-- 2. Has ANY V3 flow ever written this table? (catalog DB)
+SELECT TOP 20 FlowName, Status, StartUtc, RowsInserted, RowsUpdated
+FROM catalog.Run WHERE FlowName LIKE '%<source>%' ORDER BY StartUtc DESC;
+SELECT Name, Cron, Enabled, Paused, LastFireUtc FROM catalog.Schedule WHERE Name LIKE '%<source>%';
+```
+
+Read the outcomes:
+
+| old `max_upd` | new `max_upd` | `catalog.Run` | Verdict |
+| --- | --- | --- | --- |
+| recent | frozen at a past date | **empty** | **Cause J.** V3 never ran. Stop; the gap is arithmetic, go to Phase 6. |
+| recent | recent | has runs | A genuine V3 load question. Do the full Phases 1-5. |
+| frozen | recent | has runs | Old prod stopped; V3 is ahead legitimately (Cause I). |
+| recent | recent | both writing | Possible parallel run (Cause C). Check minute-of-hour histograms. |
+
+If `catalog.Run` is empty for the source, **the V3 engine is not involved and no transform can be at fault.**
+Skip the key derivation and the value-parity pass: there is nothing to diagnose except how far behind the
+copy is. Do not spend time on Phase 2.
+
+A second cheap check that often names the cause outright: **does the `pre` landing table even exist?**
+
+```sql
+-- against dw-pre-prod
+SELECT t.name, p.rows FROM sys.tables t
+JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0,1)
+WHERE t.name LIKE '%<Object>%';
+```
+
+No landing table means the pre/ods pair has never run, whatever the YAML looks like. That single fact
+answered "why is this table loaded from pre?" on GTFSEntur: it was not. The pre flows are the rebuild path,
+and arc had been moved table-to-table over the linked server.
+
+### "Is this an engine bug?" - answer it with Query Store, not by reasoning
+
+When someone asks whether the difference is a V3 engine defect, this settles it in one query rather than an
+argument. It lists every statement that has written the table and when, with 30-day retention:
+
+```sql
+SELECT CONVERT(varchar(30), rs.last_execution_time, 120) AS last_exec, rs.count_executions,
+       LEFT(qt.query_sql_text, 120) AS stmt
+FROM sys.query_store_query_text qt
+JOIN sys.query_store_query q  ON q.query_text_id = qt.query_text_id
+JOIN sys.query_store_plan p   ON p.query_id      = q.query_id
+JOIN sys.query_store_runtime_stats rs ON rs.plan_id = p.plan_id
+WHERE qt.query_sql_text LIKE '%<Table>%'
+  AND (qt.query_sql_text LIKE '%INSERT%' OR qt.query_sql_text LIKE '%MERGE%' OR qt.query_sql_text LIKE '%UPDATE%')
+ORDER BY rs.last_execution_time DESC;
+```
+
+**Match on the statement TEXT and search broadly.** A hand-run script writes `INSERT INTO [arc].[X] (...)`
+while the engine and the backfill scripts write other shapes; filtering too narrowly hides the very run you
+are looking for. GTFSEntur 2026-08-25: a narrow filter showed only two write occasions and made the observed
+data look impossible; widening it revealed a third, an uncommitted ad-hoc script.
 
 ---
 
@@ -139,6 +244,27 @@ The logical key identifies ONE real-world reading on BOTH estates. It is usually
 -- against OldSQlFlowConStr
 SELECT FlowID, trgDBSchTbl, KeyColumns, IncrementalColumns, DataSetColumn, SysColumns, IdentityColumn
 FROM flw.Ingestion WHERE trgDBSchTbl LIKE '%<Table>%';
+```
+
+The matching landing flow is in a `flw.PreIngestion*` table, and **its columns are named differently from
+what you would guess.** There is no `ID`, no `trgSchema`, no `trgTable`, no `IncrementalColumns`:
+
+```sql
+SELECT FlowID, Batch, SysAlias, srcPath, srcFile, trgDBSchTbl,
+       InitFromFileDate, InitToFileDate, DeactivateFromBatch, FlowType
+FROM flw.PreIngestionCSV WHERE trgDBSchTbl LIKE '%<Table>%';
+```
+
+If unsure for any legacy table, list them rather than guessing:
+`SELECT name FROM sys.columns WHERE object_id = OBJECT_ID('flw.PreIngestionCSV') ORDER BY column_id;`
+
+**Do not assume the surrogate PK is named `PK_<Table>`.** Within one source the convention can vary
+(GTFSEntur has five `PK_GTFS_Entur_*` but `GTFS_Stops_PK` and `GTFS_Trips_PK`). Read it:
+
+```sql
+SELECT t.name AS tbl, c.name AS identity_col
+FROM sys.tables t LEFT JOIN sys.columns c ON c.object_id = t.object_id AND c.is_identity = 1
+WHERE t.name LIKE '<prefix>%' AND SCHEMA_NAME(t.schema_id) = 'arc';
 ```
 
 Then remove or normalize:
@@ -298,6 +424,34 @@ happen again.
 is probably at fault. Known instance: `billettapp-orderdate-utc-drift` (V3 stores Oslo local where legacy
 stored UTC). **Action: fix the view. Never transfer.**
 
+### J. Frozen copy against a live source (no V3 acquisition)
+
+**The most common cause in this migration, and the cheapest to confirm.** The source was ported by moving arc
+table-to-table over `OLDPROD`, but the live V3 acquisition was never built. Old prod keeps loading daily; the
+V3 copy stands still at whenever the transfer last ran. From inside V3 the table looks static, because
+standing still is the absence of a feed, not the absence of upstream change.
+
+Tell: Phase 0 shows old `max_upd` recent, new `max_upd` frozen, and `catalog.Run` empty for the source. The
+per-period breakdown is contiguous and confined to the RECENT or FUTURE end, with every older period matching
+exactly. For a forward-looking dataset (timetables, calendars, service exceptions) the gap is entirely in
+future periods, because a frozen copy only ever loses the future.
+
+**Action: transfer, then fix the recurrence.** The transfer itself is Phase 6 and is uncontroversial: schema
+is identical and the rows exist. But a one-off transfer re-freezes the moment it finishes, so say so plainly
+and put the choice to the user:
+
+1. **Schedule the existing transfer** (a `flowType: sp` flow wrapping the transfer procedure, cron set AFTER
+   the legacy load wave, never mirroring the producer's trigger). Cheap, but hard-wires V3 to old prod.
+2. **Build the live acquisition.** The only option that survives the old estate being retired.
+
+**State the failure mode of option 1 explicitly:** a PK-guarded top-up reports SUCCESS while moving 0 rows
+once the old estate stops loading. Nothing breaks loudly. Whoever owns it must watch `RowsInserted`, not the
+run status.
+
+Check the lake too, not just arc. If the source's archive copy flow also ran once, the NEW lake is behind by
+the same mechanism, and those files may exist only on a storage account being decommissioned. That gap is the
+urgent one: arc rows are recoverable from old prod, deleted blobs are not.
+
 ### I. New has more, and it is legitimate
 
 V3 commonly recovers readings legacy never loaded (a runbook that failed silently, an overwritten day file,
@@ -305,6 +459,28 @@ a filter that dropped rows). Tell: `new_keys_missing_from_old` clusters in perio
 thin, and the extra rows have plausible values and file provenance.
 **Action: keep, and PROVE it.** Trace a sample back to a real source file before claiming recovery; do not
 assume a positive delta is a win (`ids-from-discovers-only-current-fleet` is the cautionary case).
+
+---
+
+## Before Phase 6: is there a SECOND transfer path?
+
+**Check this before concluding anything about which tables are behind.** If some tables in a source are
+current and others are behind, the reflex is to look for something different about those datasets. Usually
+there is nothing different about them: somebody ran a one-off script over a subset.
+
+```bash
+# is the source's transfer script the only thing that writes these tables?
+grep -rn "INSERT INTO \[\?arc\]\?\.\[\?<Table>" <pipelines repo>/
+```
+
+plus the Query Store sweep in Phase 0. GTFSEntur 2026-08-25: five of seven tables looked consistent with each
+other, so a 9,511-row gap on the other two read as dataset-specific behaviour. It was not. An uncommitted
+ad-hoc script had topped up two tables on 2026-08-24, and its `INSERT` even omitted the surrogate PK, so it
+was not the committed path at all. **A partial fix by an uncommitted path is worse than no fix**, because it
+destroys the one signal you have: tables in a source drifting together.
+
+If you find one, fold it into the committed script and delete it. Single Code Path applies to backfill
+scripts exactly as it does to engine code.
 
 ---
 
@@ -353,6 +529,13 @@ Points that matter:
 
 ### 6.3 Prove convergence
 
+**`CHECKSUM_AGG(BINARY_CHECKSUM(*))` is NOT a valid proof after a top-up.** It is valid only straight after a
+full move. A top-up guarded by `NOT EXISTS` on the surrogate PK never revisits a row that already landed, so
+any row old prod has UPDATED in place since keeps its original provenance columns and the checksums diverge
+while the data is correct. Prove convergence with row count plus both anti-join directions plus value parity
+on the shared keys, and say in the write-up that checksum is no longer the test for this table.
+
+
 Re-run the tool. `missing in new` must be 0, and value parity must still be clean. The counts it prints are
 what goes into the documentation.
 
@@ -385,6 +568,27 @@ GIT_TERMINAL_PROMPT=0 git -c credential.helper= push \
 
 ---
 
+## Scope: reconcile, do not re-architect
+
+This skill's deliverable is **the two tables agreeing, the cause classified, and the finding written down.**
+That is all. When the measurement exposes a structural problem (a one-off script that should be scheduled, a
+duplicated transfer path, a missing acquisition), **report it and propose the fix, then stop.** Restructuring
+is a separate piece of work with its own go-ahead.
+
+Specifically, do not do any of the following as a side effect of a reconciliation:
+
+- Deploy a stored procedure or other database object that did not exist before.
+- Delete or rename a script that other files reference.
+- Run `sqlflow db sync` over a whole repo. It re-projects every source in the estate, not the one you are
+  working on, and a local run also registers a phantom folder-named repo in `catalog.Repo` that then shows
+  the flow twice.
+- Enable a schedule that was deliberately disabled.
+
+Each of those may well be the right next step. Each needs the user to say so first. A reconciliation that
+quietly changes how a source runs is harder to trust than the gap it fixed.
+
+---
+
 ## Doing many tables
 
 Reconcile ONE table end to end before starting the next, the same discipline `convert-sqlflow-source` applies
@@ -404,6 +608,8 @@ directly on the siblings rather than re-deriving it.
 
 ## Definition of done
 
+- Phase 0 was run FIRST, and its verdict is stated: is the old side still loading, is the new side frozen,
+  and has any V3 flow ever written this table.
 - The logical key is established and validated (no NULL keys, no provenance columns, artifacts normalized).
 - Schema parity is known, and any shape difference is either fixed or covered by a compat view.
 - Both anti-join directions are measured, and EVERY non-zero bucket is classified against the Phase 5
@@ -414,3 +620,6 @@ directly on the siblings rather than re-deriving it.
 - Anything NOT transferable is documented with its cause and horizon.
 - The finding is in the acquisition YAML's coverage note, superseded text is marked, and the change is pushed
   to Bitbucket.
+- Every cause named in the write-up has had its mechanism checked, not just asserted because it fits.
+- If the gap will recur (Cause J), that is stated with the two options, and nothing was restructured,
+  deployed or enabled without the user asking for it.
