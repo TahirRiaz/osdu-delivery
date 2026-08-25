@@ -218,6 +218,10 @@ public sealed record RoleDto(string Name, string Scopes, string Description);
 /// <summary>Creates a local user (SSO users are provisioned by their first sign-in, never through this).</summary>
 public sealed record CreateUserRequest(string Username, string Password, string Role, string? Email, string? DisplayName);
 
+/// <summary>Renames a user and rewrites their display name and email (a null or blank optional field clears it).
+/// The username only changes for a local user; an SSO account's is owned by Entra.</summary>
+public sealed record UpdateUserProfileRequest(string Username, string? Email, string? DisplayName);
+
 /// <summary>Changes a user's role.</summary>
 public sealed record SetRoleRequest(string Role);
 

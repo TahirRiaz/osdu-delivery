@@ -6,9 +6,10 @@ namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The user/role store against the real catalog database: local creation with the uniqueness check, JIT
-/// provisioning of external identities (including UPN renames and rename conflicts), the last-active-admin
-/// lockout guards, and the local-only password reset. Gated on a reachable catalog database like the other
-/// DB-backed suites; each test uses its own unique usernames and removes them.
+/// provisioning of external identities (including UPN renames and rename conflicts), the admin profile edit
+/// (rename, and the SSO refusal), permanent deletion with its owned-row purge, the last-active-admin lockout
+/// guards, and the local-only password reset. Gated on a reachable catalog database like the other DB-backed
+/// suites; each test uses its own unique usernames and removes them.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class UserStoreTests
@@ -186,6 +187,132 @@ public sealed class UserStoreTests
 
             Assert.Equal(UserMutation.NotLocal, await UserStore.SetPasswordHashAsync(db, user.Id, "new-hash", DateTime.UtcNow));
             Assert.Equal(UserMutation.NotFound, await UserStore.SetPasswordHashAsync(db, Guid.NewGuid(), "new-hash", DateTime.UtcNow));
+        }
+        finally
+        {
+            await CleanupAsync(cs, prefix);
+        }
+    }
+
+    [SkippableFact]
+    public async Task UpdateProfile_RenamesALocalUser_AndRefusesATakenNameOrAnSsoRename()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var prefix = NewPrefix();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await SeedRolesAsync(db);
+
+            var (_, id) = await UserStore.CreateLocalAsync(
+                db, $"{prefix}-before", "hash", RoleNames.Viewer, "before@example.test", "Before", DateTime.UtcNow);
+            var (takenStatus, _) = await UserStore.CreateLocalAsync(
+                db, $"{prefix}-taken", "hash", RoleNames.Viewer, null, null, DateTime.UtcNow);
+            Assert.Equal(UserCreateStatus.Created, takenStatus);
+
+            Assert.Equal(UserMutation.Applied, await UserStore.UpdateProfileAsync(
+                db, id, $"{prefix}-after", "after@example.test", "After", DateTime.UtcNow));
+            var renamed = await UserStore.FindByIdAsync(db, id);
+            Assert.Equal($"{prefix}-after", renamed!.Username);
+            Assert.Equal("after@example.test", renamed.Email);
+            Assert.Equal("After", renamed.DisplayName);
+
+            // A blank optional field clears the stored value; the row keeps its id through every edit.
+            Assert.Equal(UserMutation.Applied, await UserStore.UpdateProfileAsync(
+                db, id, $"{prefix}-after", "   ", null, DateTime.UtcNow));
+            var cleared = await UserStore.FindByIdAsync(db, id);
+            Assert.Null(cleared!.Email);
+            Assert.Null(cleared.DisplayName);
+
+            // The name a different account already owns is refused (case-insensitively, as the index enforces it).
+            Assert.Equal(UserMutation.UsernameTaken, await UserStore.UpdateProfileAsync(
+                db, id, $"{prefix}-TAKEN", null, null, DateTime.UtcNow));
+            Assert.Equal($"{prefix}-after", (await UserStore.FindByIdAsync(db, id))!.Username);
+
+            // Creating a user under the freed original name works, taking a fresh id rather than colliding with the
+            // derived one the renamed row still holds.
+            var (recreated, recreatedId) = await UserStore.CreateLocalAsync(
+                db, $"{prefix}-before", "hash", RoleNames.Viewer, null, null, DateTime.UtcNow);
+            Assert.Equal(UserCreateStatus.Created, recreated);
+            Assert.NotEqual(id, recreatedId);
+
+            // An SSO account's sign-in name belongs to Entra; the profile fields around it stay editable.
+            var (_, sso) = await UserStore.EnsureExternalAsync(
+                db, new ExternalUserProfile(Guid.NewGuid().ToString("N"), $"{prefix}-sso@example.test", "SSO", null),
+                RoleNames.Viewer, DateTime.UtcNow);
+            Assert.NotNull(sso);
+            Assert.Equal(UserMutation.NotLocal, await UserStore.UpdateProfileAsync(
+                db, sso.Id, $"{prefix}-renamed-sso@example.test", null, null, DateTime.UtcNow));
+            Assert.Equal(UserMutation.Applied, await UserStore.UpdateProfileAsync(
+                db, sso.Id, sso.Username, "sso@example.test", "Renamed In Place", DateTime.UtcNow));
+            Assert.Equal("Renamed In Place", (await UserStore.FindByIdAsync(db, sso.Id))!.DisplayName);
+
+            Assert.Equal(UserMutation.NotFound, await UserStore.UpdateProfileAsync(
+                db, Guid.NewGuid(), $"{prefix}-ghost", null, null, DateTime.UtcNow));
+        }
+        finally
+        {
+            await CleanupAsync(cs, prefix);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Delete_RemovesTheUserAndTheirOwnedRows_AndRefusesTheLastActiveAdmin()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var prefix = NewPrefix();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await SeedRolesAsync(db);
+
+            var (_, id) = await UserStore.CreateLocalAsync(
+                db, $"{prefix}-doomed", "hash", RoleNames.Operator, null, null, DateTime.UtcNow);
+            var tokenId = await AccessTokenStore.CreateAsync(
+                db, id, "test-token", $"hash-{Guid.NewGuid():N}", "sqlf_test", "read", expiresUtc: null,
+                DateTime.UtcNow);
+            Assert.NotEqual(Guid.Empty, tokenId);
+
+            Assert.Equal(UserMutation.Applied, await UserStore.DeleteAsync(db, id));
+            Assert.Null(await UserStore.FindByIdAsync(db, id));
+            // The account's private rows go with it: a surviving token row would be a live credential.
+            Assert.False(await db.AccessTokens.AsNoTracking().AnyAsync(t => t.UserId == id));
+
+            Assert.Equal(UserMutation.NotFound, await UserStore.DeleteAsync(db, id));
+
+            // The lockout guard covers delete exactly as it covers demotion and deactivation. As in the
+            // demote/deactivate test, this builds its own admin population because the shared catalog may already
+            // hold admins from other suites.
+            var others = await db.Users.AsNoTracking()
+                .Where(u => u.Active && u.Role == RoleNames.Admin).Select(u => u.Id).ToListAsync();
+            var (adminStatus, adminId) = await UserStore.CreateLocalAsync(
+                db, $"{prefix}-admin", "h", RoleNames.Admin, null, null, DateTime.UtcNow);
+            Assert.Equal(UserCreateStatus.Created, adminStatus);
+            foreach (var other in others)
+            {
+                Assert.Equal(UserMutation.Applied, await UserStore.SetActiveAsync(db, other, active: false, DateTime.UtcNow));
+            }
+
+            try
+            {
+                Assert.Equal(UserMutation.LastAdmin, await UserStore.DeleteAsync(db, adminId));
+                Assert.NotNull(await UserStore.FindByIdAsync(db, adminId));
+            }
+            finally
+            {
+                foreach (var other in others)
+                {
+                    await UserStore.SetActiveAsync(db, other, active: true, DateTime.UtcNow);
+                }
+            }
+
+            // With another active admin back, the same delete goes through.
+            Skip.If(others.Count == 0, "The catalog holds no other admin to unblock the delete with.");
+            Assert.Equal(UserMutation.Applied, await UserStore.DeleteAsync(db, adminId));
         }
         finally
         {

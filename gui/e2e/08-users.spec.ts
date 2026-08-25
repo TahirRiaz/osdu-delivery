@@ -1,11 +1,12 @@
 import { expect, test, apiLogin, seedSession } from "./helpers";
 import { E2E } from "../playwright.config";
 
-// User administration end to end: create, filter, change role, reset password, deactivate/activate, and what a
-// non-admin session is allowed to see. Verifications go through real sign-ins, not just UI state.
+// User administration end to end: create, filter, edit, change role, reset password, deactivate/activate, delete,
+// and what a non-admin session is allowed to see. Verifications go through real sign-ins, not just UI state.
 
 const runTag = Date.now().toString(36);
 const username = `e2e-user-${runTag}`;
+const renamed = `e2e-user-renamed-${runTag}`;
 const initialPassword = "initial-password-e2e-123";
 const resetPassword = "rotated-password-e2e-456";
 
@@ -108,8 +109,34 @@ test.describe.serial("user administration", () => {
     expect(restored.subject).toBe(username);
   });
 
+  test("edit the user's display name and sign-in name", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-users").click();
+    await adminPage.getByTestId("filter-username").fill(username);
+    const row = adminPage.getByTestId("table-row").filter({ hasText: username }).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+
+    await row.getByTestId("user-actions").click();
+    await adminPage.getByTestId("user-menu-edit").click();
+    await adminPage.getByTestId("edit-user-displayname").fill("E2E Renamed User");
+    await adminPage.getByTestId("edit-user-username").fill(renamed);
+    await adminPage.getByTestId("edit-user-submit").click();
+
+    await adminPage.getByTestId("filter-username").fill(renamed);
+    const renamedRow = adminPage.getByTestId("table-row").filter({ hasText: renamed }).first();
+    await expect(renamedRow).toBeVisible({ timeout: 15_000 });
+    await expect(renamedRow.getByText("E2E Renamed User")).toBeVisible();
+
+    // The rename moves the credential with it: the new name signs in, the old one is gone.
+    const session = await apiLogin(adminPage.request, renamed, resetPassword, 15_000);
+    expect(session.subject).toBe(renamed);
+    const oldName = await adminPage.request.post(`${E2E.apiBaseUrl}/api/v1/auth/login`, {
+      data: { username, password: resetPassword },
+    });
+    expect(oldName.status()).toBe(401);
+  });
+
   test("a non-admin session sees no Users nav and cannot open the page", async ({ page, request }) => {
-    const session = await apiLogin(request, username, resetPassword, 15_000);
+    const session = await apiLogin(request, renamed, resetPassword, 15_000);
     await seedSession(page, session);
     await page.goto("/");
     await expect(page.getByTestId("page-dashboard")).toBeVisible();
@@ -117,5 +144,22 @@ test.describe.serial("user administration", () => {
     await page.goto("/users");
     // RequireScope bounces a non-admin back to the dashboard.
     await expect(page.getByTestId("page-dashboard")).toBeVisible();
+  });
+
+  test("delete removes the account for good", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-users").click();
+    await adminPage.getByTestId("filter-username").fill(renamed);
+    const row = adminPage.getByTestId("table-row").filter({ hasText: renamed }).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+
+    await row.getByTestId("user-actions").click();
+    await adminPage.getByTestId("user-menu-delete").click();
+    await adminPage.getByTestId("confirm-dialog-confirm").click();
+
+    await expect(adminPage.getByTestId("empty-message")).toBeVisible({ timeout: 15_000 });
+    const refused = await adminPage.request.post(`${E2E.apiBaseUrl}/api/v1/auth/login`, {
+      data: { username: renamed, password: resetPassword },
+    });
+    expect(refused.status()).toBe(401);
   });
 });

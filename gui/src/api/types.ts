@@ -1320,6 +1320,13 @@ export interface Role {
   description: string;
 }
 
+/** Renames a user and rewrites their display name and email; null clears an optional field. */
+export interface UpdateUserProfileRequest {
+  username: string;
+  email: string | null;
+  displayName: string | null;
+}
+
 export interface CreateUserRequest {
   username: string;
   password: string;

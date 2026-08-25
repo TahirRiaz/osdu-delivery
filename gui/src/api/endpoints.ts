@@ -21,7 +21,7 @@ import type {
   RunSummary, RunSurrogateKey, SchemaChange, SchemaChangeDatabase, SchemaObjectCompare,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
   SourceDiscoverRequest, SourceDiscoverResult, Subscriber, SubscriberDossier, SubscriberHit,
-  UpdateNotificationSubscriptionRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
+  UpdateNotificationSubscriptionRequest, UpdateUserProfileRequest, User, Wave, WorkerPool, WorkerPoolScaleRequest,
 } from "./types";
 
 export interface PageQuery {
@@ -480,6 +480,9 @@ export const userApi = {
   list: (query: UserListQuery = {}) => get<PagedResult<User>>("/api/v1/users", query as QueryParams),
   getById: (id: string) => get<User>(`/api/v1/users/${id}`),
   create: (request: CreateUserRequest) => post<User>("/api/v1/users", request),
+  updateProfile: (id: string, request: UpdateUserProfileRequest) =>
+    post<User>(`/api/v1/users/${id}/profile`, request),
+  remove: (id: string) => del<void>(`/api/v1/users/${id}`),
   setRole: (id: string, role: string) => post<User>(`/api/v1/users/${id}/role`, { role }),
   activate: (id: string) => post<User>(`/api/v1/users/${id}/activate`),
   deactivate: (id: string) => post<User>(`/api/v1/users/${id}/deactivate`),

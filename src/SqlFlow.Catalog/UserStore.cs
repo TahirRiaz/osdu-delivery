@@ -18,6 +18,9 @@ public enum UserMutation
     /// <summary>Refused because the operation only applies to local users (for example a password reset on an
     /// SSO-provisioned user, whose credential lives in Entra, not here).</summary>
     NotLocal,
+
+    /// <summary>Refused because the requested sign-in name already belongs to a different account.</summary>
+    UsernameTaken,
 }
 
 /// <summary>The outcome of creating a local user.</summary>
@@ -154,7 +157,7 @@ public static class UserStore
         var normalizedRole = role.Trim();
         // Deterministic from the sign-in name (case-folded, since the unique index is case-insensitive), matching
         // the catalog's identity convention, so re-provisioning the same admin never mints a second id.
-        var id = FlowIdentity.FromName($"user/local/{normalizedUsername.ToUpperInvariant()}");
+        var derivedId = FlowIdentity.FromName($"user/local/{normalizedUsername.ToUpperInvariant()}");
 
         return CatalogTransaction.InSerializableAsync(catalog, async () =>
         {
@@ -168,6 +171,15 @@ public static class UserStore
             if (taken)
             {
                 return (UserCreateStatus.UsernameTaken, Guid.Empty);
+            }
+
+            // The derivation belongs to the NAME, and a rename frees a name (see UpdateProfileAsync). When an
+            // earlier holder of this name still owns the derived id, mint a fresh one: a row's identity is its id,
+            // and re-using a taken key would fail the insert on the primary key.
+            var id = derivedId;
+            if (await catalog.Users.AnyAsync(u => u.Id == derivedId, ct).ConfigureAwait(false))
+            {
+                id = Guid.NewGuid();
             }
 
             catalog.Users.Add(new CatalogUser
@@ -303,6 +315,99 @@ public static class UserStore
 
             user.PasswordHash = passwordHash;
             user.UpdatedUtc = nowUtc;
+            return UserMutation.Applied;
+        }, ct);
+    }
+
+    /// <summary>
+    /// Renames a user and rewrites their profile fields. The sign-in name may only change for a local user: an SSO
+    /// user's username is the Entra UPN their token carries, refreshed on every sign-in, so an edit here would be
+    /// silently reverted. Display name and email are editable for either kind (an SSO sign-in refreshes whichever
+    /// of those claims its token carries), and a null clears the stored value.
+    /// </summary>
+    public static Task<UserMutation> UpdateProfileAsync(
+        CatalogDbContext catalog, Guid id, string username, string? email, string? displayName, DateTime nowUtc,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+        var normalizedUsername = username.Trim();
+
+        return CatalogTransaction.InSerializableAsync(catalog, async () =>
+        {
+            var user = await catalog.Users.AsTracking().FirstOrDefaultAsync(u => u.Id == id, ct).ConfigureAwait(false);
+            if (user is null)
+            {
+                return UserMutation.NotFound;
+            }
+
+            // Ordinal, so correcting only the casing of a name is still a real change; the uniqueness probe below
+            // excludes this row, so a case-only rename never collides with itself under the case-insensitive index.
+            if (!string.Equals(user.Username, normalizedUsername, StringComparison.Ordinal))
+            {
+                if (user.Provider != UserProviders.Local)
+                {
+                    catalog.ChangeTracker.Clear();
+                    return UserMutation.NotLocal;
+                }
+
+                var taken = await catalog.Users
+                    .AnyAsync(u => u.Id != id && u.Username == normalizedUsername, ct).ConfigureAwait(false);
+                if (taken)
+                {
+                    catalog.ChangeTracker.Clear();
+                    return UserMutation.UsernameTaken;
+                }
+
+                user.Username = normalizedUsername;
+            }
+
+            user.Email = NormalizeOptional(email);
+            user.DisplayName = NormalizeOptional(displayName);
+            user.UpdatedUtc = nowUtc;
+            return UserMutation.Applied;
+        }, ct);
+    }
+
+    /// <summary>
+    /// Removes a user outright, along with the rows only they could ever see: their access tokens (a surviving one
+    /// would be a live credential), their notification subscriptions and delivery history, and their chat
+    /// conversations. Deleting the last active admin is refused by the same lockout guard the role and active
+    /// mutations use. Run history and activity events are deliberately untouched: they record the actor by name, so
+    /// what a departed user did stays attributable once the account is gone. Deactivation remains the softer option
+    /// when the account may come back.
+    /// </summary>
+    public static Task<UserMutation> DeleteAsync(CatalogDbContext catalog, Guid id, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        return CatalogTransaction.InSerializableAsync(catalog, async () =>
+        {
+            var user = await catalog.Users.AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Id == id, ct).ConfigureAwait(false);
+            if (user is null)
+            {
+                return UserMutation.NotFound;
+            }
+
+            if (user.Active && user.Role == RoleNames.Admin)
+            {
+                var otherActiveAdmins = await catalog.Users
+                    .AnyAsync(u => u.Id != id && u.Active && u.Role == RoleNames.Admin, ct).ConfigureAwait(false);
+                if (!otherActiveAdmins)
+                {
+                    return UserMutation.LastAdmin;
+                }
+            }
+
+            var conversationIds = catalog.ChatConversations.Where(c => c.UserId == id).Select(c => c.Id);
+            await catalog.ChatMessages.Where(m => conversationIds.Contains(m.ConversationId))
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.ChatConversations.Where(c => c.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.NotificationDeliveries.Where(d => d.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.NotificationSubscriptions.Where(s => s.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.AccessTokens.Where(t => t.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await catalog.Users.Where(u => u.Id == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             return UserMutation.Applied;
         }, ct);
     }

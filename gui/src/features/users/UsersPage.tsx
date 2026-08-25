@@ -10,7 +10,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
+import { useAuth } from "../../auth/AuthContext";
 import { isApiError } from "../../api/client";
 import { userApi } from "../../api/endpoints";
 import type { Role, User } from "../../api/types";
@@ -186,6 +187,122 @@ function ResetPasswordDialog({ user, onClose }: { user: User; onClose: () => voi
   );
 }
 
+/**
+ * Editing an existing account's identity fields in a right side sheet (DESIGN.md 7.4), the counterpart of the
+ * create form. The sign-in name is only editable for a local user: an SSO account's username is its Entra
+ * account name, refreshed from the token at every sign-in, so the field is locked and says why.
+ */
+function EditUserSheet({ user, onClose }: { user: User; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [username, setUsername] = useState(user.username);
+  const [email, setEmail] = useState(user.email ?? "");
+  const [displayName, setDisplayName] = useState(user.displayName ?? "");
+  const sso = user.provider !== "local";
+
+  const save = useMutation({
+    mutationFn: () => userApi.updateProfile(user.id, {
+      username: username.trim(),
+      email: email.trim() === "" ? null : email.trim(),
+      displayName: displayName.trim() === "" ? null : displayName.trim(),
+    }),
+    onSuccess: (updated) => {
+      toast.success(`User ${updated.username} updated.`);
+      void queryClient.invalidateQueries({ queryKey: ["users"] });
+      onClose();
+    },
+    onError: (error) => toast.error(errorText(error)),
+  });
+
+  const canSubmit = username.trim() !== "" && !save.isPending;
+
+  return (
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        if (!next && !save.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-xl" data-testid="edit-user-dialog">
+        <SheetHeader>
+          <SheetTitle>Edit {user.username}</SheetTitle>
+        </SheetHeader>
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
+          {save.isError && isApiError(save.error) && <CorrelationError error={save.error} />}
+          {save.isError && !isApiError(save.error) && (
+            <p className="text-[13px] text-destructive">{String(save.error)}</p>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-user-username">Username</Label>
+            <Input
+              id="edit-user-username"
+              required
+              disabled={sso}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="h-8"
+              data-testid="edit-user-username"
+            />
+            {sso && (
+              <p className="text-xs text-muted-foreground">
+                The sign-in name comes from Microsoft Entra ID and is refreshed at each sign-in.
+              </p>
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-user-displayname">Display name</Label>
+            <Input
+              id="edit-user-displayname"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className="h-8"
+              data-testid="edit-user-displayname"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-user-email">Email</Label>
+            <Input
+              id="edit-user-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="h-8"
+              data-testid="edit-user-email"
+            />
+            {sso && (
+              <p className="text-xs text-muted-foreground">
+                Entra refreshes the display name and email it carries at the next sign-in.
+              </p>
+            )}
+          </div>
+        </div>
+        <SheetFooter className="flex-row justify-end">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={save.isPending}
+            data-testid="edit-user-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => save.mutate()}
+            disabled={!canSubmit}
+            data-testid="edit-user-submit"
+          >
+            {save.isPending && <Loader2 className="animate-spin" />}
+            Save
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 /** The create-user form in a right side sheet (DESIGN.md 7.4); the old dialog's testid stays on the content. */
 function CreateUserSheet({ roles, onClose }: { roles: Role[]; onClose: () => void }) {
   const queryClient = useQueryClient();
@@ -321,7 +438,8 @@ function CreateUserSheet({ roles, onClose }: { roles: Role[]; onClose: () => voi
   );
 }
 
-/** User administration: list/filter accounts, create local users, and manage role, password, and active state. */
+/** User administration: list/filter accounts, create local users, edit an account's identity fields, and manage
+ * role, password, active state, and permanent removal. */
 export default function UsersPage() {
   const queryClient = useQueryClient();
   const [usernameInput, setUsernameInput] = useLocalStorageState("sqlflow.filters.users.username", "");
@@ -332,9 +450,13 @@ export default function UsersPage() {
   const [providerFilter, setProviderFilter] = useLocalStorageState("sqlflow.filters.users.provider", "");
   const [activeFilter, setActiveFilter] = useLocalStorageState("sqlflow.filters.users.active", "");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editUser, setEditUser] = useState<User | null>(null);
   const [roleDialogUser, setRoleDialogUser] = useState<User | null>(null);
   const [passwordDialogUser, setPasswordDialogUser] = useState<User | null>(null);
   const [deactivateUser, setDeactivateUser] = useState<User | null>(null);
+  const [deleteUser, setDeleteUser] = useState<User | null>(null);
+  // The signed-in account cannot delete itself (the server refuses too); the menu says so rather than failing late.
+  const { session } = useAuth();
 
   // The username filter debounces keystrokes so each pause, not each character, costs an API call.
   useEffect(() => {
@@ -364,6 +486,19 @@ export default function UsersPage() {
     onError: (error) => {
       toast.error(errorText(error));
       setDeactivateUser(null);
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (user: User) => userApi.remove(user.id),
+    onSuccess: (_result, user) => {
+      toast.success(`User ${user.username} deleted.`);
+      void queryClient.invalidateQueries({ queryKey: ["users"] });
+      setDeleteUser(null);
+    },
+    onError: (error) => {
+      toast.error(errorText(error));
+      setDeleteUser(null);
     },
   });
 
@@ -397,6 +532,12 @@ export default function UsersPage() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" data-testid="user-actions-menu">
+            <DropdownMenuItem
+              onClick={() => setEditUser(row)}
+              data-testid="user-menu-edit"
+            >
+              Edit user
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => setRoleDialogUser(row)}
               data-testid="user-menu-change-role"
@@ -432,6 +573,23 @@ export default function UsersPage() {
                 data-testid="user-menu-activate"
               >
                 Activate
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            {row.username === session?.subject ? (
+              <DropdownMenuItem disabled data-testid="user-menu-delete">
+                <span className="flex flex-col">
+                  Delete user
+                  <span className="text-[11px] text-muted-foreground">This is your own account</span>
+                </span>
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => setDeleteUser(row)}
+                data-testid="user-menu-delete"
+              >
+                Delete user
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
@@ -518,6 +676,9 @@ export default function UsersPage() {
         emptyMessage="No users match the current filters."
       />
 
+      {editUser !== null && (
+        <EditUserSheet user={editUser} onClose={() => setEditUser(null)} />
+      )}
       {roleDialogUser !== null && (
         <ChangeRoleDialog user={roleDialogUser} roles={roles} onClose={() => setRoleDialogUser(null)} />
       )}
@@ -539,6 +700,21 @@ export default function UsersPage() {
           }
         }}
         onClose={() => setDeactivateUser(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteUser !== null}
+        title="Delete user"
+        message={`Permanently delete ${deleteUser?.username ?? ""}? Their access tokens, notification subscriptions, and chat conversations go with the account. Run history keeps naming them. Deactivate instead to keep the account recoverable.`}
+        confirmLabel="Delete"
+        danger
+        busy={remove.isPending}
+        onConfirm={() => {
+          if (deleteUser !== null) {
+            remove.mutate(deleteUser);
+          }
+        }}
+        onClose={() => setDeleteUser(null)}
       />
     </Page>
   );

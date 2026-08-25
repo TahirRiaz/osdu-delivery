@@ -863,8 +863,8 @@ internal static class Program
                         $"on {CatalogDatabase.DescribeTarget(connectionString)} at {nowUtc.ToString("O", CultureInfo.InvariantCulture)}.");
                     return 0;
                 case UserMutation.NotFound:
-                    // The row vanished between lookup and update (a concurrent deactivation-as-delete never removes
-                    // rows, so this is only a genuine delete outside the app); report it plainly.
+                    // The row vanished between lookup and update (an admin deleted the account through the API, or
+                    // it was removed in the database directly); report it plainly.
                     Console.Error.WriteLine($"ERROR  user '{user.Username}' no longer exists.");
                     return 1;
                 case UserMutation.NotLocal:

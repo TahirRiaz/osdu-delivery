@@ -7,10 +7,13 @@ using SqlFlow.Catalog;
 namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>
-/// User and role administration, mapped under the <c>admin</c> scope. Local users are created and credentialed
-/// here; SSO users appear via their first sign-in (JIT) and are only governed here (role, active). There is no
-/// delete: deactivation is the removal, so history stays attributable. The last active admin can never be demoted
-/// or deactivated (the store enforces it), so the catalog cannot be administered into a lockout.
+/// User and role administration, mapped under the <c>admin</c> scope. Local users are created, credentialed,
+/// renamed, and removed here; SSO users appear via their first sign-in (JIT) and are governed here (profile, role,
+/// active, removal). Deactivation is the reversible removal and keeps the account attributable; delete is the
+/// permanent one and takes the user's private rows (tokens, notification subscriptions and history, chat
+/// conversations) with it, while run history and activity events keep naming them. The last active admin can never
+/// be demoted, deactivated, or deleted (the store enforces it), so the catalog cannot be administered into a
+/// lockout, and no admin can delete the account they are signed in as.
 /// </summary>
 public static class UserEndpoints
 {
@@ -19,6 +22,14 @@ public static class UserEndpoints
     /// sites unchanged.</summary>
     public const int MinPasswordLength = LocalPasswords.MinLength;
 
+    /// <summary>Bounds matching the catalog columns, so an over-long field is a 400 with a readable reason instead
+    /// of a truncation error from the database.</summary>
+    private const int MaxUsernameLength = 256;
+
+    private const int MaxDisplayNameLength = 256;
+
+    private const int MaxEmailLength = 320;
+
     public static RouteGroupBuilder MapUserEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -26,6 +37,8 @@ public static class UserEndpoints
         group.MapGet("/users", ListAsync).WithTags("Users").WithName("ListUsers");
         group.MapGet("/users/{id:guid}", GetAsync).WithTags("Users").WithName("GetUser");
         group.MapPost("/users", CreateAsync).WithTags("Users").WithName("CreateUser");
+        group.MapPost("/users/{id:guid}/profile", SetProfileAsync).WithTags("Users").WithName("SetUserProfile");
+        group.MapDelete("/users/{id:guid}", DeleteAsync).WithTags("Users").WithName("DeleteUser");
         group.MapPost("/users/{id:guid}/role", SetRoleAsync).WithTags("Users").WithName("SetUserRole");
         group.MapPost("/users/{id:guid}/activate", ActivateAsync).WithTags("Users").WithName("ActivateUser");
         group.MapPost("/users/{id:guid}/deactivate", DeactivateAsync).WithTags("Users").WithName("DeactivateUser");
@@ -76,6 +89,11 @@ public static class UserEndpoints
             return PasswordTooShort();
         }
 
+        if (TooLong(request.Username, request.Email, request.DisplayName) is { } tooLong)
+        {
+            return tooLong;
+        }
+
         var nowUtc = clock.GetUtcNow().UtcDateTime;
         var hash = hasher.HashPassword(new CatalogUser { Username = request.Username.Trim() }, request.Password);
         var (status, id) = await UserStore.CreateLocalAsync(
@@ -93,6 +111,59 @@ public static class UserEndpoints
                 var created = await UserStore.FindByIdAsync(catalog, id, ct).ConfigureAwait(false);
                 return TypedResults.Created($"/api/v1/users/{id}", ToDto(created!));
         }
+    }
+
+    /// <summary>Renames a user and rewrites their display name and email. Blank optional fields clear the stored
+    /// value; the sign-in name is required and, for an SSO account, immutable here (Entra owns it).</summary>
+    private static async Task<Results<Ok<UserDto>, ProblemHttpResult>> SetProfileAsync(
+        Guid id, UpdateUserProfileRequest request, CatalogDbContext catalog, TimeProvider clock,
+        CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Username))
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, title: "A username is required");
+        }
+
+        if (TooLong(request.Username, request.Email, request.DisplayName) is { } tooLong)
+        {
+            return tooLong;
+        }
+
+        var result = await UserStore.UpdateProfileAsync(
+            catalog, id, request.Username, request.Email, request.DisplayName, clock.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+        return result switch
+        {
+            UserMutation.NotFound => NotFound($"No user with id '{id}'."),
+            UserMutation.UsernameTaken => TypedResults.Problem(statusCode: StatusCodes.Status409Conflict,
+                title: "Username already in use",
+                detail: $"A user named '{request.Username.Trim()}' already exists."),
+            UserMutation.NotLocal => TypedResults.Problem(statusCode: StatusCodes.Status409Conflict,
+                title: "Not a local user",
+                detail: "This account signs in through single sign-on; its sign-in name is the Microsoft Entra ID account name and is refreshed at every sign-in. Its display name and email can still be edited here."),
+            _ => await CurrentDtoAsync(catalog, id, ct).ConfigureAwait(false),
+        };
+    }
+
+    /// <summary>Deletes a user permanently, together with their private rows. Refused for the caller's own account
+    /// and for the last active admin; deactivation is the reversible alternative.</summary>
+    private static async Task<Results<NoContent, ProblemHttpResult>> DeleteAsync(
+        Guid id, CatalogDbContext catalog, HttpContext httpContext, CancellationToken ct)
+    {
+        if (Guid.TryParse(httpContext.User.FindFirst("uid")?.Value, out var callerId) && callerId == id)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status409Conflict,
+                title: "That is your own account",
+                detail: "An admin cannot delete the account they are signed in as; sign in as another admin to remove it.");
+        }
+
+        var result = await UserStore.DeleteAsync(catalog, id, ct).ConfigureAwait(false);
+        return result switch
+        {
+            UserMutation.NotFound => NotFound($"No user with id '{id}'."),
+            UserMutation.LastAdmin => LastAdmin("deleted"),
+            _ => TypedResults.NoContent(),
+        };
     }
 
     private static async Task<Results<Ok<UserDto>, ProblemHttpResult>> SetRoleAsync(
@@ -175,6 +246,28 @@ public static class UserEndpoints
             ? NotFound($"No user with id '{id}'.")
             : TypedResults.Ok(ToDto(user));
     }
+
+    /// <summary>The 400 for an over-long profile field, or null when every field fits its column.</summary>
+    private static ProblemHttpResult? TooLong(string? username, string? email, string? displayName)
+    {
+        if (username?.Trim().Length > MaxUsernameLength)
+        {
+            return FieldTooLong("username", MaxUsernameLength);
+        }
+
+        if (email?.Trim().Length > MaxEmailLength)
+        {
+            return FieldTooLong("email", MaxEmailLength);
+        }
+
+        return displayName?.Trim().Length > MaxDisplayNameLength
+            ? FieldTooLong("display name", MaxDisplayNameLength)
+            : null;
+    }
+
+    private static ProblemHttpResult FieldTooLong(string field, int max)
+        => TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Field too long",
+            detail: $"The {field} must be at most {max} characters.");
 
     private static ProblemHttpResult NotFound(string detail)
         => TypedResults.Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: detail);
