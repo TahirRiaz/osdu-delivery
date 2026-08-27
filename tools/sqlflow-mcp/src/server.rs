@@ -397,6 +397,100 @@ pub struct WarehouseHealthInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MaintenanceInput {
+    /// Which maintenance action to run. Call dwh_maintenance_actions first for the list this deployment
+    /// offers and the thresholds each one accepts.
+    pub action: String,
+    /// The datasource connection reference (a whole ${env:...} / ${keyvault:...} token the estate's pipelines
+    /// declare, or an @alias). Omit to measure the estate's busiest target datasource (the warehouse).
+    pub reference: Option<String>,
+    /// The database to scope to; omit for the connection's default database.
+    pub database: Option<String>,
+    /// Narrow to one schema. The four warehouse-health probes refuse this: they rank and truncate before a
+    /// schema is known, so a narrowed answer would be a page presented as the whole picture.
+    pub schema: Option<String>,
+    /// Narrow to one table or view. Requires schema.
+    #[serde(rename = "objectName")]
+    pub object_name: Option<String>,
+    /// Per-action thresholds, keyed by the parameter names the action declares (see dwh_maintenance_actions).
+    /// An unknown key is an error, so a typo never silently runs with a default.
+    pub thresholds: Option<std::collections::BTreeMap<String, f64>>,
+    /// Most rows to return (default 20, max 1000).
+    pub limit: Option<i64>,
+    /// Route the task to a worker pool that can reach the source (optional).
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DuplicateKeysInput {
+    /// The schema of the table to check.
+    pub schema: String,
+    /// The table to check.
+    #[serde(rename = "objectName")]
+    pub object_name: String,
+    /// The datasource connection reference. Omit to use the estate's busiest target datasource.
+    pub reference: Option<String>,
+    /// The database holding the table; omit for the connection's default database.
+    pub database: Option<String>,
+    /// The columns that identify one real row. LEAVE THIS EMPTY on the first call: the check uses the key the
+    /// table itself declares (SQLFlow's NCI_KeyColumn business-key index first, then a natural primary key,
+    /// then any other unique index). Supply it only to answer the question the check asks back when the table
+    /// declares no usable key, and ask the USER for those columns rather than guessing them.
+    pub columns: Option<Vec<String>>,
+    /// How many of the worst duplicate groups to return (default 20).
+    pub limit: Option<i64>,
+    /// Route the task to a worker pool that can reach the source (optional).
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareBaselineInput {
+    /// What to compare: "inventory" (every table in a schema, both sides, with row counts), "schema" (one
+    /// object's columns position by position), or "data" (one object's rows: count decomposition,
+    /// bidirectional key anti-join, and value parity). Climb the ladder in that order.
+    pub mode: String,
+    /// The schema on the CURRENT (V3) estate.
+    pub schema: String,
+    /// The object on the current estate. Required for schema and data mode; omit for inventory.
+    #[serde(rename = "objectName")]
+    pub object_name: Option<String>,
+    /// The database on the linked server (the OLD estate's database, e.g. "dw-dwh-prod").
+    #[serde(rename = "baselineDatabase")]
+    pub baseline_database: String,
+    /// The linked server reaching the old estate. Omit to use the deployment's default; call
+    /// dwh_maintenance_actions to see which are allowlisted.
+    #[serde(rename = "linkedServer")]
+    pub linked_server: Option<String>,
+    /// The schema on the old side when it differs from `schema`.
+    #[serde(rename = "baselineSchema")]
+    pub baseline_schema: Option<String>,
+    /// The object on the old side when the name differs (a ported table is routinely renamed to match its V3
+    /// source, with a compatibility view keeping the old name).
+    #[serde(rename = "baselineObjectName")]
+    pub baseline_object_name: Option<String>,
+    /// DATA MODE ONLY, and required there: the LOGICAL key, as SQL expressions that identify one real-world
+    /// reading on BOTH estates (e.g. ["Dato", "Sted", "CAST(Klokkeslett AS time)"]). NOT the surrogate primary
+    /// key, which the two estates assign independently and which therefore proves nothing. Establish this with
+    /// the user before running; a wrong key invalidates every number the comparison returns.
+    #[serde(rename = "keyExpressions")]
+    pub key_expressions: Option<Vec<String>>,
+    /// DATA MODE ONLY: the columns compared for value parity. Omit for every column except the identity, the
+    /// bare key columns, and the provenance/audit columns.
+    #[serde(rename = "compareColumns")]
+    pub compare_columns: Option<Vec<String>>,
+    /// DATA MODE ONLY: a predicate applied to BOTH sides, without the WHERE keyword, so a large table can be
+    /// compared one era at a time (e.g. "Dato >= '2025-01-01'").
+    #[serde(rename = "where")]
+    pub filter: Option<String>,
+    /// The datasource connection reference for the CURRENT estate. Omit to use the busiest target datasource.
+    pub reference: Option<String>,
+    /// Most rows any one section returns (default 50).
+    pub limit: Option<i64>,
+    /// Route the task to a worker pool that can reach the source (optional).
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct TriggerRunInput {
     /// The repository id (GUID) that owns the flow.
     #[serde(rename = "repoId")]
@@ -1721,6 +1815,57 @@ impl SqlFlowMcp {
         done(self.run_warehouse_probe(i).await)
     }
 
+    #[tool(
+        description = "List the standard warehouse maintenance actions this deployment offers, the thresholds \
+            each one accepts, and the linked servers a baseline comparison may name. Call this FIRST before \
+            run_dwh_maintenance or compare_baseline: the whole surface is behind a deployment switch, and the \
+            response says whether it is enabled here. Every action is READ-ONLY: it measures the warehouse and \
+            returns findings with review-ready SQL, and SQLFlow never executes a mutating statement from it."
+    )]
+    async fn dwh_maintenance_actions(&self, Parameters(_): Parameters<EmptyInput>) -> String {
+        self.get("/api/v1/dataops/capabilities", &[]).await
+    }
+
+    #[tool(
+        description = "Run one standard warehouse maintenance action on a worker node (requires the 'operate' \
+            scope) and wait for its ranked report: index fragmentation, table space and compression, heap \
+            tables, untrusted constraints, duplicate keys, or the four DMV probes. READ-ONLY: the report \
+            carries findings with suggested SQL for a HUMAN to review and run; nothing is executed. Present \
+            the suggested SQL as a proposal, never as work already done. Check the report's `truncated` flag \
+            before describing a list as complete, and its `question` field before reading the findings as a \
+            verdict: an action that could not determine what to measure asks instead of guessing."
+    )]
+    async fn run_dwh_maintenance(&self, Parameters(i): Parameters<MaintenanceInput>) -> String {
+        done(self.run_maintenance(i).await)
+    }
+
+    #[tool(
+        description = "Check one table for duplicate rows on its key, and wait for the answer. The key is the \
+            one the TABLE declares, in this order: SQLFlow's own NCI_KeyColumn business-key index (the key the \
+            load merges on), then a primary key that is not a bare identity, then any other unique index. A \
+            surrogate identity key is never used, because it is unique by construction and would report zero \
+            duplicates on every table. If the table declares no usable key the result comes back with a \
+            `question` and the candidate columns instead of a count: ASK THE USER which columns identify one \
+            row, then call again passing them as `columns`. Do not guess the key yourself."
+    )]
+    async fn check_duplicate_keys(&self, Parameters(i): Parameters<DuplicateKeysInput>) -> String {
+        done(self.run_duplicate_keys(i).await)
+    }
+
+    #[tool(
+        description = "Compare the current V3 estate against the OLD production baseline over a linked server, \
+            and wait for the report. Read-only on both estates; the aggregation and the anti-join run \
+            server-side, so a large table never streams to a node. Three modes, meant to be climbed in order: \
+            'inventory' (which tables of a schema disagree at all, with row counts), 'schema' (one object's \
+            columns position by position, which decides whether a direct transfer is legal or a compatibility \
+            view is needed), and 'data' (one object's rows: duplicates, a BIDIRECTIONAL key anti-join, and \
+            value parity). Data mode needs the LOGICAL key, which you must agree with the user first: a wrong \
+            key invalidates every number below it, and the surrogate primary key is never the right answer."
+    )]
+    async fn compare_baseline(&self, Parameters(i): Parameters<CompareBaselineInput>) -> String {
+        done(self.run_compare_baseline(i).await)
+    }
+
     // ---- Operate (write) -------------------------------------------------
 
     #[tool(
@@ -1900,58 +2045,48 @@ impl SqlFlowMcp {
         }))
     }
 
-    /// Enqueues one warehouse-health compute task and long-polls it to a terminal state. The default
-    /// datasource is the estate's busiest resolvable SQL Server target (by pipelines writing through it):
-    /// in this product's model that IS the warehouse. The poll budget comfortably exceeds the server's
-    /// two-minute probe budget, so a hung probe still terminates here with the task's own timeout error.
-    async fn run_warehouse_probe(&self, input: WarehouseHealthInput) -> anyhow::Result<String> {
-        const OPERATIONS: [&str; 4] = ["missingIndexes", "statisticsHealth", "indexUsage", "topQueries"];
-        if !OPERATIONS.contains(&input.operation.as_str()) {
-            anyhow::bail!(
-                "Unknown warehouse-health operation '{}'. Valid operations: {}.",
-                input.operation,
-                OPERATIONS.join(", ")
-            );
-        }
+    /// The datasource a data-operations tool measures when the caller names none: the estate's busiest
+    /// resolvable SQL Server target (by pipelines writing through it). In this product's model that IS the
+    /// warehouse, so the common ask needs no reference at all.
+    async fn default_warehouse_reference(&self) -> anyhow::Result<String> {
+        let datasources = self.cp.get("/api/v1/datasources", &[]).await?;
+        datasources
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| {
+                d["resolvable"].as_bool() == Some(true)
+                    && matches!(d["kind"].as_str(), None | Some("MSSQL") | Some("AZDB"))
+            })
+            .max_by_key(|d| d["targetPipelines"].as_i64().unwrap_or(0))
+            .and_then(|d| d["reference"].as_str().map(String::from))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No resolvable SQL Server datasource found. Pass `reference` explicitly \
+                     (see the datasources list)."
+                )
+            })
+    }
 
-        let reference = match input.reference {
-            Some(reference) if !reference.trim().is_empty() => reference.trim().to_string(),
-            _ => {
-                let datasources = self.cp.get("/api/v1/datasources", &[]).await?;
-                datasources
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|d| {
-                        d["resolvable"].as_bool() == Some(true)
-                            && matches!(d["kind"].as_str(), None | Some("MSSQL") | Some("AZDB"))
-                    })
-                    .max_by_key(|d| d["targetPipelines"].as_i64().unwrap_or(0))
-                    .and_then(|d| d["reference"].as_str().map(String::from))
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "No resolvable SQL Server datasource found to probe. Pass `reference` explicitly \
-                         (see the datasources list)."
-                    ))?
-            }
-        };
-
-        let mut body = json!({ "reference": reference, "operation": input.operation });
-        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
-            body["database"] = json!(database.trim());
+    /// Resolves the reference a tool will run against: the caller's, or the estate's warehouse.
+    async fn resolve_reference(&self, reference: Option<String>) -> anyhow::Result<String> {
+        match reference {
+            Some(reference) if !reference.trim().is_empty() => Ok(reference.trim().to_string()),
+            _ => self.default_warehouse_reference().await,
         }
-        // Context-frugal default: 20 ranked rows answer the question; the task row keeps whatever ran.
-        body["limit"] = json!(input.limit.unwrap_or(20));
-        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
-            body["pool"] = json!(pool);
-        }
+    }
 
+    /// Enqueues one compute task and long-polls it to a terminal state. Every interactive datasource tool
+    /// goes through here, so the enqueue, the poll budget, and the truncation of a fat result are decided in
+    /// one place. Each poll long-polls server-side for up to 20s; twelve rounds outlast the server's own
+    /// probe budget, so a hung task still terminates here carrying the task's own timeout error.
+    async fn run_compute_task(&self, label: &str, body: Value) -> anyhow::Result<String> {
         let accepted = self.cp.post("/api/v1/datasources/tasks", body).await?;
         let task_id = accepted["taskId"]
             .as_str()
             .map(String::from)
             .ok_or_else(|| anyhow::anyhow!("The control plane's accept response carried no taskId: {accepted}"))?;
 
-        // Each poll long-polls server-side for up to 20s; twelve rounds outlast the probe's own budget.
         for _ in 0..12 {
             let mut task = self
                 .cp
@@ -1967,10 +2102,141 @@ impl SqlFlowMcp {
         }
 
         anyhow::bail!(
-            "The {} probe (task {task_id}) did not reach a terminal state in time; check it with the \
-             datasources task list.",
-            input.operation
+            "The {label} task {task_id} did not reach a terminal state in time; check it with the \
+             datasources task list."
         )
+    }
+
+    /// The four warehouse-health DMV probes. They keep their own operation (and therefore their historical
+    /// result shape, which the insights recommendations parse) while sharing the enqueue and poll above.
+    async fn run_warehouse_probe(&self, input: WarehouseHealthInput) -> anyhow::Result<String> {
+        const OPERATIONS: [&str; 4] = ["missingIndexes", "statisticsHealth", "indexUsage", "topQueries"];
+        if !OPERATIONS.contains(&input.operation.as_str()) {
+            anyhow::bail!(
+                "Unknown warehouse-health operation '{}'. Valid operations: {}.",
+                input.operation,
+                OPERATIONS.join(", ")
+            );
+        }
+
+        let reference = self.resolve_reference(input.reference).await?;
+        let mut body = json!({ "reference": reference, "operation": input.operation });
+        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
+            body["database"] = json!(database.trim());
+        }
+        // Context-frugal default: 20 ranked rows answer the question; the task row keeps whatever ran.
+        body["limit"] = json!(input.limit.unwrap_or(20));
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        self.run_compute_task(&input.operation, body).await
+    }
+
+    async fn run_maintenance(&self, input: MaintenanceInput) -> anyhow::Result<String> {
+        let reference = self.resolve_reference(input.reference).await?;
+        let mut body = json!({
+            "reference": reference,
+            "operation": "dwhMaintenance",
+            "maintenanceAction": input.action.trim(),
+            "limit": input.limit.unwrap_or(20),
+        });
+        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
+            body["database"] = json!(database.trim());
+        }
+        if let Some(schema) = input.schema.filter(|v| !v.trim().is_empty()) {
+            body["schema"] = json!(schema.trim());
+        }
+        if let Some(object) = input.object_name.filter(|v| !v.trim().is_empty()) {
+            body["objectName"] = json!(object.trim());
+        }
+        if let Some(thresholds) = input.thresholds.filter(|t| !t.is_empty()) {
+            body["thresholds"] = json!(thresholds);
+        }
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        self.run_compute_task(&input.action, body).await
+    }
+
+    async fn run_duplicate_keys(&self, input: DuplicateKeysInput) -> anyhow::Result<String> {
+        let reference = self.resolve_reference(input.reference).await?;
+        let mut body = json!({
+            "reference": reference,
+            "operation": "dwhMaintenance",
+            "maintenanceAction": "duplicateKeys",
+            "schema": input.schema.trim(),
+            "objectName": input.object_name.trim(),
+            "limit": input.limit.unwrap_or(20),
+        });
+        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
+            body["database"] = json!(database.trim());
+        }
+        if let Some(columns) = input.columns.filter(|c| !c.is_empty()) {
+            body["columns"] = json!(columns);
+        }
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        self.run_compute_task("duplicateKeys", body).await
+    }
+
+    async fn run_compare_baseline(&self, input: CompareBaselineInput) -> anyhow::Result<String> {
+        const MODES: [&str; 3] = ["inventory", "schema", "data"];
+        let mode = input.mode.trim().to_ascii_lowercase();
+        if !MODES.contains(&mode.as_str()) {
+            anyhow::bail!(
+                "Unknown compare mode '{}'. Valid modes: {}.",
+                input.mode,
+                MODES.join(", ")
+            );
+        }
+
+        if mode == "data" && input.key_expressions.as_ref().is_none_or(|k| k.is_empty()) {
+            anyhow::bail!(
+                "Data mode needs `keyExpressions`: the LOGICAL key identifying one real-world reading on both \
+                 estates. Agree it with the user before running; the surrogate primary key is not it, because \
+                 the two estates assign it independently."
+            );
+        }
+
+        let reference = self.resolve_reference(input.reference).await?;
+        let mut body = json!({
+            "reference": reference,
+            "operation": "compareBaseline",
+            "compareMode": mode,
+            "schema": input.schema.trim(),
+            "baselineDatabase": input.baseline_database.trim(),
+            "limit": input.limit.unwrap_or(50),
+        });
+        if let Some(object) = input.object_name.filter(|v| !v.trim().is_empty()) {
+            body["objectName"] = json!(object.trim());
+        }
+        if let Some(server) = input.linked_server.filter(|v| !v.trim().is_empty()) {
+            body["linkedServer"] = json!(server.trim());
+        }
+        if let Some(schema) = input.baseline_schema.filter(|v| !v.trim().is_empty()) {
+            body["baselineSchema"] = json!(schema.trim());
+        }
+        if let Some(object) = input.baseline_object_name.filter(|v| !v.trim().is_empty()) {
+            body["baselineObjectName"] = json!(object.trim());
+        }
+        if let Some(keys) = input.key_expressions.filter(|k| !k.is_empty()) {
+            body["keyExpressions"] = json!(keys);
+        }
+        if let Some(columns) = input.compare_columns.filter(|c| !c.is_empty()) {
+            body["compareColumns"] = json!(columns);
+        }
+        if let Some(filter) = input.filter.filter(|v| !v.trim().is_empty()) {
+            body["where"] = json!(filter.trim());
+        }
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        self.run_compute_task(&format!("compareBaseline:{mode}"), body).await
     }
 }
 

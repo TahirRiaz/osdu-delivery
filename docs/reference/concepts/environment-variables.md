@@ -112,6 +112,38 @@ The worker container (`Dockerfile.worker`) is configured through environment onl
 
 The control plane container takes ASP.NET configuration environment names, as `deploy/compose/docker-compose.yml` shows: `ControlPlane__Catalog__ConnectionReference`, `ControlPlane__Jwt__SigningKey`, `ControlPlane__Jwt__BootstrapSecret`, `ControlPlane__Bootstrap__AdminUsername`, `ControlPlane__Bootstrap__AdminPasswordReference`, `ControlPlane__Cors__AllowedOrigins__0`, `ControlPlane__Worker__Enabled`.
 
+### Feature gates
+
+Two control-plane features are OFF unless a deployment turns them on. Both are gated by a single boolean, and with the gate off the feature's endpoints answer with a clear "not enabled" problem rather than failing obscurely, so a GUI or an assistant can explain instead of erroring.
+
+| Variable | Default | Gates |
+| --- | --- | --- |
+| `ControlPlane__Assistant__Enabled` | `false` | The GUI chat assistant (`/api/v1/chat`). Needs the provider settings alongside it; `GET /api/v1/chat/capabilities` reports the switch ([Chat assistant](../guides/chat-assistant.md)) |
+| `ControlPlane__DataOps__Enabled` | `false` | The data-operations surface: the standard warehouse maintenance actions (`dwhMaintenance`) and the old-versus-new baseline comparison (`compareBaseline`). `GET /api/v1/dataops/capabilities` reports the switch ([Data operations](data-operations.md)) |
+
+`ControlPlane__DataOps__Enabled` is the one to set when someone asks for the warehouse maintenance checks, the duplicate-key check, or a migration comparison against old production, and gets a 403 naming the setting:
+
+```bash
+ControlPlane__DataOps__Enabled=true
+
+# The baseline comparison additionally needs its linked servers allowlisted. A linked-server name becomes
+# an identifier in generated SQL and a route into another estate, so it is configuration, never something
+# a request chooses; an unlisted name is refused. Indexed keys bind an array, as with CORS origins.
+ControlPlane__DataOps__Comparison__LinkedServers__0=old-dwh-prod
+ControlPlane__DataOps__Comparison__LinkedServers__1=old-pre-prod
+ControlPlane__DataOps__Comparison__LinkedServers__2=old-sqlflow-prod
+ControlPlane__DataOps__Comparison__LinkedServers__3=OLDPROD
+ControlPlane__DataOps__Comparison__DefaultLinkedServer=old-dwh-prod
+
+# Optional: narrow further to named databases on those servers. Empty (the default) permits any database
+# the linked server's own login can reach, which is usually right because the linked server IS the boundary.
+ControlPlane__DataOps__Comparison__Databases__0=dw-dwh-prod
+```
+
+Turning the gate off again is a complete kill switch: the operations are refused at the trust boundary, so nothing is queued and no node ever opens a connection for them. Everything behind the gate is read-only in any case (the maintenance actions measure the warehouse and emit SQL for a human to review; the comparison reads both estates and writes nothing but a session temp table), so the gate is about limiting the surface a deployment exposes, not about preventing writes.
+
+`DefaultLinkedServer` must be one of `LinkedServers` or the host fails at startup with a message naming the setting, so a typo is caught on deploy rather than on first use.
+
 ## The .sqlflow/env file
 
 `LocalEnvFile.RelativePath` fixes the canonical local-development secrets file at `.sqlflow/env` (src/SqlFlow.Core/Secrets/LocalEnvFile.cs). Before any command runs, the CLI searches for the nearest one and applies it to the process environment:
@@ -172,6 +204,7 @@ sqlflow run flows/orders-ingestion.flow.yaml --repo analytics
 
 ## See also
 
+- [Data operations](data-operations.md)
 - [Connections and secrets](connections-and-secrets.md)
 - [The connections block](../flow/connections.md)
 - [sqlflow db](../cli/db.md)

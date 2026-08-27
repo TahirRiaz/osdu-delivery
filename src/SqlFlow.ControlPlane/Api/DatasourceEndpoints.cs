@@ -4,11 +4,15 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Background;
+using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.Core;
+using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Connections;
+using SqlFlow.Core.Maintenance;
 using SqlFlow.Lineage.Collection;
 
 namespace SqlFlow.ControlPlane.Api;
@@ -31,7 +35,35 @@ public sealed record ComputeTaskRequest(
     string? Database = null, string? Schema = null, string? ObjectName = null, string? NameLike = null,
     string? SearchTerm = null, bool IncludeTables = true, bool IncludeViews = true, bool IncludeSystem = false,
     int Offset = 0, int Limit = 200, int? SampleSize = null, int MaxKeyColumns = 4, int MaxCandidates = 5,
-    bool VerifyCandidates = true, bool TrustDeclaredKeys = true);
+    bool VerifyCandidates = true, bool TrustDeclaredKeys = true,
+    string? MaintenanceAction = null, IReadOnlyDictionary<string, double>? Thresholds = null,
+    IReadOnlyList<string>? Columns = null,
+    string? CompareMode = null, string? LinkedServer = null, string? BaselineDatabase = null,
+    string? BaselineSchema = null, string? BaselineObjectName = null,
+    IReadOnlyList<string>? KeyExpressions = null, IReadOnlyList<string>? CompareColumns = null,
+    string? ExcludeColumnPattern = null, string? Where = null, int SampleRows = 5);
+
+/// <summary>One maintenance action as the discovery endpoint describes it: enough for a GUI to render a form
+/// and for an assistant to fill the fields without reading source.</summary>
+public sealed record MaintenanceActionDto(
+    string Name, string Title, string Description, string WidestScope, string NarrowestScope,
+    IReadOnlyList<string> SupportedKinds, bool IsWarehouseHealthProbe, bool AcceptsColumns, string? Caution,
+    IReadOnlyList<MaintenanceParameterDto> Parameters);
+
+/// <summary>One tunable of a maintenance action, with its bounds and default.</summary>
+public sealed record MaintenanceParameterDto(
+    string Name, string Description, double Minimum, double Maximum, double Default);
+
+/// <summary>
+/// What the data-operations surface offers in THIS deployment: whether the feature switch is on, the standard
+/// warehouse maintenance actions available, and the linked servers a baseline comparison may name. A client
+/// reads this before offering the surface, so a deployment with the switch off shows an explanation rather
+/// than a failing button.
+/// </summary>
+public sealed record DataOpsCapabilitiesDto(
+    bool Enabled, string DisabledReason, IReadOnlyList<MaintenanceActionDto> MaintenanceActions,
+    IReadOnlyList<string> ComparisonLinkedServers, string? DefaultLinkedServer,
+    IReadOnlyList<string> CompareModes);
 
 /// <summary>The accepted-task acknowledgement: the minted task id and its queued status. The task executes
 /// asynchronously; poll <c>GET /api/v1/datasources/tasks/{taskId}</c> (the <c>Location</c> header) for the
@@ -84,8 +116,45 @@ public static class DatasourceEndpoints
             .WithTags("Datasources").WithName("ListComputeTasks");
         group.MapGet("/datasources/tasks/{taskId:guid}", GetTaskAsync)
             .WithTags("Datasources").WithName("GetComputeTask");
+        group.MapGet("/dataops/capabilities", GetDataOpsCapabilities)
+            .WithTags("Datasources").WithName("GetDataOpsCapabilities");
 
         return group;
+    }
+
+    /// <summary>
+    /// What the data-operations surface offers here. Always answers, switch on or off: a client needs to know
+    /// the feature is disabled in order to say so, and the action catalog is a static contract that costs
+    /// nothing to serve.
+    /// </summary>
+    private static Ok<DataOpsCapabilitiesDto> GetDataOpsCapabilities(IOptions<ControlPlaneOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var dataOps = options.Value.DataOps;
+        var linkedServers = dataOps.Comparison.AllowedLinkedServers().ToArray();
+
+        var actions = SqlFlow.Core.Maintenance.MaintenanceActions.All
+            .Select(a => new MaintenanceActionDto(
+                a.Name, a.Title, a.Description,
+                a.WidestScope.ToString(), a.NarrowestScope.ToString(),
+                a.SupportedKinds.Select(k => k.ToString()).ToArray(),
+                a.IsWarehouseHealthProbe, a.AcceptsColumns, a.Caution,
+                a.Parameters
+                    .Select(p => new MaintenanceParameterDto(p.Name, p.Description, p.Minimum, p.Maximum, p.Default))
+                    .ToArray()))
+            .ToArray();
+
+        var reason = dataOps.Enabled
+            ? ""
+            : "The data-operations surface is off. Set ControlPlane__DataOps__Enabled=true to enable the " +
+              "warehouse maintenance actions and the baseline comparison.";
+
+        return TypedResults.Ok(new DataOpsCapabilitiesDto(
+            dataOps.Enabled, reason, actions, linkedServers,
+            string.IsNullOrWhiteSpace(dataOps.Comparison.DefaultLinkedServer)
+                ? null
+                : dataOps.Comparison.DefaultLinkedServer.Trim(),
+            Enum.GetNames<BaselineCompareMode>()));
     }
 
     public static RouteGroupBuilder MapDatasourceComputeEndpoints(this RouteGroupBuilder group)
@@ -229,11 +298,40 @@ public static class DatasourceEndpoints
     }
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> TriggerTaskAsync(
-        ComputeTaskRequest request, CatalogDbContext db, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        ComputeTaskRequest request, CatalogDbContext db, IRunDispatcher dispatcher,
+        IOptions<ControlPlaneOptions> options, ClaimsPrincipal user, CancellationToken ct)
     {
         if (request is null)
         {
             return Problem("A compute task requires a request body.", StatusCodes.Status400BadRequest, "Invalid request");
+        }
+
+        ArgumentNullException.ThrowIfNull(options);
+        var dataOps = options.Value.DataOps;
+        var operation = request.Operation?.Trim() ?? string.Empty;
+
+        // The feature switch is checked BEFORE anything else about the request, so a deployment with the
+        // surface off answers the same way for a well-formed ask and a malformed one: not enabled here.
+        if (ComputeOperations.IsDataOps(operation) && !dataOps.Enabled)
+        {
+            return Problem(
+                $"The '{operation}' operation is part of the data-operations surface, which is not enabled in " +
+                "this deployment. Set ControlPlane__DataOps__Enabled=true to turn it on.",
+                StatusCodes.Status403Forbidden, "Not enabled");
+        }
+
+        BaselineCompareMode? compareMode = null;
+        if (!string.IsNullOrWhiteSpace(request.CompareMode))
+        {
+            if (!Enum.TryParse<BaselineCompareMode>(request.CompareMode.Trim(), ignoreCase: true, out var parsedMode))
+            {
+                return Problem(
+                    $"Unknown compareMode '{request.CompareMode}'. Valid values: " +
+                    $"{string.Join(", ", Enum.GetNames<BaselineCompareMode>())}.",
+                    StatusCodes.Status400BadRequest, "Invalid request");
+            }
+
+            compareMode = parsedMode;
         }
 
         DataSourceKind? kind = null;
@@ -275,11 +373,44 @@ public static class DatasourceEndpoints
             MaxCandidates = request.MaxCandidates,
             VerifyCandidates = request.VerifyCandidates,
             TrustDeclaredKeys = request.TrustDeclaredKeys,
+            MaintenanceAction = Trimmed(request.MaintenanceAction),
+            Thresholds = request.Thresholds,
+            Columns = request.Columns,
+            CompareMode = compareMode,
+            // A comparison that names no linked server takes the deployment's default, so the common case is
+            // one field shorter and a client never has to know the estate's linked-server name.
+            LinkedServer = Trimmed(request.LinkedServer)
+                ?? (compareMode is null ? null : Trimmed(dataOps.Comparison.DefaultLinkedServer)),
+            BaselineDatabase = Trimmed(request.BaselineDatabase),
+            BaselineSchema = Trimmed(request.BaselineSchema),
+            BaselineObjectName = Trimmed(request.BaselineObjectName),
+            KeyExpressions = request.KeyExpressions,
+            CompareColumns = request.CompareColumns,
+            ExcludeColumnPattern = Trimmed(request.ExcludeColumnPattern),
+            Where = Trimmed(request.Where),
+            SampleRows = request.SampleRows,
         };
 
         try
         {
             payload.Validate();
+
+            // The comparison's linked server is a POLICY decision the control plane owns, so it is checked
+            // here against the configured allowlist rather than on the node, which cannot see the policy.
+            if (payload.Operation == ComputeOperations.CompareBaseline)
+            {
+                payload.ToComparisonRequest(dataOps.Comparison.AllowedLinkedServers());
+            }
+
+            if (payload.Operation == ComputeOperations.CompareBaseline
+                && dataOps.Comparison.Databases.Count > 0
+                && !dataOps.Comparison.Databases.Contains(payload.BaselineDatabase!, StringComparer.OrdinalIgnoreCase))
+            {
+                return Problem(
+                    $"The baseline database '{payload.BaselineDatabase}' is not allowlisted for comparison. " +
+                    $"Configured: {string.Join(", ", dataOps.Comparison.Databases)}.",
+                    StatusCodes.Status400BadRequest, "Invalid compute task");
+            }
         }
         catch (SqlFlowException ex)
         {

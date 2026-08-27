@@ -714,6 +714,41 @@
       ]
     },
     {
+      "id": "concept-data-operations",
+      "path": "concepts/data-operations.md",
+      "title": "Data operations: warehouse maintenance actions and baseline comparison",
+      "type": "concept",
+      "summary": "Read-only warehouse maintenance actions and baseline comparison behind the ControlPlane DataOps switch; they measure and suggest SQL, never execute it.",
+      "keywords": [
+        "dataops",
+        "maintenance",
+        "duplicate keys",
+        "baseline comparison",
+        "linked server",
+        "index fragmentation",
+        "migration reconciliation",
+        "compute task"
+      ],
+      "related": [
+        "concept-control-plane",
+        "concept-shadow-catalog",
+        "concept-upsert-and-change-detection",
+        "concept-provenance-and-row-keys"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Maintenance/MaintenanceActions.cs",
+        "src/SqlFlow.Core/Maintenance/MaintenanceModels.cs",
+        "src/SqlFlow.Core/Comparison/BaselineComparisonModels.cs",
+        "src/SqlFlow.Core/Comparison/SqlFragmentGuard.cs",
+        "src/SqlFlow.SqlServer/Maintenance/SqlServerMaintenanceActions.cs",
+        "src/SqlFlow.SqlServer/Maintenance/DuplicateKeysAction.cs",
+        "src/SqlFlow.SqlServer/Comparison/SqlServerBaselineComparer.cs",
+        "src/SqlFlow.Execution/ComputeTaskExecutor.cs",
+        "src/SqlFlow.ControlPlane/Api/DatasourceEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs"
+      ]
+    },
+    {
       "id": "concept-environment-variables",
       "path": "concepts/environment-variables.md",
       "title": "SQLFLOW_* environment variables and the .sqlflow/env file",
@@ -1271,7 +1306,7 @@
       "path": "concepts/shared-target-watermarks.md",
       "title": "Incremental watermarks when several flows share one target table",
       "type": "concept",
-      "summary": "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert on a numeric watermark.",
+      "summary": "Why a fan-in of flows into one target starves all but one writer, how to scope the probe with source.incrementalClause, and why overlapDays is inert on a num...",
       "keywords": [
         "watermark",
         "incremental",
@@ -2020,7 +2055,8 @@
         "repository",
         "scripting",
         "schedule",
-        "schema history"
+        "schema history",
+        "ddl comparison"
       ],
       "yamlPath": "(root, flowType: scm)",
       "related": [
@@ -2039,6 +2075,8 @@
         "src/SqlFlow.SourceControl/SmoDatabaseScripter.cs",
         "src/SqlFlow.SourceControl/SnapshotWriter.cs",
         "src/SqlFlow.SourceControl/LibGit2GitWorkspace.cs",
+        "src/SqlFlow.ControlPlane/Api/GitHistoryEndpoints.cs",
+        "src/SqlFlow.Catalog/CatalogProjection.cs",
         "src/SqlFlow.Execution/DocumentExecutor.cs",
         "src/SqlFlow.Cli/Program.cs"
       ]

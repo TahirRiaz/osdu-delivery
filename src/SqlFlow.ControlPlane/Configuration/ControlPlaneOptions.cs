@@ -40,6 +40,8 @@ public sealed class ControlPlaneOptions
 
     public AssistantChatOptions Assistant { get; set; } = new();
 
+    public DataOpsOptions DataOps { get; set; } = new();
+
     /// <summary>Validates the options, throwing a clear startup error for any missing or unsafe required value.
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
     public void Validate()
@@ -123,6 +125,7 @@ public sealed class ControlPlaneOptions
         Notifications.Validate();
         RunTrace.Validate();
         Assistant.Validate();
+        DataOps.Validate();
     }
 }
 
@@ -852,6 +855,78 @@ public sealed class AssistantChatOptions
         {
             throw new InvalidOperationException(
                 "ControlPlane:Assistant is enabled but incomplete:\n  - " + string.Join("\n  - ", missing));
+        }
+    }
+}
+
+/// <summary>
+/// The data-operations surface: the standard warehouse maintenance actions and the old-versus-new baseline
+/// comparison. Both are READ-ONLY against the warehouse (they measure and emit review-ready SQL; nothing here
+/// executes a mutating statement), and both are OFF by default. A deployment that has finished its migration,
+/// or one that simply does not want an interactive surface reaching its warehouse and its old estate, leaves
+/// the switch alone and the operations are refused at the trust boundary with a clear "not enabled" problem
+/// rather than being queued.
+///
+/// Environment: <c>ControlPlane__DataOps__Enabled=true</c>, and
+/// <c>ControlPlane__DataOps__Comparison__LinkedServers__0=OLDPROD</c> for each linked server that may be
+/// compared against.
+/// </summary>
+public sealed class DataOpsOptions
+{
+    /// <summary>Turns the maintenance and comparison operations on. Off, <c>POST /datasources/tasks</c> refuses
+    /// them and the capabilities endpoint reports the switch, so a GUI or an assistant can explain rather than
+    /// fail.</summary>
+    public bool Enabled { get; set; }
+
+    public BaselineComparisonOptions Comparison { get; set; } = new();
+
+    public void Validate()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        Comparison.Validate();
+    }
+}
+
+/// <summary>
+/// The baseline comparison's configuration. A comparison reaches the OLD estate through a linked server, whose
+/// name becomes an identifier in generated SQL and a route to another database, so the permitted names are
+/// configuration rather than something a request may choose. With none configured the comparison operations
+/// are refused with a message naming this setting; the maintenance actions are unaffected.
+/// </summary>
+public sealed class BaselineComparisonOptions
+{
+    /// <summary>The linked servers a comparison may name (for example OLDPROD). Matched case-insensitively.</summary>
+    public IList<string> LinkedServers { get; set; } = [];
+
+    /// <summary>The linked server used when a request does not name one. Must be in
+    /// <see cref="LinkedServers"/>; blank means a request must always name one explicitly.</summary>
+    public string DefaultLinkedServer { get; set; } = "";
+
+    /// <summary>The databases on those linked servers a comparison may name. Empty means any database the
+    /// linked server's login can reach, which is the usual case: the linked server itself is the boundary.</summary>
+    public IList<string> Databases { get; set; } = [];
+
+    /// <summary>The configured names, trimmed and deduplicated, as the validators consume them.</summary>
+    public IReadOnlyCollection<string> AllowedLinkedServers()
+        => LinkedServers
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    public void Validate()
+    {
+        var allowed = AllowedLinkedServers();
+        if (!string.IsNullOrWhiteSpace(DefaultLinkedServer)
+            && !allowed.Contains(DefaultLinkedServer.Trim(), StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"ControlPlane:DataOps:Comparison:DefaultLinkedServer is '{DefaultLinkedServer}', which is not " +
+                "in ControlPlane:DataOps:Comparison:LinkedServers. Add it there, or clear the default.");
         }
     }
 }

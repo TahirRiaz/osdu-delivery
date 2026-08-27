@@ -3,10 +3,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using SqlFlow.Core;
 using SqlFlow.Core.Catalog;
+using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Connections;
+using SqlFlow.Core.Maintenance;
 using SqlFlow.Core.Profiling;
+using SqlFlow.SqlServer.Comparison;
 using SqlFlow.SqlServer.Health;
+using SqlFlow.SqlServer.Maintenance;
 using SqlFlow.SqlServer.Profiling;
 
 namespace SqlFlow.Execution;
@@ -68,7 +72,12 @@ public sealed class ComputeTaskExecutor
         var timeout = payload.Operation switch
         {
             ComputeOperations.TestConnection => ConnectTimeout,
-            ComputeOperations.DetectUniqueKey => Timeout.InfiniteTimeSpan,
+            // Measurement and comparison are bounded by the work, not by a clock: a fragmentation scan over a
+            // large warehouse and an anti-join over a billion rows both legitimately outrun any deadline that
+            // would be safe for an interactive browse. They stay cancellable (the operator cancel path) and
+            // are backstopped by the queue's running-task expiry, exactly like detectUniqueKey.
+            ComputeOperations.DetectUniqueKey or ComputeOperations.DwhMaintenance or ComputeOperations.CompareBaseline
+                => Timeout.InfiniteTimeSpan,
             _ => BrowseTimeout,
         };
 
@@ -161,6 +170,12 @@ public sealed class ComputeTaskExecutor
             case ComputeOperations.TopQueries:
                 return await WarehouseHealthAsync(payload, reference, kind, ct).ConfigureAwait(false);
 
+            case ComputeOperations.DwhMaintenance:
+                return await MaintenanceAsync(payload, reference, kind, ct).ConfigureAwait(false);
+
+            case ComputeOperations.CompareBaseline:
+                return await CompareBaselineAsync(payload, reference, kind, ct).ConfigureAwait(false);
+
             default:
                 // Validate() has already refused unknown operations at both boundaries; reaching this arm means a
                 // new operation was added to the contract without an executor arm, which must fail loudly.
@@ -238,52 +253,82 @@ public sealed class ComputeTaskExecutor
         return ToJson(report);
     }
 
-    /// <summary>Runs one of the warehouse-health DMV probes. The kind gate ran at enqueue for explicit kinds; an
-    /// @alias resolves its kind here on the node, so the resolved kind is re-checked before any T-SQL runs
-    /// against a foreign engine, exactly like detectUniqueKey. The result wraps the probe's rows with the
-    /// database they were measured in, so a task history is self-describing.</summary>
+    /// <summary>
+    /// Runs one of the four warehouse-health probes. They ARE maintenance actions of the same name, so this
+    /// goes through the maintenance registry rather than re-querying the DMVs: one code path, one set of
+    /// thresholds, one place a probe's SQL lives. Only the SHAPE differs, and deliberately so: this operation
+    /// answers with the report's native Detail payload, which is the result shape the insights recommendations
+    /// have always parsed. A caller wanting the ranked findings asks for dwhMaintenance instead.
+    /// </summary>
     private async Task<string> WarehouseHealthAsync(
         ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
     {
+        var request = new MaintenanceRequest
+        {
+            Action = payload.Operation,
+            Scope = new MaintenanceScope { Database = NullIfBlank(payload.Database) },
+            Limit = payload.Limit,
+        };
+
+        var report = await RunMaintenanceAsync(request, reference, kind, ct).ConfigureAwait(false);
+        return ToJson(report.Detail);
+    }
+
+    /// <summary>Runs one standard warehouse maintenance action and returns the full ranked report.</summary>
+    private async Task<string> MaintenanceAsync(
+        ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
+    {
+        // Re-validating on the node is not belt-and-braces: the queue row is data from the database, and the
+        // resolved kind of an @alias is only knowable here.
+        var request = payload.ToMaintenanceRequest();
+        var report = await RunMaintenanceAsync(request, reference, kind, ct).ConfigureAwait(false);
+        return ToJson(report);
+    }
+
+    private async Task<MaintenanceReport> RunMaintenanceAsync(
+        MaintenanceRequest request, string reference, DataSourceKind? kind, CancellationToken ct)
+    {
+        var resolved = await _resolver.ResolveAsync(reference, ConnectionRole.Source, kind, ct).ConfigureAwait(false);
+        MaintenanceActions.Validate(request, resolved.Kind);
+
+        return await SqlServerMaintenanceActions.RunAsync(
+            new MaintenanceExecutionContext
+            {
+                ConnectionString = resolved.CanonicalString,
+                Kind = resolved.Kind,
+                Request = request,
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Compares the current estate against the OLD production baseline over a linked server. The allowlist
+    /// decision was made and recorded at enqueue, so the node re-runs every shape and fragment check against
+    /// the linked server the payload names rather than re-deciding a policy it cannot see.
+    /// </summary>
+    private async Task<string> CompareBaselineAsync(
+        ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
+    {
+        var request = payload.ToComparisonRequest(
+            payload.LinkedServer is null ? [] : [payload.LinkedServer]);
+
         var resolved = await _resolver.ResolveAsync(reference, ConnectionRole.Source, kind, ct).ConfigureAwait(false);
         if (resolved.Kind is not (DataSourceKind.MSSQL or DataSourceKind.AZDB))
         {
             throw new SqlFlowException(
-                $"{payload.Operation} reads SQL Server dynamic management views; the source resolved to kind " +
-                $"'{resolved.Kind}'. Only SQL Server and Azure SQL sources are supported.");
+                "Baseline comparison runs its aggregation and anti-join in T-SQL over a linked server; the " +
+                $"source resolved to kind '{resolved.Kind}'. Only SQL Server and Azure SQL sources are supported.");
         }
 
-        var database = NullIfBlank(payload.Database);
-        switch (payload.Operation)
+        return request.Mode switch
         {
-            case ComputeOperations.MissingIndexes:
-            {
-                var advisories = await SqlServerHealthProbe
-                    .MissingIndexesAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
-                return ToJson(new { database = advisories.Count > 0 ? advisories[0].Database : database, advisories });
-            }
-
-            case ComputeOperations.StatisticsHealth:
-            {
-                var statistics = await SqlServerHealthProbe
-                    .StatisticsHealthAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
-                return ToJson(new { database, statistics, staleCount = statistics.Count(s => s.IsStale) });
-            }
-
-            case ComputeOperations.IndexUsage:
-            {
-                var indexes = await SqlServerHealthProbe
-                    .IndexUsageAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
-                return ToJson(new { database, indexes, unusedCount = indexes.Count(i => i.IsUnused) });
-            }
-
-            default:
-            {
-                var queries = await SqlServerHealthProbe
-                    .TopQueriesAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
-                return ToJson(new { database, queries });
-            }
-        }
+            BaselineCompareMode.Inventory => ToJson(await SqlServerBaselineComparer
+                .InventoryAsync(resolved.CanonicalString, request, ct).ConfigureAwait(false)),
+            BaselineCompareMode.Schema => ToJson(await SqlServerBaselineComparer
+                .SchemaAsync(resolved.CanonicalString, request, ct).ConfigureAwait(false)),
+            _ => ToJson(await SqlServerBaselineComparer
+                .DataAsync(resolved.CanonicalString, request, ct).ConfigureAwait(false)),
+        };
     }
 
     private static ThreePartName RequiredName(ComputeTaskPayload payload) => new()
