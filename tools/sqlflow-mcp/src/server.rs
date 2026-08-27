@@ -397,6 +397,57 @@ pub struct WarehouseHealthInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TableKeyInput {
+    /// The object key, as lineage_objects / search_objects report it.
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TableJoinsInput {
+    /// The object key to get join paths for, as lineage_objects / search_objects report it.
+    pub key: String,
+    /// Narrow to the joins reaching ONE other table, matched on its name or key (case-insensitive,
+    /// substring). Use this to answer "how do I join A to B" in a single call.
+    pub other: Option<String>,
+    /// Most join paths to return per direction (default 20).
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DetectUniqueKeyInput {
+    /// The schema of the table to profile.
+    pub schema: String,
+    /// The table or view to profile.
+    #[serde(rename = "objectName")]
+    pub object_name: String,
+    /// The datasource connection reference. Omit to use the estate's busiest target datasource.
+    pub reference: Option<String>,
+    /// The database holding the table; omit for the connection's default database.
+    pub database: Option<String>,
+    /// Rows to sample: omit to auto-sample by table size, 0 to force a full scan, or an explicit count
+    /// between 1000 and 10,000,000. A sampled candidate is still verified against the whole table unless
+    /// verifyCandidates is false, so sampling costs accuracy only when verification is also turned off.
+    #[serde(rename = "sampleSize")]
+    pub sample_size: Option<i64>,
+    /// The widest composite key to consider (default 4, max 8). Raising it grows the search combinatorially.
+    #[serde(rename = "maxKeyColumns")]
+    pub max_key_columns: Option<i64>,
+    /// How many candidate keys to report (default 5).
+    #[serde(rename = "maxCandidates")]
+    pub max_candidates: Option<i64>,
+    /// Confirm each sampled candidate against the WHOLE table before reporting it (default true). Leave it
+    /// on: a candidate that is unique in a sample and not in the table is exactly the wrong answer.
+    #[serde(rename = "verifyCandidates")]
+    pub verify_candidates: Option<bool>,
+    /// Answer straight from an enforced unique index or constraint without reading rows, when one exists
+    /// (default true). Set false to profile the data regardless of what the table declares.
+    #[serde(rename = "trustDeclaredKeys")]
+    pub trust_declared_keys: Option<bool>,
+    /// Route the task to a worker pool that can reach the source (optional).
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DuplicateKeysInput {
     /// The schema of the table to check.
     pub schema: String,
@@ -1178,6 +1229,44 @@ impl SqlFlowMcp {
     )]
     async fn describe_object(&self, Parameters(i): Parameters<KeyInput>) -> String {
         self.get("/api/v1/lineage/objects/dossier", &[("key", i.key)]).await
+    }
+
+    #[tool(
+        description = "What identifies ONE row of a table: its interpreted primary/business key columns in key \
+            order, and where that interpretation came from (a declared constraint, a flow's merge key, or the \
+            codebase). Metadata only, so it is instant and reads no data. USE THIS when you need the grain of \
+            a table, a column to join or group on, or a key to deduplicate by. If it answers that no key is \
+            known, or you need to know what the DATA actually supports rather than what the codebase claims, \
+            follow up with detect_unique_key, which profiles the rows."
+    )]
+    async fn get_table_key(&self, Parameters(i): Parameters<TableKeyInput>) -> String {
+        done(self.table_key(i).await)
+    }
+
+    #[tool(
+        description = "How a table JOINS other tables: the join paths the estate itself uses, each naming the \
+            other table, this table's columns paired positionally with the other side's, whether it came from \
+            a declared FOREIGN KEY or was inferred from the codebase's own equality predicates, and how many \
+            distinct scripts use it (the highest count is the canonical path). Pass `other` to get just the \
+            joins between two named tables. USE THIS before writing any query that spans more than one table, \
+            instead of guessing a join condition from column names: a warehouse rarely declares foreign keys, \
+            so the observed predicates are the real data model."
+    )]
+    async fn get_table_joins(&self, Parameters(i): Parameters<TableJoinsInput>) -> String {
+        done(self.table_joins(i).await)
+    }
+
+    #[tool(
+        description = "PROFILE a table's rows to discover what actually identifies them uniquely: the minimal \
+            column combination(s) with no duplicates, reported with the duplicate counts that ruled the others \
+            out. This reads DATA on a worker node and can take a while on a large table, so prefer \
+            get_table_key first, which answers from metadata instantly. USE THIS when no key is declared, when \
+            you suspect the declared key is wrong, or when check_duplicate_keys came back asking which columns \
+            identify a row. By default it answers straight from an enforced unique index when one exists \
+            (trustDeclaredKeys) and verifies every sampled candidate against the whole table."
+    )]
+    async fn detect_unique_key(&self, Parameters(i): Parameters<DetectUniqueKeyInput>) -> String {
+        done(self.run_detect_unique_key(i).await)
     }
 
     #[tool(
@@ -2089,6 +2178,157 @@ impl SqlFlowMcp {
         }
 
         self.run_compute_task(&input.operation, body).await
+    }
+
+    /// The interpreted key, projected out of the dossier. The dossier is one catalog read; trimming it here
+    /// is what keeps a narrow question from spending a wide answer's worth of context.
+    async fn table_key(&self, input: TableKeyInput) -> anyhow::Result<String> {
+        let dossier = self.cp.get("/api/v1/lineage/objects/dossier", &[("key", input.key.clone())]).await?;
+        let object = &dossier["object"];
+        if object.is_null() {
+            anyhow::bail!(
+                "No lineage object matches the key '{}'. Find it with search_objects or lineage_objects.",
+                input.key
+            );
+        }
+
+        let key_columns = object["keyColumns"].as_str().unwrap_or_default();
+        let columns: Vec<&str> = if key_columns.is_empty() {
+            Vec::new()
+        } else {
+            key_columns.split(',').map(str::trim).filter(|c| !c.is_empty()).collect()
+        };
+
+        Ok(json_str(&json!({
+            "object": object["key"],
+            "name": object["name"],
+            "database": object["database"],
+            "schema": object["schema"],
+            "kind": object["kind"],
+            "keyColumns": columns,
+            // Constraint = a declared PK/unique constraint, Declared = named by a flow, Merge = the key the
+            // load merges on. Null means nothing in the codebase names a key for this object at all.
+            "keyOrigin": object["keyOrigin"],
+            "hasKey": !columns.is_empty(),
+            "columnCount": dossier["columns"].as_array().map(|c| c.len()).unwrap_or(0),
+            "note": if columns.is_empty() {
+                "No key is interpreted for this object from the codebase. Run detect_unique_key to profile \
+                 the rows and find what actually identifies them."
+            } else {
+                "This is the key as the CODEBASE interprets it, not a measurement of the data. Run \
+                 detect_unique_key to confirm it holds, or check_duplicate_keys to count violations."
+            },
+        })))
+    }
+
+    /// The join paths, projected out of the dossier and rendered as readable equalities.
+    async fn table_joins(&self, input: TableJoinsInput) -> anyhow::Result<String> {
+        let dossier = self.cp.get("/api/v1/lineage/objects/dossier", &[("key", input.key.clone())]).await?;
+        if dossier["object"].is_null() {
+            anyhow::bail!(
+                "No lineage object matches the key '{}'. Find it with search_objects or lineage_objects.",
+                input.key
+            );
+        }
+
+        let limit = input.limit.unwrap_or(20).clamp(1, 200) as usize;
+        let filter = input.other.as_deref().map(str::to_ascii_lowercase);
+        let own_name = dossier["object"]["name"].as_str().unwrap_or("this").to_string();
+
+        let project = |list: &Value, direction: &str| -> Vec<Value> {
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter(|r| match &filter {
+                    None => true,
+                    Some(needle) => {
+                        let name = r["otherName"].as_str().unwrap_or_default().to_ascii_lowercase();
+                        let key = r["otherObjectKey"].as_str().unwrap_or_default().to_ascii_lowercase();
+                        name.contains(needle.as_str()) || key.contains(needle.as_str())
+                    }
+                })
+                .take(limit)
+                .map(|r| {
+                    let own: Vec<&str> = r["ownColumns"].as_str().unwrap_or_default().split(',').map(str::trim).collect();
+                    let other: Vec<&str> = r["otherColumns"].as_str().unwrap_or_default().split(',').map(str::trim).collect();
+                    let other_name = r["otherName"].as_str().unwrap_or("other");
+                    // The ON clause the estate itself uses, rendered so it can be pasted into a query.
+                    let on = own
+                        .iter()
+                        .zip(other.iter())
+                        .map(|(l, r2)| format!("{own_name}.{l} = {other_name}.{r2}"))
+                        .collect::<Vec<_>>()
+                        .join(" AND ");
+                    json!({
+                        "direction": direction,
+                        "otherObject": r["otherObjectKey"],
+                        "otherName": other_name,
+                        "otherDatabase": r["otherDatabase"],
+                        "otherSchema": r["otherSchema"],
+                        "on": on,
+                        "ownColumns": own,
+                        "otherColumns": other,
+                        // Constraint = an explicit FOREIGN KEY in the codebase; Join = inferred from the
+                        // equality predicates the code actually joins on.
+                        "origin": r["origin"],
+                        "occurrences": r["occurrences"],
+                        "constraintName": r["name"],
+                    })
+                })
+                .collect()
+        };
+
+        let references = project(&dossier["references"], "references");
+        let referenced_by = project(&dossier["referencedBy"], "referencedBy");
+        let total = references.len() + referenced_by.len();
+
+        Ok(json_str(&json!({
+            "object": dossier["object"]["key"],
+            "name": own_name,
+            "keyColumns": dossier["object"]["keyColumns"],
+            "joins": references.into_iter().chain(referenced_by).collect::<Vec<_>>(),
+            "note": if total == 0 {
+                "No join path is recorded for this object. Either nothing in the codebase joins it, or the \
+                 code that does has not been synced. Do NOT invent a join condition from column names."
+            } else {
+                "Ordered by occurrences: the highest count is the join the estate uses most, and is the \
+                 canonical path. 'origin' Constraint is a declared foreign key; Join was inferred from real \
+                 query predicates."
+            },
+        })))
+    }
+
+    async fn run_detect_unique_key(&self, input: DetectUniqueKeyInput) -> anyhow::Result<String> {
+        let reference = self.resolve_reference(input.reference).await?;
+        let mut body = json!({
+            "reference": reference,
+            "operation": "detectUniqueKey",
+            "schema": input.schema.trim(),
+            "objectName": input.object_name.trim(),
+        });
+        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
+            body["database"] = json!(database.trim());
+        }
+        if let Some(sample) = input.sample_size {
+            body["sampleSize"] = json!(sample);
+        }
+        if let Some(columns) = input.max_key_columns {
+            body["maxKeyColumns"] = json!(columns);
+        }
+        if let Some(candidates) = input.max_candidates {
+            body["maxCandidates"] = json!(candidates);
+        }
+        if let Some(verify) = input.verify_candidates {
+            body["verifyCandidates"] = json!(verify);
+        }
+        if let Some(trust) = input.trust_declared_keys {
+            body["trustDeclaredKeys"] = json!(trust);
+        }
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        self.run_compute_task("detectUniqueKey", body).await
     }
 
     async fn run_duplicate_keys(&self, input: DuplicateKeysInput) -> anyhow::Result<String> {

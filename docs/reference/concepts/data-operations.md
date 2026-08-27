@@ -192,8 +192,32 @@ the builder, so a name carrying its own bracket is refused rather than escaped.
 
 ## Composing SQL against these tables
 
-The join graph is not part of this surface, because it already exists. `describe_object`
-(`GET /api/v1/lineage/objects/dossier`) returns a table's columns, its interpreted key, and its relationships
-to other tables, where `origin` distinguishes an explicit FOREIGN KEY from a join inferred from the
-codebase's own equality predicates, and `occurrences` counts the distinct scripts exhibiting it so the
-canonical join path ranks highest. That is the metadata to compose a query from, rather than guessing joins.
+The metadata needed to author a correct query is not part of this surface, because it already exists. It is
+reached through three tools that each answer ONE question, so a model calls the right one instead of having
+to know that a general-purpose aggregate happens to contain the answer:
+
+| Tool | Question | Cost |
+| --- | --- | --- |
+| `get_table_key` | What identifies one row of this table? | Metadata, instant |
+| `get_table_joins` | How does this table join to others? | Metadata, instant |
+| `detect_unique_key` | What does the DATA actually support as a key? | Profiles rows on a worker node |
+
+`get_table_key` and `get_table_joins` are projections of the object dossier
+(`GET /api/v1/lineage/objects/dossier`), trimmed to one answer each: a narrow question should not spend a
+wide answer's worth of context. `describe_object` still returns the whole dossier when a model genuinely
+wants everything at once.
+
+The join graph is the part worth understanding. SQLFlow does not rely on declared foreign keys, because a
+warehouse rarely has them. `TSqlLineageExtractor` reads the AND-connected column equalities out of every view
+and procedure it parses, folding a composite key into a single observation and discarding OR branches and
+non-equality predicates as filters rather than join identity. Those land in `CatalogObjectRelationship` with:
+
+- **`origin`** - `Constraint` for an explicit FOREIGN KEY clause, `Join` for a relationship inferred from the
+  predicates the code actually joins on;
+- **`occurrences`** - how many distinct scripts exhibited it, so the join the estate uses most ranks first and
+  a one-off join in a single report does not outrank the canonical path;
+- **`tier`** - Declared / Observed / Derived, the provenance of the strongest observation.
+
+`get_table_joins` renders each one as a pasteable `ON` clause, and takes an `other` argument to answer "how do
+I join A to B" in one call. When it reports no join path, that is a real answer: nothing in the codebase joins
+those tables, and a join condition guessed from matching column names is not a substitute.

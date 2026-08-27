@@ -176,6 +176,10 @@ transform:
 
 Declared facts for this flow: `Reads` the file `data/orders.csv`, `Writes` `demo.Orders_Pre` (Table), and `Writes` `demo.v_Orders_Pre` (View). After a run, the observed tier re-derives the same graph from the executed SQL, stamped with the run id; with `--connect`, the derived tier expands `demo.usp_BuildOrderFact` and the rollup procedures so the downstream `sp` flows trace through their procedure bodies to `demo.Fact_OrderSummary` and beyond.
 
+## Reaching the relationships
+
+The interpreted relationships are served on the object dossier (`GET /api/v1/lineage/objects/dossier`) and, narrowed to one answer, through the `get_table_joins` and `get_table_key` MCP tools. See [Data operations](data-operations.md) for how a model is meant to use them when authoring SQL.
+
 ## See also
 
 - [sqlflow lineage](../cli/lineage.md): the command, its flags, and output shapes
