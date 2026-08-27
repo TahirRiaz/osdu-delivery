@@ -100,6 +100,8 @@ public static class ScriptFactBuilder
                 LeftColumns = join.LeftColumns,
                 Right = Ref(join.Right),
                 RightColumns = join.RightColumns,
+                Operators = join.Operators,
+                JoinType = join.JoinType,
                 Tier = tier,
                 ScriptId = scriptId,
             });

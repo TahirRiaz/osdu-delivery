@@ -22,11 +22,31 @@ public sealed class LineageDataModelTests
     {
         var deps = Extract("SELECT * FROM DW.dbo.Orders o JOIN DW.dbo.Customers c ON o.CustomerId = c.Id;");
 
+        // The observation is canonicalised onto the ordinally-smaller table rather than kept in the order the
+        // predicate happened to be written. That is what makes "o.CustomerId = c.Id" and "c.Id = o.CustomerId"
+        // one relationship instead of two, and it is why a predicate tree mixing both directions does not
+        // report the same join twice. The columns stay paired with their own side across the swap.
         var join = Assert.Single(deps.Joins);
-        Assert.Equal("dw.dbo.orders", join.Left.Key);
-        Assert.Equal(["CustomerId"], join.LeftColumns);
-        Assert.Equal("dw.dbo.customers", join.Right.Key);
-        Assert.Equal(["Id"], join.RightColumns);
+        Assert.Equal("dw.dbo.customers", join.Left.Key);
+        Assert.Equal(["Id"], join.LeftColumns);
+        Assert.Equal("dw.dbo.orders", join.Right.Key);
+        Assert.Equal(["CustomerId"], join.RightColumns);
+    }
+
+    [Fact]
+    public void JoinOn_FoldsBothWritingDirections_IntoOneObservation()
+    {
+        // The same relationship written each way round in two scripts, and once with the sides mixed inside a
+        // single ON clause. Every form must land on the same canonical observation.
+        var written = Extract("SELECT * FROM DW.dbo.Orders o JOIN DW.dbo.Customers c ON o.CustomerId = c.Id;");
+        var reversed = Extract("SELECT * FROM DW.dbo.Customers c JOIN DW.dbo.Orders o ON c.Id = o.CustomerId;");
+
+        var a = Assert.Single(written.Joins);
+        var b = Assert.Single(reversed.Joins);
+        Assert.Equal(a.Left.Key, b.Left.Key);
+        Assert.Equal(a.LeftColumns, b.LeftColumns);
+        Assert.Equal(a.Right.Key, b.Right.Key);
+        Assert.Equal(a.RightColumns, b.RightColumns);
     }
 
     [Fact]
@@ -49,9 +69,11 @@ public sealed class LineageDataModelTests
             SELECT * FROM DW.dbo.Orders o, DW.dbo.Customers c WHERE o.CustomerId = c.Id;
             """);
 
+        // Canonical orientation, as everywhere else: the pair, not the writing order, is the identity.
         var join = Assert.Single(deps.Joins);
-        Assert.Equal("dw.dbo.orders", join.Left.Key);
-        Assert.Equal("dw.dbo.customers", join.Right.Key);
+        Assert.Equal("dw.dbo.customers", join.Left.Key);
+        Assert.Equal("dw.dbo.orders", join.Right.Key);
+        Assert.Equal(JoinTypes.Where, join.JoinType);
     }
 
     [Fact]

@@ -181,6 +181,8 @@ public static class CatalogProjection
             FromColumns = string.Join(",", relationship.FromColumns),
             ToObjectKey = relationship.ToObjectKey,
             ToColumns = string.Join(",", relationship.ToColumns),
+            Operators = string.Join(",", relationship.Operators),
+            JoinTypes = string.Join(",", relationship.JoinTypes),
             Origin = relationship.Origin.ToString(),
             Tier = relationship.Tier.ToString(),
             Occurrences = relationship.Occurrences,

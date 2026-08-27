@@ -45,7 +45,8 @@ public sealed record ObjectDetailDto(
 public sealed record ObjectRelationshipDto(
     string? Name, string Origin, string Tier, int Occurrences,
     string OtherObjectKey, string? OtherDatabase, string? OtherSchema, string OtherName,
-    string OwnColumns, string OtherColumns);
+    string OwnColumns, string OtherColumns,
+    IReadOnlyList<string> Operators, IReadOnlyList<string> JoinTypes, bool IsRangeJoin);
 
 /// <summary>
 /// One hop of a join path: the two objects it connects and the columns it connects them on, positionally
@@ -55,7 +56,8 @@ public sealed record ObjectRelationshipDto(
 public sealed record JoinHopDto(
     string FromObjectKey, string FromName, string ToObjectKey, string ToName,
     IReadOnlyList<string> FromColumns, IReadOnlyList<string> ToColumns,
-    string On, string Origin, string Tier, int Occurrences, string? ConstraintName);
+    string On, string Origin, string Tier, int Occurrences, string? ConstraintName,
+    IReadOnlyList<string> JoinTypes, bool IsRangeJoin);
 
 /// <summary>
 /// One way to join the origin object to a target: the hops in order, and how well supported the route is.
@@ -948,12 +950,18 @@ public static class LineageEndpoints
             .ToListAsync(ct).ConfigureAwait(false);
 
         var deduped = rawRelationships
-            .GroupBy(r => (r.FromObjectKey, r.FromColumns, r.ToObjectKey, r.ToColumns, r.Origin), r => r)
+            .GroupBy(r => (r.FromObjectKey, r.FromColumns, r.ToObjectKey, r.ToColumns, r.Origin, r.Operators), r => r)
             .Select(g => new RelationshipAggregate(
                 g.Select(r => r.Name).FirstOrDefault(n => n is not null),
                 g.Key.FromObjectKey, g.Key.FromColumns, g.Key.ToObjectKey, g.Key.ToColumns, g.Key.Origin,
                 g.Select(r => r.Tier).OrderByDescending(TierRank).First(),
-                g.Max(r => r.Occurrences)))
+                g.Max(r => r.Occurrences),
+                g.Key.Operators,
+                // Repos are deduplicated here, so the join types union across them for the same reason they
+                // union across scripts: two repos disagreeing is still a disagreement worth showing.
+                string.Join(",", g.SelectMany(r => SplitColumns(r.JoinTypes))
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(t => t, StringComparer.Ordinal))))
             .ToList();
 
         var otherKeys = deduped
@@ -966,11 +974,17 @@ public static class LineageEndpoints
         {
             var otherKey = outgoing ? r.ToObjectKey : r.FromObjectKey;
             var found = locations.TryGetValue(otherKey, out var other);
+            // Reading the relationship from the other end inverts every comparison, so the operators mirror
+            // with the columns; leaving them unmirrored would render a temporal join backwards.
+            var operators = SplitColumns(r.Operators);
             return new ObjectRelationshipDto(
                 r.Name, r.Origin, r.Tier, r.Occurrences,
                 otherKey, other.Database, other.Schema, found ? other.Name : otherKey,
                 OwnColumns: outgoing ? r.FromColumns : r.ToColumns,
-                OtherColumns: outgoing ? r.ToColumns : r.FromColumns);
+                OtherColumns: outgoing ? r.ToColumns : r.FromColumns,
+                Operators: outgoing ? operators : operators.Select(MirrorComparison).ToArray(),
+                JoinTypes: SplitColumns(r.JoinTypes),
+                IsRangeJoin: operators.Count > 0);
         }
 
         var references = deduped.Where(r => r.FromObjectKey == key)
@@ -1499,7 +1513,7 @@ public static class LineageEndpoints
     /// <summary>One deduplicated data-model relationship while the dossier folds the per-repo rows.</summary>
     private sealed record RelationshipAggregate(
         string? Name, string FromObjectKey, string FromColumns, string ToObjectKey, string ToColumns,
-        string Origin, string Tier, int Occurrences);
+        string Origin, string Tier, int Occurrences, string Operators, string JoinTypes);
 
     private static async Task<Results<Ok<PagedResult<EdgeDto>>, ProblemHttpResult>> ListEdgesAsync(
         Guid repoId, CatalogDbContext db, Guid? pipelineId, string? objectKey, string? relation, string? tier,
@@ -2379,10 +2393,20 @@ public static class LineageEndpoints
                     var currentName = names.TryGetValue(currentKey, out var c) ? c.Name : currentKey;
                     var otherName = names.TryGetValue(otherKey, out var o) ? o.Name : otherKey;
 
+                    // Walking the relationship backwards inverts every comparison, so the operators mirror
+                    // along with the columns. Rendering "d.ValidFrom >= f.Dato" where the estate wrote
+                    // "f.Dato >= d.ValidFrom" would invert a temporal join and silently select the wrong rows.
+                    var operators = SplitColumns(relationship.Operators);
+                    if (!forward)
+                    {
+                        operators = operators.Select(MirrorComparison).ToArray();
+                    }
+
                     var hopDto = new JoinHopDto(
                         currentKey, currentName, otherKey, otherName, ownColumns, otherColumns,
-                        RenderOn(currentName, ownColumns, otherName, otherColumns),
-                        relationship.Origin, relationship.Tier, relationship.Occurrences, relationship.Name);
+                        RenderOn(currentName, ownColumns, otherName, otherColumns, operators),
+                        relationship.Origin, relationship.Tier, relationship.Occurrences, relationship.Name,
+                        SplitColumns(relationship.JoinTypes), operators.Count > 0);
 
                     var chain = new List<JoinHopDto>(hopsSoFar) { hopDto };
 
@@ -2471,16 +2495,34 @@ public static class LineageEndpoints
         }
     }
 
+    /// <summary>The same comparison read from the other side: reading "a &gt;= b" from b's end is
+    /// "b &lt;= a". Applied whenever a relationship is projected from the opposite direction.</summary>
+    private static string MirrorComparison(string comparison) => comparison switch
+    {
+        ">" => "<",
+        ">=" => "<=",
+        "<" => ">",
+        "<=" => ">=",
+        _ => comparison,
+    };
+
     private static IReadOnlyList<string> SplitColumns(string columns)
         => columns.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    /// <summary>The equality list for one hop, using each side's object name as the alias. Column counts can
+    /// <summary>
+    /// The predicate list for one hop, using each side's object name as the alias. An empty operator list is
+    /// an equi-join, which is the common case; a range join carries one operator per pair, so a temporal
+    /// lookup renders as the interval containment it actually is rather than as a key match. Column counts can
     /// legitimately differ if a relationship was recorded oddly, so the pairing stops at the shorter side
-    /// rather than throwing.</summary>
+    /// rather than throwing.
+    /// </summary>
     private static string RenderOn(
-        string leftName, IReadOnlyList<string> leftColumns, string rightName, IReadOnlyList<string> rightColumns)
+        string leftName, IReadOnlyList<string> leftColumns, string rightName, IReadOnlyList<string> rightColumns,
+        IReadOnlyList<string> operators)
         => string.Join(" AND ", leftColumns
-            .Zip(rightColumns, (l, r) => $"{leftName}.{l} = {rightName}.{r}"));
+            .Zip(rightColumns, (l, r) => (Left: l, Right: r))
+            .Select((pair, i) =>
+                $"{leftName}.{pair.Left} {(i < operators.Count ? operators[i] : "=")} {rightName}.{pair.Right}"));
 
     /// <summary>Case-insensitive substring match on either the object's name or its full key, so a caller can
     /// name a target the short way they think of it.</summary>

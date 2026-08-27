@@ -70,10 +70,10 @@ public sealed record CreatedObject
     public IReadOnlyList<LineageColumn> Columns { get; init; } = [];
 }
 
-/// <summary>One equality-join observation: two tables joined on positionally-paired columns
-/// (Left.LeftColumns[i] = Right.RightColumns[i]), collected from JOIN ... ON and WHERE equi-join predicates.
-/// This is the raw material of the interpreted data model: warehouses rarely declare physical constraints,
-/// so how the codebase actually joins IS the relationship knowledge.</summary>
+/// <summary>One join observation: two tables related by positionally-paired columns
+/// (Left.LeftColumns[i] <see cref="Operators"/>[i] Right.RightColumns[i]), collected from JOIN ... ON and
+/// from WHERE predicates. This is the raw material of the interpreted data model: warehouses rarely declare
+/// physical constraints, so how the codebase actually joins IS the relationship knowledge.</summary>
 public sealed record ObservedJoin
 {
     public required TableName Left { get; init; }
@@ -83,6 +83,29 @@ public sealed record ObservedJoin
     public required TableName Right { get; init; }
 
     public required IReadOnlyList<string> RightColumns { get; init; }
+
+    /// <summary>The comparison operator per column pair, same arity as the column lists. All "=" for an
+    /// equi-join; a range join (a temporal dimension lookup) carries the real operators, so a consumer can
+    /// see that the relationship is an interval containment and not a key match.</summary>
+    public IReadOnlyList<string> Operators { get; init; } = [];
+
+    /// <summary>How the two sides were joined where the observation was made: Inner, Left, Right, Full, or
+    /// Where for a predicate found in a WHERE clause rather than an ON clause. It matters to anyone composing
+    /// a query: writing INNER where the estate consistently writes LEFT silently drops rows.</summary>
+    public string JoinType { get; init; } = JoinTypes.Inner;
+}
+
+/// <summary>The join types an observation can carry, as short stable strings.</summary>
+public static class JoinTypes
+{
+    public const string Inner = "Inner";
+    public const string Left = "Left";
+    public const string Right = "Right";
+    public const string Full = "Full";
+
+    /// <summary>The predicate was in a WHERE clause, so the script did not state a join type. Old-style comma
+    /// joins land here, and so does a filter-shaped join predicate.</summary>
+    public const string Where = "Where";
 }
 
 /// <summary>One key observation for a table: an explicit PRIMARY KEY definition parsed from DDL, or the ON

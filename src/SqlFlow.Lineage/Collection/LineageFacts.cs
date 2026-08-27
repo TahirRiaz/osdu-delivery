@@ -205,6 +205,12 @@ public sealed record CollectedJoin
 
     public required IReadOnlyList<string> RightColumns { get; init; }
 
+    /// <summary>The comparison operator per column pair, same arity as the column lists.</summary>
+    public IReadOnlyList<string> Operators { get; init; } = [];
+
+    /// <summary>How the two sides were joined where this observation was made.</summary>
+    public string JoinType { get; init; } = Extraction.JoinTypes.Inner;
+
     public required Core.Lineage.LineageTier Tier { get; init; }
 
     /// <summary>The script the observation came from (a module key, a flow name, a trace step): the unit of

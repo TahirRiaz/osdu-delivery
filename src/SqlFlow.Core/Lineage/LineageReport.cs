@@ -233,6 +233,16 @@ public sealed record LineageModelRelationship
 
     public required IReadOnlyList<string> ToColumns { get; init; }
 
+    /// <summary>The comparison operator per column pair, same arity as the column lists. Empty, or all "=",
+    /// is a key match; a range join (an interval containment, typically a temporal dimension lookup) carries
+    /// the real operators so a consumer can tell the two apart.</summary>
+    public IReadOnlyList<string> Operators { get; init; } = [];
+
+    /// <summary>The distinct join types the codebase uses for this relationship, in a stable order. More than
+    /// one means different scripts disagree, which is worth knowing before writing another query: INNER where
+    /// the estate writes LEFT silently drops rows.</summary>
+    public IReadOnlyList<string> JoinTypes { get; init; } = [];
+
     public required LineageModelOrigin Origin { get; init; }
 
     public required LineageTier Tier { get; init; }

@@ -243,6 +243,11 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.FromColumns).HasMaxLength(1024).IsRequired();
             entity.Property(r => r.ToObjectKey).HasMaxLength(900).IsRequired();
             entity.Property(r => r.ToColumns).HasMaxLength(1024).IsRequired();
+            // Empty for an equi-join (the common case) and for a declared constraint; a range join carries one
+            // operator per column pair, so this is bounded by the column list it parallels.
+            entity.Property(r => r.Operators).HasMaxLength(128).IsRequired();
+            // At most the five join types, comma-joined.
+            entity.Property(r => r.JoinTypes).HasMaxLength(64).IsRequired();
             entity.Property(r => r.Origin).HasMaxLength(16).IsRequired();
             entity.Property(r => r.Tier).HasMaxLength(16).IsRequired();
             // The hot queries: an object's relationships in either direction, and the per-repo replacement.

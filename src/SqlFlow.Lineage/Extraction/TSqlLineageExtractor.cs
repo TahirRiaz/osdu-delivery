@@ -408,7 +408,7 @@ public static class TSqlLineageExtractor
                             CollectJoinConditions(reference);
                         }
 
-                        CollectEquiJoins(specification.WhereClause?.SearchCondition);
+                        CollectJoinPredicates(specification.WhereClause?.SearchCondition, JoinTypes.Where);
                     }
 
                     foreach (var clause in specification.SetClauses)
@@ -462,7 +462,7 @@ public static class TSqlLineageExtractor
                             CollectJoinConditions(reference);
                         }
 
-                        CollectEquiJoins(specification.WhereClause?.SearchCondition);
+                        CollectJoinPredicates(specification.WhereClause?.SearchCondition, JoinTypes.Where);
                     }
 
                     WalkExpressionSubqueries(specification.WhereClause?.SearchCondition);
@@ -556,19 +556,22 @@ public static class TSqlLineageExtractor
             _bindingScopes.Add(bindings);
             try
             {
-                var pairs = new List<(TableName Left, string LeftColumn, TableName Right, string RightColumn)>();
-                GatherEqualityPairs(specification.SearchCondition, pairs);
+                var pairs = new List<JoinPair>();
+                GatherJoinPairs(specification.SearchCondition, pairs);
 
+                // A MERGE match key is an EQUALITY match by definition: a row either matches the target's key
+                // or it does not. A range predicate in the ON clause narrows which rows are considered, and is
+                // never part of the key, so only the equalities contribute here.
                 var keyColumns = new List<string>();
-                foreach (var (left, leftColumn, right, rightColumn) in pairs)
+                foreach (var pair in pairs.Where(p => p.Operator == "="))
                 {
-                    if (string.Equals(left.Key, target.Key, StringComparison.Ordinal))
+                    if (string.Equals(pair.Left.Key, target.Key, StringComparison.Ordinal))
                     {
-                        keyColumns.Add(leftColumn);
+                        keyColumns.Add(pair.LeftColumn);
                     }
-                    else if (string.Equals(right.Key, target.Key, StringComparison.Ordinal))
+                    else if (string.Equals(pair.Right.Key, target.Key, StringComparison.Ordinal))
                     {
-                        keyColumns.Add(rightColumn);
+                        keyColumns.Add(pair.RightColumn);
                     }
                 }
 
@@ -734,7 +737,7 @@ public static class TSqlLineageExtractor
                                     CollectJoinConditions(reference);
                                 }
 
-                                CollectEquiJoins(specification.WhereClause?.SearchCondition);
+                                CollectJoinPredicates(specification.WhereClause?.SearchCondition, JoinTypes.Where);
                             }
 
                             foreach (var element in specification.SelectElements)
@@ -996,7 +999,7 @@ public static class TSqlLineageExtractor
                 case QualifiedJoin join:
                     CollectJoinConditions(join.FirstTableReference);
                     CollectJoinConditions(join.SecondTableReference);
-                    CollectEquiJoins(join.SearchCondition);
+                    CollectJoinPredicates(join.SearchCondition, JoinTypeOf(join.QualifiedJoinType));
                     break;
                 case UnqualifiedJoin join:
                     CollectJoinConditions(join.FirstTableReference);
@@ -1010,37 +1013,70 @@ public static class TSqlLineageExtractor
             }
         }
 
-        /// <summary>Records the equality-join observations of one predicate tree: the AND-connected
-        /// column-to-column equalities between two DIFFERENT base tables, folded per table pair so a
-        /// composite key joins as one observation. OR branches and non-equality predicates are filters,
-        /// not join identity, and contribute nothing.</summary>
-        private void CollectEquiJoins(BooleanExpression? condition)
+        /// <summary>Maps the parser's join type onto the short stable string an observation carries.</summary>
+        private static string JoinTypeOf(QualifiedJoinType joinType) => joinType switch
+        {
+            QualifiedJoinType.LeftOuter => JoinTypes.Left,
+            QualifiedJoinType.RightOuter => JoinTypes.Right,
+            QualifiedJoinType.FullOuter => JoinTypes.Full,
+            _ => JoinTypes.Inner,
+        };
+
+        /// <summary>
+        /// Records the join observations of one predicate tree: the AND-connected column-to-column comparisons
+        /// between two DIFFERENT base tables, folded per table pair so a composite key joins as one
+        /// observation. OR branches contribute nothing, because a disjunction is not join identity.
+        ///
+        /// Equality pairs are taken at face value: an equi-join between two tables is strong evidence of a
+        /// relationship. INEQUALITY pairs are not, because most of them are filters, so they are recorded only
+        /// when they BRACKET a value between two bounds on the same pair of tables (one lower bound and one
+        /// upper). That shape is the temporal dimension lookup a warehouse is full of
+        /// (<c>f.Dato &gt;= d.ValidFrom AND f.Dato &lt; d.ValidTo</c>), and requiring both sides of the
+        /// interval is what stops a lone <c>a.amount &gt; b.threshold</c> filter being mistaken for a join.
+        /// </summary>
+        private void CollectJoinPredicates(BooleanExpression? condition, string joinType)
         {
             if (condition is null)
             {
                 return;
             }
 
-            var pairs = new List<(TableName Left, string LeftColumn, TableName Right, string RightColumn)>();
-            GatherEqualityPairs(condition, pairs);
-            if (pairs.Count == 0)
+            var gathered = new List<JoinPair>();
+            GatherJoinPairs(condition, gathered);
+            if (gathered.Count == 0)
             {
                 return;
             }
 
+            // Predicates in one ON clause are written from whichever side reads naturally: "d.Id = f.DimId"
+            // beside "f.Dato >= d.ValidFrom". Grouping on the raw orientation splits those into TWO table
+            // pairs, (d,f) and (f,d), and reports one relationship as two. Canonicalising each pair onto the
+            // ordinally-smaller table first is what makes a predicate tree describe a single relationship;
+            // the operator mirrors with the swap, since "a >= b" read from b's end is "b <= a".
+            var pairs = gathered.Select(Canonical).ToList();
+
             foreach (var group in pairs.GroupBy(p => (p.Left.Key, p.Right.Key)))
             {
-                var members = group.ToList();
-                var left = members[0].Left;
-                var right = members[0].Right;
-                var leftColumns = members.Select(m => m.LeftColumn).ToList();
-                var rightColumns = members.Select(m => m.RightColumn).ToList();
+                var equalities = group.Where(p => p.Operator == "=").ToList();
+                var usable = equalities.Count > 0 ? equalities : BracketedRange(group.ToList());
+                if (usable.Count == 0)
+                {
+                    continue;
+                }
 
-                // One identity per unordered pair-with-columns, so A-to-B and B-to-A collapse and a script
-                // repeating the predicate contributes a single observation.
+                var left = usable[0].Left;
+                var right = usable[0].Right;
+                var leftColumns = usable.Select(m => m.LeftColumn).ToList();
+                var rightColumns = usable.Select(m => m.RightColumn).ToList();
+                var operators = usable.Select(m => m.Operator).ToList();
+
+                // One identity per unordered pair-with-columns-and-operators, so A-to-B and B-to-A collapse, a
+                // script repeating the predicate contributes a single observation, and an equi-join and a range
+                // join between the same two tables stay distinct relationships.
                 var sideA = $"{left.Key}({string.Join(",", leftColumns.Select(c => c.ToLowerInvariant()))})";
                 var sideB = $"{right.Key}({string.Join(",", rightColumns.Select(c => c.ToLowerInvariant()))})";
-                var identity = string.CompareOrdinal(sideA, sideB) <= 0 ? sideA + "=" + sideB : sideB + "=" + sideA;
+                var ordered = string.CompareOrdinal(sideA, sideB) <= 0 ? sideA + "=" + sideB : sideB + "=" + sideA;
+                var identity = ordered + "|" + string.Join(",", operators) + "|" + joinType;
                 if (!_joinIdentities.Add(identity))
                 {
                     continue;
@@ -1052,28 +1088,63 @@ public static class TSqlLineageExtractor
                     LeftColumns = leftColumns,
                     Right = right,
                     RightColumns = rightColumns,
+                    Operators = operators,
+                    JoinType = joinType,
                 });
             }
         }
 
-        private void GatherEqualityPairs(
-            BooleanExpression? condition, List<(TableName Left, string LeftColumn, TableName Right, string RightColumn)> pairs)
+        /// <summary>
+        /// The inequality pairs of one table pair, but only when they bracket a value: at least one lower
+        /// bound and one upper bound. Anything else is a filter that happens to mention two tables, and
+        /// recording it would poison the model with relationships nobody joins on.
+        /// </summary>
+        private static List<JoinPair> BracketedRange(List<JoinPair> pairs)
+        {
+            var lower = pairs.Where(p => p.Operator is ">" or ">=").ToList();
+            var upper = pairs.Where(p => p.Operator is "<" or "<=").ToList();
+            return lower.Count > 0 && upper.Count > 0 ? [.. lower, .. upper] : [];
+        }
+
+        /// <summary>Orients a pair onto the ordinally-smaller table so both directions of the same
+        /// relationship fold together, mirroring the comparison when the sides swap.</summary>
+        private static JoinPair Canonical(JoinPair pair)
+            => string.CompareOrdinal(pair.Left.Key, pair.Right.Key) <= 0
+                ? pair
+                : new JoinPair(pair.Right, pair.RightColumn, MirrorOperator(pair.Operator), pair.Left, pair.LeftColumn);
+
+        /// <summary>The same comparison read from the other side.</summary>
+        private static string MirrorOperator(string comparison) => comparison switch
+        {
+            ">" => "<",
+            ">=" => "<=",
+            "<" => ">",
+            "<=" => ">=",
+            _ => comparison,
+        };
+
+        /// <summary>One column-to-column comparison between two different base tables.</summary>
+        private readonly record struct JoinPair(
+            TableName Left, string LeftColumn, string Operator, TableName Right, string RightColumn);
+
+        private void GatherJoinPairs(BooleanExpression? condition, List<JoinPair> pairs)
         {
             switch (condition)
             {
                 case BooleanBinaryExpression { BinaryExpressionType: BooleanBinaryExpressionType.And } and:
-                    GatherEqualityPairs(and.FirstExpression, pairs);
-                    GatherEqualityPairs(and.SecondExpression, pairs);
+                    GatherJoinPairs(and.FirstExpression, pairs);
+                    GatherJoinPairs(and.SecondExpression, pairs);
                     break;
                 case BooleanParenthesisExpression parenthesis:
-                    GatherEqualityPairs(parenthesis.Expression, pairs);
+                    GatherJoinPairs(parenthesis.Expression, pairs);
                     break;
-                case BooleanComparisonExpression { ComparisonType: BooleanComparisonType.Equals } equality:
-                    if (ResolveColumn(equality.FirstExpression) is { } left
-                        && ResolveColumn(equality.SecondExpression) is { } right
+                case BooleanComparisonExpression comparison:
+                    if (OperatorOf(comparison.ComparisonType) is { } op
+                        && ResolveColumn(comparison.FirstExpression) is { } left
+                        && ResolveColumn(comparison.SecondExpression) is { } right
                         && !string.Equals(left.Table.Key, right.Table.Key, StringComparison.Ordinal))
                     {
-                        pairs.Add((left.Table, left.Column, right.Table, right.Column));
+                        pairs.Add(new JoinPair(left.Table, left.Column, op, right.Table, right.Column));
                     }
 
                     break;
@@ -1081,6 +1152,18 @@ public static class TSqlLineageExtractor
                     break;
             }
         }
+
+        /// <summary>The operators a join predicate can carry. Anything else (a not-equal, a negated form) is
+        /// never join identity, so it resolves to null and is dropped.</summary>
+        private static string? OperatorOf(BooleanComparisonType comparison) => comparison switch
+        {
+            BooleanComparisonType.Equals => "=",
+            BooleanComparisonType.GreaterThan => ">",
+            BooleanComparisonType.GreaterThanOrEqualTo => ">=",
+            BooleanComparisonType.LessThan => "<",
+            BooleanComparisonType.LessThanOrEqualTo => "<=",
+            _ => null,
+        };
 
         /// <summary>Resolves a qualified column reference (alias.Column or Table.Column) against the binding
         /// scopes, innermost first. An unqualified column is ambiguous by construction and resolves to

@@ -454,28 +454,63 @@ public static class LineageGraphBuilder
         // distinct scripts, so the estate's canonical join path scores highest.
         var relationships = new Dictionary<string, (LineageModelRelationship Relationship, HashSet<string> Scripts)>(StringComparer.Ordinal);
 
+        // The same comparison read from the other side: reading "a >= b" from b's end is "b <= a". Used
+        // when a join observation is oriented with its sides swapped.
+        static string Mirror(string comparison) => comparison switch
+        {
+            ">" => "<",
+            ">=" => "<=",
+            "<" => ">",
+            "<=" => ">=",
+            _ => comparison,
+        };
+
         void Accumulate(
             string? name, string fromKey, IReadOnlyList<string> fromColumns, string toKey,
-            IReadOnlyList<string> toColumns, LineageModelOrigin origin, LineageTier tier, string scriptId)
+            IReadOnlyList<string> toColumns, LineageModelOrigin origin, LineageTier tier, string scriptId,
+            IReadOnlyList<string>? operators = null, string? joinType = null)
         {
             if (string.Equals(fromKey, toKey, StringComparison.Ordinal) || fromColumns.Count == 0 || toColumns.Count == 0)
             {
                 return;
             }
 
+            // The operators are part of the IDENTITY: an equi-join and a range join between the same two
+            // tables on the same columns are different relationships, and folding them together would report
+            // an interval containment as a key match. An all-equality operator list is normalised away, so a
+            // plain equi-join keeps the identity it has always had and nothing re-keys on upgrade.
+            var effectiveOperators = operators is null || operators.All(o => o == "=")
+                ? []
+                : operators;
+
             var identity = string.Join("|",
                 origin == LineageModelOrigin.Constraint ? "constraint" : "join",
                 fromKey, string.Join(",", fromColumns.Select(c => c.ToLowerInvariant())),
-                toKey, string.Join(",", toColumns.Select(c => c.ToLowerInvariant())));
+                toKey, string.Join(",", toColumns.Select(c => c.ToLowerInvariant())),
+                string.Join(",", effectiveOperators));
 
             if (relationships.TryGetValue(identity, out var existing))
             {
                 existing.Scripts.Add(scriptId);
-                if (tier > existing.Relationship.Tier)
+                var merged = existing.Relationship;
+
+                // Join types UNION across scripts rather than last-one-wins: two scripts joining the same
+                // tables with INNER and LEFT is a real disagreement a caller needs to see, not a conflict to
+                // resolve by arrival order.
+                if (joinType is not null && !merged.JoinTypes.Contains(joinType, StringComparer.Ordinal))
                 {
-                    relationships[identity] = (existing.Relationship with { Tier = tier, Name = existing.Relationship.Name ?? name }, existing.Scripts);
+                    merged = merged with
+                    {
+                        JoinTypes = merged.JoinTypes.Append(joinType).OrderBy(t => t, StringComparer.Ordinal).ToArray(),
+                    };
                 }
 
+                if (tier > merged.Tier)
+                {
+                    merged = merged with { Tier = tier, Name = merged.Name ?? name };
+                }
+
+                relationships[identity] = (merged, existing.Scripts);
                 return;
             }
 
@@ -486,6 +521,8 @@ public static class LineageGraphBuilder
                 FromColumns = fromColumns,
                 ToObjectKey = toKey,
                 ToColumns = toColumns,
+                Operators = effectiveOperators,
+                JoinTypes = joinType is null ? [] : [joinType],
                 Origin = origin,
                 Tier = tier,
                 Occurrences = 1,
@@ -503,16 +540,23 @@ public static class LineageGraphBuilder
         {
             var leftKey = ModelKeyOf(join.Left);
             var rightKey = ModelKeyOf(join.Right);
-            var oriented =
-                ColumnsMatchKey(rightKey, join.RightColumns) ? (From: (leftKey, join.LeftColumns), To: (rightKey, join.RightColumns))
-                : ColumnsMatchKey(leftKey, join.LeftColumns) ? (From: (rightKey, join.RightColumns), To: (leftKey, join.LeftColumns))
-                : string.CompareOrdinal(leftKey, rightKey) <= 0
-                    ? (From: (leftKey, join.LeftColumns), To: (rightKey, join.RightColumns))
-                    : (From: (rightKey, join.RightColumns), To: (leftKey, join.LeftColumns));
+            var leftFirst =
+                ColumnsMatchKey(rightKey, join.RightColumns) ? true
+                : ColumnsMatchKey(leftKey, join.LeftColumns) ? false
+                : string.CompareOrdinal(leftKey, rightKey) <= 0;
+
+            var oriented = leftFirst
+                ? (From: (leftKey, join.LeftColumns), To: (rightKey, join.RightColumns))
+                : (From: (rightKey, join.RightColumns), To: (leftKey, join.LeftColumns));
+
+            // Swapping the sides inverts every comparison: "a.d >= b.from" read from b's side is
+            // "b.from <= a.d". Carrying the operators across a swap unmirrored would render a temporal join
+            // backwards, which is worse than not recording it.
+            var operators = leftFirst ? join.Operators : join.Operators.Select(Mirror).ToArray();
 
             Accumulate(
                 name: null, oriented.From.Item1, oriented.From.Item2, oriented.To.Item1, oriented.To.Item2,
-                LineageModelOrigin.Join, join.Tier, join.ScriptId);
+                LineageModelOrigin.Join, join.Tier, join.ScriptId, operators, join.JoinType);
         }
 
         var modelRelationships = relationships.Values

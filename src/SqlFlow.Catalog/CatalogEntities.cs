@@ -487,6 +487,17 @@ public class CatalogObjectRelationship
 
     public string ToColumns { get; set; } = string.Empty;
 
+    /// <summary>The comparison operator per column pair, comma-joined in the same order as the columns. Empty
+    /// means every pair is an equality, which is the overwhelmingly common case and is stored as empty rather
+    /// than as a run of "=" so the column stays cheap. Anything else is a range join: an interval containment
+    /// such as a temporal dimension lookup, which a consumer must NOT treat as a key match.</summary>
+    public string Operators { get; set; } = string.Empty;
+
+    /// <summary>The distinct join types the codebase uses for this relationship, comma-joined (Inner, Left,
+    /// Right, Full, Where). More than one means different scripts disagree, which a caller composing a new
+    /// query needs to see: writing INNER where the estate writes LEFT silently drops rows.</summary>
+    public string JoinTypes { get; set; } = string.Empty;
+
     /// <summary>Constraint / Join: how the relationship was interpreted.</summary>
     public string Origin { get; set; } = string.Empty;
 
