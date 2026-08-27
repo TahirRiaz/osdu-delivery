@@ -35,6 +35,8 @@
     <ProjectReference Include="..\..\src\SqlFlow.DuckDb\SqlFlow.DuckDb.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Cli\SqlFlow.Cli.csproj" />
+    <!-- The assistant's MCP tool allowlist is asserted against the MCP server's shipped tool list. -->
+    <ProjectReference Include="..\..\src\SqlFlow.Assistant\SqlFlow.Assistant.csproj" />
   </ItemGroup>
 
 </Project>

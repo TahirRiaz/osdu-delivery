@@ -139,12 +139,19 @@ public sealed class McpOptions
 
     /// <summary>
     /// The MCP tools the assistant may call. The default is the WHOLE read-only surface: everything that only
-    /// reads the catalog belongs here, because a missing reader is an answer the assistant cannot give (a tool
-    /// absent from this list looks to the model like a capability the product lacks). Excluded on purpose: the
-    /// operate tools (trigger_run, cancel_run, analyze_warehouse_health; writes and probe execution stay off
-    /// this path), the authoring tool (propose_pipelines), and the stdio-only or sign-in tools (inert over
-    /// HTTP anyway). An empty list means all tools, so leave this populated unless the MCP server itself is
-    /// restricted.
+    /// reads belongs here, because a missing reader is an answer the assistant cannot give. A tool absent from
+    /// this list does not look restricted to the model, it looks ABSENT: the assistant reports the product
+    /// cannot do the thing, which is worse than refusing, because it is wrong.
+    ///
+    /// That failure mode is why <see cref="ExcludedTools"/> exists beside this list and why a test asserts the
+    /// two together cover every tool the MCP server ships. Adding a tool without deciding which side it falls
+    /// on fails that test rather than silently making the assistant deny a capability it has.
+    ///
+    /// Excluded on purpose: the operate tools that TRIGGER work (trigger_run, cancel_run), the authoring tool
+    /// (propose_pipelines), and the stdio-only or sign-in tools (inert over HTTP anyway). The data-operations
+    /// tools ARE included: they are read-only by construction, they sit behind their own deployment switch,
+    /// and running a query is gated by a human approving the exact statement first. An empty list means all
+    /// tools, so leave this populated unless the MCP server itself is restricted.
     /// </summary>
     public List<string> AllowedTools { get; set; } =
     [
@@ -162,6 +169,38 @@ public sealed class McpOptions
         "search_flow_columns", "search_files", "search_statements",
         "list_schedules", "get_schedule", "get_schedule_plan", "list_nodes", "list_repo_sources", "summary",
         "insights_flows", "insights_attention", "insights_recommendations", "insights_steps",
+        // The data model, as one question per tool: what identifies a row, and how tables join. These are what
+        // an assistant composes correct SQL from, so leaving them out is what makes it guess or give up.
+        "get_table_key", "get_table_joins", "detect_unique_key",
+        // The data-operations surface. Read-only, and behind ControlPlane:DataOps:Enabled, which is the switch
+        // that actually governs them; a deployment with it off gets a clear "not enabled" rather than silence.
+        "dataops_capabilities", "check_duplicate_keys", "compare_baseline",
+        // Running a business question. prepare_query executes nothing, and run_query only redeems a single-use
+        // token minted by a prepare whose exact SQL was shown to a person, so the approval cannot be skipped.
+        "prepare_query", "run_query",
+    ];
+
+    /// <summary>
+    /// The tools deliberately kept from the assistant, listed rather than merely absent so the omission is a
+    /// decision on the record. Everything here either starts work, authors code, or is inert over HTTP.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ExcludedTools =
+    [
+        // Start or stop work in the estate.
+        "trigger_run", "cancel_run",
+        // Executes DMV probes as a side effect; the read-only insights_* tools already expose their results.
+        "analyze_warehouse_health",
+        // Authors code and opens a pull request.
+        "propose_pipelines",
+        // Scans a live location and generates YAML; an authoring step, not a question.
+        "discover_source",
+        // Session and transport plumbing, inert or meaningless over HTTP with a forwarded bearer.
+        "login", "logout", "check_auth_status", "set_access_token", "set_control_plane_url",
+        // Git history and schema-diff readers reachable through the GUI, kept off the chat surface to bound
+        // the tool count the model has to choose between.
+        "database_schema_changes", "database_schema_history_databases", "database_object_ddl",
+        "database_object_compare", "flow_definition_history", "flow_definition_file_history",
+        "flow_definition_diff",
     ];
 }
 
