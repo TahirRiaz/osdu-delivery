@@ -47,6 +47,38 @@ public sealed record ObjectRelationshipDto(
     string OtherObjectKey, string? OtherDatabase, string? OtherSchema, string OtherName,
     string OwnColumns, string OtherColumns);
 
+/// <summary>
+/// One hop of a join path: the two objects it connects and the columns it connects them on, positionally
+/// paired, plus how the relationship was interpreted. <see cref="On"/> renders the equality list ready to
+/// paste into an ON clause, using each side's object NAME as the alias.
+/// </summary>
+public sealed record JoinHopDto(
+    string FromObjectKey, string FromName, string ToObjectKey, string ToName,
+    IReadOnlyList<string> FromColumns, IReadOnlyList<string> ToColumns,
+    string On, string Origin, string Tier, int Occurrences, string? ConstraintName);
+
+/// <summary>
+/// One way to join the origin object to a target: the hops in order, and how well supported the route is.
+/// <see cref="MinOccurrences"/> is the weakest link (a chain is only as canonical as its least-used hop), and
+/// is what the alternatives are ranked by; a one-hop path through a declared foreign key outranks a two-hop
+/// path assembled from rarely-used predicates.
+/// </summary>
+public sealed record JoinPathDto(
+    string TargetObjectKey, string TargetName, string? TargetDatabase, string? TargetSchema,
+    int HopCount, int MinOccurrences, bool IsDirect, IReadOnlyList<JoinHopDto> Hops);
+
+/// <summary>
+/// Every way the estate knows of to join one object to others. With no target, the alternatives are every
+/// object reachable within the hop budget, nearest and best-supported first. With a target, they are the
+/// distinct routes to it, INCLUDING several routes to the same target when the codebase joins those two
+/// tables on more than one column set, because choosing between them is the caller's decision to make.
+/// <see cref="Truncated"/> says a bound cut the search, so an empty or short list is never mistaken for
+/// "there is no other way".
+/// </summary>
+public sealed record JoinPathsDto(
+    string ObjectKey, string ObjectName, string? Target, int MaxHops,
+    int PathCount, bool Truncated, IReadOnlyList<JoinPathDto> Paths, string Note);
+
 /// <summary>One column of a lineage object; <c>Tier</c> records whether it was read live (Derived) or parsed
 /// from the CREATE the run executed (Observed/Declared).</summary>
 public sealed record ObjectColumnDto(int Ordinal, string Name, string? DataType, bool Nullable, string Tier);
@@ -296,6 +328,7 @@ public static class LineageEndpoints
         lineage.MapGet("/objects/dossier", GetObjectDossierAsync).WithName("GetLineageObjectDossier");
         lineage.MapGet("/objects/refresh", GetObjectRefreshAsync).WithName("GetLineageObjectRefresh");
         lineage.MapGet("/objects/graph", GetObjectLineageAsync).WithName("GetLineageObjectGraph");
+        lineage.MapGet("/objects/join-paths", GetJoinPathsAsync).WithName("GetLineageObjectJoinPaths");
         lineage.MapGet("/file-pipelines", MatchFilePipelinesAsync).WithName("MatchFilePipelines");
         lineage.MapGet("/script", GetNodeScriptAsync).WithName("GetLineageNodeScript");
         lineage.MapGet("/subscribers", ListSubscribersAsync).WithName("ListLineageSubscribers");
@@ -2250,4 +2283,208 @@ public static class LineageEndpoints
             detail: $"No {resource} with id '{id}'.",
             statusCode: StatusCodes.Status404NotFound,
             title: "Not found");
+    /// <summary>The deepest join chain the search will assemble. Beyond three hops a "join path" stops being
+    /// advice and starts being a suggestion to build a query nobody should write by hand.</summary>
+    private const int MaxJoinHops = 4;
+
+    private const int DefaultJoinHops = 2;
+
+    /// <summary>The most alternatives returned. Enough to show the real choices, bounded so a hub table with
+    /// hundreds of relationships cannot return a payload nothing can read.</summary>
+    private const int MaxJoinPaths = 50;
+
+    /// <summary>The most objects the walk will expand. A hub dimension joins to a great deal.</summary>
+    private const int MaxJoinFrontier = 400;
+
+    /// <summary>
+    /// Answers "how can I join this table, and what are the alternatives": a breadth-first walk of the
+    /// interpreted relationship graph from one object, returning each distinct route as an ordered list of
+    /// hops with a ready-to-paste ON clause per hop.
+    ///
+    /// Breadth-first matters here: the shortest route to a target is found first, and a direct join is always
+    /// preferred over a chain through a bridge table. Several routes to the SAME target are kept rather than
+    /// deduplicated, because two tables joined on different column sets in different parts of the codebase is
+    /// exactly the ambiguity a caller needs to see and resolve, not something to silently pick a winner for.
+    /// </summary>
+    private static async Task<Results<Ok<JoinPathsDto>, ProblemHttpResult>> GetJoinPathsAsync(
+        string key, CatalogDbContext db, string? target, int? maxHops, CancellationToken ct)
+    {
+        var origin = await db.Objects.AsNoTracking().Where(o => o.Key == key)
+            .Select(o => new { o.Key, o.Name })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (origin is null)
+        {
+            return TypedResults.Problem(
+                detail: $"No lineage object has the key '{key}'.",
+                statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        var hopBudget = Math.Clamp(maxHops ?? DefaultJoinHops, 1, MaxJoinHops);
+        var wanted = string.IsNullOrWhiteSpace(target) ? null : target.Trim();
+
+        // Names for rendering, filled in as objects are discovered.
+        var names = new Dictionary<string, (string Name, string? Database, string? Schema)>(StringComparer.Ordinal)
+        {
+            [origin.Key] = (origin.Name, null, null),
+        };
+
+        var paths = new List<JoinPathDto>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { origin.Key };
+        var frontier = new List<(string Key, List<JoinHopDto> Hops)> { (origin.Key, []) };
+        var truncated = false;
+
+        for (var hop = 0; hop < hopBudget && frontier.Count > 0 && paths.Count < MaxJoinPaths; hop++)
+        {
+            var frontierKeys = frontier.Select(f => f.Key).Distinct(StringComparer.Ordinal).ToList();
+            var relationships = await db.ObjectRelationships.AsNoTracking()
+                .Where(r => frontierKeys.Contains(r.FromObjectKey) || frontierKeys.Contains(r.ToObjectKey))
+                .OrderByDescending(r => r.Occurrences)
+                .Take(MaxJoinFrontier)
+                .ToListAsync(ct).ConfigureAwait(false);
+
+            if (relationships.Count == MaxJoinFrontier)
+            {
+                truncated = true;
+            }
+
+            await LoadNamesAsync(db, relationships, names, ct).ConfigureAwait(false);
+
+            var next = new List<(string Key, List<JoinHopDto> Hops)>();
+            foreach (var (currentKey, hopsSoFar) in frontier)
+            {
+                foreach (var relationship in relationships)
+                {
+                    // A relationship is usable in either direction: joining A to B and B to A are the same
+                    // predicate read from opposite ends.
+                    var forward = string.Equals(relationship.FromObjectKey, currentKey, StringComparison.Ordinal);
+                    var backward = string.Equals(relationship.ToObjectKey, currentKey, StringComparison.Ordinal);
+                    if (!forward && !backward)
+                    {
+                        continue;
+                    }
+
+                    var otherKey = forward ? relationship.ToObjectKey : relationship.FromObjectKey;
+                    if (string.Equals(otherKey, currentKey, StringComparison.Ordinal))
+                    {
+                        continue; // a self-relationship is not a route anywhere
+                    }
+
+                    if (hopsSoFar.Any(h => string.Equals(h.FromObjectKey, otherKey, StringComparison.Ordinal)))
+                    {
+                        continue; // never revisit an object already on this chain
+                    }
+
+                    var ownColumns = SplitColumns(forward ? relationship.FromColumns : relationship.ToColumns);
+                    var otherColumns = SplitColumns(forward ? relationship.ToColumns : relationship.FromColumns);
+                    var currentName = names.TryGetValue(currentKey, out var c) ? c.Name : currentKey;
+                    var otherName = names.TryGetValue(otherKey, out var o) ? o.Name : otherKey;
+
+                    var hopDto = new JoinHopDto(
+                        currentKey, currentName, otherKey, otherName, ownColumns, otherColumns,
+                        RenderOn(currentName, ownColumns, otherName, otherColumns),
+                        relationship.Origin, relationship.Tier, relationship.Occurrences, relationship.Name);
+
+                    var chain = new List<JoinHopDto>(hopsSoFar) { hopDto };
+
+                    if (wanted is null || Matches(otherKey, otherName, wanted))
+                    {
+                        var location = names.TryGetValue(otherKey, out var loc) ? loc : (otherName, null, null);
+                        paths.Add(new JoinPathDto(
+                            otherKey, otherName, location.Database, location.Schema,
+                            chain.Count, chain.Min(h => h.Occurrences), chain.Count == 1, chain));
+
+                        if (paths.Count >= MaxJoinPaths)
+                        {
+                            truncated = true;
+                            break;
+                        }
+                    }
+
+                    // Keep walking through an object even after recording a route to it: a longer chain can
+                    // still be the only way to reach something further out.
+                    if (visited.Add(otherKey))
+                    {
+                        next.Add((otherKey, chain));
+                    }
+                }
+
+                if (paths.Count >= MaxJoinPaths)
+                {
+                    break;
+                }
+            }
+
+            frontier = next;
+        }
+
+        // Best first: fewest hops, then the strongest weakest-link, then a declared constraint over an
+        // inferred join, so the route a caller should reach for is the one they read first.
+        var ranked = paths
+            .OrderBy(p => p.HopCount)
+            .ThenByDescending(p => p.MinOccurrences)
+            .ThenByDescending(p => p.Hops.Any(h => string.Equals(h.Origin, "Constraint", StringComparison.OrdinalIgnoreCase)))
+            .ThenBy(p => p.TargetName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var note = ranked.Count switch
+        {
+            0 when wanted is not null =>
+                $"No join path was found from {origin.Name} to '{wanted}' within {hopBudget} hop(s). Raise " +
+                "maxHops, or accept that the codebase does not relate them: do NOT invent a join condition " +
+                "from matching column names.",
+            0 =>
+                $"No relationship is recorded for {origin.Name} at all. Either nothing in the codebase joins " +
+                "it, or the code that does has not been synced.",
+            _ =>
+                "Ordered best first: fewest hops, then the weakest link's occurrence count, then a declared " +
+                "constraint over an inferred join. Several routes to the same target mean the codebase joins " +
+                "those tables on more than one column set; choose deliberately rather than taking the first.",
+        };
+
+        return TypedResults.Ok(new JoinPathsDto(
+            origin.Key, origin.Name, wanted, hopBudget, ranked.Count, truncated, ranked, note));
+    }
+
+    /// <summary>Loads the display identity of every object a relationship batch touches, in one round trip.</summary>
+    private static async Task LoadNamesAsync(
+        CatalogDbContext db, IReadOnlyList<CatalogObjectRelationship> relationships,
+        Dictionary<string, (string Name, string? Database, string? Schema)> names, CancellationToken ct)
+    {
+        var missing = relationships
+            .SelectMany(r => new[] { r.FromObjectKey, r.ToObjectKey })
+            .Where(k => !names.ContainsKey(k))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        var found = await db.Objects.AsNoTracking()
+            .Where(o => missing.Contains(o.Key))
+            .Select(o => new { o.Key, o.Name, o.Database, o.Schema })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        foreach (var item in found)
+        {
+            names[item.Key] = (item.Name, item.Database, item.Schema);
+        }
+    }
+
+    private static IReadOnlyList<string> SplitColumns(string columns)
+        => columns.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>The equality list for one hop, using each side's object name as the alias. Column counts can
+    /// legitimately differ if a relationship was recorded oddly, so the pairing stops at the shorter side
+    /// rather than throwing.</summary>
+    private static string RenderOn(
+        string leftName, IReadOnlyList<string> leftColumns, string rightName, IReadOnlyList<string> rightColumns)
+        => string.Join(" AND ", leftColumns
+            .Zip(rightColumns, (l, r) => $"{leftName}.{l} = {rightName}.{r}"));
+
+    /// <summary>Case-insensitive substring match on either the object's name or its full key, so a caller can
+    /// name a target the short way they think of it.</summary>
+    private static bool Matches(string objectKey, string objectName, string wanted)
+        => objectName.Contains(wanted, StringComparison.OrdinalIgnoreCase)
+            || objectKey.Contains(wanted, StringComparison.OrdinalIgnoreCase);
 }

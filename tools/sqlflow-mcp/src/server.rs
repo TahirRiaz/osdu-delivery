@@ -406,11 +406,14 @@ pub struct TableKeyInput {
 pub struct TableJoinsInput {
     /// The object key to get join paths for, as lineage_objects / search_objects report it.
     pub key: String,
-    /// Narrow to the joins reaching ONE other table, matched on its name or key (case-insensitive,
-    /// substring). Use this to answer "how do I join A to B" in a single call.
+    /// Narrow to the routes reaching ONE other table, matched on its name or key (case-insensitive,
+    /// substring). Use this to answer "how do I join A to B" in a single call, including through a bridge
+    /// table when the two are not joined directly.
     pub other: Option<String>,
-    /// Most join paths to return per direction (default 20).
-    pub limit: Option<i64>,
+    /// How many joins a route may chain (default 2, max 4). 1 restricts the answer to tables joined DIRECTLY
+    /// to this one; raise it to find a route through a bridge or dimension table.
+    #[serde(rename = "maxHops")]
+    pub max_hops: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1244,13 +1247,17 @@ impl SqlFlowMcp {
     }
 
     #[tool(
-        description = "How a table JOINS other tables: the join paths the estate itself uses, each naming the \
-            other table, this table's columns paired positionally with the other side's, whether it came from \
-            a declared FOREIGN KEY or was inferred from the codebase's own equality predicates, and how many \
-            distinct scripts use it (the highest count is the canonical path). Pass `other` to get just the \
-            joins between two named tables. USE THIS before writing any query that spans more than one table, \
-            instead of guessing a join condition from column names: a warehouse rarely declares foreign keys, \
-            so the observed predicates are the real data model."
+        description = "ALL the ways to join a table, and how. Returns every route the estate itself uses, each \
+            as an ordered chain of hops with a ready-to-paste ON clause per hop, ranked best first: fewest \
+            joins, then how well used the weakest link is, then a declared FOREIGN KEY over a predicate \
+            inferred from the code. Called with just `key` it answers \"what can I join this to\"; with \
+            `other` it answers \"how do I join A to B\", finding a route through a bridge table when the two \
+            are not related directly (raise `maxHops` if it finds nothing). SEVERAL routes to the same table \
+            are returned deliberately, not deduplicated: that means the codebase joins those tables on more \
+            than one column set, which is a choice to make rather than one to have made for you. USE THIS \
+            before writing any query spanning more than one table. A warehouse rarely declares foreign keys, \
+            so these observed predicates ARE the data model, and a join guessed from matching column names is \
+            not a substitute. If it reports no route, say so rather than inventing one."
     )]
     async fn get_table_joins(&self, Parameters(i): Parameters<TableJoinsInput>) -> String {
         done(self.table_joins(i).await)
@@ -2221,81 +2228,20 @@ impl SqlFlowMcp {
         })))
     }
 
-    /// The join paths, projected out of the dossier and rendered as readable equalities.
+    /// The join routes. The walk itself lives in the control plane, which holds the relationship graph and
+    /// can breadth-first it in a bounded number of round trips; this only shapes the answer.
     async fn table_joins(&self, input: TableJoinsInput) -> anyhow::Result<String> {
-        let dossier = self.cp.get("/api/v1/lineage/objects/dossier", &[("key", input.key.clone())]).await?;
-        if dossier["object"].is_null() {
-            anyhow::bail!(
-                "No lineage object matches the key '{}'. Find it with search_objects or lineage_objects.",
-                input.key
-            );
+        let mut query = vec![("key", input.key.clone())];
+        if let Some(other) = input.other.filter(|o| !o.trim().is_empty()) {
+            query.push(("target", other.trim().to_string()));
+        }
+        if let Some(hops) = input.max_hops {
+            query.push(("maxHops", hops.to_string()));
         }
 
-        let limit = input.limit.unwrap_or(20).clamp(1, 200) as usize;
-        let filter = input.other.as_deref().map(str::to_ascii_lowercase);
-        let own_name = dossier["object"]["name"].as_str().unwrap_or("this").to_string();
-
-        let project = |list: &Value, direction: &str| -> Vec<Value> {
-            list.as_array()
-                .into_iter()
-                .flatten()
-                .filter(|r| match &filter {
-                    None => true,
-                    Some(needle) => {
-                        let name = r["otherName"].as_str().unwrap_or_default().to_ascii_lowercase();
-                        let key = r["otherObjectKey"].as_str().unwrap_or_default().to_ascii_lowercase();
-                        name.contains(needle.as_str()) || key.contains(needle.as_str())
-                    }
-                })
-                .take(limit)
-                .map(|r| {
-                    let own: Vec<&str> = r["ownColumns"].as_str().unwrap_or_default().split(',').map(str::trim).collect();
-                    let other: Vec<&str> = r["otherColumns"].as_str().unwrap_or_default().split(',').map(str::trim).collect();
-                    let other_name = r["otherName"].as_str().unwrap_or("other");
-                    // The ON clause the estate itself uses, rendered so it can be pasted into a query.
-                    let on = own
-                        .iter()
-                        .zip(other.iter())
-                        .map(|(l, r2)| format!("{own_name}.{l} = {other_name}.{r2}"))
-                        .collect::<Vec<_>>()
-                        .join(" AND ");
-                    json!({
-                        "direction": direction,
-                        "otherObject": r["otherObjectKey"],
-                        "otherName": other_name,
-                        "otherDatabase": r["otherDatabase"],
-                        "otherSchema": r["otherSchema"],
-                        "on": on,
-                        "ownColumns": own,
-                        "otherColumns": other,
-                        // Constraint = an explicit FOREIGN KEY in the codebase; Join = inferred from the
-                        // equality predicates the code actually joins on.
-                        "origin": r["origin"],
-                        "occurrences": r["occurrences"],
-                        "constraintName": r["name"],
-                    })
-                })
-                .collect()
-        };
-
-        let references = project(&dossier["references"], "references");
-        let referenced_by = project(&dossier["referencedBy"], "referencedBy");
-        let total = references.len() + referenced_by.len();
-
-        Ok(json_str(&json!({
-            "object": dossier["object"]["key"],
-            "name": own_name,
-            "keyColumns": dossier["object"]["keyColumns"],
-            "joins": references.into_iter().chain(referenced_by).collect::<Vec<_>>(),
-            "note": if total == 0 {
-                "No join path is recorded for this object. Either nothing in the codebase joins it, or the \
-                 code that does has not been synced. Do NOT invent a join condition from column names."
-            } else {
-                "Ordered by occurrences: the highest count is the join the estate uses most, and is the \
-                 canonical path. 'origin' Constraint is a declared foreign key; Join was inferred from real \
-                 query predicates."
-            },
-        })))
+        let mut result = self.cp.get("/api/v1/lineage/objects/join-paths", &query).await?;
+        self.links.decorate(&mut result);
+        Ok(json_str(&result))
     }
 
     async fn run_detect_unique_key(&self, input: DetectUniqueKeyInput) -> anyhow::Result<String> {

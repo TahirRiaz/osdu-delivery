@@ -218,6 +218,29 @@ non-equality predicates as filters rather than join identity. Those land in `Cat
   a one-off join in a single report does not outrank the canonical path;
 - **`tier`** - Declared / Observed / Derived, the provenance of the strongest observation.
 
-`get_table_joins` renders each one as a pasteable `ON` clause, and takes an `other` argument to answer "how do
-I join A to B" in one call. When it reports no join path, that is a real answer: nothing in the codebase joins
+### How can I join table X?
+
+`get_table_joins` (`GET /api/v1/lineage/objects/join-paths`) answers that as a search, not a lookup. It
+breadth-first walks the relationship graph from one object and returns every ROUTE, each an ordered chain of
+hops with a pasteable `ON` clause per hop:
+
+- **With just the table**, it lists everything reachable within the hop budget: what can I join this to, and
+  how.
+- **With `other`**, it lists the routes to that specific table, *including through a bridge* when the two are
+  not related directly. A fact table reaching a second dimension only through the first is the normal shape of
+  a star schema, and a one-hop-only answer would wrongly report "no way to join these".
+
+Two design points matter for a caller composing SQL:
+
+- **Rival routes are kept, not deduplicated.** When the codebase joins the same two tables on more than one
+  column set (a surrogate `RouteId` in most scripts, a natural `RouteNumber` in one), both come back. That is
+  a decision for whoever is writing the query, and collapsing it to a single winner would hide a real
+  ambiguity behind a confident answer.
+- **A route is ranked by its weakest link.** `minOccurrences` is the least-used hop in the chain, because a
+  chain is only as canonical as its flimsiest step. Ordering is fewest hops, then that weakest link, then a
+  declared `Constraint` ahead of an inferred `Join`.
+
+Breadth-first is what makes a direct join always beat a chain to the same table. Searches are bounded (hops,
+routes, and objects expanded) and set `truncated` when a bound cut the walk, so a short list is never mistaken
+for a complete one. When no route exists at all the reply says so in words: nothing in the codebase joins
 those tables, and a join condition guessed from matching column names is not a substitute.
