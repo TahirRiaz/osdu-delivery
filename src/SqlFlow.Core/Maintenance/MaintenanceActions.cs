@@ -254,6 +254,24 @@ public static class MaintenanceActions
             throw new SqlFlowException("A maintenance scope naming an object must also name its schema.");
         }
 
+        // The scope's identifiers reach generated SQL: most actions pass them as parameters, but an
+        // object-scoped action builds a two-part name and interpolates it. Bracket-quoting at each call site
+        // already makes that safe, but the guarantee then rests on every call site quoting correctly. Running
+        // the same strict identifier guard the comparison uses puts it in ONE place instead, so the property
+        // is provable here rather than re-argued per action.
+        foreach (var (value, field) in new[]
+                 {
+                     (scope.Database, nameof(scope.Database)),
+                     (scope.Schema, nameof(scope.Schema)),
+                     (scope.ObjectName, nameof(scope.ObjectName)),
+                 })
+        {
+            if (value is not null)
+            {
+                SqlFragmentGuard.ValidateIdentifier(value, field);
+            }
+        }
+
         if (scope.Level < descriptor.WidestScope)
         {
             throw new SqlFlowException(

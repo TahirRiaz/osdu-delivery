@@ -142,6 +142,160 @@ public sealed class MaintenanceAndComparisonTests
         Assert.Throws<SqlFlowException>(() => MaintenanceActions.Validate(request, DataSourceKind.MSSQL));
     }
 
+    [Theory]
+    // The scope's identifiers reach generated SQL, so they get the same strict guard as everything else that
+    // does. Each of these would be inert inside bracket quoting anyway; refusing them keeps the read-only
+    // guarantee resting on one check rather than on every call site quoting correctly.
+    [InlineData("arc]; DROP TABLE arc.Sales --", "T")]
+    [InlineData("arc", "T]; TRUNCATE TABLE arc.Sales --")]
+    [InlineData("arc", "T' OR 1=1 --")]
+    public void Validate_RefusesAScopeIdentifierThatCarriesSqlSyntax(string schema, string objectName)
+    {
+        Assert.Throws<SqlFlowException>(() => MaintenanceActions.Validate(
+            Request(MaintenanceActions.DuplicateKeys, schema, objectName), DataSourceKind.MSSQL));
+    }
+
+    [Fact]
+    public void Validate_RefusesADatabaseNameThatCarriesSqlSyntax()
+    {
+        var request = Request(MaintenanceActions.TableSpace) with
+        {
+            Scope = new MaintenanceScope { Database = "dwh]; DROP DATABASE x --" },
+        };
+
+        Assert.Throws<SqlFlowException>(() => MaintenanceActions.Validate(request, DataSourceKind.MSSQL));
+    }
+
+    /// <summary>
+    /// Every raw SQL literal in the shipped sources, as the executable statement text. All generated SQL in
+    /// these files lives in a raw string literal; prose (a finding sentence that mentions a merge, an
+    /// UPDATE STATISTICS suggested for review) lives in ordinary string literals, so scanning only the raw
+    /// literals separates statements from words about statements.
+    /// </summary>
+    private static IEnumerable<(string File, string Sql)> RawSqlLiterals(string relativeDirectory)
+    {
+        var directory = Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "SqlFlow.SqlServer", relativeDirectory);
+        Assert.True(Directory.Exists(directory), $"Expected sources at {Path.GetFullPath(directory)}.");
+
+        foreach (var file in Directory.GetFiles(directory, "*.cs"))
+        {
+            var text = File.ReadAllText(file);
+            var chunks = text.Split("\"\"\"");
+            Assert.True(chunks.Length % 2 == 1, $"{Path.GetFileName(file)} has an unbalanced raw string literal.");
+
+            // Odd chunks are inside a literal, even chunks are the C# around them.
+            for (var i = 1; i < chunks.Length; i += 2)
+            {
+                yield return (Path.GetFileName(file), chunks[i]);
+            }
+        }
+    }
+
+    private static readonly string[] WriteVerbs =
+        ["INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "CREATE", "ALTER", "EXEC", "EXECUTE",
+         "GRANT", "REVOKE", "DBCC", "BACKUP", "RESTORE"];
+
+    /// <summary>The comparer's staging-table name constants, read from its own source so the test cannot
+    /// assert against names the code no longer uses.</summary>
+    private static IReadOnlyList<(string Name, string Value)> StagingTableConstants()
+    {
+        var path = Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+            "src", "SqlFlow.SqlServer", "Comparison", "SqlServerBaselineComparer.cs");
+        Assert.True(File.Exists(path), $"Expected the comparer at {Path.GetFullPath(path)}.");
+
+        return System.Text.RegularExpressions.Regex
+            .Matches(File.ReadAllText(path), @"private const string (\w+) = ""([^""]+)"";")
+            .Select(m => (m.Groups[1].Value, m.Groups[2].Value))
+            .Where(c => c.Item2.StartsWith('#'))
+            .ToArray();
+    }
+
+    private static IEnumerable<string> WriteStatements(string sql)
+        => sql.Split(';', '\n')
+            .Select(line => line.Trim())
+            .Where(line => WriteVerbs.Any(verb =>
+                line.StartsWith(verb + " ", StringComparison.OrdinalIgnoreCase)));
+
+    [Fact]
+    public void EveryMaintenanceAction_ExecutesReadOnlySql()
+    {
+        // The family's whole contract is that it MEASURES and suggests: it must never insert, update, delete,
+        // or reshape anything. Asserting it against the shipped SQL means a later edit cannot quietly lose the
+        // property, which is what makes the surface safe to expose to an assistant.
+        var literals = RawSqlLiterals("Maintenance").ToList();
+        Assert.NotEmpty(literals);
+
+        foreach (var (file, sql) in literals)
+        {
+            foreach (var statement in WriteStatements(sql))
+            {
+                Assert.Fail($"{file} executes a write statement: {statement}");
+            }
+        }
+    }
+
+    [Fact]
+    public void BaselineComparison_WritesOnlyToItsOwnSessionTempTables()
+    {
+        // The comparison DOES write: it stages both estates into session temp tables so a single pass can
+        // compare them. Every such statement must name one of its own #-prefixed staging tables, so nothing it
+        // executes can reach a user table on either estate.
+        var literals = RawSqlLiterals("Comparison").ToList();
+        Assert.NotEmpty(literals);
+
+        // The staging tables are named by compile-time constants, and the SQL interpolates them by name. Read
+        // those constants out of the source and prove they are all #-prefixed BEFORE substituting them in:
+        // that is the step that makes "it only writes to temp tables" a fact rather than an assumption.
+        var stagingTables = StagingTableConstants();
+        Assert.Equal(4, stagingTables.Count);
+        foreach (var (name, value) in stagingTables)
+        {
+            Assert.True(
+                value.StartsWith("#sf_cmp_", StringComparison.Ordinal),
+                $"The staging constant {name} is '{value}', which is not a session temp table.");
+        }
+
+        var writes = 0;
+        foreach (var (file, rawSql) in literals)
+        {
+            var sql = stagingTables.Aggregate(
+                rawSql, (current, table) => current.Replace("{" + table.Name + "}", table.Value, StringComparison.Ordinal));
+
+            foreach (var statement in WriteStatements(sql))
+            {
+                writes++;
+                Assert.True(
+                    statement.Contains("#sf_cmp_", StringComparison.Ordinal),
+                    $"{file} executes a write that does not target a comparison temp table: {statement}");
+
+                // A staging write is a DROP of, a SELECT INTO, or an index on a temp table. Anything else
+                // reaching a temp table would still be a change of contract worth failing on.
+                Assert.True(
+                    statement.StartsWith("DROP TABLE IF EXISTS #sf_cmp_", StringComparison.Ordinal)
+                    || statement.StartsWith("CREATE INDEX ", StringComparison.Ordinal),
+                    $"{file} executes an unexpected staging statement: {statement}");
+            }
+        }
+
+        Assert.True(writes > 0, "Expected the comparison to stage into temp tables.");
+    }
+
+    [Fact]
+    public void SuggestedSql_IsNeverExecuted_OnlyCollectedForReview()
+    {
+        // A report's suggested SQL is a proposal for a human: it legitimately contains CREATE INDEX, DROP
+        // INDEX, UPDATE STATISTICS and ALTER TABLE. It reaches a caller as text and nothing more, which is
+        // only true while no command is ever built from a finding.
+        foreach (var (file, sql) in RawSqlLiterals("Maintenance").Concat(RawSqlLiterals("Comparison")))
+        {
+            Assert.False(
+                sql.Contains("SuggestedSql", StringComparison.Ordinal),
+                $"{file} interpolates a suggestion into executed SQL.");
+        }
+    }
+
     // ----------------------------------------------------------------------------------------------------
     // Baseline comparison.
     // ----------------------------------------------------------------------------------------------------
