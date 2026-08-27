@@ -1,10 +1,12 @@
 ---
 id: concept-data-operations
-title: "Data operations: duplicate-key check and old-versus-new baseline comparison"
+title: "Data operations: ad-hoc business queries, duplicate keys, and baseline comparison"
 type: concept
-summary: The read-only duplicate-key check and the old-versus-new baseline comparison, behind the ControlPlane DataOps switch.
+summary: The prepare-confirm-run query surface, the duplicate-key check, and baseline comparison, behind the ControlPlane DataOps switch.
 keywords:
   - dataops
+  - text to sql
+  - ad-hoc query
   - duplicate keys
   - baseline comparison
   - linked server
@@ -17,9 +19,13 @@ related:
   - concept-provenance-and-row-keys
 sourceRefs:
   - src/SqlFlow.Core/Quality/DuplicateKeyModels.cs
+  - src/SqlFlow.Core/Query/QueryModels.cs
   - src/SqlFlow.Core/Comparison/BaselineComparisonModels.cs
   - src/SqlFlow.Core/Comparison/SqlFragmentGuard.cs
   - src/SqlFlow.SqlServer/Quality/SqlServerDuplicateKeyProbe.cs
+  - src/SqlFlow.SqlServer/Query/ReadOnlyQueryGuard.cs
+  - src/SqlFlow.SqlServer/Query/SqlServerQueryRunner.cs
+  - src/SqlFlow.ControlPlane/Api/QueryEndpoints.cs
   - src/SqlFlow.SqlServer/Comparison/SqlServerBaselineComparer.cs
   - src/SqlFlow.Execution/ComputeTaskExecutor.cs
   - src/SqlFlow.ControlPlane/Api/DatasourceEndpoints.cs
@@ -28,14 +34,16 @@ sourceRefs:
 
 # Data operations
 
-Two live, interactive checks that run against the warehouse from the control plane: the **duplicate-key
-check**, and the **baseline comparison** that proves a V3 migration against the old production estate.
+Three live, interactive capabilities that run against the warehouse from the control plane: **ad-hoc business
+queries** (answering a question with real numbers, behind a human confirmation), the **duplicate-key check**,
+and the **baseline comparison** that proves a V3 migration against the old production estate.
 
-Both are **read-only**. The duplicate check groups and counts. The comparison reads both estates and writes
-nothing but a session temp table in `tempdb`. That property is enforced by construction and asserted in tests,
-which is what makes the surface safe to hand to an assistant.
+All three are **read-only**. A query is parsed and refused unless it is a single SELECT, then executed inside
+a transaction that is always rolled back. The duplicate check groups and counts. The comparison reads both
+estates and writes nothing but a session temp table in `tempdb`. Those properties are enforced by construction
+and asserted in tests, which is what makes the surface safe to hand to an assistant.
 
-Both are **off by default**, behind one switch.
+All three are **off by default**, behind one switch.
 
 > **Not a DBA surface.** This deliberately does not offer index rebuilds, statistics updates, compression, or
 > any other warehouse maintenance remediation. The four warehouse-health DMV probes (`missingIndexes`,
@@ -48,7 +56,7 @@ Both are **off by default**, behind one switch.
 ControlPlane__DataOps__Enabled=true
 ```
 
-With it off, `POST /api/v1/datasources/tasks` refuses the `duplicateKeys` and `compareBaseline` operations
+With it off, `POST /api/v1/datasources/tasks` refuses the `duplicateKeys`, `compareBaseline` and `runQuery` operations, both query endpoints answer 403,
 with a 403 naming the setting, and `GET /api/v1/dataops/capabilities` reports `enabled: false` so a GUI or an
 assistant explains the situation instead of showing a failing button. Nothing else in the product changes,
 and in particular the insights dashboard is unaffected.
@@ -82,6 +90,62 @@ anti-join over a billion rows legitimately outruns any deadline safe for an inte
 cancellable and are backstopped by the queue's running-task expiry, exactly like `detectUniqueKey`.
 
 Every task row records `RequestedBy` and the full arguments, so this surface is auditable by construction.
+
+## Ad-hoc business queries
+
+A question like "what were the daily boarding totals on route 5200 last month" needs real numbers, not SQL to
+paste elsewhere. That runs here, in **two steps**, and the split is the whole design:
+
+```
+1. POST /api/v1/dataops/queries/prepare   { sql, reference }
+   -> { planId, sql, expiresUtc }      NOTHING HAS RUN
+
+2. (the caller shows that exact sql to a person and gets agreement)
+
+3. POST /api/v1/dataops/queries/{planId}/run
+   -> 202 + taskId, then poll the task for the rows
+```
+
+The confirmation is **enforced, not requested**. The run endpoint takes a token and never a statement, so the
+only executable SQL is SQL that was first prepared and handed back to be shown. A client that wanted to skip
+asking has nothing to skip to. The plan row is:
+
+- **single-use** - redeeming it twice returns 409, so running the same query again means preparing it again
+  and each execution is separately approved;
+- **short-lived** (15 minutes) - an approval is a decision about a moment, not a standing permission, so a
+  token left in a transcript is not a key;
+- **attributable** - it records who prepared what and links to the task that ran it.
+
+### Read-only, proved twice
+
+`ReadOnlyQueryGuard` **parses** the statement with the same T-SQL parser the lineage extractor uses. That
+distinction matters: a denylist over text loses to casing, comments, whitespace and nesting, while a parse
+tree either contains a write node or it does not. `select 1; dRoP tAbLe x` and `SELECT 1 /* c */ ; DELETE ...`
+are both refused as "more than one statement", not by spotting a keyword.
+
+The rule is an allowlist at the top (exactly one batch holding exactly one SELECT) plus a refusal of every
+construct that can reach outside the query from *inside* a select: `SELECT ... INTO` (a SELECT that creates a
+table), a procedure call, `OPENQUERY` / `OPENROWSET` (which run statements this cannot inspect, possibly on
+another server), and `xp_` / `sp_` functions.
+
+It is validated at **both** ends: at prepare in the control plane, and again on the node before execution,
+because the queue row is data from the database. On top of that, the query runs inside a transaction that is
+**always rolled back**, so even a statement that somehow passed the parser leaves nothing behind. Belt and
+braces is warranted where the cost of being wrong is data.
+
+### Bounds
+
+Rows stop at `maxRows` (default 200, max 5000) with the result marked `truncated`; the read STOPS there rather
+than pulling the rest and slicing. A command timeout applies (default 120s, max 600s), and an oversized cell is
+trimmed with a marker so one `varchar(max)` column cannot swamp a small result.
+
+`truncated` is the field a caller must read before describing an answer: a truncated result is a page, and
+summing a page gives a confidently wrong total.
+
+### Composing the SQL
+
+Compose from the metadata, never from guessed names: `get_table_key` for the grain, `get_table_joins` for the
+ON clauses, `describe_object` for the columns. That is what the join graph below exists for.
 
 ## Duplicate keys, and the key it uses
 
@@ -181,12 +245,16 @@ the builder, so a name carrying its own bracket is refused rather than escaped.
 | Route | Purpose |
 | --- | --- |
 | `GET /api/v1/dataops/capabilities` | Whether the surface is enabled, the operations available, the allowlisted linked servers |
+| `POST /api/v1/dataops/queries/prepare` | Validate a SELECT and mint a one-time plan token. Nothing runs |
+| `POST /api/v1/dataops/queries/{planId}/run` | Redeem an approved token and queue the query (202 + taskId) |
 | `POST /api/v1/datasources/tasks` | `operation: "duplicateKeys"` or `"compareBaseline"` |
 | `GET /api/v1/datasources/tasks/{id}?waitMs=20000` | Long-poll the result |
 
 ## MCP tools
 
 - `dataops_capabilities` - call first; reports whether the surface is enabled here
+- `prepare_query` - step 1: validate a SELECT, get the exact statement plus a token. Nothing runs
+- `run_query` - step 2: redeem an approved token and return the rows
 - `check_duplicate_keys` - the duplicate check, including the ask-back path
 - `compare_baseline` - inventory, schema, or data comparison
 

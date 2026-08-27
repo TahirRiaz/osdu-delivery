@@ -45,6 +45,19 @@ public sealed class ControlPlaneAppFactory : WebApplicationFactory<Program>
         return this;
     }
 
+    /// <summary>Extra configuration a test needs applied before the host is built, for settings the shipped
+    /// defaults leave off (a feature switch, for instance). Must be called before the first client.</summary>
+    private readonly Dictionary<string, string> _settings = [];
+
+    /// <summary>Overrides one configuration value for this host. Applied after the standard test settings, so
+    /// a test can turn on a feature the deployed default leaves off.</summary>
+    public ControlPlaneAppFactory WithSetting(string key, string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        _settings[key] = value;
+        return this;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -70,6 +83,11 @@ public sealed class ControlPlaneAppFactory : WebApplicationFactory<Program>
         builder.UseSetting("ControlPlane:Scheduler:PollSeconds", "1");
         // A 1-second managed-sync tick so the end-to-end sync test runs promptly; the shipped default is 30s.
         builder.UseSetting("ControlPlane:ManagedSync:PollSeconds", "1");
+
+        foreach (var (key, value) in _settings)
+        {
+            builder.UseSetting(key, value);
+        }
 
         builder.ConfigureLogging(logging =>
         {

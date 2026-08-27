@@ -116,8 +116,10 @@ Operate surface (policy `operate`):
 | `POST /repos/sources/{id}/sync` | Force a sync now |
 | `POST /repos/discover` | Preview a repo's flows without importing (the selective-scan wizard) |
 | `POST /repos/sources/{id}/proposals` | Propose pipelines to a source as a pull request (`author` scope) |
-| `POST /datasources/tasks` | Enqueue an ad-hoc compute task against a datasource: browse/introspect, detect a unique key, the warehouse-health DMV probes, and (behind `DataOps:Enabled`) `duplicateKeys` and `compareBaseline`. References only; the executing node resolves the credential |
+| `POST /datasources/tasks` | Enqueue an ad-hoc compute task against a datasource: browse/introspect, detect a unique key, the warehouse-health DMV probes, and (behind `DataOps:Enabled`) `duplicateKeys`, `compareBaseline` and `runQuery`. References only; the executing node resolves the credential |
 | `POST /datasources/tasks/{taskId}/cancel` | Cancel a queued or running compute task |
+| `POST /dataops/queries/prepare` | Validate an ad-hoc SELECT and mint a one-time plan token; nothing runs. Behind `DataOps:Enabled` |
+| `POST /dataops/queries/{planId}/run` | Redeem an approved plan token and queue the query. Takes a token, never a statement, so the confirmation cannot be skipped |
 
 Admin surface (policy `admin`): `GET/POST /users`, `POST /users/{id}/role` `/activate` `/deactivate` `/password`, and `GET /roles` (src/SqlFlow.ControlPlane/Api/UserEndpoints.cs).
 
@@ -170,7 +172,7 @@ All settings bind from the `ControlPlane` configuration section (environment var
 | `Worker:Enabled` | `true` | `false` makes the replica API-only (no in-process worker) |
 | `Worker:Pools` | `[]` | Empty claims only untargeted runs |
 | `Proxy:Enabled` | `false` | See proxy section above; `ForwardLimit` default `1` |
-| `DataOps:Enabled` | `false` | The kill switch for the data-operations surface: the duplicate-key check and the old-versus-new baseline comparison. Both are read-only, and both are refused with a 403 naming this setting while it is off. The four warehouse-health DMV probes are a separate, older feature and are NOT gated by it (concept-data-operations) |
+| `DataOps:Enabled` | `false` | The kill switch for the data-operations surface: ad-hoc business queries, the duplicate-key check and the old-versus-new baseline comparison. All are read-only, and both are refused with a 403 naming this setting while it is off. The four warehouse-health DMV probes are a separate, older feature and are NOT gated by it (concept-data-operations) |
 | `DataOps:Comparison:LinkedServers` | `[]` | The linked servers a baseline comparison may name. A linked-server name becomes an identifier in generated SQL and a route into another estate, so it is configuration, never something a request chooses; an unlisted name is refused |
 | `DataOps:Comparison:DefaultLinkedServer` | unset | Used when a comparison names none; must be one of `LinkedServers` or startup fails |
 | `DataOps:Comparison:Databases` | `[]` | Optional narrowing to named databases on those servers. Empty permits any database the linked server's own login can reach, which is the usual case because the linked server is the boundary |

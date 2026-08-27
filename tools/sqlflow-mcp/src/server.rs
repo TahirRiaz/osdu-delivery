@@ -451,6 +451,32 @@ pub struct DetectUniqueKeyInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrepareQueryInput {
+    /// The single read-only SELECT to prepare. Compose it from real metadata (get_table_key,
+    /// get_table_joins, describe_object), never from guessed column or join names.
+    pub sql: String,
+    /// The datasource connection reference. Omit to use the estate's busiest target datasource (the warehouse).
+    pub reference: Option<String>,
+    /// The database to run in; omit for the connection's default.
+    pub database: Option<String>,
+    /// Most rows the result carries (default 200, max 5000). Beyond it the result is marked truncated.
+    #[serde(rename = "maxRows")]
+    pub max_rows: Option<i64>,
+    /// Command timeout in seconds (default 120, max 600).
+    #[serde(rename = "timeoutSeconds")]
+    pub timeout_seconds: Option<i64>,
+    /// Route the run to a worker pool that can reach the source (optional).
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunQueryInput {
+    /// The planId returned by prepare_query. Single-use and short-lived.
+    #[serde(rename = "planId")]
+    pub plan_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DuplicateKeysInput {
     /// The schema of the table to check.
     pub schema: String,
@@ -1894,6 +1920,38 @@ impl SqlFlowMcp {
     }
 
     #[tool(
+        description = "STEP 1 of running a business query: validate a SELECT and get back the exact statement \
+            plus a one-time token. NOTHING RUNS HERE and no data is touched. The statement is parsed and \
+            refused unless it is a single read-only SELECT, so anything that writes, calls a procedure, or \
+            reaches another server is rejected with the reason. \
+            \
+            After calling this you MUST show the returned `sql` to the user verbatim and get their agreement \
+            BEFORE calling run_query with the planId. Do not paraphrase it, do not summarise it, and do not \
+            redeem the token on your own initiative: preparing is not permission to run. \
+            \
+            Compose the SQL from real metadata first (get_table_key for the grain, get_table_joins for the ON \
+            clauses, describe_object for columns); never guess a join or a column name. This surface is behind \
+            a deployment switch, so check dataops_capabilities if it answers that it is not enabled."
+    )]
+    async fn prepare_query(&self, Parameters(i): Parameters<PrepareQueryInput>) -> String {
+        done(self.run_prepare_query(i).await)
+    }
+
+    #[tool(
+        description = "STEP 2 of running a business query: redeem an APPROVED plan token and return the rows. \
+            Call this ONLY after prepare_query returned a statement, you showed that statement to the user, \
+            and the user agreed to it. The token is single-use: redeeming it twice fails, and running the same \
+            query again means preparing it again so each execution is separately approved. \
+            \
+            Read `truncated` in the result before describing the answer. A truncated result is a PAGE, not the \
+            whole answer, and summing or counting one gives a confidently wrong total: say it was truncated, \
+            or re-prepare with a higher maxRows or an aggregate that answers the question directly."
+    )]
+    async fn run_query(&self, Parameters(i): Parameters<RunQueryInput>) -> String {
+        done(self.run_prepared_query(i).await)
+    }
+
+    #[tool(
         description = "Check one table for duplicate rows on its key, and wait for the answer. The key is the \
             one the TABLE declares, in this order: SQLFlow's own NCI_KeyColumn business-key index (the key the \
             load merges on), then a primary key that is not a bare identity, then any other unique index. A \
@@ -2275,6 +2333,65 @@ impl SqlFlowMcp {
         }
 
         self.run_compute_task("detectUniqueKey", body).await
+    }
+
+    async fn run_prepare_query(&self, input: PrepareQueryInput) -> anyhow::Result<String> {
+        let reference = self.resolve_reference(input.reference).await?;
+        let mut body = json!({ "sql": input.sql, "reference": reference });
+        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
+            body["database"] = json!(database.trim());
+        }
+        if let Some(rows) = input.max_rows {
+            body["maxRows"] = json!(rows);
+        }
+        if let Some(seconds) = input.timeout_seconds {
+            body["timeoutSeconds"] = json!(seconds);
+        }
+        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
+            body["pool"] = json!(pool);
+        }
+
+        let prepared = self.cp.post("/api/v1/dataops/queries/prepare", body).await?;
+        Ok(json_str(&prepared))
+    }
+
+    /// Redeems the plan and waits for the rows. The wait is the same enqueue-and-poll every other interactive
+    /// datasource tool uses, so a query behaves like the rest of the surface.
+    async fn run_prepared_query(&self, input: RunQueryInput) -> anyhow::Result<String> {
+        let plan = input.plan_id.trim();
+        if plan.is_empty() {
+            anyhow::bail!("run_query needs the planId that prepare_query returned.");
+        }
+
+        let accepted = self
+            .cp
+            .post(&format!("/api/v1/dataops/queries/{plan}/run"), json!({}))
+            .await?;
+        let task_id = accepted["taskId"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("The control plane's accept response carried no taskId: {accepted}"))?;
+
+        for _ in 0..12 {
+            let task = self
+                .cp
+                .get(&format!("/api/v1/datasources/tasks/{task_id}"), &[("waitMs", "20000".to_string())])
+                .await?;
+            match task["status"].as_str() {
+                Some("succeeded") | Some("failed") | Some("cancelled") | Some("skipped") => {
+                    // Deliberately NOT truncate_long_strings here: the caller asked for these values, and
+                    // silently trimming a cell would report altered data as the answer. The runner already
+                    // bounds rows and cell size at the source.
+                    return Ok(json_str(&task));
+                }
+                _ => {}
+            }
+        }
+
+        anyhow::bail!(
+            "The query (task {task_id}) did not finish in time. It may still be running; check it with the \
+             datasources task list."
+        )
     }
 
     async fn run_duplicate_keys(&self, input: DuplicateKeysInput) -> anyhow::Result<String> {

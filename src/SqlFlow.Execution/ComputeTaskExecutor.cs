@@ -7,10 +7,12 @@ using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Quality;
+using SqlFlow.Core.Query;
 using SqlFlow.Core.Profiling;
 using SqlFlow.SqlServer.Comparison;
 using SqlFlow.SqlServer.Health;
 using SqlFlow.SqlServer.Quality;
+using SqlFlow.SqlServer.Query;
 using SqlFlow.SqlServer.Profiling;
 
 namespace SqlFlow.Execution;
@@ -78,6 +80,9 @@ public sealed class ComputeTaskExecutor
             // are backstopped by the queue's running-task expiry, exactly like detectUniqueKey.
             ComputeOperations.DetectUniqueKey or ComputeOperations.DuplicateKeys or ComputeOperations.CompareBaseline
                 => Timeout.InfiniteTimeSpan,
+            // A business query carries its OWN timeout, chosen when it was approved, so the executor does not
+            // impose a second one that could cut a query the approver deliberately allowed time for.
+            ComputeOperations.RunQuery => Timeout.InfiniteTimeSpan,
             _ => BrowseTimeout,
         };
 
@@ -175,6 +180,9 @@ public sealed class ComputeTaskExecutor
 
             case ComputeOperations.CompareBaseline:
                 return await CompareBaselineAsync(payload, reference, kind, ct).ConfigureAwait(false);
+
+            case ComputeOperations.RunQuery:
+                return await RunQueryAsync(payload, reference, kind, ct).ConfigureAwait(false);
 
             default:
                 // Validate() has already refused unknown operations at both boundaries; reaching this arm means a
@@ -316,6 +324,29 @@ public sealed class ComputeTaskExecutor
         var report = await SqlServerDuplicateKeyProbe
             .RunAsync(resolved.CanonicalString, request, resolved.Kind, ct).ConfigureAwait(false);
         return ToJson(report);
+    }
+
+    /// <summary>
+    /// Runs one APPROVED read-only business query. By the time a payload reaches here a person has seen the
+    /// exact statement and the control plane has redeemed a single-use plan token into it, so this does not
+    /// re-decide whether the query MAY run; it re-decides whether the statement is read-only, because the
+    /// queue row is data from the database and the parser is the only thing that can prove that.
+    /// </summary>
+    private async Task<string> RunQueryAsync(
+        ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
+    {
+        var request = payload.ToQueryRunRequest();
+        var resolved = await _resolver.ResolveAsync(reference, ConnectionRole.Source, kind, ct).ConfigureAwait(false);
+        if (resolved.Kind is not (DataSourceKind.MSSQL or DataSourceKind.AZDB))
+        {
+            throw new SqlFlowException(
+                $"The query surface parses and runs T-SQL; the source resolved to kind '{resolved.Kind}'. Only " +
+                "SQL Server and Azure SQL sources are supported.");
+        }
+
+        var result = await SqlServerQueryRunner
+            .RunAsync(resolved.CanonicalString, request, ct).ConfigureAwait(false);
+        return ToJson(result);
     }
 
     /// <summary>

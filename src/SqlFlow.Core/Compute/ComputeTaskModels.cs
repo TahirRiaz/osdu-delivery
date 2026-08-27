@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Quality;
+using SqlFlow.Core.Query;
 
 namespace SqlFlow.Core.Compute;
 
@@ -59,6 +60,11 @@ public static class ComputeOperations
     /// it groups and counts. Gated by <c>ControlPlane:DataOps:Enabled</c>.</summary>
     public const string DuplicateKeys = "duplicateKeys";
 
+    /// <summary>Run one APPROVED read-only business query. The statement reaches this operation only after a
+    /// human saw it and a one-time plan token was redeemed, so the queue row is the record of an approved
+    /// query, never of an ad-hoc one. Gated by <c>ControlPlane:DataOps:Enabled</c>.</summary>
+    public const string RunQuery = "runQuery";
+
     /// <summary>Compare the current estate against the OLD production baseline over a configured linked
     /// server: object inventory, one object's shape, or one object's rows. Read-only on both estates and
     /// gated by <c>ControlPlane:DataOps:Enabled</c>.</summary>
@@ -67,12 +73,13 @@ public static class ComputeOperations
     /// <summary>Every operation this build understands, for validation messages.</summary>
     public static readonly string[] All =
         [TestConnection, ListDatabases, ListSchemas, ListObjects, SearchObjects, IntrospectObject, DetectUniqueKey,
-         MissingIndexes, StatisticsHealth, IndexUsage, TopQueries, DuplicateKeys, CompareBaseline];
+         MissingIndexes, StatisticsHealth, IndexUsage, TopQueries, DuplicateKeys, CompareBaseline,
+         RunQuery];
 
     /// <summary>The operations the DataOps feature switch gates. Off, the control plane refuses them with a
     /// clear "not enabled" problem instead of queueing a task no policy permits.</summary>
     public static bool IsDataOps(string? operation)
-        => operation is DuplicateKeys or CompareBaseline;
+        => operation is DuplicateKeys or CompareBaseline or RunQuery;
 
     /// <summary>The warehouse-health subset: DMV probes authored in T-SQL, so they require a SQL Server family
     /// source, exactly like <see cref="DetectUniqueKey"/>.</summary>
@@ -155,6 +162,16 @@ public sealed record ComputeTaskPayload
 
     /// <summary>detectUniqueKey: answer from an enforced unique index/constraint without reading rows.</summary>
     public bool TrustDeclaredKeys { get; init; } = true;
+
+    /// <summary>runQuery: the approved statement. It is placed here by the control plane when a plan token is
+    /// redeemed, never by a client: the request that starts a run carries a token, not SQL.</summary>
+    public string? Sql { get; init; }
+
+    /// <summary>runQuery: the most rows the result carries before it is marked truncated.</summary>
+    public int? MaxRows { get; init; }
+
+    /// <summary>runQuery: the command timeout.</summary>
+    public int? TimeoutSeconds { get; init; }
 
     /// <summary>duplicateKeys: the columns that identify one real row. Left empty the check reads the key
     /// the TABLE declares; this is where the answer to a report's <c>question</c> comes back when the table
@@ -325,6 +342,10 @@ public sealed record ComputeTaskPayload
             case ComputeOperations.CompareBaseline:
                 ToComparisonRequest(LinkedServer is null ? [] : [LinkedServer]);
                 break;
+
+            case ComputeOperations.RunQuery:
+                ToQueryRunRequest();
+                break;
         }
 
         if (ComputeOperations.IsWarehouseHealth(Operation))
@@ -394,6 +415,33 @@ public sealed record ComputeTaskPayload
             Columns = Columns ?? [],
             Limit = Limit,
         }.Validate(ProviderKind);
+    }
+
+    /// <summary>
+    /// Projects the payload onto the query-run contract and validates its bounds. The STATEMENT is validated
+    /// separately by the provider's read-only guard, which parses T-SQL; this checks only what Core can.
+    /// </summary>
+    public QueryRunRequest ToQueryRunRequest()
+    {
+        if (Operation != ComputeOperations.RunQuery)
+        {
+            throw new SqlFlowException($"Only the {ComputeOperations.RunQuery} operation carries a query.");
+        }
+
+        if (string.IsNullOrWhiteSpace(Sql))
+        {
+            throw new SqlFlowException(
+                "runQuery carries the approved statement. A client does not send SQL here: it prepares a query, " +
+                "a person approves it, and the control plane redeems the token into this payload.");
+        }
+
+        return new QueryRunRequest
+        {
+            Sql = Sql,
+            Database = NullIfBlank(Database),
+            MaxRows = MaxRows ?? QueryRunRequest.DefaultMaxRows,
+            TimeoutSeconds = TimeoutSeconds ?? QueryRunRequest.DefaultTimeoutSeconds,
+        }.Validate();
     }
 
     /// <summary>

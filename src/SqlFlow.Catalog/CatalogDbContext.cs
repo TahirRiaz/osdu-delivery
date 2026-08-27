@@ -80,6 +80,9 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogComputeTask> ComputeTasks => Set<CatalogComputeTask>();
 
+    /// <summary>Prepared ad-hoc queries awaiting approval; the confirmation gate for the query surface.</summary>
+    public DbSet<CatalogQueryPlan> QueryPlans => Set<CatalogQueryPlan>();
+
     public DbSet<CatalogNotificationEvent> NotificationEvents => Set<CatalogNotificationEvent>();
 
     public DbSet<CatalogChatConversation> ChatConversations => Set<CatalogChatConversation>();
@@ -583,6 +586,21 @@ public sealed class CatalogDbContext : DbContext
             // The GUI lists recent tasks newest first, optionally per source.
             entity.HasIndex(t => t.EnqueuedUtc);
             entity.HasIndex(t => t.SourceRef);
+        });
+
+        modelBuilder.Entity<CatalogQueryPlan>(entity =>
+        {
+            entity.ToTable("QueryPlan");
+            entity.HasKey(p => p.PlanId);
+            entity.Property(p => p.Sql).IsRequired();
+            entity.Property(p => p.SourceRef).HasMaxLength(512).IsRequired();
+            entity.Property(p => p.ProviderKind).HasMaxLength(16);
+            entity.Property(p => p.Database).HasMaxLength(256);
+            entity.Property(p => p.TargetPool).HasMaxLength(128);
+            entity.Property(p => p.PreparedBy).HasMaxLength(256);
+            // The sweep that clears lapsed plans, and the audit read of what one person prepared.
+            entity.HasIndex(p => p.ExpiresUtc);
+            entity.HasIndex(p => p.PreparedUtc);
         });
 
         modelBuilder.Entity<CatalogNotificationEvent>(entity =>

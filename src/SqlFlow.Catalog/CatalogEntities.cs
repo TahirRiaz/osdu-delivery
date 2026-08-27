@@ -1245,6 +1245,55 @@ public class CatalogComputeTask
     public string? ResultJson { get; set; }
 }
 
+/// <summary>
+/// One prepared ad-hoc query, awaiting a human's approval to run.
+///
+/// This row IS the confirmation gate. An agent composing a business question calls prepare, which validates
+/// the statement and writes this row; the row's id is the only thing that can later be executed. Nothing can
+/// run SQL that was not first prepared and shown, because the run endpoint takes a token and never a
+/// statement. The row is single-use (<see cref="ConsumedUtc"/>) and short-lived
+/// (<see cref="ExpiresUtc"/>), so an approval cannot be replayed later or left lying around, and it records
+/// who prepared it beside the exact text, which makes the whole surface auditable after the fact.
+/// </summary>
+public class CatalogQueryPlan
+{
+    /// <summary>The token. Minted server-side, and the only handle the run endpoint accepts.</summary>
+    public Guid PlanId { get; set; }
+
+    /// <summary>The validated statement, exactly as it will be executed and exactly as it was shown.</summary>
+    public string Sql { get; set; } = string.Empty;
+
+    /// <summary>The datasource reference the query will run against; never a secret.</summary>
+    public string SourceRef { get; set; } = string.Empty;
+
+    public string? ProviderKind { get; set; }
+
+    public string? Database { get; set; }
+
+    /// <summary>The pool the run should be routed to, carried from prepare so the approved plan runs where it
+    /// was planned to.</summary>
+    public string? TargetPool { get; set; }
+
+    public int MaxRows { get; set; }
+
+    public int TimeoutSeconds { get; set; }
+
+    /// <summary>Who prepared it (the token subject), recorded so an executed query is attributable.</summary>
+    public string? PreparedBy { get; set; }
+
+    public DateTime PreparedUtc { get; set; }
+
+    /// <summary>When the plan stops being runnable. An approval is a decision about a moment, not a standing
+    /// permission.</summary>
+    public DateTime ExpiresUtc { get; set; }
+
+    /// <summary>When the plan was spent. Non-null means it has already run and cannot run again.</summary>
+    public DateTime? ConsumedUtc { get; set; }
+
+    /// <summary>The compute task the run created, so a plan links to its result.</summary>
+    public Guid? TaskId { get; set; }
+}
+
 /// <summary>The identity providers a <see cref="CatalogUser"/> can come from, stored as a short lowercase string
 /// (same convention as <see cref="RunStatuses"/>).</summary>
 public static class UserProviders
