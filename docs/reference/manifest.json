@@ -716,16 +716,14 @@
     {
       "id": "concept-data-operations",
       "path": "concepts/data-operations.md",
-      "title": "Data operations: warehouse maintenance actions and baseline comparison",
+      "title": "Data operations: duplicate-key check and old-versus-new baseline comparison",
       "type": "concept",
-      "summary": "Read-only warehouse maintenance actions and baseline comparison behind the ControlPlane DataOps switch; they measure and suggest SQL, never execute it.",
+      "summary": "The read-only duplicate-key check and the old-versus-new baseline comparison, behind the ControlPlane DataOps switch.",
       "keywords": [
         "dataops",
-        "maintenance",
         "duplicate keys",
         "baseline comparison",
         "linked server",
-        "index fragmentation",
         "migration reconciliation",
         "compute task"
       ],
@@ -736,12 +734,10 @@
         "concept-provenance-and-row-keys"
       ],
       "sourceRefs": [
-        "src/SqlFlow.Core/Maintenance/MaintenanceActions.cs",
-        "src/SqlFlow.Core/Maintenance/MaintenanceModels.cs",
+        "src/SqlFlow.Core/Quality/DuplicateKeyModels.cs",
         "src/SqlFlow.Core/Comparison/BaselineComparisonModels.cs",
         "src/SqlFlow.Core/Comparison/SqlFragmentGuard.cs",
-        "src/SqlFlow.SqlServer/Maintenance/SqlServerMaintenanceActions.cs",
-        "src/SqlFlow.SqlServer/Maintenance/DuplicateKeysAction.cs",
+        "src/SqlFlow.SqlServer/Quality/SqlServerDuplicateKeyProbe.cs",
         "src/SqlFlow.SqlServer/Comparison/SqlServerBaselineComparer.cs",
         "src/SqlFlow.Execution/ComputeTaskExecutor.cs",
         "src/SqlFlow.ControlPlane/Api/DatasourceEndpoints.cs",

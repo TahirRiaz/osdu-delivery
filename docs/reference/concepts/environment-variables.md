@@ -119,9 +119,9 @@ Two control-plane features are OFF unless a deployment turns them on. Both are g
 | Variable | Default | Gates |
 | --- | --- | --- |
 | `ControlPlane__Assistant__Enabled` | `false` | The GUI chat assistant (`/api/v1/chat`). Needs the provider settings alongside it; `GET /api/v1/chat/capabilities` reports the switch ([Chat assistant](../guides/chat-assistant.md)) |
-| `ControlPlane__DataOps__Enabled` | `false` | The data-operations surface: the standard warehouse maintenance actions (`dwhMaintenance`) and the old-versus-new baseline comparison (`compareBaseline`). `GET /api/v1/dataops/capabilities` reports the switch ([Data operations](data-operations.md)) |
+| `ControlPlane__DataOps__Enabled` | `false` | The data-operations surface: the duplicate-key check (`duplicateKeys`) and the old-versus-new baseline comparison (`compareBaseline`). `GET /api/v1/dataops/capabilities` reports the switch ([Data operations](data-operations.md)) |
 
-`ControlPlane__DataOps__Enabled` is the one to set when someone asks for the warehouse maintenance checks, the duplicate-key check, or a migration comparison against old production, and gets a 403 naming the setting:
+`ControlPlane__DataOps__Enabled` is the one to set when someone asks for the duplicate-key check or a migration comparison against old production, and gets a 403 naming the setting:
 
 ```bash
 ControlPlane__DataOps__Enabled=true
@@ -140,7 +140,7 @@ ControlPlane__DataOps__Comparison__DefaultLinkedServer=old-dwh-prod
 ControlPlane__DataOps__Comparison__Databases__0=dw-dwh-prod
 ```
 
-Turning the gate off again is a complete kill switch: the operations are refused at the trust boundary, so nothing is queued and no node ever opens a connection for them. Everything behind the gate is read-only in any case (the maintenance actions measure the warehouse and emit SQL for a human to review; the comparison reads both estates and writes nothing but a session temp table), so the gate is about limiting the surface a deployment exposes, not about preventing writes.
+Turning the gate off again is a complete kill switch: the operations are refused at the trust boundary, so nothing is queued and no node ever opens a connection for them. Everything behind the gate is read-only in any case (the duplicate check groups and counts; the comparison reads both estates and writes nothing but a session temp table), so the gate is about limiting the surface a deployment exposes, not about preventing writes.
 
 `DefaultLinkedServer` must be one of `LinkedServers` or the host fails at startup with a message naming the setting, so a typo is caught on deploy rather than on first use.
 

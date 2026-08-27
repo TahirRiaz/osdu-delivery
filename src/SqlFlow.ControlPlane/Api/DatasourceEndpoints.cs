@@ -12,7 +12,6 @@ using SqlFlow.Core;
 using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Connections;
-using SqlFlow.Core.Maintenance;
 using SqlFlow.Lineage.Collection;
 
 namespace SqlFlow.ControlPlane.Api;
@@ -36,34 +35,10 @@ public sealed record ComputeTaskRequest(
     string? SearchTerm = null, bool IncludeTables = true, bool IncludeViews = true, bool IncludeSystem = false,
     int Offset = 0, int Limit = 200, int? SampleSize = null, int MaxKeyColumns = 4, int MaxCandidates = 5,
     bool VerifyCandidates = true, bool TrustDeclaredKeys = true,
-    string? MaintenanceAction = null, IReadOnlyDictionary<string, double>? Thresholds = null,
-    IReadOnlyList<string>? Columns = null,
-    string? CompareMode = null, string? LinkedServer = null, string? BaselineDatabase = null,
+    IReadOnlyList<string>? Columns = null, string? CompareMode = null, string? LinkedServer = null, string? BaselineDatabase = null,
     string? BaselineSchema = null, string? BaselineObjectName = null,
     IReadOnlyList<string>? KeyExpressions = null, IReadOnlyList<string>? CompareColumns = null,
     string? ExcludeColumnPattern = null, string? Where = null, int SampleRows = 5);
-
-/// <summary>One maintenance action as the discovery endpoint describes it: enough for a GUI to render a form
-/// and for an assistant to fill the fields without reading source.</summary>
-public sealed record MaintenanceActionDto(
-    string Name, string Title, string Description, string WidestScope, string NarrowestScope,
-    IReadOnlyList<string> SupportedKinds, bool IsWarehouseHealthProbe, bool AcceptsColumns, string? Caution,
-    IReadOnlyList<MaintenanceParameterDto> Parameters);
-
-/// <summary>One tunable of a maintenance action, with its bounds and default.</summary>
-public sealed record MaintenanceParameterDto(
-    string Name, string Description, double Minimum, double Maximum, double Default);
-
-/// <summary>
-/// What the data-operations surface offers in THIS deployment: whether the feature switch is on, the standard
-/// warehouse maintenance actions available, and the linked servers a baseline comparison may name. A client
-/// reads this before offering the surface, so a deployment with the switch off shows an explanation rather
-/// than a failing button.
-/// </summary>
-public sealed record DataOpsCapabilitiesDto(
-    bool Enabled, string DisabledReason, IReadOnlyList<MaintenanceActionDto> MaintenanceActions,
-    IReadOnlyList<string> ComparisonLinkedServers, string? DefaultLinkedServer,
-    IReadOnlyList<string> CompareModes);
 
 /// <summary>The accepted-task acknowledgement: the minted task id and its queued status. The task executes
 /// asynchronously; poll <c>GET /api/v1/datasources/tasks/{taskId}</c> (the <c>Location</c> header) for the
@@ -71,8 +46,9 @@ public sealed record DataOpsCapabilitiesDto(
 public sealed record ComputeTaskAccepted(Guid TaskId, string Status);
 
 /// <summary>A compute task as the task list shows it: everything but the (possibly large) result body.
-/// <see cref="Target"/> is the object an object-scoped task (introspect, detect a unique key) ran against, as
-/// <c>[db.]schema.name</c>, so a task history names WHAT was inspected; null for list/search/test tasks.</summary>
+/// <see cref="Target"/> is the object an object-scoped task (introspect, detect a unique key, check for
+/// duplicates) ran against, as <c>[db.]schema.name</c>, so a task history names WHAT was inspected; null for
+/// list/search/test tasks.</summary>
 public sealed record ComputeTaskSummaryDto(
     Guid TaskId, string Operation, string SourceRef, string? ProviderKind, string? Pool, string Status,
     string? RequestedBy, DateTime EnqueuedUtc, DateTime? StartUtc, DateTime? EndUtc, string? ClaimedByNode,
@@ -85,6 +61,17 @@ public sealed record ComputeTaskDto(
     Guid TaskId, string Operation, string SourceRef, string? ProviderKind, string? Pool, string Status,
     string? RequestedBy, DateTime EnqueuedUtc, DateTime? StartUtc, DateTime? EndUtc, string? ClaimedByNode,
     DateTime? CancelRequestedUtc, string? Error, JsonElement? Result, string? Target = null);
+
+/// <summary>
+/// What the data-operations surface offers in THIS deployment: whether the feature switch is on, the
+/// read-only checks available, and the linked servers a baseline comparison may name. A client reads this
+/// before offering the surface, so a deployment with the switch off shows an explanation rather than a
+/// failing button.
+/// </summary>
+public sealed record DataOpsCapabilitiesDto(
+    bool Enabled, string DisabledReason, IReadOnlyList<string> Operations,
+    IReadOnlyList<string> ComparisonLinkedServers, string? DefaultLinkedServer,
+    IReadOnlyList<string> CompareModes);
 
 /// <summary>
 /// The datasource surface: the estate's datasources as the catalog knows them, and the ad-hoc compute queue
@@ -122,41 +109,6 @@ public static class DatasourceEndpoints
         return group;
     }
 
-    /// <summary>
-    /// What the data-operations surface offers here. Always answers, switch on or off: a client needs to know
-    /// the feature is disabled in order to say so, and the action catalog is a static contract that costs
-    /// nothing to serve.
-    /// </summary>
-    private static Ok<DataOpsCapabilitiesDto> GetDataOpsCapabilities(IOptions<ControlPlaneOptions> options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        var dataOps = options.Value.DataOps;
-        var linkedServers = dataOps.Comparison.AllowedLinkedServers().ToArray();
-
-        var actions = SqlFlow.Core.Maintenance.MaintenanceActions.All
-            .Select(a => new MaintenanceActionDto(
-                a.Name, a.Title, a.Description,
-                a.WidestScope.ToString(), a.NarrowestScope.ToString(),
-                a.SupportedKinds.Select(k => k.ToString()).ToArray(),
-                a.IsWarehouseHealthProbe, a.AcceptsColumns, a.Caution,
-                a.Parameters
-                    .Select(p => new MaintenanceParameterDto(p.Name, p.Description, p.Minimum, p.Maximum, p.Default))
-                    .ToArray()))
-            .ToArray();
-
-        var reason = dataOps.Enabled
-            ? ""
-            : "The data-operations surface is off. Set ControlPlane__DataOps__Enabled=true to enable the " +
-              "warehouse maintenance actions and the baseline comparison.";
-
-        return TypedResults.Ok(new DataOpsCapabilitiesDto(
-            dataOps.Enabled, reason, actions, linkedServers,
-            string.IsNullOrWhiteSpace(dataOps.Comparison.DefaultLinkedServer)
-                ? null
-                : dataOps.Comparison.DefaultLinkedServer.Trim(),
-            Enum.GetNames<BaselineCompareMode>()));
-    }
-
     public static RouteGroupBuilder MapDatasourceComputeEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -167,6 +119,30 @@ public static class DatasourceEndpoints
             .WithTags("Datasources").WithName("CancelComputeTask");
 
         return group;
+    }
+
+    /// <summary>
+    /// What the data-operations surface offers here. Always answers, switch on or off: a client needs to know
+    /// the feature is disabled in order to say so.
+    /// </summary>
+    private static Ok<DataOpsCapabilitiesDto> GetDataOpsCapabilities(IOptions<ControlPlaneOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var dataOps = options.Value.DataOps;
+
+        var reason = dataOps.Enabled
+            ? ""
+            : "The data-operations surface is off. Set ControlPlane__DataOps__Enabled=true to enable the " +
+              "duplicate-key check and the baseline comparison.";
+
+        return TypedResults.Ok(new DataOpsCapabilitiesDto(
+            dataOps.Enabled, reason,
+            [ComputeOperations.DuplicateKeys, ComputeOperations.CompareBaseline],
+            dataOps.Comparison.AllowedLinkedServers().ToArray(),
+            string.IsNullOrWhiteSpace(dataOps.Comparison.DefaultLinkedServer)
+                ? null
+                : dataOps.Comparison.DefaultLinkedServer.Trim(),
+            Enum.GetNames<BaselineCompareMode>()));
     }
 
     /// <summary>
@@ -373,8 +349,6 @@ public static class DatasourceEndpoints
             MaxCandidates = request.MaxCandidates,
             VerifyCandidates = request.VerifyCandidates,
             TrustDeclaredKeys = request.TrustDeclaredKeys,
-            MaintenanceAction = Trimmed(request.MaintenanceAction),
-            Thresholds = request.Thresholds,
             Columns = request.Columns,
             CompareMode = compareMode,
             // A comparison that names no linked server takes the deployment's default, so the common case is

@@ -1,9 +1,10 @@
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SqlFlow.Core;
-using SqlFlow.Core.Maintenance;
+using SqlFlow.Core.Connections;
+using SqlFlow.Core.Quality;
 
-namespace SqlFlow.SqlServer.Maintenance;
+namespace SqlFlow.SqlServer.Quality;
 
 /// <summary>One key the table declares, as the discovery pass reads it out of the catalog views.</summary>
 internal sealed record DeclaredKey
@@ -67,19 +68,28 @@ internal sealed record DeclaredKey
 /// key, then any other unique index, and refuses to fall back to a surrogate. Where nothing usable is
 /// declared, the action ASKS which columns to use instead of picking something plausible.
 /// </summary>
-internal sealed class DuplicateKeysAction : IMaintenanceAction
+public static class SqlServerDuplicateKeyProbe
 {
-    public MaintenanceActionDescriptor Descriptor { get; } =
-        MaintenanceActions.Find(MaintenanceActions.DuplicateKeys)!;
-
-    public async Task<MaintenanceReport> RunAsync(MaintenanceExecutionContext context, CancellationToken ct)
+    /// <summary>
+    /// Runs one duplicate-key check. The request is already validated; the resolved provider kind is
+    /// re-checked here because an @alias only resolves on the node.
+    /// </summary>
+    public static async Task<DuplicateKeyReport> RunAsync(
+        string connectionString, DuplicateKeyRequest request, DataSourceKind kind, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        var scope = context.Scope;
-        var qualified = $"{Quote(scope.Schema!)}.{Quote(scope.ObjectName!)}";
-        var target = $"{scope.Schema}.{scope.ObjectName}";
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentNullException.ThrowIfNull(request);
+        if (!DuplicateKeyRequest.SupportedKinds.Contains(kind))
+        {
+            throw new SqlFlowException(
+                $"The duplicate-key check is authored in T-SQL; the source resolved to kind '{kind}'. Only " +
+                "SQL Server and Azure SQL sources are supported.");
+        }
 
-        await using var connection = await OpenAsync(context, ct).ConfigureAwait(false);
+        var qualified = $"{Quote(request.Schema)}.{Quote(request.ObjectName)}";
+        var target = request.Target;
+
+        await using var connection = await OpenAsync(connectionString, request.Database, ct).ConfigureAwait(false);
 
         var declared = await ReadDeclaredKeysAsync(connection, qualified, ct).ConfigureAwait(false);
         var columns = await ReadColumnNamesAsync(connection, qualified, ct).ConfigureAwait(false);
@@ -89,17 +99,17 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
                 $"The object {target} was not found in the scoped database, or has no columns to group by.");
         }
 
-        var (key, source, chosen) = Choose(declared, context.Request.Columns, columns, target);
+        var (key, source, chosen) = Choose(declared, request.Columns, columns, target);
         if (key is null)
         {
-            return AskForKey(context, target, declared, columns);
+            return AskForKey(request, declared, columns);
         }
 
         var measurement = await MeasureAsync(
-                connection, qualified, key, chosen?.FilterDefinition, context.Request.Limit, ct)
+                connection, qualified, key, chosen?.FilterDefinition, request.Limit, ct)
             .ConfigureAwait(false);
 
-        return BuildReport(context, target, qualified, key, source, chosen, measurement);
+        return BuildReport(request, qualified, key, source, chosen, measurement);
     }
 
     /// <summary>
@@ -165,65 +175,42 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
     /// finding, and the report carries the question plus the candidate columns so a client can ask a person
     /// and re-run with an answer.
     /// </summary>
-    private static MaintenanceReport AskForKey(
-        MaintenanceExecutionContext context, string target,
-        IReadOnlyList<DeclaredKey> declared, IReadOnlyList<string> columns)
+    /// <summary>
+    /// The "I will not guess" answer. The task succeeds: establishing that no usable key is declared IS the
+    /// finding, and the report carries the question plus the candidate columns so a client can ask a person
+    /// and run again with an answer.
+    /// </summary>
+    private static DuplicateKeyReport AskForKey(
+        DuplicateKeyRequest request, IReadOnlyList<DeclaredKey> declared, IReadOnlyList<string> columns)
     {
         var keyClaims = declared.Where(k => k.IsUnique || k.IsSqlFlowKeyIndex).ToArray();
         var surrogateOnly = keyClaims.Length > 0 && keyClaims.All(k => k.IsSurrogate);
-        declared = keyClaims;
+        var target = request.Target;
         var detail = surrogateOnly
             ? $"{target} declares only surrogate key(s) " +
-              $"({string.Join(", ", declared.Select(k => k.IndexName))}), whose columns are IDENTITY and " +
+              $"({string.Join(", ", keyClaims.Select(k => k.IndexName))}), whose columns are IDENTITY and " +
               "therefore unique by construction. Grouping by them would report zero duplicates on any table, " +
               "which says nothing about the business data."
             : $"{target} declares no unique index or constraint at all, so there is nothing that states what " +
               "one row of it is supposed to represent.";
 
-        return new MaintenanceReport
+        return new DuplicateKeyReport
         {
-            Action = MaintenanceActions.DuplicateKeys,
-            Title = "Duplicate keys",
-            Database = context.Scope.Database,
-            Scope = context.Scope.Describe(),
-            ItemsExamined = 0,
-            Findings =
-            [
-                new MaintenanceFinding
-                {
-                    Severity = MaintenanceSeverity.Warning,
-                    Category = "keyRequired",
-                    Target = target,
-                    Detail = detail + " Name the business key columns and run the check again.",
-                },
-            ],
-            SuggestedSql = [],
+            Target = target,
+            Database = request.Database,
+            KeyColumns = [],
+            KeySource = "none declared",
             Notes =
             [
                 "A duplicate check is only as meaningful as its key: run against the wrong columns it answers " +
                 "confidently and wrongly, which is worse than not answering. That is why this asks.",
             ],
-            Question = new MaintenanceQuestion
+            Question = new DuplicateKeyQuestion
             {
                 Prompt =
                     $"Which columns identify one real row of {target}? {detail} Choose the business key: the " +
                     "columns that together should never repeat.",
-                Parameter = "columns",
                 Options = columns,
-            },
-            Detail = new
-            {
-                target,
-                keyRequired = true,
-                declaredKeys = declared.Select(k => new
-                {
-                    k.IndexName,
-                    k.Columns,
-                    k.IsPrimaryKey,
-                    k.IsUniqueConstraint,
-                    k.IsSurrogate,
-                }),
-                candidateColumns = columns,
             },
         };
     }
@@ -240,11 +227,8 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
         /// <summary>Rows that would have to be removed to leave one per key.</summary>
         public required long ExcessRows { get; init; }
 
-        public required IReadOnlyList<DuplicateGroup> Worst { get; init; }
+        public required IReadOnlyList<DuplicateKeyGroup> Worst { get; init; }
     }
-
-    /// <summary>One key value that occurs more than once, with its row count.</summary>
-    private sealed record DuplicateGroup(IReadOnlyList<string?> Key, long Rows);
 
     private static async Task<Measurement> MeasureAsync(
         SqlConnection connection, string qualified, IReadOnlyList<string> key, string? filter, int limit,
@@ -302,7 +286,7 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
         };
     }
 
-    private static async Task<IReadOnlyList<DuplicateGroup>> ReadWorstAsync(
+    private static async Task<IReadOnlyList<DuplicateKeyGroup>> ReadWorstAsync(
         SqlConnection connection, string qualified, IReadOnlyList<string> key, string where, int limit,
         CancellationToken ct)
     {
@@ -318,7 +302,7 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
         await using var command = Command(connection, sql);
         command.Parameters.Add(new SqlParameter("@limit", limit));
 
-        var groups = new List<DuplicateGroup>();
+        var groups = new List<DuplicateKeyGroup>();
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
@@ -330,41 +314,25 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
                     : Convert.ToString(reader.GetValue(i), CultureInfo.InvariantCulture);
             }
 
-            groups.Add(new DuplicateGroup(values, reader.GetInt64(key.Count)));
+            groups.Add(new DuplicateKeyGroup(values, reader.GetInt64(key.Count)));
         }
 
         return groups;
     }
 
-    private static MaintenanceReport BuildReport(
-        MaintenanceExecutionContext context, string target, string qualified,
+    private static DuplicateKeyReport BuildReport(
+        DuplicateKeyRequest request, string qualified,
         IReadOnlyList<string> key, string source, DeclaredKey? chosen, Measurement measurement)
     {
         var filter = chosen?.FilterDefinition;
+        var target = request.Target;
         var keyList = string.Join(", ", key.Select(Quote));
         var where = string.IsNullOrWhiteSpace(filter) ? string.Empty : $" WHERE {filter}";
-        var findings = new List<MaintenanceFinding>();
-        var suggested = new List<string>();
 
-        if (chosen is not null && chosen.IsSqlFlowKeyIndex && !chosen.EnforcesUniqueness && chosen.IsDisabled)
-        {
-            findings.Add(new MaintenanceFinding
-            {
-                Severity = MaintenanceSeverity.Warning,
-                Category = "keyNotEnforced",
-                Target = $"{target}.{chosen.IndexName}",
-                Detail =
-                    $"The load's key index {chosen.IndexName} is disabled, so nothing prevents a second row " +
-                    "per business key and the merge has no unique index to seek on.",
-                Metrics = new Dictionary<string, double>(StringComparer.Ordinal),
-                SuggestedSql =
-                    $"ALTER INDEX {Quote(chosen.IndexName)} ON {qualified} REBUILD;",
-            });
-        }
-
+        string? listSql = null;
         if (measurement.DuplicateGroups > 0)
         {
-            var listSql = $"""
+            listSql = $"""
                 -- The rows behind the duplicate groups on {target}, worst first.
                 SELECT t.*
                 FROM {qualified} AS t
@@ -376,36 +344,9 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
                 ) AS d ON {string.Join(" AND ", key.Select(c => $"d.{Quote(c)} = t.{Quote(c)}"))}
                 ORDER BY {string.Join(", ", key.Select(c => $"t.{Quote(c)}"))};
                 """;
-
-            findings.Add(new MaintenanceFinding
-            {
-                Severity = measurement.ExcessRows * 100.0 / Math.Max(1, measurement.TotalRows) >= 1
-                    ? MaintenanceSeverity.Critical
-                    : MaintenanceSeverity.Warning,
-                Category = "duplicateKey",
-                Target = target,
-                Detail = string.Create(CultureInfo.InvariantCulture,
-                    $"{measurement.DuplicateGroups:N0} key value(s) occur more than once, accounting for " +
-                    $"{measurement.ExcessRows:N0} excess row(s) out of {measurement.TotalRows:N0} " +
-                    $"({measurement.ExcessRows * 100.0 / Math.Max(1, measurement.TotalRows):0.###}%). Key: " +
-                    $"{string.Join(" + ", key)}, taken from {source}."),
-                Metrics = new Dictionary<string, double>(StringComparer.Ordinal)
-                {
-                    ["totalRows"] = measurement.TotalRows,
-                    ["distinctKeys"] = measurement.DistinctKeys,
-                    ["duplicateGroups"] = measurement.DuplicateGroups,
-                    ["excessRows"] = measurement.ExcessRows,
-                },
-                SuggestedSql = listSql,
-            });
-
-            suggested.Add(listSql);
         }
 
-        var notes = new List<string>
-        {
-            $"Grouped by {string.Join(" + ", key)}, taken from {source}.",
-        };
+        var notes = new List<string> { $"Grouped by {string.Join(" + ", key)}, taken from {source}." };
 
         if (!string.IsNullOrWhiteSpace(filter))
         {
@@ -445,32 +386,24 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
                 "source that repeats a business key across exports needs the export identity in the key.");
         }
 
-        return new MaintenanceReport
+        return new DuplicateKeyReport
         {
-            Action = MaintenanceActions.DuplicateKeys,
-            Title = "Duplicate keys",
-            Database = context.Scope.Database,
-            Scope = context.Scope.Describe(),
-            ItemsExamined = (int)Math.Min(int.MaxValue, measurement.TotalRows),
-            Truncated = measurement.Worst.Count >= context.Request.Limit,
-            Findings = findings,
-            SuggestedSql = suggested,
+            Target = target,
+            Database = request.Database,
+            KeyColumns = key,
+            KeySource = source,
+            KeyIndex = chosen?.IndexName,
+            KeyFilter = filter,
+            KeyEnforcesUniqueness = chosen?.EnforcesUniqueness ?? false,
+            KeyIndexDisabled = chosen?.IsDisabled ?? false,
+            TotalRows = measurement.TotalRows,
+            DistinctKeys = measurement.DistinctKeys,
+            DuplicateGroups = measurement.DuplicateGroups,
+            ExcessRows = measurement.ExcessRows,
+            WorstGroups = measurement.Worst,
+            Truncated = measurement.Worst.Count >= request.Limit,
+            ListDuplicatesSql = listSql,
             Notes = notes,
-            Detail = new
-            {
-                target,
-                keyColumns = key,
-                keySource = source,
-                keyIndex = chosen?.IndexName,
-                keyFilter = filter,
-                keyEnforcesUniqueness = chosen?.EnforcesUniqueness ?? false,
-                keyIndexDisabled = chosen?.IsDisabled ?? false,
-                measurement.TotalRows,
-                measurement.DistinctKeys,
-                measurement.DuplicateGroups,
-                measurement.ExcessRows,
-                worstGroups = measurement.Worst.Select(g => new { key = g.Key, rows = g.Rows }),
-            },
         };
     }
 
@@ -564,15 +497,16 @@ internal sealed class DuplicateKeysAction : IMaintenanceAction
         return columns;
     }
 
-    private static async Task<SqlConnection> OpenAsync(MaintenanceExecutionContext context, CancellationToken ct)
+    private static async Task<SqlConnection> OpenAsync(
+        string connectionString, string? database, CancellationToken ct)
     {
-        var connection = new SqlConnection(context.ConnectionString);
+        var connection = new SqlConnection(connectionString);
         try
         {
             await connection.OpenAsync(ct).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(context.Scope.Database))
+            if (!string.IsNullOrWhiteSpace(database))
             {
-                await connection.ChangeDatabaseAsync(context.Scope.Database, ct).ConfigureAwait(false);
+                await connection.ChangeDatabaseAsync(database, ct).ConfigureAwait(false);
             }
 
             return connection;

@@ -6,11 +6,11 @@ using SqlFlow.Core.Catalog;
 using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Connections;
-using SqlFlow.Core.Maintenance;
+using SqlFlow.Core.Quality;
 using SqlFlow.Core.Profiling;
 using SqlFlow.SqlServer.Comparison;
 using SqlFlow.SqlServer.Health;
-using SqlFlow.SqlServer.Maintenance;
+using SqlFlow.SqlServer.Quality;
 using SqlFlow.SqlServer.Profiling;
 
 namespace SqlFlow.Execution;
@@ -76,7 +76,7 @@ public sealed class ComputeTaskExecutor
             // large warehouse and an anti-join over a billion rows both legitimately outrun any deadline that
             // would be safe for an interactive browse. They stay cancellable (the operator cancel path) and
             // are backstopped by the queue's running-task expiry, exactly like detectUniqueKey.
-            ComputeOperations.DetectUniqueKey or ComputeOperations.DwhMaintenance or ComputeOperations.CompareBaseline
+            ComputeOperations.DetectUniqueKey or ComputeOperations.DuplicateKeys or ComputeOperations.CompareBaseline
                 => Timeout.InfiniteTimeSpan,
             _ => BrowseTimeout,
         };
@@ -170,8 +170,8 @@ public sealed class ComputeTaskExecutor
             case ComputeOperations.TopQueries:
                 return await WarehouseHealthAsync(payload, reference, kind, ct).ConfigureAwait(false);
 
-            case ComputeOperations.DwhMaintenance:
-                return await MaintenanceAsync(payload, reference, kind, ct).ConfigureAwait(false);
+            case ComputeOperations.DuplicateKeys:
+                return await DuplicateKeysAsync(payload, reference, kind, ct).ConfigureAwait(false);
 
             case ComputeOperations.CompareBaseline:
                 return await CompareBaselineAsync(payload, reference, kind, ct).ConfigureAwait(false);
@@ -253,52 +253,69 @@ public sealed class ComputeTaskExecutor
         return ToJson(report);
     }
 
-    /// <summary>
-    /// Runs one of the four warehouse-health probes. They ARE maintenance actions of the same name, so this
-    /// goes through the maintenance registry rather than re-querying the DMVs: one code path, one set of
-    /// thresholds, one place a probe's SQL lives. Only the SHAPE differs, and deliberately so: this operation
-    /// answers with the report's native Detail payload, which is the result shape the insights recommendations
-    /// have always parsed. A caller wanting the ranked findings asks for dwhMaintenance instead.
-    /// </summary>
+    /// <summary>Runs one of the warehouse-health DMV probes. The kind gate ran at enqueue for explicit kinds; an
+    /// @alias resolves its kind here on the node, so the resolved kind is re-checked before any T-SQL runs
+    /// against a foreign engine, exactly like detectUniqueKey. The result wraps the probe's rows with the
+    /// database they were measured in, so a task history is self-describing.</summary>
     private async Task<string> WarehouseHealthAsync(
         ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
     {
-        var request = new MaintenanceRequest
+        var resolved = await _resolver.ResolveAsync(reference, ConnectionRole.Source, kind, ct).ConfigureAwait(false);
+        if (resolved.Kind is not (DataSourceKind.MSSQL or DataSourceKind.AZDB))
         {
-            Action = payload.Operation,
-            Scope = new MaintenanceScope { Database = NullIfBlank(payload.Database) },
-            Limit = payload.Limit,
-        };
+            throw new SqlFlowException(
+                $"{payload.Operation} reads SQL Server dynamic management views; the source resolved to kind " +
+                $"'{resolved.Kind}'. Only SQL Server and Azure SQL sources are supported.");
+        }
 
-        var report = await RunMaintenanceAsync(request, reference, kind, ct).ConfigureAwait(false);
-        return ToJson(report.Detail);
+        var database = NullIfBlank(payload.Database);
+        switch (payload.Operation)
+        {
+            case ComputeOperations.MissingIndexes:
+            {
+                var advisories = await SqlServerHealthProbe
+                    .MissingIndexesAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database = advisories.Count > 0 ? advisories[0].Database : database, advisories });
+            }
+
+            case ComputeOperations.StatisticsHealth:
+            {
+                var statistics = await SqlServerHealthProbe
+                    .StatisticsHealthAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database, statistics, staleCount = statistics.Count(s => s.IsStale) });
+            }
+
+            case ComputeOperations.IndexUsage:
+            {
+                var indexes = await SqlServerHealthProbe
+                    .IndexUsageAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database, indexes, unusedCount = indexes.Count(i => i.IsUnused) });
+            }
+
+            default:
+            {
+                var queries = await SqlServerHealthProbe
+                    .TopQueriesAsync(resolved.CanonicalString, database, payload.Limit, ct).ConfigureAwait(false);
+                return ToJson(new { database, queries });
+            }
+        }
     }
 
-    /// <summary>Runs one standard warehouse maintenance action and returns the full ranked report.</summary>
-    private async Task<string> MaintenanceAsync(
+    /// <summary>
+    /// Checks one table for duplicate rows on the key it declares. Read-only: it groups and counts. Where the
+    /// table declares no usable key the report comes back carrying a QUESTION rather than a count, and the
+    /// task still succeeds: establishing that a decision is needed is the answer.
+    /// </summary>
+    private async Task<string> DuplicateKeysAsync(
         ComputeTaskPayload payload, string reference, DataSourceKind? kind, CancellationToken ct)
     {
         // Re-validating on the node is not belt-and-braces: the queue row is data from the database, and the
         // resolved kind of an @alias is only knowable here.
-        var request = payload.ToMaintenanceRequest();
-        var report = await RunMaintenanceAsync(request, reference, kind, ct).ConfigureAwait(false);
-        return ToJson(report);
-    }
-
-    private async Task<MaintenanceReport> RunMaintenanceAsync(
-        MaintenanceRequest request, string reference, DataSourceKind? kind, CancellationToken ct)
-    {
+        var request = payload.ToDuplicateKeyRequest();
         var resolved = await _resolver.ResolveAsync(reference, ConnectionRole.Source, kind, ct).ConfigureAwait(false);
-        MaintenanceActions.Validate(request, resolved.Kind);
-
-        return await SqlServerMaintenanceActions.RunAsync(
-            new MaintenanceExecutionContext
-            {
-                ConnectionString = resolved.CanonicalString,
-                Kind = resolved.Kind,
-                Request = request,
-            },
-            ct).ConfigureAwait(false);
+        var report = await SqlServerDuplicateKeyProbe
+            .RunAsync(resolved.CanonicalString, request, resolved.Kind, ct).ConfigureAwait(false);
+        return ToJson(report);
     }
 
     /// <summary>

@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using SqlFlow.Core.Comparison;
 using SqlFlow.Core.Connections;
-using SqlFlow.Core.Maintenance;
+using SqlFlow.Core.Quality;
 
 namespace SqlFlow.Core.Compute;
 
@@ -55,10 +55,9 @@ public static class ComputeOperations
     /// (SQL Server / Azure SQL sources only).</summary>
     public const string TopQueries = "topQueries";
 
-    /// <summary>Run one of the standard warehouse maintenance actions (<see cref="MaintenanceActions"/>): a
-    /// READ-ONLY measurement that returns ranked findings and review-ready SQL, never executing a mutating
-    /// statement. Gated by <c>ControlPlane:DataOps:Enabled</c>.</summary>
-    public const string DwhMaintenance = "dwhMaintenance";
+    /// <summary>Check one table for duplicate rows on its key, using the key the TABLE declares. READ-ONLY:
+    /// it groups and counts. Gated by <c>ControlPlane:DataOps:Enabled</c>.</summary>
+    public const string DuplicateKeys = "duplicateKeys";
 
     /// <summary>Compare the current estate against the OLD production baseline over a configured linked
     /// server: object inventory, one object's shape, or one object's rows. Read-only on both estates and
@@ -68,12 +67,12 @@ public static class ComputeOperations
     /// <summary>Every operation this build understands, for validation messages.</summary>
     public static readonly string[] All =
         [TestConnection, ListDatabases, ListSchemas, ListObjects, SearchObjects, IntrospectObject, DetectUniqueKey,
-         MissingIndexes, StatisticsHealth, IndexUsage, TopQueries, DwhMaintenance, CompareBaseline];
+         MissingIndexes, StatisticsHealth, IndexUsage, TopQueries, DuplicateKeys, CompareBaseline];
 
     /// <summary>The operations the DataOps feature switch gates. Off, the control plane refuses them with a
     /// clear "not enabled" problem instead of queueing a task no policy permits.</summary>
     public static bool IsDataOps(string? operation)
-        => operation is DwhMaintenance or CompareBaseline;
+        => operation is DuplicateKeys or CompareBaseline;
 
     /// <summary>The warehouse-health subset: DMV probes authored in T-SQL, so they require a SQL Server family
     /// source, exactly like <see cref="DetectUniqueKey"/>.</summary>
@@ -157,16 +156,9 @@ public sealed record ComputeTaskPayload
     /// <summary>detectUniqueKey: answer from an enforced unique index/constraint without reading rows.</summary>
     public bool TrustDeclaredKeys { get; init; } = true;
 
-    /// <summary>dwhMaintenance: which action to run, one of <see cref="MaintenanceActions.Names"/>.</summary>
-    public string? MaintenanceAction { get; init; }
-
-    /// <summary>dwhMaintenance: the action's tunables, keyed by the parameter names it declares. An unknown
-    /// key is a request error, so a typo never silently runs with a default.</summary>
-    public IReadOnlyDictionary<string, double>? Thresholds { get; init; }
-
-    /// <summary>dwhMaintenance: the columns an action works over, for an action that accepts them. This is
-    /// where the answer to a report's <c>question</c> goes: duplicateKeys asks which columns identify a row
-    /// when the table declares no usable key, and the answer comes back here.</summary>
+    /// <summary>duplicateKeys: the columns that identify one real row. Left empty the check reads the key
+    /// the TABLE declares; this is where the answer to a report's <c>question</c> comes back when the table
+    /// declares no usable key.</summary>
     public IReadOnlyList<string>? Columns { get; init; }
 
     /// <summary>compareBaseline: what to compare (inventory, schema, or data).</summary>
@@ -325,10 +317,9 @@ public sealed record ComputeTaskPayload
 
                 break;
 
-            case ComputeOperations.DwhMaintenance:
-                // Projecting the request is itself the validation: the descriptor catalog owns what an action
-                // accepts, so there is one rule set rather than a copy of it here.
-                ToMaintenanceRequest();
+            case ComputeOperations.DuplicateKeys:
+                // Projecting the request is itself the validation, so there is one rule set rather than a copy.
+                ToDuplicateKeyRequest();
                 break;
 
             case ComputeOperations.CompareBaseline:
@@ -377,41 +368,32 @@ public sealed record ComputeTaskPayload
     }
 
     /// <summary>
-    /// Projects the payload onto the maintenance contract, validating it against the action's descriptor. The
-    /// projection is the validation, so the control plane and the node cannot disagree about what an action
-    /// accepts. Throws <see cref="SqlFlowException"/> naming the offending field.
+    /// Projects the payload onto the duplicate-key contract and validates it. The projection IS the
+    /// validation, so the control plane and the node cannot disagree about what the check accepts. Throws
+    /// <see cref="SqlFlowException"/> naming the offending field.
     /// </summary>
-    public MaintenanceRequest ToMaintenanceRequest()
+    public DuplicateKeyRequest ToDuplicateKeyRequest()
     {
-        if (Operation != ComputeOperations.DwhMaintenance)
+        if (Operation != ComputeOperations.DuplicateKeys)
         {
             throw new SqlFlowException(
-                $"Only the {ComputeOperations.DwhMaintenance} operation carries a maintenance request.");
+                $"Only the {ComputeOperations.DuplicateKeys} operation carries a duplicate-key request.");
         }
 
-        if (string.IsNullOrWhiteSpace(MaintenanceAction))
+        if (string.IsNullOrWhiteSpace(Schema) || string.IsNullOrWhiteSpace(ObjectName))
         {
             throw new SqlFlowException(
-                $"{ComputeOperations.DwhMaintenance} requires a maintenanceAction. Valid actions: " +
-                $"{string.Join(", ", MaintenanceActions.Names)}.");
+                $"{ComputeOperations.DuplicateKeys} checks one table, so both schema and objectName are required.");
         }
 
-        var request = new MaintenanceRequest
+        return new DuplicateKeyRequest
         {
-            Action = MaintenanceAction.Trim(),
-            Scope = new MaintenanceScope
-            {
-                Database = NullIfBlank(Database),
-                Schema = NullIfBlank(Schema),
-                ObjectName = NullIfBlank(ObjectName),
-            },
-            Limit = Limit,
-            Thresholds = Thresholds ?? new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase),
+            Schema = Schema.Trim(),
+            ObjectName = ObjectName.Trim(),
+            Database = NullIfBlank(Database),
             Columns = Columns ?? [],
-        };
-
-        MaintenanceActions.Validate(request, ProviderKind);
-        return request;
+            Limit = Limit,
+        }.Validate(ProviderKind);
     }
 
     /// <summary>

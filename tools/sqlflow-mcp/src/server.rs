@@ -397,31 +397,6 @@ pub struct WarehouseHealthInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct MaintenanceInput {
-    /// Which maintenance action to run. Call dwh_maintenance_actions first for the list this deployment
-    /// offers and the thresholds each one accepts.
-    pub action: String,
-    /// The datasource connection reference (a whole ${env:...} / ${keyvault:...} token the estate's pipelines
-    /// declare, or an @alias). Omit to measure the estate's busiest target datasource (the warehouse).
-    pub reference: Option<String>,
-    /// The database to scope to; omit for the connection's default database.
-    pub database: Option<String>,
-    /// Narrow to one schema. The four warehouse-health probes refuse this: they rank and truncate before a
-    /// schema is known, so a narrowed answer would be a page presented as the whole picture.
-    pub schema: Option<String>,
-    /// Narrow to one table or view. Requires schema.
-    #[serde(rename = "objectName")]
-    pub object_name: Option<String>,
-    /// Per-action thresholds, keyed by the parameter names the action declares (see dwh_maintenance_actions).
-    /// An unknown key is an error, so a typo never silently runs with a default.
-    pub thresholds: Option<std::collections::BTreeMap<String, f64>>,
-    /// Most rows to return (default 20, max 1000).
-    pub limit: Option<i64>,
-    /// Route the task to a worker pool that can reach the source (optional).
-    pub pool: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DuplicateKeysInput {
     /// The schema of the table to check.
     pub schema: String,
@@ -1816,27 +1791,10 @@ impl SqlFlowMcp {
     }
 
     #[tool(
-        description = "List the standard warehouse maintenance actions this deployment offers, the thresholds \
-            each one accepts, and the linked servers a baseline comparison may name. Call this FIRST before \
-            run_dwh_maintenance or compare_baseline: the whole surface is behind a deployment switch, and the \
-            response says whether it is enabled here. Every action is READ-ONLY: it measures the warehouse and \
-            returns findings with review-ready SQL, and SQLFlow never executes a mutating statement from it."
+        description = "Report what the data-operations surface offers in THIS deployment: whether the feature             switch is on, which read-only checks are available, and the linked servers a baseline comparison             may name. Call this FIRST before check_duplicate_keys or compare_baseline, because the whole             surface sits behind a deployment switch and the response says whether it is enabled here."
     )]
-    async fn dwh_maintenance_actions(&self, Parameters(_): Parameters<EmptyInput>) -> String {
+    async fn dataops_capabilities(&self, Parameters(_): Parameters<EmptyInput>) -> String {
         self.get("/api/v1/dataops/capabilities", &[]).await
-    }
-
-    #[tool(
-        description = "Run one standard warehouse maintenance action on a worker node (requires the 'operate' \
-            scope) and wait for its ranked report: index fragmentation, table space and compression, heap \
-            tables, untrusted constraints, duplicate keys, or the four DMV probes. READ-ONLY: the report \
-            carries findings with suggested SQL for a HUMAN to review and run; nothing is executed. Present \
-            the suggested SQL as a proposal, never as work already done. Check the report's `truncated` flag \
-            before describing a list as complete, and its `question` field before reading the findings as a \
-            verdict: an action that could not determine what to measure asks instead of guessing."
-    )]
-    async fn run_dwh_maintenance(&self, Parameters(i): Parameters<MaintenanceInput>) -> String {
-        done(self.run_maintenance(i).await)
     }
 
     #[tool(
@@ -2133,39 +2091,11 @@ impl SqlFlowMcp {
         self.run_compute_task(&input.operation, body).await
     }
 
-    async fn run_maintenance(&self, input: MaintenanceInput) -> anyhow::Result<String> {
-        let reference = self.resolve_reference(input.reference).await?;
-        let mut body = json!({
-            "reference": reference,
-            "operation": "dwhMaintenance",
-            "maintenanceAction": input.action.trim(),
-            "limit": input.limit.unwrap_or(20),
-        });
-        if let Some(database) = input.database.filter(|d| !d.trim().is_empty()) {
-            body["database"] = json!(database.trim());
-        }
-        if let Some(schema) = input.schema.filter(|v| !v.trim().is_empty()) {
-            body["schema"] = json!(schema.trim());
-        }
-        if let Some(object) = input.object_name.filter(|v| !v.trim().is_empty()) {
-            body["objectName"] = json!(object.trim());
-        }
-        if let Some(thresholds) = input.thresholds.filter(|t| !t.is_empty()) {
-            body["thresholds"] = json!(thresholds);
-        }
-        if let Some(pool) = input.pool.filter(|p| !p.trim().is_empty()) {
-            body["pool"] = json!(pool);
-        }
-
-        self.run_compute_task(&input.action, body).await
-    }
-
     async fn run_duplicate_keys(&self, input: DuplicateKeysInput) -> anyhow::Result<String> {
         let reference = self.resolve_reference(input.reference).await?;
         let mut body = json!({
             "reference": reference,
-            "operation": "dwhMaintenance",
-            "maintenanceAction": "duplicateKeys",
+            "operation": "duplicateKeys",
             "schema": input.schema.trim(),
             "objectName": input.object_name.trim(),
             "limit": input.limit.unwrap_or(20),

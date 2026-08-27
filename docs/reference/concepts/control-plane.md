@@ -101,7 +101,7 @@ Read surface (policy `read`):
 | `GET /nodes` | Worker fleet with a derived online flag |
 | `GET /repos/sources` | Managed repo sources |
 | `GET /summary` | Estate summary |
-| `GET /dataops/capabilities` | Whether the data-operations surface is enabled here, the warehouse maintenance action catalog with each action's scope bounds and thresholds, and the linked servers a baseline comparison may name (concept-data-operations) |
+| `GET /dataops/capabilities` | Whether the data-operations surface is enabled here, the operations available, and the linked servers a baseline comparison may name (concept-data-operations) |
 
 Operate surface (policy `operate`):
 
@@ -115,7 +115,7 @@ Operate surface (policy `operate`):
 | `POST /repos/sources/{id}/sync` | Force a sync now |
 | `POST /repos/discover` | Preview a repo's flows without importing (the selective-scan wizard) |
 | `POST /repos/sources/{id}/proposals` | Propose pipelines to a source as a pull request (`author` scope) |
-| `POST /datasources/tasks` | Enqueue an ad-hoc compute task against a datasource: browse/introspect, detect a unique key, the warehouse-health DMV probes, and (behind `DataOps:Enabled`) `dwhMaintenance` and `compareBaseline`. References only; the executing node resolves the credential |
+| `POST /datasources/tasks` | Enqueue an ad-hoc compute task against a datasource: browse/introspect, detect a unique key, the warehouse-health DMV probes, and (behind `DataOps:Enabled`) `duplicateKeys` and `compareBaseline`. References only; the executing node resolves the credential |
 | `POST /datasources/tasks/{taskId}/cancel` | Cancel a queued or running compute task |
 
 Admin surface (policy `admin`): `GET/POST /users`, `POST /users/{id}/role` `/activate` `/deactivate` `/password`, and `GET /roles` (src/SqlFlow.ControlPlane/Api/UserEndpoints.cs).
@@ -169,7 +169,7 @@ All settings bind from the `ControlPlane` configuration section (environment var
 | `Worker:Enabled` | `true` | `false` makes the replica API-only (no in-process worker) |
 | `Worker:Pools` | `[]` | Empty claims only untargeted runs |
 | `Proxy:Enabled` | `false` | See proxy section above; `ForwardLimit` default `1` |
-| `DataOps:Enabled` | `false` | The kill switch for the data-operations surface: the standard warehouse maintenance actions and the old-versus-new baseline comparison. Both are read-only (they measure and emit review-ready SQL; nothing mutating is ever executed), and both are refused with a 403 naming this setting while it is off (concept-data-operations) |
+| `DataOps:Enabled` | `false` | The kill switch for the data-operations surface: the duplicate-key check and the old-versus-new baseline comparison. Both are read-only, and both are refused with a 403 naming this setting while it is off. The four warehouse-health DMV probes are a separate, older feature and are NOT gated by it (concept-data-operations) |
 | `DataOps:Comparison:LinkedServers` | `[]` | The linked servers a baseline comparison may name. A linked-server name becomes an identifier in generated SQL and a route into another estate, so it is configuration, never something a request chooses; an unlisted name is refused |
 | `DataOps:Comparison:DefaultLinkedServer` | unset | Used when a comparison names none; must be one of `LinkedServers` or startup fails |
 | `DataOps:Comparison:Databases` | `[]` | Optional narrowing to named databases on those servers. Empty permits any database the linked server's own login can reach, which is the usual case because the linked server is the boundary |
@@ -307,7 +307,7 @@ curl -s -X POST http://localhost:5000/api/v1/runs \
 
 ## See also
 
-- concept-data-operations: the warehouse maintenance actions and the baseline comparison behind `DataOps:Enabled`
+- concept-data-operations: the duplicate-key check and the baseline comparison behind `DataOps:Enabled`
 
 
 - [Worker CLI](../cli/worker.md): the standalone node runtime that drains the same run queue.

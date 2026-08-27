@@ -1,15 +1,13 @@
 ---
 id: concept-data-operations
-title: "Data operations: warehouse maintenance actions and baseline comparison"
+title: "Data operations: duplicate-key check and old-versus-new baseline comparison"
 type: concept
-summary: Read-only warehouse maintenance actions and baseline comparison behind the ControlPlane DataOps switch; they measure and suggest SQL, never execute it.
+summary: The read-only duplicate-key check and the old-versus-new baseline comparison, behind the ControlPlane DataOps switch.
 keywords:
   - dataops
-  - maintenance
   - duplicate keys
   - baseline comparison
   - linked server
-  - index fragmentation
   - migration reconciliation
   - compute task
 related:
@@ -18,12 +16,10 @@ related:
   - concept-upsert-and-change-detection
   - concept-provenance-and-row-keys
 sourceRefs:
-  - src/SqlFlow.Core/Maintenance/MaintenanceActions.cs
-  - src/SqlFlow.Core/Maintenance/MaintenanceModels.cs
+  - src/SqlFlow.Core/Quality/DuplicateKeyModels.cs
   - src/SqlFlow.Core/Comparison/BaselineComparisonModels.cs
   - src/SqlFlow.Core/Comparison/SqlFragmentGuard.cs
-  - src/SqlFlow.SqlServer/Maintenance/SqlServerMaintenanceActions.cs
-  - src/SqlFlow.SqlServer/Maintenance/DuplicateKeysAction.cs
+  - src/SqlFlow.SqlServer/Quality/SqlServerDuplicateKeyProbe.cs
   - src/SqlFlow.SqlServer/Comparison/SqlServerBaselineComparer.cs
   - src/SqlFlow.Execution/ComputeTaskExecutor.cs
   - src/SqlFlow.ControlPlane/Api/DatasourceEndpoints.cs
@@ -32,16 +28,19 @@ sourceRefs:
 
 # Data operations
 
-Two families of live, interactive diagnostics that run against the warehouse from the control plane: the
-**standard warehouse maintenance actions**, and the **baseline comparison** that proves a V3 migration against
-the old production estate.
+Two live, interactive checks that run against the warehouse from the control plane: the **duplicate-key
+check**, and the **baseline comparison** that proves a V3 migration against the old production estate.
 
-Both are **read-only**. The maintenance actions measure the warehouse and return findings with ready-to-review
-SQL; SQLFlow never executes a mutating statement from them. The comparison reads both estates and writes
-nothing but a session temp table in `tempdb`. That property is what makes the surface safe to hand to an
-assistant, and it is enforced by construction rather than by convention.
+Both are **read-only**. The duplicate check groups and counts. The comparison reads both estates and writes
+nothing but a session temp table in `tempdb`. That property is enforced by construction and asserted in tests,
+which is what makes the surface safe to hand to an assistant.
 
 Both are **off by default**, behind one switch.
+
+> **Not a DBA surface.** This deliberately does not offer index rebuilds, statistics updates, compression, or
+> any other warehouse maintenance remediation. The four warehouse-health DMV probes (`missingIndexes`,
+> `statisticsHealth`, `indexUsage`, `topQueries`) are a separate, older feature that backs the insights
+> recommendations; they are NOT part of this surface and are not gated by its switch.
 
 ## The switch
 
@@ -49,9 +48,10 @@ Both are **off by default**, behind one switch.
 ControlPlane__DataOps__Enabled=true
 ```
 
-With it off, `POST /api/v1/datasources/tasks` refuses the `dwhMaintenance` and `compareBaseline` operations
+With it off, `POST /api/v1/datasources/tasks` refuses the `duplicateKeys` and `compareBaseline` operations
 with a 403 naming the setting, and `GET /api/v1/dataops/capabilities` reports `enabled: false` so a GUI or an
-assistant explains the situation instead of showing a failing button. Nothing else in the product changes.
+assistant explains the situation instead of showing a failing button. Nothing else in the product changes,
+and in particular the insights dashboard is unaffected.
 
 The comparison additionally needs its linked servers allowlisted. A linked-server name becomes an identifier
 in generated SQL and a route into another estate, so it is configuration, never something a request chooses:
@@ -69,7 +69,7 @@ server's own login can reach is permitted, which is the usual case because the l
 
 ## How it executes
 
-Both families ride the existing ad-hoc compute queue, so nothing new was invented for transport:
+Both ride the existing ad-hoc compute queue, so nothing new was invented for transport:
 
 1. `POST /api/v1/datasources/tasks` (the `operate` scope) validates the request at the trust boundary and
    writes a `CatalogComputeTask` row. Only a connection **reference** travels; a secret never does.
@@ -77,65 +77,15 @@ Both families ride the existing ad-hoc compute queue, so nothing new was invente
    ahead of flow runs, because compute is interactive) and executes it through `ComputeTaskExecutor`.
 3. The result lands on the same row. `GET /api/v1/datasources/tasks/{id}?waitMs=20000` long-polls it.
 
-The control plane never opens a connection to a datasource. Neither family carries a wall-clock deadline: a
-fragmentation scan over a large warehouse and an anti-join over a billion rows both legitimately outrun any
-deadline safe for an interactive browse, so they stay cancellable and are backstopped by the queue's
-running-task expiry, exactly like `detectUniqueKey`.
+The control plane never opens a connection to a datasource. Neither check carries a wall-clock deadline: an
+anti-join over a billion rows legitimately outruns any deadline safe for an interactive browse, so they stay
+cancellable and are backstopped by the queue's running-task expiry, exactly like `detectUniqueKey`.
 
 Every task row records `RequestedBy` and the full arguments, so this surface is auditable by construction.
 
-## Warehouse maintenance actions
-
-The action catalog lives in `SqlFlow.Core.Maintenance.MaintenanceActions` as **descriptors** (name, title,
-description, scope bounds, supported providers, thresholds). The implementations live with their provider in
-`SqlFlow.SqlServer.Maintenance`. That split is why the control plane can validate a request and answer the
-discovery endpoint without referencing any provider, and a test asserts the two sides cannot drift.
-
-| Action | Measures |
-| --- | --- |
-| `missingIndexes` | Optimizer index advisories, ranked by improvement measure, with CREATE INDEX |
-| `statisticsHealth` | Statistics drift against the engine's dynamic threshold, with UPDATE STATISTICS |
-| `indexUsage` | Reads and writes per index; write-only indexes, with DROP INDEX |
-| `topQueries` | The plan cache's statements by total elapsed time |
-| `indexFragmentation` | Logical fragmentation per index, with REORGANIZE or REBUILD |
-| `tableSpace` | Rows, reserved space, data-versus-index split, and compression candidates |
-| `heapTables` | User tables with no clustered index |
-| `constraintTrust` | Foreign keys and check constraints the optimizer must ignore |
-| `duplicateKeys` | Whether one table holds more than one row per key |
-
-The first four are the pre-existing warehouse-health DMV probes. They are **the same code path**: the
-`missingIndexes` / `statisticsHealth` / `indexUsage` / `topQueries` compute operations now run through the
-maintenance registry and simply return the report's native `detail` payload, which is the result shape the
-insights recommendations have always parsed. Asking for them as `dwhMaintenance` returns the full ranked
-report instead. There is one place each probe's SQL lives.
-
-Those four also refuse to be narrowed to a schema or an object. They read DMVs whose rows are ranked and
-truncated before any schema is known, so a "schema-scoped" answer would be a page presented as the whole
-picture. Refusing is the honest behaviour, and the descriptor's `narrowestScope` encodes it.
-
-### Reading a report
-
-```jsonc
-{
-  "action": "indexFragmentation",
-  "scope": "schema arc",
-  "itemsExamined": 412,
-  "truncated": false,          // a truncated list must never be described as complete
-  "findings": [ /* ranked most severe first, each with metrics and suggestedSql */ ],
-  "suggestedSql": [ /* the deduplicated review script */ ],
-  "notes": [ /* what the numbers do and do not mean */ ],
-  "question": null             // non-null means the action asked instead of measuring
-}
-```
-
-`suggestedSql` is a **proposal for a human**, never work already done. The `notes` exist because most of these
-measurements are easy to misread: missing-index advisories overlap and ignore write cost, usage counters reset
-with the instance, fragmentation matters for range scans and not for the singleton lookups a warehouse load
-does.
-
 ## Duplicate keys, and the key it uses
 
-`duplicateKeys` is object-scoped and answers "does this table hold more than one row per key". The key it
+The `duplicateKeys` operation answers "does this table hold more than one row per key". The key it
 groups by is the one the **table itself declares**, in this order:
 
 1. **SQLFlow's own `NCI_KeyColumn`** business-key index, which `CanonicalIndexPlanner` creates on every target.
@@ -230,13 +180,20 @@ the builder, so a name carrying its own bracket is refused rather than escaped.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/v1/dataops/capabilities` | Whether the surface is enabled, the action catalog with thresholds, the allowlisted linked servers |
-| `POST /api/v1/datasources/tasks` | `operation: "dwhMaintenance"` or `"compareBaseline"` |
+| `GET /api/v1/dataops/capabilities` | Whether the surface is enabled, the operations available, the allowlisted linked servers |
+| `POST /api/v1/datasources/tasks` | `operation: "duplicateKeys"` or `"compareBaseline"` |
 | `GET /api/v1/datasources/tasks/{id}?waitMs=20000` | Long-poll the result |
 
 ## MCP tools
 
-- `dwh_maintenance_actions` - call first; reports whether the surface is enabled here
-- `run_dwh_maintenance` - one action, waits for the ranked report
+- `dataops_capabilities` - call first; reports whether the surface is enabled here
 - `check_duplicate_keys` - the duplicate check, including the ask-back path
 - `compare_baseline` - inventory, schema, or data comparison
+
+## Composing SQL against these tables
+
+The join graph is not part of this surface, because it already exists. `describe_object`
+(`GET /api/v1/lineage/objects/dossier`) returns a table's columns, its interpreted key, and its relationships
+to other tables, where `origin` distinguishes an explicit FOREIGN KEY from a join inferred from the
+codebase's own equality predicates, and `occurrences` counts the distinct scripts exhibiting it so the
+canonical join path ranks highest. That is the metadata to compose a query from, rather than guessing joins.
