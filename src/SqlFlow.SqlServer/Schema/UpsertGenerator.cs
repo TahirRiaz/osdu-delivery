@@ -265,10 +265,17 @@ public static class UpsertGenerator
                 : new UpsertStatement
                 {
                     Kind = UpsertStatementKind.Update,
+                    // Collapsed to one row per key for the same reason the INSERT is: staging legitimately
+                    // carries several rows for a key, and driving an UPDATE from all of them writes the same
+                    // target row once per staging row. The value that survives is then whichever row the plan
+                    // happened to apply last (undefined, and free to change between runs), and the reported
+                    // update count is the number of staging matches rather than the number of rows changed.
                     Sql =
                         $"UPDATE trg SET {setList} " +
-                        $"FROM {stg} AS src INNER JOIN {trg} AS trg ON {keyEquality}" +
-                        (changePredicate is null ? ";" : $" WHERE {changePredicate};"),
+                        $"FROM {OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns)} AS src " +
+                        $"INNER JOIN {trg} AS trg ON {keyEquality} " +
+                        $"WHERE src._rn = 1" +
+                        (changePredicate is null ? ";" : $" AND {changePredicate};"),
                 });
         }
 
@@ -577,7 +584,12 @@ public static class UpsertGenerator
         var selectList = string.Join(", ", selectColumns);
 
         var srcKeySelect = string.Join(", ", options.KeyColumns.Select(k => $"src.[{Escape(k)}]"));
-        var keyEqualitySrcK = KeyEquality(options.KeyColumns, "src", "k");
+
+        // #dsstg is already one row per (dataset, key) and each window key table is filtered to a single
+        // dataset, so the keys it holds are distinct without a DISTINCT. The join back to #dsstg is NULL-safe
+        // for the same reason the plain batched path's is: a nullable key reaches the key table and must find
+        // its staging row again.
+        var keyEqualitySrcK = NullSafeKeyEquality(options.KeyColumns, "src", "k");
 
         string updateBlock;
         string insertBlock;
@@ -591,7 +603,7 @@ public static class UpsertGenerator
                     FROM #dsstg AS src
                     {dsCurrent}
                     INNER JOIN {trg} AS trg ON {keyEquality};
-                    CREATE CLUSTERED INDEX [IX_curUpd] ON #curUpd (RowNum);
+                    CREATE UNIQUE CLUSTERED INDEX [IX_curUpd] ON #curUpd (RowNum);
                     SET @u = 0; SET @s = 1; SET @e = @Batch; SET @t = (SELECT COUNT(*) FROM #curUpd);
                     WHILE @s <= @t
                     BEGIN
@@ -617,7 +629,7 @@ public static class UpsertGenerator
                     FROM #dsstg AS src
                     {dsCurrent}
                     WHERE NOT EXISTS (SELECT 1 FROM {trg} AS trg WHERE {keyEquality});
-                    CREATE CLUSTERED INDEX [IX_curIns] ON #curIns (RowNum);
+                    CREATE UNIQUE CLUSTERED INDEX [IX_curIns] ON #curIns (RowNum);
                     SET @i = 0; SET @s = 1; SET @e = @Batch; SET @t = (SELECT COUNT(*) FROM #curIns);
                     WHILE @s <= @t
                     BEGIN
@@ -738,30 +750,38 @@ public static class UpsertGenerator
     // The batched apply (legacy #UpdateKeys pattern, corrected): snapshot the matched keys with a ROW_NUMBER,
     // index the windows, then update window by window so each DML stays under the lock-escalation threshold.
     // The change predicate (when present) is evaluated inside each window exactly as in the unbatched form.
+    //
+    // The key table holds DISTINCT keys, and the windowed DML reads the per-key-deduped staging source, so a
+    // key that staging carries more than once produces exactly one row in the key table and one write. The
+    // numbering has to happen OUTSIDE that DISTINCT: ROW_NUMBER() is computed before DISTINCT is applied and
+    // is unique on every row, so `SELECT DISTINCT <keys>, ROW_NUMBER() OVER (...)` de-duplicates nothing at
+    // all, and the window join then multiplies the deduped staging row back out once per key-table copy.
     private static string BatchedUpdateScript(
         string trg, string stg, UpsertOptions options, string keyEquality, string setList, string? changePredicate)
     {
         var keySelect = string.Join(", ", options.KeyColumns.Select(k => $"src.[{Escape(k)}]"));
+        var keySelectK = string.Join(", ", options.KeyColumns.Select(k => $"k.[{Escape(k)}]"));
         var keyList = string.Join(", ", options.KeyColumns.Select(k => $"[{Escape(k)}]"));
-        var windowJoin = KeyEquality(options.KeyColumns, "src", "k");
+        var windowJoin = NullSafeKeyEquality(options.KeyColumns, "src", "k");
+        var dedupedSource = OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns);
 
         return $"""
             SET NOCOUNT ON;
             IF OBJECT_ID('tempdb..#UpsertKeysU') IS NOT NULL DROP TABLE #UpsertKeysU;
-            SELECT {keySelect}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
+            SELECT {keySelectK}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
             INTO #UpsertKeysU
-            FROM {stg} AS src INNER JOIN {trg} AS trg ON {keyEquality};
-            CREATE CLUSTERED INDEX [IX_UpsertKeysU_RowNum] ON #UpsertKeysU (RowNum);
+            FROM (SELECT DISTINCT {keySelect} FROM {stg} AS src INNER JOIN {trg} AS trg ON {keyEquality}) AS k;
+            CREATE UNIQUE CLUSTERED INDEX [IX_UpsertKeysU_RowNum] ON #UpsertKeysU (RowNum);
             CREATE STATISTICS [ST_UpsertKeysU] ON #UpsertKeysU ({keyList});
-            DECLARE @Affected int = 0, @Start int = 1, @End int = {options.BatchRowCount}, @Total int;
-            SELECT @Total = COUNT(*) FROM #UpsertKeysU;
+            DECLARE @Affected bigint = 0, @Start bigint = 1, @End bigint = {options.BatchRowCount}, @Total bigint;
+            SELECT @Total = COUNT_BIG(*) FROM #UpsertKeysU;
             WHILE @Start <= @Total
             BEGIN
                 UPDATE trg SET {setList}
-                FROM {stg} AS src
+                FROM {dedupedSource} AS src
                 INNER JOIN #UpsertKeysU AS k ON {windowJoin}
                 INNER JOIN {trg} AS trg ON {keyEquality}
-                WHERE k.RowNum BETWEEN @Start AND @End{(changePredicate is null ? string.Empty : $" AND {changePredicate}")};
+                WHERE src._rn = 1 AND k.RowNum BETWEEN @Start AND @End{(changePredicate is null ? string.Empty : $" AND {changePredicate}")};
                 SET @Affected = @Affected + @@ROWCOUNT;
                 SET @Start = @End + 1;
                 SET @End = @End + {options.BatchRowCount};
@@ -775,21 +795,25 @@ public static class UpsertGenerator
         string trg, string stg, UpsertOptions options, string keyEquality, string insertColumnList, string selectList)
     {
         var keySelect = string.Join(", ", options.KeyColumns.Select(k => $"src.[{Escape(k)}]"));
+        var keySelectK = string.Join(", ", options.KeyColumns.Select(k => $"k.[{Escape(k)}]"));
         var keyList = string.Join(", ", options.KeyColumns.Select(k => $"[{Escape(k)}]"));
-        var windowJoin = KeyEquality(options.KeyColumns, "src", "k");
+        var windowJoin = NullSafeKeyEquality(options.KeyColumns, "src", "k");
         var dedupedSource = OneRowPerKeySource(stg, options.DataColumns, options.KeyColumns);
 
         return $"""
             SET NOCOUNT ON;
             IF OBJECT_ID('tempdb..#UpsertKeysI') IS NOT NULL DROP TABLE #UpsertKeysI;
-            SELECT DISTINCT {keySelect}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
+            SELECT {keySelectK}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
             INTO #UpsertKeysI
-            FROM {stg} AS src
-            WHERE NOT EXISTS (SELECT 1 FROM {trg} AS trg WHERE {keyEquality});
-            CREATE CLUSTERED INDEX [IX_UpsertKeysI_RowNum] ON #UpsertKeysI (RowNum);
+            FROM (
+                SELECT DISTINCT {keySelect}
+                FROM {stg} AS src
+                WHERE NOT EXISTS (SELECT 1 FROM {trg} AS trg WHERE {keyEquality})
+            ) AS k;
+            CREATE UNIQUE CLUSTERED INDEX [IX_UpsertKeysI_RowNum] ON #UpsertKeysI (RowNum);
             CREATE STATISTICS [ST_UpsertKeysI] ON #UpsertKeysI ({keyList});
-            DECLARE @Affected int = 0, @Start int = 1, @End int = {options.BatchRowCount}, @Total int;
-            SELECT @Total = COUNT(*) FROM #UpsertKeysI;
+            DECLARE @Affected bigint = 0, @Start bigint = 1, @End bigint = {options.BatchRowCount}, @Total bigint;
+            SELECT @Total = COUNT_BIG(*) FROM #UpsertKeysI;
             WHILE @Start <= @Total
             BEGIN
                 INSERT INTO {trg} ({insertColumnList})
@@ -822,6 +846,19 @@ public static class UpsertGenerator
 
     private static string KeyEquality(IReadOnlyList<string> keys, string left, string right)
         => string.Join(" AND ", keys.Select(k => $"{left}.[{Escape(k)}] = {right}.[{Escape(k)}]"));
+
+    // Equality for joining staging back to a numbered key table extracted FROM it (the batch windows). It has
+    // to treat NULL as equal to NULL, unlike the staging-to-target match, where a plain `=` is the intended
+    // semantics: a NULL business key deliberately matches no existing target row and so becomes an insert.
+    // That very row then reaches the key table, and with a plain `=` it would fail to join back to the staging
+    // row it came from: the batched path would silently write fewer rows than the unbatched path and under-
+    // report its own count, with nothing in the log to show for it.
+    private static string NullSafeKeyEquality(IReadOnlyList<string> keys, string left, string right)
+        => string.Join(" AND ", keys.Select(k =>
+        {
+            var column = Escape(k);
+            return $"({left}.[{column}] = {right}.[{column}] OR ({left}.[{column}] IS NULL AND {right}.[{column}] IS NULL))";
+        }));
 
     // CONCAT requires at least two arguments, so a leading N'' guards the single-column case; non-key values
     // are interleaved with a separator so two distinct rows cannot collide on concatenation.

@@ -41,7 +41,9 @@ public sealed class UpsertGeneratorUpgradeTests
 
         var update = Assert.Single(statements, s => s.Kind == UpsertStatementKind.Update).Sql;
         Assert.DoesNotContain("HASHBYTES", update, StringComparison.Ordinal);
-        Assert.DoesNotContain("WHERE", update, StringComparison.Ordinal);
+
+        // No change predicate left, so the only filter is the per-key dedup of staging.
+        Assert.EndsWith("WHERE src._rn = 1;", update, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -95,9 +97,9 @@ public sealed class UpsertGeneratorUpgradeTests
         var update = statements.Single(s => s.Kind == UpsertStatementKind.Update).Sql;
         Assert.Contains("#UpsertKeysU", update, StringComparison.Ordinal);
         Assert.Contains("ROW_NUMBER() OVER", update, StringComparison.Ordinal);
-        Assert.Contains("CREATE CLUSTERED INDEX", update, StringComparison.Ordinal);
+        Assert.Contains("CREATE UNIQUE CLUSTERED INDEX", update, StringComparison.Ordinal);
         Assert.Contains("WHILE @Start <= @Total", update, StringComparison.Ordinal);
-        Assert.Contains("@End int = 500", update, StringComparison.Ordinal);
+        Assert.Contains("@End bigint = 500", update, StringComparison.Ordinal);
         Assert.Contains("HASHBYTES", update, StringComparison.Ordinal);            // change predicate inside the window
         Assert.Contains("SELECT @Affected;", update, StringComparison.Ordinal);
 

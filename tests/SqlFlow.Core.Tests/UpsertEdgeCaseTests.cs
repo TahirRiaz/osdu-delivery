@@ -457,6 +457,82 @@ public sealed class UpsertEdgeCaseTests
         Assert.Contains("WHERE src._rn = 1 AND k.RowNum BETWEEN @Start AND @End", insert.Sql, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void BatchedInsert_NumbersDistinctKeys_NotDistinctRows()
+    {
+        // Regression: the key table used to be built as `SELECT DISTINCT <keys>, ROW_NUMBER() OVER (...)`.
+        // ROW_NUMBER is computed BEFORE the DISTINCT and is unique on every row, so the DISTINCT removed
+        // nothing: a key staged twice produced two key-table rows, the window join multiplied the deduped
+        // staging row back out, and the INSERT hit the target's unique key with its own second copy.
+        // The numbering must sit OUTSIDE the DISTINCT.
+        var insert = UecInsert(UpsertGenerator.GenerateStatements(UecTarget, UecStaging, new UpsertOptions
+        {
+            DataColumns = ["Id", "Name"],
+            KeyColumns = ["Id"],
+            BatchToAvoidLockEscalation = true,
+            BatchRowCount = 1000,
+        }));
+
+        Assert.DoesNotContain("SELECT DISTINCT src.[Id], ROW_NUMBER()", insert.Sql, StringComparison.Ordinal);
+        Assert.Contains("SELECT k.[Id], ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum", insert.Sql, StringComparison.Ordinal);
+        Assert.Contains("SELECT DISTINCT src.[Id]", insert.Sql, StringComparison.Ordinal);
+        Assert.Contains(") AS k;", insert.Sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchedUpdate_NumbersDistinctKeys_AndReadsOneRowPerKey()
+    {
+        // The same defect on the UPDATE side is not a hard error (SQL Server allows a multi-matched UPDATE)
+        // but it writes the same target row once per staging copy, leaves an undefined winner, and reports
+        // the staging match count as the number of rows changed.
+        var update = UecUpdate(UpsertGenerator.GenerateStatements(UecTarget, UecStaging, new UpsertOptions
+        {
+            DataColumns = ["Id", "Name"],
+            KeyColumns = ["Id"],
+            BatchToAvoidLockEscalation = true,
+            BatchRowCount = 1000,
+        }));
+
+        Assert.Contains("SELECT k.[Id], ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("FROM (SELECT DISTINCT src.[Id] FROM", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [Id]", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE src._rn = 1 AND k.RowNum BETWEEN @Start AND @End", update.Sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UnbatchedUpdate_CollapsesStagingToOneRowPerKey()
+    {
+        // The batched and unbatched applies must agree: both write each matched target row exactly once.
+        var update = UecUpdate(UpsertGenerator.GenerateStatements(UecTarget, UecStaging,
+            UecOptions(["Id", "Name"], ["Id"])));
+
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [Id]", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE src._rn = 1 AND ", update.Sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchedWindows_JoinStagingBackNullSafely()
+    {
+        // A nullable business key never matches a target row (plain `=`), so it always reaches the INSERT key
+        // table. Joining it back to staging with a plain `=` would then match nothing and the row would be
+        // dropped from the load without a trace, only on the batched path.
+        var statements = UpsertGenerator.GenerateStatements(UecTarget, UecStaging, new UpsertOptions
+        {
+            DataColumns = ["Id", "Name"],
+            KeyColumns = ["Id"],
+            BatchToAvoidLockEscalation = true,
+            BatchRowCount = 1000,
+        });
+
+        foreach (var statement in statements)
+        {
+            Assert.Contains(
+                "(src.[Id] = k.[Id] OR (src.[Id] IS NULL AND k.[Id] IS NULL))",
+                statement.Sql,
+                StringComparison.Ordinal);
+        }
+    }
+
     // --- Batched-window combinations ------------------------------------------------------------------------
 
     [Theory]
@@ -484,7 +560,7 @@ public sealed class UpsertEdgeCaseTests
         });
 
         var update = UecUpdate(statements);
-        Assert.Contains("@End int = 1", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("@End bigint = 1", update.Sql, StringComparison.Ordinal);
         Assert.Contains("SET @End = @End + 1;", update.Sql, StringComparison.Ordinal);
     }
 
@@ -500,7 +576,13 @@ public sealed class UpsertEdgeCaseTests
         }));
 
         Assert.Contains("CREATE STATISTICS [ST_UpsertKeysU] ON #UpsertKeysU ([TenantId], [Id])", update.Sql, StringComparison.Ordinal);
-        Assert.Contains("src.[TenantId] = k.[TenantId] AND src.[Id] = k.[Id]", update.Sql, StringComparison.Ordinal);
+
+        // The window join is NULL-safe on every key, so a nullable key column cannot drop its own row.
+        Assert.Contains(
+            "(src.[TenantId] = k.[TenantId] OR (src.[TenantId] IS NULL AND k.[TenantId] IS NULL)) "
+            + "AND (src.[Id] = k.[Id] OR (src.[Id] IS NULL AND k.[Id] IS NULL))",
+            update.Sql,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -518,7 +600,7 @@ public sealed class UpsertEdgeCaseTests
         }));
 
         Assert.DoesNotContain("HASHBYTES", update.Sql, StringComparison.Ordinal);
-        Assert.Contains("WHERE k.RowNum BETWEEN @Start AND @End;", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE src._rn = 1 AND k.RowNum BETWEEN @Start AND @End;", update.Sql, StringComparison.Ordinal);
     }
 
     // --- Large column list ----------------------------------------------------------------------------------
@@ -664,7 +746,7 @@ public sealed class UpsertEdgeCaseTests
             UecOptions(["Id", "Name"], ["Id"]));
 
         var update = UecUpdate(statements);
-        Assert.Contains("FROM [dbo].[stg_DimCustomer] AS src", update.Sql, StringComparison.Ordinal);
+        Assert.Contains("FROM [dbo].[stg_DimCustomer])", update.Sql, StringComparison.Ordinal);
         Assert.Contains("INNER JOIN [dbo].[DimCustomer] AS trg", update.Sql, StringComparison.Ordinal);
     }
 }
