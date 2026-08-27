@@ -241,7 +241,23 @@ public sealed class DuplicateKeyAndComparisonTests
     }
 
     [Fact]
-    public void OnlyTheTwoChecksAreGated_TheOlderProbesAreUntouched()
+    public void EveryGatedOperation_IsDiscoverable_SoNoCapabilityIsInvisible()
+    {
+        // The capabilities endpoint derives its operation list from this set rather than keeping a copy. A
+        // hand-kept copy goes stale the moment an operation is added, and the failure is silent from the
+        // server's side: it answers 200, and a reading client concludes the missing capability does not exist
+        // and tells the user the product cannot do it. runQuery shipped, deployed, and stayed unusable for
+        // exactly that reason, so the set is pinned here by name.
+        var gated = ComputeOperations.All.Where(ComputeOperations.IsDataOps).ToArray();
+
+        Assert.Contains(ComputeOperations.DuplicateKeys, gated);
+        Assert.Contains(ComputeOperations.CompareBaseline, gated);
+        Assert.Contains(ComputeOperations.RunQuery, gated);
+        Assert.Equal(3, gated.Length);
+    }
+
+    [Fact]
+    public void OnlyTheGatedOperationsAreGated_TheOlderProbesAreUntouched()
     {
         // The four warehouse-health probes predate this surface and back the insights recommendations. They
         // must NOT sit behind the DataOps switch, or turning it off would silently break the dashboard.

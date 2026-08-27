@@ -71,7 +71,7 @@ public sealed record ComputeTaskDto(
 public sealed record DataOpsCapabilitiesDto(
     bool Enabled, string DisabledReason, IReadOnlyList<string> Operations,
     IReadOnlyList<string> ComparisonLinkedServers, string? DefaultLinkedServer,
-    IReadOnlyList<string> CompareModes);
+    IReadOnlyList<string> CompareModes, string QuerySurface);
 
 /// <summary>
 /// The datasource surface: the estate's datasources as the catalog knows them, and the ad-hoc compute queue
@@ -132,17 +132,27 @@ public static class DatasourceEndpoints
 
         var reason = dataOps.Enabled
             ? ""
-            : "The data-operations surface is off. Set ControlPlane__DataOps__Enabled=true to enable the " +
-              "duplicate-key check and the baseline comparison.";
+            : "The data-operations surface is off. Set ControlPlane__DataOps__Enabled=true to enable ad-hoc " +
+              "queries, the duplicate-key check, and the baseline comparison.";
+
+        // DERIVED from the operation set, never a hand-kept copy of it. A literal list here silently goes
+        // stale the moment an operation is added, and the failure is invisible from the server: the endpoint
+        // answers 200, and a reading client concludes the missing capability does not exist and tells the user
+        // the product cannot do it. That is exactly how runQuery shipped, deployed, and stayed unusable.
+        var operations = ComputeOperations.All.Where(ComputeOperations.IsDataOps).ToArray();
 
         return TypedResults.Ok(new DataOpsCapabilitiesDto(
-            dataOps.Enabled, reason,
-            [ComputeOperations.DuplicateKeys, ComputeOperations.CompareBaseline],
+            dataOps.Enabled, reason, operations,
             dataOps.Comparison.AllowedLinkedServers().ToArray(),
             string.IsNullOrWhiteSpace(dataOps.Comparison.DefaultLinkedServer)
                 ? null
                 : dataOps.Comparison.DefaultLinkedServer.Trim(),
-            Enum.GetNames<BaselineCompareMode>()));
+            Enum.GetNames<BaselineCompareMode>(),
+            dataOps.Enabled
+                ? "Ad-hoc queries run in two steps: prepare_query validates a SELECT and returns it with a " +
+                  "one-time token WITHOUT running anything, then run_query redeems that token after a person " +
+                  "has seen and approved the exact statement."
+                : ""));
     }
 
     /// <summary>
