@@ -134,8 +134,10 @@ public static class DataStreamEndpoints
     /// <c>healthy</c>, or <c>insufficient-history</c>.</param>
     /// <param name="includeBackfills">Count backfills and other operator-driven reprocessing as normal
     /// traffic. False by default, which is what keeps a history replay from redefining a stream's normal.</param>
-    /// <param name="scheduledOnly">Analyse only streams that join an enabled schedule, so every verdict is
-    /// measured against a declared cadence rather than an inferred one.</param>
+    /// <param name="scheduledOnly">Count only the runs a SCHEDULE fired, and analyse only streams that join an
+    /// enabled schedule, so every verdict is measured against a declared cadence and never against a run
+    /// somebody kicked off by hand. Runs recorded before the trigger source was tracked carry none, and are
+    /// excluded by this filter rather than guessed at.</param>
     /// <param name="limit">How many streams to return (the counts still cover every analysed stream).</param>
     /// <param name="ct">Cancellation.</param>
     private static async Task<Results<Ok<DataStreamsDto>, ProblemHttpResult>> GetDataStreamsAsync(
@@ -199,6 +201,13 @@ public static class DataStreamEndpoints
 
         // Ordinary traffic only, unless the caller asked otherwise: see Reprocessing for what that excludes.
         var counted = includeBackfills ? window : window.Where(NotReprocessing);
+        if (scheduledOnly)
+        {
+            // Only what the scheduler itself fired. A run with no trigger source predates the column, and is
+            // dropped rather than assumed: guessing here would quietly put manual backfills back into the
+            // baseline this filter exists to keep them out of.
+            counted = counted.Where(r => r.TriggerSource == RunTriggerSources.Schedule);
+        }
 
         var activity = await counted
             .GroupBy(r => new { r.PipelineId, Day = r.WrittenUtc.Date })
@@ -243,6 +252,25 @@ public static class DataStreamEndpoints
         var batchFilter = string.IsNullOrWhiteSpace(batch) ? null : batch.Trim();
         var byStream = activity.GroupBy(a => a.PipelineId).ToDictionary(g => g.Key, g => g.ToList());
 
+        // A stream that loaded NOTHING inside the window may simply be new, or may have been dead longer than
+        // we looked. Those are opposite findings, and the window cannot tell them apart, so the last load
+        // before it is read from the full history. Scoped to the streams that need it, which is normally a
+        // handful, rather than scanning the run table for every stream on the board.
+        var silentIds = candidateIds.Where(id => !byStream.ContainsKey(id)
+            || byStream[id].All(r => r.Inserted + r.Updated + r.Deleted == 0)).ToList();
+        var lastLoadBeforeWindow = silentIds.Count == 0
+            ? []
+            : await db.Runs.AsNoTracking()
+                .Where(r => silentIds.Contains(r.PipelineId)
+                    && r.WrittenUtc < fromUtc
+                    && r.Status == RunStatuses.Succeeded
+                    && ((r.RowsInserted ?? 0) + (r.RowsUpdated ?? 0) + (r.RowsDeleted ?? 0) > 0
+                        || (r.RowsInserted == null && r.RowsUpdated == null && r.RowsDeleted == null
+                            && (r.RowsLoaded ?? 0) > 0)))
+                .GroupBy(r => r.PipelineId)
+                .Select(g => new { PipelineId = g.Key, LastLoadUtc = g.Max(r => r.WrittenUtc) })
+                .ToDictionaryAsync(x => x.PipelineId, x => x.LastLoadUtc, ct).ConfigureAwait(false);
+
         // The candidates, newest activity first, so a capped sweep keeps the streams whose state is current.
         var ordered = candidateIds
             .Where(id => batchFilter is null
@@ -283,7 +311,11 @@ public static class DataStreamEndpoints
             var schedule = schedules.GetValueOrDefault(id);
             var analysis = StreamAnomalyDetector.Analyze(
                 buckets, fromUtc, now,
-                new StreamAnomalyOptions { ExpectedGapDaysOverride = schedule?.ExpectedGapDays });
+                new StreamAnomalyOptions
+                {
+                    ExpectedGapDaysOverride = schedule?.ExpectedGapDays,
+                    LastKnownLoadUtc = lastLoadBeforeWindow.TryGetValue(id, out var seen) ? seen : null,
+                });
 
             var pipeline = meta.GetValueOrDefault(id);
             results.Add(new DataStreamDto(
@@ -308,9 +340,13 @@ public static class DataStreamEndpoints
             .ToList();
         await ResolveTargetsAsync(db, ranked, ct).ConfigureAwait(false);
 
+        // Scoped to the streams that were analysed, so the number squares with the board rather than counting
+        // reprocessing on streams a filter removed.
+        var analyzedSet = analyzed.ToHashSet();
         return new DataStreamsDto(
             windowDays, fromUtc, now, includeBackfills, scheduledOnly,
-            ordered.Count, ranked.Count, excluded.Sum(e => (long)e.Runs),
+            ordered.Count, ranked.Count,
+            excluded.Where(e => analyzedSet.Contains(e.PipelineId)).Sum(e => (long)e.Runs),
             ranked.Count(s => s.Status == "stalled"),
             ranked.Count(s => s.Status == "degraded"),
             ranked.Count(s => s.Status == "watch"),

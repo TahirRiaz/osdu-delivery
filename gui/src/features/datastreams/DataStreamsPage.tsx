@@ -47,9 +47,9 @@ const statusFilters = [
  *
  * Two controls change what the numbers mean rather than just what is shown, which is why they sit on the page
  * rather than in a menu. "Include backfills" puts operator-driven reprocessing back into the baseline, and a
- * history replay will then make every ordinary day after it look like a collapse. "Scheduled only" restricts
- * to streams that join an enabled schedule, so every verdict is measured against a declared cron cadence
- * instead of one inferred from the stream's own recent behaviour.
+ * history replay will then make every ordinary day after it look like a collapse. "Scheduled only" counts just
+ * the runs a schedule fired, on streams that join an enabled schedule, so every verdict is measured against a
+ * declared cron cadence and never against a run somebody kicked off by hand.
  */
 export default function DataStreamsPage() {
   const [days, setDays] = useLocalStorageState<number>("datastreams.windowDays", 60);

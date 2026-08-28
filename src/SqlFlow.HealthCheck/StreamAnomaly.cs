@@ -175,6 +175,20 @@ public sealed record StreamAnomalyOptions
     /// </para>
     /// </summary>
     public double? ExpectedGapDaysOverride { get; init; }
+
+    /// <summary>
+    /// When this stream last wrote a row BEFORE the analysed window, or null if it never has. Supplied by the
+    /// caller, which can see history the window does not.
+    /// <para>
+    /// Without it the detector's worst blind spot is its worst case. A table that stopped six months ago has
+    /// no load inside a sixty-day window at all, so there is nothing to build a pattern from and the analysis
+    /// reads it as "never loaded": the lowest severity, at the bottom of the board. The tables that have been
+    /// broken longest would be the ones hardest to see, which is precisely backwards. With this, a stream that
+    /// loaded before the window and not inside it is what it plainly is, a stalled one, and the gap is
+    /// measured from the real last load rather than from the edge of what was read.
+    /// </para>
+    /// </summary>
+    public DateTime? LastKnownLoadUtc { get; init; }
 }
 
 /// <summary>The independent tests the ensemble runs. They are deliberately drawn from different families:

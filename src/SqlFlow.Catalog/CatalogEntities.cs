@@ -281,6 +281,24 @@ public class CatalogRun
     /// </summary>
     public int? GroupMaxConcurrency { get; set; }
 
+    /// <summary>
+    /// What asked for this run (see <see cref="RunTriggerSources"/>): a schedule firing, a person or API call,
+    /// or a local CLI execution synced in from its artifact. Null on every run recorded before this column
+    /// existed, which is the only reason a reader must treat it as unknown rather than as "not a schedule".
+    /// <para>
+    /// It exists because nothing else on the row answers the question. A schedule fire and someone clicking
+    /// Run in the GUI both go through the same enqueue and produce byte-identical rows, so monitoring that
+    /// wants to judge a stream against its declared cadence could previously only approximate it by asking
+    /// whether the flow is a member of a schedule at all.
+    /// </para>
+    /// </summary>
+    public string? TriggerSource { get; set; }
+
+    /// <summary>The schedule whose fire enqueued this run, when <see cref="TriggerSource"/> is
+    /// <see cref="RunTriggerSources.Schedule"/>; null otherwise. A soft link (no FK), so a run outlives the
+    /// schedule being renamed out of the catalog by a later sync.</summary>
+    public Guid? TriggerScheduleId { get; set; }
+
     public int SchemaVersion { get; set; }
 
     public DateTime WrittenUtc { get; set; }
@@ -325,6 +343,27 @@ public class CatalogRun
     /// file set)</c> or <c>last-modified</c>), projected from <c>result.dataSetConvention</c>. Null for a flow that
     /// emits no <c>DataSet_DW</c> (relational ingestion, sp/hc flows).</summary>
     public string? DataSetConvention { get; set; }
+}
+
+/// <summary>
+/// What asked for a run, stored as a short lowercase string (same convention as <see cref="RunStatuses"/>).
+/// Recorded at enqueue, so it says what actually happened rather than what can be inferred afterwards.
+/// </summary>
+public static class RunTriggerSources
+{
+    /// <summary>A schedule fired and enqueued it (<see cref="CatalogRun.TriggerScheduleId"/> names which).</summary>
+    public const string Schedule = "schedule";
+
+    /// <summary>A person or an API client asked for it: the GUI's Run button, a run trigger call, an MCP
+    /// tool. Deliberately one value and not several, because the distinction that matters to a reader is
+    /// "the estate ran this on its own" versus "somebody asked for it".</summary>
+    public const string Manual = "manual";
+
+    /// <summary>Recorded from an on-disk artifact rather than enqueued: a local <c>sqlflow run</c> synced in.</summary>
+    public const string Cli = "cli";
+
+    /// <summary>Every source, in display order.</summary>
+    public static readonly IReadOnlyList<string> All = [Schedule, Manual, Cli];
 }
 
 /// <summary>The modes a run group can be launched in, stored as a short lowercase string (same convention as

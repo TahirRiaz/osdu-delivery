@@ -17,9 +17,15 @@ namespace SqlFlow.Catalog;
 /// fallback. <see cref="Parameters"/> carries the per-run substitution parameters (the built-in backfill: full
 /// load, window, file pattern), validated at the trust boundary and recorded on the run row so every backfill is
 /// auditable. Bundled into one request so the optional references can never be passed in the wrong order.</summary>
+/// <para><c>TriggerSource</c> records WHAT asked for the run (see <see cref="RunTriggerSources"/>), defaulting
+/// to <see cref="RunTriggerSources.Manual"/> because every caller that does not say is a person or an API
+/// client asking; the scheduler passes <see cref="RunTriggerSources.Schedule"/> and its schedule id. It is
+/// recorded rather than inferred because nothing else on the row distinguishes the two: a schedule fire and a
+/// GUI Run button take this same path and produce otherwise identical rows.</para>
 public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
-    RunParameters? Parameters = null);
+    RunParameters? Parameters = null, string TriggerSource = RunTriggerSources.Manual,
+    Guid? TriggerScheduleId = null);
 
 /// <summary>What to enqueue as one multi-flow run group (a Node or Batch execution): the resolved, ordered member
 /// flows (with their waves) plus the shared routing. Every member is enqueued under one <see cref="RunGroupModes"/>
@@ -37,7 +43,8 @@ public sealed record RunGroupEnqueueRequest(
     Guid RepoId, string Mode, string Anchor, IReadOnlyList<RunScopeMember> Members,
     string? TargetPool = null, string? CommitSha = null,
     IReadOnlyDictionary<string, RunParameters>? MemberParameters = null,
-    int? MaxConcurrency = null);
+    int? MaxConcurrency = null, string TriggerSource = RunTriggerSources.Manual,
+    Guid? TriggerScheduleId = null);
 
 /// <summary>The outcome of enqueuing a group: the new group id and the ids of every member run, in wave order.</summary>
 public sealed record RunGroupEnqueueResult(Guid GroupId, IReadOnlyList<Guid> RunIds);
@@ -231,6 +238,8 @@ public static class RunQueueStore
                 SourceFilter = string.IsNullOrWhiteSpace(parameters.SourceFilter) ? null : parameters.SourceFilter.Trim(),
                 AssertionsOnly = parameters.AssertionsOnly,
                 ReprocessFromSourceMin = parameters.ReprocessFromSourceMin,
+                TriggerSource = request.TriggerSource,
+                TriggerScheduleId = request.TriggerScheduleId,
                 Status = RunStatuses.Queued,
                 EnqueuedUtc = nowUtc,
                 // Until the run finishes there is no artifact; seed WrittenUtc with the enqueue time so the run
@@ -342,6 +351,8 @@ public static class RunQueueStore
                     SourceFilter = string.IsNullOrWhiteSpace(memberParameters.SourceFilter) ? null : memberParameters.SourceFilter.Trim(),
                     AssertionsOnly = memberParameters.AssertionsOnly,
                     ReprocessFromSourceMin = memberParameters.ReprocessFromSourceMin,
+                    TriggerSource = request.TriggerSource,
+                    TriggerScheduleId = request.TriggerScheduleId,
                     Status = RunStatuses.Queued,
                     EnqueuedUtc = nowUtc,
                     WrittenUtc = nowUtc,
@@ -1090,6 +1101,10 @@ public static class RunQueueStore
         target.IncrementalWatermark = projected.IncrementalWatermark;
         target.IncrementalWatermarkSource = projected.IncrementalWatermarkSource;
         target.DataSetConvention = projected.DataSetConvention;
+        // Fill only, never overwrite: an enqueued run already carries what asked for it (a schedule, a person),
+        // and the projection's view of an artifact is always "cli". This assigns solely on the path where the
+        // completion inserts a row that was never enqueued, which IS a node-local execution.
+        target.TriggerSource ??= projected.TriggerSource;
     }
 
     private static void AddParameter(DbCommand command, string name, object value)

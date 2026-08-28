@@ -652,6 +652,10 @@ public static class CatalogProjection
             EndUtc = result is { } r2 ? Date(r2, "endTimeUtc") : null,
             DurationSeconds = DurationSeconds(result),
             RowsLoaded = result is { } r3 ? Long(r3, "rowsLoaded") ?? Long(r3, "totalRows") : null,
+            // An artifact reaching the catalog without ever having been enqueued is a local `sqlflow run`
+            // that was synced in afterwards. The queue overwrites this on completion for runs it dispatched,
+            // so only genuinely node-local executions keep it.
+            TriggerSource = RunTriggerSources.Cli,
             RowsInserted = result is { } r4 ? Long(r4, "rowsInserted") : null,
             RowsUpdated = result is { } r5 ? Long(r5, "rowsUpdated") : null,
             RowsDeleted = result is { } r6 ? Long(r6, "rowsDeleted") : null,

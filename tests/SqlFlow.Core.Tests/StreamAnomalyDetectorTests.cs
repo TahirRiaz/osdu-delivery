@@ -339,6 +339,45 @@ public sealed class StreamAnomalyDetectorTests
     }
 
     [Fact]
+    public void StreamDeadLongerThanTheWindow_IsStalledAndCritical_NotNeverLoaded()
+    {
+        // The worst case must not be the most invisible one. A table that stopped months ago has no load
+        // inside the window at all, so there is no pattern to build; judged on the window alone it reads as
+        // "never loaded" at the lowest severity, which buries the longest-broken tables at the bottom of the
+        // board. The caller supplies the last load it can see, and the verdict follows from that.
+        var buckets = Enumerable.Range(0, 30)
+            .Select(i => Day(AsOf.Date.AddDays(-i), rows: 0))
+            .ToList();
+
+        var analysis = Analyze(buckets, new StreamAnomalyOptions
+        {
+            LastKnownLoadUtc = AsOf.Date.AddDays(-120),
+        });
+
+        Assert.Equal(StreamStatus.Stalled, analysis.Status);
+        Assert.Equal("stalled", analysis.Category);
+        Assert.Equal("critical", analysis.Severity);
+        Assert.Equal(120, analysis.Profile.DaysSinceLastLoad);
+        Assert.True(analysis.Signals.First(s => s.Detector == StreamDetector.Silence).Fired);
+    }
+
+    [Fact]
+    public void StreamDeadLongerThanTheWindow_WhoseEveryRunFailed_IsReportedAsFailing()
+    {
+        var buckets = Enumerable.Range(0, 20)
+            .Select(i => Day(AsOf.Date.AddDays(-i), rows: 0, runs: 1, failures: 1))
+            .ToList();
+
+        var analysis = Analyze(buckets, new StreamAnomalyOptions
+        {
+            LastKnownLoadUtc = AsOf.Date.AddDays(-90),
+        });
+
+        Assert.Equal("failing", analysis.Category);
+        Assert.Equal(StreamStatus.Stalled, analysis.Status);
+    }
+
+    [Fact]
     public void StreamThatRunsButHasNeverWrittenARow_IsNeverLoaded_NotStalled()
     {
         // A staged endpoint or an assertions-only flow reads exactly like this, and neither is broken.

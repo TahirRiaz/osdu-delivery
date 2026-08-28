@@ -154,6 +154,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.IncrementalWatermark).HasMaxLength(512);
             entity.Property(r => r.IncrementalWatermarkSource).HasMaxLength(256);
             entity.Property(r => r.DataSetConvention).HasMaxLength(128);
+            entity.Property(r => r.TriggerSource).HasMaxLength(16);
             // PipelineId is a soft link (no FK): a run can outlive its pipeline being removed from git, so the
             // history stays even when the Pipeline row is gone. The GUI left-joins on it; it is indexed for that.
             entity.HasIndex(r => r.PipelineId);

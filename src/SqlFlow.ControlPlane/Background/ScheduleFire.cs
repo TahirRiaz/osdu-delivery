@@ -86,7 +86,12 @@ public static class ScheduleFire
             var parameters = memberParameters?.GetValueOrDefault(member.FlowName) ?? RunParameters.None;
             var runId = await dispatcher.EnqueueAsync(
                 catalog,
-                new RunEnqueueRequest(schedule.RepoId, member.FlowName, member.FlowKind, Parameters: parameters),
+                new RunEnqueueRequest(
+                    schedule.RepoId, member.FlowName, member.FlowKind, Parameters: parameters,
+                    // Recorded on the run so monitoring can tell an automatic execution from one a person
+                    // asked for. Nothing else on the row distinguishes them: a manual trigger takes this same
+                    // path with the same shape.
+                    TriggerSource: RunTriggerSources.Schedule, TriggerScheduleId: schedule.Id),
                 ct).ConfigureAwait(false);
             await ScheduleStore.SetLastRunAsync(catalog, schedule.Id, runId, nowUtc, ct).ConfigureAwait(false);
             return new FireResult(Outcome.Enqueued, runId, null, 1);
@@ -100,7 +105,8 @@ public static class ScheduleFire
             catalog,
             new RunGroupEnqueueRequest(
                 schedule.RepoId, RunGroupModes.Batch, expansion.Anchor, expansion.Members,
-                MemberParameters: memberParameters, MaxConcurrency: schedule.MaxConcurrency),
+                MemberParameters: memberParameters, MaxConcurrency: schedule.MaxConcurrency,
+                TriggerSource: RunTriggerSources.Schedule, TriggerScheduleId: schedule.Id),
             ct).ConfigureAwait(false);
 
         var firstRunId = result.RunIds.Count > 0 ? result.RunIds[0] : Guid.Empty;

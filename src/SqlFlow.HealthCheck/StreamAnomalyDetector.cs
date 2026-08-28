@@ -98,7 +98,7 @@ public static class StreamAnomalyDetector
         // inventing a verdict from an empty sample.
         if (loadDays.Count == 0)
         {
-            return NothingToJudge(ordered, runDays, asOfDate);
+            return NothingLoadedInWindow(ordered, runDays, asOfDate, fromDate, options);
         }
 
         // ---- Step 1: strip reprocessing, before anything is fitted ---------------------------------------
@@ -913,9 +913,30 @@ public static class StreamAnomalyDetector
 
     // ---- Shaping -------------------------------------------------------------------------------------------
 
-    private static StreamAnalysis NothingToJudge(
-        IReadOnlyList<StreamBucket> ordered, IReadOnlyList<StreamBucket> runDays, DateTime asOfDate)
+    /// <summary>
+    /// The stream wrote nothing at all inside the window, which is two very different situations that must
+    /// not be reported the same way.
+    /// <para>
+    /// If it loaded BEFORE the window (<see cref="StreamAnomalyOptions.LastKnownLoadUtc"/>) then it is not a
+    /// stream without a pattern, it is a stream that has been dead longer than we looked, and it is reported
+    /// as stalled with the gap measured from its real last load. That case used to read as "never loaded" at
+    /// the lowest severity, which put the longest-broken tables at the bottom of the board.
+    /// </para>
+    /// <para>
+    /// If it has never loaded at all, it is left alone: a staged endpoint, an assertions-only flow, or a
+    /// brand-new pipeline reads exactly like this, and none of them is broken.
+    /// </para>
+    /// </summary>
+    private static StreamAnalysis NothingLoadedInWindow(
+        IReadOnlyList<StreamBucket> ordered, IReadOnlyList<StreamBucket> runDays, DateTime asOfDate,
+        DateTime fromDate, StreamAnomalyOptions options)
     {
+        var lastLoad = options.LastKnownLoadUtc?.Date;
+        var silentDays = lastLoad is { } load ? (asOfDate - load).TotalDays : double.PositiveInfinity;
+        var windowDays = Math.Max((asOfDate - fromDate).TotalDays + 1, 1);
+        var runs = ordered.Sum(b => (long)b.Runs);
+        var failures = ordered.Sum(b => (long)b.Failures);
+
         var profile = new StreamProfile
         {
             Pattern = new StreamPattern
@@ -926,15 +947,18 @@ public static class StreamAnomalyDetector
                 LowRows = 0,
                 HighRows = 0,
                 Reliability = 0,
-                Description = "No load has ever been recorded in this window, so there is no pattern yet.",
+                Description = lastLoad is { } seen
+                    ? $"Last loaded on {seen:yyyy-MM-dd}, before this window opened, so there is no current " +
+                        "pattern to compare against."
+                    : "No load has ever been recorded, so there is no pattern yet.",
             },
             Cadence = DataFrequency.Irregular,
             ExpectedGapDays = 0,
             CadenceSource = "observed",
             MaxObservedGapDays = 0,
-            LastLoadUtc = null,
+            LastLoadUtc = lastLoad,
             LastRunUtc = runDays.Count > 0 ? runDays[^1].Date.Date : null,
-            DaysSinceLastLoad = double.PositiveInfinity,
+            DaysSinceLastLoad = silentDays,
             DaysSinceLastRun = runDays.Count > 0 ? (asOfDate - runDays[^1].Date.Date).TotalDays : double.PositiveInfinity,
             RunDays = runDays.Count,
             LoadedDays = 0,
@@ -957,17 +981,52 @@ public static class StreamAnomalyDetector
             TrimFence = 0,
         };
 
+        // Dead longer than we looked. There is no series to run detectors over, but there is nothing
+        // uncertain about it either: the stream loaded before, it has not loaded since, and the gap is longer
+        // than the whole window. Reported at full severity, because a table silent for months is the most
+        // broken thing this surface can find, not the least.
+        if (lastLoad is not null)
+        {
+            var failing = runs > 0 && failures == runs;
+            var detail = $"No data since {lastLoad:yyyy-MM-dd} ({Days(silentDays)} ago), which is longer than " +
+                $"the whole {windowDays:0} day window." +
+                (runs == 0
+                    ? " The flow has not run in the window either."
+                    : failing
+                        ? $" All {runs} run(s) in the window failed."
+                        : $" It ran {runs} time(s) in the window and wrote nothing every time.");
+
+            return new StreamAnalysis
+            {
+                Status = StreamStatus.Stalled,
+                Category = failing ? "failing" : "stalled",
+                Severity = "critical",
+                Confidence = 1,
+                AgreeingDetectors = 1,
+                Summary = detail,
+                Signals = Enum.GetValues<StreamDetector>()
+                    .Select(d => d == StreamDetector.Silence
+                        ? Signal(d, fired: true, 1, detail)
+                        : Signal(d, fired: false, 0,
+                            "No load inside the window, so there is no series for this test to run on."))
+                    .ToList(),
+                Profile = profile,
+                Series = RawSeries(ordered),
+            };
+        }
+
         return new StreamAnalysis
         {
             Status = StreamStatus.InsufficientHistory,
-            Category = runDays.Count > 0 ? "never-loaded" : "insufficient-history",
+            Category = runs > 0 ? "never-loaded" : "insufficient-history",
             Severity = "info",
             Confidence = 0,
             AgreeingDetectors = 0,
-            Summary = runDays.Count > 0
-                ? $"{profile.Runs} run(s) in the window wrote no rows at all, so there is no load history to judge."
+            Summary = runs > 0
+                ? $"{runs} run(s) in the window wrote no rows, and this stream has never written any. A staged " +
+                    "endpoint or an assertions-only flow reads exactly like this."
                 : "No runs in the window, so there is nothing to judge.",
-            Signals = QuietSignals("the stream has never written a row in this window"),
+            Signals = QuietSignals("the stream has never written a row"),
             Profile = profile,
             Series = RawSeries(ordered),
         };

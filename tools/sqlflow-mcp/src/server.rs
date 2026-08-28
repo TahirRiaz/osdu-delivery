@@ -375,8 +375,9 @@ pub struct StreamAnomalyInput {
     /// ordinary day after it look like a collapse. Set true only to ask what the raw numbers did.
     #[serde(rename = "includeBackfills")]
     pub include_backfills: Option<bool>,
-    /// Analyse only streams that join an enabled schedule, so every verdict is measured against a DECLARED
-    /// cron cadence instead of one inferred from the stream's own recent behaviour.
+    /// Count only the runs a SCHEDULE fired, on streams that join an enabled schedule, so every verdict is
+    /// measured against a DECLARED cron cadence and never against a run somebody kicked off by hand. Runs
+    /// recorded before the trigger source was tracked carry none and are excluded rather than guessed at.
     #[serde(rename = "scheduledOnly")]
     pub scheduled_only: Option<bool>,
     /// Most streams to return (default 25; the counts in the answer cover every stream analysed).
