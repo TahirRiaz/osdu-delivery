@@ -295,7 +295,7 @@ public sealed record NotificationDigestSummaryDto(
 /// event kind (<c>run_failed</c>, <c>assertion_failed</c>, ...), not a run status.</summary>
 public sealed record NotificationDigestFlowDto(
     string FlowName, string FlowKind, string Kind, int Count, DateTime LastOccurredUtc, Guid LastRunId,
-    string? LastError);
+    Guid PipelineId, string? LastError);
 
 /// <summary>One estate digest opened for reading: the summary, the per-flow rows behind it, and the composed
 /// bodies. <see cref="Flows"/> is what the GUI tabulates; <see cref="TextBody"/> is the message as it would be

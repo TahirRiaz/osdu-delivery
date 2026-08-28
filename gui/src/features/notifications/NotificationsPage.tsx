@@ -474,14 +474,28 @@ function DigestBreakdown({ summary }: { summary: NotificationDigestSummary }) {
   );
 }
 
-/** The four headline numbers of a digest, in the dashboard's own tile (DESIGN.md 7.7). */
+/**
+ * The headline numbers of a digest (DESIGN.md 7.7). Each tile is a distinct dimension: a total-events tile would
+ * repeat the failed count on every digest where nothing but failures happened, which is most of them. The total
+ * still reads, as the caption on the count that matters for triage: how many flows need attention.
+ */
 function DigestKpis({ summary }: { summary: NotificationDigestSummary }) {
+  const quiet = summary.cancelledCount + summary.skippedCount;
+  const quietParts = [
+    summary.skippedCount > 0 ? `${summary.skippedCount} skipped` : null,
+    summary.cancelledCount > 0 ? `${summary.cancelledCount} cancelled` : null,
+  ].filter((part): part is string => part !== null);
+
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <KpiCard label="Events" value={summary.eventCount} testId="digest-kpi-events" />
-      <KpiCard label="Flows" value={summary.flowCount} testId="digest-kpi-flows" />
       <KpiCard
-        label="Failed"
+        label="Flows"
+        value={summary.flowCount}
+        caption={`${summary.eventCount} ${summary.eventCount === 1 ? "event" : "events"} in total`}
+        testId="digest-kpi-flows"
+      />
+      <KpiCard
+        label="Failed runs"
         value={summary.failedCount}
         color={summary.failedCount > 0 ? "error" : undefined}
         testId="digest-kpi-failed"
@@ -491,6 +505,12 @@ function DigestKpis({ summary }: { summary: NotificationDigestSummary }) {
         value={summary.assertionFailedCount}
         color={summary.assertionFailedCount > 0 ? "warning" : undefined}
         testId="digest-kpi-assertions"
+      />
+      <KpiCard
+        label="Cancelled + skipped"
+        value={quiet}
+        caption={quietParts.length > 0 ? quietParts.join(", ") : undefined}
+        testId="digest-kpi-quiet"
       />
     </div>
   );
@@ -534,7 +554,10 @@ function DigestFlows({ flows, unlisted }: { flows: NotificationDigestFlow[]; unl
               <TableRow key={`${flow.flowName}-${flow.kind}`} data-testid="digest-flow-row">
                 <TableCell className="max-w-[260px] px-3 py-1.5">
                   <div className="flex flex-col">
-                    <TruncatedText text={flow.flowName} maxWidth={260} mono />
+                    {/* The flow page answers "is this the eighth failure in a row"; the run answers "why". */}
+                    <Link to={`/pipelines/${flow.pipelineId}`} className="text-primary hover:underline">
+                      <TruncatedText text={flow.flowName} maxWidth={260} mono />
+                    </Link>
                     <span className="text-[11px] text-muted-foreground">{flow.flowKind}</span>
                   </div>
                 </TableCell>

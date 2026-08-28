@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace SqlFlow.ControlPlane.Notifications;
@@ -17,6 +17,7 @@ public sealed record NotificationDigestGroup(
     [property: JsonPropertyName("count")] int Count,
     [property: JsonPropertyName("last")] DateTime LastOccurredUtc,
     [property: JsonPropertyName("run")] Guid LastRunId,
+    [property: JsonPropertyName("pipeline")] Guid PipelineId,
     [property: JsonPropertyName("error")] string? LastError);
 
 /// <summary>
@@ -42,7 +43,7 @@ public static class NotificationDigestGroups
         var stored = groups
             .Take(MaxGroups)
             .Select(g => new NotificationDigestGroup(
-                g.FlowName, g.FlowKind, g.Kind, g.Count, g.LastOccurredUtc, g.LastRunId,
+                g.FlowName, g.FlowKind, g.Kind, g.Count, g.LastOccurredUtc, g.LastRunId, g.PipelineId,
                 string.IsNullOrWhiteSpace(g.LastError) ? null : NotificationComposer.ErrorExcerpt(g.LastError)))
             .ToList();
         return JsonSerializer.Serialize(stored, Options);

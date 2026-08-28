@@ -11,7 +11,7 @@ namespace SqlFlow.ControlPlane.Notifications;
 /// recent occurrence, which is the one whose error is worth reading.</summary>
 public sealed record NotificationFlowGroup(
     string FlowName, string FlowKind, string Kind, int Count, DateTime LastOccurredUtc, Guid LastRunId,
-    string? LastError);
+    Guid PipelineId, string? LastError);
 
 /// <summary>The period a digest covers, rendered in its header so an all-clear digest still says what it looked
 /// at. Subscription messages carry none: their window is "since the last message", which the events themselves
@@ -134,6 +134,12 @@ public static class NotificationComposer
     public static string? RunUrl(string? guiBaseUrl, Guid runId)
         => string.IsNullOrWhiteSpace(guiBaseUrl) ? null : $"{guiBaseUrl.TrimEnd('/')}/runs/{runId}";
 
+    /// <summary>The GUI deep link for a flow, when a GUI base URL is configured. Offered beside the run link
+    /// because they answer different questions: the run shows this failure, the flow shows whether it is the
+    /// eighth in a row and what the flow is supposed to do.</summary>
+    public static string? FlowUrl(string? guiBaseUrl, Guid pipelineId)
+        => string.IsNullOrWhiteSpace(guiBaseUrl) ? null : $"{guiBaseUrl.TrimEnd('/')}/pipelines/{pipelineId}";
+
     /// <summary>The GUI notification-settings link, when a GUI base URL is configured.</summary>
     public static string? SettingsUrl(string? guiBaseUrl)
         => string.IsNullOrWhiteSpace(guiBaseUrl) ? null : $"{guiBaseUrl.TrimEnd('/')}/settings/notifications";
@@ -163,7 +169,9 @@ public static class NotificationComposer
             .Select(g =>
             {
                 var last = g.OrderBy(e => e.OccurredUtc).ThenBy(e => e.Id).Last();
-                return new NotificationFlowGroup(g.Key.FlowName, last.FlowKind, g.Key.Kind, g.Count(), last.OccurredUtc, last.RunId, last.Error);
+                return new NotificationFlowGroup(
+                    g.Key.FlowName, last.FlowKind, g.Key.Kind, g.Count(), last.OccurredUtc, last.RunId,
+                    last.PipelineId, last.Error);
             })
             .OrderBy(g => KindRank(g.Kind))
             .ThenByDescending(g => g.LastOccurredUtc)
@@ -263,9 +271,14 @@ public static class NotificationComposer
                 text.Append("  ").AppendLine(Excerpt(group.LastError));
             }
 
-            if (RunUrl(composition.GuiBaseUrl, group.LastRunId) is { } url)
+            if (RunUrl(composition.GuiBaseUrl, group.LastRunId) is { } runUrl)
             {
-                text.Append("  ").AppendLine(url);
+                text.Append("  run:  ").AppendLine(runUrl);
+            }
+
+            if (FlowUrl(composition.GuiBaseUrl, group.PipelineId) is { } flowUrl)
+            {
+                text.Append("  flow: ").AppendLine(flowUrl);
             }
         }
 
@@ -321,9 +334,14 @@ public static class NotificationComposer
                 .Append(WebUtility.HtmlEncode(KindVerb(group.Kind, group.Count))).Append("</td>");
             html.Append("<td style=\"padding:6px 8px;border-top:1px solid #d0d7de;white-space:nowrap;vertical-align:top\">")
                 .Append(WebUtility.HtmlEncode(Stamp(group.LastOccurredUtc)));
-            if (RunUrl(composition.GuiBaseUrl, group.LastRunId) is { } url)
+            if (RunUrl(composition.GuiBaseUrl, group.LastRunId) is { } runUrl)
             {
-                html.Append(" <a href=\"").Append(WebUtility.HtmlEncode(url)).Append("\">Open run</a>");
+                html.Append(" <a href=\"").Append(WebUtility.HtmlEncode(runUrl)).Append("\">Open run</a>");
+            }
+
+            if (FlowUrl(composition.GuiBaseUrl, group.PipelineId) is { } flowUrl)
+            {
+                html.Append(" <a href=\"").Append(WebUtility.HtmlEncode(flowUrl)).Append("\">Open flow</a>");
             }
 
             html.Append("</td></tr>");
@@ -371,9 +389,13 @@ public static class NotificationComposer
                 section.Append("\n```").Append(MrkdwnEscape(Excerpt(group.LastError))).Append("```");
             }
 
-            if (RunUrl(composition.GuiBaseUrl, group.LastRunId) is { } url)
+            if (RunUrl(composition.GuiBaseUrl, group.LastRunId) is { } runUrl)
             {
-                section.Append("\n<").Append(MrkdwnEscape(url)).Append("|Open run>");
+                section.Append("\n<").Append(MrkdwnEscape(runUrl)).Append("|Open run>");
+                if (FlowUrl(composition.GuiBaseUrl, group.PipelineId) is { } flowUrl)
+                {
+                    section.Append("  ·  <").Append(MrkdwnEscape(flowUrl)).Append("|Open flow>");
+                }
             }
 
             blocks.Add(SectionBlock(Truncate(section.ToString(), 3000)));

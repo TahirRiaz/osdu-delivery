@@ -597,7 +597,8 @@ public static partial class NotificationEndpoints
         IReadOnlyList<NotificationDigestFlowDto> flows = full
             ? NotificationDigestGroups.Deserialize(d.GroupsJson)
                 .Select(g => new NotificationDigestFlowDto(
-                    g.FlowName, g.FlowKind, g.EventKind, g.Count, g.LastOccurredUtc, g.LastRunId, g.LastError))
+                    g.FlowName, g.FlowKind, g.EventKind, g.Count, g.LastOccurredUtc, g.LastRunId, g.PipelineId,
+                    g.LastError))
                 .ToList()
             : [];
         return new NotificationDigestDto(summary, flows, d.TextBody, d.HtmlBody);

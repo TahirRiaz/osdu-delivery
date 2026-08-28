@@ -1717,6 +1717,8 @@ export interface NotificationDigestFlow {
   count: number;
   lastOccurredUtc: string;
   lastRunId: string;
+  /** The flow behind the name, for the link to its page; a soft link, like the run id. */
+  pipelineId: string;
   lastError: string | null;
 }
 

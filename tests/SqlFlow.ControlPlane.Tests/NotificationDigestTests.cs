@@ -109,13 +109,25 @@ public sealed class NotificationDigestTests
         // The events sit in the middle of a 24 hour window; the header must state the window asked for, so an
         // operator can tell "quiet since lunch" from "we only looked at lunchtime".
         var window = new NotificationWindow(Now.AddHours(-24), Now);
+        var events = new[] { Event(1), Event(2) };
         var message = NotificationComposer.ComposeReport(new NotificationComposition(
-            NotificationChannels.Email, NotificationModes.Digest, [Event(1), Event(2)], MorePending: false,
+            NotificationChannels.Email, NotificationModes.Digest, events, MorePending: false,
             "https://sqlflow.example.com", Now, window));
 
         Assert.Contains("2 events between 2026-07-10 12:34 UTC and 2026-07-11 12:34 UTC.", message.TextBody,
             StringComparison.Ordinal);
         Assert.Contains("orders-load", message.TextBody, StringComparison.Ordinal);
+
+        // Both destinations are offered, and both name the most recent occurrence: the run that failed, and the
+        // flow behind it.
+        var group = Assert.Single(NotificationComposer.Group(events));
+        Assert.Equal(events[1].RunId, group.LastRunId);
+        Assert.Contains($"/runs/{group.LastRunId}", message.TextBody, StringComparison.Ordinal);
+        Assert.Contains($"/pipelines/{group.PipelineId}", message.TextBody, StringComparison.Ordinal);
+        Assert.NotNull(message.SlackBlocksJson);
+        Assert.Contains("Open flow", message.SlackBlocksJson, StringComparison.Ordinal);
+        Assert.NotNull(message.HtmlBody);
+        Assert.Contains("Open flow", message.HtmlBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -152,6 +164,8 @@ public sealed class NotificationDigestTests
         // The most recent occurrence is the one whose error is worth reading.
         Assert.Equal("The target table vanished.", failed.LastError);
         Assert.Equal(events[1].RunId, failed.LastRunId);
+        // The flow id rides along, so the digest can link to the flow and not only to the run that failed.
+        Assert.Equal(events[1].PipelineId, failed.PipelineId);
 
         var assertions = Assert.Single(groups, g => g.EventKind == NotificationEventKinds.AssertionFailed);
         Assert.Null(assertions.LastError);
