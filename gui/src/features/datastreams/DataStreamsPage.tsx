@@ -20,7 +20,7 @@ import { pollingInterval } from "../../hooks/usePolling";
 import { StreamDetailSheet } from "./StreamDetailSheet";
 import { StreamStatusBadge } from "./StreamStatusBadge";
 import {
-  confidenceLabel, formatDays, formatRows, howOftenItLoads, whatIsWrong,
+  confidenceLabel, formatDays, formatRows, howOftenItLoads, stageLabels, stageMeaning, whatIsWrong,
 } from "./streamPresentation";
 
 const kpiGridClass = "grid grid-cols-[repeat(auto-fill,minmax(148px,1fr))] gap-3";
@@ -44,6 +44,16 @@ const statusFilters = [
 /**
  * DataStream anomaly detection: which tables have stopped receiving data.
  *
+ * The board is split by WHO a finding belongs to, because that is the first thing anyone needs to know and
+ * mixing the two sides makes both unreadable. A vendor that did not deliver and a transformation of ours that
+ * broke are different incidents with different owners, and one quiet upstream would otherwise light up its
+ * whole downstream chain as a dozen separate findings that are all the same finding. Vendor deliveries are the
+ * default view; our own processing is one click away, and so is everything at once.
+ *
+ * The stage column sharpens the same question. A source-side stream failing at "Vendor fetch" means nothing
+ * arrived from them; the same stream failing at "File ingestion" or "Load to archive" means it arrived and we
+ * did not take it in.
+ *
  * Every column answers a question in the words an operator would use, because the algorithm's vocabulary
  * ("degraded", "gap-days", "2 of 6 detectors") is precise and useless at a glance. What is wrong, how often
  * this table normally loads, when data last arrived, how many days it missed against how many it usually
@@ -57,14 +67,16 @@ const statusFilters = [
 export default function DataStreamsPage() {
   const [days, setDays] = useLocalStorageState<number>("datastreams.windowDays", 60);
   const [status, setStatus] = useLocalStorageState<string>("datastreams.status", "");
+  const [scope, setScope] = useLocalStorageState<string>("datastreams.scope", "source");
   const [includeBackfills, setIncludeBackfills] = useLocalStorageState<boolean>("datastreams.includeBackfills", false);
   const [drill, setDrill] = useState<{ pipelineId: string; flowName: string } | null>(null);
 
   const query = useQuery({
-    queryKey: ["datastreams", days, status, includeBackfills],
+    queryKey: ["datastreams", days, status, scope, includeBackfills],
     queryFn: () => dataStreamApi.list({
       days,
       status: status === "" ? undefined : status,
+      scope,
       includeBackfills,
       limit: 300,
     }),
@@ -83,6 +95,14 @@ export default function DataStreamsPage() {
             {s.targetObject ?? s.batch ?? "unknown target"}
           </span>
         </div>
+      ),
+    },
+    {
+      id: "stage",
+      header: "Stage",
+      width: 140,
+      render: (s) => (
+        <span className="text-[13px]" title={stageMeaning[s.stage]}>{stageLabels[s.stage]}</span>
       ),
     },
     {
@@ -218,11 +238,38 @@ export default function DataStreamsPage() {
       <PageHeader
         title="Data streams"
         subtitle={
-          `Which tables have stopped receiving data, over the last ${days} days` +
+          (board.scope === "source"
+            ? "Has the vendor delivered? Data arriving from outside the estate"
+            : board.scope === "internal"
+              ? "Have we processed it? Tables we derive from the archive onwards"
+              : "Vendor deliveries and our own processing together") +
+          `, over the last ${days} days` +
           (board.includeBackfills ? " (backfills counted as normal traffic)" : "")
         }
         actions={controls}
       />
+
+      {/* The split is the primary control, so it sits above the numbers it changes rather than beside the
+          window picker: every count below it is scoped to whichever side is selected. */}
+      <ToggleGroup
+        type="single"
+        value={board.scope}
+        onValueChange={(value) => { if (value !== "") { setScope(value); } }}
+        variant="outline"
+        size="sm"
+        className="self-start"
+        data-testid="datastreams-scope"
+      >
+        <ToggleGroupItem value="source" className="px-3 text-xs">
+          Vendor deliveries ({board.sourceStreams})
+        </ToggleGroupItem>
+        <ToggleGroupItem value="internal" className="px-3 text-xs">
+          Our processing ({board.internalStreams})
+        </ToggleGroupItem>
+        <ToggleGroupItem value="all" className="px-3 text-xs">
+          Everything ({board.sourceStreams + board.internalStreams})
+        </ToggleGroupItem>
+      </ToggleGroup>
 
       <div className={kpiGridClass}>
         <KpiCard
@@ -278,9 +325,11 @@ export default function DataStreamsPage() {
               icon={<Activity />}
               title="Nothing to show"
               description={
-                status === ""
-                  ? "No flow has run inside this window, so there is nothing to check."
-                  : "Every table checked is in a different state. Clear the filter to see them."
+                status !== ""
+                  ? "Every table checked is in a different state. Clear the filter to see them."
+                  : board.scope === "source"
+                    ? "No stream brings data in from outside the estate in this window. Try Our processing."
+                    : "No flow has run inside this window, so there is nothing to check."
               }
             />
           ) : (
@@ -291,7 +340,7 @@ export default function DataStreamsPage() {
               onRowClick={(s) => setDrill({ pipelineId: s.pipelineId, flowName: s.flowName })}
               emptyMessage="No tables to show."
               // Below this the columns would compress and clip their content instead of the card scrolling.
-              minWidth={1000}
+              minWidth={1140}
               data-testid="datastreams-table"
             />
           )}

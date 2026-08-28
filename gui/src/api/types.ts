@@ -2017,6 +2017,15 @@ export interface StreamPoint {
   trimmed: boolean;
 }
 
+/** Which side of the estate boundary a stream sits on. "source" carries a vendor's data inwards; "internal"
+ * derives one of our tables from another. They are separate questions with separate owners. */
+export type StreamScope = "source" | "internal";
+
+/** Where in the pipeline a stream sits. The sharper form of the same question: a vendor delivery failing at
+ * "integration" means nothing arrived from them, while the same delivery failing at "file-ingestion" or
+ * "archive" means it arrived and we did not take it in. */
+export type StreamStage = "integration" | "file-ingestion" | "archive" | "derived";
+
 /** One data stream: a flow, the table it writes, and the verdict. series is null on the board and populated
  * on the single-stream endpoint. */
 export interface DataStream {
@@ -2026,6 +2035,11 @@ export interface DataStream {
   batch: string | null;
   active: boolean;
   targetObject: string | null;
+  scope: StreamScope;
+  /** How the scope was decided: "lineage" (walked the upstream chain), "origin" (reads nothing we produce),
+   * "schema" (the target schema is configured as one side), or "kind". */
+  scopeReason: string;
+  stage: StreamStage;
   scheduleName: string | null;
   cron: string | null;
   timezone: string | null;
@@ -2047,6 +2061,11 @@ export interface DataStreams {
   fromUtc: string;
   asOfUtc: string;
   includeBackfills: boolean;
+  scope: StreamScope | "all";
+  /** How many streams exist on each side, whichever side was analysed, so both can be offered without a
+   * second request. */
+  sourceStreams: number;
+  internalStreams: number;
   totalStreams: number;
   analyzedStreams: number;
   excludedBackfillRuns: number;

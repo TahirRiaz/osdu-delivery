@@ -370,6 +370,12 @@ pub struct StreamAnomalyInput {
     /// Restrict to one verdict: "stalled", "degraded", "watch", "healthy", or "insufficient-history".
     /// Omit for everything, ranked most urgent first.
     pub status: Option<String>,
+    /// Which side of the estate to look at, and the most important parameter here. "source" (the DEFAULT)
+    /// is vendor deliveries: data arriving from outside, so a finding means the vendor did not deliver or we
+    /// failed to take in what they sent. "internal" is our own processing: tables derived from the archive
+    /// onwards, so a finding is ours. "all" mixes both, which is usually the wrong way to read the board,
+    /// because one quiet upstream lights up its whole downstream chain as separate findings.
+    pub scope: Option<String>,
     /// Count backfills and other operator-driven reprocessing as normal traffic. Default false, which is
     /// what stops a replay of three years of history from redefining a stream's normal and making every
     /// ordinary day after it look like a collapse. Set true only to ask what the raw numbers did.
@@ -1948,6 +1954,11 @@ impl SqlFlowMcp {
             teach the detector that outages are normal. Where the stream joins a schedule, the cadence \
             comes from its cron instead. \
             \
+            Every stream carries a scope (source / internal) and a STAGE saying where in the pipeline it \
+            sits: 'integration' fetches from the vendor, so nothing there usually means the vendor sent \
+            nothing; 'file-ingestion' and 'archive' mean their data arrived and WE did not take it in; \
+            'derived' is entirely our own processing. Use the stage to say whose problem a finding is. \
+            \
             Six detectors vote. Three are PRIMARY and can raise a finding alone: silence (no data now), \
             nullDays (more empty days than the median week explains), cadence (the flow stopped running). \
             Three measure volume and corroborate: rateChange (overdispersion-adjusted count rate), \
@@ -1975,6 +1986,7 @@ impl SqlFlowMcp {
             ("repoId", i.repo_id.unwrap_or_default()),
             ("batch", i.batch.unwrap_or_default()),
             ("status", i.status.unwrap_or_default()),
+            ("scope", i.scope.unwrap_or_default()),
             ("includeBackfills", i.include_backfills.map(|b| b.to_string()).unwrap_or_default()),
             // The board is ranked most urgent first, so a short page carries the story; the counts still
             // report the whole estate.

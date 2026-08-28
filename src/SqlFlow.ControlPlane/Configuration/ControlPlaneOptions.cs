@@ -38,6 +38,8 @@ public sealed class ControlPlaneOptions
 
     public RunTraceRetentionOptions RunTrace { get; set; } = new();
 
+    public DataStreamOptions DataStreams { get; set; } = new();
+
     public AssistantChatOptions Assistant { get; set; } = new();
 
     public DataOpsOptions DataOps { get; set; } = new();
@@ -130,6 +132,43 @@ public sealed class ControlPlaneOptions
 }
 
 /// <summary>How the control plane reaches the shadow catalog database.</summary>
+/// <summary>
+/// How the data-stream board tells a VENDOR DELIVERY apart from OUR PROCESSING, which is the single most
+/// useful distinction it can draw and the one that decides who a finding belongs to.
+///
+/// <para>
+/// A table that stopped receiving data because the vendor sent nothing is a completely different incident
+/// from one that stopped because a transformation of ours broke, and mixing them on one board means every
+/// reader has to re-derive which is which on every row. Worse, one upstream that goes quiet lights up its
+/// whole downstream chain, so a single vendor outage can fill the board with a dozen findings that are all
+/// the same finding. Splitting them means the source board answers "has the vendor delivered" and the
+/// internal board answers "have we processed it", and neither is noise to the other.
+/// </para>
+///
+/// <para>
+/// The classification is deliberately configuration and not cleverness, because where an estate draws that
+/// line is an estate's own convention. It is decided in order: a target schema known to be downstream wins,
+/// then a target schema known to be a landing area, then the flow kind. The defaults suit the common
+/// warehouse shape (raw/staging/archive schemas fed by acquisition and ingestion flows, curated schemas
+/// built by stored procedures), and an estate that names things differently sets its own.
+/// </para>
+/// </summary>
+public sealed class DataStreamOptions
+{
+    /// <summary>Flow kinds that bring data INTO the estate from outside it: an API, an SFTP server, an object
+    /// store, landed files, or a source database. A stream of one of these kinds is a vendor delivery unless
+    /// its target schema says otherwise.</summary>
+    public List<string> SourceFlowKinds { get; set; } = ["api", "sftp", "cpy", "file", "ing"];
+
+    /// <summary>Schemas that hold data as the vendor sent it: the landing, staging, and archive layers. A
+    /// stream writing here is a vendor delivery whatever kind of flow loads it.</summary>
+    public List<string> LandingSchemas { get; set; } = ["raw", "arc", "stg", "staging", "landing", "src", "ext", "pre"];
+
+    /// <summary>Schemas that hold what we DERIVED: the curated warehouse. A stream writing here is our own
+    /// processing even when an ingestion-shaped flow builds it, which is why this is checked first.</summary>
+    public List<string> DownstreamSchemas { get; set; } = ["edw", "dwh", "dw", "mart", "rpt", "skey"];
+}
+
 public sealed class CatalogOptions
 {
     /// <summary>A connection string or a secret reference (<c>${env:NAME}</c> / <c>${keyvault:vault/secret}</c>),

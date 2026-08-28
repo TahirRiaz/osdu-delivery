@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.Catalog;
 using SqlFlow.Core.Model;
 using SqlFlow.HealthCheck;
@@ -51,6 +53,16 @@ public sealed record StreamPointDto(
 /// </summary>
 public sealed record DataStreamDto(
     Guid PipelineId, string FlowName, string FlowKind, string? Batch, bool Active, string? TargetObject,
+    // "source" when this stream brings data in from outside the estate (a vendor delivery), "internal" when
+    // it derives one of our tables from another, and how that was decided: "lineage" (every flow upstream of
+    // it is an ingestion flow, or the first derivation was found), "origin" (it reads nothing this estate
+    // produces), "schema" (the target schema is configured as one side or the other), or "kind".
+    string Scope, string ScopeReason,
+    // Where in the pipeline this stream sits, which is the sharper form of the same question: "integration"
+    // fetches from the vendor (a failure here is usually THEIRS), "file-ingestion" lands what was fetched and
+    // "archive" loads it into the silver layer (failures there are ours, on the vendor's data), and "derived"
+    // is everything built from the archive onwards.
+    string Stage,
     string? ScheduleName, string? Cron, string? Timezone,
     string Status, string Category, string Severity, double Confidence, int AgreeingDetectors, string Summary,
     StreamProfileDto Profile, IReadOnlyList<StreamSignalDto> Signals, IReadOnlyList<StreamPointDto>? Series);
@@ -62,6 +74,11 @@ public sealed record DataStreamDto(
 /// </summary>
 public sealed record DataStreamsDto(
     int WindowDays, DateTime FromUtc, DateTime AsOfUtc, bool IncludeBackfills,
+    // Which side was analysed: "source", "internal", or "all".
+    string Scope,
+    // How many streams exist on each side, whichever side was analysed, so a client can offer both without a
+    // second request.
+    int SourceStreams, int InternalStreams,
     int TotalStreams, int AnalyzedStreams, long ExcludedBackfillRuns,
     int StalledCount, int DegradedCount, int WatchCount, int HealthyCount, int InsufficientHistoryCount,
     IReadOnlyList<DataStreamDto> Streams);
@@ -111,6 +128,32 @@ public static class DataStreamEndpoints
 
     public const int MaxResults = 500;
 
+    /// <summary>Vendor deliveries: streams that bring data in from outside the estate. The default scope,
+    /// because "has the vendor delivered" is the question with an owner outside this building, and because a
+    /// single upstream going quiet would otherwise light up its whole downstream chain as separate findings.</summary>
+    public const string SourceScope = "source";
+
+    /// <summary>Our own processing: streams that derive one of our tables from another.</summary>
+    public const string InternalScope = "internal";
+
+    public const string AllScopes = "all";
+
+    /// <summary>
+    /// The pipeline stages, in the order data moves through them. The scope split answers "whose data is
+    /// this"; the stage answers the more useful "where did it stop", and the two are not the same question.
+    /// A vendor delivery that fails at <c>integration</c> means nothing arrived from them; the same delivery
+    /// failing at <c>file-ingestion</c> or <c>archive</c> means it arrived and WE did not take it in. Both are
+    /// source-side, and sending them to the same person would be wrong.
+    /// </summary>
+    private static string StageOf(string? flowKind, string scope) => scope == InternalScope
+        ? "derived"
+        : flowKind switch
+        {
+            "api" or "sftp" or "cpy" => "integration",
+            "file" => "file-ingestion",
+            _ => "archive",
+        };
+
     public static RouteGroupBuilder MapDataStreamEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -127,27 +170,40 @@ public static class DataStreamEndpoints
     /// </summary>
     /// <param name="db">The shadow catalog.</param>
     /// <param name="clock">The clock the window and drought arithmetic are anchored at.</param>
+    /// <param name="options">Deployment configuration, for how this estate splits source from internal.</param>
     /// <param name="days">The analysis window (1 to <see cref="MaxWindowDays"/>).</param>
     /// <param name="repoId">Restrict to one repository.</param>
     /// <param name="batch">Restrict to one batch (data source).</param>
     /// <param name="status">Restrict to one verdict: <c>stalled</c>, <c>degraded</c>, <c>watch</c>,
     /// <c>healthy</c>, or <c>insufficient-history</c>.</param>
+    /// <param name="scope">Which side to analyse: <c>source</c> (vendor deliveries, the default),
+    /// <c>internal</c> (our own processing), or <c>all</c>. The two answer different questions and have
+    /// different owners, so they are separate boards by default rather than one mixed list.</param>
     /// <param name="includeBackfills">Count backfills and other operator-driven reprocessing as normal
     /// traffic. False by default, which is what keeps a history replay from redefining a stream's normal.</param>
     /// <param name="limit">How many streams to return (the counts still cover every analysed stream).</param>
     /// <param name="ct">Cancellation.</param>
     private static async Task<Results<Ok<DataStreamsDto>, ProblemHttpResult>> GetDataStreamsAsync(
-        CatalogDbContext db, TimeProvider clock, int? days, Guid? repoId, string? batch, string? status,
-        bool? includeBackfills, int? limit, CancellationToken ct)
+        CatalogDbContext db, TimeProvider clock, IOptions<ControlPlaneOptions> options, int? days, Guid? repoId,
+        string? batch, string? status, string? scope, bool? includeBackfills, int? limit, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
         if (Validate(days, limit) is { } problem)
         {
             return problem;
         }
 
+        var requested = NormalizeScope(scope);
+        if (requested is null)
+        {
+            return TypedResults.Problem(
+                detail: $"scope must be '{SourceScope}', '{InternalScope}', or '{AllScopes}'.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
         var report = await ComputeAsync(
-            db, clock, days ?? DefaultWindowDays, repoId, batch, includeBackfills == true,
-            pipelineId: null, ct).ConfigureAwait(false);
+            db, clock, options.Value.DataStreams, days ?? DefaultWindowDays, repoId, batch,
+            includeBackfills == true, requested, pipelineId: null, ct).ConfigureAwait(false);
 
         var filtered = string.IsNullOrWhiteSpace(status)
             ? report.Streams
@@ -159,17 +215,20 @@ public static class DataStreamEndpoints
     /// <summary>One stream in full, including the day-by-day series the chart draws and every detector's
     /// reasoning. Same analysis as the board, so the detail can never disagree with the row that led to it.</summary>
     private static async Task<Results<Ok<DataStreamDto>, NotFound, ProblemHttpResult>> GetDataStreamAsync(
-        Guid pipelineId, CatalogDbContext db, TimeProvider clock, int? days, bool? includeBackfills,
-        CancellationToken ct)
+        Guid pipelineId, CatalogDbContext db, TimeProvider clock, IOptions<ControlPlaneOptions> options,
+        int? days, bool? includeBackfills, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
         if (Validate(days, limit: null) is { } problem)
         {
             return problem;
         }
 
+        // Always every scope here: a caller asking for one stream by id has already chosen it, and refusing to
+        // show it because it sits on the other side of the split would be obstruction, not filtering.
         var report = await ComputeAsync(
-            db, clock, days ?? DefaultWindowDays, repoId: null, batch: null, includeBackfills == true,
-            pipelineId, ct).ConfigureAwait(false);
+            db, clock, options.Value.DataStreams, days ?? DefaultWindowDays, repoId: null, batch: null,
+            includeBackfills == true, AllScopes, pipelineId, ct).ConfigureAwait(false);
 
         var stream = report.Streams.FirstOrDefault(s => s.PipelineId == pipelineId);
         return stream is null ? TypedResults.NotFound() : TypedResults.Ok(stream);
@@ -183,8 +242,8 @@ public static class DataStreamEndpoints
     /// hundred is work nobody asked for.
     /// </summary>
     private static async Task<DataStreamsDto> ComputeAsync(
-        CatalogDbContext db, TimeProvider clock, int windowDays, Guid? repoId, string? batch,
-        bool includeBackfills, Guid? pipelineId, CancellationToken ct)
+        CatalogDbContext db, TimeProvider clock, DataStreamOptions classification, int windowDays, Guid? repoId,
+        string? batch, bool includeBackfills, string scope, Guid? pipelineId, CancellationToken ct)
     {
         var now = clock.GetUtcNow().UtcDateTime;
         var fromUtc = now.Date.AddDays(-(windowDays - 1));
@@ -238,6 +297,18 @@ public static class DataStreamEndpoints
             .Select(p => new { p.Id, p.Name, p.Kind, p.Batch, p.Active })
             .ToDictionaryAsync(p => p.Id, ct).ConfigureAwait(false);
 
+        // The written object and its SCHEMA, for every candidate. Resolved before the analysis rather than
+        // after the ranking, because which side of the source/internal split a stream falls on decides whether
+        // it is analysed at all.
+        var graph = await LoadScopeGraphAsync(db, repoId, ct).ConfigureAwait(false);
+        var classifier = new ScopeClassifier(
+            graph,
+            meta.ToDictionary(m => m.Key, m => m.Value.Kind),
+            new HashSet<string>(classification.LandingSchemas, StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(classification.DownstreamSchemas, StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(classification.SourceFlowKinds, StringComparer.OrdinalIgnoreCase));
+        var scopeById = candidateIds.ToDictionary(id => id, classifier.Classify);
+
         var batchFilter = string.IsNullOrWhiteSpace(batch) ? null : batch.Trim();
         var byStream = activity.GroupBy(a => a.PipelineId).ToDictionary(g => g.Key, g => g.ToList());
 
@@ -264,6 +335,7 @@ public static class DataStreamEndpoints
         var ordered = candidateIds
             .Where(id => batchFilter is null
                 || string.Equals(meta.GetValueOrDefault(id)?.Batch, batchFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(id => scope == AllScopes || scopeById[id].Scope == scope)
             .OrderByDescending(id => byStream.TryGetValue(id, out var rows) ? rows.Max(r => r.Day) : DateTime.MinValue)
             .ToList();
         var analyzed = ordered.Take(MaxStreams).ToList();
@@ -308,7 +380,8 @@ public static class DataStreamEndpoints
             var pipeline = meta.GetValueOrDefault(id);
             results.Add(new DataStreamDto(
                 id, pipeline?.Name ?? id.ToString(), pipeline?.Kind ?? "?", pipeline?.Batch,
-                pipeline?.Active ?? false, TargetObject: null,
+                pipeline?.Active ?? false, graph.Targets.GetValueOrDefault(id).Name,
+                scopeById[id].Scope, scopeById[id].Reason, StageOf(pipeline?.Kind, scopeById[id].Scope),
                 schedule?.Name, schedule?.Cron, schedule?.Timezone,
                 StatusName(analysis.Status), analysis.Category, analysis.Severity, analysis.Confidence,
                 analysis.AgreeingDetectors, analysis.Summary,
@@ -326,13 +399,15 @@ public static class DataStreamEndpoints
             .ThenByDescending(s => s.Confidence)
             .ThenBy(s => s.FlowName, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        await ResolveTargetsAsync(db, ranked, ct).ConfigureAwait(false);
 
         // Scoped to the streams that were analysed, so the number squares with the board rather than counting
         // reprocessing on streams a filter removed.
         var analyzedSet = analyzed.ToHashSet();
         return new DataStreamsDto(
             windowDays, fromUtc, now, includeBackfills,
+            scope,
+            candidateIds.Count(id => scopeById[id].Scope == SourceScope),
+            candidateIds.Count(id => scopeById[id].Scope == InternalScope),
             ordered.Count, ranked.Count,
             excluded.Where(e => analyzedSet.Contains(e.PipelineId)).Sum(e => (long)e.Runs),
             ranked.Count(s => s.Status == "stalled"),
@@ -411,39 +486,182 @@ public static class DataStreamEndpoints
         return byPipeline;
     }
 
-    /// <summary>Fills in the table each returned stream writes, from the lineage edges. Done for the ranked
-    /// page only and in one query; a stream whose lineage has not been computed simply reports no target,
-    /// which is a display gap rather than an analysis one.</summary>
-    private static async Task ResolveTargetsAsync(
-        CatalogDbContext db, List<DataStreamDto> streams, CancellationToken ct)
-    {
-        if (streams.Count == 0)
-        {
-            return;
-        }
+    /// <summary>
+    /// The lineage a stream is classified from: what each pipeline writes (with the schema, for the override),
+    /// what each pipeline reads, and which pipelines produce each object. Two queries over the repo's edges,
+    /// joined to the object registry for the write side.
+    /// </summary>
+    private sealed record ScopeGraph(
+        Dictionary<Guid, (string? Name, string? Schema)> Targets,
+        Dictionary<Guid, List<string>> Reads,
+        Dictionary<string, List<Guid>> Producers);
 
-        var ids = streams.Select(s => s.PipelineId).ToList();
+    private static async Task<ScopeGraph> LoadScopeGraphAsync(
+        CatalogDbContext db, Guid? repoId, CancellationToken ct)
+    {
         var writes = await db.LineageEdges.AsNoTracking()
-            .Where(e => e.PipelineId != null && e.Relation == "Writes" && ids.Contains(e.PipelineId!.Value))
-            .Select(e => new { PipelineId = e.PipelineId!.Value, e.ObjectName, e.Tier })
+            .Where(e => e.PipelineId != null && e.Relation == "Writes" && (repoId == null || e.RepoId == repoId))
+            .Join(db.Objects.AsNoTracking(), e => e.ObjectKey, o => o.Key, (e, o) => new
+            {
+                PipelineId = e.PipelineId!.Value, e.ObjectKey, e.ObjectName, e.Tier, o.Schema,
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var reads = await db.LineageEdges.AsNoTracking()
+            .Where(e => e.PipelineId != null && e.Relation == "Reads" && (repoId == null || e.RepoId == repoId))
+            .Select(e => new { PipelineId = e.PipelineId!.Value, e.ObjectKey })
             .ToListAsync(ct).ConfigureAwait(false);
 
         // A flow can write several objects (a staging table and its target). The DECLARED edge is the flow's
-        // own target; anything else is derived from a module body, so it is named only when nothing declared
+        // own target; anything else is derived from a module body, so it is used only when nothing declared
         // exists.
         var targets = writes
             .GroupBy(w => w.PipelineId)
             .ToDictionary(
                 g => g.Key,
-                g => (g.FirstOrDefault(w => w.Tier == "Declared") ?? g.First()).ObjectName);
+                g =>
+                {
+                    var best = g.FirstOrDefault(w => w.Tier == "Declared") ?? g.First();
+                    return ((string?)best.ObjectName, best.Schema);
+                });
 
-        for (var i = 0; i < streams.Count; i++)
+        return new ScopeGraph(
+            targets,
+            reads.GroupBy(r => r.PipelineId)
+                .ToDictionary(g => g.Key, g => g.Select(r => r.ObjectKey).Distinct().ToList()),
+            writes.GroupBy(w => w.ObjectKey, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Select(w => w.PipelineId).Distinct().ToList(),
+                    StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Decides which side of the split each stream is on, and says why.
+    ///
+    /// <para>
+    /// The rule that matters is the LINEAGE one, because it needs no naming convention. Data is a vendor
+    /// delivery for as long as it is still a copy of what the vendor sent, and it stops being one the moment
+    /// something of ours derives from it. Walking upstream from a stream through the flow graph, that is
+    /// exactly the point where a flow appears that is not an ingestion flow: an acquisition fetches a file, a
+    /// file flow lands it, an ingestion flow loads it into the archive, and every one of those is still moving
+    /// the vendor's data. A stored procedure building a fact table from that archive is the first step that is
+    /// ours. So a stream is a vendor delivery when every flow on the path from the external origin down to it
+    /// is an ingestion-shaped flow, and it is internal from the first derivation onwards. The archive layer
+    /// falls out of that as the last source-side stop, without anyone having to name it.
+    /// </para>
+    ///
+    /// <para>
+    /// The schema lists stay as an OVERRIDE, checked first, because an estate that has already made this
+    /// decision in its naming should not have it re-derived and possibly contradicted. Where lineage has not
+    /// been computed there is no graph to walk, and the flow kind alone decides.
+    /// </para>
+    /// </summary>
+    private sealed class ScopeClassifier
+    {
+        private readonly ScopeGraph _graph;
+        private readonly IReadOnlyDictionary<Guid, string> _kinds;
+        private readonly IReadOnlySet<string> _landing;
+        private readonly IReadOnlySet<string> _downstream;
+        private readonly IReadOnlySet<string> _sourceKinds;
+        private readonly Dictionary<Guid, (string Scope, string Reason)> _memo = [];
+
+        /// <summary>Pipelines currently being resolved, so a cyclic lineage (a flow whose upstream reaches
+        /// itself) terminates instead of recursing forever. A cycle cannot be an external origin, so it
+        /// resolves as internal.</summary>
+        private readonly HashSet<Guid> _visiting = [];
+
+        public ScopeClassifier(
+            ScopeGraph graph, IReadOnlyDictionary<Guid, string> kinds, IReadOnlySet<string> landing,
+            IReadOnlySet<string> downstream, IReadOnlySet<string> sourceKinds)
         {
-            if (targets.TryGetValue(streams[i].PipelineId, out var target))
-            {
-                streams[i] = streams[i] with { TargetObject = target };
-            }
+            _graph = graph;
+            _kinds = kinds;
+            _landing = landing;
+            _downstream = downstream;
+            _sourceKinds = sourceKinds;
         }
+
+        public (string Scope, string Reason) Classify(Guid pipelineId)
+        {
+            if (_memo.TryGetValue(pipelineId, out var cached))
+            {
+                return cached;
+            }
+
+            if (!_visiting.Add(pipelineId))
+            {
+                return (InternalScope, "cycle");
+            }
+
+            var result = Resolve(pipelineId);
+            _visiting.Remove(pipelineId);
+            _memo[pipelineId] = result;
+            return result;
+        }
+
+        private (string Scope, string Reason) Resolve(Guid pipelineId)
+        {
+            var schema = _graph.Targets.GetValueOrDefault(pipelineId).Schema;
+            if (schema is not null && _downstream.Contains(schema))
+            {
+                return (InternalScope, "schema");
+            }
+
+            if (schema is not null && _landing.Contains(schema))
+            {
+                return (SourceScope, "schema");
+            }
+
+            var kind = _kinds.GetValueOrDefault(pipelineId);
+            var isIngestionShaped = kind is not null && _sourceKinds.Contains(kind);
+            if (!isIngestionShaped)
+            {
+                // The first derivation. Everything downstream of here is ours by construction.
+                return (InternalScope, "kind");
+            }
+
+            // An ingestion-shaped flow is still only carrying the vendor's data if everything upstream of it
+            // is too. An object nothing produces is the external origin itself, which is the base case.
+            var reads = _graph.Reads.GetValueOrDefault(pipelineId);
+            if (reads is null || reads.Count == 0)
+            {
+                return (SourceScope, "origin");
+            }
+
+            var sawProducer = false;
+            foreach (var objectKey in reads)
+            {
+                if (_graph.Producers.GetValueOrDefault(objectKey) is not { Count: > 0 } producers)
+                {
+                    continue; // external origin: a file, an endpoint, a table nothing here writes
+                }
+
+                foreach (var producer in producers.Where(producer => producer != pipelineId))
+                {
+                    sawProducer = true;
+                    if (Classify(producer).Scope == InternalScope)
+                    {
+                        return (InternalScope, "lineage");
+                    }
+                }
+            }
+
+            return (SourceScope, sawProducer ? "lineage" : "origin");
+        }
+    }
+
+    /// <summary>The requested scope, or null when it is not one this endpoint knows.</summary>
+    private static string? NormalizeScope(string? scope)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+        {
+            return SourceScope;
+        }
+
+        var trimmed = scope.Trim();
+        return trimmed.Equals(SourceScope, StringComparison.OrdinalIgnoreCase) ? SourceScope
+            : trimmed.Equals(InternalScope, StringComparison.OrdinalIgnoreCase) ? InternalScope
+            : trimmed.Equals(AllScopes, StringComparison.OrdinalIgnoreCase) ? AllScopes
+            : null;
     }
 
     /// <summary>One stream's declared cadence: which schedule holds it, and how many days that schedule

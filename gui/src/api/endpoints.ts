@@ -87,6 +87,9 @@ export interface DataStreamQuery {
   batch?: string;
   /** Restrict to one verdict: stalled / degraded / watch / healthy / insufficient-history. */
   status?: string;
+  /** Which side to analyse: "source" (vendor deliveries, the default), "internal" (our own processing),
+   * or "all". They answer different questions and have different owners. */
+  scope?: string;
   /** Count backfills as normal traffic. False by default: a history replay would otherwise redefine the
    * stream's normal and make every ordinary day after it look like a collapse. */
   includeBackfills?: boolean;

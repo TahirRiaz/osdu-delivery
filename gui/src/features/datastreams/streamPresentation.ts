@@ -1,5 +1,7 @@
 import { useMemo } from "react";
-import type { DataStream, StreamDetectorName, StreamPattern, StreamStatus } from "../../api/types";
+import type {
+  DataStream, StreamDetectorName, StreamPattern, StreamStage, StreamStatus,
+} from "../../api/types";
 import { useThemeMode } from "../../theme/ThemeModeContext";
 
 /** The detectors as a person reads them, in the order the ensemble ranks them: the three that answer "is data
@@ -22,6 +24,23 @@ export const detectorMethods: Record<StreamDetectorName, string> = {
   rateChange: "Overdispersion-adjusted count rate, recent slice against baseline",
   levelShift: "PELT change point over the residuals",
   volumeOutlier: "Generalized ESD over trend-and-weekday residuals",
+};
+
+/** The pipeline stages in the words the estate uses for them, and what a failure at each one MEANS, which is
+ * the whole reason the stage is shown: the same "no data" reads as the vendor's problem at one stage and ours
+ * at the next. */
+export const stageLabels: Record<StreamStage, string> = {
+  integration: "Vendor fetch",
+  "file-ingestion": "File ingestion",
+  archive: "Load to archive",
+  derived: "Derived",
+};
+
+export const stageMeaning: Record<StreamStage, string> = {
+  integration: "Fetches from the vendor. Nothing here usually means the vendor sent nothing.",
+  "file-ingestion": "Lands what was fetched. A failure here is ours, on their data.",
+  archive: "Loads the landed data into the archive (silver). A failure here is ours.",
+  derived: "Built from the archive onwards. Entirely our own processing.",
 };
 
 /** The verdicts in words an operator uses, not words the algorithm uses. "Degraded" and "watch" describe how
