@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -171,14 +171,19 @@ public sealed class NotificationApiTests
         Assert.False(options.Slack.Available);
         Assert.True(options.EstateDigest.Enabled);
 
+        // A past day, which is what the GUI's picker asks for: the digest reports on that day, not on now.
+        var day = DateTime.UtcNow.Date.AddDays(-1);
         using var generate = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
-            new GenerateNotificationDigestRequest(120));
+            new GenerateNotificationDigestRequest(day, day.AddDays(1).AddMilliseconds(-1)));
         Assert.Equal(HttpStatusCode.Created, generate.StatusCode);
         var digest = await generate.Content.ReadFromJsonAsync<NotificationDigestDto>();
         Assert.NotNull(digest);
         Assert.Equal(NotificationDigestOrigins.Manual, digest.Summary.Origin);
         Assert.Equal("Notification API test user", digest.Summary.GeneratedBy);
-        Assert.Equal(120, (digest.Summary.PeriodEndUtc - digest.Summary.PeriodStartUtc).TotalMinutes, 0);
+        Assert.Equal(day, digest.Summary.PeriodStartUtc);
+        Assert.Equal(day.AddDays(1).AddMilliseconds(-1), digest.Summary.PeriodEndUtc);
+        // The period is the day asked for; the generation stamp is now, and the two are recorded separately.
+        Assert.True(digest.Summary.GeneratedUtc > digest.Summary.PeriodEndUtc);
         Assert.False(string.IsNullOrWhiteSpace(digest.TextBody));
         Assert.False(string.IsNullOrWhiteSpace(digest.HtmlBody));
 
@@ -198,7 +203,7 @@ public sealed class NotificationApiTests
     }
 
     [SkippableFact]
-    public async Task Digests_RejectAWindowOutsideTheServedBounds()
+    public async Task Digests_RejectAPeriodOutsideTheServedBounds()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -206,14 +211,47 @@ public sealed class NotificationApiTests
         using var client = factory.CreateClient();
         var (token, _, _) = await NewUserSessionAsync(client);
         var options = await GetAsync<NotificationOptionsDto>(client, token, "/api/v1/me/notifications/options");
+        var now = DateTime.UtcNow;
 
-        foreach (var window in new[] { 0, options.EstateDigest.MinWindowMinutes - 1, options.EstateDigest.MaxWindowMinutes + 1 })
+        var rejected = new[]
         {
-            using var response = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
-                new GenerateNotificationDigestRequest(window));
+            // Backwards.
+            new GenerateNotificationDigestRequest(now, now.AddHours(-1)),
+            // Shorter than the floor.
+            new GenerateNotificationDigestRequest(now.AddMinutes(-(options.EstateDigest.MinWindowMinutes - 1)), now),
+            // Longer than the ceiling.
+            new GenerateNotificationDigestRequest(now.AddMinutes(-(options.EstateDigest.MaxWindowMinutes + 60)), now),
+            // Entirely in the future: the end clamps to now, which leaves nothing to report on.
+            new GenerateNotificationDigestRequest(now.AddDays(1), now.AddDays(2)),
+        };
+
+        foreach (var request in rejected)
+        {
+            using var response = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests", request);
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-            Assert.Contains("Invalid window", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.Contains("Invalid period", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         }
+    }
+
+    [SkippableFact]
+    public async Task Digest_ForToday_IsClampedToNow_RatherThanRefused()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+        using var client = factory.CreateClient();
+        var (token, _, _) = await NewUserSessionAsync(client);
+
+        // Exactly what the picker sends for "today": midnight to the end of the day, most of it still to come.
+        var today = DateTime.UtcNow.Date;
+        using var generate = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
+            new GenerateNotificationDigestRequest(today, today.AddDays(1).AddMilliseconds(-1)));
+        Assert.Equal(HttpStatusCode.Created, generate.StatusCode);
+        var digest = await generate.Content.ReadFromJsonAsync<NotificationDigestDto>();
+        Assert.NotNull(digest);
+        Assert.Equal(today, digest.Summary.PeriodStartUtc);
+        // Today so far: the reported period stops at the present instead of running into the future.
+        Assert.True(digest.Summary.PeriodEndUtc <= DateTime.UtcNow.AddMinutes(1));
     }
 
     [SkippableFact]
@@ -231,8 +269,9 @@ public sealed class NotificationApiTests
         var subscription = await create.Content.ReadFromJsonAsync<NotificationSubscriptionDto>();
         Assert.NotNull(subscription);
 
+        var now = DateTime.UtcNow;
         using var generate = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
-            new GenerateNotificationDigestRequest(60));
+            new GenerateNotificationDigestRequest(now.AddHours(-1), now));
         Assert.Equal(HttpStatusCode.Created, generate.StatusCode);
         var digest = await generate.Content.ReadFromJsonAsync<NotificationDigestDto>();
         Assert.NotNull(digest);

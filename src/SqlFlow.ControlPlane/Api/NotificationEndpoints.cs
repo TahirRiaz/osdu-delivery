@@ -107,7 +107,6 @@ public static partial class NotificationEndpoints
             new EstateDigestOptionsDto(
                 notifications.Enabled && notifications.DigestEnabled,
                 notifications.DigestIntervalMinutes,
-                notifications.DigestIntervalMinutes,
                 MinManualWindowMinutes,
                 MaxManualWindowMinutes)));
     }
@@ -454,12 +453,12 @@ public static partial class NotificationEndpoints
     }
 
     /// <summary>
-    /// Generates a digest on demand over the window the caller asked for, through the same generator the periodic
+    /// Generates a digest on demand over the period the caller asked for, through the same generator the periodic
     /// one goes through, so the result is the same artifact rather than a preview of one. It is a report: the
     /// scheduled cursor is untouched, so asking for one never robs the next scheduled digest of its events.
     /// </summary>
     private static async Task<Results<Created<NotificationDigestDto>, ProblemHttpResult>> GenerateDigestAsync(
-        GenerateNotificationDigestRequest? request, CatalogDbContext catalog, IOptions<ControlPlaneOptions> options,
+        GenerateNotificationDigestRequest request, CatalogDbContext catalog, IOptions<ControlPlaneOptions> options,
         TimeProvider clock, HttpContext httpContext, CancellationToken ct)
     {
         if (!TryGetUserId(httpContext.User, out var userId))
@@ -477,17 +476,21 @@ public static partial class NotificationEndpoints
                 + "so no run failures are being detected and a digest would be empty for that reason alone.");
         }
 
-        var window = request?.WindowMinutes ?? notifications.DigestIntervalMinutes;
-        if (window is < MinManualWindowMinutes or > MaxManualWindowMinutes)
+        var now = clock.GetUtcNow().UtcDateTime;
+        var from = AsUtc(request.FromUtc);
+        // A period that runs past now is clamped rather than refused: asking for today is the common case, and
+        // the honest answer to it is today so far, reported over the period actually covered.
+        var to = Min(AsUtc(request.ToUtc), now);
+        var span = to - from;
+        if (span < TimeSpan.FromMinutes(MinManualWindowMinutes) || span > TimeSpan.FromMinutes(MaxManualWindowMinutes))
         {
-            return Invalid("Invalid window",
-                $"The digest window must be between {MinManualWindowMinutes.ToString(CultureInfo.InvariantCulture)} "
-                + $"and {MaxManualWindowMinutes.ToString(CultureInfo.InvariantCulture)} minutes.");
+            return Invalid("Invalid period",
+                $"The digest period must run forwards and cover between {MinManualWindowMinutes.ToString(CultureInfo.InvariantCulture)} "
+                + $"minutes and {(MaxManualWindowMinutes / 1440).ToString(CultureInfo.InvariantCulture)} days, ending no later than now.");
         }
 
-        var now = clock.GetUtcNow().UtcDateTime;
         var digest = await NotificationDigestGenerator.GenerateManualAsync(
-            catalog, now.AddMinutes(-window), now, userId, notifications.GuiBaseUrl, ct).ConfigureAwait(false);
+            catalog, from, to, now, userId, notifications.GuiBaseUrl, ct).ConfigureAwait(false);
         var authors = await ResolveAuthorsAsync(catalog, [digest.GeneratedByUserId], ct).ConfigureAwait(false);
         return TypedResults.Created(
             $"/api/v1/notifications/digests/{digest.Id}", ToDto(digest, authors, full: true));
@@ -602,6 +605,17 @@ public static partial class NotificationEndpoints
 
     private static string? Author(Guid? userId, Dictionary<Guid, string> authors)
         => userId is { } id && authors.TryGetValue(id, out var name) ? name : null;
+
+    /// <summary>Every instant in the product is UTC by contract, so a value that arrived without a zone is read
+    /// as UTC rather than as the server's local time; one that carried an offset is converted.</summary>
+    private static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+    };
+
+    private static DateTime Min(DateTime a, DateTime b) => a < b ? a : b;
 
     private static ProblemHttpResult DigestNotFound()
         => TypedResults.Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found",

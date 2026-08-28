@@ -30,26 +30,31 @@ public static class NotificationDigestGenerator
         CatalogDbContext catalog, long afterEventId, DateTime periodStartUtc, DateTime nowUtc, string? guiBaseUrl,
         CancellationToken ct = default)
         => GenerateAsync(
-            catalog, NotificationDigestOrigins.Scheduled, afterEventId, fromUtc: null, periodStartUtc, nowUtc,
-            generatedByUserId: null, advanceCursor: true, guiBaseUrl, ct);
+            catalog, NotificationDigestOrigins.Scheduled, afterEventId, fromUtc: null, periodStartUtc,
+            periodEndUtc: nowUtc, generatedUtc: nowUtc, generatedByUserId: null, advanceCursor: true, guiBaseUrl, ct);
 
-    /// <summary>A digest a person asked for over a window they chose. A report only: the scheduled cursor is left
-    /// alone, so the next scheduled digest still covers everything it was going to.</summary>
+    /// <summary>
+    /// A digest a person asked for over a period they chose, which is very often a past day rather than a window
+    /// ending now: the period the digest reports on and the instant it was produced at are therefore separate.
+    /// A report only, so the scheduled cursor is left alone and the next scheduled digest still covers everything
+    /// it was going to.
+    /// </summary>
     public static Task<CatalogNotificationDigest> GenerateManualAsync(
-        CatalogDbContext catalog, DateTime periodStartUtc, DateTime nowUtc, Guid generatedByUserId,
-        string? guiBaseUrl, CancellationToken ct = default)
+        CatalogDbContext catalog, DateTime periodStartUtc, DateTime periodEndUtc, DateTime generatedUtc,
+        Guid generatedByUserId, string? guiBaseUrl, CancellationToken ct = default)
         => GenerateAsync(
-            catalog, NotificationDigestOrigins.Manual, afterEventId: 0, periodStartUtc, periodStartUtc, nowUtc,
-            generatedByUserId, advanceCursor: false, guiBaseUrl, ct);
+            catalog, NotificationDigestOrigins.Manual, afterEventId: 0, periodStartUtc, periodStartUtc,
+            periodEndUtc, generatedUtc, generatedByUserId, advanceCursor: false, guiBaseUrl, ct);
 
     private static async Task<CatalogNotificationDigest> GenerateAsync(
         CatalogDbContext catalog, string origin, long afterEventId, DateTime? fromUtc, DateTime periodStartUtc,
-        DateTime nowUtc, Guid? generatedByUserId, bool advanceCursor, string? guiBaseUrl, CancellationToken ct)
+        DateTime periodEndUtc, DateTime generatedUtc, Guid? generatedByUserId, bool advanceCursor,
+        string? guiBaseUrl, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
         var events = await NotificationStore.ListEventsForDigestAsync(
-            catalog, afterEventId, fromUtc, nowUtc, MaxEventsPerDigest + 1, ct).ConfigureAwait(false);
+            catalog, afterEventId, fromUtc, periodEndUtc, MaxEventsPerDigest + 1, ct).ConfigureAwait(false);
         var truncated = events.Count > MaxEventsPerDigest;
         if (truncated)
         {
@@ -59,8 +64,8 @@ public static class NotificationDigestGenerator
         // The channel is inert here: ComposeReport renders the text, HTML and Block Kit bodies whatever it says,
         // so the one artifact can later be viewed in the GUI or delivered over either channel.
         var message = NotificationComposer.ComposeReport(new NotificationComposition(
-            NotificationChannels.Email, NotificationModes.Digest, events, truncated, guiBaseUrl, nowUtc,
-            new NotificationWindow(periodStartUtc, nowUtc)));
+            NotificationChannels.Email, NotificationModes.Digest, events, truncated, guiBaseUrl, periodEndUtc,
+            new NotificationWindow(periodStartUtc, periodEndUtc)));
 
         // The same grouping the bodies were rendered from, persisted so the GUI's table and the delivered message
         // can never disagree, and so the digest still reads in full after its events have been pruned.
@@ -71,8 +76,8 @@ public static class NotificationDigestGenerator
             Id = Guid.CreateVersion7(),
             Origin = origin,
             PeriodStartUtc = periodStartUtc,
-            PeriodEndUtc = nowUtc,
-            GeneratedUtc = nowUtc,
+            PeriodEndUtc = periodEndUtc,
+            GeneratedUtc = generatedUtc,
             GeneratedByUserId = generatedByUserId,
             EventCount = events.Count,
             FlowCount = events.Select(e => e.FlowName).Distinct(StringComparer.OrdinalIgnoreCase).Count(),

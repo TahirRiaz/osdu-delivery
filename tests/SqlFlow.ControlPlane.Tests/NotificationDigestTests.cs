@@ -254,14 +254,17 @@ public sealed class NotificationDigestStoreTests
         var before = (await NotificationStore.GetWatermarkAsync(db))?.DigestCursorEventId ?? 0;
         var now = DateTime.UtcNow;
 
+        // A past day, reported on long after it ended: the period and the generation stamp are separate.
+        var day = now.Date.AddDays(-3);
         var digest = await NotificationDigestGenerator.GenerateManualAsync(
-            db, now.AddHours(-6), now, userId, guiBaseUrl: null);
+            db, day, day.AddDays(1), now, userId, guiBaseUrl: null);
         try
         {
             Assert.Equal(NotificationDigestOrigins.Manual, digest.Origin);
             Assert.Equal(userId, digest.GeneratedByUserId);
-            Assert.Equal(now.AddHours(-6), digest.PeriodStartUtc);
-            Assert.Equal(now, digest.PeriodEndUtc);
+            Assert.Equal(day, digest.PeriodStartUtc);
+            Assert.Equal(day.AddDays(1), digest.PeriodEndUtc);
+            Assert.Equal(now, digest.GeneratedUtc);
 
             var after = (await NotificationStore.GetWatermarkAsync(db))?.DigestCursorEventId ?? 0;
             Assert.Equal(before, after);
@@ -358,9 +361,9 @@ public sealed class NotificationDigestStoreTests
         await using var db = CatalogDatabase.Create(cs);
         var ancient = DateTime.UtcNow.AddDays(-400);
         var aged = await NotificationDigestGenerator.GenerateManualAsync(
-            db, ancient.AddHours(-1), ancient, Guid.NewGuid(), null);
+            db, ancient.AddHours(-1), ancient, ancient, Guid.NewGuid(), null);
         var fresh = await NotificationDigestGenerator.GenerateManualAsync(
-            db, DateTime.UtcNow.AddHours(-1), DateTime.UtcNow, Guid.NewGuid(), null);
+            db, DateTime.UtcNow.AddHours(-1), DateTime.UtcNow, DateTime.UtcNow, Guid.NewGuid(), null);
 
         try
         {
@@ -384,8 +387,10 @@ public sealed class NotificationDigestStoreTests
         await CatalogDatabase.MigrateAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var now = DateTime.UtcNow;
-        var older = await NotificationDigestGenerator.GenerateManualAsync(db, now.AddHours(-2), now.AddMinutes(-5), Guid.NewGuid(), null);
-        var newer = await NotificationDigestGenerator.GenerateManualAsync(db, now.AddHours(-1), now, Guid.NewGuid(), null);
+        var older = await NotificationDigestGenerator.GenerateManualAsync(
+            db, now.AddHours(-2), now.AddMinutes(-5), now.AddMinutes(-5), Guid.NewGuid(), null);
+        var newer = await NotificationDigestGenerator.GenerateManualAsync(
+            db, now.AddHours(-1), now, now, Guid.NewGuid(), null);
 
         try
         {

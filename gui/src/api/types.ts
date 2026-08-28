@@ -1610,8 +1610,7 @@ export interface EstateDigestOptions {
   enabled: boolean;
   /** The period between scheduled digests, in minutes. */
   intervalMinutes: number;
-  /** The window a manual digest covers unless the caller names another. */
-  defaultWindowMinutes: number;
+  /** The shortest and longest period an on-demand digest may cover, in minutes. */
   minWindowMinutes: number;
   maxWindowMinutes: number;
 }
@@ -1731,9 +1730,13 @@ export interface NotificationDigest {
   htmlBody: string;
 }
 
-/** Generates a digest over the last windowMinutes; omit to use the deployment's configured period. */
+/**
+ * Generates a digest over one period, most often a single day. Both instants are UTC ISO strings and both are
+ * required; an end past the present is clamped to now, so asking for today yields today so far.
+ */
 export interface GenerateNotificationDigestRequest {
-  windowMinutes?: number;
+  fromUtc: string;
+  toUtc: string;
 }
 
 /** Sends an already-generated digest through one of the caller's own subscriptions. */

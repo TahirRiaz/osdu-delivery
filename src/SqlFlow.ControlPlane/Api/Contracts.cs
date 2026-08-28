@@ -281,7 +281,7 @@ public sealed record NotificationOptionsDto(
 /// plus the bounds the on-demand window must fall inside. Lets the settings page state the cadence in words
 /// instead of leaving the reader to guess when the next one lands.</summary>
 public sealed record EstateDigestOptionsDto(
-    bool Enabled, int IntervalMinutes, int DefaultWindowMinutes, int MinWindowMinutes, int MaxWindowMinutes);
+    bool Enabled, int IntervalMinutes, int MinWindowMinutes, int MaxWindowMinutes);
 
 /// <summary>One estate digest as a list shows it: its window, headline and per-kind counts, without the rendered
 /// bodies. <see cref="GeneratedBy"/> names the person who asked for a manual digest; null for a scheduled one.</summary>
@@ -304,9 +304,13 @@ public sealed record NotificationDigestDto(
     NotificationDigestSummaryDto Summary, IReadOnlyList<NotificationDigestFlowDto> Flows, string TextBody,
     string HtmlBody);
 
-/// <summary>Generates a digest on demand over the last <see cref="WindowMinutes"/> minutes; null uses the
-/// deployment's configured digest period.</summary>
-public sealed record GenerateNotificationDigestRequest(int? WindowMinutes);
+/// <summary>
+/// Generates a digest on demand over one period, most often a single day. Both instants are UTC, and both are
+/// required: a digest answers "what happened between these two moments", which a lookback from now cannot express
+/// once the question is about a particular day. An end in the future is clamped to now, so asking for today
+/// yields today so far rather than a period the estate has not lived through yet.
+/// </summary>
+public sealed record GenerateNotificationDigestRequest(DateTime FromUtc, DateTime ToUtc);
 
 /// <summary>Sends an already-generated digest through one of the caller's own subscriptions, which is what
 /// supplies the channel and destination.</summary>

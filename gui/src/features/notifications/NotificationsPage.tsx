@@ -31,6 +31,7 @@ import type {
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CopyButton } from "../../components/CopyButton";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DateRangeCalendar } from "../../components/DateRangeCalendar";
 import { EmptyState } from "../../components/EmptyState";
 import { KpiCard } from "../../components/KpiCard";
 import { Page } from "../../components/Page";
@@ -721,22 +722,31 @@ const DELIVERY_HEADERS = ["Subject", "Channel", "Target", "Status", "Attempts", 
 const DIGEST_HEADERS = ["Subject", "Period", "Events", "Flows", "Breakdown", "Origin", "Generated", ""];
 const DIGEST_RIGHT_ALIGNED = new Set(["Events", "Flows", ""]);
 
-/** The windows offered for an on-demand digest: an hour, six hours, a day, three days, a week, 30 days. */
-const WINDOW_CHOICES = [60, 360, 1440, 4320, 10080, 43200];
+/**
+ * One local calendar day as the picker's two datetime-local edges. Seeded to yesterday: it is the last day the
+ * estate has fully lived through, and so the one a daily digest is actually about.
+ */
+function lastCompleteDay(): { from: string; to: string } {
+  const day = new Date();
+  day.setDate(day.getDate() - 1);
+  const stamp = format(day, "yyyy-MM-dd");
+  return { from: `${stamp}T00:00`, to: `${stamp}T23:59` };
+}
 
-/** The offered windows narrowed to what this deployment accepts, always including its own default. */
-function windowOptions(options: MyNotificationOptions | undefined): number[] {
-  if (options === undefined) {
-    return WINDOW_CHOICES;
+/**
+ * A picked datetime-local edge as the UTC instant the API takes. The picker resolves to the minute, so "to 23:59"
+ * means through the end of that minute: the end edge is extended to :59.999 so a day covers all of its last
+ * minute instead of silently dropping it.
+ */
+function edgeToUtc(local: string, edge: "from" | "to"): string {
+  const at = new Date(local);
+  if (edge === "from") {
+    at.setSeconds(0, 0);
+  } else {
+    at.setSeconds(59, 999);
   }
 
-  const { minWindowMinutes, maxWindowMinutes, defaultWindowMinutes } = options.estateDigest;
-  const choices = new Set(WINDOW_CHOICES.filter((m) => m >= minWindowMinutes && m <= maxWindowMinutes));
-  if (defaultWindowMinutes >= minWindowMinutes && defaultWindowMinutes <= maxWindowMinutes) {
-    choices.add(defaultWindowMinutes);
-  }
-
-  return [...choices].sort((a, b) => a - b);
+  return at.toISOString();
 }
 
 /** Skeleton rows for one of the hand-rolled tables while its query loads. */
@@ -766,8 +776,7 @@ export default function NotificationsPage() {
   const [sheet, setSheet] = useState<{ subscription: NotificationSubscription | null } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<NotificationSubscription | null>(null);
   const [openDigestId, setOpenDigestId] = useState<string | null>(null);
-  // Null follows the deployment default, which is only known once the options query lands.
-  const [digestWindow, setDigestWindow] = useState<number | null>(null);
+  const [digestPeriod, setDigestPeriod] = useState(lastCompleteDay);
 
   const optionsQuery = useQuery({ queryKey: ["me-notifications", "options"], queryFn: notificationApi.options });
   const subscriptionsQuery = useQuery({
@@ -787,8 +796,7 @@ export default function NotificationsPage() {
   const subscriptions = subscriptionsQuery.data;
   const deliveries = deliveriesQuery.data;
   const digests = digestsQuery.data;
-  const windowChoices = windowOptions(options);
-  const selectedWindow = digestWindow ?? options?.estateDigest.defaultWindowMinutes ?? 1440;
+  const periodChosen = digestPeriod.from !== "" && digestPeriod.to !== "";
   const channelAvailable = options !== undefined && (options.email.available || options.slack.available);
   const notConfigured =
     options !== undefined && (!options.enabled || (!options.email.available && !options.slack.available));
@@ -813,7 +821,10 @@ export default function NotificationsPage() {
   });
 
   const generate = useMutation({
-    mutationFn: () => notificationApi.generateDigest({ windowMinutes: selectedWindow }),
+    mutationFn: () => notificationApi.generateDigest({
+      fromUtc: edgeToUtc(digestPeriod.from, "from"),
+      toUtc: edgeToUtc(digestPeriod.to, "to"),
+    }),
     onSuccess: (digest) => {
       toast.success(
         digest.summary.eventCount === 0
@@ -999,34 +1010,33 @@ export default function NotificationsPage() {
           <p className="text-[13px] text-muted-foreground">
             {options?.estateDigest.enabled === false
               ? "Periodic generation is turned off on this deployment, so digests appear here only when someone asks for one."
-              : `One digest is written every ${formatMinutes(options?.estateDigest.intervalMinutes ?? 1440)}, whether or not anyone subscribes to it. Generate one now to read the window you choose.`}
+              : `One digest is written every ${formatMinutes(options?.estateDigest.intervalMinutes ?? 1440)}, whether or not anyone subscribes to it. To read any period now, pick it below: click one day twice for that day alone, or two days for the span between them.`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={String(selectedWindow)}
-            onValueChange={(value) => setDigestWindow(Number(value))}
-            disabled={generate.isPending}
-          >
-            <SelectTrigger size="sm" className="h-8 w-44" data-testid="digest-window">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {windowChoices.map((minutes) => (
-                <SelectItem key={minutes} value={String(minutes)}>{`Last ${formatMinutes(minutes)}`}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* A day is that day on both edges; the same picker also takes a week or a month when asked. */}
+          <div className="w-[19rem]">
+            <DateRangeCalendar
+              from={digestPeriod.from}
+              to={digestPeriod.to}
+              onChange={(from, to) => setDigestPeriod({ from, to })}
+              disabled={generate.isPending}
+              testId="digest-period"
+            />
+          </div>
           <Button
             size="sm"
             variant="outline"
             onClick={() => generate.mutate()}
-            disabled={generate.isPending || options === undefined}
+            disabled={generate.isPending || options === undefined || !periodChosen}
             data-testid="generate-digest"
           >
             {generate.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            Generate now
+            Generate
           </Button>
+          {!periodChosen && (
+            <span className="text-xs text-muted-foreground">Pick a day to generate its digest.</span>
+          )}
         </div>
 
         {digestsQuery.isError && (
@@ -1059,15 +1069,15 @@ export default function NotificationsPage() {
                     <EmptyState
                       icon={<CalendarClock />}
                       title="No digests yet"
-                      description="The control plane writes one each period. You can also generate one now over any window."
+                      description="The control plane writes one each period. You can also generate one for any day above."
                       action={(
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => generate.mutate()}
-                          disabled={generate.isPending || options === undefined}
+                          disabled={generate.isPending || options === undefined || !periodChosen}
                         >
-                          Generate now
+                          Generate
                         </Button>
                       )}
                     />
