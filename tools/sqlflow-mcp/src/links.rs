@@ -190,6 +190,11 @@ impl GuiLinks {
         self.at("/insights")
     }
 
+    /// The data-stream board: which tables have stopped receiving data, and which load abnormally.
+    pub fn datastreams(&self) -> String {
+        self.at("/datastreams")
+    }
+
     /// The dashboard, which is what the summary rollup is the data for.
     pub fn dashboard(&self) -> String {
         self.at("/")

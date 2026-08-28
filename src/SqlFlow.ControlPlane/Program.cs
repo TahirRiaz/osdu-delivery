@@ -371,6 +371,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapRepoSourceReadEndpoints()
     .MapSummaryEndpoints()
     .MapInsightsEndpoints()
+    .MapDataStreamEndpoints()
     .MapIntegrationReadEndpoints()
     // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own)
     // and their own notification opt-ins.

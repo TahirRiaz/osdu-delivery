@@ -1907,9 +1907,16 @@ export interface StepInsights {
  * every detector quiet; "insufficient-history" means there were too few loads to judge. */
 export type StreamStatus = "stalled" | "degraded" | "watch" | "healthy" | "insufficient-history";
 
-/** The five independent tests that vote. Two agreeing is the confirmation bar: no single detector, at any
- * strength, can raise a critical on its own. */
-export type StreamDetectorName = "silence" | "cadence" | "volumeOutlier" | "levelShift" | "rateCollapse";
+/** The six independent tests that vote. The first three are PRIMARY (they answer "is data arriving at all")
+ * and are the only ones that can raise a finding on their own; the last three measure volume and corroborate.
+ * Two agreeing is the confirmation bar: no single detector, at any strength, can raise a critical. */
+export type StreamDetectorName =
+  | "silence" | "nullDays" | "cadence"
+  | "rateChange" | "levelShift" | "volumeOutlier";
+
+/** Which way a deviation went. The three are not equally urgent: no data is an outage, below is a
+ * degradation, above is information. */
+export type StreamDirection = "none" | "below" | "above";
 
 /** One detector's verdict. Detectors that stayed quiet are reported too, with what they measured, so a
  * healthy stream is auditable rather than merely asserted. */
@@ -1918,12 +1925,33 @@ export interface StreamSignal {
   fired: boolean;
   /** Confidence in [0, 1]: 0 at the firing boundary, 1 where the evidence is unambiguous. */
   score: number;
+  direction: StreamDirection;
+  /** Whether this detector may raise a finding alone. A non-primary detector that fires corroborates a
+   * primary one; alone it produces a lead to check. */
+  primary: boolean;
   detail: string;
+}
+
+/** What one table's traffic normally looks like, learned from its own history after reprocessing was
+ * excluded. This is the reference every verdict is stated against. */
+export interface StreamPattern {
+  shape: "daily" | "weekdays" | "weekly" | "several-days-a-week" | "periodic" | "sporadic";
+  /** The weekdays it reliably loads on, Monday first. Empty for a periodic or sporadic stream. */
+  loadDays: string[];
+  /** The median load on a day it loads, from the TRIMMED volumes, so a backfill is not what "typical" means. */
+  typicalRows: number;
+  /** The middle half of its loads: the band an ordinary day falls in. */
+  lowRows: number;
+  highRows: number;
+  /** How often it NORMALLY delivers on a day it loads on, in [0, 1]: the median week, not the mean day. */
+  reliability: number;
+  description: string;
 }
 
 /** A stream's measured normal: how much it writes, how often, and where it is trending. cadenceSource says
  * whether expectedGapDays came from the stream's cron ("schedule") or from its own history ("observed"). */
 export interface StreamProfile {
+  pattern: StreamPattern;
   cadence: string;
   expectedGapDays: number;
   cadenceSource: "schedule" | "observed";
@@ -1946,6 +1974,17 @@ export interface StreamProfile {
   avgRowsWrittenPerLoadedDay: number;
   medianRowsWrittenPerLoadedDay: number;
   trendRowsPerDay: number;
+  /** Days it was expected to load on and wrote nothing: the headline number of this surface. */
+  unexpectedNullDays: number;
+  /** Of those, the days the flow RAN and still wrote nothing (an upstream problem). */
+  emptyRunDays: number;
+  /** Of those, the days the flow did not run at all (a scheduling or worker problem). */
+  noRunDays: number;
+  /** How many empty days its own normal delivery rate predicts: the bar the count above is judged against. */
+  predictedNullDays: number;
+  /** Load days trimmed as suspected reprocessing before anything was fitted, and the fence they hit. */
+  trimmedLoadDays: number;
+  trimFence: number;
 }
 
 /** One analysed day: what arrived, what was expected, and how the point was judged. */
@@ -1965,6 +2004,12 @@ export interface StreamPoint {
   reason: string | null;
   imputed: boolean;
   immature: boolean;
+  /** How reliably the stream loads on this kind of day, learned from its own history, in [0, 1]. */
+  expectedLoadRate: number;
+  /** The day wrote nothing AND it is a kind of day this stream loads on. */
+  unexpectedNull: boolean;
+  /** The day's volume was trimmed as suspected reprocessing before fitting; rowsWritten is the true number. */
+  trimmed: boolean;
 }
 
 /** One data stream: a flow, the table it writes, and the verdict. series is null on the board and populated

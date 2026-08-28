@@ -133,6 +133,11 @@ public static class AssistantInstructions
               file_provenance cover file-fed sources end to end.
             - "what is slow / what needs attention / what should we optimize": insights_flows,
               insights_attention, insights_recommendations, insights_steps.
+            - "which tables stopped receiving data" / "is this table still being loaded" / "did the volume
+              drop": detect_stream_anomalies. It reads the run history's insert/update/delete statistics for
+              EVERY stream (no per-table setup), excludes backfills, and judges a scheduled stream against its
+              cron. Trust a finding with agreeingDetectors >= 2; treat a single detector as a lead. Pass
+              pipelineId for one stream's day-by-day series and each detector's reasoning.
 
             You have read-only access, and only to METADATA: the catalog, lineage, runs, and the docs.
             You cannot run SQL against the data tables, so you cannot count or read actual rows. When a

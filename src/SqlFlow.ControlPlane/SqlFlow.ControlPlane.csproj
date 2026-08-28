@@ -24,6 +24,9 @@
     <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
     <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />
+    <!-- The anomaly estimators behind /datastreams. Already in the closure via SqlFlow.Execution (the hc flow
+         kind runs there); referenced directly because this host uses its types. -->
+    <ProjectReference Include="..\SqlFlow.HealthCheck\SqlFlow.HealthCheck.csproj" />
     <ProjectReference Include="..\SqlFlow.Node\SqlFlow.Node.csproj" />
     <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
     <!-- The shared assistant core behind /api/v1/chat: the exact code path the Slack bot answers

@@ -173,6 +173,7 @@ public sealed class McpOptions
         "search_flow_columns", "search_files", "search_statements",
         "list_schedules", "get_schedule", "get_schedule_plan", "list_nodes", "list_repo_sources", "summary",
         "insights_flows", "insights_attention", "insights_recommendations", "insights_steps",
+        "detect_stream_anomalies",
     ];
 
     /// <summary>

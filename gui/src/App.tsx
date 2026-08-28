@@ -10,6 +10,7 @@ import { lazyRoute } from "./lib/lazyRoute";
 const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
 const ChatPage = lazyRoute("ChatPage", () => import("./features/chat/ChatPage"));
 const InsightsPage = lazyRoute("InsightsPage", () => import("./features/insights/InsightsPage"));
+const DataStreamsPage = lazyRoute("DataStreamsPage", () => import("./features/datastreams/DataStreamsPage"));
 const RunsPage = lazyRoute("RunsPage", () => import("./features/runs/RunsPage"));
 const RunDetailPage = lazyRoute("RunDetailPage", () => import("./features/runs/RunDetailPage"));
 const RunGroupPage = lazyRoute("RunGroupPage", () => import("./features/runs/RunGroupPage"));
@@ -58,6 +59,8 @@ export default function App() {
           {/* The SQLFlow assistant: chat over the estate, tools served by the SQLFlow MCP server. */}
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/insights" element={<InsightsPage />} />
+          {/* Which tables have stopped receiving data, from the run history's own write statistics. */}
+          <Route path="/datastreams" element={<DataStreamsPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/groups/:groupId" element={<RunGroupPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />

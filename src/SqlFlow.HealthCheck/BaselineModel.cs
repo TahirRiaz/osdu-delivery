@@ -21,10 +21,19 @@ public sealed class BaselineModel
         _overallMedian = overallMedian;
     }
 
-    /// <summary>Fits the baseline on the observed (non-imputed) points.</summary>
-    public static BaselineModel Fit(IReadOnlyList<SeriesRow> series)
+    /// <summary>
+    /// Fits the baseline on the observed (non-imputed) points.
+    /// </summary>
+    /// <param name="series">The scored series.</param>
+    /// <param name="value">Which number to take the weekday medians of; the observed value by default. A
+    /// caller that has already removed a robust trend passes the DETRENDED value instead, so the baseline
+    /// learns the weekday pattern AROUND the growth rather than mistaking the growth for a Friday effect.
+    /// This is the same composition the trained path uses, where the trend carries the level and the model
+    /// learns the calendar shape on top of it.</param>
+    public static BaselineModel Fit(IReadOnlyList<SeriesRow> series, Func<SeriesRow, double>? value = null)
     {
         ArgumentNullException.ThrowIfNull(series);
+        var select = value ?? (r => r.BaseValue);
 
         var observed = series.Where(r => r.IsNoData == 0).ToList();
         if (observed.Count == 0)
@@ -36,8 +45,8 @@ public sealed class BaselineModel
             .GroupBy(r => r.Date.DayOfWeek)
             .ToDictionary(
                 g => g.Key,
-                g => RobustStatistics.Median(g.Select(r => (double)r.BaseValue).ToList()));
-        var overall = RobustStatistics.Median(observed.Select(r => (double)r.BaseValue).ToList());
+                g => RobustStatistics.Median(g.Select(select).ToList()));
+        var overall = RobustStatistics.Median(observed.Select(select).ToList());
 
         return new BaselineModel(weekdayMedians, overall);
     }

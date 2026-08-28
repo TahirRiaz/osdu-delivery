@@ -358,6 +358,36 @@ pub struct InsightsWindowInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct StreamAnomalyInput {
+    /// The analysis window in days (1-180; default 60). Longer is better here than for the insights
+    /// endpoints: the detectors need a baseline BEHIND the recent slice they are judging.
+    pub days: Option<i64>,
+    /// Restrict to one repository (GUID, optional).
+    #[serde(rename = "repoId")]
+    pub repo_id: Option<String>,
+    /// Restrict to one batch (source-system grouping, optional).
+    pub batch: Option<String>,
+    /// Restrict to one verdict: "stalled", "degraded", "watch", "healthy", or "insufficient-history".
+    /// Omit for everything, ranked most urgent first.
+    pub status: Option<String>,
+    /// Count backfills and other operator-driven reprocessing as normal traffic. Default false, which is
+    /// what stops a replay of three years of history from redefining a stream's normal and making every
+    /// ordinary day after it look like a collapse. Set true only to ask what the raw numbers did.
+    #[serde(rename = "includeBackfills")]
+    pub include_backfills: Option<bool>,
+    /// Analyse only streams that join an enabled schedule, so every verdict is measured against a DECLARED
+    /// cron cadence instead of one inferred from the stream's own recent behaviour.
+    #[serde(rename = "scheduledOnly")]
+    pub scheduled_only: Option<bool>,
+    /// Most streams to return (default 25; the counts in the answer cover every stream analysed).
+    pub limit: Option<i64>,
+    /// A pipeline id (GUID) to drill into instead of listing the board: returns that one stream with its
+    /// full day-by-day series and every detector's reasoning.
+    #[serde(rename = "pipelineId")]
+    pub pipeline_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct InsightsFlowsInput {
     /// The analysis window in days (1-90; default 7).
     pub days: Option<i64>,
@@ -1897,6 +1927,66 @@ impl SqlFlowMcp {
         ];
         self.get(&format!("/api/v1/insights/pipelines/{}/steps", i.pipeline_id), &q)
             .await
+    }
+
+    #[tool(
+        description = "DataStream anomaly detection: which TABLES have stopped receiving data. Answers \
+            'is anything broken that nobody noticed' from the run history's own insert/update/delete \
+            statistics, with no per-table setup, so it covers every stream the platform writes rather than \
+            the few that have a health-check flow. \
+            \
+            It answers three questions per table, RANKED because they are not equally urgent: zero data (an \
+            outage, and the only category that can be critical), less data than normal (a degradation, \
+            capped at warning), and more data than normal (information). Categories: stalled, failing, \
+            gap-days, not-running, less-than-normal, more-than-normal, healthy, never-loaded, \
+            insufficient-history. \
+            \
+            Reprocessing is removed BEFORE anything is measured, in two passes: the runs the log flags as \
+            backfills are dropped, and the outsized days those flags missed are trimmed to a Tukey fence. \
+            Without that, one history replay redefines a stream's normal and every ordinary day after it \
+            reads as a collapse. \
+            \
+            A zero-row day is judged against what the table normally does on THAT KIND OF DAY: reliability \
+            is learned per weekday, and how often it delivers is the median week rather than the mean day, \
+            so a feed that never loads at weekends is not reported every Saturday and an outage cannot \
+            teach the detector that outages are normal. Where the stream joins a schedule, the cadence \
+            comes from its cron instead. \
+            \
+            Six detectors vote. Three are PRIMARY and can raise a finding alone: silence (no data now), \
+            nullDays (more empty days than the median week explains), cadence (the flow stopped running). \
+            Three measure volume and corroborate: rateChange (overdispersion-adjusted count rate), \
+            levelShift (PELT change point: halved and STAYED halved), volumeOutlier (generalized ESD). \
+            Trust a finding with agreeingDetectors >= 2; treat a lone one as a lead. Each stream also \
+            carries its learned PATTERN (shape, load weekdays, typical row band, reliability) and its \
+            averages per run. \
+            \
+            Pass pipelineId to drill one stream down to its day-by-day series and every detector\'s \
+            reasoning. Use insights_attention for run FAILURES and durations; use this for whether the \
+            DATA is arriving."
+    )]
+    async fn detect_stream_anomalies(&self, Parameters(i): Parameters<StreamAnomalyInput>) -> String {
+        if let Some(id) = i.pipeline_id.as_deref().filter(|s| !s.is_empty()) {
+            let q = vec![
+                ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+                ("includeBackfills", i.include_backfills.map(|b| b.to_string()).unwrap_or_default()),
+            ];
+            return self.get_about(&format!("/api/v1/datastreams/{id}"), &q, ("board", "datastreams"),
+                json!({ "page": self.links.datastreams() })).await;
+        }
+
+        let q = vec![
+            ("days", i.days.map(|n| n.to_string()).unwrap_or_default()),
+            ("repoId", i.repo_id.unwrap_or_default()),
+            ("batch", i.batch.unwrap_or_default()),
+            ("status", i.status.unwrap_or_default()),
+            ("includeBackfills", i.include_backfills.map(|b| b.to_string()).unwrap_or_default()),
+            ("scheduledOnly", i.scheduled_only.map(|b| b.to_string()).unwrap_or_default()),
+            // The board is ranked most urgent first, so a short page carries the story; the counts still
+            // report the whole estate.
+            ("limit", i.limit.unwrap_or(25).to_string()),
+        ];
+        self.get_about("/api/v1/datastreams", &q, ("board", "datastreams"),
+            json!({ "page": self.links.datastreams() })).await
     }
 
     #[tool(

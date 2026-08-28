@@ -26,6 +26,31 @@ public static class RobustStatistics
         return sorted.Length % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0;
     }
 
+    /// <summary>
+    /// The <paramref name="quantile"/> of <paramref name="values"/> (0 to 1) by linear interpolation between
+    /// order statistics, the standard R type-7 definition. Quartiles from this are what build a Tukey fence,
+    /// which is the outlier rule that survives a sample where the outlier is enormous: unlike MAD's fallback
+    /// to a mean absolute deviation, no order statistic is dragged by the magnitude of a contaminating point,
+    /// only by how many of them there are.
+    /// </summary>
+    public static double Quantile(IReadOnlyList<double> values, double quantile)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        ArgumentOutOfRangeException.ThrowIfNegative(quantile);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(quantile, 1);
+        if (values.Count == 0)
+        {
+            throw new ArgumentException("A quantile needs at least one value.", nameof(values));
+        }
+
+        var sorted = values.ToArray();
+        Array.Sort(sorted);
+        var position = quantile * (sorted.Length - 1);
+        var lower = (int)Math.Floor(position);
+        var upper = (int)Math.Ceiling(position);
+        return lower == upper ? sorted[lower] : sorted[lower] + (position - lower) * (sorted[upper] - sorted[lower]);
+    }
+
     /// <summary>The robust scale of <paramref name="values"/>: scaled MAD, falling back to the mean absolute
     /// deviation when more than half the values sit exactly on the median (a constant-ish series whose MAD
     /// collapses to zero), never negative. A zero return means the series is genuinely constant; callers keep
