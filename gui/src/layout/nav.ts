@@ -70,6 +70,7 @@ export const navGroups: NavGroup[] = [
       { label: "Pipelines", to: "/pipelines", icon: Workflow, testId: "nav-pipelines" },
       { label: "Schedules", to: "/schedules", icon: CalendarClock, testId: "nav-schedules" },
       { label: "Timeline", to: "/schedules/timeline", icon: CalendarRange, testId: "nav-schedule-timeline" },
+      { label: "Subscribers", to: "/subscribers", icon: MonitorPlay, testId: "nav-subscribers" },
     ],
   },
   {
@@ -91,7 +92,6 @@ export const navGroups: NavGroup[] = [
       { label: "Catalog", to: "/catalog", icon: BookOpen, testId: "nav-catalog" },
       { label: "Schema changes", to: "/schema-changes", icon: GitCompare, testId: "nav-schema-changes" },
       { label: "Lineage", to: "/lineage", icon: Network, testId: "nav-lineage" },
-      { label: "Subscribers", to: "/subscribers", icon: MonitorPlay, testId: "nav-subscribers" },
       { label: "Search", to: "/search", icon: Search, testId: "nav-search" },
     ],
   },

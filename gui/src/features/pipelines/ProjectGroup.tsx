@@ -1,12 +1,13 @@
-import { ChevronDown, Folder, Play } from "lucide-react";
+import { ChevronDown, File, Folder, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { PipelineSummary } from "../../api/types";
+import type { PipelineSummary, RepoTreeEntry } from "../../api/types";
 import { ActiveBadge } from "../../components/StatusBadge";
+import { formatBytes } from "../../lib/time";
 import { projectOf } from "../repos/project";
 
 /** Whether a pipeline matches a free-text search over the fields a user eyeballs to find a flow: its name, path,
@@ -34,16 +35,21 @@ export function groupByProject(pipelines: PipelineSummary[]): [string, PipelineS
   return [...byProject.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-/** One project (repo-root folder) of pipelines: a collapsible card with the flows in a table. A project that holds
- * a batch flow (kind: batch) can be run as a unit, so "Run project" triggers that wave-ordered run.
+/** One project (repo-root folder) of pipelines: a collapsible card with the flows in a table, and under them the
+ * folder's other files when the caller read the repository itself. A project that holds a batch flow (kind: batch)
+ * can be run as a unit, so "Run project" triggers that wave-ordered run.
  *
  * `filtered` keys the collapsible so it remounts (and springs back open) when a search starts or clears, surfacing a
  * matching flow in a project the user had collapsed. */
 export function ProjectGroup({
-  project, rows, repoId, filtered, defaultOpen = false, onOpen, onRunBatch,
+  project, rows, files = [], repoId, filtered, defaultOpen = false, onOpen, onRunBatch,
 }: {
   project: string;
   rows: PipelineSummary[];
+  /** The folder's files that are NOT registered pipelines (SQL scripts, docs, excluded flows), from the repo's own
+   * content listing. Empty where the caller has only the catalog (the pipelines page), which leaves the card exactly
+   * as it was: the flows and nothing else. */
+  files?: RepoTreeEntry[];
   repoId: string;
   filtered: boolean;
   /** Whether the flow table starts expanded. Projects stay collapsed so a repo with dozens of them reads as a
@@ -64,7 +70,18 @@ export function ProjectGroup({
             <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform duration-120 group-data-[state=closed]:-rotate-90" />
             <Folder className="size-4 shrink-0 text-muted-foreground" />
             <span className="truncate text-[13px] font-semibold">{project}</span>
-            <Badge variant="outline">{rows.length} pipeline{rows.length === 1 ? "" : "s"}</Badge>
+            {/* A folder the sync imported nothing from still belongs in the outline; it says so rather than
+                claiming "0 pipelines", which reads as a broken import. */}
+            {rows.length === 0 ? (
+              <Badge variant="outline" className="text-muted-foreground">no pipelines</Badge>
+            ) : (
+              <Badge variant="outline">{rows.length} pipeline{rows.length === 1 ? "" : "s"}</Badge>
+            )}
+            {files.length > 0 && (
+              <Badge variant="outline" className="text-muted-foreground">
+                {files.length} file{files.length === 1 ? "" : "s"}
+              </Badge>
+            )}
             {inactive > 0 && (
               <Badge variant="outline" className="border-warning/50 text-warning">
                 {inactive} inactive
@@ -120,6 +137,27 @@ export function ProjectGroup({
               ))}
             </TableBody>
           </Table>
+          {files.length > 0 && (
+            <div className="border-t" data-testid="project-files">
+              <Table>
+                <TableBody>
+                  {files.map((f) => (
+                    <TableRow key={f.path} data-testid="project-file-row">
+                      <TableCell className="w-6 px-3 py-1.5">
+                        <File className="size-3.5 text-muted-foreground" />
+                      </TableCell>
+                      <TableCell className="px-3 py-1.5">
+                        <span className="font-mono text-xs text-muted-foreground">{f.path}</span>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap px-3 py-1.5 text-right text-xs text-muted-foreground">
+                        {formatBytes(f.sizeBytes)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CollapsibleContent>
       </Card>
     </Collapsible>

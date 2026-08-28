@@ -106,6 +106,15 @@ public sealed record RepoSyncResultDto(
     int Objects, int Columns, int Edges, int Waves, int Dependencies,
     bool Connected, IReadOnlyList<string> Warnings);
 
+/// <summary>One entry in a repository's content listing: a repo-relative, forward-slashed path, whether it is a
+/// folder, and the file's size in bytes (0 for a folder, and for a file the host could not stat).</summary>
+public sealed record RepoTreeEntryDto(string Path, bool IsFolder, long SizeBytes);
+
+/// <summary>Everything one repository holds, path-ordered: the folders and files as they stand on the synced branch
+/// (or on disk for a local-path repo), not only what the catalog imported. <c>ReadFrom</c> is <c>git</c> or
+/// <c>disk</c>; <c>Truncated</c> says the listing hit its cap and is partial.</summary>
+public sealed record RepoTreeDto(string ReadFrom, IReadOnlyList<RepoTreeEntryDto> Entries, bool Truncated);
+
 /// <summary>A pipeline (flow) as it appears in lists: the hot dimensions, without the heavy YAML/definition body.
 /// <c>ExecutionMode</c> is <c>auto</c> or <c>manual</c> (the flow's YAML <c>mode:</c>); manual flows are excluded
 /// from schedules and group runs and execute only when triggered directly. <c>Lifecycle</c> is <c>production</c>

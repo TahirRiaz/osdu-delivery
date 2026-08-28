@@ -107,6 +107,11 @@ public sealed class SlackBotOptions
     /// </summary>
     private void NormalizeLegacyMcpSettings()
     {
+        // Slack is a shared channel, not a signed-in per-user session, so it gets a narrower tool set than the
+        // GUI: the read surface plus the join lookup, and nothing that reaches a datasource. Applied before
+        // the legacy promotion below, so an explicitly configured list still wins.
+        Mcp.ApplySurfaceDefault(McpOptions.SlackDefaultTools);
+
         if (!string.IsNullOrWhiteSpace(Mcp.ServerUrl))
         {
             return;

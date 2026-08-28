@@ -122,4 +122,63 @@ public sealed class AssistantToolAllowlistTests
         Assert.DoesNotContain("cancel_run", allowed);
         Assert.DoesNotContain("propose_pipelines", allowed);
     }
+
+    // ---- The Slack surface, which is narrower than the GUI's on purpose ------------------------------
+
+    [Fact]
+    public void SlackNeverGetsMoreThanTheGui()
+    {
+        // Slack is a shared channel rather than a signed-in per-user session. Whatever else changes, it must
+        // never end up with a tool the GUI does not also have: that would mean the least-controlled surface
+        // had the widest reach.
+        var extra = McpOptions.SlackDefaultTools
+            .Except(McpOptions.GuiDefaultTools, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(extra.Count == 0, "Slack allows tools the GUI does not: " + string.Join(", ", extra));
+    }
+
+    [Fact]
+    public void SlackGetsTheJoinLookup_AndNothingThatReachesADatasource()
+    {
+        var slack = McpOptions.SlackDefaultTools;
+
+        // The one addition Slack gets: answering "how do I join these tables" is a metadata question.
+        Assert.Contains("get_table_joins", slack);
+
+        // Everything that reaches a datasource stays off, because the two-step confirmation the query surface
+        // relies on is a weak guarantee in a room where the approver need not be the asker.
+        Assert.DoesNotContain("prepare_query", slack);
+        Assert.DoesNotContain("run_query", slack);
+        Assert.DoesNotContain("check_duplicate_keys", slack);
+        Assert.DoesNotContain("compare_baseline", slack);
+        Assert.DoesNotContain("detect_unique_key", slack);
+    }
+
+    [Fact]
+    public void TheSlackListNamesNoToolThatDoesNotExist()
+    {
+        var shipped = McpToolNames().ToHashSet(StringComparer.Ordinal);
+        var phantom = McpOptions.SlackDefaultTools
+            .Where(name => !shipped.Contains(name))
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(phantom.Count == 0, "The Slack list names tools that do not ship: " + string.Join(", ", phantom));
+    }
+
+    [Fact]
+    public void ApplyingASurfaceDefault_NarrowsTheShippedListButNeverAConfiguredOne()
+    {
+        // Untouched: narrowed to the surface.
+        var shipped = new McpOptions();
+        shipped.ApplySurfaceDefault(McpOptions.SlackDefaultTools);
+        Assert.Equal(McpOptions.SlackDefaultTools, shipped.AllowedTools);
+
+        // Configured by a deployment: left exactly as configured, because an operator's explicit decision
+        // outranks a built-in default.
+        var configured = new McpOptions { AllowedTools = ["summary", "list_runs"] };
+        configured.ApplySurfaceDefault(McpOptions.SlackDefaultTools);
+        Assert.Equal(["summary", "list_runs"], configured.AllowedTools);
+    }
 }

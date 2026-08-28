@@ -16,7 +16,7 @@ import type {
   ProjectGraph,
   NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
-  PipelineColumn, PipelineDetail, PipelineFile, PipelineFileStats, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, Role,
+  PipelineColumn, PipelineDetail, PipelineFile, PipelineFileStats, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, RepoTree, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
   RunSummary, RunSurrogateKey, SchemaChange, SchemaChangeDatabase, SchemaObjectCompare,
   RunTriggerAccepted, RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted, SessionResponse, TokenResponse,
@@ -80,6 +80,9 @@ export const insightsApi = {
 export const repoApi = {
   list: (query: PageQuery = {}) => get<PagedResult<Repo>>("/api/v1/repos", query as QueryParams),
   getById: (id: string) => get<Repo>(`/api/v1/repos/${id}`),
+  // Everything the repository holds on its synced branch, not only the flows the catalog imported: the folder outline
+  // the repo view lists its projects from. 400s for a repo with no git source and no reachable root path.
+  tree: (id: string) => get<RepoTree>(`/api/v1/repos/${id}/tree`),
   // Re-sync a CLI/local-path repo from its recorded root path (connected: reads the live database for the derived
   // lineage tier). Refused server-side for a git-source-managed repo, which syncs via its source instead.
   syncLocal: (id: string) => post<RepoSyncResult>(`/api/v1/repos/${id}/sync`),

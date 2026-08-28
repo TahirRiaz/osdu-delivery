@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { repoApi, repoSourceApi } from "../../api/endpoints";
+import type { PipelineSummary, RepoTree, RepoTreeEntry } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
 import { DetailPair } from "../../components/DetailPair";
@@ -22,16 +23,87 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { fetchAllPipelines } from "../pipelines/fetchAllPipelines";
 import { groupByProject, pipelineMatches, ProjectGroup } from "../pipelines/ProjectGroup";
+import { projectOf } from "./project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { useSyncTracePanel } from "./useSyncTracePanel";
 
 /** The most repos/sources a single control plane realistically holds; one page covers the by-name lookup. */
 const SOURCE_LOOKUP_CAP = 200;
 
-/** The repo's pipelines grouped by project (root folder): each project is one source's set of pipelines. A project
- * that contains a batch flow (flowType: batch) can be run as a unit: the batch executes its members in lineage
- * wave order, so "Run project" triggers that ordered run. */
-function PipelinesByProject({
+/** One top-level folder of a repository: the pipelines the catalog imported from it, and the files under it that are
+ * not registered flows (SQL scripts, docs, flows the source excludes). */
+interface RepoFolder {
+  project: string;
+  pipelines: PipelineSummary[];
+  files: RepoTreeEntry[];
+}
+
+/**
+ * The repo's folder outline: every top-level folder the REPOSITORY holds, not only the ones the catalog imported a
+ * flow from. The catalog knows only the flow files a sync selected, so a folder of SQL scripts or of excluded flows
+ * would otherwise be invisible here even though it is part of the repo. The two are merged by project (root folder):
+ * the pipelines come from the catalog (with their kind, wave, and active state), the rest of the folder from the
+ * repo's own content listing. With no listing available the outline degrades to exactly what it was before, the
+ * projects that hold pipelines.
+ */
+function foldersOf(pipelines: PipelineSummary[], tree: RepoTree | undefined): RepoFolder[] {
+  const byProject = new Map<string, RepoFolder>();
+  const folderFor = (project: string): RepoFolder => {
+    const existing = byProject.get(project);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const created: RepoFolder = { project, pipelines: [], files: [] };
+    byProject.set(project, created);
+    return created;
+  };
+
+  for (const [project, rows] of groupByProject(pipelines)) {
+    folderFor(project).pipelines = rows;
+  }
+
+  if (tree !== undefined) {
+    const registered = new Set(pipelines.map((p) => p.relativePath));
+    for (const entry of tree.entries) {
+      if (entry.isFolder) {
+        // A top-level folder anchors a project even when nothing under it was imported. Deeper folders need no entry
+        // of their own: they show through the paths of the files inside them.
+        if (!entry.path.includes("/")) {
+          folderFor(entry.path);
+        }
+        continue;
+      }
+      if (registered.has(entry.path)) {
+        continue;
+      }
+      folderFor(projectOf(entry.path)).files.push(entry);
+    }
+  }
+
+  return [...byProject.values()].sort((a, b) => a.project.localeCompare(b.project));
+}
+
+/** The folders whose name, pipelines, or files match the search. A folder matched by name keeps all of its contents;
+ * otherwise only the matching rows survive, and a folder left with nothing drops out. */
+function matchingFolders(folders: RepoFolder[], needle: string): RepoFolder[] {
+  if (needle === "") {
+    return folders;
+  }
+  return folders
+    .map((folder) => folder.project.toLowerCase().includes(needle)
+      ? folder
+      : {
+        project: folder.project,
+        pipelines: folder.pipelines.filter((p) => pipelineMatches(p, needle)),
+        files: folder.files.filter((f) => f.path.toLowerCase().includes(needle)),
+      })
+    .filter((folder) => folder.pipelines.length > 0 || folder.files.length > 0);
+}
+
+/** The repo's folders, each a collapsible card of its pipelines and its other files. A project that contains a batch
+ * flow (flowType: batch) can be run as a unit: the batch executes its members in lineage wave order, so "Run project"
+ * triggers that ordered run. */
+function RepoProjects({
   repoId, filter, onOpen, onRunBatch,
 }: {
   repoId: string;
@@ -46,6 +118,15 @@ function PipelinesByProject({
     queryFn: () => fetchAllPipelines({ repoId }),
   });
 
+  // What the repository itself holds. A repo with no git source and no reachable root path cannot be listed, which is
+  // a 400 rather than a fault: it is reported under the outline and the catalog-derived projects still render, so a
+  // retry loop would buy nothing.
+  const treeQuery = useQuery({
+    queryKey: ["repos", "tree", repoId],
+    queryFn: () => repoApi.tree(repoId),
+    retry: false,
+  });
+
   if (query.isError) {
     return isApiError(query.error)
       ? <CorrelationError error={query.error} />
@@ -58,18 +139,31 @@ function PipelinesByProject({
   }
 
   const pipelines = result.items;
-  if (pipelines.length === 0) {
+  const folders = foldersOf(pipelines, treeQuery.data);
+
+  // Why the outline can be thinner than the repository: said once, under the folders, rather than left to be guessed.
+  const treeNote = treeQuery.isError && (
+    <p className="text-xs text-muted-foreground" data-testid="repo-tree-unavailable">
+      {`Repository contents unavailable (${isApiError(treeQuery.error) ? treeQuery.error.detail ?? treeQuery.error.title : String(treeQuery.error)}). `}
+      Listing only the folders the catalog imported flows from.
+    </p>
+  );
+
+  if (folders.length === 0) {
     return (
-      <EmptyState
-        title="No pipelines yet"
-        description="They appear here after a sync imports the selected flows from git."
-        data-testid="repo-no-pipelines"
-      />
+      <div className="flex flex-col gap-2">
+        <EmptyState
+          title="No pipelines yet"
+          description="They appear here after a sync imports the selected flows from git."
+          data-testid="repo-no-pipelines"
+        />
+        {treeNote}
+      </div>
     );
   }
 
   const needle = filter.trim().toLowerCase();
-  const matches = needle === "" ? pipelines : pipelines.filter((p) => pipelineMatches(p, needle));
+  const matches = matchingFolders(folders, needle);
 
   // Only reachable on an estate past the sweep's cap; says so rather than quietly showing a partial tree.
   const cappedNote = result.capped && (
@@ -79,15 +173,25 @@ function PipelinesByProject({
     </p>
   );
 
+  // The same statement for the content listing: a repository past the listing cap is reported partial, never silently
+  // clipped into an outline that reads as complete.
+  const treeCappedNote = treeQuery.data?.truncated === true && (
+    <p className="text-xs text-warning" data-testid="repo-tree-capped">
+      This repository holds more files than one listing returns, so some folders may be incomplete.
+    </p>
+  );
+
   if (matches.length === 0) {
     return (
       <div className="flex flex-col gap-2">
         {cappedNote}
+        {treeCappedNote}
         <EmptyState
           title="No matches"
-          description={`No pipeline matches "${filter.trim()}". Search by name, path, kind, or project.`}
+          description={`Nothing matches "${filter.trim()}". Search by name, path, kind, or project.`}
           data-testid="repo-no-matches"
         />
+        {treeNote}
       </div>
     );
   }
@@ -95,11 +199,13 @@ function PipelinesByProject({
   return (
     <div className="flex flex-col gap-2" data-testid="repo-projects">
       {cappedNote}
-      {groupByProject(matches).map(([project, rows]) => (
+      {treeCappedNote}
+      {matches.map((folder) => (
         <ProjectGroup
-          key={project}
-          project={project}
-          rows={rows}
+          key={folder.project}
+          project={folder.project}
+          rows={folder.pipelines}
+          files={folder.files}
           repoId={repoId}
           filtered={needle !== ""}
           defaultOpen={needle !== ""}
@@ -107,6 +213,7 @@ function PipelinesByProject({
           onRunBatch={onRunBatch}
         />
       ))}
+      {treeNote}
     </div>
   );
 }
@@ -310,7 +417,7 @@ export default function RepoDetailPage() {
           label="Search pipelines"
           testId="repo-pipeline-search"
         />
-        <PipelinesByProject
+        <RepoProjects
           repoId={repoId}
           filter={pipelineFilter}
           onOpen={(id) => navigate(`/pipelines/${id}`)}

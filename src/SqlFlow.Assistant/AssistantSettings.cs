@@ -153,7 +153,11 @@ public sealed class McpOptions
     /// and running a query is gated by a human approving the exact statement first. An empty list means all
     /// tools, so leave this populated unless the MCP server itself is restricted.
     /// </summary>
-    public List<string> AllowedTools { get; set; } =
+    /// <summary>
+    /// The read surface every host gets: catalog, lineage, runs, search, schedules, insights, docs. Nothing
+    /// here touches a datasource, so it is safe on any surface however public.
+    /// </summary>
+    private static readonly string[] SharedReadTools =
     [
         "search_docs", "get_doc", "get_doc_by_yaml_path", "get_doc_by_cli_command", "related_docs", "list_docs",
         "validate_flow", "list_flow_keys", "describe_flow_key",
@@ -169,16 +173,57 @@ public sealed class McpOptions
         "search_flow_columns", "search_files", "search_statements",
         "list_schedules", "get_schedule", "get_schedule_plan", "list_nodes", "list_repo_sources", "summary",
         "insights_flows", "insights_attention", "insights_recommendations", "insights_steps",
-        // The data model, as one question per tool: what identifies a row, and how tables join. These are what
-        // an assistant composes correct SQL from, so leaving them out is what makes it guess or give up.
+    ];
+
+    /// <summary>
+    /// The GUI's surface: everything shared, plus the tools that reach a datasource. The GUI is a signed-in,
+    /// per-user surface where the caller's own bearer authorises every call, so the data-model tools and the
+    /// data-operations surface belong here.
+    /// </summary>
+    public static readonly IReadOnlyList<string> GuiDefaultTools =
+    [
+        .. SharedReadTools,
+        // The data model, one question per tool: what identifies a row, and how tables join. These are what an
+        // assistant composes correct SQL from, so leaving them out is what makes it guess or give up.
         "get_table_key", "get_table_joins", "detect_unique_key",
         // The data-operations surface. Read-only, and behind ControlPlane:DataOps:Enabled, which is the switch
-        // that actually governs them; a deployment with it off gets a clear "not enabled" rather than silence.
+        // that actually governs them.
         "dataops_capabilities", "check_duplicate_keys", "compare_baseline",
         // Running a business question. prepare_query executes nothing, and run_query only redeems a single-use
-        // token minted by a prepare whose exact SQL was shown to a person, so the approval cannot be skipped.
+        // token minted by a prepare whose exact SQL was shown to a person.
         "prepare_query", "run_query",
     ];
+
+    /// <summary>
+    /// Slack's surface: the shared read tools plus the JOIN lookup, and nothing that reaches a datasource.
+    ///
+    /// Slack is a SHARED, semi-public channel rather than a signed-in per-user session, so the trust model is
+    /// different from the GUI's: a message is visible to a room, and the two-step confirmation the query
+    /// surface relies on ("show the SQL, get agreement, then run") is a much weaker guarantee when the person
+    /// who approves it need not be the person who asked. Answering "how do I join these tables" is a metadata
+    /// question with no such property, which is why it is the one addition Slack gets.
+    /// </summary>
+    public static readonly IReadOnlyList<string> SlackDefaultTools =
+    [
+        .. SharedReadTools,
+        "get_table_joins",
+    ];
+
+    public List<string> AllowedTools { get; set; } = [.. GuiDefaultTools];
+
+    /// <summary>
+    /// Narrows the allowed tools to a surface's default, but ONLY when the list is still the shipped default:
+    /// a deployment that configured its own list keeps it. Called by a host whose surface is not the GUI, so
+    /// the per-surface decision lives beside the list rather than in each host's binding code.
+    /// </summary>
+    public void ApplySurfaceDefault(IReadOnlyList<string> surfaceDefault)
+    {
+        ArgumentNullException.ThrowIfNull(surfaceDefault);
+        if (AllowedTools.SequenceEqual(GuiDefaultTools, StringComparer.Ordinal))
+        {
+            AllowedTools = [.. surfaceDefault];
+        }
+    }
 
     /// <summary>
     /// The tools deliberately kept from the assistant, listed rather than merely absent so the omission is a

@@ -74,6 +74,23 @@ export interface Repo {
   lastSyncUtc: string;
 }
 
+/** One entry in a repository's content listing: a repo-relative, forward-slashed path, whether it is a folder, and
+ * the file's size in bytes (0 for a folder). */
+export interface RepoTreeEntry {
+  path: string;
+  isFolder: boolean;
+  sizeBytes: number;
+}
+
+/** Everything a repository holds, path-ordered: the folders and files on the synced branch (or on disk for a
+ * local-path repo), not only the flow files the catalog imported. `readFrom` is "git" or "disk"; `truncated` says the
+ * listing hit its server-side cap and is partial. */
+export interface RepoTree {
+  readFrom: string;
+  entries: RepoTreeEntry[];
+  truncated: boolean;
+}
+
 /** The outcome of a manual local-path repo sync: the pipeline reconciliation counts and lineage tallies, whether the
  * derived tier connected to the live database, and any warnings the pass surfaced (bounded). */
 export interface RepoSyncResult {
