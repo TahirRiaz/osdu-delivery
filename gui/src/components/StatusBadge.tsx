@@ -1,4 +1,4 @@
-import {
+﻿import {
   Ban,
   CircleCheck,
   CircleMinus,
@@ -220,6 +220,25 @@ export function ScheduleStateBadge({ enabled, paused }: { enabled: boolean; paus
   return paused
     ? <IconBadge family="state" tone="warning" label="paused" icon={Pause} testId="schedule-badge" />
     : <IconBadge family="state" tone="success" label="enabled" icon={Power} testId="schedule-badge" />;
+}
+
+/**
+ * Something that ran and finished, where the word matters as much as the glyph: a delivery result, a digest's
+ * "failed x12". The filled-disc outcome family (DESIGN.md 7.3), exported for the same reason {@link StatePill}
+ * is, so a feature never hand-rolls a tinted pill of its own.
+ */
+export function OutcomePill({
+  tone,
+  label,
+  icon,
+  testId,
+}: {
+  tone: Tone;
+  label: string;
+  icon: LucideIcon;
+  testId: string;
+}) {
+  return <Pill family="outcome" tone={tone} label={label} icon={icon} testId={testId} />;
 }
 
 /**

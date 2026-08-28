@@ -1,4 +1,4 @@
-// Thin, typed wrappers over the control plane's /api/v1 surface: one function per endpoint, nothing else.
+﻿// Thin, typed wrappers over the control plane's /api/v1 surface: one function per endpoint, nothing else.
 // Auth, error shaping, and rate-limit handling live in client.ts; pages compose these with TanStack Query.
 
 import { del, get, getAnonymous, getText, post, postAnonymous, postBinary, put, streamSse, type QueryParams, type SseFrame } from "./client";
@@ -6,6 +6,7 @@ import type {
   AccessToken, AllSearchResult, Attention, AuthProviders,
   ChatAskRequest, ChatCapabilities, ChatConversation, ChatMessage, ChatTranscription,
   ColumnHit, ComputeTask, ComputeTaskAccepted, ComputeTaskRequest,
+  DataStream, DataStreams,
   ComputeTaskSummary, CreateAccessTokenRequest, CreateNotificationSubscriptionRequest, CreateScheduleRequest, CreatedAccessToken,
   CreateUserRequest, Dashboard, Datasource, DefinitionHit, DiscoveredFlow,
   FlowInsights, Recommendations, StepInsights,
@@ -14,7 +15,9 @@ import type {
   LineageEdge, LineageObject, LineageObjectColumn, LineageObjectDetail, LineageProject, LineageSchema, MyNotificationOptions, Node, NodePurgeResult, NodeScript,
   ObjectDossier, PipelineBatch, SchemaKindCount, FileNode, FileFlows,
   ProjectGraph,
-  NotificationDelivery, NotificationSubscription, NotificationTestSend, ObjectHit, ObjectRepo, PagedResult,
+  GenerateNotificationDigestRequest, NotificationDelivery, NotificationDigest, NotificationDigestSummary,
+  NotificationQueuedDelivery, NotificationSubscription, SendNotificationDigestRequest,
+  ObjectHit, ObjectRepo, PagedResult,
   FlowParameters,
   PipelineColumn, PipelineDetail, PipelineFile, PipelineFileStats, PipelineSummary, RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, RepoTree, Role,
   RunAssertion, RunDetail, RunFile, RunGroup, RunHealthCheckMetric, RunScope, RunScopePreview, RunStatement, RunTraceEntry, RunTraceStorage, RunTraceRetention, RunTraceRetentionUpdate, RunStatementPurgeResult, RunEventPurgeResult,
@@ -73,6 +76,31 @@ export const insightsApi = {
   /** One flow's step-level hotspots; includeSql=true adds one sample statement per step. */
   steps: (pipelineId: string, days?: number, includeSql?: boolean) =>
     get<StepInsights>(`/api/v1/insights/pipelines/${pipelineId}/steps`, { days, includeSql }),
+};
+
+// ---- DataStream anomaly detection -------------------------------------------------------------------------------------
+
+export interface DataStreamQuery {
+  /** The analysis window in days (1-180; the server defaults to 60). */
+  days?: number;
+  repoId?: string;
+  batch?: string;
+  /** Restrict to one verdict: stalled / degraded / watch / healthy / insufficient-history. */
+  status?: string;
+  /** Count backfills as normal traffic. False by default: a history replay would otherwise redefine the
+   * stream's normal and make every ordinary day after it look like a collapse. */
+  includeBackfills?: boolean;
+  /** Only streams that join an enabled schedule, so each verdict is measured against a declared cron. */
+  scheduledOnly?: boolean;
+  limit?: number;
+}
+
+export const dataStreamApi = {
+  /** The board: every stream's verdict, ranked most urgent first. No per-stream series (too large). */
+  list: (query: DataStreamQuery = {}) => get<DataStreams>("/api/v1/datastreams", query as QueryParams),
+  /** One stream in full: the day-by-day series the chart draws, and every detector's reasoning. */
+  get: (pipelineId: string, days?: number, includeBackfills?: boolean) =>
+    get<DataStream>(`/api/v1/datastreams/${pipelineId}`, { days, includeBackfills }),
 };
 
 // ---- Repos and pipelines ----------------------------------------------------------------------------------------------
@@ -511,8 +539,16 @@ export const notificationApi = {
   updateSubscription: (id: string, request: UpdateNotificationSubscriptionRequest) =>
     put<NotificationSubscription>(`/api/v1/me/notifications/subscriptions/${id}`, request),
   deleteSubscription: (id: string) => del<void>(`/api/v1/me/notifications/subscriptions/${id}`),
-  testSubscription: (id: string) => post<NotificationTestSend>(`/api/v1/me/notifications/subscriptions/${id}/test`),
+  testSubscription: (id: string) =>
+    post<NotificationQueuedDelivery>(`/api/v1/me/notifications/subscriptions/${id}/test`),
   listDeliveries: (take = 50) => get<NotificationDelivery[]>("/api/v1/me/notifications/deliveries", { take }),
+  // Estate digests are not per-user: one record of what the estate did in each window, readable by anyone.
+  listDigests: (take = 50) => get<NotificationDigestSummary[]>("/api/v1/notifications/digests", { take }),
+  getDigest: (id: string) => get<NotificationDigest>(`/api/v1/notifications/digests/${id}`),
+  generateDigest: (request: GenerateNotificationDigestRequest) =>
+    post<NotificationDigest>("/api/v1/notifications/digests", request),
+  sendDigest: (id: string, request: SendNotificationDigestRequest) =>
+    post<NotificationQueuedDelivery>(`/api/v1/notifications/digests/${id}/send`, request),
 };
 
 // ---- Maintenance (run-trace storage retention) ------------------------------------------------------------------

@@ -125,7 +125,7 @@ public sealed class NotificationApiTests
 
         using var test = await SendAsync(client, token, HttpMethod.Post, $"/api/v1/me/notifications/subscriptions/{dto.Id}/test", null);
         Assert.Equal(HttpStatusCode.Accepted, test.StatusCode);
-        var accepted = await test.Content.ReadFromJsonAsync<NotificationTestSendDto>();
+        var accepted = await test.Content.ReadFromJsonAsync<NotificationQueuedDeliveryDto>();
         Assert.NotNull(accepted);
 
         var deliveries = await GetAsync<List<NotificationDeliveryDto>>(client, token, "/api/v1/me/notifications/deliveries");
@@ -154,6 +154,109 @@ public sealed class NotificationApiTests
         using var list = await SendAsync(client, bootstrap.AccessToken, HttpMethod.Get, "/api/v1/me/notifications/subscriptions", null);
         Assert.Equal(HttpStatusCode.BadRequest, list.StatusCode);
         Assert.Contains("No user account", await list.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Digests_AreGeneratedOnDemand_ListedEstateWide_AndOpenable()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+        using var client = factory.CreateClient();
+        var (token, _, _) = await NewUserSessionAsync(client);
+
+        // A digest needs no channel and no subscription: this host has neither.
+        var options = await GetAsync<NotificationOptionsDto>(client, token, "/api/v1/me/notifications/options");
+        Assert.False(options.Email.Available);
+        Assert.False(options.Slack.Available);
+        Assert.True(options.EstateDigest.Enabled);
+
+        using var generate = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
+            new GenerateNotificationDigestRequest(120));
+        Assert.Equal(HttpStatusCode.Created, generate.StatusCode);
+        var digest = await generate.Content.ReadFromJsonAsync<NotificationDigestDto>();
+        Assert.NotNull(digest);
+        Assert.Equal(NotificationDigestOrigins.Manual, digest.Summary.Origin);
+        Assert.Equal("Notification API test user", digest.Summary.GeneratedBy);
+        Assert.Equal(120, (digest.Summary.PeriodEndUtc - digest.Summary.PeriodStartUtc).TotalMinutes, 0);
+        Assert.False(string.IsNullOrWhiteSpace(digest.TextBody));
+        Assert.False(string.IsNullOrWhiteSpace(digest.HtmlBody));
+
+        // Estate-wide: the list is not scoped to the caller, and the row carries the headline without the bodies.
+        var list = await GetAsync<List<NotificationDigestSummaryDto>>(client, token, "/api/v1/notifications/digests");
+        var listed = Assert.Single(list, d => d.Id == digest.Summary.Id);
+        Assert.Equal(digest.Summary.Subject, listed.Subject);
+
+        var opened = await GetAsync<NotificationDigestDto>(
+            client, token, $"/api/v1/notifications/digests/{digest.Summary.Id}");
+        Assert.Equal(digest.TextBody, opened.TextBody);
+        Assert.Equal(digest.Summary.EventCount, opened.Summary.EventCount);
+
+        using var missing = await SendAsync(
+            client, token, HttpMethod.Get, $"/api/v1/notifications/digests/{Guid.NewGuid()}", null);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Digests_RejectAWindowOutsideTheServedBounds()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+        using var client = factory.CreateClient();
+        var (token, _, _) = await NewUserSessionAsync(client);
+        var options = await GetAsync<NotificationOptionsDto>(client, token, "/api/v1/me/notifications/options");
+
+        foreach (var window in new[] { 0, options.EstateDigest.MinWindowMinutes - 1, options.EstateDigest.MaxWindowMinutes + 1 })
+        {
+            using var response = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
+                new GenerateNotificationDigestRequest(window));
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Contains("Invalid window", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Digest_IsSentThroughTheCallersOwnSubscription_AndAppearsInTheHistory()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        using var factory = SmtpConfigured(new ControlPlaneAppFactory().WithCatalog(cs));
+        using var client = factory.CreateClient();
+        var (token, _, email) = await NewUserSessionAsync(client);
+
+        using var create = await SendAsync(client, token, HttpMethod.Post, "/api/v1/me/notifications/subscriptions",
+            new CreateNotificationSubscriptionRequest("email", "digest", null, null, null, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        var subscription = await create.Content.ReadFromJsonAsync<NotificationSubscriptionDto>();
+        Assert.NotNull(subscription);
+
+        using var generate = await SendAsync(client, token, HttpMethod.Post, "/api/v1/notifications/digests",
+            new GenerateNotificationDigestRequest(60));
+        Assert.Equal(HttpStatusCode.Created, generate.StatusCode);
+        var digest = await generate.Content.ReadFromJsonAsync<NotificationDigestDto>();
+        Assert.NotNull(digest);
+
+        using var send = await SendAsync(client, token, HttpMethod.Post,
+            $"/api/v1/notifications/digests/{digest.Summary.Id}/send",
+            new SendNotificationDigestRequest(subscription.Id));
+        Assert.Equal(HttpStatusCode.Accepted, send.StatusCode);
+        var accepted = await send.Content.ReadFromJsonAsync<NotificationQueuedDeliveryDto>();
+        Assert.NotNull(accepted);
+
+        // The stored bodies go out as composed: what the sender read is what the recipient gets.
+        var deliveries = await GetAsync<List<NotificationDeliveryDto>>(client, token, "/api/v1/me/notifications/deliveries");
+        var delivery = Assert.Single(deliveries, d => d.Id == accepted.DeliveryId);
+        Assert.Equal(digest.Summary.Subject, delivery.Subject);
+        Assert.Equal(email, delivery.Target);
+        Assert.Equal(subscription.Id, delivery.SubscriptionId);
+
+        // Another account's subscription is not a destination the caller can borrow.
+        var (otherToken, _, _) = await NewUserSessionAsync(client);
+        using var borrowed = await SendAsync(client, otherToken, HttpMethod.Post,
+            $"/api/v1/notifications/digests/{digest.Summary.Id}/send",
+            new SendNotificationDigestRequest(subscription.Id));
+        Assert.Equal(HttpStatusCode.NotFound, borrowed.StatusCode);
     }
 
     /// <summary>An email-capable host: SMTP configured (the relay is never contacted in these tests) and the

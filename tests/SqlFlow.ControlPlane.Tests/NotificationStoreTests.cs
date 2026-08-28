@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using Xunit;
 
@@ -337,7 +337,8 @@ public sealed class NotificationStoreTests
             await NotificationStore.EnqueueDeliveryAsync(db, oldQueued);
 
             await NotificationStore.PurgeExpiredAsync(
-                db, eventsBeforeUtc: DateTime.UtcNow.AddDays(-365), deliveriesBeforeUtc: DateTime.UtcNow.AddDays(-365));
+                db, eventsBeforeUtc: DateTime.UtcNow.AddDays(-365), deliveriesBeforeUtc: DateTime.UtcNow.AddDays(-365),
+                digestsBeforeUtc: DateTime.UtcNow.AddDays(-365));
 
             Assert.Null(await db.NotificationDeliveries.AsNoTracking().FirstOrDefaultAsync(d => d.Id == oldSent.Id));
             // Undelivered work is not garbage, no matter how old.

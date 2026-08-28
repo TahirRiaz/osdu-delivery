@@ -1,3 +1,4 @@
+﻿using System.Globalization;
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
@@ -34,6 +35,16 @@ public static partial class NotificationEndpoints
 
     private const int MaxEmailLength = 320;
 
+    /// <summary>The shortest window an on-demand digest may cover.</summary>
+    private const int MinManualWindowMinutes = 5;
+
+    /// <summary>The longest window an on-demand digest may cover (30 days). Beyond this the answer belongs in the
+    /// runs board, not in a digest, and the event retention has usually pruned the far end anyway.</summary>
+    private const int MaxManualWindowMinutes = 43200;
+
+    /// <summary>How many digests one listing returns by default.</summary>
+    private const int DefaultDigestListSize = 50;
+
     public static RouteGroupBuilder MapNotificationEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -52,6 +63,17 @@ public static partial class NotificationEndpoints
             .WithTags("Notifications").WithName("TestMyNotificationSubscription");
         group.MapGet("/me/notifications/deliveries", ListDeliveriesAsync)
             .WithTags("Notifications").WithName("ListMyNotificationDeliveries");
+
+        // The estate digests are not per-user: one record of what the estate did in each window, readable by
+        // anyone who can read runs. Only the send action touches a subscription, and only the caller's own.
+        group.MapGet("/notifications/digests", ListDigestsAsync)
+            .WithTags("Notifications").WithName("ListNotificationDigests");
+        group.MapGet("/notifications/digests/{id:guid}", GetDigestAsync)
+            .WithTags("Notifications").WithName("GetNotificationDigest");
+        group.MapPost("/notifications/digests", GenerateDigestAsync)
+            .WithTags("Notifications").WithName("GenerateNotificationDigest");
+        group.MapPost("/notifications/digests/{id:guid}/send", SendDigestAsync)
+            .WithTags("Notifications").WithName("SendNotificationDigest");
 
         return group;
     }
@@ -81,7 +103,13 @@ public static partial class NotificationEndpoints
             [NotificationModes.Immediate, NotificationModes.Digest],
             userEmail,
             DefaultDigestIntervalMinutes: 360,
-            DefaultCooldownMinutes: 5));
+            DefaultCooldownMinutes: 5,
+            new EstateDigestOptionsDto(
+                notifications.Enabled && notifications.DigestEnabled,
+                notifications.DigestIntervalMinutes,
+                notifications.DigestIntervalMinutes,
+                MinManualWindowMinutes,
+                MaxManualWindowMinutes)));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<NotificationSubscriptionDto>>, ProblemHttpResult>> ListSubscriptionsAsync(
@@ -235,7 +263,7 @@ public static partial class NotificationEndpoints
     /// <summary>Enqueues a test message onto the real outbox for this subscription's channel and destination, so
     /// a green test is a true rehearsal (composition, resolution, credentials, transport) and its outcome shows up
     /// in the deliveries history like any other message. Works while disabled: that is exactly when you test.</summary>
-    private static async Task<Results<Accepted<NotificationTestSendDto>, ProblemHttpResult>> TestSubscriptionAsync(
+    private static async Task<Results<Accepted<NotificationQueuedDeliveryDto>, ProblemHttpResult>> TestSubscriptionAsync(
         Guid id, CatalogDbContext catalog, IOptions<ControlPlaneOptions> options, TimeProvider clock,
         HttpContext httpContext, CancellationToken ct)
     {
@@ -283,7 +311,7 @@ public static partial class NotificationEndpoints
         };
         await NotificationStore.EnqueueDeliveryAsync(catalog, delivery, ct).ConfigureAwait(false);
         return TypedResults.Accepted(
-            $"/api/v1/me/notifications/deliveries", new NotificationTestSendDto(delivery.Id));
+            $"/api/v1/me/notifications/deliveries", new NotificationQueuedDeliveryDto(delivery.Id));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<NotificationDeliveryDto>>, ProblemHttpResult>> ListDeliveriesAsync(
@@ -397,6 +425,187 @@ public static partial class NotificationEndpoints
 
         return null;
     }
+
+    /// <summary>The estate digest list, newest first: every window the control plane summarized on its own, plus
+    /// every one a person asked for. Estate-wide on purpose, so "what failed last night" has one answer and not
+    /// one per reader.</summary>
+    private static async Task<Ok<IReadOnlyList<NotificationDigestSummaryDto>>> ListDigestsAsync(
+        CatalogDbContext catalog, CancellationToken ct, int take = DefaultDigestListSize)
+    {
+        var digests = await NotificationStore.ListDigestsAsync(catalog, take, ct).ConfigureAwait(false);
+        var authors = await ResolveAuthorsAsync(catalog, digests.Select(d => d.GeneratedByUserId), ct)
+            .ConfigureAwait(false);
+        IReadOnlyList<NotificationDigestSummaryDto> dto = digests.Select(d => ToDto(d, authors)).ToList();
+        return TypedResults.Ok(dto);
+    }
+
+    /// <summary>One digest opened for reading, with the bodies the list omits.</summary>
+    private static async Task<Results<Ok<NotificationDigestDto>, ProblemHttpResult>> GetDigestAsync(
+        Guid id, CatalogDbContext catalog, CancellationToken ct)
+    {
+        var digest = await NotificationStore.GetDigestAsync(catalog, id, ct).ConfigureAwait(false);
+        if (digest is null)
+        {
+            return DigestNotFound();
+        }
+
+        var authors = await ResolveAuthorsAsync(catalog, [digest.GeneratedByUserId], ct).ConfigureAwait(false);
+        return TypedResults.Ok(ToDto(digest, authors, full: true));
+    }
+
+    /// <summary>
+    /// Generates a digest on demand over the window the caller asked for, through the same generator the periodic
+    /// one goes through, so the result is the same artifact rather than a preview of one. It is a report: the
+    /// scheduled cursor is untouched, so asking for one never robs the next scheduled digest of its events.
+    /// </summary>
+    private static async Task<Results<Created<NotificationDigestDto>, ProblemHttpResult>> GenerateDigestAsync(
+        GenerateNotificationDigestRequest? request, CatalogDbContext catalog, IOptions<ControlPlaneOptions> options,
+        TimeProvider clock, HttpContext httpContext, CancellationToken ct)
+    {
+        if (!TryGetUserId(httpContext.User, out var userId))
+        {
+            return NoUserAccount();
+        }
+
+        var notifications = options.Value.Notifications;
+        if (!notifications.Enabled)
+        {
+            // Detection is what fills the event stream a digest reads. With it off the stream is empty, and an
+            // empty digest would read as an all-clear rather than as "nothing was ever looked at".
+            return Invalid("Notifications are disabled",
+                "The notification service is disabled on this control plane (ControlPlane:Notifications:Enabled), "
+                + "so no run failures are being detected and a digest would be empty for that reason alone.");
+        }
+
+        var window = request?.WindowMinutes ?? notifications.DigestIntervalMinutes;
+        if (window is < MinManualWindowMinutes or > MaxManualWindowMinutes)
+        {
+            return Invalid("Invalid window",
+                $"The digest window must be between {MinManualWindowMinutes.ToString(CultureInfo.InvariantCulture)} "
+                + $"and {MaxManualWindowMinutes.ToString(CultureInfo.InvariantCulture)} minutes.");
+        }
+
+        var now = clock.GetUtcNow().UtcDateTime;
+        var digest = await NotificationDigestGenerator.GenerateManualAsync(
+            catalog, now.AddMinutes(-window), now, userId, notifications.GuiBaseUrl, ct).ConfigureAwait(false);
+        var authors = await ResolveAuthorsAsync(catalog, [digest.GeneratedByUserId], ct).ConfigureAwait(false);
+        return TypedResults.Created(
+            $"/api/v1/notifications/digests/{digest.Id}", ToDto(digest, authors, full: true));
+    }
+
+    /// <summary>
+    /// Puts an already-generated digest on the outbox, addressed by one of the caller's own subscriptions (which
+    /// is what supplies the channel, destination and credentials). The stored bodies go out as they were composed,
+    /// so what the sender read in the GUI is exactly what the recipient gets, even after the events behind it have
+    /// aged out. Its outcome appears in the deliveries history like any other message.
+    /// </summary>
+    private static async Task<Results<Accepted<NotificationQueuedDeliveryDto>, ProblemHttpResult>> SendDigestAsync(
+        Guid id, SendNotificationDigestRequest request, CatalogDbContext catalog,
+        IOptions<ControlPlaneOptions> options, TimeProvider clock, HttpContext httpContext, CancellationToken ct)
+    {
+        if (!TryGetUserId(httpContext.User, out var userId))
+        {
+            return NoUserAccount();
+        }
+
+        var digest = await NotificationStore.GetDigestAsync(catalog, id, ct).ConfigureAwait(false);
+        if (digest is null)
+        {
+            return DigestNotFound();
+        }
+
+        var subscription = await NotificationStore.GetSubscriptionForUserAsync(
+            catalog, userId, request.SubscriptionId, ct).ConfigureAwait(false);
+        if (subscription is null)
+        {
+            return NotFound();
+        }
+
+        var notifications = options.Value.Notifications;
+        if (ChannelUnavailable(notifications, subscription.Channel) is { } unavailable)
+        {
+            return unavailable;
+        }
+
+        var target = await NotificationTargetResolver.ResolveAsync(catalog, subscription, ct).ConfigureAwait(false);
+        if (target is null)
+        {
+            return Invalid("No destination", NotificationTargetResolver.UnresolvedReason(subscription.Channel));
+        }
+
+        var isEmail = subscription.Channel == NotificationChannels.Email;
+        var delivery = new CatalogNotificationDelivery
+        {
+            Id = Guid.CreateVersion7(),
+            SubscriptionId = subscription.Id,
+            UserId = userId,
+            Channel = subscription.Channel,
+            Target = target,
+            Subject = digest.Subject,
+            TextBody = digest.TextBody,
+            HtmlBody = isEmail ? digest.HtmlBody : null,
+            SlackBlocksJson = isEmail ? null : digest.SlackBlocksJson,
+            EventCount = digest.EventCount,
+            FirstEventId = digest.FirstEventId,
+            LastEventId = digest.LastEventId,
+            Status = NotificationDeliveryStatuses.Queued,
+            CreatedUtc = clock.GetUtcNow().UtcDateTime,
+        };
+        await NotificationStore.EnqueueDeliveryAsync(catalog, delivery, ct).ConfigureAwait(false);
+        return TypedResults.Accepted(
+            "/api/v1/me/notifications/deliveries", new NotificationQueuedDeliveryDto(delivery.Id));
+    }
+
+    /// <summary>Names the people behind the manual digests in a listing, in one query. A digest whose author has
+    /// since been deleted keeps its row and simply reports no name.</summary>
+    private static async Task<Dictionary<Guid, string>> ResolveAuthorsAsync(
+        CatalogDbContext catalog, IEnumerable<Guid?> userIds, CancellationToken ct)
+    {
+        var ids = userIds.OfType<Guid>().Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        var users = await catalog.Users.AsNoTracking()
+            .Where(u => ids.Contains(u.Id))
+            .Select(u => new { u.Id, u.DisplayName, u.Username })
+            .ToListAsync(ct).ConfigureAwait(false);
+        return users.ToDictionary(
+            u => u.Id,
+            u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Username : u.DisplayName);
+    }
+
+    private static NotificationDigestSummaryDto ToDto(NotificationDigestSummary d, Dictionary<Guid, string> authors)
+        => new(
+            d.Id, d.Origin, d.PeriodStartUtc, d.PeriodEndUtc, d.GeneratedUtc, Author(d.GeneratedByUserId, authors),
+            d.Subject, d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount,
+            d.AssertionFailedCount, d.Truncated);
+
+    /// <summary>One digest opened for reading. <paramref name="full"/> is the signature's reminder that this is
+    /// the heavy shape: it carries the stored per-flow rows and both composed bodies.</summary>
+    private static NotificationDigestDto ToDto(
+        CatalogNotificationDigest d, Dictionary<Guid, string> authors, bool full)
+    {
+        var summary = new NotificationDigestSummaryDto(
+            d.Id, d.Origin, d.PeriodStartUtc, d.PeriodEndUtc, d.GeneratedUtc, Author(d.GeneratedByUserId, authors),
+            d.Subject, d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount,
+            d.AssertionFailedCount, d.Truncated);
+        IReadOnlyList<NotificationDigestFlowDto> flows = full
+            ? NotificationDigestGroups.Deserialize(d.GroupsJson)
+                .Select(g => new NotificationDigestFlowDto(
+                    g.FlowName, g.FlowKind, g.EventKind, g.Count, g.LastOccurredUtc, g.LastRunId, g.LastError))
+                .ToList()
+            : [];
+        return new NotificationDigestDto(summary, flows, d.TextBody, d.HtmlBody);
+    }
+
+    private static string? Author(Guid? userId, Dictionary<Guid, string> authors)
+        => userId is { } id && authors.TryGetValue(id, out var name) ? name : null;
+
+    private static ProblemHttpResult DigestNotFound()
+        => TypedResults.Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found",
+            detail: "No digest with that id exists; it may have been pruned by the digest retention.");
 
     private static ProblemHttpResult? ChannelUnavailable(NotificationOptions notifications, string channel)
     {

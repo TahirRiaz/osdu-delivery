@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -6,15 +6,29 @@ using SqlFlow.Catalog;
 
 namespace SqlFlow.ControlPlane.Notifications;
 
-/// <summary>Everything one message is composed from: the subscription's matched events (oldest first, never
-/// empty), whether more were pending than fit (they follow in the next message), and the rendering context.</summary>
+/// <summary>One flow's aggregated slice of a window: the unit a reader scans, in a message body and in the GUI's
+/// digest table alike. <see cref="Count"/> is how many times it happened, and the "last" fields describe the most
+/// recent occurrence, which is the one whose error is worth reading.</summary>
+public sealed record NotificationFlowGroup(
+    string FlowName, string FlowKind, string Kind, int Count, DateTime LastOccurredUtc, Guid LastRunId,
+    string? LastError);
+
+/// <summary>The period a digest covers, rendered in its header so an all-clear digest still says what it looked
+/// at. Subscription messages carry none: their window is "since the last message", which the events themselves
+/// describe.</summary>
+public sealed record NotificationWindow(DateTime StartUtc, DateTime EndUtc);
+
+/// <summary>Everything one message is composed from: the matched events (oldest first, empty only for an estate
+/// digest, which reports an all-clear window), whether more were pending than fit (they follow in the next
+/// message), the covered period when one is known, and the rendering context.</summary>
 public sealed record NotificationComposition(
     string Channel,
     string Mode,
     IReadOnlyList<CatalogNotificationEvent> Events,
     bool MorePending,
     string? GuiBaseUrl,
-    DateTime NowUtc);
+    DateTime NowUtc,
+    NotificationWindow? Window = null);
 
 /// <summary>
 /// Renders a subscription's pending events into one message. The shape is the anti-spam contract made visible:
@@ -36,25 +50,37 @@ public static class NotificationComposer
 
     private const int SubjectFlowNameLength = 120;
 
-    /// <summary>One flow's aggregated slice of the window: the unit a reader scans.</summary>
-    private sealed record FlowGroup(
-        string FlowName, string FlowKind, string Kind, int Count, DateTime LastOccurredUtc, Guid LastRunId,
-        string? LastError);
-
+    /// <summary>The message one subscription window produces, rendered for that subscription's channel only.</summary>
     public static NotificationMessage Compose(NotificationComposition composition)
     {
         ArgumentNullException.ThrowIfNull(composition);
-        if (composition.Events.Count == 0)
-        {
-            throw new ArgumentException("A message needs at least one event; empty windows send nothing.", nameof(composition));
-        }
+        return ComposeCore(
+            composition,
+            html: composition.Channel == NotificationChannels.Email,
+            blocks: composition.Channel == NotificationChannels.Slack);
+    }
 
+    /// <summary>
+    /// An estate digest, rendered for every channel at once: the HTML is what the GUI displays, and the text and
+    /// Block Kit renderings are what an email or Slack delivery of that same digest carries later, without
+    /// recomposing it from events retention may since have pruned. Unlike a subscription message, a digest is
+    /// produced for an empty window too: "nothing failed in this period" is the answer the reader came for.
+    /// </summary>
+    public static NotificationMessage ComposeReport(NotificationComposition composition)
+    {
+        ArgumentNullException.ThrowIfNull(composition);
+        return ComposeCore(composition, html: true, blocks: true);
+    }
+
+    private static NotificationMessage ComposeCore(NotificationComposition composition, bool html, bool blocks)
+    {
         var groups = GroupEvents(composition.Events);
         var subject = ComposeSubject(composition, groups);
-        var text = ComposeText(composition, groups, subject);
-        var html = composition.Channel == NotificationChannels.Email ? ComposeHtml(composition, groups, subject) : null;
-        var blocks = composition.Channel == NotificationChannels.Slack ? ComposeSlackBlocks(composition, groups, subject) : null;
-        return new NotificationMessage(subject, text, html, blocks);
+        return new NotificationMessage(
+            subject,
+            ComposeText(composition, groups, subject),
+            html ? ComposeHtml(composition, groups, subject) : null,
+            blocks ? ComposeSlackBlocks(composition, groups, subject) : null);
     }
 
     /// <summary>The message a test send delivers: proof the channel, address, and credentials work end to end.</summary>
@@ -112,13 +138,32 @@ public static class NotificationComposer
     public static string? SettingsUrl(string? guiBaseUrl)
         => string.IsNullOrWhiteSpace(guiBaseUrl) ? null : $"{guiBaseUrl.TrimEnd('/')}/settings/notifications";
 
-    private static List<FlowGroup> GroupEvents(IReadOnlyList<CatalogNotificationEvent> events)
+    /// <summary>
+    /// The window's events aggregated the way a reader scans them: one row per (flow, kind), carrying the repeat
+    /// count, the most recent occurrence and its error, ordered failures first and most recent first inside a
+    /// kind. Public because it is also what a digest persists for structured display, so the GUI's table and the
+    /// composed message are the same grouping and can never disagree.
+    /// </summary>
+    public static List<NotificationFlowGroup> Group(IReadOnlyList<CatalogNotificationEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        return GroupEvents(events);
+    }
+
+    /// <summary>A single-line, length-bounded rendering of an error, as the message bodies show it.</summary>
+    public static string ErrorExcerpt(string error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        return Excerpt(error);
+    }
+
+    private static List<NotificationFlowGroup> GroupEvents(IReadOnlyList<CatalogNotificationEvent> events)
         => events
             .GroupBy(e => (e.FlowName, e.Kind))
             .Select(g =>
             {
                 var last = g.OrderBy(e => e.OccurredUtc).ThenBy(e => e.Id).Last();
-                return new FlowGroup(g.Key.FlowName, last.FlowKind, g.Key.Kind, g.Count(), last.OccurredUtc, last.RunId, last.Error);
+                return new NotificationFlowGroup(g.Key.FlowName, last.FlowKind, g.Key.Kind, g.Count(), last.OccurredUtc, last.RunId, last.Error);
             })
             .OrderBy(g => KindRank(g.Kind))
             .ThenByDescending(g => g.LastOccurredUtc)
@@ -132,9 +177,14 @@ public static class NotificationComposer
         _ => 3,
     };
 
-    private static string ComposeSubject(NotificationComposition composition, List<FlowGroup> groups)
+    private static string ComposeSubject(NotificationComposition composition, List<NotificationFlowGroup> groups)
     {
         var prefix = composition.Mode == NotificationModes.Digest ? "SQLFlow digest: " : "SQLFlow: ";
+        if (composition.Events.Count == 0)
+        {
+            return prefix + "no failures";
+        }
+
         if (composition.Events.Count == 1)
         {
             var only = groups[0];
@@ -172,17 +222,33 @@ public static class NotificationComposer
         _ => count == 1 ? "was skipped (upstream failure)" : $"skipped x{count.ToString(CultureInfo.InvariantCulture)} (upstream failures)",
     };
 
+    /// <summary>The one-line header under the subject. A digest states the period it was asked to cover (so an
+    /// all-clear window still says what was looked at); a subscription message, whose window is simply "since the
+    /// last message", states the span its own events cover.</summary>
     private static string WindowLine(NotificationComposition composition)
     {
+        var count = composition.Events.Count;
+        if (composition.Window is { } window)
+        {
+            var span = $"{Stamp(window.StartUtc)} and {Stamp(window.EndUtc)}";
+            return count == 0
+                ? $"No failures between {span}."
+                : $"{count.ToString(CultureInfo.InvariantCulture)} {Plural(count, "event", "events")} between {span}.";
+        }
+
+        if (count == 0)
+        {
+            return "No failures.";
+        }
+
         var first = composition.Events.Min(e => e.OccurredUtc);
         var last = composition.Events.Max(e => e.OccurredUtc);
-        var count = composition.Events.Count.ToString(CultureInfo.InvariantCulture);
-        return composition.Events.Count == 1
+        return count == 1
             ? $"At {Stamp(first)}."
-            : $"{count} events between {Stamp(first)} and {Stamp(last)}.";
+            : $"{count.ToString(CultureInfo.InvariantCulture)} events between {Stamp(first)} and {Stamp(last)}.";
     }
 
-    private static string ComposeText(NotificationComposition composition, List<FlowGroup> groups, string subject)
+    private static string ComposeText(NotificationComposition composition, List<NotificationFlowGroup> groups, string subject)
     {
         var text = new StringBuilder();
         text.AppendLine(subject);
@@ -225,12 +291,18 @@ public static class NotificationComposer
         return text.ToString();
     }
 
-    private static string ComposeHtml(NotificationComposition composition, List<FlowGroup> groups, string subject)
+    private static string ComposeHtml(NotificationComposition composition, List<NotificationFlowGroup> groups, string subject)
     {
         var html = new StringBuilder();
         html.Append("<div style=\"font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#1f2328\">");
         html.Append("<h2 style=\"font-size:16px;margin:0 0 4px\">").Append(WebUtility.HtmlEncode(subject)).Append("</h2>");
         html.Append("<p style=\"margin:0 0 12px;color:#57606a\">").Append(WebUtility.HtmlEncode(WindowLine(composition))).Append("</p>");
+        if (groups.Count == 0)
+        {
+            // An all-clear digest: an empty table would render as a stray hairline in every mail client.
+            html.Append("<p style=\"margin:0;color:#57606a\">Every run in this period either succeeded or is still running.</p>");
+        }
+
         html.Append("<table style=\"border-collapse:collapse;width:100%\">");
         foreach (var group in groups.Take(MaxFlowSections))
         {
@@ -280,7 +352,7 @@ public static class NotificationComposer
         return html.ToString();
     }
 
-    private static string ComposeSlackBlocks(NotificationComposition composition, List<FlowGroup> groups, string subject)
+    private static string ComposeSlackBlocks(NotificationComposition composition, List<NotificationFlowGroup> groups, string subject)
     {
         var blocks = new JsonArray
         {

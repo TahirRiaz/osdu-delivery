@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -8,6 +8,13 @@ namespace SqlFlow.Catalog;
 /// holds a fresher watermark or the single watermark row was just bootstrapped) and how many new events of each
 /// family were recorded.</summary>
 public sealed record NotificationDetectionResult(bool Scanned, int RunEvents, int AssertionEvents);
+
+/// <summary>One estate digest as a list reads it: identity, window, headline and counts, without the rendered
+/// bodies (kilobytes each) that only a reader opening the digest needs.</summary>
+public sealed record NotificationDigestSummary(
+    Guid Id, string Origin, DateTime PeriodStartUtc, DateTime PeriodEndUtc, DateTime GeneratedUtc,
+    Guid? GeneratedByUserId, string Subject, int EventCount, int FlowCount, int FailedCount, int CancelledCount,
+    int SkippedCount, int AssertionFailedCount, bool Truncated);
 
 /// <summary>
 /// Data access for the notification pipeline: event detection, subscription dispatch claims, and the delivery
@@ -445,13 +452,15 @@ public static class NotificationStore
     }
 
     /// <summary>
-    /// Prunes aged rows: events detected before <paramref name="eventsBeforeUtc"/> and terminal (sent / failed)
-    /// deliveries created before <paramref name="deliveriesBeforeUtc"/>. Queued and sending deliveries are never
-    /// pruned (undelivered work is not garbage). Deletes run in bounded batches so a large backlog never takes a
-    /// long lock; a backlog bigger than one sweep's budget is finished by later sweeps. Returns the rows removed.
+    /// Prunes aged rows: events detected before <paramref name="eventsBeforeUtc"/>, terminal (sent / failed)
+    /// deliveries created before <paramref name="deliveriesBeforeUtc"/>, and digests generated before
+    /// <paramref name="digestsBeforeUtc"/>. Queued and sending deliveries are never pruned (undelivered work is
+    /// not garbage). Deletes run in bounded batches so a large backlog never takes a long lock; a backlog bigger
+    /// than one sweep's budget is finished by later sweeps. Returns the rows removed.
     /// </summary>
-    public static async Task<(int Events, int Deliveries)> PurgeExpiredAsync(
-        CatalogDbContext catalog, DateTime eventsBeforeUtc, DateTime deliveriesBeforeUtc, CancellationToken ct = default)
+    public static async Task<(int Events, int Deliveries, int Digests)> PurgeExpiredAsync(
+        CatalogDbContext catalog, DateTime eventsBeforeUtc, DateTime deliveriesBeforeUtc, DateTime digestsBeforeUtc,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
@@ -485,7 +494,127 @@ public static class NotificationStore
             }
         }
 
-        return (events, deliveries);
+        var digests = 0;
+        for (var batch = 0; batch < MaxPurgeBatchesPerSweep; batch++)
+        {
+            var deleted = await catalog.Database.ExecuteSqlAsync(
+                $"DELETE TOP ({PurgeBatchSize}) FROM [catalog].[NotificationDigest] WHERE [GeneratedUtc] < {digestsBeforeUtc}",
+                ct).ConfigureAwait(false);
+            digests += deleted;
+            if (deleted < PurgeBatchSize)
+            {
+                break;
+            }
+        }
+
+        return (events, deliveries, digests);
+    }
+
+    /// <summary>The notification pipeline's single state row, or null before the first detection tick creates it.
+    /// The digest generator reads it to learn whether its window is due and where the previous one ended.</summary>
+    public static Task<CatalogNotificationWatermark?> GetWatermarkAsync(
+        CatalogDbContext catalog, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return catalog.NotificationWatermarks.AsNoTracking()
+            .FirstOrDefaultAsync(w => w.Id == CatalogNotificationWatermark.WellKnownId, ct);
+    }
+
+    /// <summary>
+    /// Atomically claims the scheduled digest window by advancing <see cref="CatalogNotificationWatermark.DigestDueUtc"/>
+    /// from the value the caller observed, and stamps the next window's start. Returns true only for the winner, so
+    /// when several control-plane replicas see the same window come due, exactly one generates its digest (the same
+    /// compare-and-swap the subscription dispatcher uses).
+    /// </summary>
+    public static async Task<bool> TryClaimDigestWindowAsync(
+        CatalogDbContext catalog, DateTime? observedDueUtc, DateTime newDueUtc, DateTime nowUtc,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var affected = await catalog.NotificationWatermarks
+            .Where(w => w.Id == CatalogNotificationWatermark.WellKnownId && w.DigestDueUtc == observedDueUtc)
+            .ExecuteUpdateAsync(w => w
+                .SetProperty(x => x.DigestDueUtc, newDueUtc)
+                .SetProperty(x => x.DigestPeriodStartUtc, nowUtc)
+                .SetProperty(x => x.UpdatedUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+        return affected > 0;
+    }
+
+    /// <summary>
+    /// The events one digest covers, oldest first: everything after <paramref name="afterEventId"/> that was
+    /// detected no later than <paramref name="toUtc"/>, optionally floored at <paramref name="fromUtc"/>. The
+    /// scheduled generator passes its cursor and no floor (so nothing detected late is ever skipped); a manual
+    /// generation passes a cursor of 0 and the window the caller asked for. Callers pass their cap + 1 to learn
+    /// whether the slice was truncated.
+    /// </summary>
+    public static async Task<List<CatalogNotificationEvent>> ListEventsForDigestAsync(
+        CatalogDbContext catalog, long afterEventId, DateTime? fromUtc, DateTime toUtc, int take,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var query = catalog.NotificationEvents.AsNoTracking()
+            .Where(e => e.Id > afterEventId && e.DetectedUtc <= toUtc);
+        if (fromUtc is { } floor)
+        {
+            query = query.Where(e => e.DetectedUtc >= floor);
+        }
+
+        return await query
+            .OrderBy(e => e.Id)
+            .Take(Math.Clamp(take, 1, 5000))
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Persists a generated digest and, for a scheduled one, advances the generator's cursor to what the digest
+    /// actually covered, in a single transaction: a crash can only ever repeat a window, never leave a covered
+    /// window unrecorded. <paramref name="newCursorEventId"/> is null for a manual digest, which is a report over
+    /// a window the caller chose and must never rob the next scheduled one. The cursor never moves backwards.
+    /// </summary>
+    public static async Task SaveDigestAsync(
+        CatalogDbContext catalog, CatalogNotificationDigest digest, long? newCursorEventId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(digest);
+        catalog.NotificationDigests.Add(digest);
+        if (newCursorEventId is { } cursor)
+        {
+            var watermark = await catalog.NotificationWatermarks.AsTracking()
+                .FirstOrDefaultAsync(w => w.Id == CatalogNotificationWatermark.WellKnownId, ct).ConfigureAwait(false);
+            if (watermark is not null && watermark.DigestCursorEventId < cursor)
+            {
+                watermark.DigestCursorEventId = cursor;
+                watermark.UpdatedUtc = digest.GeneratedUtc;
+            }
+        }
+
+        await catalog.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The digest list as the GUI shows it, newest first: headline and counts without the rendered
+    /// bodies, which are several kilobytes each and are only read when one digest is opened.</summary>
+    public static async Task<IReadOnlyList<NotificationDigestSummary>> ListDigestsAsync(
+        CatalogDbContext catalog, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return await catalog.NotificationDigests.AsNoTracking()
+            .OrderByDescending(d => d.GeneratedUtc).ThenByDescending(d => d.Id)
+            .Take(Math.Clamp(take, 1, 200))
+            .Select(d => new NotificationDigestSummary(
+                d.Id, d.Origin, d.PeriodStartUtc, d.PeriodEndUtc, d.GeneratedUtc, d.GeneratedByUserId, d.Subject,
+                d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount, d.AssertionFailedCount,
+                d.Truncated))
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>One digest with its rendered bodies, or null when it has been pruned or never existed.</summary>
+    public static Task<CatalogNotificationDigest?> GetDigestAsync(
+        CatalogDbContext catalog, Guid id, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return catalog.NotificationDigests.AsNoTracking().FirstOrDefaultAsync(d => d.Id == id, ct);
     }
 
     private static void AddParameter(DbCommand command, string name, object value)

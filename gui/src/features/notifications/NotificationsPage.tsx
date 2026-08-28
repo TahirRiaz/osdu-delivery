@@ -1,7 +1,12 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { BellPlus, BellRing, CircleCheck, CircleX, Clock3, Info, Loader2 } from "lucide-react";
+import { format } from "date-fns";
+import {
+  Ban, BellPlus, BellRing, CalendarClock, CircleCheck, CircleMinus, CircleX, Clock3, Info, Loader2,
+  RefreshCw, Send, SkipForward, TriangleAlert, type LucideIcon,
+} from "lucide-react";
+import { Link } from "react-router-dom";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,16 +21,24 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
 import { notificationApi } from "../../api/endpoints";
-import type { MyNotificationOptions, NotificationDelivery, NotificationSubscription } from "../../api/types";
+import type {
+  MyNotificationOptions, NotificationDelivery, NotificationDigestFlow, NotificationDigestSummary,
+  NotificationSubscription,
+} from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { CopyButton } from "../../components/CopyButton";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
+import { KpiCard } from "../../components/KpiCard";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
+import { OutcomePill } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
+import { parseUtc } from "../../lib/time";
 
 type Channel = NotificationSubscription["channel"];
 type Mode = NotificationSubscription["mode"];
@@ -102,20 +115,12 @@ function parseMinutes(raw: string): number | null {
 
 /** The delivery outcome pill (DESIGN.md 7.3): icon + label so color never carries the state alone. */
 function DeliveryStatusBadge({ status }: { status: NotificationDelivery["status"] }) {
-  const { classes, Icon } = status === "sent"
-    ? { classes: "bg-success/12 text-success", Icon: CircleCheck }
+  const visual = status === "sent"
+    ? { tone: "success" as const, icon: CircleCheck }
     : status === "failed"
-      ? { classes: "bg-destructive/12 text-destructive", Icon: CircleX }
-      : { classes: "bg-muted text-muted-foreground", Icon: Clock3 };
-  return (
-    <span
-      data-testid="delivery-status"
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ${classes}`}
-    >
-      <Icon className="size-3.5 shrink-0" />
-      {status}
-    </span>
-  );
+      ? { tone: "destructive" as const, icon: CircleX }
+      : { tone: "muted" as const, icon: Clock3 };
+  return <OutcomePill tone={visual.tone} label={status} icon={visual.icon} testId="delivery-status" />;
 }
 
 /** The one create/edit form, in a right side sheet: creating picks a channel, editing keeps it locked. */
@@ -396,8 +401,343 @@ function SubscriptionSheet({
   );
 }
 
+/** A UTC instant as a compact wall clock, for the two ends of a digest period. */
+function stamp(value: string): string {
+  return format(parseUtc(value), "MMM d, HH:mm");
+}
+
+/** Where a digest came from: the periodic generator, or the person who asked for one. */
+function originText(summary: NotificationDigestSummary): string {
+  if (summary.origin === "scheduled") {
+    return "Scheduled";
+  }
+
+  return summary.generatedBy === null ? "Manual" : `Manual, by ${summary.generatedBy}`;
+}
+
+/** The tone, word, and glyph one notification event kind wears, in the same language as a run's own status. */
+const KIND_VISUALS: Record<string, { tone: "destructive" | "warning" | "muted"; label: string; icon: LucideIcon }> = {
+  run_failed: { tone: "destructive", label: "failed", icon: CircleX },
+  assertion_failed: { tone: "warning", label: "assertions", icon: TriangleAlert },
+  run_cancelled: { tone: "muted", label: "cancelled", icon: Ban },
+  run_skipped: { tone: "muted", label: "skipped", icon: SkipForward },
+};
+
+/** One flow row's outcome, with its repeat count folded into the word: "failed", "failed x12". */
+function KindPill({ kind, count }: { kind: string; count: number }) {
+  const visual = KIND_VISUALS[kind] ?? { tone: "muted" as const, label: kind, icon: CircleMinus };
+  return (
+    <OutcomePill
+      tone={visual.tone}
+      label={count > 1 ? `${visual.label} x${count}` : visual.label}
+      icon={visual.icon}
+      testId="digest-kind"
+    />
+  );
+}
+
+/**
+ * The per-kind tally of one digest. Every chip carries its own noun, because four bare integers in a row cannot
+ * be attributed while the eye is on the row (DESIGN.md 7.8); zero-count kinds are left out entirely so a quiet
+ * window reads as quiet.
+ */
+function DigestBreakdown({ summary }: { summary: NotificationDigestSummary }) {
+  const parts: { key: string; label: string; className: string }[] = [];
+  if (summary.failedCount > 0) {
+    parts.push({ key: "failed", label: `${summary.failedCount} failed`, className: "text-destructive" });
+  }
+  if (summary.assertionFailedCount > 0) {
+    parts.push({
+      key: "assertions",
+      label: `${summary.assertionFailedCount} assertions`,
+      className: "text-warning",
+    });
+  }
+  if (summary.cancelledCount > 0) {
+    parts.push({ key: "cancelled", label: `${summary.cancelledCount} cancelled`, className: "" });
+  }
+  if (summary.skippedCount > 0) {
+    parts.push({ key: "skipped", label: `${summary.skippedCount} skipped`, className: "" });
+  }
+
+  if (parts.length === 0) {
+    return <span className="text-[13px] text-muted-foreground">All clear</span>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {parts.map((part) => (
+        <Badge key={part.key} variant="outline" className={part.className}>{part.label}</Badge>
+      ))}
+    </div>
+  );
+}
+
+/** The four headline numbers of a digest, in the dashboard's own tile (DESIGN.md 7.7). */
+function DigestKpis({ summary }: { summary: NotificationDigestSummary }) {
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <KpiCard label="Events" value={summary.eventCount} testId="digest-kpi-events" />
+      <KpiCard label="Flows" value={summary.flowCount} testId="digest-kpi-flows" />
+      <KpiCard
+        label="Failed"
+        value={summary.failedCount}
+        color={summary.failedCount > 0 ? "error" : undefined}
+        testId="digest-kpi-failed"
+      />
+      <KpiCard
+        label="Assertions"
+        value={summary.assertionFailedCount}
+        color={summary.assertionFailedCount > 0 ? "warning" : undefined}
+        testId="digest-kpi-assertions"
+      />
+    </div>
+  );
+}
+
+/** The cap the server applies when it persists a digest's per-flow rows; the GUI says so rather than implying none. */
+const DIGEST_MAX_FLOW_ROWS = 200;
+
+const DIGEST_FLOW_HEADERS = ["Flow", "Outcome", "Last", "Error", ""];
+
+/** The digest's own table: one row per flow and outcome, newest and most alarming first, each opening its run. */
+function DigestFlows({ flows, unlisted }: { flows: NotificationDigestFlow[]; unlisted: number }) {
+  if (flows.length === 0) {
+    return (
+      <EmptyState
+        icon={<CircleCheck />}
+        title="Nothing failed in this period"
+        description="Every run either succeeded or is still going."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="digest-flows">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              {DIGEST_FLOW_HEADERS.map((header) => (
+                <TableHead
+                  key={header}
+                  className="h-8 whitespace-nowrap px-3 text-xs font-medium text-muted-foreground"
+                >
+                  {header}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {flows.map((flow) => (
+              <TableRow key={`${flow.flowName}-${flow.kind}`} data-testid="digest-flow-row">
+                <TableCell className="max-w-[260px] px-3 py-1.5">
+                  <div className="flex flex-col">
+                    <TruncatedText text={flow.flowName} maxWidth={260} mono />
+                    <span className="text-[11px] text-muted-foreground">{flow.flowKind}</span>
+                  </div>
+                </TableCell>
+                <TableCell className="whitespace-nowrap px-3 py-1.5">
+                  <KindPill kind={flow.kind} count={flow.count} />
+                </TableCell>
+                <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                  <RelativeTime value={flow.lastOccurredUtc} />
+                </TableCell>
+                <TableCell className="max-w-[280px] px-3 py-1.5 text-[13px]">
+                  {flow.lastError === null || flow.lastError === "" ? (
+                    <span className="text-muted-foreground">-</span>
+                  ) : (
+                    <TruncatedText text={flow.lastError} maxWidth={280} />
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap px-3 py-1.5 text-right">
+                  <Button variant="ghost" size="xs" asChild data-testid="digest-flow-run">
+                    <Link to={`/runs/${flow.lastRunId}`}>Open run</Link>
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Card>
+      {unlisted > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {`${unlisted} further event${unlisted === 1 ? "" : "s"} in this window are counted above but not listed: a digest tabulates its ${DIGEST_MAX_FLOW_ROWS} most alarming flows.`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One digest opened for reading: its headline numbers, the per-flow table behind them, and the message exactly as
+ * it would be delivered. The delivered text is a second view rather than the main one, because the reader here is
+ * an operator triaging flows, not an inbox; it stays available because it is what actually goes out, and checking
+ * it before pressing Send is the point of having it.
+ */
+function DigestSheet({
+  digestId,
+  userEmail,
+  subscriptions,
+  onClose,
+}: {
+  digestId: string;
+  userEmail: string | null;
+  subscriptions: NotificationSubscription[];
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [subscriptionId, setSubscriptionId] = useState(subscriptions[0]?.id ?? "");
+  const [view, setView] = useState<"flows" | "message">("flows");
+
+  const digestQuery = useQuery({
+    queryKey: ["notification-digests", digestId],
+    queryFn: () => notificationApi.getDigest(digestId),
+  });
+
+  const send = useMutation({
+    mutationFn: () => notificationApi.sendDigest(digestId, { subscriptionId }),
+    onSuccess: () => {
+      toast.success("Digest queued for delivery.");
+      void queryClient.invalidateQueries({ queryKey: ["me-notifications", "deliveries"] });
+    },
+    onError: (error) => toast.error(errorText(error)),
+  });
+
+  const digest = digestQuery.data;
+  const listed = digest === undefined ? 0 : digest.flows.reduce((total, flow) => total + flow.count, 0);
+  const unlisted = digest === undefined ? 0 : Math.max(0, digest.summary.eventCount - listed);
+
+  return (
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        if (!next && !send.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-xl" data-testid="digest-dialog">
+        <SheetHeader className="gap-1">
+          <SheetTitle className="pr-6 text-[15px]">
+            {digest === undefined ? "Digest" : digest.summary.subject}
+          </SheetTitle>
+          {digest !== undefined && (
+            <p className="text-xs text-muted-foreground">
+              <span className="font-mono tabular-nums">
+                {`${stamp(digest.summary.periodStartUtc)} to ${stamp(digest.summary.periodEndUtc)}`}
+              </span>
+              {` · ${originText(digest.summary)}`}
+            </p>
+          )}
+        </SheetHeader>
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4">
+          {digestQuery.isError && (
+            isApiError(digestQuery.error)
+              ? <CorrelationError error={digestQuery.error} />
+              : <p className="text-[13px] text-destructive">{errorText(digestQuery.error)}</p>
+          )}
+          {digest === undefined && !digestQuery.isError && (
+            <>
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-64 w-full" />
+            </>
+          )}
+          {digest !== undefined && (
+            <>
+              <DigestKpis summary={digest.summary} />
+
+              {digest.summary.truncated && (
+                <Alert>
+                  <Info />
+                  <AlertDescription>
+                    The window held more events than one digest covers. The remainder is carried into the next
+                    scheduled digest rather than dropped.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              <Tabs value={view} onValueChange={(next) => setView(next as "flows" | "message")}>
+                <TabsList>
+                  <TabsTrigger value="flows" data-testid="digest-tab-flows">Flows</TabsTrigger>
+                  <TabsTrigger value="message" data-testid="digest-tab-message">Delivered message</TabsTrigger>
+                </TabsList>
+                <TabsContent value="flows" className="mt-3">
+                  <DigestFlows flows={digest.flows} unlisted={unlisted} />
+                </TabsContent>
+                <TabsContent value="message" className="mt-3">
+                  <pre
+                    className="max-h-[55vh] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap"
+                    data-testid="digest-body"
+                  >
+                    {digest.textBody}
+                  </pre>
+                </TabsContent>
+              </Tabs>
+            </>
+          )}
+        </div>
+        <SheetFooter className="flex-row items-center justify-end gap-2">
+          {digest !== undefined && (
+            <CopyButton label="Copy" text={digest.textBody} testId="digest-copy" />
+          )}
+          {subscriptions.length > 0 ? (
+            <>
+              <Select value={subscriptionId} onValueChange={setSubscriptionId}>
+                <SelectTrigger size="sm" className="h-8 w-56" data-testid="digest-send-subscription">
+                  <SelectValue placeholder="Send through..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {subscriptions.map((subscription) => (
+                    <SelectItem key={subscription.id} value={subscription.id}>
+                      {`${CHANNEL_LABELS[subscription.channel]}: ${destinationText(subscription, userEmail)}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                onClick={() => send.mutate()}
+                disabled={digest === undefined || subscriptionId === "" || send.isPending}
+                data-testid="digest-send"
+              >
+                {send.isPending ? <Loader2 className="animate-spin" /> : <Send />}
+                Send
+              </Button>
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Create a subscription above to send a digest to email or Slack.
+            </span>
+          )}
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 const SUBSCRIPTION_HEADERS = ["Channel", "Pacing", "Events", "Flows", "Destination", "Enabled", "Last sent", "Actions"];
 const DELIVERY_HEADERS = ["Subject", "Channel", "Target", "Status", "Attempts", "Created", "Error"];
+const DIGEST_HEADERS = ["Subject", "Period", "Events", "Flows", "Breakdown", "Origin", "Generated", ""];
+const DIGEST_RIGHT_ALIGNED = new Set(["Events", "Flows", ""]);
+
+/** The windows offered for an on-demand digest: an hour, six hours, a day, three days, a week, 30 days. */
+const WINDOW_CHOICES = [60, 360, 1440, 4320, 10080, 43200];
+
+/** The offered windows narrowed to what this deployment accepts, always including its own default. */
+function windowOptions(options: MyNotificationOptions | undefined): number[] {
+  if (options === undefined) {
+    return WINDOW_CHOICES;
+  }
+
+  const { minWindowMinutes, maxWindowMinutes, defaultWindowMinutes } = options.estateDigest;
+  const choices = new Set(WINDOW_CHOICES.filter((m) => m >= minWindowMinutes && m <= maxWindowMinutes));
+  if (defaultWindowMinutes >= minWindowMinutes && defaultWindowMinutes <= maxWindowMinutes) {
+    choices.add(defaultWindowMinutes);
+  }
+
+  return [...choices].sort((a, b) => a - b);
+}
 
 /** Skeleton rows for one of the hand-rolled tables while its query loads. */
 function SkeletonRows({ headers, count }: { headers: string[]; count: number }) {
@@ -425,6 +765,9 @@ export default function NotificationsPage() {
 
   const [sheet, setSheet] = useState<{ subscription: NotificationSubscription | null } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<NotificationSubscription | null>(null);
+  const [openDigestId, setOpenDigestId] = useState<string | null>(null);
+  // Null follows the deployment default, which is only known once the options query lands.
+  const [digestWindow, setDigestWindow] = useState<number | null>(null);
 
   const optionsQuery = useQuery({ queryKey: ["me-notifications", "options"], queryFn: notificationApi.options });
   const subscriptionsQuery = useQuery({
@@ -435,10 +778,17 @@ export default function NotificationsPage() {
     queryKey: ["me-notifications", "deliveries"],
     queryFn: () => notificationApi.listDeliveries(50),
   });
+  const digestsQuery = useQuery({
+    queryKey: ["notification-digests", "list"],
+    queryFn: () => notificationApi.listDigests(50),
+  });
 
   const options = optionsQuery.data;
   const subscriptions = subscriptionsQuery.data;
   const deliveries = deliveriesQuery.data;
+  const digests = digestsQuery.data;
+  const windowChoices = windowOptions(options);
+  const selectedWindow = digestWindow ?? options?.estateDigest.defaultWindowMinutes ?? 1440;
   const channelAvailable = options !== undefined && (options.email.available || options.slack.available);
   const notConfigured =
     options !== undefined && (!options.enabled || (!options.email.available && !options.slack.available));
@@ -462,6 +812,20 @@ export default function NotificationsPage() {
     onError: (error) => toast.error(errorText(error)),
   });
 
+  const generate = useMutation({
+    mutationFn: () => notificationApi.generateDigest({ windowMinutes: selectedWindow }),
+    onSuccess: (digest) => {
+      toast.success(
+        digest.summary.eventCount === 0
+          ? "Digest generated: nothing failed in that window."
+          : `Digest generated: ${digest.summary.eventCount} event(s) across ${digest.summary.flowCount} flow(s).`);
+      void queryClient.invalidateQueries({ queryKey: ["notification-digests"] });
+      // Generating is how a reader asks to SEE one, so open it rather than leaving them to find the row.
+      setOpenDigestId(digest.summary.id);
+    },
+    onError: (error) => toast.error(errorText(error)),
+  });
+
   const remove = useMutation({
     mutationFn: (subscription: NotificationSubscription) => notificationApi.deleteSubscription(subscription.id),
     onSuccess: () => {
@@ -479,7 +843,7 @@ export default function NotificationsPage() {
     <Page data-testid="page-notifications">
       <PageHeader
         title="Notifications"
-        subtitle="Get an email or Slack message when your flows fail, are cancelled or skipped, or fail assertions. Immediate subscriptions respect a per-subscription cooldown; digest subscriptions bundle events on an interval."
+        subtitle="Get an email or Slack message when your flows fail, are cancelled or skipped, or fail assertions. Immediate subscriptions respect a per-subscription cooldown; digest subscriptions bundle events on an interval. Estate digests below are written on a schedule whether or not anyone subscribes, and can be generated on demand."
         actions={(
           <Button
             size="sm"
@@ -630,6 +994,133 @@ export default function NotificationsPage() {
       </Card>
 
       <div className="flex flex-col gap-2">
+        <div>
+          <h2 className="text-base font-medium">Estate digests</h2>
+          <p className="text-[13px] text-muted-foreground">
+            {options?.estateDigest.enabled === false
+              ? "Periodic generation is turned off on this deployment, so digests appear here only when someone asks for one."
+              : `One digest is written every ${formatMinutes(options?.estateDigest.intervalMinutes ?? 1440)}, whether or not anyone subscribes to it. Generate one now to read the window you choose.`}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={String(selectedWindow)}
+            onValueChange={(value) => setDigestWindow(Number(value))}
+            disabled={generate.isPending}
+          >
+            <SelectTrigger size="sm" className="h-8 w-44" data-testid="digest-window">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {windowChoices.map((minutes) => (
+                <SelectItem key={minutes} value={String(minutes)}>{`Last ${formatMinutes(minutes)}`}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => generate.mutate()}
+            disabled={generate.isPending || options === undefined}
+            data-testid="generate-digest"
+          >
+            {generate.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            Generate now
+          </Button>
+        </div>
+
+        {digestsQuery.isError && (
+          isApiError(digestsQuery.error)
+            ? <CorrelationError error={digestsQuery.error} />
+            : <p className="text-[13px] text-destructive">{errorText(digestsQuery.error)}</p>
+        )}
+
+        <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="digests-table">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                {DIGEST_HEADERS.map((header) => (
+                  <TableHead
+                    key={header}
+                    className={`h-8 whitespace-nowrap px-3 text-xs font-medium text-muted-foreground${DIGEST_RIGHT_ALIGNED.has(header) ? " text-right" : ""}`}
+                  >
+                    {header}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {digests === undefined && !digestsQuery.isError && (
+                <SkeletonRows headers={DIGEST_HEADERS} count={3} />
+              )}
+              {digests !== undefined && digests.length === 0 && (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={DIGEST_HEADERS.length} className="border-0 p-0">
+                    <EmptyState
+                      icon={<CalendarClock />}
+                      title="No digests yet"
+                      description="The control plane writes one each period. You can also generate one now over any window."
+                      action={(
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => generate.mutate()}
+                          disabled={generate.isPending || options === undefined}
+                        >
+                          Generate now
+                        </Button>
+                      )}
+                    />
+                  </TableCell>
+                </TableRow>
+              )}
+              {digests?.map((digest) => (
+                <TableRow
+                  key={digest.id}
+                  data-testid="digest-row"
+                  className="cursor-pointer"
+                  onClick={() => setOpenDigestId(digest.id)}
+                >
+                  <TableCell className="max-w-[320px] px-3 py-1.5 text-[13px]">
+                    <TruncatedText text={digest.subject} maxWidth={320} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 font-mono text-[12px] tabular-nums">
+                    {`${stamp(digest.periodStartUtc)} to ${stamp(digest.periodEndUtc)}`}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[13px] tabular-nums">
+                    {digest.eventCount}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[13px] tabular-nums">
+                    {digest.flowCount}
+                  </TableCell>
+                  <TableCell className="px-3 py-1.5">
+                    <DigestBreakdown summary={digest} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">{originText(digest)}</TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                    <RelativeTime value={digest.generatedUtc} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-right">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenDigestId(digest.id);
+                      }}
+                      data-testid="digest-open"
+                    >
+                      Open
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      </div>
+
+      <div className="flex flex-col gap-2">
         <h2 className="text-base font-medium">Recent deliveries</h2>
         {deliveriesQuery.isError && (
           isApiError(deliveriesQuery.error)
@@ -687,6 +1178,15 @@ export default function NotificationsPage() {
           </Table>
         </Card>
       </div>
+
+      {openDigestId !== null && (
+        <DigestSheet
+          digestId={openDigestId}
+          userEmail={options?.userEmail ?? null}
+          subscriptions={subscriptions ?? []}
+          onClose={() => setOpenDigestId(null)}
+        />
+      )}
 
       {sheet !== null && options !== undefined && (
         <SubscriptionSheet

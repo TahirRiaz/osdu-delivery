@@ -1,4 +1,4 @@
-namespace SqlFlow.Catalog;
+﻿namespace SqlFlow.Catalog;
 
 /// <summary>
 /// The lifecycle states a <see cref="CatalogRun"/> moves through, stored as a short lowercase string so the value
@@ -1865,9 +1865,113 @@ public class CatalogNotificationWatermark
     /// <summary>The high-water mark: runs written at or before this instant have been scanned.</summary>
     public DateTime RunsWatermarkUtc { get; set; }
 
+    /// <summary>When the estate digest generator may next produce a scheduled digest: the end of the current
+    /// digest window, advanced to the next boundary on every claim. Null until the first tick observes the row
+    /// (which arms it without generating, so a fresh deployment never emits a digest over unknown history). The
+    /// generator claims a due window by compare-and-swapping this instant, exactly as a subscription window is
+    /// claimed, so several control-plane replicas never generate the same digest twice.</summary>
+    public DateTime? DigestDueUtc { get; set; }
+
+    /// <summary>The start of the window currently accumulating: the previous scheduled digest's period end.
+    /// Stamped with "now" on every claim, so the periods of consecutive scheduled digests chain without a gap.</summary>
+    public DateTime? DigestPeriodStartUtc { get; set; }
+
+    /// <summary>The scheduled generator's cursor over the event stream: the highest
+    /// <see cref="CatalogNotificationEvent.Id"/> a scheduled digest has covered. Events above it are pending for
+    /// the next one, so a window is never skipped and never reported twice, whatever the detection latency.</summary>
+    public long DigestCursorEventId { get; set; }
+
     public DateTime UpdatedUtc { get; set; }
 }
 
+
+/// <summary>What produced a <see cref="CatalogNotificationDigest"/>, stored as a short lowercase string.</summary>
+public static class NotificationDigestOrigins
+{
+    /// <summary>The control plane's own periodic generation: one digest per configured interval, produced whether
+    /// or not anybody subscribes, so the estate always has a standing record of what went wrong in each window.</summary>
+    public const string Scheduled = "scheduled";
+
+    /// <summary>Generated on demand by a person from the GUI over a window they chose. Manual digests are reports
+    /// only: they never move the scheduled cursor, so asking for one never robs the next scheduled digest.</summary>
+    public const string Manual = "manual";
+
+    public static bool IsKnown(string origin) => origin is Scheduled or Manual;
+}
+
+/// <summary>
+/// One estate digest: a composed, persisted summary of every notification event in a window, produced
+/// independently of any subscription. The control plane generates one per configured interval, and a person can
+/// generate one on demand over any window, so "what failed yesterday" is answerable in the GUI on a deployment
+/// with no channel configured and nobody subscribed. The rendered bodies are stored (text, HTML and Block Kit),
+/// which is what makes a digest both readable in the GUI and sendable to a channel later without recomposing it
+/// from events that retention may since have pruned.
+/// </summary>
+public class CatalogNotificationDigest
+{
+    public Guid Id { get; set; }
+
+    /// <summary>What produced it (see <see cref="NotificationDigestOrigins"/>).</summary>
+    public string Origin { get; set; } = NotificationDigestOrigins.Scheduled;
+
+    /// <summary>The window's start; for a scheduled digest, the previous scheduled digest's period end, so
+    /// consecutive periods chain without a gap.</summary>
+    public DateTime PeriodStartUtc { get; set; }
+
+    /// <summary>The window's end: the instant the digest was generated at.</summary>
+    public DateTime PeriodEndUtc { get; set; }
+
+    /// <summary>When the digest row was written (equal to <see cref="PeriodEndUtc"/> for both origins today, kept
+    /// separate because it is the retention and list-ordering column).</summary>
+    public DateTime GeneratedUtc { get; set; }
+
+    /// <summary>The user who asked for a manual digest (<see cref="CatalogUser.Id"/>, a soft link); null for a
+    /// scheduled one.</summary>
+    public Guid? GeneratedByUserId { get; set; }
+
+    /// <summary>How many events the digest covers.</summary>
+    public int EventCount { get; set; }
+
+    /// <summary>How many distinct flows those events came from.</summary>
+    public int FlowCount { get; set; }
+
+    /// <summary>Per-kind counts, so the digest list reads without parsing a body.</summary>
+    public int FailedCount { get; set; }
+
+    public int CancelledCount { get; set; }
+
+    public int SkippedCount { get; set; }
+
+    public int AssertionFailedCount { get; set; }
+
+    /// <summary>The event-id range covered; both 0 when the window held no events.</summary>
+    public long FirstEventId { get; set; }
+
+    public long LastEventId { get; set; }
+
+    /// <summary>Whether the window held more events than one digest renders; the remainder is covered by the next
+    /// scheduled digest (the cursor advanced only over what was taken).</summary>
+    public bool Truncated { get; set; }
+
+    /// <summary>The headline, identical to the subject a delivery of this digest would carry.</summary>
+    public string Subject { get; set; } = string.Empty;
+
+    /// <summary>The plain-text rendering (the GUI's copy view, and an email's text alternative).</summary>
+    public string TextBody { get; set; } = string.Empty;
+
+    /// <summary>The HTML rendering: what the GUI displays, and what an email delivery of this digest carries.</summary>
+    public string HtmlBody { get; set; } = string.Empty;
+
+    /// <summary>The Block Kit JSON (an array of blocks) a Slack delivery of this digest carries.</summary>
+    public string SlackBlocksJson { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The window's events grouped per flow, as a JSON array: what the GUI renders as the digest's table. Stored
+    /// rather than recomputed because a digest outlives the events behind it (events are pruned in weeks, digests
+    /// kept for a year), so a digest read later still shows which flows failed and why, not just a total.
+    /// </summary>
+    public string GroupsJson { get; set; } = string.Empty;
+}
 /// <summary>
 /// One GUI chat conversation with the SQLFlow assistant: the durable transcript the assistant's
 /// provider-side state is only a cache of (exactly as a Slack thread is for the Slack bot). Owned

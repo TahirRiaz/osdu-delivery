@@ -1,4 +1,4 @@
-// The control plane API contracts, mirrored by hand from src/SqlFlow.ControlPlane/Api/Contracts.cs and the
+﻿// The control plane API contracts, mirrored by hand from src/SqlFlow.ControlPlane/Api/Contracts.cs and the
 // endpoint DTOs. Property names are the camelCase form System.Text.Json emits. All timestamps are UTC and may
 // arrive without a timezone suffix; parse them with parseUtc from ../lib/time.
 
@@ -1600,6 +1600,20 @@ export interface MyNotificationOptions {
   userEmail: string | null;
   defaultDigestIntervalMinutes: number;
   defaultCooldownMinutes: number;
+  /** How this deployment produces estate digests, and the bounds an on-demand window must fall inside. */
+  estateDigest: EstateDigestOptions;
+}
+
+/** The deployment's estate-digest cadence: what the periodic generator does, and what a manual window may ask for. */
+export interface EstateDigestOptions {
+  /** Whether the control plane generates a digest on its own schedule. */
+  enabled: boolean;
+  /** The period between scheduled digests, in minutes. */
+  intervalMinutes: number;
+  /** The window a manual digest covers unless the caller names another. */
+  defaultWindowMinutes: number;
+  minWindowMinutes: number;
+  maxWindowMinutes: number;
 }
 
 export interface NotificationSubscription {
@@ -1663,9 +1677,68 @@ export interface NotificationDelivery {
   sentUtc: string | null;
 }
 
-/** The accepted test send: the delivery to watch for in the recent-deliveries list. */
-export interface NotificationTestSend {
+/** An accepted send (a test message, a digest): the delivery to watch for in the recent-deliveries list. */
+export interface NotificationQueuedDelivery {
   deliveryId: string;
+}
+
+/**
+ * One estate digest as a list shows it: a composed summary of every notification event in a window. The control
+ * plane generates one per configured period whether or not anybody subscribes, and a person can generate one on
+ * demand, so "what failed last night" is answerable even on a deployment with no channel configured.
+ */
+export interface NotificationDigestSummary {
+  id: string;
+  /** "scheduled" for the periodic generator, "manual" for one a person asked for. */
+  origin: "scheduled" | "manual";
+  periodStartUtc: string;
+  periodEndUtc: string;
+  generatedUtc: string;
+  /** Who asked for a manual digest; null for a scheduled one (and for a deleted account). */
+  generatedBy: string | null;
+  subject: string;
+  eventCount: number;
+  flowCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  skippedCount: number;
+  assertionFailedCount: number;
+  /** The window held more events than one digest renders; the rest are carried into the next scheduled digest. */
+  truncated: boolean;
+}
+
+/**
+ * One flow's slice of a digest: what happened to it in the window, how often, and the run worth opening. `kind`
+ * is the notification event kind ("run_failed", "assertion_failed", ...), not a run status.
+ */
+export interface NotificationDigestFlow {
+  flowName: string;
+  flowKind: string;
+  kind: string;
+  count: number;
+  lastOccurredUtc: string;
+  lastRunId: string;
+  lastError: string | null;
+}
+
+/** One digest opened for reading: the summary, the per-flow rows behind it, and the composed bodies. */
+export interface NotificationDigest {
+  summary: NotificationDigestSummary;
+  /** The per-flow table, most alarming first; empty when the window was quiet. */
+  flows: NotificationDigestFlow[];
+  /** The message exactly as it would be delivered (an email's text alternative, Slack's fallback). */
+  textBody: string;
+  htmlBody: string;
+}
+
+/** Generates a digest over the last windowMinutes; omit to use the deployment's configured period. */
+export interface GenerateNotificationDigestRequest {
+  windowMinutes?: number;
+}
+
+/** Sends an already-generated digest through one of the caller's own subscriptions. */
+export interface SendNotificationDigestRequest {
+  subscriptionId: string;
 }
 
 // ---- Maintenance (run-trace storage retention) ------------------------------------------------------------------
@@ -1825,6 +1898,115 @@ export interface StepInsights {
   fromUtc: string;
   sampleRunId: string | null;
   steps: StepInsight[];
+}
+
+// ---- DataStream anomaly detection -----------------------------------------------------------------------------------------------
+
+/** The ensemble's verdict on a stream. "stalled" means data has stopped arriving; "degraded" means two or
+ * more independent detectors agree something is wrong; "watch" is a single detector's lead; "healthy" is
+ * every detector quiet; "insufficient-history" means there were too few loads to judge. */
+export type StreamStatus = "stalled" | "degraded" | "watch" | "healthy" | "insufficient-history";
+
+/** The five independent tests that vote. Two agreeing is the confirmation bar: no single detector, at any
+ * strength, can raise a critical on its own. */
+export type StreamDetectorName = "silence" | "cadence" | "volumeOutlier" | "levelShift" | "rateCollapse";
+
+/** One detector's verdict. Detectors that stayed quiet are reported too, with what they measured, so a
+ * healthy stream is auditable rather than merely asserted. */
+export interface StreamSignal {
+  detector: StreamDetectorName;
+  fired: boolean;
+  /** Confidence in [0, 1]: 0 at the firing boundary, 1 where the evidence is unambiguous. */
+  score: number;
+  detail: string;
+}
+
+/** A stream's measured normal: how much it writes, how often, and where it is trending. cadenceSource says
+ * whether expectedGapDays came from the stream's cron ("schedule") or from its own history ("observed"). */
+export interface StreamProfile {
+  cadence: string;
+  expectedGapDays: number;
+  cadenceSource: "schedule" | "observed";
+  maxObservedGapDays: number;
+  lastLoadUtc: string | null;
+  lastRunUtc: string | null;
+  /** Null means the stream has never loaded (never in this window). */
+  daysSinceLastLoad: number | null;
+  daysSinceLastRun: number | null;
+  runDays: number;
+  loadedDays: number;
+  runs: number;
+  failures: number;
+  totalRowsInserted: number;
+  totalRowsUpdated: number;
+  totalRowsDeleted: number;
+  avgRowsInsertedPerRun: number;
+  avgRowsUpdatedPerRun: number;
+  avgRowsDeletedPerRun: number;
+  avgRowsWrittenPerLoadedDay: number;
+  medianRowsWrittenPerLoadedDay: number;
+  trendRowsPerDay: number;
+}
+
+/** One analysed day: what arrived, what was expected, and how the point was judged. */
+export interface StreamPoint {
+  date: string;
+  rowsWritten: number;
+  rowsInserted: number;
+  rowsUpdated: number;
+  rowsDeleted: number;
+  runs: number;
+  failures: number;
+  /** Backfill runs on the day, excluded from every number above and from the analysis. */
+  excludedBackfillRuns: number;
+  expected: number;
+  severity: number;
+  anomaly: boolean;
+  reason: string | null;
+  imputed: boolean;
+  immature: boolean;
+}
+
+/** One data stream: a flow, the table it writes, and the verdict. series is null on the board and populated
+ * on the single-stream endpoint. */
+export interface DataStream {
+  pipelineId: string;
+  flowName: string;
+  flowKind: string;
+  batch: string | null;
+  active: boolean;
+  targetObject: string | null;
+  scheduleName: string | null;
+  cron: string | null;
+  timezone: string | null;
+  status: StreamStatus;
+  category: string;
+  severity: InsightSeverity;
+  confidence: number;
+  agreeingDetectors: number;
+  summary: string;
+  profile: StreamProfile;
+  signals: StreamSignal[];
+  series: StreamPoint[] | null;
+}
+
+/** The board: every analysed stream ranked most urgent first, plus the state counts. The counts cover every
+ * ANALYSED stream, so totalStreams versus analyzedStreams says whether the sweep was capped. */
+export interface DataStreams {
+  windowDays: number;
+  fromUtc: string;
+  asOfUtc: string;
+  includeBackfills: boolean;
+  scheduledOnly: boolean;
+  totalStreams: number;
+  analyzedStreams: number;
+  excludedBackfillRuns: number;
+  stalledCount: number;
+  degradedCount: number;
+  watchCount: number;
+  healthyCount: number;
+  insufficientHistoryCount: number;
+  streams: DataStream[];
 }
 
 // ---- Warehouse health probe results (compute-task result shapes) ---------------------------------------------------------------

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 
 namespace SqlFlow.Catalog;
 
@@ -94,6 +94,9 @@ public sealed class CatalogDbContext : DbContext
     public DbSet<CatalogNotificationDelivery> NotificationDeliveries => Set<CatalogNotificationDelivery>();
 
     public DbSet<CatalogNotificationWatermark> NotificationWatermarks => Set<CatalogNotificationWatermark>();
+
+    /// <summary>The estate digests: periodic and on-demand summaries of the notification event stream.</summary>
+    public DbSet<CatalogNotificationDigest> NotificationDigests => Set<CatalogNotificationDigest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -658,6 +661,24 @@ public sealed class CatalogDbContext : DbContext
             entity.HasKey(w => w.Id);
             // The single row's id is assigned by code (WellKnownId), never by the database.
             entity.Property(w => w.Id).ValueGeneratedNever();
+        });
+
+        modelBuilder.Entity<CatalogNotificationDigest>(entity =>
+        {
+            entity.ToTable("NotificationDigest");
+            entity.HasKey(d => d.Id);
+            entity.Property(d => d.Origin).HasMaxLength(16).IsRequired();
+            entity.Property(d => d.Subject).HasMaxLength(512).IsRequired();
+            // TextBody / HtmlBody / SlackBlocksJson / GroupsJson are nvarchar(max): rendered message content and
+            // the persisted per-flow grouping have no useful column bound (both are capped in the composer).
+            entity.Property(d => d.TextBody).IsRequired();
+            entity.Property(d => d.HtmlBody).IsRequired();
+            entity.Property(d => d.SlackBlocksJson).IsRequired();
+            entity.Property(d => d.GroupsJson).IsRequired();
+            // The GUI list (newest first) and the retention prune both read this column.
+            entity.HasIndex(d => d.GeneratedUtc);
+            // "The latest scheduled digest": the generator's self-healing check that a window is not re-covered.
+            entity.HasIndex(d => new { d.Origin, d.PeriodEndUtc });
         });
 
         modelBuilder.Entity<CatalogChatConversation>(entity =>

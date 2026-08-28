@@ -1,10 +1,28 @@
-using Microsoft.Extensions.Options;
+﻿using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.ControlPlane.Notifications;
 using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.ControlPlane.Background;
+
+/// <summary>What one estate digest tick decided.</summary>
+public enum DigestTickOutcome
+{
+    /// <summary>Nothing to do: no state row yet, the window is not due, or another replica owns it.</summary>
+    Idle,
+
+    /// <summary>The digest clock was armed for the first time; the first window starts now.</summary>
+    Armed,
+
+    /// <summary>The due window was claimed and its digest written.</summary>
+    Generated,
+}
+
+/// <summary>One digest tick's outcome: what it decided, when the next window falls due, and the digest it wrote
+/// (non-null exactly when <see cref="Outcome"/> is <see cref="DigestTickOutcome.Generated"/>).</summary>
+public sealed record NotificationDigestTick(
+    DigestTickOutcome Outcome, DateTime NextDueUtc, CatalogNotificationDigest? Digest);
 
 /// <summary>
 /// The notification pipeline's engine room: each tick detects new failure events from the run history, turns due
@@ -105,6 +123,7 @@ public sealed partial class NotificationService : BackgroundService
     private async Task TickAsync(CancellationToken ct)
     {
         await RunPhaseAsync(DetectAsync, "detection", ct).ConfigureAwait(false);
+        await RunPhaseAsync(DigestAsync, "digest", ct).ConfigureAwait(false);
         await RunPhaseAsync(DispatchAsync, "dispatch", ct).ConfigureAwait(false);
         await RunPhaseAsync(SendAsync, "send", ct).ConfigureAwait(false);
         await RunPhaseAsync(HousekeepAsync, "housekeeping", ct).ConfigureAwait(false);
@@ -140,6 +159,103 @@ public sealed partial class NotificationService : BackgroundService
         {
             LogDetected(result.RunEvents, result.AssertionEvents);
         }
+    }
+
+    /// <summary>
+    /// The estate digest: one persisted summary per configured period, generated whether or not anybody subscribes
+    /// and whether or not a channel is configured. The window is claimed by compare-and-swapping the watermark's
+    /// due instant, so several replicas produce one digest between them, and it chains on the generator's event
+    /// cursor, so no event falls between two windows however late it was detected.
+    /// </summary>
+    private async Task DigestAsync(CancellationToken ct)
+    {
+        if (!_options.DigestEnabled)
+        {
+            return;
+        }
+
+        await using var scope = _services.CreateAsyncScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var tick = await RunDigestTickAsync(
+            catalog, _clock.GetUtcNow().UtcDateTime, _options.DigestIntervalMinutes, _options.DigestOffsetMinutes,
+            _options.GuiBaseUrl, ct).ConfigureAwait(false);
+
+        switch (tick.Outcome)
+        {
+            case DigestTickOutcome.Armed:
+                LogDigestArmed(tick.NextDueUtc);
+                break;
+            case DigestTickOutcome.Generated when tick.Digest is { } digest:
+                LogDigestGenerated(
+                    digest.Id, digest.EventCount, digest.FlowCount, digest.PeriodStartUtc, digest.PeriodEndUtc,
+                    tick.NextDueUtc);
+                break;
+            default:
+                // Idle: no state row yet, the window is not due, or another replica owns it.
+                break;
+        }
+    }
+
+    /// <summary>
+    /// One digest tick's whole decision, free of the host: arm the clock, generate the due window, or stand
+    /// down. Separated from <see cref="DigestAsync"/> (which only supplies the scope, the options and the log
+    /// lines) so the sequence a wrong digest cadence would hide in is directly testable.
+    /// </summary>
+    internal static async Task<NotificationDigestTick> RunDigestTickAsync(
+        CatalogDbContext catalog, DateTime nowUtc, int intervalMinutes, int offsetMinutes, string? guiBaseUrl,
+        CancellationToken ct = default)
+    {
+        var next = NextDigestBoundary(nowUtc, intervalMinutes, offsetMinutes);
+        var watermark = await NotificationStore.GetWatermarkAsync(catalog, ct).ConfigureAwait(false);
+        if (watermark is null)
+        {
+            // Detection creates the single state row; the next tick arms the digest clock against it.
+            return new NotificationDigestTick(DigestTickOutcome.Idle, next, null);
+        }
+
+        if (watermark.DigestDueUtc is not { } due)
+        {
+            // Arming, not generating: everything before this instant predates the digest clock and was never part
+            // of a window, so the first digest covers from here to the next boundary rather than all of history.
+            var armed = await NotificationStore.TryClaimDigestWindowAsync(catalog, null, next, nowUtc, ct)
+                .ConfigureAwait(false);
+            return new NotificationDigestTick(
+                armed ? DigestTickOutcome.Armed : DigestTickOutcome.Idle, next, null);
+        }
+
+        if (due > nowUtc)
+        {
+            return new NotificationDigestTick(DigestTickOutcome.Idle, due, null);
+        }
+
+        if (!await NotificationStore.TryClaimDigestWindowAsync(catalog, due, next, nowUtc, ct).ConfigureAwait(false))
+        {
+            // Another replica owns this window.
+            return new NotificationDigestTick(DigestTickOutcome.Idle, next, null);
+        }
+
+        // The period start is stamped by the claim that opened this window. A row whose start was cleared out of
+        // band is reported over its nominal period instead, which is the closest honest bound available.
+        var periodStart = watermark.DigestPeriodStartUtc ?? due.AddMinutes(-intervalMinutes);
+        var digest = await NotificationDigestGenerator.GenerateScheduledAsync(
+            catalog, watermark.DigestCursorEventId, periodStart, nowUtc, guiBaseUrl, ct).ConfigureAwait(false);
+        return new NotificationDigestTick(DigestTickOutcome.Generated, next, digest);
+    }
+
+    /// <summary>
+    /// The next digest boundary, aligned to the Unix epoch rather than to process start, so the daily default
+    /// lands at the same clock time every day and a restart never shifts the rhythm. The offset moves the boundary
+    /// inside the period (with the daily default, 300 makes it 05:00 UTC). A host that was down across several
+    /// boundaries resumes at the next one and covers everything it missed in a single digest, because the window
+    /// is bounded by the event cursor, not by the boundary it was due at.
+    /// </summary>
+    internal static DateTime NextDigestBoundary(DateTime nowUtc, int intervalMinutes, int offsetMinutes)
+    {
+        var interval = Math.Max(1, intervalMinutes);
+        var offset = ((offsetMinutes % interval) + interval) % interval;
+        var minutesSinceEpoch = (long)Math.Floor((nowUtc - DateTime.UnixEpoch).TotalMinutes);
+        var periods = (minutesSinceEpoch - offset) / interval;
+        return DateTime.UnixEpoch.AddMinutes(((periods + 1) * interval) + offset);
     }
 
     private async Task DispatchAsync(CancellationToken ct)
@@ -401,12 +517,12 @@ public sealed partial class NotificationService : BackgroundService
             LogRecoveredStuck(recovered);
         }
 
-        var (events, deliveries) = await NotificationStore.PurgeExpiredAsync(
-            catalog, now.AddDays(-_options.EventRetentionDays), now.AddDays(-_options.DeliveryRetentionDays), ct)
-            .ConfigureAwait(false);
-        if (events > 0 || deliveries > 0)
+        var (events, deliveries, digests) = await NotificationStore.PurgeExpiredAsync(
+            catalog, now.AddDays(-_options.EventRetentionDays), now.AddDays(-_options.DeliveryRetentionDays),
+            now.AddDays(-_options.DigestRetentionDays), ct).ConfigureAwait(false);
+        if (events > 0 || deliveries > 0 || digests > 0)
         {
-            LogPurged(events, deliveries);
+            LogPurged(events, deliveries, digests);
         }
     }
 
@@ -437,8 +553,14 @@ public sealed partial class NotificationService : BackgroundService
     [LoggerMessage(Level = LogLevel.Information, Message = "Requeued {Count} notification delivery(ies) stuck in sending (claiming node stopped mid-send).")]
     private partial void LogRecoveredStuck(int count);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Notification retention pruned {Events} event(s) and {Deliveries} delivery(ies).")]
-    private partial void LogPurged(int events, int deliveries);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Notification retention pruned {Events} event(s), {Deliveries} delivery(ies) and {Digests} digest(s).")]
+    private partial void LogPurged(int events, int deliveries, int digests);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Estate digest clock armed; the first digest covers from now to {NextDueUtc:u}.")]
+    private partial void LogDigestArmed(DateTime nextDueUtc);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Generated estate digest {DigestId} covering {EventCount} event(s) across {FlowCount} flow(s) from {PeriodStartUtc:u} to {PeriodEndUtc:u}; next due {NextDueUtc:u}.")]
+    private partial void LogDigestGenerated(Guid digestId, int eventCount, int flowCount, DateTime periodStartUtc, DateTime periodEndUtc, DateTime nextDueUtc);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Notification {Phase} phase error: {Error}")]
     private partial void LogPhaseError(string phase, string error);

@@ -274,7 +274,43 @@ public sealed record NotificationOptionsDto(
     IReadOnlyList<string> Modes,
     string? UserEmail,
     int DefaultDigestIntervalMinutes,
-    int DefaultCooldownMinutes);
+    int DefaultCooldownMinutes,
+    EstateDigestOptionsDto EstateDigest);
+
+/// <summary>How this deployment produces estate digests: whether the periodic generator runs and on what period,
+/// plus the bounds the on-demand window must fall inside. Lets the settings page state the cadence in words
+/// instead of leaving the reader to guess when the next one lands.</summary>
+public sealed record EstateDigestOptionsDto(
+    bool Enabled, int IntervalMinutes, int DefaultWindowMinutes, int MinWindowMinutes, int MaxWindowMinutes);
+
+/// <summary>One estate digest as a list shows it: its window, headline and per-kind counts, without the rendered
+/// bodies. <see cref="GeneratedBy"/> names the person who asked for a manual digest; null for a scheduled one.</summary>
+public sealed record NotificationDigestSummaryDto(
+    Guid Id, string Origin, DateTime PeriodStartUtc, DateTime PeriodEndUtc, DateTime GeneratedUtc,
+    string? GeneratedBy, string Subject, int EventCount, int FlowCount, int FailedCount, int CancelledCount,
+    int SkippedCount, int AssertionFailedCount, bool Truncated);
+
+/// <summary>One flow's slice of a digest, as the GUI's digest table renders it: what happened, how many times,
+/// when it last happened, the error worth reading, and the run to open. <see cref="Kind"/> is the notification
+/// event kind (<c>run_failed</c>, <c>assertion_failed</c>, ...), not a run status.</summary>
+public sealed record NotificationDigestFlowDto(
+    string FlowName, string FlowKind, string Kind, int Count, DateTime LastOccurredUtc, Guid LastRunId,
+    string? LastError);
+
+/// <summary>One estate digest opened for reading: the summary, the per-flow rows behind it, and the composed
+/// bodies. <see cref="Flows"/> is what the GUI tabulates; <see cref="TextBody"/> is the message as it would be
+/// delivered, which is what a reader copies out or checks before sending.</summary>
+public sealed record NotificationDigestDto(
+    NotificationDigestSummaryDto Summary, IReadOnlyList<NotificationDigestFlowDto> Flows, string TextBody,
+    string HtmlBody);
+
+/// <summary>Generates a digest on demand over the last <see cref="WindowMinutes"/> minutes; null uses the
+/// deployment's configured digest period.</summary>
+public sealed record GenerateNotificationDigestRequest(int? WindowMinutes);
+
+/// <summary>Sends an already-generated digest through one of the caller's own subscriptions, which is what
+/// supplies the channel and destination.</summary>
+public sealed record SendNotificationDigestRequest(Guid SubscriptionId);
 
 /// <summary>One notification opt-in as its owner lists it.</summary>
 public sealed record NotificationSubscriptionDto(
@@ -303,5 +339,6 @@ public sealed record NotificationDeliveryDto(
     Guid Id, Guid SubscriptionId, string Channel, string Target, string Subject, string Status, int Attempts,
     int EventCount, string? LastError, DateTime CreatedUtc, DateTime? SentUtc);
 
-/// <summary>The response to a test send: the outbox row to watch in the deliveries history.</summary>
-public sealed record NotificationTestSendDto(Guid DeliveryId);
+/// <summary>The response to anything that puts a message on the outbox (a test send, a digest send): the
+/// delivery row to watch in the deliveries history.</summary>
+public sealed record NotificationQueuedDeliveryDto(Guid DeliveryId);

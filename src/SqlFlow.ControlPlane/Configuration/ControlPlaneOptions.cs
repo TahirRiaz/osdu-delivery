@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 
 namespace SqlFlow.ControlPlane.Configuration;
@@ -525,6 +525,12 @@ public sealed class ManagedSyncOptions
 /// </summary>
 public sealed class NotificationOptions
 {
+    /// <summary>The shortest estate digest period, matching the floor a subscription digest accepts.</summary>
+    public const int MinDigestIntervalMinutes = 5;
+
+    /// <summary>The longest estate digest period: one week.</summary>
+    public const int MaxDigestIntervalMinutes = 10080;
+
     /// <summary>Turns the notification background service off entirely (nothing is detected or sent, and the
     /// subscription API reports every channel unavailable). On by default: with no channel configured the service
     /// idles harmlessly, so the default costs nothing until someone configures a channel and opts in.</summary>
@@ -544,6 +550,26 @@ public sealed class NotificationOptions
 
     /// <summary>How long detected events are kept for audit ("what would have been notified") before pruning.</summary>
     public int EventRetentionDays { get; set; } = 30;
+
+    /// <summary>
+    /// Whether the control plane generates estate digests on its own. On by default and deliberately independent
+    /// of whether anybody subscribes or any channel is configured: the digest is the standing record of what went
+    /// wrong in each window, readable in the GUI, and a subscriber is one way to have it pushed, not the reason it
+    /// exists. Turning this off leaves on-demand generation from the GUI working.
+    /// </summary>
+    public bool DigestEnabled { get; set; } = true;
+
+    /// <summary>The estate digest period in minutes (1440 = one digest a day). Windows chain without gaps, so
+    /// changing this re-paces the next digest rather than losing or repeating anything.</summary>
+    public int DigestIntervalMinutes { get; set; } = 1440;
+
+    /// <summary>Where the digest boundary sits inside the period, in minutes past the aligned UTC boundary: with
+    /// the daily default, 0 generates at 00:00 UTC and 300 at 05:00 UTC. Boundaries are computed from the Unix
+    /// epoch rather than from process start, so a restart never shifts the rhythm.</summary>
+    public int DigestOffsetMinutes { get; set; }
+
+    /// <summary>How long generated digests are kept before pruning.</summary>
+    public int DigestRetentionDays { get; set; } = 365;
 
     /// <summary>How long sent / failed deliveries are kept as per-user history before pruning.</summary>
     public int DeliveryRetentionDays { get; set; } = 90;
@@ -579,10 +605,22 @@ public sealed class NotificationOptions
             throw new InvalidOperationException("ControlPlane:Notifications:MaxDeliveryAttempts must be between 1 and 10.");
         }
 
-        if (EventRetentionDays < 1 || DeliveryRetentionDays < 1)
+        if (EventRetentionDays < 1 || DeliveryRetentionDays < 1 || DigestRetentionDays < 1)
         {
             throw new InvalidOperationException(
-                "ControlPlane:Notifications:EventRetentionDays and DeliveryRetentionDays must be positive.");
+                "ControlPlane:Notifications:EventRetentionDays, DeliveryRetentionDays and DigestRetentionDays must be positive.");
+        }
+
+        if (DigestIntervalMinutes is < MinDigestIntervalMinutes or > MaxDigestIntervalMinutes)
+        {
+            throw new InvalidOperationException(
+                $"ControlPlane:Notifications:DigestIntervalMinutes must be between {MinDigestIntervalMinutes} and {MaxDigestIntervalMinutes} (one week).");
+        }
+
+        if (DigestOffsetMinutes < 0 || DigestOffsetMinutes >= DigestIntervalMinutes)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:Notifications:DigestOffsetMinutes must be at least 0 and less than DigestIntervalMinutes.");
         }
 
         if (!string.IsNullOrWhiteSpace(GuiBaseUrl)
