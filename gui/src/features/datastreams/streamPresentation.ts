@@ -53,6 +53,22 @@ export const statusLabels: Record<StreamStatus, string> = {
   "insufficient-history": "Too new",
 };
 
+/** Verdicts worst-first, for ordering a group's summary so the reason to open it comes first. */
+export function statusRank(status: StreamStatus): number {
+  switch (status) {
+    case "stalled":
+      return 0;
+    case "degraded":
+      return 1;
+    case "watch":
+      return 2;
+    case "healthy":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
 /**
  * The headline for one row: what is wrong with this table, as a sentence with its number in it. The category
  * alone ("gap-days") says nothing to a reader, and the raw summary is a paragraph, so this is the middle

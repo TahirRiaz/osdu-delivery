@@ -2035,6 +2035,9 @@ export interface DataStream {
   batch: string | null;
   active: boolean;
   targetObject: string | null;
+  /** The data source this stream belongs to, from the repository layout or schedule membership rather than
+   * from the flow's name, so a misnamed flow still groups with its siblings. */
+  source: string;
   scope: StreamScope;
   /** How the scope was decided: "lineage" (walked the upstream chain), "origin" (reads nothing we produce),
    * "schema" (the target schema is configured as one side), or "kind". */

@@ -53,6 +53,11 @@ public sealed record StreamPointDto(
 /// </summary>
 public sealed record DataStreamDto(
     Guid PipelineId, string FlowName, string FlowKind, string? Batch, bool Active, string? TargetObject,
+    // The data SOURCE this stream belongs to (Citybike, Fara, Baatbooking), from the repository layout or
+    // schedule membership rather than from the flow's name. One source routinely has fifty objects, so
+    // without it a board is a flat wall of tables with no way to see that forty rows are one vendor. Not the
+    // same thing as Batch, which groups the flows of one DATASET inside a source.
+    string Source,
     // "source" when this stream brings data in from outside the estate (a vendor delivery), "internal" when
     // it derives one of our tables from another, and how that was decided: "lineage" (every flow upstream of
     // it is an ingestion flow, or the first derivation was found), "origin" (it reads nothing this estate
@@ -294,7 +299,7 @@ public static class DataStreamEndpoints
             .ToList();
         var meta = await db.Pipelines.AsNoTracking()
             .Where(p => candidateIds.Contains(p.Id))
-            .Select(p => new { p.Id, p.Name, p.Kind, p.Batch, p.Active })
+            .Select(p => new { p.Id, p.Name, p.Kind, p.Batch, p.Active, p.RelativePath })
             .ToDictionaryAsync(p => p.Id, ct).ConfigureAwait(false);
 
         // The written object and its SCHEMA, for every candidate. Resolved before the analysis rather than
@@ -381,6 +386,7 @@ public static class DataStreamEndpoints
             results.Add(new DataStreamDto(
                 id, pipeline?.Name ?? id.ToString(), pipeline?.Kind ?? "?", pipeline?.Batch,
                 pipeline?.Active ?? false, graph.Targets.GetValueOrDefault(id).Name,
+                SourceOf(pipeline?.RelativePath, schedule?.Name, pipeline?.Name ?? string.Empty),
                 scopeById[id].Scope, scopeById[id].Reason, StageOf(pipeline?.Kind, scopeById[id].Scope),
                 schedule?.Name, schedule?.Cron, schedule?.Timezone,
                 StatusName(analysis.Status), analysis.Category, analysis.Severity, analysis.Confidence,
@@ -647,6 +653,63 @@ public static class DataStreamEndpoints
 
             return (SourceScope, sawProducer ? "lineage" : "origin");
         }
+    }
+
+    /// <summary>
+    /// The data source a stream belongs to, taken from the strongest STRUCTURAL signal available rather than
+    /// from what the flow is called.
+    ///
+    /// <para>
+    /// Naming is the wrong basis for this. A flow whose name does not follow the estate's convention, or that
+    /// was renamed, or that belongs to a source whose prefix differs from its folder, would land in a group of
+    /// its own and quietly break the overview the grouping exists to give. The repository LAYOUT is a fact
+    /// about where someone deliberately filed the flow, and SCHEDULE MEMBERSHIP is a fact about what fires
+    /// together; both survive any amount of misnaming.
+    /// </para>
+    ///
+    /// <para>
+    /// So: the folder the document lives in first, because an estate organises a vendor's flows under one
+    /// directory. Then the schedule it joins, because one schedule fires one source's whole wave, which makes
+    /// it the operational grouping even for a flow sitting loose at the repository root. Only with neither
+    /// does the name convention get a turn, and then the flow name itself, so a stream always lands somewhere
+    /// rather than in an unnamed bucket.
+    /// </para>
+    /// </summary>
+    private static string SourceOf(string? relativePath, string? scheduleName, string flowName)
+    {
+        if (FolderOf(relativePath) is { Length: > 0 } folder)
+        {
+            return folder;
+        }
+
+        if (!string.IsNullOrWhiteSpace(scheduleName))
+        {
+            return scheduleName;
+        }
+
+        var underscore = flowName.IndexOf('_', StringComparison.Ordinal);
+        return underscore > 0 ? flowName[..underscore] : flowName;
+    }
+
+    /// <summary>The immediate parent directory of a repo-relative flow path, or null when the document sits at
+    /// the repository root.</summary>
+    private static string? FolderOf(string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return null;
+        }
+
+        var normalized = relativePath.Replace('\\', '/');
+        var lastSlash = normalized.LastIndexOf('/');
+        if (lastSlash <= 0)
+        {
+            return null;
+        }
+
+        var folder = normalized[..lastSlash];
+        var parent = folder.LastIndexOf('/');
+        return parent >= 0 ? folder[(parent + 1)..] : folder;
     }
 
     /// <summary>The requested scope, or null when it is not one this endpoint knows.</summary>

@@ -8,9 +8,9 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isApiError } from "../../api/client";
 import { dataStreamApi } from "../../api/endpoints";
-import type { DataStream } from "../../api/types";
+import type { DataStream, StreamStatus } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
+import { DataTable, type Column, type TableGrouping } from "../../components/DataTable";
 import { EmptyState } from "../../components/EmptyState";
 import { KpiCard } from "../../components/KpiCard";
 import { Page } from "../../components/Page";
@@ -20,7 +20,8 @@ import { pollingInterval } from "../../hooks/usePolling";
 import { StreamDetailSheet } from "./StreamDetailSheet";
 import { StreamStatusBadge } from "./StreamStatusBadge";
 import {
-  confidenceLabel, formatDays, formatRows, howOftenItLoads, stageLabels, stageMeaning, whatIsWrong,
+  confidenceLabel, formatDays, formatRows, howOftenItLoads, stageLabels, stageMeaning, statusLabels,
+  statusRank, whatIsWrong,
 } from "./streamPresentation";
 
 const kpiGridClass = "grid grid-cols-[repeat(auto-fill,minmax(148px,1fr))] gap-3";
@@ -30,6 +31,41 @@ const windowChoices = [
   { days: 60, label: "60d" },
   { days: 90, label: "90d" },
 ];
+
+const groupChoices = [
+  { value: "source", label: "By source" },
+  { value: "schedule", label: "By schedule" },
+  { value: "none", label: "Flat" },
+];
+
+/**
+ * One collapsed group: the source (or schedule), its worst verdict, and what it is made of. A source with
+ * fifty objects is one line here, and the summary is meant to answer "do I need to open this" without
+ * opening it.
+ */
+function GroupHeader({ label, rows }: { label: string; rows: DataStream[] }) {
+  // Rows arrive ranked most urgent first and the grouping preserves that, so the first row IS the worst.
+  const worst = rows[0];
+  const counts = new Map<StreamStatus, number>();
+  for (const row of rows) {
+    counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
+  }
+
+  const breakdown = [...counts.entries()]
+    .sort((a, b) => statusRank(a[0]) - statusRank(b[0]))
+    .map(([status, n]) => `${n} ${statusLabels[status].toLowerCase()}`)
+    .join(" · ");
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-3">
+      <span className="shrink-0 text-[13px] font-medium">{label}</span>
+      <StreamStatusBadge status={worst.status} severity={worst.severity} />
+      <span className="truncate text-[11px] text-muted-foreground">
+        {rows.length} table{rows.length === 1 ? "" : "s"} · {breakdown}
+      </span>
+    </div>
+  );
+}
 
 /** The filter chips carry the same words as the verdicts themselves, so a reader never has to map one
  * vocabulary onto another. */
@@ -68,6 +104,7 @@ export default function DataStreamsPage() {
   const [days, setDays] = useLocalStorageState<number>("datastreams.windowDays", 60);
   const [status, setStatus] = useLocalStorageState<string>("datastreams.status", "");
   const [scope, setScope] = useLocalStorageState<string>("datastreams.scope", "source");
+  const [groupBy, setGroupBy] = useLocalStorageState<string>("datastreams.groupBy", "source");
   const [includeBackfills, setIncludeBackfills] = useLocalStorageState<boolean>("datastreams.includeBackfills", false);
   const [drill, setDrill] = useState<{ pipelineId: string; flowName: string } | null>(null);
 
@@ -175,6 +212,42 @@ export default function DataStreamsPage() {
       },
     },
   ], []);
+
+  // Grouping keys off STRUCTURE, never the flow's name: the source comes from the repository layout (or
+  // schedule membership), and the schedule from what actually fires together. A misnamed flow still lands
+  // with its siblings.
+  const grouping = useMemo<TableGrouping<DataStream> | undefined>(() => {
+    if (groupBy === "none") {
+      return undefined;
+    }
+
+    const keyOf = groupBy === "schedule"
+      ? (row: DataStream) => row.scheduleName ?? "On no schedule"
+      : (row: DataStream) => row.source;
+
+    return {
+      // The table clusters CONTIGUOUS rows, so the rows have to arrive already grouped. Sorting by each
+      // key's first appearance keeps the server's most-urgent-first ranking in two ways at once: the group
+      // holding the worst stream comes first, and within a group the order is untouched (the sort is stable).
+      transform: (rows) => {
+        const firstSeen = new Map<string, number>();
+        rows.forEach((row, index) => {
+          const key = keyOf(row);
+          if (!firstSeen.has(key)) {
+            firstSeen.set(key, index);
+          }
+        });
+        return [...rows].sort((a, b) => firstSeen.get(keyOf(a))! - firstSeen.get(keyOf(b))!);
+      },
+      levels: [{
+        key: keyOf,
+        // Collapsed, because the whole point is an overview: fifty objects of one source are one line until
+        // someone asks for them.
+        defaultCollapsed: true,
+        renderHeader: (rows) => <GroupHeader label={keyOf(rows[0])} rows={rows} />,
+      }],
+    };
+  }, [groupBy]);
 
   const controls = (
     <div className="flex flex-wrap items-center gap-4">
@@ -304,21 +377,36 @@ export default function DataStreamsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <ToggleGroup
-            type="single"
-            value={status}
-            onValueChange={setStatus}
-            variant="outline"
-            size="sm"
-            className="self-start"
-            data-testid="datastreams-status-filter"
-          >
-            {statusFilters.map((filter) => (
-              <ToggleGroupItem key={filter.value || "all"} value={filter.value} className="px-2.5 text-xs">
-                {filter.label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <ToggleGroup
+              type="single"
+              value={status}
+              onValueChange={setStatus}
+              variant="outline"
+              size="sm"
+              data-testid="datastreams-status-filter"
+            >
+              {statusFilters.map((filter) => (
+                <ToggleGroupItem key={filter.value || "all"} value={filter.value} className="px-2.5 text-xs">
+                  {filter.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+            <ToggleGroup
+              type="single"
+              value={groupBy}
+              onValueChange={(value) => { if (value !== "") { setGroupBy(value); } }}
+              variant="outline"
+              size="sm"
+              data-testid="datastreams-group-by"
+            >
+              {groupChoices.map((choice) => (
+                <ToggleGroupItem key={choice.value} value={choice.value} className="px-2.5 text-xs">
+                  {choice.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
 
           {board.streams.length === 0 ? (
             <EmptyState
@@ -338,6 +426,7 @@ export default function DataStreamsPage() {
               rows={board.streams}
               rowKey={(s) => s.pipelineId}
               onRowClick={(s) => setDrill({ pipelineId: s.pipelineId, flowName: s.flowName })}
+              grouping={grouping}
               emptyMessage="No tables to show."
               // Below this the columns would compress and clip their content instead of the card scrolling.
               minWidth={1140}
