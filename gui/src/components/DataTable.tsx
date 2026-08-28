@@ -53,6 +53,10 @@ interface DataTableProps<T> {
   grouping?: TableGrouping<T>;
   /** Rendered inside the bordered surface, below the table (the PagedTable pagination lives here). */
   footer?: ReactNode;
+  /** The width below which the table SCROLLS instead of compressing, in pixels. The table is w-full by
+   * default, so a column set wider than its container has nowhere to go: the columns crush and their content
+   * clips rather than the container scrolling. Set this on any table with enough columns to run out of room. */
+  minWidth?: number;
   skeletonRows?: number;
   "data-testid"?: string;
 }
@@ -92,7 +96,7 @@ const alignClass = (align: Column<never>["align"]) =>
  * directly, so there is one table code path instead of several hand-rolled shells.
  */
 export function DataTable<T>({
-  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer,
+  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer, minWidth,
   skeletonRows = 5, "data-testid": testId,
 }: DataTableProps<T>) {
   // Node ids the user has FLIPPED from their level's default (expanded or collapsed), keyed by the path of
@@ -196,8 +200,9 @@ export function DataTable<T>({
 
   return (
     <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={testId}>
-      {/* The ui Table brings its own overflow-x container, so wide tables scroll inside the card. */}
-      <Table>
+      {/* The ui Table brings its own overflow-x container; minWidth is what actually gives a wide table
+          something to scroll, since a w-full table would otherwise just compress its columns to fit. */}
+      <Table style={minWidth === undefined ? undefined : { minWidth }}>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               {columns.map((column) => (

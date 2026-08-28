@@ -375,11 +375,6 @@ pub struct StreamAnomalyInput {
     /// ordinary day after it look like a collapse. Set true only to ask what the raw numbers did.
     #[serde(rename = "includeBackfills")]
     pub include_backfills: Option<bool>,
-    /// Count only the runs a SCHEDULE fired, on streams that join an enabled schedule, so every verdict is
-    /// measured against a DECLARED cron cadence and never against a run somebody kicked off by hand. Runs
-    /// recorded before the trigger source was tracked carry none and are excluded rather than guessed at.
-    #[serde(rename = "scheduledOnly")]
-    pub scheduled_only: Option<bool>,
     /// Most streams to return (default 25; the counts in the answer cover every stream analysed).
     pub limit: Option<i64>,
     /// A pipeline id (GUID) to drill into instead of listing the board: returns that one stream with its
@@ -1981,7 +1976,6 @@ impl SqlFlowMcp {
             ("batch", i.batch.unwrap_or_default()),
             ("status", i.status.unwrap_or_default()),
             ("includeBackfills", i.include_backfills.map(|b| b.to_string()).unwrap_or_default()),
-            ("scheduledOnly", i.scheduled_only.map(|b| b.to_string()).unwrap_or_default()),
             // The board is ranked most urgent first, so a short page carries the story; the counts still
             // report the whole estate.
             ("limit", i.limit.unwrap_or(25).to_string()),

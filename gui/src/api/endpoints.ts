@@ -90,10 +90,6 @@ export interface DataStreamQuery {
   /** Count backfills as normal traffic. False by default: a history replay would otherwise redefine the
    * stream's normal and make every ordinary day after it look like a collapse. */
   includeBackfills?: boolean;
-  /** Count only the runs a SCHEDULE fired, and only streams that join an enabled schedule, so each verdict is
-   * measured against a declared cron and never against a run somebody kicked off by hand. Runs recorded before
-   * the trigger source was tracked carry none and are excluded rather than guessed at. */
-  scheduledOnly?: boolean;
   limit?: number;
 }
 

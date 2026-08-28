@@ -2047,7 +2047,6 @@ export interface DataStreams {
   fromUtc: string;
   asOfUtc: string;
   includeBackfills: boolean;
-  scheduledOnly: boolean;
   totalStreams: number;
   analyzedStreams: number;
   excludedBackfillRuns: number;

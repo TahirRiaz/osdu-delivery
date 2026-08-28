@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { StreamDetectorName, StreamStatus } from "../../api/types";
+import type { DataStream, StreamDetectorName, StreamPattern, StreamStatus } from "../../api/types";
 import { useThemeMode } from "../../theme/ThemeModeContext";
 
 /** The detectors as a person reads them, in the order the ensemble ranks them: the three that answer "is data
@@ -24,27 +24,82 @@ export const detectorMethods: Record<StreamDetectorName, string> = {
   volumeOutlier: "Generalized ESD over trend-and-weekday residuals",
 };
 
-/** The verdicts as a person reads them. */
+/** The verdicts in words an operator uses, not words the algorithm uses. "Degraded" and "watch" describe how
+ * sure the detector is; these describe what is actually happening to the data. */
 export const statusLabels: Record<StreamStatus, string> = {
   stalled: "Stopped",
-  degraded: "Degraded",
-  watch: "Watch",
-  healthy: "Healthy",
-  "insufficient-history": "Not enough history",
+  degraded: "Missing data",
+  watch: "Worth a look",
+  healthy: "OK",
+  "insufficient-history": "Too new",
 };
 
-/** The finding categories, spelled out. The first four are the zero-data family. */
-export const categoryLabels: Record<string, string> = {
-  stalled: "No data arriving",
-  failing: "Failing",
-  "gap-days": "Missing days",
-  "not-running": "Not running",
-  "less-than-normal": "Less than normal",
-  "more-than-normal": "More than normal",
-  "never-loaded": "Never loaded",
-  "insufficient-history": "Not enough history",
-  healthy: "On pattern",
-};
+/**
+ * The headline for one row: what is wrong with this table, as a sentence with its number in it. The category
+ * alone ("gap-days") says nothing to a reader, and the raw summary is a paragraph, so this is the middle
+ * ground the board needs.
+ */
+export function whatIsWrong(stream: DataStream): string {
+  const days = stream.profile.daysSinceLastLoad;
+  const missed = stream.profile.unexpectedNullDays;
+  switch (stream.category) {
+    case "stalled":
+      return days === null ? "No data ever" : `No data for ${formatDayCount(days)}`;
+    case "failing":
+      return days === null ? "Failing, no data" : `Failing, no data for ${formatDayCount(days)}`;
+    case "gap-days":
+      return `Missed ${missed} day${missed === 1 ? "" : "s"}`;
+    case "not-running":
+      return "Flow stopped running";
+    case "less-than-normal":
+      return "Less data than usual";
+    case "more-than-normal":
+      return "More data than usual";
+    case "never-loaded":
+      return "Has never loaded";
+    case "insufficient-history":
+      return "Too new to judge";
+    default:
+      return "Loading normally";
+  }
+}
+
+/** How often the table normally loads, spelled out. The shape name alone ("several-days-a-week") is the
+ * algorithm's vocabulary; this is a person's. */
+export function howOftenItLoads(pattern: StreamPattern, expectedGapDays: number): string {
+  switch (pattern.shape) {
+    case "daily":
+      return "Every day";
+    case "weekdays":
+      return "Weekdays only";
+    case "weekly":
+      return pattern.loadDays.length === 1 ? `Every ${pattern.loadDays[0]}` : "Once a week";
+    case "several-days-a-week":
+      return `${pattern.loadDays.length} days a week`;
+    case "periodic":
+      return `Every ${formatDayCount(expectedGapDays)}`;
+    default:
+      return "No fixed rhythm";
+  }
+}
+
+/**
+ * How much to trust a finding, in a word. The underlying number is how many of the six independent checks
+ * agreed, which is meaningful but not something a reader should have to interpret: two agreeing is the bar a
+ * finding has to clear before it can be called critical, so that is where "high" starts.
+ */
+export function confidenceLabel(stream: DataStream): { label: string; title: string } | null {
+  if (stream.agreeingDetectors === 0) {
+    return null;
+  }
+
+  const title = `${stream.agreeingDetectors} of ${stream.signals.length} independent checks agree`;
+  if (stream.agreeingDetectors >= 2) {
+    return { label: stream.confidence >= 0.5 ? "High" : "Medium", title };
+  }
+
+  return { label: "Low", title: `${title}; a single check is a lead, not a finding` };
+}
 
 /**
  * Chart ink from the app's own custom properties (DESIGN.md 3.4), re-read when the theme flips. Slot 1 carries
@@ -66,7 +121,7 @@ export function useChartInk() {
   }, [mode]);
 }
 
-/** Row counts, compact enough for an axis tick when asked. */
+/** Row counts, compact enough for a table cell or an axis tick when asked. */
 export function formatRows(rows: number, compact = false): string {
   if (!Number.isFinite(rows)) {
     return "-";
@@ -84,15 +139,21 @@ export function formatRows(rows: number, compact = false): string {
   return Math.abs(value) >= 1_000 ? `${(value / 1_000).toFixed(0)}k` : String(value);
 }
 
+/** A bare span of days: "2 days", "1 day". */
+export function formatDayCount(days: number): string {
+  const whole = Math.round(days);
+  return whole === 1 ? "1 day" : `${whole} days`;
+}
+
 /** A day count as an age. Null means it has never happened, which is not the same as "0 days ago". */
 export function formatDays(days: number | null): string {
   if (days === null) {
-    return "never";
+    return "Never";
   }
 
   if (days < 1) {
-    return "today";
+    return "Today";
   }
 
-  return days < 2 ? "1 day ago" : `${Math.round(days)} days ago`;
+  return days < 2 ? "Yesterday" : `${Math.round(days)} days ago`;
 }

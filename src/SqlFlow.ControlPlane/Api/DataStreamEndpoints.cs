@@ -61,7 +61,7 @@ public sealed record DataStreamDto(
 /// list is visibly truncated.
 /// </summary>
 public sealed record DataStreamsDto(
-    int WindowDays, DateTime FromUtc, DateTime AsOfUtc, bool IncludeBackfills, bool ScheduledOnly,
+    int WindowDays, DateTime FromUtc, DateTime AsOfUtc, bool IncludeBackfills,
     int TotalStreams, int AnalyzedStreams, long ExcludedBackfillRuns,
     int StalledCount, int DegradedCount, int WatchCount, int HealthyCount, int InsufficientHistoryCount,
     IReadOnlyList<DataStreamDto> Streams);
@@ -134,15 +134,11 @@ public static class DataStreamEndpoints
     /// <c>healthy</c>, or <c>insufficient-history</c>.</param>
     /// <param name="includeBackfills">Count backfills and other operator-driven reprocessing as normal
     /// traffic. False by default, which is what keeps a history replay from redefining a stream's normal.</param>
-    /// <param name="scheduledOnly">Count only the runs a SCHEDULE fired, and analyse only streams that join an
-    /// enabled schedule, so every verdict is measured against a declared cadence and never against a run
-    /// somebody kicked off by hand. Runs recorded before the trigger source was tracked carry none, and are
-    /// excluded by this filter rather than guessed at.</param>
     /// <param name="limit">How many streams to return (the counts still cover every analysed stream).</param>
     /// <param name="ct">Cancellation.</param>
     private static async Task<Results<Ok<DataStreamsDto>, ProblemHttpResult>> GetDataStreamsAsync(
         CatalogDbContext db, TimeProvider clock, int? days, Guid? repoId, string? batch, string? status,
-        bool? includeBackfills, bool? scheduledOnly, int? limit, CancellationToken ct)
+        bool? includeBackfills, int? limit, CancellationToken ct)
     {
         if (Validate(days, limit) is { } problem)
         {
@@ -150,7 +146,7 @@ public static class DataStreamEndpoints
         }
 
         var report = await ComputeAsync(
-            db, clock, days ?? DefaultWindowDays, repoId, batch, includeBackfills == true, scheduledOnly == true,
+            db, clock, days ?? DefaultWindowDays, repoId, batch, includeBackfills == true,
             pipelineId: null, ct).ConfigureAwait(false);
 
         var filtered = string.IsNullOrWhiteSpace(status)
@@ -173,7 +169,7 @@ public static class DataStreamEndpoints
 
         var report = await ComputeAsync(
             db, clock, days ?? DefaultWindowDays, repoId: null, batch: null, includeBackfills == true,
-            scheduledOnly: false, pipelineId, ct).ConfigureAwait(false);
+            pipelineId, ct).ConfigureAwait(false);
 
         var stream = report.Streams.FirstOrDefault(s => s.PipelineId == pipelineId);
         return stream is null ? TypedResults.NotFound() : TypedResults.Ok(stream);
@@ -188,7 +184,7 @@ public static class DataStreamEndpoints
     /// </summary>
     private static async Task<DataStreamsDto> ComputeAsync(
         CatalogDbContext db, TimeProvider clock, int windowDays, Guid? repoId, string? batch,
-        bool includeBackfills, bool scheduledOnly, Guid? pipelineId, CancellationToken ct)
+        bool includeBackfills, Guid? pipelineId, CancellationToken ct)
     {
         var now = clock.GetUtcNow().UtcDateTime;
         var fromUtc = now.Date.AddDays(-(windowDays - 1));
@@ -201,13 +197,6 @@ public static class DataStreamEndpoints
 
         // Ordinary traffic only, unless the caller asked otherwise: see Reprocessing for what that excludes.
         var counted = includeBackfills ? window : window.Where(NotReprocessing);
-        if (scheduledOnly)
-        {
-            // Only what the scheduler itself fired. A run with no trigger source predates the column, and is
-            // dropped rather than assumed: guessing here would quietly put manual backfills back into the
-            // baseline this filter exists to keep them out of.
-            counted = counted.Where(r => r.TriggerSource == RunTriggerSources.Schedule);
-        }
 
         var activity = await counted
             .GroupBy(r => new { r.PipelineId, Day = r.WrittenUtc.Date })
@@ -275,7 +264,6 @@ public static class DataStreamEndpoints
         var ordered = candidateIds
             .Where(id => batchFilter is null
                 || string.Equals(meta.GetValueOrDefault(id)?.Batch, batchFilter, StringComparison.OrdinalIgnoreCase))
-            .Where(id => !scheduledOnly || schedules.ContainsKey(id))
             .OrderByDescending(id => byStream.TryGetValue(id, out var rows) ? rows.Max(r => r.Day) : DateTime.MinValue)
             .ToList();
         var analyzed = ordered.Take(MaxStreams).ToList();
@@ -344,7 +332,7 @@ public static class DataStreamEndpoints
         // reprocessing on streams a filter removed.
         var analyzedSet = analyzed.ToHashSet();
         return new DataStreamsDto(
-            windowDays, fromUtc, now, includeBackfills, scheduledOnly,
+            windowDays, fromUtc, now, includeBackfills,
             ordered.Count, ranked.Count,
             excluded.Where(e => analyzedSet.Contains(e.PipelineId)).Sum(e => (long)e.Runs),
             ranked.Count(s => s.Status == "stalled"),

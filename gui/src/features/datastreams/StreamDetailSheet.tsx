@@ -21,7 +21,7 @@ import { dataStreamApi } from "../../api/endpoints";
 import type { StreamPoint, StreamSignal } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
-import { useChartInk, categoryLabels, detectorLabels, detectorMethods, formatRows, formatDays } from "./streamPresentation";
+import { useChartInk, detectorLabels, detectorMethods, formatRows, formatDays, whatIsWrong } from "./streamPresentation";
 import { StreamStatusBadge } from "./StreamStatusBadge";
 
 /** The chart's hover readout: what arrived, what was expected, and (when flagged) why. */
@@ -157,7 +157,7 @@ export function StreamDetailSheet({
               <div className="flex flex-wrap items-center gap-2">
                 <StreamStatusBadge status={stream.status} severity={stream.severity} />
                 <span className="text-[11px] text-muted-foreground">
-                  {categoryLabels[stream.category] ?? stream.category}
+                  {whatIsWrong(stream)}
                   {" - "}
                   {stream.agreeingDetectors} of {stream.signals.length} detectors agree
                   {stream.agreeingDetectors > 0 && `, confidence ${(stream.confidence * 100).toFixed(0)}%`}
