@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { startLspClient, stopLspClient } from './lsp/lspClient';
 import { Session, errText } from './api/session';
 import { AuthError, ControlPlaneClient } from './api/controlPlaneClient';
-import { CatalogTreeProvider, PipelineNode, RepoNode, RunNode, RunsTreeProvider, ScheduleNode, SchedulesTreeProvider } from './views/trees';
+import { CatalogTreeProvider, DataStreamNode, DataStreamsTreeProvider, PipelineNode, RepoNode, RunNode, RunsTreeProvider, ScheduleNode, SchedulesTreeProvider } from './views/trees';
+import { DataStreamPanel } from './views/dataStreamPanel';
 import { Docs } from './docs/docs';
 import { setupMcp } from './mcp/mcpSetup';
 
@@ -17,16 +18,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const catalog = new CatalogTreeProvider(client);
     const runs = new RunsTreeProvider(client);
     const schedules = new SchedulesTreeProvider(client);
+    const dataStreams = new DataStreamsTreeProvider(client);
     context.subscriptions.push(
         vscode.window.registerTreeDataProvider('sqlflowCatalog', catalog),
         vscode.window.registerTreeDataProvider('sqlflowRuns', runs),
-        vscode.window.registerTreeDataProvider('sqlflowSchedules', schedules)
+        vscode.window.registerTreeDataProvider('sqlflowSchedules', schedules),
+        vscode.window.registerTreeDataProvider('sqlflowDataStreams', dataStreams)
     );
 
     const refreshAll = () => {
         catalog.refresh();
         runs.refresh();
         schedules.refresh();
+        dataStreams.refresh();
     };
     context.subscriptions.push(session.changed(refreshAll));
 
@@ -104,6 +108,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     register('sqlflow.refreshCatalog', refreshAll);
     register('sqlflow.refreshRuns', () => runs.refresh());
 
+    register('sqlflow.refreshDataStreams', () => dataStreams.refresh());
+
     register('sqlflow.runFlow', async (arg: unknown) => {
         await withAuth(session, client, output, async () => {
             const pipeline = await resolvePipeline(client, arg);
@@ -170,6 +176,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             );
             runs.refresh();
             schedules.refresh();
+        });
+    });
+
+    register('sqlflow.openDataStream', async (arg: unknown) => {
+        if (!(arg instanceof DataStreamNode)) {
+            return;
+        }
+        await withAuth(session, client, output, async () => {
+            const days = vscode.workspace.getConfiguration('sqlflow').get<number>('dataStreamWindowDays', 60);
+            // The full analysis, including the day-by-day series and every detector's reasoning (the ones
+            // that stayed quiet included, so a verdict can be checked rather than taken on trust).
+            const detail = await client.getDataStream(arg.stream.pipelineId, days);
+            DataStreamPanel.show(detail, days);
         });
     });
 

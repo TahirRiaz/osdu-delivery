@@ -18,6 +18,41 @@ export interface Run {
 }
 export interface Schedule { id: string; name?: string; cron?: string; paused?: boolean; [k: string]: unknown; }
 
+/** One data stream's verdict from `/api/v1/datastreams`: a flow, the table it writes, and whether data is
+ * still arriving the way its learned pattern says it should. */
+export interface DataStream {
+    pipelineId: string;
+    flowName: string;
+    targetObject?: string | null;
+    batch?: string | null;
+    status: 'stalled' | 'degraded' | 'watch' | 'healthy' | 'insufficient-history';
+    category: string;
+    severity: 'critical' | 'warning' | 'info';
+    agreeingDetectors: number;
+    summary: string;
+    profile: {
+        pattern: { shape: string; description: string; typicalRows: number };
+        daysSinceLastLoad: number | null;
+        unexpectedNullDays: number;
+        [k: string]: unknown;
+    };
+    [k: string]: unknown;
+}
+
+/** The data-stream board, ranked most urgent first, with the counts covering every analysed stream. */
+export interface DataStreams {
+    windowDays: number;
+    totalStreams: number;
+    analyzedStreams: number;
+    excludedBackfillRuns: number;
+    stalledCount: number;
+    degradedCount: number;
+    watchCount: number;
+    healthyCount: number;
+    insufficientHistoryCount: number;
+    streams: DataStream[];
+}
+
 /**
  * Thin fetch-based client for the control plane's `/api/v1` surface. Every call
  * attaches the session bearer token; a 401 surfaces as a typed error so the
@@ -112,6 +147,17 @@ export class ControlPlaneClient {
     /** Fire a schedule now, enqueuing a run of its flow (to test the schedule) without moving its cadence. */
     runSchedule(id: string): Promise<{ runId: string }> {
         return this.request(`/api/v1/schedules/${id}/run`, { method: 'POST', body: {} });
+    }
+
+    /** The data-stream board: which tables have stopped receiving data. Backfills are excluded from the
+     * baseline by default, which is what stops a history replay redefining a stream's normal. */
+    listDataStreams(query: { days?: number; status?: string; limit?: number } = {}): Promise<DataStreams> {
+        return this.request('/api/v1/datastreams', { query: { ...query, limit: query.limit ?? 200 } });
+    }
+
+    /** One stream in full: the day-by-day series and every detector's reasoning. */
+    getDataStream(pipelineId: string, days?: number): Promise<DataStream> {
+        return this.request(`/api/v1/datastreams/${pipelineId}`, { query: { days } });
     }
 
     lineageEdges(repoId: string): Promise<unknown> {

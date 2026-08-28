@@ -51,6 +51,16 @@
           "type": "number",
           "default": 50,
           "description": "How many runs to show in the Runs view."
+        },
+        "sqlflow.dataStreamWindowDays": {
+          "type": "number",
+          "default": 60,
+          "description": "How many days of write history the Data Streams view analyses (1-180). A longer window gives the detectors a baseline behind the recent slice they judge."
+        },
+        "sqlflow.dataStreamShowHealthy": {
+          "type": "boolean",
+          "default": false,
+          "description": "List every analysed stream in the Data Streams view, including the ones loading on pattern. Off by default: the view shows what needs attention and reports the rest as a count."
         }
       }
     },
@@ -70,6 +80,8 @@
       { "command": "sqlflow.cancelRun", "title": "Cancel Run", "category": "SQLFlow", "icon": "$(stop)" },
       { "command": "sqlflow.runSchedule", "title": "Run Schedule Now", "category": "SQLFlow", "icon": "$(play)" },
       { "command": "sqlflow.showLineage", "title": "Show Repository Lineage", "category": "SQLFlow" },
+      { "command": "sqlflow.refreshDataStreams", "title": "Refresh Data Streams", "category": "SQLFlow", "icon": "$(refresh)" },
+      { "command": "sqlflow.openDataStream", "title": "Open Data Stream Analysis", "category": "SQLFlow" },
       { "command": "sqlflow.setupMcp", "title": "Set Up MCP Server", "category": "SQLFlow", "icon": "$(server)" }
     ],
     "viewsContainers": {
@@ -85,7 +97,8 @@
       "sqlflow": [
         { "id": "sqlflowCatalog", "name": "Catalog" },
         { "id": "sqlflowRuns", "name": "Runs" },
-        { "id": "sqlflowSchedules", "name": "Schedules" }
+        { "id": "sqlflowSchedules", "name": "Schedules" },
+        { "id": "sqlflowDataStreams", "name": "Data Streams" }
       ]
     },
     "menus": {
@@ -93,12 +106,14 @@
         { "command": "sqlflow.openPipeline", "when": "false" },
         { "command": "sqlflow.openRun", "when": "false" },
         { "command": "sqlflow.cancelRun", "when": "false" },
-        { "command": "sqlflow.runSchedule", "when": "false" }
+        { "command": "sqlflow.runSchedule", "when": "false" },
+        { "command": "sqlflow.openDataStream", "when": "false" }
       ],
       "view/title": [
         { "command": "sqlflow.refreshCatalog", "when": "view == sqlflowCatalog", "group": "navigation" },
         { "command": "sqlflow.searchDocs", "when": "view == sqlflowCatalog", "group": "navigation" },
-        { "command": "sqlflow.refreshRuns", "when": "view == sqlflowRuns", "group": "navigation" }
+        { "command": "sqlflow.refreshRuns", "when": "view == sqlflowRuns", "group": "navigation" },
+        { "command": "sqlflow.refreshDataStreams", "when": "view == sqlflowDataStreams", "group": "navigation" }
       ],
       "view/item/context": [
         { "command": "sqlflow.runFlow", "when": "view == sqlflowCatalog && viewItem == pipeline", "group": "inline" },
@@ -106,7 +121,8 @@
         { "command": "sqlflow.showLineage", "when": "view == sqlflowCatalog && viewItem == repo" },
         { "command": "sqlflow.cancelRun", "when": "view == sqlflowRuns && viewItem == run-active", "group": "inline" },
         { "command": "sqlflow.openRun", "when": "view == sqlflowRuns && viewItem =~ /^run/" },
-        { "command": "sqlflow.runSchedule", "when": "view == sqlflowSchedules && viewItem == schedule", "group": "inline" }
+        { "command": "sqlflow.runSchedule", "when": "view == sqlflowSchedules && viewItem == schedule", "group": "inline" },
+        { "command": "sqlflow.openDataStream", "when": "view == sqlflowDataStreams && viewItem == datastream" }
       ],
       "editor/title": [
         { "command": "sqlflow.validateFlow", "when": "resourceLangId == sqlflow-flow", "group": "navigation" },
