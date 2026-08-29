@@ -24,6 +24,17 @@ import {
   statusRank, whatIsWrong,
 } from "./streamPresentation";
 
+/** The last two parts of a qualified name (schema.table), which is what distinguishes pre.X from arc.X
+ * without spending a column on the database. */
+function shortTarget(qualified: string | null): string | null {
+  if (qualified === null) {
+    return null;
+  }
+
+  const parts = qualified.split(".");
+  return parts.length <= 2 ? qualified : parts.slice(-2).join(".");
+}
+
 const kpiGridClass = "grid grid-cols-[repeat(auto-fill,minmax(148px,1fr))] gap-3";
 
 const windowChoices = [
@@ -140,7 +151,9 @@ export default function DataStreamsPage() {
         <div className="flex min-w-0 flex-col">
           <span className="truncate font-mono text-xs" title={s.flowName}>{s.flowName}</span>
           <span className="truncate text-[11px] text-muted-foreground" title={s.targetObject ?? undefined}>
-            {s.targetObject ?? s.batch ?? "unknown target"}
+            {/* schema.table, because the bare name does not distinguish a staging copy from the archive one
+                it feeds; the full three-part name is on hover. */}
+            {shortTarget(s.targetObject) ?? s.batch ?? "unknown target"}
           </span>
         </div>
       ),

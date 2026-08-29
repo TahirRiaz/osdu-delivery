@@ -532,6 +532,19 @@ public static class DataStreamEndpoints
         Dictionary<Guid, List<string>> Reads,
         Dictionary<string, List<Guid>> Producers);
 
+    /// <summary>
+    /// The target's QUALIFIED name. The bare object name is not an identity: one dataset routinely exists as a
+    /// staging copy and an archive copy that share it, so a board showing only the name presents two different
+    /// tables as the same one, and a finding about the staging hop then reads as a finding about the table
+    /// everything downstream depends on. The database is included because the two halves of a chain commonly
+    /// live in different databases as well as different schemas.
+    /// </summary>
+    private static string Qualify(string? database, string? schema, string name)
+    {
+        var qualified = string.IsNullOrWhiteSpace(schema) ? name : $"{schema}.{name}";
+        return string.IsNullOrWhiteSpace(database) ? qualified : $"{database}.{qualified}";
+    }
+
     private static async Task<ScopeGraph> LoadScopeGraphAsync(
         CatalogDbContext db, Guid? repoId, CancellationToken ct)
     {
@@ -539,7 +552,8 @@ public static class DataStreamEndpoints
             .Where(e => e.PipelineId != null && e.Relation == "Writes" && (repoId == null || e.RepoId == repoId))
             .Join(db.Objects.AsNoTracking(), e => e.ObjectKey, o => o.Key, (e, o) => new
             {
-                PipelineId = e.PipelineId!.Value, e.ObjectKey, e.ObjectName, e.Tier, o.Schema,
+                PipelineId = e.PipelineId!.Value, e.ObjectKey, e.ObjectName, e.Tier,
+                o.Database, o.Schema, ObjectRealName = o.Name,
             })
             .ToListAsync(ct).ConfigureAwait(false);
 
@@ -558,7 +572,8 @@ public static class DataStreamEndpoints
                 g =>
                 {
                     var best = g.FirstOrDefault(w => w.Tier == "Declared") ?? g.First();
-                    return ((string?)best.ObjectName, best.Schema);
+                    return ((string?)Qualify(best.Database, best.Schema, best.ObjectRealName ?? best.ObjectName),
+                        best.Schema);
                 });
 
         return new ScopeGraph(
