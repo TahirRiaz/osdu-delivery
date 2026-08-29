@@ -192,7 +192,7 @@ export default function DataStreamsPage() {
     },
     {
       id: "missed",
-      header: "Days it missed",
+      header: "Days with no rows",
       width: 130,
       align: "right",
       render: (s) => {
@@ -204,7 +204,9 @@ export default function DataStreamsPage() {
               {missed}
             </span>
             <span className="text-[11px] text-muted-foreground">
-              {usual < 0.5 ? "usually none" : `usually ${usual.toFixed(0)}`}
+              {s.profile.noRunDays > 0
+                ? `${s.profile.noRunDays} did not run`
+                : usual < 0.5 ? "all ran, none loaded" : `usually ${usual.toFixed(0)}`}
             </span>
           </div>
         );

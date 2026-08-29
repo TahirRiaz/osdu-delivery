@@ -175,6 +175,45 @@ public sealed class StreamAnomalyDetectorTests
     }
 
     [Fact]
+    public void DaysWhereTheFlowRanAndHadNothingNew_AreNotReportedAsMissingData()
+    {
+        // The false positive that put a healthy stream at the top of the board. An incremental flow over a
+        // source that produced nothing writes zero rows and SAYS SO by succeeding; that is the flow reporting
+        // there was nothing new, not data going missing. It stays visible, at the lowest severity, and never
+        // wears the same words as a stream that stopped.
+        var buckets = Daily(60, 10_000);
+        for (var i = 20; i <= 25; i++)
+        {
+            var date = AsOf.Date.AddDays(-i);
+            buckets[buckets.FindIndex(b => b.Date == date)] = Day(date, rows: 0, runs: 1);
+        }
+
+        var analysis = Analyze(buckets);
+
+        Assert.Equal("idle-days", analysis.Category);
+        Assert.Equal(StreamStatus.Watch, analysis.Status);
+        Assert.Equal("info", analysis.Severity);
+        Assert.Equal(0, analysis.Profile.NoRunDays);
+        Assert.Contains("loaded no new rows", analysis.Summary, StringComparison.OrdinalIgnoreCase);
+        // It must still say, in the same breath, that data IS arriving; that is the sentence whose absence
+        // made a healthy stream read as a broken one.
+        Assert.Contains("still arriving", analysis.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DaysTheFlowDidNotRunAtAll_AreStillReportedAsAGap()
+    {
+        // The counterpart: nothing ran, so nothing said there was nothing to load. That is a gap.
+        var buckets = Daily(60, 10_000);
+        buckets.RemoveAll(b => b.Date >= AsOf.Date.AddDays(-25) && b.Date <= AsOf.Date.AddDays(-20));
+
+        var analysis = Analyze(buckets);
+
+        Assert.Equal("gap-days", analysis.Category);
+        Assert.True(analysis.Profile.NoRunDays > 0);
+    }
+
+    [Fact]
     public void EmptyDays_AreSplitByWhetherTheFlowRan()
     {
         // Same symptom, different owner: a flow that ran and wrote nothing is an upstream problem, a flow that

@@ -83,7 +83,9 @@ export function whatIsWrong(stream: DataStream): string {
     case "failing":
       return days === null ? "Failing, no data" : `Failing, no data for ${formatDayCount(days)}`;
     case "gap-days":
-      return `Missed ${missed} day${missed === 1 ? "" : "s"}`;
+      return `Did not run on ${missed} day${missed === 1 ? "" : "s"}`;
+    case "idle-days":
+      return `${missed} day${missed === 1 ? "" : "s"} with nothing new`;
     case "not-running":
       return "Flow stopped running";
     case "less-than-normal":

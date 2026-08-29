@@ -470,8 +470,9 @@ public sealed record StreamAnalysis
     public required StreamStatus Status { get; init; }
 
     /// <summary>The machine-usable finding: <c>stalled</c>, <c>not-running</c>, <c>volume-collapse</c>,
-    /// <c>gap-days</c>, <c>failing</c>, <c>less-than-normal</c>, <c>more-than-normal</c>,
-    /// <c>never-loaded</c>, <c>insufficient-history</c>, or <c>healthy</c>.</summary>
+    /// <c>gap-days</c> (days it did not run), <c>idle-days</c> (days it ran and had nothing to load),
+    /// <c>failing</c>, <c>less-than-normal</c>, <c>more-than-normal</c>, <c>never-loaded</c>,
+    /// <c>insufficient-history</c>, or <c>healthy</c>.</summary>
     public required string Category { get; init; }
 
     /// <summary>The severity in the estate's shared vocabulary (<c>critical</c> / <c>warning</c> /

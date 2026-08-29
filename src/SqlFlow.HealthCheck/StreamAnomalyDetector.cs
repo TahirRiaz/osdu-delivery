@@ -847,6 +847,17 @@ public static class StreamAnomalyDetector
                 "stalled",
                 $"No data for {Days(profile.DaysSinceLastLoad)} against a {Days(profile.ExpectedGapDays)} " +
                 "cadence, although the flow keeps running: the upstream has stopped producing."),
+            // Every empty day had a run that SUCCEEDED and wrote nothing. That is the flow reporting there was
+            // nothing new, not data going missing, and the two must not read the same. An incremental stream
+            // over a source that only produces on some days does this by design, and calling it missing data
+            // puts a healthy stream at the top of the board next to a broken one. A sustained version of this
+            // is still caught, by the silence test above, which is the case where it really does mean the
+            // upstream has stopped.
+            (false, true, _) when profile.NoRunDays == 0 => (
+                "idle-days",
+                $"{profile.UnexpectedNullDays} day(s) ran and loaded no new rows, against a history that " +
+                $"predicts {profile.PredictedNullDays.ToString("0.#", CultureInfo.InvariantCulture)}. Data is " +
+                $"still arriving: the last load was {Days(profile.DaysSinceLastLoad)} ago."),
             (false, true, _) => (
                 "gap-days", nullDays.Detail),
             (false, false, true) => (
@@ -862,7 +873,7 @@ public static class StreamAnomalyDetector
         var status = category switch
         {
             "stalled" or "failing" => StreamStatus.Stalled,
-            "more-than-normal" => StreamStatus.Watch,
+            "more-than-normal" or "idle-days" => StreamStatus.Watch,
             _ when fired.Count >= ConfirmationThreshold => StreamStatus.Degraded,
             _ => StreamStatus.Watch,
         };
@@ -874,7 +885,7 @@ public static class StreamAnomalyDetector
         // because more data is not an outage.
         var severity = category switch
         {
-            "more-than-normal" => "info",
+            "more-than-normal" or "idle-days" => "info",
             _ when !zeroData => fired.Count >= ConfirmationThreshold ? "warning" : "info",
             _ when fired.Count >= ConfirmationThreshold || silence.Score >= 0.5 => "critical",
             _ => "warning",
