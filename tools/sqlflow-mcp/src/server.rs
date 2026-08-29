@@ -381,6 +381,12 @@ pub struct StreamAnomalyInput {
     /// ordinary day after it look like a collapse. Set true only to ask what the raw numbers did.
     #[serde(rename = "includeBackfills")]
     pub include_backfills: Option<bool>,
+    /// Analyse streams that join no ENABLED schedule too. Default false, and the default is the point: a flow
+    /// nothing schedules has no say in whether data is delivered, so holding it to a delivery expectation
+    /// invents an incident about a promise nobody made. Schedule membership is what defines the population
+    /// this board is about.
+    #[serde(rename = "includeUnscheduled")]
+    pub include_unscheduled: Option<bool>,
     /// Most streams to return (default 25; the counts in the answer cover every stream analysed).
     pub limit: Option<i64>,
     /// A pipeline id (GUID) to drill into instead of listing the board: returns that one stream with its
@@ -1954,6 +1960,9 @@ impl SqlFlowMcp {
             teach the detector that outages are normal. Where the stream joins a schedule, the cadence \
             comes from its cron instead. \
             \
+            Only streams on an ENABLED schedule are analysed by default: a flow nothing schedules has no \
+            say in whether data is delivered. The answer reports how many were left out for that reason. \
+            \
             Every stream carries a scope (source / internal) and a STAGE saying where in the pipeline it \
             sits: 'integration' fetches from the vendor, so nothing there usually means the vendor sent \
             nothing; 'file-ingestion' and 'archive' mean their data arrived and WE did not take it in; \
@@ -1988,6 +1997,7 @@ impl SqlFlowMcp {
             ("status", i.status.unwrap_or_default()),
             ("scope", i.scope.unwrap_or_default()),
             ("includeBackfills", i.include_backfills.map(|b| b.to_string()).unwrap_or_default()),
+            ("includeUnscheduled", i.include_unscheduled.map(|b| b.to_string()).unwrap_or_default()),
             // The board is ranked most urgent first, so a short page carries the story; the counts still
             // report the whole estate.
             ("limit", i.limit.unwrap_or(25).to_string()),

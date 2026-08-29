@@ -93,6 +93,9 @@ export interface DataStreamQuery {
   /** Count backfills as normal traffic. False by default: a history replay would otherwise redefine the
    * stream's normal and make every ordinary day after it look like a collapse. */
   includeBackfills?: boolean;
+  /** Analyse streams that join no enabled schedule too. False by default: a flow nothing schedules has no
+   * say in whether data is delivered, so holding it to a delivery expectation invents an incident. */
+  includeUnscheduled?: boolean;
   limit?: number;
 }
 

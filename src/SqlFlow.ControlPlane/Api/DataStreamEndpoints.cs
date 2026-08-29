@@ -84,6 +84,9 @@ public sealed record DataStreamsDto(
     // How many streams exist on each side, whichever side was analysed, so a client can offer both without a
     // second request.
     int SourceStreams, int InternalStreams,
+    // Streams left out because they join no enabled schedule. Reported rather than silently dropped, so the
+    // board says how much of the estate it decided was not part of the delivery contract.
+    int UnscheduledStreams, bool IncludeUnscheduled,
     int TotalStreams, int AnalyzedStreams, long ExcludedBackfillRuns,
     int StalledCount, int DegradedCount, int WatchCount, int HealthyCount, int InsufficientHistoryCount,
     IReadOnlyList<DataStreamDto> Streams);
@@ -186,11 +189,15 @@ public static class DataStreamEndpoints
     /// different owners, so they are separate boards by default rather than one mixed list.</param>
     /// <param name="includeBackfills">Count backfills and other operator-driven reprocessing as normal
     /// traffic. False by default, which is what keeps a history replay from redefining a stream's normal.</param>
+    /// <param name="includeUnscheduled">Analyse streams that join no ENABLED schedule too. False by default:
+    /// a flow nothing schedules has no say in whether data is delivered, so holding it to a delivery
+    /// expectation invents an incident out of a flow that was never promised to run.</param>
     /// <param name="limit">How many streams to return (the counts still cover every analysed stream).</param>
     /// <param name="ct">Cancellation.</param>
     private static async Task<Results<Ok<DataStreamsDto>, ProblemHttpResult>> GetDataStreamsAsync(
         CatalogDbContext db, TimeProvider clock, IOptions<ControlPlaneOptions> options, int? days, Guid? repoId,
-        string? batch, string? status, string? scope, bool? includeBackfills, int? limit, CancellationToken ct)
+        string? batch, string? status, string? scope, bool? includeBackfills, bool? includeUnscheduled,
+        int? limit, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (Validate(days, limit) is { } problem)
@@ -208,7 +215,8 @@ public static class DataStreamEndpoints
 
         var report = await ComputeAsync(
             db, clock, options.Value.DataStreams, days ?? DefaultWindowDays, repoId, batch,
-            includeBackfills == true, requested, pipelineId: null, ct).ConfigureAwait(false);
+            includeBackfills == true, includeUnscheduled == true, requested, pipelineId: null, ct)
+            .ConfigureAwait(false);
 
         var filtered = string.IsNullOrWhiteSpace(status)
             ? report.Streams
@@ -233,7 +241,8 @@ public static class DataStreamEndpoints
         // show it because it sits on the other side of the split would be obstruction, not filtering.
         var report = await ComputeAsync(
             db, clock, options.Value.DataStreams, days ?? DefaultWindowDays, repoId: null, batch: null,
-            includeBackfills == true, AllScopes, pipelineId, ct).ConfigureAwait(false);
+            includeBackfills == true, includeUnscheduled: true, AllScopes, pipelineId, ct)
+            .ConfigureAwait(false);
 
         var stream = report.Streams.FirstOrDefault(s => s.PipelineId == pipelineId);
         return stream is null ? TypedResults.NotFound() : TypedResults.Ok(stream);
@@ -248,7 +257,8 @@ public static class DataStreamEndpoints
     /// </summary>
     private static async Task<DataStreamsDto> ComputeAsync(
         CatalogDbContext db, TimeProvider clock, DataStreamOptions classification, int windowDays, Guid? repoId,
-        string? batch, bool includeBackfills, string scope, Guid? pipelineId, CancellationToken ct)
+        string? batch, bool includeBackfills, bool includeUnscheduled, string scope, Guid? pipelineId,
+        CancellationToken ct)
     {
         var now = clock.GetUtcNow().UtcDateTime;
         var fromUtc = now.Date.AddDays(-(windowDays - 1));
@@ -341,6 +351,10 @@ public static class DataStreamEndpoints
             .Where(id => batchFilter is null
                 || string.Equals(meta.GetValueOrDefault(id)?.Batch, batchFilter, StringComparison.OrdinalIgnoreCase))
             .Where(id => scope == AllScopes || scopeById[id].Scope == scope)
+            // A flow nothing schedules has no say in whether data is delivered: it runs when somebody runs it,
+            // so measuring it against a delivery cadence would manufacture findings about a promise nobody
+            // made. Schedule membership is what defines the population this board is about.
+            .Where(id => includeUnscheduled || schedules.ContainsKey(id))
             .OrderByDescending(id => byStream.TryGetValue(id, out var rows) ? rows.Max(r => r.Day) : DateTime.MinValue)
             .ToList();
         var analyzed = ordered.Take(MaxStreams).ToList();
@@ -412,8 +426,10 @@ public static class DataStreamEndpoints
         return new DataStreamsDto(
             windowDays, fromUtc, now, includeBackfills,
             scope,
-            candidateIds.Count(id => scopeById[id].Scope == SourceScope),
-            candidateIds.Count(id => scopeById[id].Scope == InternalScope),
+            candidateIds.Count(id => scopeById[id].Scope == SourceScope && (includeUnscheduled || schedules.ContainsKey(id))),
+            candidateIds.Count(id => scopeById[id].Scope == InternalScope && (includeUnscheduled || schedules.ContainsKey(id))),
+            candidateIds.Count(id => !schedules.ContainsKey(id)),
+            includeUnscheduled,
             ordered.Count, ranked.Count,
             excluded.Where(e => analyzedSet.Contains(e.PipelineId)).Sum(e => (long)e.Runs),
             ranked.Count(s => s.Status == "stalled"),
@@ -477,13 +493,27 @@ public static class DataStreamEndpoints
                 gapCache[key] = gap;
             }
 
-            if (gap is not { } days)
+            // A CHAINED schedule has no cadence of its own: it fires behind its parents, so the clock cannot
+            // compute a gap for it. That is a missing cadence, NOT a missing membership, and conflating the
+            // two would drop every downstream flow of a chained wave off a board that filters on being
+            // scheduled. The membership is recorded either way; the detector simply infers the cadence from
+            // the stream's own history when none is declared.
+            var cadence = new ScheduleCadence(member.Name, member.Cron, member.Timezone, gap);
+            if (!byPipeline.TryGetValue(member.PipelineId, out var existing))
             {
-                continue; // a chained or malformed schedule declares no cadence; the detector infers one
+                byPipeline[member.PipelineId] = cadence;
+                continue;
             }
 
-            var cadence = new ScheduleCadence(member.Name, member.Cron, member.Timezone, days);
-            if (!byPipeline.TryGetValue(member.PipelineId, out var existing) || days < existing.ExpectedGapDays)
+            // A flow on several schedules is held to the most frequent of them, because that is the one whose
+            // miss is noticeable first. A computable cadence always beats none.
+            var better = (existing.ExpectedGapDays, gap) switch
+            {
+                (null, not null) => true,
+                (not null, not null) when gap < existing.ExpectedGapDays => true,
+                _ => false,
+            };
+            if (better)
             {
                 byPipeline[member.PipelineId] = cadence;
             }
@@ -729,7 +759,10 @@ public static class DataStreamEndpoints
 
     /// <summary>One stream's declared cadence: which schedule holds it, and how many days that schedule
     /// normally leaves between fires.</summary>
-    private sealed record ScheduleCadence(string Name, string? Cron, string Timezone, double ExpectedGapDays);
+    /// <summary>One stream's enabled schedule membership: which schedule holds it, and how many days that
+    /// schedule normally leaves between fires when it has a cadence of its own at all (a chained schedule
+    /// does not).</summary>
+    private sealed record ScheduleCadence(string Name, string? Cron, string Timezone, double? ExpectedGapDays);
 
     private static StreamProfileDto ToDto(StreamProfile profile) => new(
         new StreamPatternDto(

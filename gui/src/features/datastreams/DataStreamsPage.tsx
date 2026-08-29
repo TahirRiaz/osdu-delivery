@@ -33,8 +33,8 @@ const windowChoices = [
 ];
 
 const groupChoices = [
-  { value: "source", label: "By source" },
   { value: "schedule", label: "By schedule" },
+  { value: "source", label: "By source" },
   { value: "none", label: "Flat" },
 ];
 
@@ -43,7 +43,7 @@ const groupChoices = [
  * fifty objects is one line here, and the summary is meant to answer "do I need to open this" without
  * opening it.
  */
-function GroupHeader({ label, rows }: { label: string; rows: DataStream[] }) {
+function GroupHeader({ label, caption, rows }: { label: string; caption?: string; rows: DataStream[] }) {
   // Rows arrive ranked most urgent first and the grouping preserves that, so the first row IS the worst.
   const worst = rows[0];
   const counts = new Map<StreamStatus, number>();
@@ -59,6 +59,9 @@ function GroupHeader({ label, rows }: { label: string; rows: DataStream[] }) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3">
       <span className="shrink-0 text-[13px] font-medium">{label}</span>
+      {caption !== undefined && (
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{caption}</span>
+      )}
       <StreamStatusBadge status={worst.status} severity={worst.severity} />
       <span className="truncate text-[11px] text-muted-foreground">
         {rows.length} table{rows.length === 1 ? "" : "s"} · {breakdown}
@@ -96,25 +99,33 @@ const statusFilters = [
  * misses, and how much to trust the finding. The statistics behind each of those live one click away in the
  * detail sheet, where there is room to show the reasoning rather than just the verdict.
  *
- * "Include backfills" is on the page rather than in a menu because it changes what the numbers MEAN, not just
- * what is shown: it puts operator-driven reprocessing back into the baseline, and a history replay will then
- * make every ordinary day after it look like a collapse.
+ * Two switches change what the numbers MEAN rather than just what is shown, which is why they sit on the page
+ * rather than in a menu. "Include backfills" puts operator-driven reprocessing back into the baseline, and a
+ * history replay will then make every ordinary day after it look like a collapse. "Include unscheduled" adds
+ * the flows nothing schedules, which have no say in whether data is delivered: measuring them against a
+ * delivery cadence manufactures findings about a promise nobody made.
+ *
+ * Grouping is by SCHEDULE by default, because a schedule is what actually fires together: one fire runs a
+ * source's whole wave, so a group missing the same six days is one incident and not nine.
  */
 export default function DataStreamsPage() {
   const [days, setDays] = useLocalStorageState<number>("datastreams.windowDays", 60);
   const [status, setStatus] = useLocalStorageState<string>("datastreams.status", "");
   const [scope, setScope] = useLocalStorageState<string>("datastreams.scope", "source");
-  const [groupBy, setGroupBy] = useLocalStorageState<string>("datastreams.groupBy", "source");
+  const [groupBy, setGroupBy] = useLocalStorageState<string>("datastreams.groupBy", "schedule");
+  const [includeUnscheduled, setIncludeUnscheduled] =
+    useLocalStorageState<boolean>("datastreams.includeUnscheduled", false);
   const [includeBackfills, setIncludeBackfills] = useLocalStorageState<boolean>("datastreams.includeBackfills", false);
   const [drill, setDrill] = useState<{ pipelineId: string; flowName: string } | null>(null);
 
   const query = useQuery({
-    queryKey: ["datastreams", days, status, scope, includeBackfills],
+    queryKey: ["datastreams", days, status, scope, includeBackfills, includeUnscheduled],
     queryFn: () => dataStreamApi.list({
       days,
       status: status === "" ? undefined : status,
       scope,
       includeBackfills,
+      includeUnscheduled,
       limit: 300,
     }),
     refetchInterval: pollingInterval(120_000),
@@ -244,7 +255,15 @@ export default function DataStreamsPage() {
         // Collapsed, because the whole point is an overview: fifty objects of one source are one line until
         // someone asks for them.
         defaultCollapsed: true,
-        renderHeader: (rows) => <GroupHeader label={keyOf(rows[0])} rows={rows} />,
+        renderHeader: (rows) => (
+          <GroupHeader
+            label={keyOf(rows[0])}
+            // Grouping by schedule, the cadence IS the group's contract, so it belongs in the header: a
+            // group of daily flows that missed six days reads differently from a weekly one that missed six.
+            caption={groupBy === "schedule" ? (rows[0].cron ?? undefined) : undefined}
+            rows={rows}
+          />
+        ),
       }],
     };
   }, [groupBy]);
@@ -260,6 +279,17 @@ export default function DataStreamsPage() {
         />
         <Label htmlFor="include-backfills" className="text-xs font-normal text-muted-foreground">
           Include backfills
+        </Label>
+      </div>
+      <div className="flex items-center gap-2">
+        <Switch
+          id="include-unscheduled"
+          checked={includeUnscheduled}
+          onCheckedChange={setIncludeUnscheduled}
+          data-testid="datastreams-include-unscheduled"
+        />
+        <Label htmlFor="include-unscheduled" className="text-xs font-normal text-muted-foreground">
+          Include unscheduled
         </Label>
       </div>
       <ToggleGroup
@@ -374,6 +404,11 @@ export default function DataStreamsPage() {
           <CardTitle className="text-sm">
             {board.analyzedStreams} table{board.analyzedStreams === 1 ? "" : "s"} checked
             {truncated && ` of ${board.totalStreams} (capped)`}
+            {!board.includeUnscheduled && board.unscheduledStreams > 0 && (
+              <span className="ml-2 font-normal text-muted-foreground">
+                {board.unscheduledStreams} on no schedule, left out
+              </span>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">

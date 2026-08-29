@@ -2069,6 +2069,9 @@ export interface DataStreams {
    * second request. */
   sourceStreams: number;
   internalStreams: number;
+  /** Streams left out because they join no enabled schedule: reported rather than silently dropped. */
+  unscheduledStreams: number;
+  includeUnscheduled: boolean;
   totalStreams: number;
   analyzedStreams: number;
   excludedBackfillRuns: number;
