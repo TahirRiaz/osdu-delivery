@@ -73,9 +73,17 @@ public static class PipelineExecutionModes
 
     public const string Manual = "manual";
 
+    /// <summary>Deactivated: a retired pipeline that automatic execution (schedule fires, node/batch group
+    /// expansion) must never pick up; still runnable by a direct trigger.</summary>
+    public const string Disabled = "disabled";
+
     /// <summary>The stored spelling of a core execution mode.</summary>
-    public static string From(Core.Runs.ExecutionMode mode)
-        => mode == Core.Runs.ExecutionMode.Manual ? Manual : Auto;
+    public static string From(Core.Runs.ExecutionMode mode) => mode switch
+    {
+        Core.Runs.ExecutionMode.Manual => Manual,
+        Core.Runs.ExecutionMode.Disabled => Disabled,
+        _ => Auto,
+    };
 }
 
 /// <summary>The catalog spellings of a flow's lifecycle (the YAML <c>lifecycle:</c>), stored as a string so the

@@ -2211,14 +2211,16 @@ internal static class Program
               sqlflow trigger  --repo <name|id> --flow <f> [--scope flow|node]
                                [--pool <p>] [--commit <sha>] [--full] [--from <date>] [--to <date>]
                                [--file-pattern <glob>] [--source-filter <predicate>] [--assertions-only]
-                               [--preview] [--follow]
+                               [--include-all] [--preview] [--follow]
                                                  Enqueue a run on the fleet (POST /runs), exactly as the GUI's trigger
                                                  dialog does: scope flow (default) or node (the flow + its lineage
-                                                 descendants). A whole source runs through its schedule ('schedules
-                                                 run'), whose membership is what a fire runs. --preview shows the
-                                                 members and waves without enqueuing; backfill flags are the same as a
-                                                 local run; --follow attaches to the live trace (or the group's member
-                                                 stream) and exits by the terminal outcome.
+                                                 descendants; only mode: auto descendants by default, --include-all
+                                                 widens to manual and disabled ones). A whole source runs through its
+                                                 schedule ('schedules run'), whose membership is what a fire runs.
+                                                 --preview shows the members and waves without enqueuing; backfill
+                                                 flags are the same as a local run; --follow attaches to the live
+                                                 trace (or the group's member stream) and exits by the terminal
+                                                 outcome.
               sqlflow runs list [--status s] [--flow name] [--batch b] [--kind k] [--repo r] [--group g] [--latest]
               sqlflow runs show <runId> [--files --statements --assertions --keys --metrics]
               sqlflow runs trace <runId> [--follow]

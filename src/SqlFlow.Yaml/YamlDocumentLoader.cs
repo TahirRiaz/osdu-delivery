@@ -16,6 +16,15 @@ public abstract record FlowDocument
     /// none. Captured at the document envelope so every flow kind carries a schedule the same way; the control
     /// plane turns it into actual runs (the engine itself never schedules anything).</summary>
     public ScheduleSpec? Schedule { get; init; }
+
+    /// <summary>The flow's declared execution mode from its top-level <c>mode:</c> key (auto | manual; absent is
+    /// auto). Captured at the document envelope so every flow kind carries it the same way: a <c>mode: manual</c>
+    /// pipeline is excluded from every group expansion (a schedule's member set, and a Node run's descendant
+    /// set), and runs only when named directly, which IS the manual trigger. This is how a deactivated pipeline
+    /// (a retired source, a run-once replay) is kept out of automatic execution while staying runnable by hand.
+    /// A health-check document reads the same key into its own flow model as well; the two never disagree
+    /// because they bind the same YAML scalar.</summary>
+    public Core.Runs.ExecutionMode Mode { get; init; }
 }
 
 /// <summary>A file-source flow document (no <c>flowType</c> key, the original document shape).</summary>
@@ -115,6 +124,8 @@ public sealed class YamlDocumentLoader
         public string? FlowType { get; set; }
 
         public ScheduleYaml? Schedule { get; set; }
+
+        public string? Mode { get; set; }
     }
 
     private sealed class ScheduleYaml
@@ -301,70 +312,71 @@ public sealed class YamlDocumentLoader
 
         var flowType = probe?.FlowType?.Trim();
         var schedule = MapSchedule(probe?.Schedule);
+        var mode = YamlDocumentParts.ParseExecutionMode(probe?.Mode, "mode", source);
 
         if (string.IsNullOrEmpty(flowType))
         {
-            return new FileFlowDocument { Flow = _fileFlows.Parse(yaml, source), Schedule = schedule };
+            return new FileFlowDocument { Flow = _fileFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "ing", StringComparison.OrdinalIgnoreCase))
         {
-            return new IngestionFlowDocument { Document = _ingestionFlows.Parse(yaml, source), Schedule = schedule };
+            return new IngestionFlowDocument { Document = _ingestionFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "exp", StringComparison.OrdinalIgnoreCase))
         {
-            return new ExportFlowDocument { Document = _exportFlows.Parse(yaml, source), Schedule = schedule };
+            return new ExportFlowDocument { Document = _exportFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "sp", StringComparison.OrdinalIgnoreCase))
         {
-            return new StoredProcedureFlowDocument { Document = _storedProcedureFlows.Parse(yaml, source), Schedule = schedule };
+            return new StoredProcedureFlowDocument { Document = _storedProcedureFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "inv", StringComparison.OrdinalIgnoreCase))
         {
-            return new InvokeFlowDocument { Document = _invokeFlows.Parse(yaml, source), Schedule = schedule };
+            return new InvokeFlowDocument { Document = _invokeFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "hc", StringComparison.OrdinalIgnoreCase))
         {
-            return new HealthCheckFlowDocument { Document = _healthCheckFlows.Parse(yaml, source), Schedule = schedule };
+            return new HealthCheckFlowDocument { Document = _healthCheckFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "scm", StringComparison.OrdinalIgnoreCase))
         {
-            return new SourceControlFlowDocument { Document = _sourceControlFlows.Parse(yaml, source), Schedule = schedule };
+            return new SourceControlFlowDocument { Document = _sourceControlFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "batch", StringComparison.OrdinalIgnoreCase))
         {
-            return new BatchFlowDocument { Document = _batchFlows.Parse(yaml, source), Schedule = schedule };
+            return new BatchFlowDocument { Document = _batchFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "api", StringComparison.OrdinalIgnoreCase))
         {
-            return new AcquireFlowDocument { Flow = _acquireFlows.Parse(yaml, source), Schedule = schedule };
+            return new AcquireFlowDocument { Flow = _acquireFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "cpy", StringComparison.OrdinalIgnoreCase))
         {
-            return new CopyFlowDocument { Flow = _copyFlows.Parse(yaml, source), Schedule = schedule };
+            return new CopyFlowDocument { Flow = _copyFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "sftp", StringComparison.OrdinalIgnoreCase))
         {
-            return new SftpFlowDocument { Flow = _sftpFlows.Parse(yaml, source), Schedule = schedule };
+            return new SftpFlowDocument { Flow = _sftpFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "cal", StringComparison.OrdinalIgnoreCase))
         {
-            return new CalendarFlowDocument { Document = _calendarFlows.Parse(yaml, source), Schedule = schedule };
+            return new CalendarFlowDocument { Document = _calendarFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         if (string.Equals(flowType, "trl", StringComparison.OrdinalIgnoreCase))
         {
-            return new TranslateFlowDocument { Document = _translateFlows.Parse(yaml, source), Schedule = schedule };
+            return new TranslateFlowDocument { Document = _translateFlows.Parse(yaml, source), Schedule = schedule, Mode = mode };
         }
 
         throw new FlowValidationException(

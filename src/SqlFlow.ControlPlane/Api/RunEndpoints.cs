@@ -415,7 +415,7 @@ public static class RunEndpoints
     }
 
     private static async Task<Results<Ok<RunScopePreviewDto>, ProblemHttpResult>> PreviewScopeAsync(
-        CatalogDbContext db, Guid repoId, string? flowName, string? scope, string? batch, CancellationToken ct)
+        CatalogDbContext db, Guid repoId, string? flowName, string? scope, string? batch, bool? includeAll, CancellationToken ct)
     {
         var parsed = RunScopeExpander.TryParseScope(scope);
         if (parsed is null)
@@ -431,7 +431,7 @@ public static class RunEndpoints
         {
             expansion = await RunScopeExpander.ExpandAsync(
                     db, repoId,
-                    string.IsNullOrWhiteSpace(flowName) ? null : flowName.Trim(), parsed.Value, ct)
+                    string.IsNullOrWhiteSpace(flowName) ? null : flowName.Trim(), parsed.Value, includeAll ?? false, ct)
                 .ConfigureAwait(false);
         }
         catch (ArgumentException ex)

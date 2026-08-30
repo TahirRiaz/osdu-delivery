@@ -27,6 +27,15 @@
       "validation": "Unknown value fails to load: \"<source>: 'lifecycle' has unknown value '<value>'. Allowed: production, development.\" (YamlDocumentParts.ParseLifecycle, src/SqlFlow.Yaml/YamlDocumentParts.cs)"
     },
     {
+      "path": "mode",
+      "type": "enum(auto|manual|disabled)",
+      "required": false,
+      "default": "auto",
+      "description": "The flow's execution mode, read at the document envelope for EVERY flow kind (file, ing, exp, sp, inv, hc, scm, api, cpy, sftp, cal, trl) by YamlDocumentLoader's probe and projected to CatalogPipeline.ExecutionMode on sync. 'auto' (the default) participates in automatic execution. 'manual' reserves a working flow for direct triggers. 'disabled' deactivates a retired flow (a retired source, a run-once replay) with the same exclusions and a visible 'disabled' badge. Both non-auto modes are excluded from schedule fires and from batch/node group expansion by default; a node-scoped run can opt into includeAll ('find all') to replay them deliberately, and naming any flow directly always runs it (a Node anchor is kept whatever its mode: the direct request IS the manual trigger). A non-auto flow is also exempt from the sync's 'attached to no schedule' warning.",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs (FlowDocument.Mode, parsed by YamlDocumentParts.ParseExecutionMode); consumed at src/SqlFlow.Catalog/RunScopeExpander.cs and src/SqlFlow.Orchestration/BatchOrchestrator.cs",
+      "validation": "Unknown value fails to load: \"<source>: 'mode' has unknown value '<value>'. Allowed: auto, manual, disabled.\" (YamlDocumentParts.ParseExecutionMode, src/SqlFlow.Yaml/YamlDocumentParts.cs)"
+    },
+    {
       "path": "desiredIndexes",
       "type": "string",
       "required": false,

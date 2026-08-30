@@ -62,7 +62,7 @@ public static class FlowDocumentHeaders
                 {
                     new(flow.SysAlias ?? flow.Target.Table.Name, "ing", flow.Batch,
                         ServerIdentity.From(refs[flow.Source.Server]), target, document.Schedule,
-                        Lifecycle: flow.Lifecycle),
+                        document.Mode, flow.Lifecycle),
                 };
 
                 // The embedded healthCheck: block is a full sibling pipeline sharing this file. The document's
@@ -82,7 +82,7 @@ public static class FlowDocumentHeaders
                 var flow = doc.Document.Flow;
                 var refs = ConnectionRefs(doc.Document.Connections);
                 var server = ServerIdentity.From(refs[flow.SrcServer]);
-                return [new DocumentFlowHeader(flow.SysAlias, "exp", flow.Batch, server, server, document.Schedule, Lifecycle: flow.Lifecycle)];
+                return [new DocumentFlowHeader(flow.SysAlias, "exp", flow.Batch, server, server, document.Schedule, document.Mode, flow.Lifecycle)];
             }
 
             case TranslateFlowDocument doc:
@@ -92,7 +92,7 @@ public static class FlowDocumentHeaders
                 var flow = doc.Document.Flow;
                 var refs = ConnectionRefs(doc.Document.Connections);
                 var server = ServerIdentity.From(refs[flow.SrcServer]);
-                return [new DocumentFlowHeader(flow.SysAlias, "trl", flow.Batch, server, server, document.Schedule, Lifecycle: flow.Lifecycle)];
+                return [new DocumentFlowHeader(flow.SysAlias, "trl", flow.Batch, server, server, document.Schedule, document.Mode, flow.Lifecycle)];
             }
 
             case StoredProcedureFlowDocument doc:
@@ -101,7 +101,7 @@ public static class FlowDocumentHeaders
                 var refs = ConnectionRefs(doc.Document.Connections);
                 return
                 [
-                    new DocumentFlowHeader(flow.SysAlias, "sp", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), document.Schedule, Lifecycle: flow.Lifecycle),
+                    new DocumentFlowHeader(flow.SysAlias, "sp", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), document.Schedule, document.Mode, flow.Lifecycle),
                 ];
             }
 
@@ -123,21 +123,21 @@ public static class FlowDocumentHeaders
                 var refs = ConnectionRefs(doc.Document.Connections);
                 return
                 [
-                    new DocumentFlowHeader(flow.SysAlias, "cal", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), document.Schedule, Lifecycle: flow.Lifecycle),
+                    new DocumentFlowHeader(flow.SysAlias, "cal", flow.Batch, null, ServerIdentity.From(refs[flow.Server]), document.Schedule, document.Mode, flow.Lifecycle),
                 ];
             }
 
             case FileFlowDocument doc:
                 return
                 [
-                    new DocumentFlowHeader(doc.Flow.Name, "file", doc.Flow.Batch, null, ServerIdentity.From(doc.Flow.Target.Connection), document.Schedule, Lifecycle: doc.Flow.Lifecycle),
+                    new DocumentFlowHeader(doc.Flow.Name, "file", doc.Flow.Batch, null, ServerIdentity.From(doc.Flow.Target.Connection), document.Schedule, document.Mode, doc.Flow.Lifecycle),
                 ];
 
             case InvokeFlowDocument doc:
                 // An invoke triggers external compute; it moves no catalog data itself.
                 return
                 [
-                    new DocumentFlowHeader(doc.Document.Definition.InvokeAlias, "inv", doc.Document.Definition.Batch, null, ServerIdentity.FileSystem, document.Schedule, Lifecycle: doc.Document.Definition.Lifecycle),
+                    new DocumentFlowHeader(doc.Document.Definition.InvokeAlias, "inv", doc.Document.Definition.Batch, null, ServerIdentity.FileSystem, document.Schedule, document.Mode, doc.Document.Definition.Lifecycle),
                 ];
 
             case AcquireFlowDocument doc:
@@ -145,7 +145,7 @@ public static class FlowDocumentHeaders
                 // target is its declared output.
                 return
                 [
-                    new DocumentFlowHeader(doc.Flow.Name, "api", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
+                    new DocumentFlowHeader(doc.Flow.Name, "api", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule, document.Mode),
                 ];
 
             case CopyFlowDocument doc:
@@ -153,14 +153,14 @@ public static class FlowDocumentHeaders
                 // and writes its target, so it is a filesystem flow.
                 return
                 [
-                    new DocumentFlowHeader(doc.Flow.Name, "cpy", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
+                    new DocumentFlowHeader(doc.Flow.Name, "cpy", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule, document.Mode),
                 ];
 
             case SftpFlowDocument doc:
                 // An SFTP flow transfers files between a server and the lake/local; both sides are file locations.
                 return
                 [
-                    new DocumentFlowHeader(doc.Flow.Name, "sftp", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule),
+                    new DocumentFlowHeader(doc.Flow.Name, "sftp", doc.Flow.Batch, null, ServerIdentity.FileSystem, document.Schedule, document.Mode),
                 ];
 
             case SourceControlFlowDocument doc:
@@ -177,7 +177,7 @@ public static class FlowDocumentHeaders
                     new DocumentFlowHeader(
                         flow.SysAlias, "scm", flow.Batch, ServerIdentity.From(refs[flow.Server]),
                         ServerIdentity.FileSystem, document.Schedule,
-                        Lifecycle: flow.Lifecycle, ParticipatesInLineage: false),
+                        document.Mode, flow.Lifecycle, ParticipatesInLineage: false),
                 ];
             }
 

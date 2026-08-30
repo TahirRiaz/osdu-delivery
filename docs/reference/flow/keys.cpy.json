@@ -7,6 +7,16 @@
   "keyCount": 38,
   "keys": [
     { "path": "name", "type": "string", "required": true, "default": "none", "description": "The flow's unique identifier; seeds the stable FlowId. A blank value fails: \"'name' is required for a cpy flow.\"", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
+    {
+      "path": "mode",
+      "type": "enum(auto|manual|disabled)",
+      "required": false,
+      "default": "auto",
+      "enumValues": ["auto", "manual", "disabled"],
+      "description": "The flow's execution mode, read at the document envelope (YamlDocumentLoader's probe, FlowDocument.Mode) and projected to the catalog pipeline row. 'auto' (the default) runs on schedule fires and in batch/node group runs; 'manual' reserves a working flow for direct triggers; 'disabled' deactivates a retired one (a retired source, a run-once replay) with the same exclusions and a visible 'disabled' badge. A node-scoped run can opt into includeAll ('find all') to replay non-auto descendants deliberately, and naming a flow directly always runs it.",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs (FlowDocument.Mode, parsed by YamlDocumentParts.ParseExecutionMode)",
+      "validation": "Unknown value fails to load: \"<source>: 'mode' has unknown value '<value>'. Allowed: auto, manual, disabled.\""
+    },
     { "path": "batch", "type": "string", "required": false, "default": "null", "description": "Optional grouping label recorded with the run.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
     { "path": "operation", "type": "enum(copy|zip|unzip)", "required": false, "default": "copy", "enumValues": ["copy", "zip", "unzip"], "description": "What the flow does with the matched files: copy each verbatim, bundle them all into one .zip written to the target (zip-only), or extract each matched .zip's entries to the target.", "definedIn": "src/SqlFlow.Core/Copy/CopyFlow.cs" },
     { "path": "source", "type": "object", "required": false, "description": "The source of a single copy (with target). One of source/target OR items is required, not both; declaring both fails with \"declare either a top-level 'source'/'target' or an 'items' list, not both.\" A single source/target is the one-copy shortcut for one step.", "definedIn": "src/SqlFlow.Yaml/YamlCopyFlowLoader.cs" },

@@ -185,13 +185,14 @@ internal sealed class ControlPlaneClient : IDisposable
     // ---- runs ---------------------------------------------------------------------------------------------
 
     /// <summary>Previews what a node/batch scope would enqueue, without enqueuing anything.</summary>
-    public Task<RunScopePreviewDto> PreviewScopeAsync(Guid repoId, string? flowName, string scope, string? batch, CancellationToken ct)
+    public Task<RunScopePreviewDto> PreviewScopeAsync(Guid repoId, string? flowName, string scope, string? batch, bool includeAll, CancellationToken ct)
     {
         var query = new QueryBuilder()
             .Add("repoId", repoId.ToString())
             .Add("flowName", flowName)
             .Add("scope", scope)
-            .Add("batch", batch);
+            .Add("batch", batch)
+            .Add("includeAll", includeAll ? "true" : null);
         return GetAsync<RunScopePreviewDto>($"/api/v1/runs/preview{query}", ct);
     }
 

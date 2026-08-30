@@ -69,8 +69,8 @@
       "type": "string",
       "required": false,
       "default": "auto",
-      "enumValues": ["auto", "manual"],
-      "description": "When the health check executes. 'auto' (the default) lets schedules and batch/node group runs pick the flow up like any other automatic execution; 'manual' excludes it from all automatic dispatch and reserves it for an explicit on-demand trigger (the GUI's run button, a single-flow API trigger, or a direct CLI run). Parsed by YamlDocumentParts.ParseExecutionMode into HealthCheckFlow.Mode (src/SqlFlow.Yaml/YamlHealthCheckFlowLoader.cs:170), backed by the ExecutionMode enum (Auto=0, Manual=1).",
+      "enumValues": ["auto", "manual", "disabled"],
+      "description": "When the health check executes. 'auto' (the default) lets schedules and batch/node group runs pick the flow up like any other automatic execution; 'manual' excludes it from all automatic dispatch and reserves it for an explicit on-demand trigger (the GUI's run button, a single-flow API trigger, or a direct CLI run); 'disabled' deactivates it with the same exclusions and a visible 'disabled' badge. Parsed by YamlDocumentParts.ParseExecutionMode into HealthCheckFlow.Mode (src/SqlFlow.Yaml/YamlHealthCheckFlowLoader.cs:170), backed by the ExecutionMode enum (Auto=0, Manual=1, Disabled=2).",
       "definedIn": "src/SqlFlow.Yaml/HealthCheckYaml.cs:17 (model: src/SqlFlow.Core/HealthChecks/HealthCheckFlow.cs:109, enum src/SqlFlow.Core/Runs/ExecutionMode.cs)"
     },
     {

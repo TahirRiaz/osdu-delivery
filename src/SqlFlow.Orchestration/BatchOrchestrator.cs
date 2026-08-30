@@ -378,7 +378,7 @@ public sealed class BatchOrchestrator
             .Where(f => included.Contains(f.File))
             .Select(f => new Member(
                 f.Name, f.File, f.Kind, inactive.Contains(f.File), ignore.Contains(f.File),
-                f.Mode == ExecutionMode.Manual))
+                f.Mode != ExecutionMode.Auto))
             .OrderBy(m => m.File, StringComparer.Ordinal)
             .ToList();
     }

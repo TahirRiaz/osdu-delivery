@@ -147,7 +147,7 @@ schedule:
   timezone: "Europe/Oslo"
 ```
 
-Flows excluded from a group: anything inactive, and anything declaring `mode: manual` (its document reserved it for a direct trigger). A `node` anchor is the one exception, since naming it IS the manual trigger. A scope that resolves to nothing runnable is logged and fires nothing rather than failing.
+Flows excluded from a group: anything inactive, and anything declaring `mode: manual` (its document reserved it for a direct trigger) or `mode: disabled` (deactivated: a retired source or run-once replay). A `node` anchor is the one exception, since naming it IS the manual trigger, and a node-scoped run can opt into "find all" (`includeAll` on the trigger/preview API, a switch in the GUI's run dialog) to deliberately replay manual and disabled descendants with their parent; a schedule fire never includes them. A scope that resolves to nothing runnable is logged and fires nothing rather than failing.
 
 An unknown scope is rejected: `sqlflow db sync` warns and drops the schedule rather than silently narrowing it to the single flow, which would look like the rest of the set had quietly stopped running.
 

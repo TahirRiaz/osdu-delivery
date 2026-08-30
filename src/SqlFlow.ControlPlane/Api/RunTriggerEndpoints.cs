@@ -25,7 +25,8 @@ namespace SqlFlow.ControlPlane.Api;
 public sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
     bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
-    string? Scope = null, string? Batch = null, bool AssertionsOnly = false, string? SourceFilter = null);
+    string? Scope = null, string? Batch = null, bool AssertionsOnly = false, string? SourceFilter = null,
+    bool IncludeAll = false);
 
 /// <summary>The accepted-run acknowledgement: the minted run id and its queued status. The run executes
 /// asynchronously; poll <c>GET /api/v1/runs/{runId}</c> (the <c>Location</c> header) for the outcome.</summary>
@@ -200,8 +201,10 @@ public static class RunTriggerEndpoints
         RunScopeExpansion expansion;
         try
         {
+            // includeAll ("find all") widens a Node expansion to its manual and disabled descendants for a
+            // deliberate full replay; the default runs only the active (mode: auto) ones.
             expansion = await RunScopeExpander
-                .ExpandAsync(db, request.RepoId, anchorFlow, scope, ct)
+                .ExpandAsync(db, request.RepoId, anchorFlow, scope, request.IncludeAll, ct)
                 .ConfigureAwait(false);
         }
         catch (ArgumentException ex)

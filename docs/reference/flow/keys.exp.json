@@ -15,6 +15,16 @@
       "definedIn": "src/SqlFlow.Yaml/ExportYaml.cs:10; mapped at src/SqlFlow.Yaml/YamlExportFlowLoader.cs:106; model src/SqlFlow.Core/Export/ExportFlow.cs:16"
     },
     {
+      "path": "mode",
+      "type": "enum(auto|manual|disabled)",
+      "required": false,
+      "default": "auto",
+      "enumValues": ["auto", "manual", "disabled"],
+      "description": "The flow's execution mode, read at the document envelope (YamlDocumentLoader's probe, FlowDocument.Mode) and projected to the catalog pipeline row. 'auto' (the default) runs on schedule fires and in batch/node group runs; 'manual' reserves a working flow for direct triggers; 'disabled' deactivates a retired one (a retired source, a run-once replay) with the same exclusions and a visible 'disabled' badge. A node-scoped run can opt into includeAll ('find all') to replay non-auto descendants deliberately, and naming a flow directly always runs it.",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs (FlowDocument.Mode, parsed by YamlDocumentParts.ParseExecutionMode)",
+      "validation": "Unknown value fails to load: \"<source>: 'mode' has unknown value '<value>'. Allowed: auto, manual, disabled.\""
+    },
+    {
       "path": "lifecycle",
       "type": "string",
       "required": false,

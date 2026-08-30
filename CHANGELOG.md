@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Document-envelope `mode:` on every flow kind, with a new `disabled` value. `mode: manual` was
+  documented as excluding a flow from schedule fires and batch/node group runs, but only health
+  checks actually parsed the key; now the envelope reads `auto | manual | disabled` for all kinds
+  and projects it to the pipeline row. `disabled` deactivates a retired pipeline: excluded from all
+  automatic execution and from descendant selection, exempt from the "attached to no schedule"
+  sync warning, shown with a `disabled` badge, and still runnable by a direct trigger (a Node
+  anchor is kept whatever its mode). Node-scoped runs select only active (`mode: auto`)
+  descendants by default; a new `includeAll` ("find all") option on the trigger/preview API and a
+  switch in the GUI run dialog widens a node run to its manual and disabled descendants for a
+  deliberate replay. Fixes deactivated sources being pulled into "run with descendants" groups.
 - `load.resetWhenConsolidated` on a file flow (default ON): a chained landing (bronze) table is reset,
   truncated at the start of the next run, once every flow that directly reads its typed view has
   completed a successful run after the landing's last successful load. One hop only: delivery to

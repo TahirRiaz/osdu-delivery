@@ -112,6 +112,9 @@ export function TriggerRunDialog({
   const [filePattern, setFilePattern] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [assertionsOnly, setAssertionsOnly] = useState(false);
+  // Node scope's "find all": include mode: manual and mode: disabled descendants in the group. Off by default,
+  // so a deactivated branch is only replayed when the operator deliberately asks for it.
+  const [includeAll, setIncludeAll] = useState(false);
 
   // A batch-locked launch (from the status board) carries no flow: force batch scope and keep it there.
   const batchLocked = batch !== undefined;
@@ -125,6 +128,7 @@ export function TriggerRunDialog({
       setFilePattern(initialParameters?.filePattern ?? "");
       setSourceFilter(initialParameters?.sourceFilter ?? "");
       setAssertionsOnly(initialParameters?.assertionsOnly ?? false);
+      setIncludeAll(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -215,12 +219,13 @@ export function TriggerRunDialog({
     && Boolean(effectiveRepoId)
     && (batchLocked ? Boolean(batch) : Boolean(effectiveFlow));
   const preview = useQuery({
-    queryKey: ["run-scope-preview", effectiveRepoId, effectiveFlow, selectedScope, batch],
+    queryKey: ["run-scope-preview", effectiveRepoId, effectiveFlow, selectedScope, batch, includeAll],
     queryFn: () => runApi.previewScope({
       repoId: effectiveRepoId!,
       flowName: batchLocked ? undefined : effectiveFlow ?? undefined,
       scope: selectedScope,
       batch: batchLocked ? batch : undefined,
+      includeAll: selectedScope === "node" ? includeAll : undefined,
     }),
     enabled: previewEnabled,
   });
@@ -298,6 +303,7 @@ export function TriggerRunDialog({
       filePattern: applies("filePattern") && hasPattern ? filePattern.trim() : null,
       sourceFilter: applies("sourceFilter") && hasSourceFilter ? sourceFilter.trim() : null,
       assertionsOnly: applies("assertionsOnly") ? assertionsOnly : false,
+      includeAll: selectedScope === "node" ? includeAll : false,
     });
   };
 
@@ -467,6 +473,23 @@ export function TriggerRunDialog({
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
+            </div>
+          )}
+
+          {selectedScope === "node" && (
+            <div className="flex flex-col gap-1">
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <Switch
+                  checked={includeAll}
+                  onCheckedChange={setIncludeAll}
+                  data-testid="trigger-include-all"
+                />
+                Include disabled and manual descendants
+              </Label>
+              <p className="pl-10 text-xs text-muted-foreground">
+                By default only active (mode: auto) descendants run; turn this on to replay deactivated or
+                manual-only flows together with the anchor.
+              </p>
             </div>
           )}
 

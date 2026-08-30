@@ -51,7 +51,7 @@ public sealed class AssertionRunner : IAssertionRunner
 
             // A manual-mode assertion is reserved for the on-demand assertions-only run; an automatic ingestion
             // run (includeManual: false) skips it entirely, recording no result for it.
-            if (definition.Mode == ExecutionMode.Manual && !includeManual)
+            if (definition.Mode != ExecutionMode.Auto && !includeManual)
             {
                 continue;
             }

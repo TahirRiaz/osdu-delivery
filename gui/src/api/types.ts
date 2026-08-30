@@ -129,7 +129,7 @@ export interface PipelineSummary {
   active: boolean;
   /** "auto" (default: schedules and group runs execute it) or "manual" (the flow's YAML mode: it runs only
    * when triggered directly; the scheduler and batch/node expansion skip it). */
-  executionMode: "auto" | "manual";
+  executionMode: "auto" | "manual" | "disabled";
   /** "production" (default) or "development" (the flow's YAML lifecycle:); development flows run normally
    * but never generate notification events. */
   lifecycle: string;
@@ -488,6 +488,9 @@ export interface RunTriggerRequest {
   assertionsOnly?: boolean;
   /** The execution scope: one flow (default), a flow and its descendants (node), or a whole batch (batch). */
   scope?: RunScope;
+  /** Node scope's "find all": include mode: manual and mode: disabled descendants in the group. False (the
+   * default) runs only the active (mode: auto) descendants. */
+  includeAll?: boolean;
   /** The batch label for a batch-scoped run; when omitted the anchor flow's own batch is used. */
   batch?: string | null;
 }

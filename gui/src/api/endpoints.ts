@@ -212,6 +212,8 @@ export interface RunScopePreviewQuery {
   flowName?: string;
   scope: RunScope;
   batch?: string;
+  /** Node scope's "find all": preview with mode: manual and mode: disabled descendants included. */
+  includeAll?: boolean;
 }
 
 export const runApi = {

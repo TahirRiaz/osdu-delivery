@@ -226,7 +226,7 @@ internal static partial class RemoteVerbs
 
             if (args.Contains("--preview"))
             {
-                var preview = await client.PreviewScopeAsync(repo.Id, flowName, scope, batch: null, ct).ConfigureAwait(false);
+                var preview = await client.PreviewScopeAsync(repo.Id, flowName, scope, batch: null, includeAll: args.Contains("--include-all"), ct).ConfigureAwait(false);
                 if (json)
                 {
                     Console.WriteLine(JsonSerializer.Serialize(preview, ControlPlaneClient.JsonIndented));
@@ -253,7 +253,9 @@ internal static partial class RemoteVerbs
                 FilePattern: parameters.FilePattern,
                 Scope: scope,
                 AssertionsOnly: parameters.AssertionsOnly,
-                SourceFilter: parameters.SourceFilter);
+                SourceFilter: parameters.SourceFilter,
+                // Node scope's "find all": include mode: manual and mode: disabled descendants in the group.
+                IncludeAll: args.Contains("--include-all"));
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
             if (outcome.Run is { } run)

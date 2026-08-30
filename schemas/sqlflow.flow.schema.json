@@ -36,6 +36,10 @@
       "type": "string",
       "description": "Optional grouping label (source system) this flow reports under in the catalog and run history. Reporting only; never an execution input for a file flow. Blank/whitespace normalizes to unset."
     },
+    "mode": {
+      "enum": ["auto", "manual", "disabled"],
+      "description": "Execution mode. auto (default): runs on schedule fires and in batch/node group runs. manual: reserved for direct triggers. disabled: deactivated (a retired source or run-once replay); excluded from automatic execution and from descendant selection unless the run opts into find-all, still runnable directly."
+    },
     "schedule": {
       "type": "object",
       "description": "When the catalog scheduler should run this flow. Mirrored into the catalog on sync; the engine itself never schedules anything. A block with neither cron nor intervalSeconds is treated as absent.",

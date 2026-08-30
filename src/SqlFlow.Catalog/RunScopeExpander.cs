@@ -49,9 +49,10 @@ public sealed record RunScopeExpansion(RunScope Scope, string Anchor, IReadOnlyL
 /// trigger endpoint so the two can never disagree. It reads exactly the data the lineage graph does: the flow-to-flow
 /// dependency edges (<see cref="CatalogFlowDependency"/>) for descendants, the batch label for a batch, and the
 /// topological wave (<see cref="CatalogPipeline.Wave"/>) for ordering. Only active pipelines are ever selected, so a
-/// flow that has left the estate is never enqueued; a <c>mode: manual</c> pipeline is likewise excluded from group
-/// membership (a Node's anchor is the one exception: naming it IS the manual trigger). Stateless, like the rest of
-/// the catalog stores.
+/// flow that has left the estate is never enqueued; a <c>mode: manual</c> or <c>mode: disabled</c> pipeline is
+/// likewise excluded from group membership by default (a Node's anchor is the one exception: naming it IS the
+/// manual trigger; and a Node expansion can opt into "find all" to replay them deliberately). Stateless, like the
+/// rest of the catalog stores.
 /// </summary>
 public static class RunScopeExpander
 {
@@ -68,17 +69,20 @@ public static class RunScopeExpander
     /// identifies the starting flow; for Batch either a <c>batch</c> names the batch directly, or the
     /// anchor flow's own batch is used. The returned members are active pipelines ordered by wave then name; a wave
     /// that lineage has not computed yet (-1) collapses to 0 so an un-analyzed set runs as a single parallel wave
-    /// rather than in an undefined order.
+    /// rather than in an undefined order. A Node expansion selects only <c>mode: auto</c> descendants by default
+    /// (find only active); <paramref name="includeAll"/> widens it to every descendant, manual and disabled alike
+    /// (find all), for the operator who deliberately wants a retired branch replayed with its parent.
     /// </summary>
     public static async Task<RunScopeExpansion> ExpandAsync(
-        CatalogDbContext catalog, Guid repoId, string? anchorFlow, RunScope scope, CancellationToken ct = default)
+        CatalogDbContext catalog, Guid repoId, string? anchorFlow, RunScope scope, bool includeAll = false,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(catalog);
 
         return scope switch
         {
             RunScope.Flow => await ExpandFlowAsync(catalog, repoId, anchorFlow, ct).ConfigureAwait(false),
-            RunScope.Node => await ExpandNodeAsync(catalog, repoId, anchorFlow, ct).ConfigureAwait(false),
+            RunScope.Node => await ExpandNodeAsync(catalog, repoId, anchorFlow, includeAll, ct).ConfigureAwait(false),
             _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "Unknown run scope."),
         };
     }
@@ -88,9 +92,9 @@ public static class RunScopeExpander
     /// reads <see cref="CatalogScheduleMember"/> rather than matching any label. <paramref name="batchFilter"/>
     /// optionally narrows the set to members carrying one of those <c>batch:</c> tags, which is how "run the
     /// nightly, but only the small and medium tables" is expressed; it never widens the set, so a filter can only
-    /// ever run a subset of what the schedule already owns. A null or empty filter runs every member. Inactive and
-    /// <c>mode: manual</c> members are excluded exactly as they are from a node expansion: a manual flow reserved
-    /// itself for a direct trigger.
+    /// ever run a subset of what the schedule already owns. A null or empty filter runs every member. Inactive,
+    /// <c>mode: manual</c>, and <c>mode: disabled</c> members are excluded exactly as they are from a node
+    /// expansion: a manual flow reserved itself for a direct trigger, and a disabled one is deactivated.
     /// </summary>
     public static async Task<RunScopeExpansion> ExpandScheduleAsync(
         CatalogDbContext catalog, Guid repoId, Guid scheduleId, string scheduleName,
@@ -108,7 +112,7 @@ public static class RunScopeExpander
             from member in catalog.ScheduleMembers.AsNoTracking().Where(m => m.ScheduleId == scheduleId)
             join pipeline in catalog.Pipelines.AsNoTracking() on member.PipelineId equals pipeline.Id
             where pipeline.RepoId == repoId && pipeline.Active
-                  && pipeline.ExecutionMode != PipelineExecutionModes.Manual
+                  && pipeline.ExecutionMode == PipelineExecutionModes.Auto
                   && (filter == null || filter.Contains(pipeline.Batch ?? CatalogPipeline.DefaultBatch))
             orderby pipeline.Wave < 0 ? 0 : pipeline.Wave, pipeline.Name
             select new RunScopeMember(
@@ -154,7 +158,7 @@ public static class RunScopeExpander
     }
 
     private static async Task<RunScopeExpansion> ExpandNodeAsync(
-        CatalogDbContext catalog, Guid repoId, string? anchorFlow, CancellationToken ct)
+        CatalogDbContext catalog, Guid repoId, string? anchorFlow, bool includeAll, CancellationToken ct)
     {
         var flowName = RequireAnchor(anchorFlow);
         var anchorId = CatalogIdentity.Pipeline(repoId, flowName);
@@ -206,14 +210,17 @@ public static class RunScopeExpander
             }
         }
 
-        // Manual-mode descendants are excluded (a group is automatic execution); the anchor itself is kept even
-        // when manual, because the caller named it explicitly and a direct request IS the manual trigger.
-        var members = await MembersByIdAsync(catalog, repoId, reachable, anchorId, ct).ConfigureAwait(false);
+        // Only mode: auto descendants are selected by default (find only active): a group is automatic
+        // execution, and a manual or disabled (deactivated) descendant opted out of exactly that. The anchor
+        // itself is always kept, because the caller named it explicitly and a direct request IS the manual
+        // trigger; includeAll (find all) widens the set to every descendant for a deliberate full replay.
+        var members = await MembersByIdAsync(catalog, repoId, reachable, anchorId, includeAll, ct).ConfigureAwait(false);
         return new RunScopeExpansion(RunScope.Node, flowName, members);
     }
 
     private static async Task<IReadOnlyList<RunScopeMember>> MembersByIdAsync(
-        CatalogDbContext catalog, Guid repoId, IReadOnlyCollection<Guid> pipelineIds, Guid anchorId, CancellationToken ct)
+        CatalogDbContext catalog, Guid repoId, IReadOnlyCollection<Guid> pipelineIds, Guid anchorId, bool includeAll,
+        CancellationToken ct)
     {
         if (pipelineIds.Count == 0)
         {
@@ -223,7 +230,7 @@ public static class RunScopeExpander
         var ids = pipelineIds.ToList();
         return await catalog.Pipelines.AsNoTracking()
             .Where(p => p.RepoId == repoId && p.Active && ids.Contains(p.Id)
-                        && (p.Id == anchorId || p.ExecutionMode != PipelineExecutionModes.Manual))
+                        && (includeAll || p.Id == anchorId || p.ExecutionMode == PipelineExecutionModes.Auto))
             .OrderBy(p => p.Wave < 0 ? 0 : p.Wave).ThenBy(p => p.Name)
             .Select(p => new RunScopeMember(
                 p.Name, p.Kind, p.Wave < 0 ? 0 : p.Wave, p.Batch ?? CatalogPipeline.DefaultBatch, p.Id))

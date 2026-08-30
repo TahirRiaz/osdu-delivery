@@ -380,18 +380,18 @@ public sealed class FlowSetCollector
 
         result.Schedules.AddRange(library.Values.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase));
 
-        // 5) Every flow that automatic dispatch could run should be attached to a schedule. A 'mode: manual' flow
-        //    opted out deliberately, so it is exempt; anything else that joined nothing will simply never run, which
-        //    is almost always an oversight rather than an intent.
+        // 5) Every flow that automatic dispatch could run should be attached to a schedule. A 'mode: manual' or
+        //    'mode: disabled' flow opted out deliberately, so it is exempt; anything else that joined nothing will
+        //    simply never run, which is almost always an oversight rather than an intent.
         var attached = new HashSet<string>(
             library.Values.SelectMany(s => s.Members), StringComparer.OrdinalIgnoreCase);
         foreach (var flow in result.Flows)
         {
-            if (!attached.Contains(flow.Node.Name) && flow.Node.Mode != Core.Runs.ExecutionMode.Manual)
+            if (!attached.Contains(flow.Node.Name) && flow.Node.Mode == Core.Runs.ExecutionMode.Auto)
             {
                 result.Warnings.Add(
-                    $"'{flow.Node.Name}' ({flow.Node.File}) is attached to no schedule and is not 'mode: manual', " +
-                    "so nothing will ever run it; join one with 'schedule: <name>'.");
+                    $"'{flow.Node.Name}' ({flow.Node.File}) is attached to no schedule and is not 'mode: manual' " +
+                    "or 'mode: disabled', so nothing will ever run it; join one with 'schedule: <name>'.");
             }
         }
     }

@@ -8,6 +8,16 @@
   "keys": [
     { "path": "name", "type": "string", "required": true, "default": "none", "description": "The flow's unique identifier; seeds the stable FlowId. A blank value fails: \"'name' is required for a translate flow.\"", "definedIn": "src/SqlFlow.Core/Translate/TranslateFlow.cs" },
     { "path": "batch", "type": "string", "required": false, "default": "null", "description": "Optional grouping label recorded with the run.", "definedIn": "src/SqlFlow.Core/Translate/TranslateFlow.cs" },
+    {
+      "path": "mode",
+      "type": "enum(auto|manual|disabled)",
+      "required": false,
+      "default": "auto",
+      "enumValues": ["auto", "manual", "disabled"],
+      "description": "The flow's execution mode, read at the document envelope (YamlDocumentLoader's probe, FlowDocument.Mode) and projected to the catalog pipeline row. 'auto' (the default) runs on schedule fires and in batch/node group runs; 'manual' reserves a working flow for direct triggers; 'disabled' deactivates a retired one (a retired source, a run-once replay) with the same exclusions and a visible 'disabled' badge. A node-scoped run can opt into includeAll ('find all') to replay non-auto descendants deliberately, and naming a flow directly always runs it.",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs (FlowDocument.Mode, parsed by YamlDocumentParts.ParseExecutionMode)",
+      "validation": "Unknown value fails to load: \"<source>: 'mode' has unknown value '<value>'. Allowed: auto, manual, disabled.\""
+    },
     { "path": "lifecycle", "type": "enum(production|development)", "required": false, "default": "production", "enumValues": ["production", "development"], "description": "A development flow runs exactly like a production one but never generates notification events.", "definedIn": "src/SqlFlow.Core/Runs/FlowLifecycle.cs" },
     { "path": "connections", "type": "map(string -> string|map)", "required": false, "default": "empty", "description": "The document-local connection registry: each value is a connection string / ${...} reference, a map with 'provider' and 'connection', or bare (resolving ${env:SQLFLOW_CONN_<NAME>} by convention).", "definedIn": "src/SqlFlow.Yaml/YamlDocumentParts.cs" },
     { "path": "source.server", "type": "string", "required": false, "default": "none", "description": "A connection name declared under 'connections:'. Exactly one of source.server / source.connection is required. The source must be SQL Server (mssql or azdb): the read is T-SQL.", "definedIn": "src/SqlFlow.Yaml/YamlTranslateFlowLoader.cs" },

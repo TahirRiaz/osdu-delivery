@@ -10,6 +10,16 @@
     { "path": "name", "type": "string", "required": true, "default": "none", "description": "The flow's unique identifier; seeds the stable FlowId. A blank value fails: \"'name' is required for a calendar flow.\"", "definedIn": "src/SqlFlow.Core/Calendar/CalendarFlow.cs" },
     { "path": "description", "type": "string", "required": false, "default": "null", "description": "Free text carried on the flow and shown in the catalog.", "definedIn": "src/SqlFlow.Core/Calendar/CalendarFlow.cs" },
     { "path": "batch", "type": "string", "required": false, "default": "null", "description": "Optional grouping label recorded with the run. Grouping/filter only; never an execution input and no effect on scheduling.", "definedIn": "src/SqlFlow.Core/Calendar/CalendarFlow.cs" },
+    {
+      "path": "mode",
+      "type": "enum(auto|manual|disabled)",
+      "required": false,
+      "default": "auto",
+      "enumValues": ["auto", "manual", "disabled"],
+      "description": "The flow's execution mode, read at the document envelope (YamlDocumentLoader's probe, FlowDocument.Mode) and projected to the catalog pipeline row. 'auto' (the default) runs on schedule fires and in batch/node group runs; 'manual' reserves a working flow for direct triggers; 'disabled' deactivates a retired one (a retired source, a run-once replay) with the same exclusions and a visible 'disabled' badge. A node-scoped run can opt into includeAll ('find all') to replay non-auto descendants deliberately, and naming a flow directly always runs it.",
+      "definedIn": "src/SqlFlow.Yaml/YamlDocumentLoader.cs (FlowDocument.Mode, parsed by YamlDocumentParts.ParseExecutionMode)",
+      "validation": "Unknown value fails to load: \"<source>: 'mode' has unknown value '<value>'. Allowed: auto, manual, disabled.\""
+    },
     { "path": "lifecycle", "type": "enum(production|development)", "required": false, "default": "production", "enumValues": ["production", "development"], "description": "A development flow runs identically but never generates notification events.", "definedIn": "src/SqlFlow.Core/Calendar/CalendarFlow.cs" },
     { "path": "connections", "type": "map", "required": false, "default": "none", "description": "The document-local connection registry. Each value is either a plain string (a SQL Server connection reference) or a map with 'provider' and 'connection' keys.", "definedIn": "src/SqlFlow.Yaml/YamlDocumentParts.cs" },
     { "path": "calendar", "type": "object", "required": true, "description": "The generator's declaration. Missing it fails with \"'calendar' is required.\"", "definedIn": "src/SqlFlow.Yaml/YamlCalendarFlowLoader.cs" },

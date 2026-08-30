@@ -150,6 +150,44 @@ public sealed class ExecutionModeApiTests
         }
     }
 
+    [SkippableFact]
+    public async Task ScopeExpansion_ExcludesDisabledPipelines_UnlessFindAllIsRequested()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var name = $"mode-disabled-{Guid.NewGuid():N}";
+        var repoId = SqlFlow.Core.Identity.FlowIdentity.FromName($"repo/{name}");
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var now = DateTime.UtcNow;
+            db.Repos.Add(new CatalogRepo { Id = repoId, Name = name, FirstSeenUtc = now, LastSyncUtc = now });
+            db.Pipelines.Add(Pipeline(repoId, "acquire", "api", now, batch: "SRC"));
+            db.Pipelines.Add(Pipeline(repoId, "land-live", "file", now, batch: "SRC"));
+            db.Pipelines.Add(Pipeline(repoId, "merge-retired", "ing", now, batch: "SRC", executionMode: PipelineExecutionModes.Disabled));
+            db.FlowDependencies.Add(Dependency(repoId, "acquire", "land-live"));
+            db.FlowDependencies.Add(Dependency(repoId, "land-live", "merge-retired"));
+            await db.SaveChangesAsync();
+
+            // Find only active (the default): the deactivated descendant is left out of the group.
+            var node = await RunScopeExpander.ExpandAsync(db, repoId, "acquire", RunScope.Node);
+            Assert.Equal(["acquire", "land-live"], node.Members.Select(m => m.FlowName).Order().ToArray());
+
+            // Find all: the operator deliberately replays the retired branch with its parent.
+            var all = await RunScopeExpander.ExpandAsync(db, repoId, "acquire", RunScope.Node, includeAll: true);
+            Assert.Equal(["acquire", "land-live", "merge-retired"], all.Members.Select(m => m.FlowName).Order().ToArray());
+
+            // A disabled anchor is kept: naming it directly IS the manual trigger.
+            var disabledAnchor = await RunScopeExpander.ExpandAsync(db, repoId, "merge-retired", RunScope.Node);
+            Assert.Equal("merge-retired", Assert.Single(disabledAnchor.Members).FlowName);
+        }
+        finally
+        {
+            await CleanupAsync(cs, repoId);
+        }
+    }
+
     private static CatalogPipeline Pipeline(
         Guid repoId, string name, string kind, DateTime now, string? batch = null, string executionMode = PipelineExecutionModes.Auto)
         => new()

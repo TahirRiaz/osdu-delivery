@@ -393,6 +393,25 @@ export default function PipelineDetailPage() {
                 </TooltipContent>
               </Tooltip>
             )}
+            {detail.executionMode === "disabled" && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Badge
+                      variant="secondary"
+                      className="bg-destructive/15 text-destructive"
+                      data-testid="pipeline-disabled-mode"
+                    >
+                      disabled
+                    </Badge>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  mode: disabled - deactivated: never part of schedules or batch/node group runs (unless the
+                  group opts into &quot;find all&quot;); still runnable by a direct trigger.
+                </TooltipContent>
+              </Tooltip>
+            )}
           </>
         )}
         actions={(

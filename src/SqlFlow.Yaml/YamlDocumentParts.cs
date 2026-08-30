@@ -14,15 +14,19 @@ namespace SqlFlow.Yaml;
 /// </summary>
 internal static class YamlDocumentParts
 {
-    /// <summary>Parses a <c>mode:</c> value (auto | manual; blank/absent is auto). One vocabulary for every
-    /// place a definition opts out of automatic execution: a health-check flow and an ingestion assertion.</summary>
+    /// <summary>Parses a <c>mode:</c> value (auto | manual | disabled; blank/absent is auto). One vocabulary for
+    /// every place a definition opts out of automatic execution: the document envelope of every flow kind, a
+    /// health-check flow, and an ingestion assertion. <c>manual</c> reserves a working definition for direct
+    /// triggers; <c>disabled</c> deactivates a retired one, with the same automatic-execution exclusion and the
+    /// retirement carried visibly on the pipeline row.</summary>
     public static ExecutionMode ParseExecutionMode(string? value, string property, string source)
         => value?.Trim().ToLowerInvariant() switch
         {
             null or "" or "auto" => ExecutionMode.Auto,
             "manual" => ExecutionMode.Manual,
+            "disabled" => ExecutionMode.Disabled,
             _ => throw new FlowValidationException(
-                $"{source}: '{property}' has unknown value '{value}'. Allowed: auto, manual."),
+                $"{source}: '{property}' has unknown value '{value}'. Allowed: auto, manual, disabled."),
         };
 
     /// <summary>Parses a <c>lifecycle:</c> value (production | development; blank/absent is production). One
