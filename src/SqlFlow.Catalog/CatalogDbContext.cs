@@ -177,6 +177,17 @@ public sealed class CatalogDbContext : DbContext
             // WHERE GroupId = @g AND GroupWave < @w AND Status IN ('queued','running'). This composite makes that
             // a seek, and also serves the group-detail board (a group's members by wave) and the groupId filter.
             entity.HasIndex(r => new { r.GroupId, r.GroupWave, r.Status });
+            // At most ONE running execution per pipeline, enforced by the database instead of by the claim's own
+            // check. The claim's "no running sibling of this pipeline" gate is a plain read under READ COMMITTED,
+            // so two nodes claiming two different queued runs of the SAME pipeline can each observe no running
+            // sibling and both claim it (write skew: neither read sees the other's uncommitted flip). That matters
+            // because the engine names a flow's work tables per FLOW, not per run, so two overlapping executions
+            // share (and drop) one staging table. This filtered unique index makes the gate atomic: the loser's
+            // claim fails with a duplicate key, which ClaimNextAsync reads as "another node just took this
+            // pipeline" and answers by moving on to the next candidate run.
+            entity.HasIndex(r => r.PipelineId, "UX_Run_RunningPipeline")
+                .IsUnique()
+                .HasFilter($"[Status] = '{RunStatuses.Running}'");
         });
 
         modelBuilder.Entity<CatalogRunGroup>(entity =>

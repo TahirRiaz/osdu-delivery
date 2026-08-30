@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core.Identity;
@@ -141,6 +142,77 @@ public sealed class RunQueueStoreTests
         finally
         {
             await Cleanup(cs, repoId, dir);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ClaimNext_ConcurrentClaimsOfOnePipeline_StartOnlyOneExecution()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+
+        try
+        {
+            Guid first, duplicate;
+            await using (var seed = CatalogDatabase.Create(cs))
+            {
+                // A double-trigger: two queued runs of one flow, exactly what a schedule firing over a still-running
+                // wave produces.
+                first = await RunQueueStore.EnqueueAsync(seed, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+                duplicate = await RunQueueStore.EnqueueAsync(seed, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            }
+
+            // Two nodes claim at the same instant. The claim's "no running sibling" gate is a read, so both can see
+            // a clear queue; the database is what keeps them apart. Whichever loses must come back empty rather than
+            // start a second execution of a flow whose staging table is shared.
+            await using var a = CatalogDatabase.Create(cs);
+            await using var b = CatalogDatabase.Create(cs);
+            var results = await Task.WhenAll(
+                RunQueueStore.ClaimNextAsync(a, "node-a", [], DateTime.UtcNow),
+                RunQueueStore.ClaimNextAsync(b, "node-b", [], DateTime.UtcNow));
+
+            Assert.Equal(1, results.Count(c => c is not null));
+            Assert.Equal(first, results.Single(c => c is not null)!.Value.RunId);
+
+            await using var verify = CatalogDatabase.Create(cs);
+            var pipelineId = (await Reload(verify, first)).PipelineId;
+            Assert.Equal(1, await verify.Runs.CountAsync(r => r.PipelineId == pipelineId && r.Status == RunStatuses.Running));
+            Assert.Equal(RunStatuses.Queued, (await Reload(verify, duplicate)).Status);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, null);
+        }
+    }
+
+    [SkippableFact]
+    public async Task RunningPipelineIndex_RefusesASecondRunningRunOfOnePipeline()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, flowName) = NewIds();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var first = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            var duplicate = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
+            Assert.Equal(first, await ClaimId(db, Node, [], DateTime.UtcNow));
+
+            // The write the claim's gate is meant to make impossible, issued directly: the guarantee has to hold in
+            // the schema, not only in the statement that normally performs it. A race that slips past the gate takes
+            // exactly this shape, and the filtered unique index turns it into a duplicate-key error.
+            var conflict = await Assert.ThrowsAsync<SqlException>(() => db.Database.ExecuteSqlRawAsync(
+                "UPDATE [catalog].[Run] SET [Status] = 'running' WHERE [RunId] = {0};", duplicate));
+            Assert.Contains(conflict.Errors.Cast<SqlError>(), e => e.Number is 2601 or 2627);
+
+            // The refused write left the row exactly as it was: still queued, still claimable later.
+            Assert.Equal(RunStatuses.Queued, (await Reload(db, duplicate)).Status);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, null);
         }
     }
 

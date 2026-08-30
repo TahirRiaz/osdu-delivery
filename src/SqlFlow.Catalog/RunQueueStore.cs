@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using SqlFlow.Core.Runs;
@@ -138,6 +139,17 @@ public static class RunQueueStore
     // the next eligible run; node-restart recovery (RecoverStuckRunningAsync) requeues orphaned running rows, so a
     // crashed run cannot wedge its pipeline.
     //
+    // That clause alone is only advisory across a fleet: it is a read under READ COMMITTED, holding no lock on the
+    // sibling rows, so two nodes claiming two different queued runs of one pipeline can both see no running sibling
+    // and both claim (write skew). The unique filtered index UX_Run_RunningPipeline
+    // (catalog.Run(PipelineId) WHERE Status = 'running') is what makes the gate atomic: the loser's write fails with
+    // a duplicate key, which ClaimNextAsync answers by trying the next-eligible run. The clause stays because it is
+    // the cheap, ordering-preserving filter that keeps the conflict rare; the index is the guarantee.
+    //
+    // The trailing [Status] = @queued on the UPDATE is the same defence for the row itself: the subquery picks a
+    // queued run under UPDLOCK, and this keeps the write conditional on that state so no path can flip a run that
+    // has meanwhile been claimed, cancelled, or requeued.
+    //
     // The group-concurrency clause bounds how WIDE a fire runs: a member carrying a GroupMaxConcurrency (stamped from
     // the firing schedule at enqueue) is claimable only while fewer than that many of its siblings are running. Since
     // the wave gate above already means only one wave is eligible at a time, this is the width of the running wave.
@@ -153,6 +165,19 @@ public static class RunQueueStore
     // The claim increments [Attempt] and returns it alongside the id: the incremented value is the claiming node's
     // fencing token, which every outcome write is conditional on (see the fenced overloads below), and doubles as
     // the execution counter that bounds crash-recovery requeues.
+    /// <summary>How many times one <see cref="ClaimNextAsync"/> call re-runs its claim after losing the
+    /// UX_Run_RunningPipeline race. Three covers a realistic fleet (the loser only retries when another node
+    /// claimed the very pipeline it picked, and the retry then picks a different run) without letting one poll
+    /// hammer a contended queue: exhausting the budget simply reports nothing claimable this tick.</summary>
+    private const int ClaimRaceAttempts = 3;
+
+    // SQL Server's two duplicate-key errors: 2601 from a unique index, 2627 from a unique constraint. The claim
+    // statement writes one column set on [catalog].[Run] and never touches a key column, so the only uniqueness it
+    // can violate is the filtered UX_Run_RunningPipeline index - a lost race for the pipeline, not a fault. Matching
+    // on the numbers alone keeps the check independent of the server's message language.
+    private const int DuplicateKeyInIndex = 2601;
+    private const int DuplicateKeyInConstraint = 2627;
+
     private const string ClaimSqlTemplate = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         UPDATE [catalog].[Run]
@@ -171,7 +196,8 @@ public static class RunQueueStore
               AND NOT EXISTS (
                   SELECT 1 FROM [catalog].[Run] AS p
                   WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = @running)
-            ORDER BY r.[EnqueuedUtc], r.[RunId]);
+            ORDER BY r.[EnqueuedUtc], r.[RunId])
+          AND [Status] = @queued;
         """;
 
     /// <summary>Enqueues a run: inserts a <c>queued</c> <see cref="CatalogRun"/> row and returns its newly minted
@@ -471,7 +497,10 @@ public static class RunQueueStore
     /// when there is none. Eligibility: an untargeted run (no pool) is claimable by any node; a pooled run only by a
     /// node that serves that pool (<paramref name="pools"/>); a run whose pipeline already has a running execution
     /// waits its turn (same-flow runs never overlap, protecting the flow's canonical staging table). Safe to call
-    /// concurrently from many workers: each claim takes a different run (or none).</summary>
+    /// concurrently from many workers: each claim takes a different run (or none). The one-execution-per-pipeline
+    /// rule is guaranteed by the database (the filtered unique index UX_Run_RunningPipeline), not merely checked
+    /// here, so a claim that loses that race to another node retries against the next-eligible run instead of
+    /// producing a second concurrent execution of one flow.</summary>
     public static async Task<ClaimedRun?> ClaimNextAsync(
         CatalogDbContext catalog, string node, IReadOnlyList<string> pools, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -491,6 +520,34 @@ public static class RunQueueStore
 
         var sql = ClaimSqlTemplate.Replace("{POOL_PREDICATE}", poolPredicate, StringComparison.Ordinal);
 
+        // Losing the race for a pipeline is an ordinary outcome, not an error: the run stays queued and becomes
+        // claimable the moment the winner finishes. Each retry re-runs the whole claim, so it evaluates the gates
+        // afresh and takes the next-eligible run (usually a different pipeline). The attempt budget bounds the work
+        // a heavily contended queue can cause in one poll; exhausting it answers "nothing claimable right now", and
+        // the drain loop's next nudge or poll picks the work up.
+        for (var attempt = 1; attempt <= ClaimRaceAttempts; attempt++)
+        {
+            try
+            {
+                return await ClaimOnceAsync(catalog, sql, node, pools, nowUtc, ct).ConfigureAwait(false);
+            }
+            catch (SqlException ex) when (IsRunningPipelineConflict(ex))
+            {
+                // Another node claimed this pipeline between this claim's gate check and its write.
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The claim's single database round trip: runs <see cref="ClaimSqlTemplate"/> (already pool-expanded)
+    /// and materializes the claimed run, or null when nothing was eligible. Separated from
+    /// <see cref="ClaimNextAsync"/> so the lost-race retry re-enters through a fresh execution strategy, which is
+    /// what the strategy contract requires of a retried operation.</summary>
+    private static async Task<ClaimedRun?> ClaimOnceAsync(
+        CatalogDbContext catalog, string sql, string node, IReadOnlyList<string> pools, DateTime nowUtc,
+        CancellationToken ct)
+    {
         var strategy = catalog.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -529,6 +586,22 @@ public static class RunQueueStore
                 await catalog.Database.CloseConnectionAsync().ConfigureAwait(false);
             }
         }).ConfigureAwait(false);
+    }
+
+    /// <summary>True when a failed claim is the database refusing a second running run for one pipeline (see
+    /// <see cref="DuplicateKeyInIndex"/>). Every other SqlException is a real failure and propagates to the worker's
+    /// poll-error handling. A batch can carry several errors, so the whole collection is inspected.</summary>
+    private static bool IsRunningPipelineConflict(SqlException ex)
+    {
+        foreach (SqlError error in ex.Errors)
+        {
+            if (error.Number is DuplicateKeyInIndex or DuplicateKeyInConstraint)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Records a claimed run's outcome from its on-disk <c>run.json</c>: copies the result fields onto the

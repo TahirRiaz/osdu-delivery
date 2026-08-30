@@ -333,6 +333,26 @@ public sealed class IngestionFlowRunner
                 await TargetProcessHooks.RunAsync(targetConnectionString, flow.Process.PreProcessOnTarget!.Trim(), ct).ConfigureAwait(false);
             }
 
+            // 2c. Take this flow's work-table lease and hold it for the rest of the run. Everything from the
+            //     staging rebuild below to the staging drop at the end operates on tables named for the FLOW, not
+            //     for this run, so a second execution of the same flow would drop and recreate the very table this
+            //     one is filling (and load whatever rows it found there). The run queue serializes runs of one
+            //     pipeline, but it is not the only way a flow executes, so the guarantee is taken here, against the
+            //     target database that owns the tables. Nothing has been read or written yet, so a run that cannot
+            //     take the lease fails clean.
+            await using var workTables = await WorkTableLease.AcquireAsync(
+                targetConnectionString, staging, flow.SysAlias ?? flow.Target.Table.Name, WorkTableLease.LockWaitMs, ct)
+                .ConfigureAwait(false);
+            if (workTables.Waited)
+            {
+                Info("work.lease", $"work tables {workTables.WorkTable} leased after waiting {workTables.WaitedMs}ms "
+                    + "for another execution of this flow to finish");
+            }
+            else
+            {
+                Dbg("work.lease", $"work tables {workTables.WorkTable} leased");
+            }
+
             // 3. Rebuild the flow's canonical staging table (data columns only). The raw schema is ensured
             //    first (it also hosts the match-key table below), then the previous incarnation is dropped so
             //    the create always yields a fresh table carrying THIS run's exact source shape: a kept or

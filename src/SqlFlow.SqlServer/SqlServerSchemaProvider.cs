@@ -182,7 +182,7 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
         }
         finally
         {
-            await ReleaseAppLockAsync(connection, resource).ConfigureAwait(false);
+            await SqlAppLock.ReleaseAsync(connection, resource).ConfigureAwait(false);
             await RestoreDefaultLockTimeoutAsync(connection).ConfigureAwait(false);
         }
     }
@@ -220,22 +220,7 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
 
     private static async Task AcquireAppLockOrThrowAsync(SqlConnection connection, string resource, int timeoutMs, CancellationToken ct)
     {
-        // The wait is bounded server-side by @LockTimeout, which is the whole point of this call: on expiry
-        // sp_getapplock returns -1 and the caller gets a typed, retryable SchemaLockTimeoutException. A client
-        // CommandTimeout must never be the shorter of the two, or it aborts the round trip first and the
-        // graceful path becomes unreachable. ADO.NET's 30 second default is exactly AppLockTimeoutMs's default,
-        // so the client always won that race; 0 hands the bound back to @LockTimeout where it belongs.
-        await using var command = new SqlCommand("sys.sp_getapplock", connection) { CommandType = CommandType.StoredProcedure, CommandTimeout = 0 };
-        command.Parameters.AddWithValue("@Resource", resource);
-        command.Parameters.AddWithValue("@LockMode", "Exclusive");
-        command.Parameters.AddWithValue("@LockOwner", "Session");
-        command.Parameters.AddWithValue("@LockTimeout", timeoutMs);
-        var returnValue = command.Parameters.Add("@ReturnValue", SqlDbType.Int);
-        returnValue.Direction = ParameterDirection.ReturnValue;
-
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-        var code = returnValue.Value is int value ? value : -999;
+        var code = await SqlAppLock.TryAcquireAsync(connection, resource, timeoutMs, ct).ConfigureAwait(false);
         if (code < 0)
         {
             // -1 timeout, -2 cancelled, -3 deadlock, -999 validation/parameter error.
@@ -258,27 +243,6 @@ public sealed class SqlServerSchemaProvider : ISchemaProvider
         {
             // 1222 lock-request timeout (the polite fail-fast), 1204 lock resources, 1205 deadlock victim.
             throw new SchemaLockTimeoutException(resource, null, ex);
-        }
-    }
-
-    private static async Task ReleaseAppLockAsync(SqlConnection connection, string resource)
-    {
-        if (connection.State != ConnectionState.Open)
-        {
-            return;
-        }
-
-        try
-        {
-            await using var command = new SqlCommand("sys.sp_releaseapplock", connection) { CommandType = CommandType.StoredProcedure, CommandTimeout = 0 };
-            command.Parameters.AddWithValue("@Resource", resource);
-            command.Parameters.AddWithValue("@LockOwner", "Session");
-            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (SqlException)
-        {
-            // The connection close that follows frees the session lock anyway; a release failure must not
-            // mask the original DDL exception.
         }
     }
 
