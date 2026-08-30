@@ -580,6 +580,7 @@
       "required": false,
       "default": "null",
       "description": "Raw SQL predicate narrowing the source read, carrying its own leading keyword (legacy contract, for example 'AND SystemID = 13'). Combined with the incremental/full-load WHERE by AssembleWhere (src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs:180-212) according to source.filterIsAppend, and also feeds the deleted-row detector's key-set query (src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs:704, unless matchKeys.sourceFilter overrides it there).",
+      "validation": "STATIC narrowing only; spliced into the composed SQL verbatim, with no macro or parameter expansion (a token like @sf_watermark is an undefined variable that fails the read). Never hand-write an incremental watermark here (a 'SELECT MAX(...)' probe subquery, or a comparison against a watermark variable): that is the 'incremental' block's job (incremental.columns, or dateColumn + overlapDays, or lookback for numeric keys), and the engine composes its bound WITH this filter automatically.",
       "definedIn": "src/SqlFlow.Yaml/IngestionYaml.cs:57"
     },
     {

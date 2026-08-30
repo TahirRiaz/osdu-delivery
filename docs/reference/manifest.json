@@ -2560,6 +2560,42 @@
       ]
     },
     {
+      "id": "guide-canonical-authoring",
+      "path": "guides/canonical-authoring.md",
+      "title": "Canonical flow authoring: the simplest design that the engine already owns",
+      "type": "guide",
+      "summary": "The design loop for creating or changing a pipeline (scaffold or discover, edit, validate, propose) and the declare-intent-not-mechanism rules: incremental via the incremental block, upsert via load.keyColumns, narrowing via source.filter, and never macro tokens or hand-written watermark SQL.",
+      "keywords": [
+        "canonical",
+        "authoring",
+        "design",
+        "new pipeline",
+        "scaffold",
+        "incremental",
+        "watermark",
+        "upsert",
+        "keycolumns",
+        "macro",
+        "best practice"
+      ],
+      "related": [
+        "flow-incremental",
+        "flow-ing-schema-incremental",
+        "guide-incremental-and-backfill",
+        "concept-upsert-and-change-detection",
+        "cli-catalog-scaffold",
+        "cli-validate"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Catalog/CatalogScaffolder.cs",
+        "src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs",
+        "src/SqlFlow.Core/Engine/FlowRunner.cs",
+        "src/SqlFlow.Yaml/YamlDocumentLoader.cs",
+        "src/SqlFlow.ControlPlane/Api/FlowProposalEndpoints.cs",
+        "tools/sqlflow-lang/src/features.rs"
+      ]
+    },
+    {
       "id": "guide-incremental-and-backfill",
       "path": "guides/incremental-and-backfill.md",
       "title": "Incremental loads and per-run backfill parameters",

@@ -103,8 +103,9 @@ public sealed class FlowSetCollector
     /// <summary>Whether a file is a shared-schedule library: named <c>schedules.yaml</c> or ending in
     /// <c>.schedules.yaml</c>. These are not flow documents (they are excluded from the flow parse and handled by
     /// <see cref="ResolveSchedules"/>) and never become pipelines; they only publish named schedules for flows to
-    /// reference.</summary>
-    private static bool IsScheduleLibraryFile(string path)
+    /// reference. Public because the proposal preflight must classify a proposed file exactly as this scan will
+    /// classify it once the proposal merges.</summary>
+    public static bool IsScheduleLibraryFile(string path)
     {
         var name = Path.GetFileName(path);
         return name.Equals("schedules.yaml", StringComparison.OrdinalIgnoreCase)
@@ -113,8 +114,9 @@ public sealed class FlowSetCollector
 
     /// <summary>Whether a file is a subscriber library: named <c>subscribers.yaml</c> or ending in
     /// <c>.subscribers.yaml</c>. Like a schedule library it is not a flow document and never becomes a pipeline;
-    /// it declares who CONSUMES the estate, and is handled by <see cref="CollectSubscribers"/>.</summary>
-    private static bool IsSubscriberLibraryFile(string path)
+    /// it declares who CONSUMES the estate, and is handled by <see cref="CollectSubscribers"/>. Public for the
+    /// proposal preflight, mirroring <see cref="IsScheduleLibraryFile"/>.</summary>
+    public static bool IsSubscriberLibraryFile(string path)
     {
         var name = Path.GetFileName(path);
         return name.Equals("subscribers.yaml", StringComparison.OrdinalIgnoreCase)

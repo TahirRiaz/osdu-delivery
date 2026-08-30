@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
+using SqlFlow.Core.Identity;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Node;
 using SqlFlow.SourceControl.Proposals;
@@ -26,10 +27,12 @@ public sealed record ProposeFlowsRequest(
     string Title, string? Body, string? BaseBranch, string? HeadBranch, IReadOnlyList<ProposeFlowsFile> Files);
 
 /// <summary>An opened proposal: the pull-request URL a human reviews it at and its number, plus the pushed head
-/// branch, the commit SHA (feed it to a commit-pinned run to test the proposal before it merges), and the file
-/// count.</summary>
+/// branch, the commit SHA (feed it to a commit-pinned run to test the proposal before it merges), the file
+/// count, and the preflight warnings that were stamped into the pull-request body (empty when the preflight was
+/// clean).</summary>
 public sealed record FlowProposalCreated(
-    string PullRequestUrl, int PullRequestNumber, string HeadBranch, string CommitSha, int FilesChanged);
+    string PullRequestUrl, int PullRequestNumber, string HeadBranch, string CommitSha, int FilesChanged,
+    IReadOnlyList<string> Warnings);
 
 /// <summary>
 /// The authoring surface: propose pipelines to a tracked repo source as a pull request
@@ -38,6 +41,8 @@ public sealed record FlowProposalCreated(
 /// after which the existing managed sync imports them. Mapped under the "author" scope: pushing to a source repo is a
 /// higher trust boundary than triggering a run, so it is separate from "operate". The pull request is a proposal, not
 /// a merge, so a person always stays in the loop, and the commit is authored under the requesting user for audit.
+/// Every proposal is preflighted first (<see cref="FlowProposalPreflight"/>): a flow file the sync could not import
+/// is rejected before any git work, and softer findings ride into the response and the pull-request body.
 /// </summary>
 public static class FlowProposalEndpoints
 {
@@ -98,11 +103,30 @@ public static class FlowProposalEndpoints
 
         var source = await db.RepoSources.AsNoTracking()
             .Where(s => s.Id == id)
-            .Select(s => new { s.RemoteUrl, s.Branch, s.CredentialReference, s.CredentialUsername })
+            .Select(s => new { s.Name, s.RemoteUrl, s.Branch, s.CredentialReference, s.CredentialUsername })
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (source is null)
         {
             return Problem($"No repo source '{id}'.", StatusCodes.Status404NotFound, "Not found");
+        }
+
+        // Preflight with the engine's own loaders BEFORE anything touches git: a flow that would not import is
+        // rejected here with the loader's message (merging it would land nothing), and softer findings (an
+        // endpoint change on a revised flow, a duplicate flow name) ride into the response and the pull-request
+        // body so the human reviewer decides with them in view. The synced repo's id is derived from the
+        // source's name, exactly as the managed sync derives it.
+        var repoId = FlowIdentity.FromName(source.Name);
+        var existingPipelines = await db.Pipelines.AsNoTracking()
+            .Where(p => p.RepoId == repoId && p.Active)
+            .Select(p => new FlowProposalPreflight.ExistingPipeline(p.Name, p.RelativePath, p.Yaml))
+            .ToListAsync(ct).ConfigureAwait(false);
+        var preflight = FlowProposalPreflight.Run(filesOrError.Files!, existingPipelines);
+        if (preflight.Errors.Count > 0)
+        {
+            return Problem(
+                "The proposal was rejected by preflight; nothing was pushed.\n"
+                + string.Join("\n", preflight.Errors.Concat(preflight.Warnings).Select(f => $"- {f}")),
+                StatusCodes.Status422UnprocessableEntity, "Proposal failed preflight");
         }
 
         var coordinates = RemoteUrlParser.Parse(source.RemoteUrl);
@@ -147,6 +171,7 @@ public static class FlowProposalEndpoints
         var effectiveHead = string.IsNullOrEmpty(headBranch) ? GenerateBranchName(request.Title, files) : headBranch;
         var (authorName, authorEmail) = AuthorIdentity(user);
         var commitMessage = ComposeCommitMessage(request.Title, request.Body);
+        var pullRequestBody = StampPreflightWarnings(request.Body, preflight.Warnings);
 
         ProposalPublishResult publish;
         try
@@ -169,14 +194,15 @@ public static class FlowProposalEndpoints
             var result = await publisher.CreateAsync(
                 coordinates,
                 new PullRequestRequest(
-                    effectiveBase, publish.HeadBranch, request.Title.Trim(), request.Body,
+                    effectiveBase, publish.HeadBranch, request.Title.Trim(), pullRequestBody,
                     credentials.Username, credentials.Secret),
                 ct).ConfigureAwait(false);
 
             return TypedResults.Created(
                 result.Url,
                 new FlowProposalCreated(
-                    result.Url, result.Number, publish.HeadBranch, publish.CommitSha, publish.FilesChanged));
+                    result.Url, result.Number, publish.HeadBranch, publish.CommitSha, publish.FilesChanged,
+                    preflight.Warnings.Select(f => f.ToString()).ToList()));
         }
         catch (SqlFlowException ex)
         {
@@ -302,6 +328,21 @@ public static class FlowProposalEndpoints
     {
         var summary = title.Trim();
         return string.IsNullOrWhiteSpace(body) ? summary : $"{summary}\n\n{body.Trim()}";
+    }
+
+    /// <summary>The pull-request body with the preflight warnings appended as their own section, so the reviewer
+    /// decides with them in view (an endpoint change on a revised flow is exactly what a review must catch). The
+    /// requested body passes through unchanged when the preflight was clean.</summary>
+    private static string? StampPreflightWarnings(string? body, IReadOnlyList<ProposalFinding> warnings)
+    {
+        if (warnings.Count == 0)
+        {
+            return body;
+        }
+
+        var section = "## SQLFlow preflight\n\n"
+            + string.Join("\n", warnings.Select(f => $"- :warning: `{f.Path}`: {f.Message}"));
+        return string.IsNullOrWhiteSpace(body) ? section : $"{body.Trim()}\n\n{section}";
     }
 
     private static ProblemHttpResult Problem(string detail, int statusCode, string title = "Invalid request")

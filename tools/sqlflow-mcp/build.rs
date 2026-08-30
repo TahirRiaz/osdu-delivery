@@ -1,10 +1,10 @@
 //! Build script: embed the entire `docs/reference` corpus into the binary.
 //!
 //! It reads `docs/reference/manifest.json` and, for every page it lists,
-//! generates an `include_str!` entry so the MCP server ships all 71 pages plus
-//! the manifest with no runtime file dependency (mirroring how DeltaForge's MCP
-//! embeds its enriched docs). Editing any page or the manifest retriggers the
-//! build.
+//! generates an `include_str!` entry so the MCP server ships every manifest
+//! page plus the manifest itself with no runtime file dependency (mirroring how
+//! DeltaForge's MCP embeds its enriched docs). Editing any page or the manifest
+//! retriggers the build.
 
 use std::{env, fs, path::Path};
 

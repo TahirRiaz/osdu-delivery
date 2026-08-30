@@ -68,6 +68,9 @@ const HTTP_MODE_URL_NOTE: &str = "Not applicable over HTTP: the control-plane UR
 the server operator (SQLFLOW_CONTROL_PLANE_URL) and cannot be changed by a client.";
 const HTTP_MODE_DISCOVER_NOTE: &str = "discover_source is disabled over HTTP because it reads \
 sample files on the server host, not on yours. Run sqlflow-mcp locally over stdio to use it.";
+const HTTP_MODE_SCAFFOLD_NOTE: &str = "scaffold_ingestion_flow is disabled over HTTP because it \
+runs the local `sqlflow` CLI and resolves the connection reference on the server host, not on \
+yours. Run sqlflow-mcp locally over stdio to use it, or run `sqlflow catalog scaffold` yourself.";
 
 // --- Parameter structs -----------------------------------------------------
 
@@ -823,7 +826,18 @@ async fn run_sqlflow_cli(args: Vec<String>) -> Result<String, String> {
     .map_err(|e| format!("Failed to run the SQLFlow CLI: {e}"))?;
 
     match result {
-        Ok(output) if output.status.success() => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+        Ok(output) if output.status.success() => {
+            // The CLI writes advisory notes (a detected unique key, a skipped candidate) to stderr
+            // so stdout stays clean YAML; surface them to the caller under a clear label.
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let notes = stderr.trim();
+            Ok(if notes.is_empty() {
+                stdout
+            } else {
+                format!("{stdout}\n[cli notes]\n{notes}")
+            })
+        }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -935,7 +949,12 @@ impl SqlFlowMcp {
     // ---- Flow language (offline) -----------------------------------------
 
     #[tool(
-        description = "Validate a `.flow.yaml` document against SQLFlow's key census: reports parse errors, unknown keys, invalid enum values, and missing required keys with line numbers."
+        description = "Validate a `.flow.yaml` document against SQLFlow's key census AND its canonical-pattern \
+lints: parse errors, unknown keys, misplaced keys (with the documented home to move them to), invalid enum \
+values, missing required keys, invented macro tokens (SQLFlow has no macro/parameter expansion in SQL, so \
+an undeclared '@sf_*' variable is an error), and hand-written incremental watermarks that belong in the \
+'incremental' block. MANDATORY before showing or proposing ANY flow YAML you authored or edited: run it \
+and fix every finding first."
     )]
     async fn validate_flow(&self, Parameters(input): Parameters<ValidateFlowInput>) -> String {
         let diags = sqlflow_lang::analyze(&input.yaml);
@@ -2126,8 +2145,13 @@ user, and opens a pull request for review; it never writes the catalog directly,
 before the managed sync imports the flows. Returns the pull-request URL and number, the pushed head branch, and \
 the head commit SHA. Feed that commitSha to trigger_run to test the proposal pinned to the PR commit before it \
 merges (a changed flow already in the catalog runs this way; a brand-new flow is not in the catalog until the PR \
-merges and syncs). Generate the files with discover_source and validate each with validate_flow before proposing. \
-Works over both stdio and HTTP (it only proxies the control plane)."
+merges and syncs). The canonical authoring loop is: generate each file with scaffold_ingestion_flow (a \
+relational source) or discover_source (a JSON/NDJSON/XML file source), edit only what the generator could \
+not know, validate with validate_flow, THEN propose; never compose flow YAML from scratch when a generator \
+covers the source. The control plane preflights every proposed file with the engine's own loader: a file \
+that would not import is rejected with the loader's message, and warnings (a revised flow whose declared \
+source/target endpoints changed, a duplicate flow name) come back in the response and are stamped into the \
+pull-request body for the reviewer. Works over both stdio and HTTP (it only proxies the control plane)."
     )]
     async fn propose_pipelines(&self, Parameters(i): Parameters<ProposePipelinesInput>) -> String {
         let files: Vec<Value> = i
@@ -2157,9 +2181,11 @@ Works over both stdio and HTTP (it only proxies the control plane)."
         description = "Scan a JSON/NDJSON/XML sample file or folder and generate a ready-to-run `.flow.yaml` \
 stub (mode=flatten), or report its path structure (mode=paths|discover). The record grain (JSON rootPath / \
 XML rowXPath) is auto-detected from sample statistics, so an envelope like {items:[...]} or an RSS feed \
-produces one row per record without a hand-written config. Runs the local `sqlflow` CLI, so it reads any \
-path (local, UNC, or cloud) the CLI's file stores can reach. Validate the emitted YAML with validate_flow \
-before returning it."
+produces one row per record without a hand-written config. This is the canonical starting point for a new \
+FILE-source pipeline (scaffold_ingestion_flow is its relational twin); do not compose file-flow YAML from \
+scratch when a sample is available. Runs the local `sqlflow` CLI, so it reads any path (local, UNC, or \
+cloud) the CLI's file stores can reach. Validate the emitted YAML with validate_flow before returning or \
+proposing it."
     )]
     async fn discover_source(&self, Parameters(i): Parameters<DiscoverSourceInput>) -> String {
         if self.http_mode {
@@ -2213,6 +2239,62 @@ before returning it."
                     args.push(v.clone());
                 }
             }
+        }
+
+        match run_sqlflow_cli(args).await {
+            Ok(output) => output,
+            Err(message) => message,
+        }
+    }
+
+    #[tool(
+        description = "Scaffold the CANONICAL table-to-table ingestion flow (`flowType: ing`) from a live \
+relational source: introspects the object, fills `load.keyColumns` from its primary key (detecting a \
+minimal unique key when none is declared), and suggests candidate `incremental` date columns as comments, \
+so the emitted YAML is the engine's own idiomatic design rather than a hand-assembled one. This is the \
+REQUIRED starting point for a new relational pipeline; do not compose ing YAML from scratch. After \
+scaffolding: pick the change-tracking column and uncomment the `incremental` block (never hand-write \
+watermark SQL; the engine probes and composes the predicate), add batch/schedule, then validate_flow, \
+then propose_pipelines. Runs the local `sqlflow` CLI (`catalog scaffold`), so it needs the CLI on PATH \
+(or SQLFLOW_CLI) and a reachable source connection."
+    )]
+    async fn scaffold_ingestion_flow(&self, Parameters(i): Parameters<ScaffoldIngestionInput>) -> String {
+        if self.http_mode {
+            return HTTP_MODE_SCAFFOLD_NOTE.to_string();
+        }
+
+        let mut args: Vec<String> = vec![
+            "catalog".into(),
+            "scaffold".into(),
+            "--source".into(),
+            i.source.clone(),
+            "--object".into(),
+            i.object.clone(),
+            "--target-object".into(),
+            i.target_object.clone(),
+        ];
+        if let Some(provider) = &i.provider {
+            args.push("--provider".into());
+            args.push(provider.clone());
+        }
+        if let Some(target) = &i.target {
+            args.push("--target".into());
+            args.push(target.clone());
+        }
+        if let Some(name) = &i.name {
+            args.push("--name".into());
+            args.push(name.clone());
+        }
+        if let Some(keys) = i.keys.as_ref().filter(|k| !k.is_empty()) {
+            args.push("--keys".into());
+            args.push(keys.join(","));
+        }
+        if i.detect_keys.unwrap_or(true) {
+            args.push("--detect-keys".into());
+        }
+        if let Some(sample) = i.sample {
+            args.push("--sample".into());
+            args.push(sample.to_string());
         }
 
         match run_sqlflow_cli(args).await {
@@ -2707,6 +2789,34 @@ pub struct DiscoverSourceInput {
     pub array: Option<String>,
     /// Column-name separator (default "_"). Flatten mode only.
     pub separator: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScaffoldIngestionInput {
+    /// The source connection: a ${env:NAME} / ${keyvault:vault/secret} reference (embedded
+    /// verbatim in the YAML) or a literal connection string (used for introspection only; the
+    /// YAML gets a ${env:SQLFLOW_SOURCE} placeholder so no secret is ever written).
+    pub source: String,
+    /// The source object to scaffold from: database.schema.table (or database.table for MySQL).
+    pub object: String,
+    /// The target object on the warehouse, as schema.table (e.g. "raw.Orders").
+    #[serde(rename = "targetObject")]
+    pub target_object: String,
+    /// Source provider: mssql (default) | azdb | mysql | postgres.
+    pub provider: Option<String>,
+    /// The target connection reference embedded under connections: (default ${env:SQLFLOW_DW}).
+    pub target: Option<String>,
+    /// Explicit key columns for load.keyColumns; omit to use the source's introspected primary
+    /// key (with live unique-key detection as the fallback).
+    pub keys: Option<Vec<String>>,
+    /// When the source declares no primary key and no keys are given, profile the table to
+    /// detect a minimal unique key (default true). SQL Server sources only.
+    #[serde(rename = "detectKeys")]
+    pub detect_keys: Option<bool>,
+    /// The flow name (defaults to "schema-table" lowercased).
+    pub name: Option<String>,
+    /// Row sample size for key detection; omit to auto-sample large tables only.
+    pub sample: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

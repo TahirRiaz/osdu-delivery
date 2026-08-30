@@ -29,6 +29,11 @@
     <ProjectReference Include="..\SqlFlow.HealthCheck\SqlFlow.HealthCheck.csproj" />
     <ProjectReference Include="..\SqlFlow.Node\SqlFlow.Node.csproj" />
     <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
+    <!-- The proposal preflight parses proposed flow files with the engine's own loaders and projects their
+         declared endpoints. Already in the closure via SqlFlow.Catalog; referenced directly because this host
+         uses their types. -->
+    <ProjectReference Include="..\SqlFlow.Yaml\SqlFlow.Yaml.csproj" />
+    <ProjectReference Include="..\SqlFlow.Lineage\SqlFlow.Lineage.csproj" />
     <!-- The shared assistant core behind /api/v1/chat: the exact code path the Slack bot answers
          with, streamed to the GUI with per-user MCP authority. -->
     <ProjectReference Include="..\SqlFlow.Assistant\SqlFlow.Assistant.csproj" />

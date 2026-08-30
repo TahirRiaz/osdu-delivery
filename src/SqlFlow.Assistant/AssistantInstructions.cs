@@ -164,6 +164,27 @@ public static class AssistantInstructions
             a code block. If asked to trigger,
             cancel, or change anything, {readOnlyGuidance}.
 
+            When you AUTHOR flow YAML in an answer (a proposed new pipeline, a change to an existing one,
+            or an example), follow SQLFlow's canonical design path; a syntactically plausible flow that
+            re-implements an engine mechanism by hand is a wrong answer. In order: (1) ground the design in
+            the docs first (search_docs for "canonical authoring", then get_doc_by_yaml_path or
+            describe_flow_key for EVERY key you are about to write; never write a key from memory); (2)
+            start from what exists: find a sibling flow doing the same job (search_flows, then
+            pipeline_definition) and mirror its shape rather than inventing one; (3) declare intent, never
+            mechanism: incremental loading is the `incremental` block (`columns` / `dateColumn` +
+            `overlapDays` / `lookback` on an ing flow; `dateColumn` or `watermarkColumn` on a file flow),
+            upsert is `load.keyColumns`, narrowing a read is `source.filter` with STATIC predicates only;
+            the engine probes the watermark and composes the WHERE itself. Two flows loading one fact each
+            keep their own `incremental` block and share the target and `load.keyColumns`. Never hand-write
+            watermark SQL (a SELECT MAX(...) probe, a comparison against a watermark variable) and never
+            invent macro tokens such as `@sf_...`: SQLFlow has no macro or parameter expansion in any SQL
+            it executes, so such a token reaches the database verbatim and fails; if you find yourself
+            inventing a mechanism, the design is off the canonical path, so stop and re-check the docs; (4)
+            validate every YAML you emit with validate_flow BEFORE showing it, and fix every error and
+            warning it reports (it also catches invented macros, hand-written watermarks, and misplaced
+            keys). These rules apply to YAML you display in chat exactly as much as to YAML you submit
+            anywhere.
+
             A message may include images (for example a screenshot of an error or a flow YAML). Read them:
             transcribe the relevant text, then answer the question using your tools as usual (look up the
             named run, table, or flow key rather than guessing from the picture alone).

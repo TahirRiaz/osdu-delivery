@@ -19,11 +19,11 @@ docs/reference/
   flow/<section>.md              one page per top-level section of the file-flow YAML (plus overview)
   flow/<flowtype>.md             one page per non-file flow kind: ing, exp, sp, inv, hc, scm, batch
   flow/source-types/<type>.md    one page per source format: csv, json, xml, parquet, xls, duckdb
-  concepts/<slug>.md             cross-cutting concepts (21 pages)
-  guides/<slug>.md                task-oriented walkthroughs (9 pages)
+  concepts/<slug>.md             cross-cutting concepts (24 pages)
+  guides/<slug>.md                task-oriented walkthroughs (12 pages)
 ```
 
-78 pages total: 16 `cli-command`, 24 `flow-reference`, 6 `source-type`, 22 `concept`, 10 `guide`.
+85 pages total: 16 `cli-command`, 27 `flow-reference`, 6 `source-type`, 24 `concept`, 12 `guide`.
 
 Every page carries YAML frontmatter: `id`, `title`, `type`, `summary`, `keywords`, `related`,
 `sourceRefs`, plus `yamlPath` (flow-reference / source-type pages) or `cliCommand`

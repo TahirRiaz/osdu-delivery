@@ -1009,6 +1009,7 @@
       "required": false,
       "appliesWhen": "source.type in (duckdb,delta)",
       "description": "Verbatim DuckDB SQL wrapped as the FROM relation '(<query>) AS _src'; when set it takes precedence over the location scan (location/format are not used to build the relation). Trust boundary is the flow author, like a preProcess hook.",
+      "validation": "Sent to DuckDB verbatim: SQLFlow performs no macro or parameter expansion here, so tokens like @sf_watermark are never substituted. Do not hand-write watermark predicates in this query: incremental loading is the flow's 'incremental' block (watermarkColumn / dateColumn), whose bound the engine pushes into the DuckDB scan itself.",
       "definedIn": "src/SqlFlow.DuckDb/DuckDbQuery.cs:21"
     },
     {

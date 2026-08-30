@@ -386,18 +386,51 @@ pub fn diagnostics(doc: &FlowDocument) -> Vec<Diagnostic> {
                     Some(AuthoredSeg::Key(k)) => k.clone(),
                     _ => String::new(),
                 };
+
+                // The classic off-canon authoring: a hand-written source query on a relational
+                // flow, whose canonical form is source.object + source.filter + the incremental
+                // block. Called out specifically, because the generic unknown-key warning does not
+                // say what to write instead.
+                if let Some(guidance) = relational_query_guidance(doc.flow_type.as_deref(), &loc.path) {
+                    out.push(Diagnostic {
+                        range: key_range,
+                        severity: Severity::Warning,
+                        message: guidance,
+                        code: Some("flow-no-source-query".to_string()),
+                    });
+                    continue;
+                }
+
+                // A key documented under a DIFFERENT parent is almost always a misplacement the
+                // loader silently drops (IgnoreUnmatchedProperties), which reads as "the option
+                // did nothing" at run time. Name the documented home(s) so the fix is obvious.
+                let homes = documented_homes(&census, &name);
                 let subject = match doc.kind {
                     DocumentKind::Subscribers => "a subscriber library",
                     DocumentKind::Flow => "this flow type",
                 };
-                out.push(Diagnostic {
-                    range: key_range,
-                    severity: Severity::Warning,
-                    message: format!(
-                        "unknown key '{name}' for {subject}; it will be ignored by the loader"
-                    ),
-                    code: Some("flow-unknown-key".to_string()),
-                });
+                if homes.is_empty() {
+                    out.push(Diagnostic {
+                        range: key_range,
+                        severity: Severity::Warning,
+                        message: format!(
+                            "unknown key '{name}' for {subject}; it will be ignored by the loader"
+                        ),
+                        code: Some("flow-unknown-key".to_string()),
+                    });
+                } else {
+                    out.push(Diagnostic {
+                        range: key_range,
+                        severity: Severity::Warning,
+                        message: format!(
+                            "key '{name}' is not documented here for {subject} and will be ignored by \
+                             the loader; a key of that name is documented at: {}. If that is what you \
+                             meant, move it there.",
+                            homes.join(", ")
+                        ),
+                        code: Some("flow-misplaced-key".to_string()),
+                    });
+                }
             }
             Resolution::Exact(entry) => {
                 if let (Some(values), Some(value), NodeKind::Scalar) =
@@ -450,7 +483,341 @@ pub fn diagnostics(doc: &FlowDocument) -> Vec<Diagnostic> {
         }
     }
 
+    canon_diagnostics(doc, &census, &mut out);
+
     out
+}
+
+// --- Canonical-pattern lints ------------------------------------------------
+//
+// Structural validity is necessary but not sufficient: a flow can parse cleanly
+// while re-implementing, in hand-written SQL, a mechanism the engine already
+// owns (incremental watermarks), or while invoking a mechanism that does not
+// exist at all (macro tokens in query text). These lints keep authored flows on
+// the canonical path: declare intent in YAML, let the engine compose the SQL.
+
+/// Census paths whose scalar values are raw SQL that SQLFlow sends or splices
+/// VERBATIM: full statements (hooks, declared queries) and fragments (filters,
+/// expressions). The engine performs no macro or parameter expansion on any of
+/// them, which is what the invented-macro lint enforces.
+const SQL_BEARING_PATHS: &[&str] = &[
+    // Full statements.
+    "source.query",
+    "datasets[].query",
+    "source.options.query",
+    "preProcess",
+    "preProcess[]",
+    "postProcess",
+    "postProcess[]",
+    "source.options.preProcessOnTrg",
+    "source.options.postProcessOnTrg",
+    "surrogateKeys[].preProcess",
+    "surrogateKeys[].postProcess",
+    // Fragments spliced into engine-composed SQL.
+    "source.filter",
+    "source.incrementalClause",
+    "source.options.filter",
+    "filter",
+    "virtualColumns[].expression",
+    "assertions[].expression",
+    "transform.columns[].expr",
+];
+
+/// T-SQL keywords that start a new statement, ending a DECLARE's variable list.
+const STATEMENT_STARTERS: &[&str] = &[
+    "select", "set", "insert", "update", "delete", "merge", "with", "if", "while", "begin", "end",
+    "exec", "execute", "print", "create", "alter", "drop", "truncate", "from", "where", "declare",
+];
+
+fn canon_diagnostics(doc: &FlowDocument, census: &Census, out: &mut Vec<Diagnostic>) {
+    for loc in &doc.locations {
+        let (Some(value), NodeKind::Scalar) = (&loc.value, loc.value_kind) else {
+            continue;
+        };
+        let Resolution::Exact(entry) = census.resolve(&loc.path) else {
+            continue;
+        };
+        if !SQL_BEARING_PATHS.contains(&entry.path.as_str()) {
+            continue;
+        }
+
+        for var in undeclared_sf_variables(value) {
+            out.push(Diagnostic {
+                range: loc.value_range,
+                severity: Severity::Error,
+                message: format!(
+                    "'@{var}' looks like an invented SQLFlow macro. SQLFlow has no macro or \
+                     parameter expansion in SQL it executes: this token reaches the database \
+                     verbatim as an undefined variable and the statement fails. Declare the intent \
+                     in YAML instead (the 'incremental' block for watermarks, 'source.filter' for \
+                     a static narrowing predicate)."
+                ),
+                code: Some("flow-invented-macro".to_string()),
+            });
+        }
+
+        if let Some(alternative) = watermark_alternative(doc.flow_type.as_deref(), &entry.path) {
+            if let Some(shape) = handwritten_watermark(value) {
+                out.push(Diagnostic {
+                    range: loc.value_range,
+                    severity: Severity::Warning,
+                    message: format!(
+                        "'{}' hand-codes an incremental watermark ({shape}). The canonical \
+                         mechanism is {alternative}. Declare the watermark there and keep '{}' \
+                         free of watermark SQL (static narrowing is fine).",
+                        entry.path, entry.path
+                    ),
+                    code: Some("flow-handwritten-watermark".to_string()),
+                });
+            }
+        }
+    }
+}
+
+/// Guidance for the specific misauthoring of a hand-written source query on a relational flow.
+/// Returns `Some(message)` when the authored path is `source.query` / `source.sql` on an
+/// ing or exp document, whose census has no such key on purpose.
+fn relational_query_guidance(flow_type: Option<&str>, path: &[AuthoredSeg]) -> Option<String> {
+    let ft = flow_type?;
+    if !matches!(ft, "ing" | "exp") {
+        return None;
+    }
+    let [AuthoredSeg::Key(first), AuthoredSeg::Key(second)] = path else {
+        return None;
+    };
+    if first.as_str() != "source" || !matches!(second.as_str(), "query" | "sql") {
+        return None;
+    }
+    Some(format!(
+        "'source.{second}' does not exist for flowType: {ft} and will be ignored by the loader; \
+         the flow would silently read the whole object instead of your SQL. A relational flow \
+         reads 'source.object', narrowed by 'source.filter' when needed. Incremental loading is \
+         declared in the 'incremental' block (columns, or dateColumn + overlapDays, or lookback \
+         for numeric keys) and the engine composes the WHERE clause itself; hand-written watermark \
+         SQL is never part of a flow."
+    ))
+}
+
+/// The documented full paths of census keys whose LEAF name matches `name` (case-insensitive),
+/// for the misplaced-key suggestion. Capped so a common leaf name stays readable.
+fn documented_homes(census: &Census, name: &str) -> Vec<String> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let mut homes: Vec<String> = Vec::new();
+    for entry in &census.entries {
+        if let Some(crate::census::Seg::Key(leaf)) = entry.segs.last() {
+            if leaf.eq_ignore_ascii_case(name) && !homes.contains(&entry.path) {
+                homes.push(entry.path.clone());
+            }
+        }
+    }
+    homes.truncate(3);
+    homes
+}
+
+/// The canonical alternative to a hand-written watermark for this (flow kind, key), or `None`
+/// for keys/kinds where a MAX() subquery can be legitimate business SQL (trl queries, hooks).
+fn watermark_alternative(flow_type: Option<&str>, entry_path: &str) -> Option<&'static str> {
+    match (flow_type, entry_path) {
+        (None, "source.options.query" | "source.options.filter") => Some(
+            "the 'incremental' block on this file flow ('watermarkColumn' for row-level bounds, \
+             'dateColumn' + 'overlapDays' for file dates); the engine pushes the bound into the \
+             scan and filters every reader identically",
+        ),
+        (Some("ing"), "source.filter" | "source.incrementalClause") => Some(
+            "the 'incremental' block ('columns', or 'dateColumn' + 'overlapDays', or 'lookback' \
+             for numeric keys); the engine probes the target's MAX and combines the bound with \
+             'source.filter' automatically",
+        ),
+        _ => None,
+    }
+}
+
+/// Replaces single-quoted string literals, `--` line comments, and `/* */` block comments
+/// (nesting included) with spaces, so tokens inside them are never linted and offsets keep
+/// their line structure.
+fn strip_sql_noise(sql: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    while i < chars.len() {
+        match chars[i] {
+            '\'' => {
+                out.push(' ');
+                i += 1;
+                while i < chars.len() {
+                    if chars[i] == '\'' {
+                        if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                            out.push(' ');
+                            out.push(' ');
+                            i += 2;
+                            continue;
+                        }
+                        out.push(' ');
+                        i += 1;
+                        break;
+                    }
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            }
+            '-' if i + 1 < chars.len() && chars[i + 1] == '-' => {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                let mut depth = 1usize;
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+                while i < chars.len() && depth > 0 {
+                    if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                        depth += 1;
+                        out.push(' ');
+                        out.push(' ');
+                        i += 2;
+                    } else if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                        depth -= 1;
+                        out.push(' ');
+                        out.push(' ');
+                        i += 2;
+                    } else {
+                        out.push(blank(chars[i]));
+                        i += 1;
+                    }
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// One token of the noise-stripped SQL, for the small amount of structure the lints need.
+enum SqlToken {
+    Word(String),
+    Variable(String),
+}
+
+/// Words and `@variables` of the noise-stripped SQL, in order. `@@functions` (system
+/// functions like `@@ROWCOUNT`) are skipped; punctuation carries no information here.
+fn sql_tokens(stripped: &str) -> Vec<SqlToken> {
+    let chars: Vec<char> = stripped.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '@' {
+            if i + 1 < chars.len() && chars[i + 1] == '@' {
+                i += 2;
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                continue;
+            }
+            let start = i + 1;
+            let mut end = start;
+            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
+            if end > start {
+                tokens.push(SqlToken::Variable(chars[start..end].iter().collect()));
+            }
+            i = end.max(i + 1);
+        } else if c.is_alphabetic() || c == '_' {
+            let start = i;
+            let mut end = i;
+            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
+            tokens.push(SqlToken::Word(chars[start..end].iter().collect()));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    tokens
+}
+
+/// The variable names a `DECLARE` list in this SQL declares (lowercased). A DECLARE's list
+/// runs until the next statement-starting keyword, so `DECLARE @a INT, @b INT` declares both.
+fn declared_variables(tokens: &[SqlToken]) -> std::collections::HashSet<String> {
+    let mut declared = std::collections::HashSet::new();
+    let mut in_declare = false;
+    for token in tokens {
+        match token {
+            SqlToken::Word(word) => {
+                let lower = word.to_lowercase();
+                if lower == "declare" {
+                    in_declare = true;
+                } else if STATEMENT_STARTERS.contains(&lower.as_str()) {
+                    in_declare = false;
+                }
+            }
+            SqlToken::Variable(name) => {
+                if in_declare {
+                    declared.insert(name.to_lowercase());
+                }
+            }
+        }
+    }
+    declared
+}
+
+/// Distinct `@sf_*` variables the SQL uses without declaring, in first-use order and original
+/// casing. These are the signature of an invented macro: no engine path defines them.
+fn undeclared_sf_variables(sql: &str) -> Vec<String> {
+    let stripped = strip_sql_noise(sql);
+    let tokens = sql_tokens(&stripped);
+    let declared = declared_variables(&tokens);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for token in &tokens {
+        if let SqlToken::Variable(name) = token {
+            let lower = name.to_lowercase();
+            if lower.starts_with("sf_") && !declared.contains(&lower) && seen.insert(lower) {
+                out.push(name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Whether this SQL hand-codes an incremental watermark, and in what shape: a
+/// `SELECT MAX(...)` probe subquery, or a comparison against an undeclared variable whose
+/// name says watermark. Returns a short description of the detected shape.
+fn handwritten_watermark(sql: &str) -> Option<String> {
+    let stripped = strip_sql_noise(sql);
+    let collapsed = stripped
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("max (", "max(");
+    if collapsed.contains("select max(") {
+        return Some("a 'SELECT MAX(...)' probe subquery".to_string());
+    }
+
+    let tokens = sql_tokens(&stripped);
+    let declared = declared_variables(&tokens);
+    const WATERMARK_NAMES: &[&str] =
+        &["watermark", "highwater", "high_water", "lastload", "last_load", "lastrun", "last_run"];
+    for token in &tokens {
+        if let SqlToken::Variable(name) = token {
+            let lower = name.to_lowercase();
+            if !declared.contains(&lower) && WATERMARK_NAMES.iter().any(|m| lower.contains(m)) {
+                return Some(format!("a comparison against the undeclared variable '@{name}'"));
+            }
+        }
+    }
+    None
 }
 
 /// Normalise a token for the two carve-out keys that strip separators/case.
@@ -757,5 +1124,103 @@ mod tests {
         let doc = FlowDocument::parse("name: demo\n  bad: : :\n:\n");
         assert!(doc.parse_error.is_some());
         assert!(semantic_tokens(&doc).is_empty());
+    }
+
+    #[test]
+    fn ing_source_query_gets_canonical_guidance_not_a_generic_unknown() {
+        let src = "flowType: ing\nname: demo\nsource:\n  server: src\n  query: SELECT * FROM t WHERE x > 1\n";
+        let diags = diagnostics(&FlowDocument::parse(src));
+        let hit = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("flow-no-source-query"))
+            .expect("expected the source.query guidance");
+        assert!(hit.message.contains("source.object"));
+        assert!(hit.message.contains("'incremental' block"));
+        // The specific guidance replaces the generic unknown-key warning for this key.
+        assert!(!diags.iter().any(|d| {
+            d.code.as_deref() == Some("flow-unknown-key") && d.message.contains("'query'")
+        }));
+    }
+
+    #[test]
+    fn invented_sf_macro_in_query_is_an_error() {
+        let src = concat!(
+            "flowType: trl\nname: demo\nsource:\n  server: src\n",
+            "  query: SELECT * FROM dbo.Orders WHERE Id > @sf_incremental_watermark\n",
+        );
+        let diags = diagnostics(&FlowDocument::parse(src));
+        let hit = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("flow-invented-macro"))
+            .expect("expected an invented-macro error");
+        assert_eq!(hit.severity, Severity::Error);
+        assert!(hit.message.contains("@sf_incremental_watermark"));
+    }
+
+    #[test]
+    fn declared_commented_and_quoted_sf_tokens_are_not_macros() {
+        // Declared in the same batch, inside a string literal, and inside comments: all legitimate.
+        let src = concat!(
+            "flowType: trl\nname: demo\nsource:\n  server: src\n",
+            "  query: |\n",
+            "    DECLARE @sf_cutoff INT = 5, @sf_other INT\n",
+            "    -- @sf_ghost is only a comment\n",
+            "    /* @sf_ghost2 */\n",
+            "    SELECT '@sf_literal' AS tag FROM t WHERE Id > @sf_cutoff AND x < @sf_other\n",
+        );
+        let diags = diagnostics(&FlowDocument::parse(src));
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref() == Some("flow-invented-macro")),
+            "no macro error expected, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn handwritten_watermark_in_ing_filter_is_flagged() {
+        let src = concat!(
+            "flowType: ing\nname: demo\nsource:\n  server: src\n",
+            "  filter: AND ModifiedDate > (SELECT MAX(ModifiedDate) FROM dw.raw.Orders)\n",
+        );
+        let diags = diagnostics(&FlowDocument::parse(src));
+        let hit = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("flow-handwritten-watermark"))
+            .expect("expected a handwritten-watermark warning");
+        assert_eq!(hit.severity, Severity::Warning);
+        assert!(hit.message.contains("'incremental' block"));
+    }
+
+    #[test]
+    fn handwritten_watermark_in_duckdb_query_is_flagged() {
+        let src = concat!(
+            "name: demo\nsource:\n  type: duckdb\n  options:\n",
+            "    query: SELECT * FROM read_parquet('x') WHERE v > (SELECT max(v) FROM t)\n",
+        );
+        let diags = diagnostics(&FlowDocument::parse(src));
+        assert!(diags.iter().any(|d| d.code.as_deref() == Some("flow-handwritten-watermark")));
+    }
+
+    #[test]
+    fn plain_static_filter_is_clean() {
+        let src = "flowType: ing\nname: demo\nsource:\n  server: src\n  filter: AND SystemID = 13\n";
+        let diags = diagnostics(&FlowDocument::parse(src));
+        assert!(!diags.iter().any(|d| {
+            matches!(
+                d.code.as_deref(),
+                Some("flow-handwritten-watermark") | Some("flow-invented-macro")
+            )
+        }));
+    }
+
+    #[test]
+    fn misplaced_key_names_its_documented_home() {
+        // truncateBeforeLoad belongs under target:, not load: (the classic silently-dropped key).
+        let src = "flowType: ing\nname: demo\nload:\n  truncateBeforeLoad: true\n";
+        let diags = diagnostics(&FlowDocument::parse(src));
+        let hit = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("flow-misplaced-key"))
+            .expect("expected a misplaced-key warning");
+        assert!(hit.message.contains("target.truncateBeforeLoad"));
     }
 }
