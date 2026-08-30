@@ -753,7 +753,7 @@ public sealed class IngestionFlowRunner
                 var wmColumn = ConsolidationWatermarkColumn(flow)!;   // non-null: validated at run start
                 var landing = LandingTableOf(flow.Source.Table);
                 var landingSql = SchemaQualified(landing);
-                var sourceMax = await ReadMaxAsync(resolvedSource.CanonicalString, landingSql, wmColumn, ct).ConfigureAwait(false);
+                var sourceMax = await ReadMaxAsync(resolvedSource.CanonicalString, landingSql, wmColumn, whereClause: null, ct).ConfigureAwait(false);
 
                 if (sourceMax is null)
                 {
@@ -761,7 +761,14 @@ public sealed class IngestionFlowRunner
                 }
                 else
                 {
-                    var targetMax = await ReadMaxAsync(targetConnectionString, SchemaQualified(flow.Target.Table), wmColumn, ct).ConfigureAwait(false);
+                    // The target probe is scoped by the flow's incrementalClause, exactly like the watermark
+                    // window probe: on a shared target (several operators merging into one arc table,
+                    // discriminated by a clause like "AND [SourceSystemID] = 31"), an unscoped MAX would return
+                    // whichever operator loaded last and fake the catch-up, truncating landing rows this flow
+                    // has NOT consolidated. The landing side stays unscoped: the landing table is per-flow, and
+                    // the clause may reference view-only (virtual) columns that do not exist on the base table.
+                    var targetMax = await ReadMaxAsync(
+                        targetConnectionString, SchemaQualified(flow.Target.Table), wmColumn, flow.Source.IncrementalClause, ct).ConfigureAwait(false);
                     if (targetMax is null || CompareWatermarks(targetMax, sourceMax) < 0)
                     {
                         Info("source.truncate",
@@ -1638,11 +1645,14 @@ public sealed class IngestionFlowRunner
 
     // MAX(column) from a two-part-qualified table on the given connection, or null when the table is empty (the
     // scalar is NULL). Used to compare the landing and target high-water marks across their two databases.
-    private static async Task<object?> ReadMaxAsync(string connectionString, string qualifiedTable, string column, CancellationToken ct)
+    private static async Task<object?> ReadMaxAsync(string connectionString, string qualifiedTable, string column, string? whereClause, CancellationToken ct)
     {
+        // The optional clause is the flow's incrementalClause verbatim (an "AND ..." fragment, same contract as
+        // the watermark window probe), appended behind WHERE 1=1 so the fragment composes without parsing it.
+        var filter = string.IsNullOrWhiteSpace(whereClause) ? string.Empty : $" WHERE 1=1 {whereClause.Trim()}";
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
-        await using var command = new SqlCommand($"SELECT MAX([{Escape(column)}]) FROM {qualifiedTable};", connection) { CommandTimeout = 0 };
+        await using var command = new SqlCommand($"SELECT MAX([{Escape(column)}]) FROM {qualifiedTable}{filter};", connection) { CommandTimeout = 0 };
         var scalar = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
         return scalar is null or DBNull ? null : scalar;
     }

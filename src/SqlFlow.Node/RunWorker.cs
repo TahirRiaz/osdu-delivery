@@ -6,6 +6,7 @@ using SqlFlow.Catalog;
 using SqlFlow.Core;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Model;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Execution;
@@ -876,6 +877,27 @@ public sealed partial class RunWorker
                 }
             }
 
+            // Landing-reset verdict (load.resetWhenConsolidated, on by default): a chained landing (bronze)
+            // table is pure staging, so once every flow that directly reads its typed view has completed a
+            // successful run after this flow's last successful load, the engine may truncate it before this
+            // run's load. One hop only, by design: delivery to the NEXT phase (silver) frees the landing table;
+            // whether anything further downstream ran is irrelevant. Resolved here because the verdict needs the
+            // catalog's lineage graph and run ledger, which the engine tier does not have. Null (no consumers in
+            // the lineage, or a non-participating flow) leaves the landing table alone without comment.
+            LandingReset? landingReset = null;
+            if (document is FileFlowDocument landingDoc
+                && landingDoc.Flow.Load is { Mode: LoadMode.Append, ResetWhenConsolidated: true }
+                && landingDoc.Flow.Inference.GeneratesView)
+            {
+                landingReset = await ResolveLandingResetAsync(
+                    catalog, repoId, run.PipelineId,
+                    landingDoc.Flow.Target.Schema, landingDoc.Flow.Target.Table, parameters, ct).ConfigureAwait(false);
+                if (landingReset is not null)
+                {
+                    LogLandingReset(runId, landingReset.Authorized ? "authorized" : "blocked", landingReset.Reason);
+                }
+            }
+
             // The node streams the run's generated SQL and its canonical events into the catalog live: as each
             // statement executes a CatalogRunStatement row is written, and as each event is published (a file
             // read, a resolved watermark, a stage summary) a CatalogRunEvent row is written, each on its sink's
@@ -890,7 +912,7 @@ public sealed partial class RunWorker
                 var options = new DocumentExecutionOptions
                 {
                     RunId = runId, Echo = null, Parameters = parameters, StatementSink = statementSink,
-                    EventSink = eventSink, WatermarkSourceTable = watermarkSourceTable,
+                    EventSink = eventSink, WatermarkSourceTable = watermarkSourceTable, LandingReset = landingReset,
                     // The claimed run's flow name selects WHICH flow of the document executes: for an ingestion
                     // document with an embedded healthCheck: block, the derived hc pipeline runs from the same file.
                     FlowName = run.FlowName,
@@ -1126,6 +1148,127 @@ public sealed partial class RunWorker
         return new RelationalObject { Database = only.Database!, Schema = only.Schema!, Name = only.Name };
     }
 
+    /// <summary>
+    /// Resolves the landing-reset verdict for a chained landing (file) flow: may the engine truncate the flow's
+    /// landing target before this run's load? The verdict is one hop only, by design: the landing (bronze) table
+    /// is freed when the NEXT phase (silver) has its data, so the gate is that every flow DIRECTLY consuming this
+    /// flow (per the persisted lineage dependencies) has completed a successful run that started after this
+    /// flow's last successful run ended, proving everything the last load staged was visible to and consumed by
+    /// every reader. What any later phase (gold) holds never enters the verdict. Two additional conditions keep
+    /// the truncate honest: every consumer must read the engine's typed view <c>[schema].[v_&lt;table&gt;]</c>
+    /// (the chained landing contract; a consumer reading the base table, or through a hand-written object, may
+    /// depend on rows accumulating, so the reset is refused rather than guessed), and this flow must have a
+    /// prior successful run to anchor the comparison (a seeded table with no run history is never truncated on
+    /// faith). A run bounded to a window or filter (an operator backfill of a slice) is refused outright: the
+    /// whole staged dataset must reach the downstream merge, so a partial re-land never truncates first; a plain
+    /// forced full load keeps the normal gate and becomes a clean staging rebuild when authorized. Returns null
+    /// when the flow has no lineage consumers at all: a plain append flow that is nobody's staging area is left
+    /// alone without comment. Every blocked verdict carries the reason, so a landing table that keeps growing
+    /// has a loud, queryable explanation on each run.
+    /// </summary>
+    internal static async Task<LandingReset?> ResolveLandingResetAsync(
+        CatalogDbContext catalog, Guid repoId, Guid pipelineId, string targetSchema, string targetTable,
+        RunParameters parameters, CancellationToken ct)
+    {
+        var consumers = await catalog.FlowDependencies.AsNoTracking()
+            .Where(d => d.RepoId == repoId && d.FromPipelineId == pipelineId)
+            .Select(d => new { d.ToPipelineId, d.ToFlow })
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (consumers.Count == 0)
+        {
+            return null;
+        }
+
+        // A window- or filter-bounded run (an operator backfilling a specific slice) deliberately re-lands only
+        // part of the source, and the whole staged dataset must reach the downstream merge: resetting first
+        // would leave the landing table holding just the slice, which a downstream full-refresh consumer could
+        // then rebuild from. Never reset a bounded run. A plain forced full load (--full, no window or filter)
+        // keeps the normal gate below: it re-lands everything the definition selects, so an authorized reset
+        // turns it into a clean staging rebuild instead of doubling the table.
+        if (parameters.BackfillFrom is not null || parameters.BackfillTo is not null
+            || !string.IsNullOrWhiteSpace(parameters.FilePattern) || !string.IsNullOrWhiteSpace(parameters.SourceFilter))
+        {
+            return new LandingReset
+            {
+                Authorized = false,
+                Reason = "this run is bounded to a window/filter (backfill); a partial re-land never resets the landing table",
+            };
+        }
+
+        // The chained landing contract: consumers read the engine-generated typed view over the landing table.
+        // Resolve which consumers actually read [targetSchema].[v_<targetTable>] from their persisted Reads
+        // edges; any consumer that depends on this flow through some other object gets the rows preserved.
+        var viewName = $"v_{targetTable}";
+        var consumerIds = consumers.Select(c => c.ToPipelineId).ToList();
+        var reads = await catalog.LineageEdges.AsNoTracking()
+            .Where(e => e.RepoId == repoId
+                && e.PipelineId != null && consumerIds.Contains(e.PipelineId.Value)
+                && e.Relation == "Reads")
+            .Select(e => new { PipelineId = e.PipelineId!.Value, e.ObjectKey })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var readKeys = reads.Select(r => r.ObjectKey).Distinct().ToList();
+        var viewKeys = await catalog.Objects.AsNoTracking()
+            .Where(o => readKeys.Contains(o.Key)
+                && o.Kind == "View"
+                && o.Schema == targetSchema && o.Name == viewName)
+            .Select(o => o.Key)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var viewKeySet = viewKeys.ToHashSet(StringComparer.Ordinal);
+        var viewReaders = reads.Where(r => viewKeySet.Contains(r.ObjectKey)).Select(r => r.PipelineId).ToHashSet();
+        var nonViewConsumer = consumers.FirstOrDefault(c => !viewReaders.Contains(c.ToPipelineId));
+        if (nonViewConsumer is not null)
+        {
+            return new LandingReset
+            {
+                Authorized = false,
+                Reason = $"consumer '{nonViewConsumer.ToFlow}' does not read the typed view [{targetSchema}].[{viewName}], "
+                    + "so its contract with this table is unknown and the staged rows are preserved",
+            };
+        }
+
+        // The consolidation anchor: this flow's last successful load. No prior success means nothing this flow
+        // loaded is proven delivered (a seeded or hand-filled table has no ledger entry to compare against).
+        var lastLoadEnd = await catalog.Runs.AsNoTracking()
+            .Where(r => r.PipelineId == pipelineId && r.Status == RunStatuses.Succeeded && r.EndUtc != null)
+            .MaxAsync(r => (DateTime?)r.EndUtc, ct).ConfigureAwait(false);
+        if (lastLoadEnd is null)
+        {
+            return new LandingReset
+            {
+                Authorized = false,
+                Reason = "this flow has no prior successful run, so nothing staged is proven consolidated",
+            };
+        }
+
+        // Delivery proof, per consumer: a successful run that STARTED after the last load ENDED saw every staged
+        // row (a run that started earlier may have read a partial table, so it proves nothing). A consumer that
+        // is disabled or failing blocks the reset indefinitely, loudly: growth is the correct failure mode when
+        // delivery cannot be proven, silent data loss is not.
+        foreach (var consumer in consumers)
+        {
+            var consumed = await catalog.Runs.AsNoTracking()
+                .AnyAsync(r => r.PipelineId == consumer.ToPipelineId
+                    && r.Status == RunStatuses.Succeeded
+                    && r.StartUtc != null && r.StartUtc >= lastLoadEnd, ct).ConfigureAwait(false);
+            if (!consumed)
+            {
+                return new LandingReset
+                {
+                    Authorized = false,
+                    Reason = $"consumer '{consumer.ToFlow}' has no successful run after this flow's last load at {lastLoadEnd:u}",
+                };
+            }
+        }
+
+        return new LandingReset
+        {
+            Authorized = true,
+            Reason = $"every consumer ({string.Join(", ", consumers.Select(c => c.ToFlow))}) completed a successful run "
+                + $"after this flow's last load at {lastLoadEnd:u}",
+        };
+    }
+
     // Every outcome write below presents the claim fence (this node's name + the claim's attempt): if crash
     // recovery has requeued the run in the meantime (this node was presumed dead), the write silently misses and
     // the successor execution's outcome stands - a stale write must lose to the fence, never race it.
@@ -1176,6 +1319,9 @@ public sealed partial class RunWorker
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: watermark anchored to downstream table {Table} (incremental.watermarkFromDownstream).")]
     private partial void LogDownstreamWatermark(Guid runId, string table);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: landing reset {Verdict} (load.resetWhenConsolidated): {Reason}.")]
+    private partial void LogLandingReset(Guid runId, string verdict, string reason);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId} starting: flow '{FlowName}' in repo '{Repo}'.")]
     private partial void LogStarting(Guid runId, string flowName, string repo);

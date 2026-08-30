@@ -84,4 +84,5 @@ internal sealed class LoadYaml
     public int? BatchSize { get; set; }
     public bool? TableLock { get; set; }
     public bool? ManageIndexes { get; set; }
+    public bool? ResetWhenConsolidated { get; set; }
 }

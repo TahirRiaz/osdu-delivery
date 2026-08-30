@@ -197,7 +197,7 @@ public sealed class DocumentExecutor : IDocumentRunner
         // The run-history anchor (the flow document's folder) is the same one RunHistory.Write uses below, so the
         // incremental probe reads the durable last-processed watermark from exactly the runs written here.
         var runHistoryDirectory = Path.GetDirectoryName(Path.GetFullPath(flowFile)) ?? Directory.GetCurrentDirectory();
-        var result = await runner.RunAsync(flow, options.RunId, options.StatementSink, runHistoryDirectory, options.WatermarkSourceTable, events, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(flow, options.RunId, options.StatementSink, runHistoryDirectory, options.WatermarkSourceTable, events, options.LandingReset, ct).ConfigureAwait(false);
         var trace = SqlTrace.Render(result.SqlTrace);
 
         var runDirectory = RunHistory.Write(flowFile, doc.Flow.Name, result.RunId, new Dictionary<string, string>(StringComparer.Ordinal)

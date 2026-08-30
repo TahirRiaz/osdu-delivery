@@ -50,15 +50,23 @@ public sealed class SampleFlowIntegrationTests
             flow = flow with { Source = flow.Source with { Location = Path.GetFullPath(Path.Combine(dir, location)) } };
         }
 
+        // The samples land in the schema they declare (most use dbo, the landing samples use the canonical
+        // staging schema pre), so the checks qualify with the flow's own schema and the schema is created on
+        // the sink first: the file engine creates tables, not schemas.
+        var qualified = $"[{flow.Target.Schema}].[{flow.Target.Table}]";
+        await IntegrationDb.ExecuteAsync(cs, $"IF SCHEMA_ID(N'{flow.Target.Schema}') IS NULL EXEC(N'CREATE SCHEMA [{flow.Target.Schema}]');");
+
         // Fresh start, but leave the table afterwards for inspection.
-        await IntegrationDb.DropTableAsync(cs, flow.Target.Table);
+        await IntegrationDb.ExecuteAsync(cs, $"DROP TABLE IF EXISTS {qualified};");
 
         var result = await IntegrationDb.RealRunner().RunAsync(flow);
 
         Assert.Equal(FlowStatus.Success, result.Status);
-        Assert.True(await IntegrationDb.TableExistsAsync(cs, flow.Target.Table), $"{flow.Target.Table} should exist");
+        Assert.True(
+            await IntegrationDb.ScalarAsync<int?>(cs, $"SELECT 1 WHERE OBJECT_ID('{qualified}','U') IS NOT NULL") == 1,
+            $"{qualified} should exist");
         Assert.True(result.RowsLoaded > 0, "sample should load at least one row");
-        Assert.Equal(result.RowsLoaded, await IntegrationDb.RowCountAsync(cs, flow.Target.Table));
+        Assert.Equal(result.RowsLoaded, await IntegrationDb.ScalarAsync<long>(cs, $"SELECT COUNT_BIG(*) FROM {qualified}"));
     }
 
     private static string SamplesDir()

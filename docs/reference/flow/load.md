@@ -10,6 +10,8 @@ keywords:
   - batchsize
   - tablelock
   - manageindexes
+  - resetwhenconsolidated
+  - landing reset
   - desiredindexes
   - sqlbulkcopy
 yamlPath: load
@@ -58,6 +60,7 @@ load:
 | `load.batchSize` | int | no | `50000` | Rows per SqlBulkCopy batch (`SqlBulkCopy.BatchSize`). |
 | `load.tableLock` | bool | no | `true` | Take a table lock during the bulk load (`SqlBulkCopyOptions.TableLock`). |
 | `load.manageIndexes` | bool | no | `false` | Disable non-clustered indexes on an existing target before the load and rebuild them after. |
+| `load.resetWhenConsolidated` | bool | no | `true` | Reset (truncate) a chained landing target at the start of the next run once every direct consumer of its typed view has consolidated it. See the section below. |
 | `desiredIndexes` | string (top level) | no | none | One or more `CREATE INDEX` statements applied after the load, only on the run that created the table. |
 | `preProcess` | list of strings (top level) | no | `[]` | Raw SQL statements executed on the target before the load. |
 | `postProcess` | list of strings (top level) | no | `[]` | Raw SQL statements executed on the target after the load. |
@@ -90,6 +93,23 @@ Boolean, default `true`. When true the bulk copy runs with `SqlBulkCopyOptions.T
 
 Boolean, default `false`. Applies only when the target table already exists; see the index-handling section below for exactly which indexes are touched and in what order.
 
+### `load.resetWhenConsolidated`
+
+Boolean, default `true`. The chained landing pattern (`file -> [pre].[<Table>] -> view [pre].[v_<Table>] -> silver`) makes the flow's target pure staging: once the downstream flows have merged its rows into their own durable tables, keeping them in the landing table only makes it grow without bound. With this key on (the default), the landing table is truncated at the start of the next run, but only when delivery one phase downstream is proven. The verdict is one hop only: bronze is freed when silver has the data; whether anything further downstream (gold) ran is irrelevant.
+
+The reset is deliberately fail-closed. The node authorizes it from the catalog's lineage graph and run ledger (`ResolveLandingResetAsync` in src/SqlFlow.Node/RunWorker.cs), and ALL of the following must hold, or the rows are kept and the run's event stream says which condition blocked it:
+
+- The flow appends (`load.mode: append`) and generates the typed view (`transform.generateView` with typing on): the chained landing contract. A `truncate-load` flow already replaces its data, and a flow with no view has no chained contract to honor.
+- The flow has at least one direct consumer in the lineage graph, and every one of them reads the typed view `[schema].[v_<Table>]`. A consumer that depends on the flow through some other object (the base table, a hand-written view) may rely on rows accumulating, so the reset is refused rather than guessed.
+- The flow has a prior successful run, and every direct consumer has a successful run that STARTED after that run ENDED. A run that started earlier may have read a partial table; a failed or missing consumer run proves nothing and blocks the reset indefinitely, loudly: growth is the correct failure mode when delivery cannot be shown, silent data loss is not.
+- The source read found files. The engine (`target.reset` in src/SqlFlow.Core/Engine/FlowRunner.cs) truncates after `source.open` succeeds, so a quiet incremental day (nothing newer than the watermark) never empties the table out from under a downstream consumer that full-reloads from it.
+- The run is not bounded to a window or filter. An operator backfill of a slice (`backfillFrom`/`backfillTo`, `--file-pattern`, `--source-filter`) re-lands only part of the source, and the whole staged dataset must reach the downstream merge, so a bounded run never resets. A plain forced full load (`--full`, no window or filter) keeps the normal gate: when authorized it becomes a clean staging rebuild (the table holds the re-landed dataset exactly once) instead of doubling under append.
+- The target table existed before this run, and the run came through the control plane. A direct CLI run has no catalog and never resets.
+
+The truncate does not disturb incremental correctness: a file flow's watermark is anchored to the downstream (silver) table or the on-disk run log, deliberately not to its own transient target.
+
+Set `resetWhenConsolidated: false` to keep a landing table's history across runs, for example while a report still queries the base table directly. This key governs the file flow's own landing target; the ingestion-side `load.truncateSourceWhenConsolidated` (docs/reference/flow/ing-load.md) remains the explicit consumer-side knob for the same table and is unaffected.
+
 ### `desiredIndexes` (top level)
 
 A string containing one or more T-SQL `CREATE INDEX` statements. Applied only on the run that created the table; see below.
@@ -106,10 +126,11 @@ For a file flow, `FlowRunner.RunAsync` executes the load-relevant stages in this
 2. `target.preprocess`: run `preProcess` statements.
 3. `indexes.disable`: if `load.manageIndexes: true` and the table existed before this run.
 4. `target.truncate`: if `load.mode: truncate-load`.
-5. `target.load`: the SqlBulkCopy load.
-6. `indexes.rebuild`: rebuild the indexes disabled in step 3.
-7. `indexes.desired`: if the table was created by this run and `desiredIndexes` is set.
-8. `target.postprocess`: run `postProcess` statements.
+5. `target.reset`: if the control plane authorized the landing reset (`load.resetWhenConsolidated`); runs after `source.open` found files, so a no-file day never truncates.
+6. `target.load`: the SqlBulkCopy load.
+7. `indexes.rebuild`: rebuild the indexes disabled in step 3.
+8. `indexes.desired`: if the table was created by this run and `desiredIndexes` is set.
+9. `target.postprocess`: run `postProcess` statements.
 
 If the run fails after indexes were disabled, the engine makes a best-effort rebuild of those indexes so a failed load does not leave the table with disabled indexes; a rebuild failure at that point is logged but does not mask the original error.
 

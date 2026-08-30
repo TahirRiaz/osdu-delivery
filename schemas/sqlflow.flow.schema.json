@@ -834,6 +834,10 @@
         "manageIndexes": {
           "type": "boolean",
           "description": "On an existing table, disable non-clustered indexes before the load and rebuild them after."
+        },
+        "resetWhenConsolidated": {
+          "type": "boolean",
+          "description": "Reset (truncate) a chained landing target at the start of the next run once every flow that directly reads its typed view has completed a successful run after this flow's last successful load, so the staging table stops growing without bound. Default true; applies only to an append-mode flow that generates the typed view and only to control-plane runs (the node proves delivery from lineage and the run ledger; a direct CLI run never resets). A backfill bounded to a window or filter never resets (the whole staged dataset must reach the downstream merge); a plain forced full load keeps the gate and becomes a clean staging rebuild. Set false to keep the landing rows across runs."
         }
       }
     },

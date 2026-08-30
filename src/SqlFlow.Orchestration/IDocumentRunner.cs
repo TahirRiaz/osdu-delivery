@@ -49,6 +49,14 @@ public sealed record DocumentExecutionOptions
     /// on the flow's own target. Threaded into the ingestion runner through the single execution path.</summary>
     public RelationalObject? WatermarkSourceTable { get; init; }
 
+    /// <summary>The control plane's consolidation verdict for a file flow's chained landing target
+    /// (<c>load.resetWhenConsolidated</c>): whether every flow that directly reads the landing's typed view has
+    /// completed a successful run since this flow's last successful load, so the engine may truncate the landing
+    /// table before this run's load. Resolved from the catalog's lineage and run ledger by the node, which is
+    /// the tier that has them; null (the default, and every direct CLI run) never resets. Threaded into the file
+    /// flow runner through the single execution path.</summary>
+    public LandingReset? LandingReset { get; init; }
+
     /// <summary>Receives each generated SQL statement as the run executes it, for live persistence (the node
     /// streams the trace into the catalog during the run). Null (the default) records nothing live, so a direct
     /// CLI run is unchanged; the trace is still written to the artifact and projected at completion.</summary>

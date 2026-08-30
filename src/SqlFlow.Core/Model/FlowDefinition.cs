@@ -169,4 +169,20 @@ public sealed record LoadPolicy
 
     /// <summary>Script &amp; drop non-clustered indexes before the load, then recreate them after.</summary>
     public bool ManageIndexes { get; init; }
+
+    /// <summary>
+    /// Reset (truncate) a chained landing target at the start of the next run once every direct consumer has
+    /// consolidated it (default true). The chained landing pattern
+    /// (<c>file -&gt; [pre].[&lt;Table&gt;] -&gt; view [pre].[v_&lt;Table&gt;] -&gt; silver</c>) makes the landing table pure
+    /// staging: after the downstream flows have merged its rows into their own durable tables, keeping the
+    /// history in the landing table only makes it grow without bound. The reset applies only when the
+    /// control plane authorizes it for the run (see <see cref="Runs.LandingReset"/>): the flow appends
+    /// (<see cref="LoadMode.Append"/>), generates the typed view, the target existed before the run, and
+    /// EVERY flow that directly reads the typed view has completed a successful run after this flow's last
+    /// successful load, proving the staged rows were delivered one phase downstream (bronze is freed when
+    /// silver has the data; what gold holds is irrelevant). A direct CLI run, a flow with no consumers, or a
+    /// consumer that has not caught up leaves the table untouched. Set false to keep a landing table's
+    /// history across runs (for example while a report still reads the base table directly).
+    /// </summary>
+    public bool ResetWhenConsolidated { get; init; } = true;
 }

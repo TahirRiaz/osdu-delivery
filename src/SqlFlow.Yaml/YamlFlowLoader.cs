@@ -280,6 +280,7 @@ public sealed class YamlFlowLoader
             BatchSize = y.BatchSize ?? 50_000,
             TableLock = y.TableLock ?? true,
             ManageIndexes = y.ManageIndexes ?? false,
+            ResetWhenConsolidated = y.ResetWhenConsolidated ?? true,
         };
     }
 

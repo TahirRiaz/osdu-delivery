@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `load.resetWhenConsolidated` on a file flow (default ON): a chained landing (bronze) table is reset,
+  truncated at the start of the next run, once every flow that directly reads its typed view has
+  completed a successful run after the landing's last successful load. One hop only: delivery to
+  silver frees bronze; gold is irrelevant. The node proves delivery from the catalog's lineage graph
+  and run ledger and the engine truncates only after the source read finds files, so a quiet day, a
+  lagging/failed consumer, a base-table reader, a seeded table with no run history, a backfill
+  bounded to a window or filter, or a direct CLI run all keep the rows, each with the blocking
+  reason on the run's events. A plain forced full load keeps the gate and, when authorized, becomes
+  a clean staging rebuild instead of doubling the table. Fixes landing tables growing without bound
+  (the `pre` estate had accumulated 794M rows / 232 GB of already-consolidated staging data).
+- The ing-side `load.truncateSourceWhenConsolidated` gate now scopes its target-side `MAX(watermark)`
+  probe by `source.incrementalClause`, so on a shared target (several operators merging into one arc
+  table) another operator's fresher load can no longer fake the catch-up and truncate un-consolidated
+  landing rows.
 - `incremental.lookback` on an `ing` flow: the numeric counterpart of `incremental.overlapDays`, subtracted
   from a non-date watermark's `MAX` (and, with `fetchMinValuesFromSource`, from the source `MIN`) inside the
   probe itself. A monotonic id is allocated at `INSERT` but published at `COMMIT`, so a bare `MAX` can

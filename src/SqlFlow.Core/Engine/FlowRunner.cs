@@ -84,11 +84,11 @@ public sealed class FlowRunner
         => RunAsync(flow, runId, null, null, ct);
 
     public Task<FlowResult> RunAsync(FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, CancellationToken ct = default)
-        => RunAsync(flow, runId, statementSink, null, null, null, ct);
+        => RunAsync(flow, runId, statementSink, null, null, null, null, ct);
 
     public Task<FlowResult> RunAsync(
         FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, string? runHistoryDirectory, CancellationToken ct = default)
-        => RunAsync(flow, runId, statementSink, runHistoryDirectory, null, null, ct);
+        => RunAsync(flow, runId, statementSink, runHistoryDirectory, null, null, null, ct);
 
     /// <param name="flow">The validated flow to run.</param>
     /// <param name="runId">An orchestrator-assigned run id stamped on the run instead of minting one; the
@@ -110,10 +110,16 @@ public sealed class FlowRunner
     /// collector, and through it the node's live catalog writer), so this run's canonical events reach the
     /// run.json <c>events</c> array and the control plane's Events view while the CLI console keeps its own
     /// stream. Null (a plain library caller) publishes to the host-wide sink only.</param>
+    /// <param name="landingReset">The control plane's consolidation verdict for a chained landing target
+    /// (<c>load.resetWhenConsolidated</c>): when authorized, the target is truncated after the source read finds
+    /// files and before the load, so a landing table whose rows every direct consumer has already merged starts
+    /// the run empty instead of growing forever. Null (a direct CLI run, or a flow with no lineage consumers)
+    /// never resets.</param>
     /// <param name="ct">Cancellation for the run.</param>
     public async Task<FlowResult> RunAsync(
         FlowDefinition flow, Guid? runId, IRunStatementSink? statementSink, string? runHistoryDirectory,
-        RelationalObject? watermarkTable, IFlowEventSink? events = null, CancellationToken ct = default)
+        RelationalObject? watermarkTable, IFlowEventSink? events = null, LandingReset? landingReset = null,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
 
@@ -216,6 +222,28 @@ public sealed class FlowRunner
 
             var reader = ResolveReader(effectiveFlow.Source.Type);
             var read = await StageAsync("source.open", context, () => reader.OpenAsync(effectiveFlow.Source, plan.SourceColumns, ct)).ConfigureAwait(false);
+
+            // Landing reset (load.resetWhenConsolidated): a chained landing (bronze) target is pure staging, so
+            // once every direct consumer has merged its rows into the next phase (the control plane's verdict,
+            // computed from lineage and the run ledger), this run starts the table empty instead of appending
+            // forever. Deliberately AFTER source.open: a run that finds no files never reaches here (the no-op
+            // catch below fires first), so a quiet day keeps the landing rows and a downstream full-reload
+            // consumer never reloads from an emptied table. Only an append-mode flow that generates the typed
+            // view participates (truncate-load already replaces; no view means no chained landing contract),
+            // and only when the table existed before this run (a just-created table has nothing to reset).
+            if (landingReset is not null && flow.Load is { Mode: LoadMode.Append, ResetWhenConsolidated: true }
+                && flow.Inference.GeneratesView && !tableIsNew)
+            {
+                if (landingReset.Authorized)
+                {
+                    await StageAsync("target.reset", context, () => _loader.TruncateAsync(connectionString, flow.Target, ct)).ConfigureAwait(false);
+                    Emit(context, $"landing {flow.Target.QualifiedName} reset before load: {landingReset.Reason}", stage: "target.reset");
+                }
+                else
+                {
+                    Emit(context, $"landing {flow.Target.QualifiedName} retained: {landingReset.Reason}", stage: "target.reset");
+                }
+            }
 
             // Row-level incremental: drop any row not past the watermark before it reaches the bulk loader.
             // This is reader-agnostic (DuckDB also pushes the same bound into its scan; here it is a no-op
