@@ -201,9 +201,25 @@ var flowEnvVars = [for (entry, i) in flowEnv: {
 // re-enter the queued term until a live node claims them. The platform still picks scale-in victims blindly, so a
 // busy pod can be condemned in the claim/scale-in race; terminationGracePeriodSeconds lets it drain, and the
 // reaper's requeue makes even a severed run recoverable.
+//
+// The queued term is DIVIDED by maxConcurrentRunsPerReplica, because a replica is not worth one run: the node
+// drains up to RunWorker.DefaultMaxConcurrentRuns (4) at once. Asking for one replica per queued run made a
+// schedule wave spawn four times the fleet it needed, and the surplus pods found nothing left to claim by the
+// time they had pulled the image and started polling: over one 24h window 79 of 150 pods executed zero runs and
+// were reclaimed at the scaler's cooldown floor. Only the queued term is divided; busy nodes still count one
+// each, since dividing occupied capacity would ask the platform to reclaim pods that are executing runs.
+//
+// That term also counts only CLAIMABLE runs, mirroring the three gates in RunQueueStore.ClaimSqlTemplate: a
+// member of a wave-ordered group waits for every lower wave to go terminal, a member carrying a
+// GroupMaxConcurrency waits for a free slot in its group, and a run whose pipeline is already executing waits its
+// turn. A plain COUNT of queued rows asks for capacity no worker is permitted to take: one schedule fire enqueued
+// 51 wave-ordered members at once, the group then sat queued for four hours behind its wave-1 acquisition, and
+// the rule kept ordering replicas that started, claimed nothing, and died at the cooldown floor. Demand has to
+// mean work a node could pick up right now. Keep these predicates in step with the claim statement; the scaler
+// evaluates them over queued rows only, which is the same small set every node's claim poll already scans.
 var queueDepthQuery = empty(pool)
-  ? 'SELECT (SELECT MAX(v) FROM (VALUES ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] IS NULL) / ${maxConcurrentRunsPerReplica}.0) AS int) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND ([Pool] = N\'\' OR [Pool] IS NULL)))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
-  : 'SELECT (SELECT MAX(v) FROM (VALUES ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] = \'${pool}\') / ${maxConcurrentRunsPerReplica}.0) AS int) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND [Pool] = N\'${pool}\'))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
+  ? 'SELECT (SELECT MAX(v) FROM (VALUES ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] AS r WHERE r.[Status] = \'queued\' AND r.[TargetPool] IS NULL AND (r.[GroupId] IS NULL OR NOT EXISTS (SELECT 1 FROM [catalog].[Run] AS s WHERE s.[GroupId] = r.[GroupId] AND s.[GroupWave] < r.[GroupWave] AND s.[Status] IN (\'queued\', \'running\'))) AND (r.[GroupMaxConcurrency] IS NULL OR (SELECT COUNT(*) FROM [catalog].[Run] AS w WHERE w.[GroupId] = r.[GroupId] AND w.[Status] = \'running\') < r.[GroupMaxConcurrency]) AND NOT EXISTS (SELECT 1 FROM [catalog].[Run] AS p WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = \'running\')) / ${maxConcurrentRunsPerReplica}.0) AS int) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND ([Pool] = N\'\' OR [Pool] IS NULL)))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
+  : 'SELECT (SELECT MAX(v) FROM (VALUES ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] AS r WHERE r.[Status] = \'queued\' AND r.[TargetPool] = \'${pool}\' AND (r.[GroupId] IS NULL OR NOT EXISTS (SELECT 1 FROM [catalog].[Run] AS s WHERE s.[GroupId] = r.[GroupId] AND s.[GroupWave] < r.[GroupWave] AND s.[Status] IN (\'queued\', \'running\'))) AND (r.[GroupMaxConcurrency] IS NULL OR (SELECT COUNT(*) FROM [catalog].[Run] AS w WHERE w.[GroupId] = r.[GroupId] AND w.[Status] = \'running\') < r.[GroupMaxConcurrency]) AND NOT EXISTS (SELECT 1 FROM [catalog].[Run] AS p WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = \'running\')) / ${maxConcurrentRunsPerReplica}.0) AS int) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND [Pool] = N\'${pool}\'))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name

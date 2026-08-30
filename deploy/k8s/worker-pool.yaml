@@ -93,9 +93,24 @@ spec:
         # since a replica drains four runs at once: one replica per queued run spawned four times the fleet a
         # schedule wave needed, and the surplus pods found nothing left to claim. Busy nodes are NOT divided;
         # they each hold one replica's worth of occupied capacity. Keep the 4.0 in step with that constant.
+        # It also counts only CLAIMABLE queued runs, mirroring the three gates in RunQueueStore.ClaimSqlTemplate
+        # (wave order within a run group, the group's max concurrency, one execution per pipeline). Counting every
+        # queued row asked for replicas that no worker was permitted to claim: a 51-member wave-ordered group sat
+        # queued for hours behind its first wave while the rule kept ordering pods that claimed nothing.
         query: |-
           SELECT (SELECT MAX(v) FROM (VALUES
-            ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = 'queued' AND [TargetPool] IS NULL) / 4.0) AS int)
+            ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] AS r
+                            WHERE r.[Status] = 'queued' AND r.[TargetPool] IS NULL
+                              AND (r.[GroupId] IS NULL OR NOT EXISTS (
+                                  SELECT 1 FROM [catalog].[Run] AS s
+                                  WHERE s.[GroupId] = r.[GroupId] AND s.[GroupWave] < r.[GroupWave]
+                                    AND s.[Status] IN ('queued', 'running')))
+                              AND (r.[GroupMaxConcurrency] IS NULL OR (
+                                  SELECT COUNT(*) FROM [catalog].[Run] AS w
+                                  WHERE w.[GroupId] = r.[GroupId] AND w.[Status] = 'running') < r.[GroupMaxConcurrency])
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM [catalog].[Run] AS p
+                                  WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = 'running')) / 4.0) AS int)
               + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0
                  AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME())
                  AND ([Pool] = N'' OR [Pool] IS NULL)))),
