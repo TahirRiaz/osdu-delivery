@@ -50,9 +50,13 @@ param acrLoginServer string = ''
 @description('Key Vault secret name for a Go-driver-compatible catalog connection string used ONLY by the KEDA scale rule (a go-mssqldb URL, sqlserver://user:urlencoded-pw@host:port?database=...). The KEDA mssql scaler is not .NET SqlClient: it does not strip the single quotes an ADO.NET connection string puts around a password, so the .NET catalog connection cannot be reused for the scaler. Leave empty to reuse catalogConnectionSecretName for the scaler (correct only when that password needs no quoting).')
 param scalerConnectionSecretName string = ''
 
-@description('Upper bound for queue-depth scale out (one queued run per replica).')
+@description('Upper bound for queue-depth scale out.')
 @minValue(1)
 param maxReplicas int = 10
+
+@description('How many runs one replica executes at once. MUST match the node\'s own concurrency (SqlFlow.Node RunWorker.DefaultMaxConcurrentRuns, 4), because the scale rule divides queued work by it to size the fleet. Setting it higher than the node\'s value starves the queue; lower spawns replicas that find nothing left to claim.')
+@minValue(1)
+param maxConcurrentRunsPerReplica int = 4
 
 @description('vCPU per replica, as a string for exact decimals. Must form a valid Container Apps consumption pair with memory.')
 param cpu string = '1.0'
@@ -198,8 +202,8 @@ var flowEnvVars = [for (entry, i) in flowEnv: {
 // busy pod can be condemned in the claim/scale-in race; terminationGracePeriodSeconds lets it drain, and the
 // reaper's requeue makes even a severed run recoverable.
 var queueDepthQuery = empty(pool)
-  ? 'SELECT (SELECT MAX(v) FROM (VALUES (((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] IS NULL) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND ([Pool] = N\'\' OR [Pool] IS NULL)))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
-  : 'SELECT (SELECT MAX(v) FROM (VALUES (((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] = \'${pool}\') + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND [Pool] = N\'${pool}\'))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
+  ? 'SELECT (SELECT MAX(v) FROM (VALUES ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] IS NULL) / ${maxConcurrentRunsPerReplica}.0) AS int) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND ([Pool] = N\'\' OR [Pool] IS NULL)))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'\'), 0))) AS t(v))'
+  : 'SELECT (SELECT MAX(v) FROM (VALUES ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = \'queued\' AND [TargetPool] = \'${pool}\') / ${maxConcurrentRunsPerReplica}.0) AS int) + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0 AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME()) AND [Pool] = N\'${pool}\'))), (ISNULL((SELECT [MinReplicas] FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0)), (ISNULL((SELECT CASE WHEN [ManualUntilUtc] > SYSUTCDATETIME() THEN [ManualReplicas] ELSE 0 END FROM [catalog].[WorkerPool] WHERE [Pool] = N\'${pool}\'), 0))) AS t(v))'
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name

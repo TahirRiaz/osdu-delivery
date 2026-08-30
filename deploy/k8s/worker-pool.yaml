@@ -89,9 +89,13 @@ spec:
         # both migrations land, then apply this. For a pooled copy of this manifest, change the run predicate to
         # [TargetPool] = '<pool>', the Node predicate to [Pool] = N'<pool>' (dropping the IS NULL alternative),
         # and the two WorkerPool lookups to [Pool] = N'<pool>'.
+        # The queued term is divided by the node's own run concurrency (RunWorker.DefaultMaxConcurrentRuns, 4),
+        # since a replica drains four runs at once: one replica per queued run spawned four times the fleet a
+        # schedule wave needed, and the surplus pods found nothing left to claim. Busy nodes are NOT divided;
+        # they each hold one replica's worth of occupied capacity. Keep the 4.0 in step with that constant.
         query: |-
           SELECT (SELECT MAX(v) FROM (VALUES
-            (((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = 'queued' AND [TargetPool] IS NULL)
+            ((CAST(CEILING((SELECT COUNT(*) FROM [catalog].[Run] WHERE [Status] = 'queued' AND [TargetPool] IS NULL) / 4.0) AS int)
               + (SELECT COUNT(*) FROM [catalog].[Node] WHERE [BusyRuns] > 0
                  AND [LastSeenUtc] >= DATEADD(second, -60, SYSUTCDATETIME())
                  AND ([Pool] = N'' OR [Pool] IS NULL)))),
