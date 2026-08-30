@@ -81,15 +81,25 @@ public sealed class EngineTests
         var file = TestEngine.LandedFiles(dir).Single();
         var landed = File.GetLastWriteTimeUtc(file);
 
-        // A normal re-run of the identical payload does not rewrite it: the timestamp is unchanged.
-        Assert.True((await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None)).Success);
+        // A normal re-run of the identical payload does not rewrite it: the timestamp is unchanged, and the run
+        // reports the file as unchanged rather than as newly landed.
+        var reRun = await engine.RunAsync(flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None);
+        Assert.True(reRun.Success);
+        Assert.Equal(1, reRun.Unchanged);
         Assert.Equal(landed, File.GetLastWriteTimeUtc(file));
 
-        // A reprocess (ReprocessFiles) re-lands the identical payload, bumping its timestamp.
-        Assert.True((await engine.RunAsync(
+        // A reprocess (ReprocessFiles) re-lands the identical payload, bumping its timestamp. The re-land is
+        // asserted through the run's own counter, not through the clock: Windows resolves a file's last-write time
+        // to roughly 15ms, so three writes inside one warm run can share a stamp and a strictly-increasing
+        // assertion fails for reasons that have nothing to do with the behavior under test. The timestamp is still
+        // checked, as "not older", which granularity cannot break.
+        var reprocess = await engine.RunAsync(
             flow, Guid.NewGuid(), NullRunEventSink.Instance, null, CancellationToken.None,
-            new AcquireRunOverrides { ReprocessFiles = true })).Success);
-        Assert.True(File.GetLastWriteTimeUtc(file) > landed);
+            new AcquireRunOverrides { ReprocessFiles = true });
+        Assert.True(reprocess.Success);
+        Assert.Equal(0, reprocess.Unchanged);
+        Assert.Equal(1, reprocess.FilesWritten);
+        Assert.True(File.GetLastWriteTimeUtc(file) >= landed);
     }
 
     [Fact]

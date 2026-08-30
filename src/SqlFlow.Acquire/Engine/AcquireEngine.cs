@@ -277,6 +277,7 @@ public sealed class AcquireEngine
             Iterations = iterations,
             PagesFetched = pages,
             FilesWritten = pipelines.Sum(p => p.FilesWritten),
+            Unchanged = pipelines.Sum(p => p.Unchanged),
             Skipped = pipelines.Sum(p => p.Skipped),
             SkippedRequests = skippedRequests,
             BytesWritten = pipelines.Sum(p => p.BytesWritten),

@@ -62,8 +62,18 @@ public sealed record AcquireRunResult
     /// <summary>How many HTTP pages / listed objects were fetched.</summary>
     public int PagesFetched { get; init; }
 
-    /// <summary>How many files were written to the raw zone (a page skipped as empty does not count).</summary>
+    /// <summary>How many payloads reached the raw zone (a page skipped as empty does not count). This INCLUDES the
+    /// <see cref="Unchanged"/> ones, which resolved to a path that already held byte-identical content and so left
+    /// the target untouched: read it as "files landed", not "files newly written". A summary that quotes this
+    /// number alone reads as new data arriving even on a run that wrote nothing, so report it together with
+    /// <see cref="Unchanged"/>.</summary>
     public int FilesWritten { get; init; }
+
+    /// <summary>How many of <see cref="FilesWritten"/> were byte-identical to what the target already held, so the
+    /// blob was left untouched: no last-modified bump, and deliberately no downstream re-trigger. A rolling-window
+    /// feed re-fetches the same days on every run, so this is the normal steady state, and it is the difference
+    /// between "the source produced nothing new" and "the source is broken".</summary>
+    public int Unchanged { get; init; }
 
     /// <summary>How many fetched payloads were skipped because they were empty.</summary>
     public int Skipped { get; init; }

@@ -62,8 +62,16 @@ public sealed class AcquireFlowRunner
         var runId = options.RunId ?? Guid.NewGuid();
         var result = await _engine.RunAsync(flow, runId, events, priorWatermark, ct, overrides).ConfigureAwait(false);
 
+        // The summary has to distinguish "the source produced new data" from "the source produced the same data
+        // again", because a rolling-window feed re-fetches the same days every run and lands them byte-identical.
+        // Quoting the landed count alone made a run that wrote nothing read as new files arriving, and the flows
+        // downstream (which correctly saw no new files and loaded no rows) then looked broken by comparison.
+        var newFiles = result.FilesWritten - result.Unchanged;
+        var landedNote = result.Unchanged > 0
+            ? $"{newFiles} new file(s), {result.Unchanged} unchanged"
+            : $"{result.FilesWritten} file(s)";
         events.Log(RunLogLevel.Info, "run.end", result.Success
-            ? $"SUCCESS in {result.DurationSeconds}s: {result.FilesWritten} file(s), {result.BytesWritten} byte(s), {result.PagesFetched} page(s) across {result.Iterations} iteration(s)"
+            ? $"SUCCESS in {result.DurationSeconds}s: {landedNote}, {result.BytesWritten} byte(s), {result.PagesFetched} page(s) across {result.Iterations} iteration(s)"
             : $"FAILED after {result.DurationSeconds}s ({result.FilesWritten} file(s) landed before failure): {result.Error}");
 
         return result;

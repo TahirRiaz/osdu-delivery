@@ -48,7 +48,8 @@ public sealed record IngestionRunResult
 
     public DateTime EndTimeUtc { get; init; }
 
-    public int DurationSeconds { get; init; }
+    /// <summary>Wall time in seconds, to milliseconds (the legacy run log keeps its whole-second column).</summary>
+    public double DurationSeconds { get; init; }
 
     /// <summary>Rows the keyed upsert (or insert-all) inserted into the target.</summary>
     public long RowsInserted { get; init; }
@@ -790,9 +791,14 @@ public sealed class IngestionFlowRunner
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
             var flowRate = FlowRateOf(rowsStaged, duration);
-            Info("run.end", $"SUCCESS in {duration}s ({flowRate:0.#} rows/s)");
+            // The wave board shows this line verbatim, so it has to carry the counts: a rate alone reads as "nothing
+            // happened" on a fast run, and reads identically whether the flow moved no rows or a million.
+            var deletedNote = rowsDeleted > 0 ? $", {rowsDeleted} deleted" : string.Empty;
+            Info("run.end",
+                $"SUCCESS in {Fmt(duration)}s: {rowsStaged} row(s) staged, {rowsInserted} inserted, "
+                + $"{rowsUpdated} updated{deletedNote} ({Fmt((double)flowRate)} rows/s)");
             await _runLog.WriteAsync(
-                BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, rowsStaged, rowsInserted, rowsUpdated, rowsDeleted, success: true, error: null, sourceSelect, insertCmd, updateCmd, createCmd, flowRate, SqlTrace.Render(trace)),
+                BuildRunRecord(flow, options, runId, startUtc, endUtc, WholeSeconds(duration), rowsStaged, rowsInserted, rowsUpdated, rowsDeleted, success: true, error: null, sourceSelect, insertCmd, updateCmd, createCmd, flowRate, SqlTrace.Render(trace)),
                 ct).ConfigureAwait(false);
 
             return new IngestionRunResult
@@ -827,11 +833,11 @@ public sealed class IngestionFlowRunner
             MarkFailure(ex);
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
-            Info("run.end", $"FAILED after {duration}s: {ex.Message} (staging {SchemaQualified(staging)} kept)");
+            Info("run.end", $"FAILED after {Fmt(duration)}s: {ex.Message} (staging {SchemaQualified(staging)} kept)");
             try
             {
                 await _runLog.WriteAsync(
-                    BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, 0, 0, 0, 0, success: false, error: ex.Message, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
+                    BuildRunRecord(flow, options, runId, startUtc, endUtc, WholeSeconds(duration), 0, 0, 0, 0, success: false, error: ex.Message, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
                     ct).ConfigureAwait(false);
             }
             catch (Exception logEx) when (logEx is not OperationCanceledException)
@@ -894,9 +900,9 @@ public sealed class IngestionFlowRunner
 
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
-            Info("run.end", $"SUCCESS in {duration}s ({assertionResults.Count} assertion(s) evaluated)");
+            Info("run.end", $"SUCCESS in {Fmt(duration)}s ({assertionResults.Count} assertion(s) evaluated)");
             await _runLog.WriteAsync(
-                BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, 0, 0, 0, 0, success: true, error: null, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
+                BuildRunRecord(flow, options, runId, startUtc, endUtc, WholeSeconds(duration), 0, 0, 0, 0, success: true, error: null, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
                 ct).ConfigureAwait(false);
 
             return new IngestionRunResult
@@ -915,11 +921,11 @@ public sealed class IngestionFlowRunner
         {
             var endUtc = DateTime.UtcNow;
             var duration = DurationSeconds(startUtc, endUtc);
-            Info("run.end", $"FAILED after {duration}s: {ex.Message}");
+            Info("run.end", $"FAILED after {Fmt(duration)}s: {ex.Message}");
             try
             {
                 await _runLog.WriteAsync(
-                    BuildRunRecord(flow, options, runId, startUtc, endUtc, duration, 0, 0, 0, 0, success: false, error: ex.Message, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
+                    BuildRunRecord(flow, options, runId, startUtc, endUtc, WholeSeconds(duration), 0, 0, 0, 0, success: false, error: ex.Message, selectCmd: null, insertCmd: null, updateCmd: null, createCmd: null, flowRate: 0m, traceLog: SqlTrace.Render(trace)),
                     ct).ConfigureAwait(false);
             }
             catch (Exception logEx) when (logEx is not OperationCanceledException)
@@ -1678,11 +1684,26 @@ public sealed class IngestionFlowRunner
             _ => watermark.ToString() ?? "(empty)",
         };
 
-    private static int DurationSeconds(DateTime startUtc, DateTime endUtc)
-        => (int)Math.Max(0, (endUtc - startUtc).TotalSeconds);
+    /// <summary>The run's wall time in seconds, to milliseconds. It used to truncate to whole seconds, which made
+    /// every run under a second report "0s" and, because the rate divides by it, "0 rows/s" no matter how many rows
+    /// it moved. Millisecond resolution matches what the acquire and file runners already report.</summary>
+    private static double DurationSeconds(DateTime startUtc, DateTime endUtc)
+        => Math.Round(Math.Max(0, (endUtc - startUtc).TotalSeconds), 3);
 
-    private static decimal FlowRateOf(long rowsFetched, int durationSeconds)
-        => durationSeconds > 0 ? Math.Round((decimal)rowsFetched / durationSeconds, 2) : 0m;
+    /// <summary>Rows per second over the run's wall time. Zero only when the clock genuinely reports no elapsed
+    /// time, which no run that staged a row can do at millisecond resolution: a zero rate now means zero rows.</summary>
+    private static decimal FlowRateOf(long rowsFetched, double durationSeconds)
+        => durationSeconds > 0 ? Math.Round((decimal)rowsFetched / (decimal)durationSeconds, 2) : 0m;
+
+    /// <summary>The legacy run log's DurationSec column is a whole number of seconds (the ported flw.SysLog
+    /// contract), so the precise duration is rounded at that boundary and nowhere else.</summary>
+    private static int WholeSeconds(double durationSeconds)
+        => (int)Math.Round(Math.Max(0, durationSeconds), MidpointRounding.AwayFromZero);
+
+    /// <summary>Durations and rates render invariantly, so a node running under a comma-decimal locale writes the
+    /// same run log as every other node.</summary>
+    private static string Fmt(double value)
+        => value.ToString("0.###", CultureInfo.InvariantCulture);
 
     /// <summary>The incremental read scope this run resolved to, for the run detail: the operator's full-load /
     /// backfill substitution takes precedence (matching the resolver's own precedence), then the init-load chunk

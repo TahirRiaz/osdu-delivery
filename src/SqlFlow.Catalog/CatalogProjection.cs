@@ -651,7 +651,12 @@ public static class CatalogProjection
             StartUtc = result is { } r1 ? Date(r1, "startTimeUtc") : null,
             EndUtc = result is { } r2 ? Date(r2, "endTimeUtc") : null,
             DurationSeconds = DurationSeconds(result),
-            RowsLoaded = result is { } r3 ? Long(r3, "rowsLoaded") ?? Long(r3, "totalRows") : null,
+            // Each flow kind names its "rows read from the source" field for its own domain: a file flow lands
+            // rowsLoaded/totalRows, an ingestion flow stages rowsStaged. Reading only the first two left RowsLoaded
+            // NULL on every ingestion run ever recorded, so the GUI showed no rows for flows that were staging and
+            // merging millions, and a healthy load was indistinguishable from an empty one. The fallback chain is
+            // ordered, not merged: the first field the artifact actually carries wins.
+            RowsLoaded = result is { } r3 ? Long(r3, "rowsLoaded") ?? Long(r3, "totalRows") ?? Long(r3, "rowsStaged") : null,
             // An artifact reaching the catalog without ever having been enqueued is a local `sqlflow run`
             // that was synced in afterwards. The queue overwrites this on completion for runs it dispatched,
             // so only genuinely node-local executions keep it.
