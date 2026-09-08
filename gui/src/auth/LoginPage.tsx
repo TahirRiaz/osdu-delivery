@@ -56,8 +56,7 @@ const CAPABILITIES: ReadonlyArray<{ icon: LucideIcon; title: string; body: strin
 ];
 
 /**
- * The branded left column, shown only on wide screens: the OSDU Delivery lockup with its platform attribution,
- * what the product does, and the
+ * The branded left column, shown only on wide screens: the lockup, what the product does, and the
  * capabilities worth naming, over a navy field carrying concentric arcs that echo the logo mark. It
  * carries the page on large displays, where a lone card would otherwise float in an empty background.
  * Purely decorative, so it is hidden from assistive tech and never rendered on the narrow, form-only layout.
@@ -97,7 +96,6 @@ function BrandPanel() {
       {/* Content stays a readable column and centres itself once the panel grows past it. */}
       <div className="relative mx-auto flex h-full w-full max-w-xl flex-col justify-center px-12 py-14 xl:px-16 xl:py-16">
         <img src="/brand/logo-full.png" alt="" className="h-20 w-auto self-start object-contain xl:h-24" />
-        <p className="mt-3 text-[13px] font-medium tracking-wide text-white/45">Powered by SQLFlow</p>
 
         <div className="mt-14">
           <h2 className="text-3xl font-semibold leading-[1.15] tracking-tight text-white xl:text-[2.5rem]">
@@ -197,9 +195,8 @@ export default function LoginPage() {
 
         {/* The lockup sits with the form on narrow screens, where the brand panel is hidden. The navy plaque
             keeps the light-blue mark legible on the light theme's near-white background. */}
-        <div className="relative flex flex-col items-center gap-1 rounded-xl px-6 py-3.5 lg:hidden" style={{ backgroundColor: "var(--brand-navy)" }}>
+        <div className="relative rounded-xl px-6 py-3.5 lg:hidden" style={{ backgroundColor: "var(--brand-navy)" }}>
           <img src="/brand/logo-full.png" alt="OSDU Delivery" className="h-11 w-auto object-contain" />
-          <span className="text-[11px] tracking-wide text-white/50">Powered by SQLFlow</span>
         </div>
 
         <Card
