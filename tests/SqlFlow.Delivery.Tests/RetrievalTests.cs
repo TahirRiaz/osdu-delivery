@@ -103,6 +103,21 @@ public sealed class RetrievalTests : IDisposable
         Assert.Equal("{root}/out/{region}", document.TargetReference);
         Assert.False(document.RequiresRepoTree);
 
+        // The platform's own loader reads the envelope (schedule, mode, lifecycle) before the kind sees the body, so
+        // a retrieval flow schedules itself exactly as a delivery flow does, retrieve included.
+        var platform = new YamlDocumentLoader([kind]);
+        var scheduled = platform.Parse(Yaml + """
+
+            schedule:
+              cron: "0 3 * * *"
+              timezone: "Europe/Oslo"
+              operation: retrieve
+            """, "f");
+        Assert.IsType<RetrievalFlowDocument>(scheduled);
+        Assert.Equal("0 3 * * *", scheduled.Schedule!.Cron);
+        Assert.Equal("Europe/Oslo", scheduled.Schedule.Timezone);
+        Assert.Equal(RunParameters.RetrieveOperation, scheduled.Schedule.Operation);
+
         Assert.Contains("pageSize", Assert.Throws<FlowValidationException>(() => loader.ParseRetrieval(Yaml.Replace("pageSize: 2", "pageSize: 5000", StringComparison.Ordinal), "f")).Message, StringComparison.Ordinal);
         Assert.Contains("authority:source", Assert.Throws<FlowValidationException>(() => loader.ParseRetrieval(Yaml.Replace(Well, "not a kind", StringComparison.Ordinal), "f")).Message, StringComparison.Ordinal);
         Assert.Contains("compression", Assert.Throws<FlowValidationException>(() => loader.ParseRetrieval(Yaml.Replace("compression: gzip", "compression: zip", StringComparison.Ordinal), "f")).Message, StringComparison.Ordinal);

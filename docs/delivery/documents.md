@@ -97,7 +97,7 @@ reliability:
   fanOut: 0                        # member runs a large submission spreads over (0 = none; at most 64)
   fanOutMinRecords: 1000           # below this a submission never fans out
 
-schedule: { cron: "0 * * * *", timeZone: UTC, operation: deliver }   # service: what to run, and when
+schedule: { cron: "0 * * * *", timezone: UTC, operation: deliver }   # service: what to run, and when
 verify: { reconcile: false }       # whether the verify pass re-queues drifted or missing records
 ```
 
@@ -158,7 +158,7 @@ target:
   manifest: manifest.json
 
 reliability: { concurrency: 4, retry: { attempts: 4 } }   # kinds retrieved at once; the HTTP settings as on a delivery flow
-schedule: { cron: "0 3 * * *", timeZone: UTC, operation: retrieve }
+schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 ```
 
 | Key | Meaning |
