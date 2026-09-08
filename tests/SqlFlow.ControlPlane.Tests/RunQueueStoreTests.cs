@@ -652,24 +652,6 @@ public sealed class RunQueueStoreTests
         }
     }
 
-    [Fact]
-    public void RunStatements_ProjectsTheErrorOntoTheFailingStatementOnly()
-    {
-        var runId = Guid.NewGuid();
-        var repoId = Guid.NewGuid();
-        using var doc = JsonDocument.Parse(FailedArtifactWithTrace(runId, "rq_flow"));
-
-        var statements = CatalogProjection.RunStatements(doc.RootElement, runId, repoId);
-
-        Assert.Equal(2, statements.Count);
-        Assert.Equal(1, statements[0].Ordinal);
-        Assert.Equal("staging.create", statements[0].Step);
-        Assert.Null(statements[0].Error);
-        Assert.Equal(2, statements[1].Ordinal);
-        Assert.Equal("upsert.insert", statements[1].Step);
-        Assert.Equal("Cannot insert duplicate key", statements[1].Error);
-    }
-
     [SkippableFact]
     public async Task CompleteFromArtifact_KeepsACompleteLiveTraceUnderStableIds_AppendingNothing()
     {
@@ -684,23 +666,9 @@ public sealed class RunQueueStoreTests
             var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
             await ClaimId(db, Node, [], DateTime.UtcNow);
 
-            // The node's live feed captured the run's whole trace as it executed: the same rows, ordinals, and
-            // failure attribution the artifact carries. The trace stream has already delivered these under their
+            // The live feed captured the whole event trace as the run executed: the same rows and ordinals
+            // the artifact carries. The trace stream has already delivered these under their
             // ids, so completion must keep them exactly - not delete and re-issue them under fresh ids.
-            var liveStatements = new[]
-            {
-                new CatalogRunStatement
-                {
-                    RunId = runId, RepoId = repoId, Ordinal = 1, Step = "staging.create", Sql = "CREATE TABLE #s;",
-                    TimestampUtc = new DateTime(2026, 6, 19, 9, 59, 58, DateTimeKind.Utc),
-                },
-                new CatalogRunStatement
-                {
-                    RunId = runId, RepoId = repoId, Ordinal = 2, Step = "upsert.insert", Sql = "INSERT INTO t;",
-                    TimestampUtc = new DateTime(2026, 6, 19, 9, 59, 59, DateTimeKind.Utc),
-                    Error = "Cannot insert duplicate key",
-                },
-            };
             var liveEvents = new[]
             {
                 new CatalogRunEvent
@@ -716,10 +684,8 @@ public sealed class RunQueueStoreTests
                     TimestampUtc = new DateTime(2026, 6, 19, 10, 0, 0, DateTimeKind.Utc),
                 },
             };
-            db.RunStatements.AddRange(liveStatements);
             db.RunEvents.AddRange(liveEvents);
             await db.SaveChangesAsync();
-            var liveStatementIds = liveStatements.Select(s => s.Id).ToArray();
             var liveEventIds = liveEvents.Select(e => e.Id).ToArray();
 
             var runJson = Path.Combine(dir, "run.json");
@@ -727,11 +693,6 @@ public sealed class RunQueueStoreTests
             Assert.Equal(RunCompletionOutcome.Recorded, await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
 
             // No duplication and no re-issue: the very same live rows remain, under the very same ids.
-            var statements = await db.RunStatements.AsNoTracking()
-                .Where(s => s.RunId == runId).OrderBy(s => s.Ordinal).ToListAsync();
-            Assert.Equal(liveStatementIds, statements.Select(s => s.Id).ToArray());
-            Assert.Equal("Cannot insert duplicate key", statements[1].Error);
-
             var events = await db.RunEvents.AsNoTracking()
                 .Where(e => e.RunId == runId).OrderBy(e => e.Ordinal).ToListAsync();
             Assert.Equal(liveEventIds, events.Select(e => e.Id).ToArray());
@@ -759,23 +720,15 @@ public sealed class RunQueueStoreTests
             var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "ing"), DateTime.UtcNow);
             await ClaimId(db, Node, [], DateTime.UtcNow);
 
-            // The live feed broke after the first statement and the first event: only the prefix reached the
-            // catalog. Completion must preserve that prefix under its ids and append only the missing tail.
-            var liveStatement = new CatalogRunStatement
-            {
-                RunId = runId, RepoId = repoId, Ordinal = 1, Step = "staging.create", Sql = "CREATE TABLE #s;",
-                TimestampUtc = new DateTime(2026, 6, 19, 9, 59, 58, DateTimeKind.Utc),
-            };
+            // The live feed broke after the first event: only the prefix reached the catalog. Completion must preserve that prefix under its ids and append only the missing tail.
             var liveEvent = new CatalogRunEvent
             {
                 RunId = runId, RepoId = repoId, Ordinal = 1, Level = "info", Step = "incremental",
                 Message = "watermark resolved to 2026-06-18",
                 TimestampUtc = new DateTime(2026, 6, 19, 9, 59, 57, DateTimeKind.Utc),
             };
-            db.RunStatements.Add(liveStatement);
             db.RunEvents.Add(liveEvent);
             await db.SaveChangesAsync();
-            var liveStatementId = liveStatement.Id;
             var liveEventId = liveEvent.Id;
 
             var runJson = Path.Combine(dir, "run.json");
@@ -783,14 +736,6 @@ public sealed class RunQueueStoreTests
             Assert.Equal(RunCompletionOutcome.Recorded, await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, DateTime.UtcNow));
 
             // The whole trace is present, exactly once: the prefix under its original id, the tail newly appended.
-            var statements = await db.RunStatements.AsNoTracking()
-                .Where(s => s.RunId == runId).OrderBy(s => s.Ordinal).ToListAsync();
-            Assert.Equal(2, statements.Count);
-            Assert.Equal(liveStatementId, statements[0].Id);
-            Assert.NotEqual(liveStatementId, statements[1].Id);
-            Assert.Equal("INSERT INTO t;", statements[1].Sql);
-            Assert.Equal("Cannot insert duplicate key", statements[1].Error);
-
             var events = await db.RunEvents.AsNoTracking()
                 .Where(e => e.RunId == runId).OrderBy(e => e.Ordinal).ToListAsync();
             Assert.Equal(2, events.Count);
@@ -840,9 +785,7 @@ public sealed class RunQueueStoreTests
             }
             """;
 
-    // A failed ingestion artifact whose SQL trace attributes the failure to the second statement (the upsert
-    // insert), mirroring a real duplicate-key failure: the projection stamps its Error onto that entry only.
-    // Carries a canonical events array too, so the completion's event reconciliation is exercised alongside.
+    // A failed run artifact carrying the canonical events array, so the completion event reconciliation is exercised.
     private static string FailedArtifactWithTrace(Guid runId, string flowName)
         => $$"""
             {
@@ -854,11 +797,7 @@ public sealed class RunQueueStoreTests
               "error": "Cannot insert duplicate key",
               "writtenUtc": "2026-06-19T10:00:00Z",
               "result": {
-                "durationSeconds": 2.0,
-                "sqlTrace": [
-                  { "sequence": 1, "timestampUtc": "2026-06-19T09:59:58Z", "step": "staging.create", "sql": "CREATE TABLE #s;" },
-                  { "sequence": 2, "timestampUtc": "2026-06-19T09:59:59Z", "step": "upsert.insert", "sql": "INSERT INTO t;", "error": "Cannot insert duplicate key" }
-                ]
+                "durationSeconds": 2.0
               },
               "events": [
                 { "timestampUtc": "2026-06-19T09:59:57Z", "level": "info", "step": "incremental", "message": "watermark resolved to 2026-06-18" },
@@ -884,12 +823,7 @@ public sealed class RunQueueStoreTests
     {
         await using (var db = CatalogDatabase.Create(cs))
         {
-            await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
-            await db.RunFiles.Where(f => f.RepoId == repoId).ExecuteDeleteAsync();
-            await db.RunAssertions.Where(a => a.RepoId == repoId).ExecuteDeleteAsync();
-            await db.RunSurrogateKeys.Where(k => k.RepoId == repoId).ExecuteDeleteAsync();
-            await db.RunHealthCheckMetrics.Where(m => m.RepoId == repoId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
         }
 

@@ -15,7 +15,7 @@ public enum FlowEventLevel
 
 /// <summary>
 /// A key event emitted by the engine as work happens, so a calling client (CLI/GUI) can show live
-/// progress. Distinct from the post-run <see cref="TraceEntry"/> summary - these stream in real time.
+/// progress. Distinct from the post-run trace entry summary - these stream in real time.
 /// </summary>
 public sealed record FlowEvent
 {

@@ -40,7 +40,7 @@ public sealed class NotificationComposerTests
         var evt = Event(1);
         var message = NotificationComposer.Compose(Composition(NotificationChannels.Email, NotificationModes.Immediate, evt));
 
-        Assert.Equal("SQLFlow: flow 'orders-load' failed", message.Subject);
+        Assert.Equal("OSDU Delivery: flow 'orders-load' failed", message.Subject);
         Assert.Contains("Timeout expired.", message.TextBody, StringComparison.Ordinal);
         Assert.Contains($"https://sqlflow.example.com/runs/{evt.RunId}", message.TextBody, StringComparison.Ordinal);
         Assert.NotNull(message.HtmlBody);
@@ -54,7 +54,7 @@ public sealed class NotificationComposerTests
             NotificationChannels.Email, NotificationModes.Immediate,
             Event(1), Event(2, minutesAgo: 3), Event(3, minutesAgo: 1)));
 
-        Assert.Equal("SQLFlow: 3 failed runs across 1 flow", message.Subject);
+        Assert.Equal("OSDU Delivery: 3 failed runs across 1 flow", message.Subject);
         Assert.Contains("failed x3", message.TextBody, StringComparison.Ordinal);
         // One flow line, not three: the anti-spam contract in the body itself.
         Assert.Equal(1, CountOccurrences(message.TextBody, "- orders-load (ing)"));
@@ -66,12 +66,12 @@ public sealed class NotificationComposerTests
         var message = NotificationComposer.Compose(Composition(
             NotificationChannels.Email, NotificationModes.Digest,
             Event(1, NotificationEventKinds.RunSkipped, "downstream-a", error: null),
-            Event(2, NotificationEventKinds.AssertionFailed, "quality-checks", "row-count: bad object"),
+            Event(2, NotificationEventKinds.RunCancelled, "cancelled-load", error: null),
             Event(3, flow: "orders-load")));
 
-        Assert.StartsWith("SQLFlow digest: ", message.Subject, StringComparison.Ordinal);
+        Assert.StartsWith("OSDU Delivery digest: ", message.Subject, StringComparison.Ordinal);
         Assert.Contains("1 failed run", message.Subject, StringComparison.Ordinal);
-        Assert.Contains("1 assertion failure", message.Subject, StringComparison.Ordinal);
+        Assert.Contains("1 cancelled run", message.Subject, StringComparison.Ordinal);
         Assert.Contains("1 skipped run", message.Subject, StringComparison.Ordinal);
         // Failures list before the skipped echoes.
         var failedAt = message.TextBody.IndexOf("- orders-load", StringComparison.Ordinal);
@@ -160,13 +160,13 @@ public sealed class NotificationComposerTests
     {
         var subscription = new CatalogNotificationSubscription
         {
-            Kinds = "run_failed,assertion_failed",
+            Kinds = "run_failed,run_skipped",
             FlowPattern = "sales_*, finance_??_load",
         };
         var filter = NotificationSubscriptionFilter.Build(subscription);
 
         Assert.True(filter(Event(1, flow: "sales_orders")));
-        Assert.True(filter(Event(2, NotificationEventKinds.AssertionFailed, "SALES_ORDERS")));
+        Assert.True(filter(Event(2, NotificationEventKinds.RunSkipped, "SALES_ORDERS")));
         Assert.True(filter(Event(3, flow: "finance_no_load")));
         Assert.False(filter(Event(4, flow: "finance_nope_load")));
         Assert.False(filter(Event(5, NotificationEventKinds.RunCancelled, "sales_orders")));

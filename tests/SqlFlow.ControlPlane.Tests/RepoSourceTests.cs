@@ -108,8 +108,6 @@ public sealed class RepoSourceTests
         {
             await using (var db = CatalogDatabase.Create(cs))
             {
-                await db.FlowDependencies.Where(d => d.RepoId == syncedRepoId).ExecuteDeleteAsync();
-                await db.LineageEdges.Where(e => e.RepoId == syncedRepoId).ExecuteDeleteAsync();
                 await db.Pipelines.Where(p => p.RepoId == syncedRepoId).ExecuteDeleteAsync();
                 await db.Repos.Where(r => r.Id == syncedRepoId).ExecuteDeleteAsync();
                 await db.RepoSources.Where(s => s.Id == sourceId).ExecuteDeleteAsync();

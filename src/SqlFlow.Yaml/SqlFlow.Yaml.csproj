@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.Yaml</RootNamespace>
-    <Description>YAML pipeline loader: maps and validates YAML into the metadata model.</Description>
+    <Description>The flow document envelope (schedule, mode, lifecycle) and the flowType kind registry.</Description>
   </PropertyGroup>
 
   <ItemGroup>

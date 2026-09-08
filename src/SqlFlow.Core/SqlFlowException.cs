@@ -86,13 +86,3 @@ public sealed class NoSourceFilesException : SqlFlowException
     /// <summary>Which of the distinct empty-selection outcomes this is.</summary>
     public NoSourceFilesReason Reason { get; }
 }
-
-/// <summary>Thrown when the target schema diverges from the desired schema under a 'strict' policy.</summary>
-public sealed class SchemaDriftException : SqlFlowException
-{
-    public SchemaDriftException(TableSchema desired, IReadOnlyList<ColumnDefinition> missing)
-        : base($"Schema drift on [{desired.Schema}].[{desired.Table}]: target is missing {missing.Count} column(s) " +
-               $"({string.Join(", ", missing.Select(c => c.Name))}) and the evolve policy is 'strict'.")
-    {
-    }
-}

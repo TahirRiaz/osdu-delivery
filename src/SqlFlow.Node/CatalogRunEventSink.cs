@@ -16,7 +16,7 @@ namespace SqlFlow.Node;
 /// even if this process dies before its <c>run.json</c> is written.
 /// </summary>
 /// <remarks>
-/// The exact twin of <see cref="CatalogRunStatementSink"/>, for the event stream. Non-blocking by design: the
+/// The exact twin of the run trace, for the event stream. Non-blocking by design: the
 /// engine's <see cref="Publish"/> only enqueues, so a slow catalog never stalls the run; a single background
 /// writer drains the queue in order on the sink's own catalog context (a fresh DI scope, separate from the
 /// completion context, with its own connection). These rows are the durable, append-only event log: completion

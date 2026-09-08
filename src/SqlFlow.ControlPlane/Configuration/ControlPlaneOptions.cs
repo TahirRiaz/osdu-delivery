@@ -38,11 +38,8 @@ public sealed class ControlPlaneOptions
 
     public RunTraceRetentionOptions RunTrace { get; set; } = new();
 
-    public DataStreamOptions DataStreams { get; set; } = new();
 
-    public AssistantChatOptions Assistant { get; set; } = new();
 
-    public DataOpsOptions DataOps { get; set; } = new();
 
     /// <summary>Validates the options, throwing a clear startup error for any missing or unsafe required value.
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
@@ -126,47 +123,7 @@ public sealed class ControlPlaneOptions
         Proxy.Validate();
         Notifications.Validate();
         RunTrace.Validate();
-        Assistant.Validate();
-        DataOps.Validate();
     }
-}
-
-/// <summary>How the control plane reaches the shadow catalog database.</summary>
-/// <summary>
-/// How the data-stream board tells a VENDOR DELIVERY apart from OUR PROCESSING, which is the single most
-/// useful distinction it can draw and the one that decides who a finding belongs to.
-///
-/// <para>
-/// A table that stopped receiving data because the vendor sent nothing is a completely different incident
-/// from one that stopped because a transformation of ours broke, and mixing them on one board means every
-/// reader has to re-derive which is which on every row. Worse, one upstream that goes quiet lights up its
-/// whole downstream chain, so a single vendor outage can fill the board with a dozen findings that are all
-/// the same finding. Splitting them means the source board answers "has the vendor delivered" and the
-/// internal board answers "have we processed it", and neither is noise to the other.
-/// </para>
-///
-/// <para>
-/// The classification is deliberately configuration and not cleverness, because where an estate draws that
-/// line is an estate's own convention. It is decided in order: a target schema known to be downstream wins,
-/// then a target schema known to be a landing area, then the flow kind. The defaults suit the common
-/// warehouse shape (raw/staging/archive schemas fed by acquisition and ingestion flows, curated schemas
-/// built by stored procedures), and an estate that names things differently sets its own.
-/// </para>
-/// </summary>
-public sealed class DataStreamOptions
-{
-    /// <summary>Flow kinds that bring data INTO the estate from outside it: an API, an SFTP server, an object
-    /// store, landed files, or a source database. A stream of one of these kinds is a vendor delivery unless
-    /// its target schema says otherwise.</summary>
-    public List<string> SourceFlowKinds { get; set; } = ["api", "sftp", "cpy", "file", "ing"];
-
-    /// <summary>Schemas that hold data as the vendor sent it: the landing, staging, and archive layers. A
-    /// stream writing here is a vendor delivery whatever kind of flow loads it.</summary>
-    public List<string> LandingSchemas { get; set; } = ["raw", "arc", "stg", "staging", "landing", "src", "ext", "pre"];
-
-    /// <summary>Schemas that hold what we DERIVED: the curated warehouse. A stream writing here is our own
-    /// processing even when an ingestion-shaped flow builds it, which is why this is checked first.</summary>
-    public List<string> DownstreamSchemas { get; set; } = ["edw", "dwh", "dw", "mart", "rpt", "skey"];
 }
 
 public sealed class CatalogOptions
@@ -544,16 +501,7 @@ public sealed class ManagedSyncOptions
     public bool Enabled { get; set; } = true;
 
     public int PollSeconds { get; set; } = 30;
-
-    /// <summary>Whether the managed sync runs the connected (derived) lineage tier: it opens each referenced SQL
-    /// Server and expands module bodies (procedures, views) through the T-SQL parser, so a stored-procedure flow
-    /// gains the reads/writes of the procedure it executes instead of appearing as an edgeless root. On by
-    /// default so the estate's lineage is complete without an operator running <c>db sync --connect</c> by hand;
-    /// the connection uses the source's own resolved secrets, and a connect failure is non-fatal (the offline
-    /// tiers still land and the failure is recorded as a warning). Turn it off for a deployment whose control
-    /// plane cannot reach the data-plane SQL Servers, so those syncs stay purely offline.</summary>
-    public bool ConnectLineage { get; set; } = true;
-}
+}
 
 /// <summary>
 /// The notification pipeline: detects failed runs (and failed assertions on green runs) in the catalog and sends
@@ -691,7 +639,7 @@ public sealed class EmailNotificationOptions
     public string? FromAddress { get; set; }
 
     /// <summary>The display name shown next to the From address.</summary>
-    public string FromDisplayName { get; set; } = "SQLFlow";
+    public string FromDisplayName { get; set; } = "OSDU Delivery";
 
     public SmtpEmailOptions Smtp { get; set; } = new();
 
@@ -854,156 +802,6 @@ public sealed class SlackNotificationOptions
             || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
         {
             throw new InvalidOperationException("ControlPlane:Notifications:Slack:BaseUrl must be an absolute http(s) URL.");
-        }
-    }
-}
-
-/// <summary>
-/// The GUI chat assistant (section <c>ControlPlane:Assistant</c>): the same SqlFlow.Assistant core
-/// the Slack bot runs, hosted behind the control plane's <c>/api/v1/chat</c> surface with GUI
-/// (Markdown) formatting and streaming. Disabled by default: the chat endpoints then report the
-/// feature as unavailable instead of failing startup, so an estate without an AI deployment runs
-/// unchanged. Unlike the Slack bot, no assistant access token is configured here: every agent run
-/// forwards the calling user's own bearer to the MCP server, so tool access is exactly that user's
-/// access. The <c>ApiKey</c> fields accept <c>${env:...}</c>/<c>${keyvault:...}</c> references,
-/// resolved through the engine's secret chain at first use.
-/// </summary>
-public sealed class AssistantChatOptions
-{
-    /// <summary>Turns the chat assistant on. Off, the chat endpoints answer with a clear
-    /// "not configured" problem and the capabilities endpoint reports it, so the GUI can hide chat.</summary>
-    public bool Enabled { get; set; }
-
-    /// <summary>The model provider answering questions (AzureFoundry, OpenAI, Anthropic).</summary>
-    public SqlFlow.Assistant.AssistantProvider Provider { get; set; } = SqlFlow.Assistant.AssistantProvider.AzureFoundry;
-
-    public SqlFlow.Assistant.McpOptions Mcp { get; set; } = new();
-
-    public SqlFlow.Assistant.FoundryOptions Foundry { get; set; } = new();
-
-    public SqlFlow.Assistant.OpenAIOptions OpenAI { get; set; } = new();
-
-    public SqlFlow.Assistant.AnthropicOptions Anthropic { get; set; } = new();
-
-    /// <summary>Ceiling for one agent run before it is cancelled and reported as timed out.</summary>
-    public int RunTimeoutSeconds { get; set; } = 180;
-
-    /// <summary>How many prior conversation messages are replayed when the provider-side
-    /// conversation must be rebuilt (the persisted transcript is the durable record).</summary>
-    public int MaxReplayMessages { get; set; } = 20;
-
-    /// <summary>How many image attachments one question may carry. 0 disables image input.</summary>
-    public int MaxImages { get; set; } = 4;
-
-    /// <summary>Largest accepted image (bytes); a larger attachment is rejected with a clear error.</summary>
-    public long MaxImageBytes { get; set; } = 8_000_000;
-
-    /// <summary>Optional GUI base URL for absolute entity links in answers; empty links relative,
-    /// which is correct when the chat renders inside the GUI itself.</summary>
-    public string GuiBaseUrl { get; set; } = "";
-
-    /// <summary>Maps the bound configuration onto the shared assistant settings the gateways
-    /// consume (GUI surface). The nested option instances are shared, not copied.</summary>
-    public SqlFlow.Assistant.AssistantSettings ToAssistantSettings() => new()
-    {
-        Provider = Provider,
-        Surface = SqlFlow.Assistant.AssistantSurface.Gui,
-        Mcp = Mcp,
-        Foundry = Foundry,
-        OpenAI = OpenAI,
-        Anthropic = Anthropic,
-        RunTimeoutSeconds = RunTimeoutSeconds,
-        MaxReplayMessages = MaxReplayMessages,
-        MaxImages = MaxImages,
-        MaxImageBytes = MaxImageBytes,
-        GuiBaseUrl = GuiBaseUrl,
-    };
-
-    public void Validate()
-    {
-        if (!Enabled)
-        {
-            return;
-        }
-
-        var missing = new List<string>();
-        ToAssistantSettings().CollectMissing("ControlPlane:Assistant", missing);
-        if (missing.Count > 0)
-        {
-            throw new InvalidOperationException(
-                "ControlPlane:Assistant is enabled but incomplete:\n  - " + string.Join("\n  - ", missing));
-        }
-    }
-}
-
-/// <summary>
-/// The data-operations surface: the standard warehouse maintenance actions and the old-versus-new baseline
-/// comparison. Both are READ-ONLY against the warehouse (they measure and emit review-ready SQL; nothing here
-/// executes a mutating statement), and both are OFF by default. A deployment that has finished its migration,
-/// or one that simply does not want an interactive surface reaching its warehouse and its old estate, leaves
-/// the switch alone and the operations are refused at the trust boundary with a clear "not enabled" problem
-/// rather than being queued.
-///
-/// Environment: <c>ControlPlane__DataOps__Enabled=true</c>, and
-/// <c>ControlPlane__DataOps__Comparison__LinkedServers__0=OLDPROD</c> for each linked server that may be
-/// compared against.
-/// </summary>
-public sealed class DataOpsOptions
-{
-    /// <summary>Turns the maintenance and comparison operations on. Off, <c>POST /datasources/tasks</c> refuses
-    /// them and the capabilities endpoint reports the switch, so a GUI or an assistant can explain rather than
-    /// fail.</summary>
-    public bool Enabled { get; set; }
-
-    public BaselineComparisonOptions Comparison { get; set; } = new();
-
-    public void Validate()
-    {
-        if (!Enabled)
-        {
-            return;
-        }
-
-        Comparison.Validate();
-    }
-}
-
-/// <summary>
-/// The baseline comparison's configuration. A comparison reaches the OLD estate through a linked server, whose
-/// name becomes an identifier in generated SQL and a route to another database, so the permitted names are
-/// configuration rather than something a request may choose. With none configured the comparison operations
-/// are refused with a message naming this setting; the maintenance actions are unaffected.
-/// </summary>
-public sealed class BaselineComparisonOptions
-{
-    /// <summary>The linked servers a comparison may name (for example OLDPROD). Matched case-insensitively.</summary>
-    public IList<string> LinkedServers { get; set; } = [];
-
-    /// <summary>The linked server used when a request does not name one. Must be in
-    /// <see cref="LinkedServers"/>; blank means a request must always name one explicitly.</summary>
-    public string DefaultLinkedServer { get; set; } = "";
-
-    /// <summary>The databases on those linked servers a comparison may name. Empty means any database the
-    /// linked server's login can reach, which is the usual case: the linked server itself is the boundary.</summary>
-    public IList<string> Databases { get; set; } = [];
-
-    /// <summary>The configured names, trimmed and deduplicated, as the validators consume them.</summary>
-    public IReadOnlyCollection<string> AllowedLinkedServers()
-        => LinkedServers
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-    public void Validate()
-    {
-        var allowed = AllowedLinkedServers();
-        if (!string.IsNullOrWhiteSpace(DefaultLinkedServer)
-            && !allowed.Contains(DefaultLinkedServer.Trim(), StringComparer.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                $"ControlPlane:DataOps:Comparison:DefaultLinkedServer is '{DefaultLinkedServer}', which is not " +
-                "in ControlPlane:DataOps:Comparison:LinkedServers. Add it there, or clear the default.");
         }
     }
 }

@@ -4,8 +4,8 @@ namespace SqlFlow.Azure;
 
 /// <summary>
 /// The single interpretation of the <c>SQLFLOW_AZURE_AUTH</c> environment variable, shared by the .NET credential
-/// factory and the cloud-storage credential provider so every Azure access path - Key Vault, ADF/Automation
-/// invoke, and DuckDB object storage - obeys one auth intent rather than each parsing the variable its own way.
+/// factory and the cloud-storage credential provider so every Azure access path (Key Vault and blob
+/// storage) obeys one auth intent rather than each parsing the variable its own way.
 /// </summary>
 public static class AzureAuth
 {

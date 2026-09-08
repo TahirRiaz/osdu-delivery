@@ -1,5 +1,5 @@
-# The SQLFlow control plane as a container: the warm, always-on API that Azure Data Factory (or any scheduler)
-# triggers. A trigger is a sub-second authenticated call; nothing is provisioned per run, so this image runs as a
+# The OSDU Delivery control plane as a container: the warm, always-on API the GUI, the CLI, and any external
+# scheduler call. A trigger is a sub-second authenticated call; nothing is provisioned per run, so this image runs as a
 # long-lived service (Azure Container Apps, App Service, Kubernetes, or plain Docker), not booted per execution.
 #
 # Build from the repository root (the build context must include the whole solution: central package management in
@@ -10,8 +10,8 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 COPY . .
 # Framework-dependent publish (run via `dotnet <dll>`, no native apphost). Building inside the linux SDK image
-# restores the linux-x64 native assets the engine carries (LibGit2Sharp for SHA-pinned git materialization, the
-# DuckDB reader), so they ship in the publish output under runtimes/linux-x64.
+# restores the linux-x64 native assets the engine carries (LibGit2Sharp for SHA-pinned git materialization), so
+# they ship in the publish output under runtimes/linux-x64.
 RUN dotnet publish src/SqlFlow.ControlPlane/SqlFlow.ControlPlane.csproj \
     -c Release -o /app /p:UseAppHost=false
 

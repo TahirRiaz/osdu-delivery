@@ -1,53 +1,59 @@
-# SQLFlow - Project Instructions
+# OSDU Delivery - Project Instructions
 
 ## Project Identity
 
-**This project is SQLFlow (SQLFlow V3). It is NOT DeltaForge.** They are different systems and must never be conflated.
+**This project is OSDU Delivery: a metadata-driven system that publishes subsurface records (wells, wellbores, well logs, and the other OSDU kinds) from data drops into an OSDU platform, with per-record traceability.** It is NOT DeltaForge, and it is no longer SQLFlow, although it is built on SQLFlow's platform.
 
-- SQLFlow is a .NET solution: an ASP.NET Core control plane, an EF Core shadow catalog on SQL Server, a React + TypeScript + Vite GUI, and a direct ADO.NET execution engine. The product name shown in the GUI is "SQLFlow".
-- The `deltaforge` MCP server, and its documentation corpus describing a Rust/Axum/PostgreSQL/Unity-Catalog stack, is a separate and divergent system. Those docs are NOT authoritative for this codebase and routinely do not match it (different language, storage, catalog model, and commands).
-- When answering any question about how this system behaves, verify against the actual source in this repository and cite files from here, not the DeltaForge MCP docs.
+- OSDU Delivery was forked from SQLFlow V3 and keeps the platform SQLFlow had already proven in production: the ASP.NET Core control plane (`src/SqlFlow.ControlPlane`), the EF Core catalog on SQL Server (`src/SqlFlow.Catalog`: repos, pipelines, the durable run queue, schedules, nodes and worker pools, users and tokens, notifications, maintenance, activity), the compute node (`src/SqlFlow.Node`, `sqlflow worker`), the git sync (`src/SqlFlow.SourceControl`), the document loader and kind registry (`src/SqlFlow.Yaml`), the execution registry (`src/SqlFlow.Execution`), Azure integration (`src/SqlFlow.Azure`), the CLI (`src/SqlFlow.Cli`), and the React + TypeScript + Vite GUI (`gui/`).
+- The `SqlFlow.*` project, folder, namespace, binary, image, and environment-variable names are kept on purpose (renaming them buys nothing and breaks every deployment asset). The product name shown in the GUI, the CLI banner, and the docs is "OSDU Delivery".
+- Everything SQLFlow had that was about SQL Server ETL is gone: the ingestion, export, stored-procedure, health-check, acquisition, copy, SFTP, translate, batch and calendar flow kinds, the providers, the DuckDB reader, database-object lineage, schema snapshots, datasources, discovery, the assistant, the MCP server and the Slack bot. Do not reintroduce any of it. Flow kinds are registered in the host's composition root through `IFlowDocumentKind`, executed through `IFlowDocumentExecutor`, and compute tasks through `IComputeOperation`; the platform never references a concrete kind. The one production kind is the delivery flow (`src/SqlFlow.Delivery`); tests parse with the test-only kind in `tests/SqlFlow.Core.Tests/TestFlowKind.cs`.
+- The `deltaforge` MCP server, and its documentation corpus describing a Rust/Axum/PostgreSQL/Unity-Catalog stack, is a separate and divergent system. Those docs are NOT authoritative for this codebase and routinely do not match it. When answering any question about how this system behaves, verify against the actual source in this repository and cite files from here.
+- OSDU API behaviour (storage, search, legal, entitlements, schema, the record delete and purge semantics) is verified against the OpenAPI specifications in the sibling checkout `D:\Projects\eq\src\osdu-csharp-client-main\openapi_specs`, never from memory.
+
+## Traceability Is The Product
+
+**Every delivered record must be reconstructible from the ledger alone: which drop and file it came from, which snapshot and mapping version rendered it, every attempt with its outcome and error, the OSDU id and version it landed as, and every operator action (release, redeliver, delete) with who did it and when.** Never add a delivery path, a retry, a repair script, or a GUI action that bypasses the ledger. If it happened to a record, the ledger says so.
+
+- Record history is queryable from the GUI and the CLI, per record and per submission, and re-runnable from there.
+- Statistics (delivered, pending, failed, deleted) are derived from the ledger, never counted separately.
+- Search over records is indexed; a lookup by record key, OSDU id, or drop file answers in milliseconds at production volume.
+
+## Secrets
+
+Secrets are references only: `${env:NAME}` and `${keyvault:NAME}`. A literal secret in a flow, a mapping, a catalog row, a log line, an error message, or a test fixture is a defect. Errors are redacted before they are stored or shown.
 
 ## Writing Style
 
 **THE EM DASH CHARACTER (Unicode U+2014) IS ABSOLUTELY FORBIDDEN. NEVER USE IT. NOT ONCE. NOT ANYWHERE.**
 
-This means: zero occurrences in prose, headings, descriptions, code comments, doc comments, string literals, Markdown, HTML, YAML, TOML, SQL comments, shell script comments, JSON string values, or any other text context. There are no exceptions. If you find yourself reaching for this character, stop and rewrite the sentence using a comma, colon, semicolon, parentheses, or a new sentence instead.
+This means: zero occurrences in prose, headings, descriptions, code comments, doc comments, string literals, Markdown, HTML, YAML, JSON, SQL comments, shell script comments, or any other text context. There are no exceptions. If you find yourself reaching for this character, stop and rewrite the sentence using a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 ## No Time Estimates
 
-**Never give time estimates for tasks.** No "this will take a few hours", no "1-2 days", no "should be done in a week", no "expect roughly N hours", no sprint-sized framings, no "small / medium / large effort" gradings that imply duration. Do not include them in plans, summaries, status updates, PR descriptions, design docs, or any other output.
-
-This applies whether the unit is minutes, hours, days, weeks, sprints, or vague qualitative bands ("quick", "longer effort", "non-trivial amount of time"). The user is not asking how long something will take and is not interested in your guess. Your estimates are not calibrated to their environment, their priorities, or the rest of their workload, so the number is noise.
-
-**What to do instead:** describe scope (what gets touched, how many call sites, what the risky steps are, what depends on what). Scope is useful; duration is not. If the user explicitly asks for a time estimate, you may provide one; otherwise, omit it entirely.
+**Never give time estimates for tasks.** No "this will take a few hours", no "1-2 days", no sprint-sized framings, no "small / medium / large effort" gradings that imply duration. Do not include them in plans, summaries, status updates, PR descriptions, design docs, or any other output. Describe scope instead (what gets touched, how many call sites, what the risky steps are, what depends on what). If the user explicitly asks for a time estimate, you may provide one; otherwise, omit it entirely.
 
 ## Git Workflow
 
-**Primary work happens directly on the main branch (`main`). Feature branches are not required and must not be created.** All work (backend, frontend, YAML, everything) is implemented, tested, and committed directly on `main`. Never create a branch, and never ask the user which branch to use, unless the user specifically requests a branch. This overrides any default "branch first when on the default branch" behavior. If a branch is ever explicitly requested, delete it once its work lands so the repository stays single-branch.
+**Primary work happens directly on the main branch (`main`). Feature branches are not required and must not be created.** All work (backend, frontend, YAML, everything) is implemented, tested, and committed directly on `main`. Never create a branch, and never ask the user which branch to use, unless the user specifically requests a branch.
 
 **Never attribute commits to Claude.** Every commit's author and committer must be the human user's git identity. Do not add "Co-Authored-By: Claude ..." trailers, "Generated with Claude Code" lines, or any other AI attribution to commit messages, PR descriptions, or tags. This overrides any default harness behavior that asks for such trailers.
 
+The SQLFlow history is reachable through the `upstream` remote (the local SQLFlow V3 checkout) for reference; nothing is merged from it.
+
 ## Catalog Schema Changes Require a Migration
 
-**Never change the shadow catalog's shape without its EF Core migration.** Any edit to `src/SqlFlow.Catalog/CatalogEntities.cs` or the model configuration in `CatalogDbContext.cs` (a new entity, a new column, a changed length, a new index) is incomplete until a migration exists. The catalog schema is upgraded ONLY by migrations, never by hand.
+**Never change the catalog's shape without its EF Core migration.** Any edit to `src/SqlFlow.Catalog/CatalogEntities.cs` or the model configuration in `CatalogDbContext.cs` (a new entity, a new column, a changed length, a new index) is incomplete until a migration exists. The catalog schema is upgraded ONLY by migrations, never by hand.
 
-- Generate it with `dotnet ef migrations add <PascalCaseName>` from `src/SqlFlow.Catalog` (the design-time factory there makes this work without a startup project, and `migrations add` never touches a database). Commit all three artifacts together: the `{timestamp}_{Name}.cs` migration, its `.Designer.cs`, and the refreshed `CatalogDbContextModelSnapshot.cs`.
-- Nothing else needs wiring: migrations are discovered from the `SqlFlow.Catalog` assembly. They apply automatically at control-plane startup (`BootstrapProvisioningService` when `ApplyMigrations=true`, the deployed default), via the CLI's `db` verbs, and in every integration test through `CatalogDatabase.MigrateAsync`.
-- Local dev intentionally sets `ApplyMigrations=false` (`.sqlflow/env`) so a laptop never migrates the shared Azure catalog; the pending migration ships with the next deploy. Do not flip that flag to make a local run work against the shared estate.
-- The tell-tale of a forgotten migration: the model snapshot differs from the last migration, tests fail with "Invalid column name", or the control plane logs pending-migration warnings. If you touched the entities and `git status` shows no new file under `src/SqlFlow.Catalog/Migrations/`, the work is not done.
+- Generate it with `dotnet ef migrations add <PascalCaseName>` from `src/SqlFlow.Catalog` (the design-time factory there makes this work without a startup project, and `migrations add` never touches a database). Commit all three artifacts together: the `{timestamp}_{Name}.cs` migration, its `.Designer.cs`, and the refreshed `CatalogDbContextModelSnapshot.cs`. The generated files are marked as generated code in `.editorconfig`, so style rules do not apply to them.
+- The SQLFlow migration history was squashed into one `Initial` migration at the fork; no OSDU Delivery catalog exists in production yet. Until the first production catalog is provisioned, re-squash into `Initial` rather than stacking migrations, so the shipped history starts clean.
+- Migrations are discovered from the `SqlFlow.Catalog` assembly. They apply automatically at control-plane startup (`BootstrapProvisioningService` when `ApplyMigrations=true`, the deployed default), via the CLI's `db` verbs, and in every integration test through `CatalogDatabase.MigrateAsync`.
+- The tell-tale of a forgotten migration: the model snapshot differs from the last migration, tests fail with "Invalid column name", or the control plane logs pending-migration warnings.
 
 ## Never Change a Flow's Source or Destination
 
-**NEVER CHANGE A FLOW'S SOURCE OR DESTINATION. NOT THE SOURCE LOCATION, NOT THE TARGET LOCATION, NOT THE STORAGE ACCOUNT, NOT THE BUCKET, NOT THE PATH, NOT THE CREDENTIALS. NOT IN PIPELINE YAML, NOT IN THE CATALOG. NEVER, UNLESS THE USER EXPLICITLY ASKS FOR THAT EXACT CHANGE.**
+**NEVER CHANGE A FLOW'S DROP LOCATION, ITS OSDU ENDPOINT OR DATA PARTITION, ITS LEGAL TAGS AND ACLS, OR ITS CREDENTIAL REFERENCES. NOT IN FLOW YAML, NOT IN A MAPPING, NOT IN THE CATALOG. NEVER, UNLESS THE USER EXPLICITLY ASKS FOR THAT EXACT CHANGE.**
 
-The declared endpoints of a flow ARE the design. We are upgrading to a new production environment: sources and targets are chosen deliberately as part of that migration, and what looks like a "dead" or "wrong" endpoint from the outside can be intentional, staged, or awaiting an upstream cutover. Repointing a flow at a different store because a run matched zero files is exactly the kind of unilateral rewiring that corrupts the migration plan.
-
-When a flow finds no files or seems to read from the wrong place:
-
-- Diagnose and report: what the flow declares, what actually exists at that endpoint, and where the data really is.
-- Propose the endpoint change as an option and STOP. The user decides whether the flow moves, the upstream moves, or the finding changes the plan.
-- Fixing anything else about the flow (options, patterns, schedule, comments) is fine when asked; the source and target locations are untouchable without an explicit instruction naming them.
+The declared endpoints of a flow ARE the design. When a flow finds no files or seems to point at the wrong place: diagnose and report what the flow declares, what actually exists there, and where the data really is; propose the change as an option and STOP. Fixing anything else about the flow (options, patterns, schedule, comments) is fine when asked.
 
 ## Single Code Path Principle
 
@@ -55,70 +61,26 @@ When a flow finds no files or seems to read from the wrong place:
 
 ## Zero Warnings, Zero Errors
 
-**The solution must build with zero warnings and zero errors.** `dotnet build SqlFlow.sln` (Debug or Release) must report `Build succeeded` with no warning or error diagnostics from any project, source or test. Do not hand back work that adds a warning, and do not silence one by lowering the analyzer configuration wholesale.
+**The solution must build with zero warnings and zero errors.** `dotnet build SqlFlow.sln` (Debug or Release) must report `Build succeeded` with no warning or error diagnostics from any project, source or test. The GUI must pass `npm run build` and `npm run lint` the same way. Do not hand back work that adds a warning, and do not silence one by lowering the analyzer configuration wholesale.
 
 - Fix warnings properly at the source: correct the doc comment, add the missing culture/`IFormatProvider`, make the method static, implement `IDisposable`, forward the `CancellationToken`, and so on.
-- Suppress a warning only when the flagged behavior is deliberate and correct (for example an intentional insecure-TLS opt-in, an EF Core query where the analyzer's rewrite would break SQL translation, a serialized DTO whose member name is an API contract, or an xUnit convention). Use a narrow `#pragma warning disable`/`restore` around the exact lines, or a `[SuppressMessage]` with a `Justification` that states why. Never a blanket file- or project-wide disable.
+- Suppress a warning only when the flagged behavior is deliberate and correct. Use a narrow `#pragma warning disable`/`restore` around the exact lines, or a `[SuppressMessage]` with a `Justification` that states why. Never a blanket file- or project-wide disable.
 - Verify with a clean rebuild (`-t:Rebuild`) before committing, since an incremental build only re-reports warnings for recompiled projects.
 
 ## No TODOs, No Stubs, Production-Grade Only
 
-**It is forbidden to leave TODOs, FIXMEs, placeholders, stubs, fake return values, or "will implement later" markers in any code you write.** Every function, branch, and module you touch must be fully implemented and production-grade before you hand it back. There is no such thing as a "first pass" that is allowed to be incomplete.
+**It is forbidden to leave TODOs, FIXMEs, placeholders, stubs, fake return values, or "will implement later" markers in any code you write.** Every function, branch, and module you touch must be fully implemented and production-grade before you hand it back.
 
-**This rule covers, without exception:**
-
-- No `todo!()`, `unimplemented!()`, `unreachable!()` (unless the branch is genuinely unreachable and you can prove it from the type system, not from "it should not happen"), or `panic!("TODO ...")` in Rust.
-- No `// TODO`, `// FIXME`, `// XXX`, `// HACK`, or `// stub` comments anywhere in code, doc comments, SQL, shell, TOML, YAML, JSON, HTML, CSS, or Markdown.
-- No functions that return a hardcoded default, empty `Vec`, `None`, `null`, `0`, `""`, or fabricated success status as a placeholder for real logic.
-- No `throw new Error("not implemented")`, `NotImplementedException`, `raise NotImplementedError`, or equivalent in any language.
-- No half-wired control flow: every `match`/`switch`/`if` arm must do the real work, not log "would handle X here" and fall through.
+- No `// TODO`, `// FIXME`, `// XXX`, `// HACK`, or `// stub` comments anywhere in code, doc comments, SQL, shell, YAML, JSON, HTML, CSS, or Markdown.
+- No functions that return a hardcoded default, empty collection, `null`, `0`, `""`, or fabricated success status as a placeholder for real logic.
+- No `NotImplementedException` or equivalent.
+- No half-wired control flow: every `switch`/`if` arm must do the real work.
 - No commented-out code left in as a "future hook." If it is not running, delete it.
-- No silent error swallowing as a stand-in for real handling. Every `Result`/`Option`/`try` boundary must do the right thing for both the success and failure path: propagate, recover, or surface to the user with context. "I will harden this later" is not an option.
+- No silent error swallowing as a stand-in for real handling. Every `try` boundary must do the right thing for both the success and failure path: propagate, recover, or surface to the user with context.
 
-**What "production-grade" means at the point you write the code:**
+**What "production-grade" means at the point you write the code:** edge cases handled (empty, oversized, unicode, concurrency, partial downstream failure, IO/network/permission errors, malformed data); explicit resource lifetimes; inputs validated at trust boundaries and not over-validated inside; errors that can be debugged from a log line alone (which operation, which inputs sanitised, which cause); tight types (no stray `any`/`unknown` to dodge a real signature); the same polish as the surrounding code.
 
-- Edge cases are handled: empty inputs, oversized inputs, unicode, concurrent access where the function can be hit concurrently, partial failure of downstream calls, IO/network/permission errors, malformed data, version skew across protocol boundaries.
-- Resource lifetimes are explicit: files closed, transactions committed or rolled back, locks released on every exit path including panic/error, async tasks awaited or deliberately detached with a documented reason.
-- Inputs are validated at trust boundaries (user input, external API responses, file contents, FFI), and trusted internal calls are not over-validated (see the global "no defensive checks for impossible scenarios" rule).
-- Errors carry enough context to debug from a log line alone: which operation, which inputs (sanitised), which underlying cause.
-- The code compiles, the types are tight (no stray `any`/`unknown`/`Box<dyn Any>` to dodge a real signature), and any new public surface has the same level of polish as the surrounding code.
-## Convert Legacy Sources One At A Time (Controlled, Step By Step)
+## Tests
 
-**Porting legacy runbooks/sources into V3 is a CONTROLLED, ONE-SOURCE-AT-A-TIME process. Never fan out across many sources in parallel, and never spawn subagents to author a batch of sources at once.** That produces a scattered mess of half-verified files and lands nothing. Do exactly one source, end to end, before touching the next.
-
-**Each source is INDEPENDENT and unrelated.** Kolumbus ingests mobility data from many separate vendors: Citybike (bysykkel) is Kolumbus's own city bikes; Voi and Ryde are e-scooter operators; Getaround is car-share; EasyPark and Stavanger Parkering are parking; Fjord1 and Norled are ferries; Entur is national transit; Statens vegvesen (SVV) is roads/traffic; and so on. They share nothing, feed nothing into each other, and none of them are part of Citybike. Each has its own lake path (`raw/<source>/...`), its own catalog batch, its own folder, and its own DWH tables. Never merge, group, or imply a relationship between sources.
-
-**The controlled per-source loop (finish every step for a source before starting the next):**
-
-1. Read that ONE source's runbook(s). Confirm it is LIVE, not dead/retired/commented-out and not pointed at a test host. If it is dead or test-only, STOP and report it: do not ship an acquisition for it.
-2. Author the acquisition flow for that one source.
-3. Validate it.
-4. RUN it and LAND real data into the V3 lake. Landing data is the point; an authored YAML that never runs is not progress.
-5. Show the landed result (files/bytes/rows).
-6. Only then move to the next source, and get the go-ahead first.
-
-Do not batch, do not parallelize sources, do not report "authored N flows" as if that were done. "Done" for a source means its data landed and was shown.
-
-## Source Flow Naming And Batch Conventions (match the sibling folders exactly)
-
-When porting a source, the file names, flow `name:` fields, and `batch:` values MUST match the estate convention shown by the sibling folders (baatbooking, billettapp). Do not invent a variant.
-
-- **Folder** = the readable source name, e.g. `Citybike/`, `Baatbooking/`.
-- **File name and flow `name:`** = `<source>_<object>_<counter>_<flowtype>`, where `<source>` is the folder/source name lowercased (NOT the target table's prefix). Example: the `Citybike` folder holds `citybike_bikes_01_jsn`, `citybike_alert_02_ing`, and the acquisition `citybike_00_api`. The pipeline prefix ALWAYS matches its repo folder (like `billettapp_*`, `baatbooking_*`); it does NOT track the DWH table name (the Citybike tables are `Bysykkel_*`, but the flows are `citybike_*`). The `Bysykkel_*` names stay ONLY inside the flow bodies where they reference the real pre view / arc table.
-- **`batch:` = a per-object (per-dataset) grouping label, NOT the source name.** Each dataset's pre+ods pair shares `batch: <object>` (e.g. `citybike_bikes_01_jsn` and `citybike_bikes_02_ing` are both `batch: bikes`); the acquisition flow uses `batch:` = its flow type (`api`, or `copy` for a `cpy` flow). This mirrors baatbooking (`detail`, `sess`, `trans`, `trans_item`, `copy`). `batch` is only a grouping/filter label and has NO effect on scheduling.
-- **Scheduling** is by schedule membership, never by batch: define one schedule on the acquisition anchor (`schedule:` block, e.g. `citybike_daily`, daily `0 4 * * *` Europe/Oslo) and have every pre/ods flow join it with `schedule: <name>`. One fire runs the whole source wave-ordered (acquire -> pre -> ods).
-
-## FUNDAMENTAL PRINCIPLE: MATCH THE OLD PRODUCTION FORMAT EXACTLY
-
-**PORTING A SOURCE TO V3 MUST NOT CHANGE WHAT DOWNSTREAM CONSUMERS SEE. THE CONSUMER-FACING OUTPUT MUST MATCH THE OLD PRODUCTION TABLE EXACTLY: SAME TABLE NAME, SAME COLUMN SET, SAME COLUMN ORDER, SAME COLUMN NAMES, SAME TYPES (INCLUDING LENGTHS, AND decimal vs numeric). DOWNSTREAM USAGE MUST REMAIN INTACT. THIS IS NON-NEGOTIABLE.**
-
-The V3 ODS/arc table is built from the typed view, so its physical shape (column ORDER, and occasionally a type/length) will NOT match the hand-built old production table even when the column SET is identical: the framework appends the surrogate PK, the audit columns, and any declared-but-not-landed "legacy extra" columns, so their positions shift. A consumer doing `SELECT *` or positional access would break.
-
-So for EVERY ported ODS table, cross-match it column-for-column, IN ORDER, against the old production DDL (`B:\SQLFlowUpgradeV3\dw-dwh-prod\arc.<OldTable>.Table.sql`). When it is not an EXACT match:
-
-- Point the ods flow at a physical table named for the V3 SOURCE, matching the flow's source prefix (e.g. the Citybike source's physical tables are `arc.Citybike_<Object>`, not the old `arc.Bysykkel_<Object>`). Do NOT use an `_ods` suffix.
-- Create a VIEW with the OLD production table name (e.g. `arc.Bysykkel_<Object>`) over that physical table, projecting the EXACT old-production format: exact column order, names, and types (`CAST` every column to its old-prod type, listed in old-prod order). Downstream keeps querying the old name and sees the unchanged shape.
-- Only skip the compat view when the V3 table is already byte-for-byte identical to old production.
-- Creating the view is a one-time/manual DDL operation (no engine change; keep the `CREATE OR ALTER VIEW` statements in a `compat_views.sql` in the source folder for reproducibility). Do NOT bolt it onto the ods run.
-
-Never reshape or rename what downstream depends on; interpose a compatibility view under the old name instead.
+- `dotnet test SqlFlow.sln` runs everything. DB-backed suites need `SQLFLOW_TEST_DB` pointing at a disposable SQL Server database (the git-ignored `.sqlflow/env` is the usual place); they skip when it is unset or unreachable, and the CLI binary suites skip when the CLI has not been built.
+- Never point `SQLFLOW_TEST_DB` at a catalog that holds real data: the suites migrate and seed the database they are given.

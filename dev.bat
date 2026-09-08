@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  SQLFlow local dev. Run this instead of deploying to Azure to try something.
+REM  OSDU Delivery local dev. Run this instead of deploying to Azure to try something.
 REM
 REM      dev.bat          start the GUI and the control plane
 REM      dev.bat api      control plane only (no GUI window)
@@ -11,7 +11,7 @@ REM      Control plane  http://localhost:5000   (API + scheduler + worker, ONE p
 REM
 REM  Everything RUNS here; every resource is the REAL Azure estate: the same catalog
 REM  (dw-sqlflow-prod), the same pre/ods databases, the same lake. Sign in with your
-REM  normal SQLFlow login, because it is literally the same user table.
+REM  normal OSDU Delivery login, because it is literally the same user table.
 REM
 REM  Azure calls go through your 'az login' (SQLFLOW_AZURE_AUTH=cli), so ${keyvault:...}
 REM  refs in flow YAML resolve with no extra config.
@@ -36,7 +36,7 @@ REM  deployed containers do the same for themselves). F5 alone does NOT migrate:
 REM  after pulling or authoring a migration, then debug.
 REM
 REM  Config: .sqlflow\env (git-ignored). Rebuild it with scripts\dev-setup.ps1.
-REM  Debugger: F5 in VS Code -> "SQLFlow: Dev (F5)" does the same with breakpoints.
+REM  Debugger: F5 in VS Code -> "OSDU Delivery: Dev (F5)" does the same with breakpoints.
 REM ============================================================================
 setlocal
 
@@ -51,7 +51,7 @@ REM the bin\ lock (F5 sessions included), and kill the GUI window a previous dev
 call :stopport 5000 "control plane"
 call :stopport 5173 "GUI"
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.ControlPlane.exe' -and $_.CommandLine -like '*SqlFlow.ControlPlane*' } | ForEach-Object { Write-Host ('Stopping previous control plane (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-taskkill /f /t /fi "WINDOWTITLE eq SQLFlow GUI*" >nul 2>&1
+taskkill /f /t /fi "WINDOWTITLE eq OSDU Delivery GUI*" >nul 2>&1
 
 REM --- Azure login is what routes Key Vault and the lake to the cloud ---
 REM 'call' is REQUIRED: az on Windows is az.cmd, and invoking a .cmd from a .bat without 'call'
@@ -145,11 +145,11 @@ if defined _gui_install (
 )
 
 echo Starting the GUI on http://localhost:5173 ...
-start "SQLFlow GUI" cmd /k "cd /d %~dp0gui && npm run dev -- --open"
+start "OSDU Delivery GUI" cmd /k "cd /d %~dp0gui && npm run dev -- --open"
 
 :api
 echo.
-echo   GUI:      http://localhost:5173     (your normal SQLFlow login)
+echo   GUI:      http://localhost:5173     (your normal OSDU Delivery login)
 echo   API:      http://localhost:5000
 echo   Catalog:  the REAL Azure catalog. Your worker shares the estate's run queue.
 echo   Ctrl+C    stops the control plane. The GUI has its own window.

@@ -35,7 +35,6 @@ import { runApi, scheduleApi } from "../../api/endpoints";
 import type { RunStatus, RunSummary, Schedule, SchedulePlanMember } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
-import { DateRangeCalendar } from "../../components/DateRangeCalendar";
 import { RelativeTime } from "../../components/RelativeTime";
 import { seriesColor } from "../../theme/branding";
 import { useRunDock } from "../runs/RunDockContext";
@@ -140,10 +139,6 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   // An empty set means "all batches"; any members carrying a selected batch tag are what the fire (and this board)
   // narrows to. Multiple batches can be selected to run several at once.
   const [selectedBatches, setSelectedBatches] = useState<string[]>([]);
-  // An optional backfill window (datetime-local strings). When set, the fire re-processes the source for that range:
-  // its integration roots re-land the slice, its silver (relational ingestion) flows re-pull from the source minimum.
-  const [backfillFrom, setBackfillFrom] = useState("");
-  const [backfillTo, setBackfillTo] = useState("");
   // Whether this manual fire carries the schedules chained behind it. Defaults to true so the manual path matches
   // what the clock does; an operator re-running one region alone turns it off.
   const [runChain, setRunChain] = useState(true);
@@ -165,23 +160,8 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
     return map;
   }, [liveMembers]);
 
-  const trimmedFrom = backfillFrom.trim();
-  const trimmedTo = backfillTo.trim();
-  // An end date needs a start date, and the range must be ordered; the server validates authoritatively.
-  const windowError = trimmedTo !== "" && trimmedFrom === ""
-    ? "An end date needs a start date."
-    : trimmedFrom !== "" && trimmedTo !== "" && trimmedTo <= trimmedFrom
-      ? "The end date must be after the start date."
-      : null;
-
   const run = useMutation({
-    mutationFn: () => scheduleApi.runNow(
-      schedule.id,
-      selectedBatches,
-      trimmedFrom === "" ? null : `${trimmedFrom}:00Z`,
-      trimmedTo === "" ? null : `${trimmedTo}:00Z`,
-      runChain,
-    ),
+    mutationFn: () => scheduleApi.runNow(schedule.id, selectedBatches, runChain),
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: ["schedules"] });
       if (accepted.groupId !== null) {
@@ -268,8 +248,7 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
   const progress = memberCount > 0 ? Math.round((doneCount / memberCount) * 100) : 0;
 
   const nothingToRun = plan.isSuccess && memberCount === 0;
-  const canStart = plan.isSuccess && memberCount > 0 && !run.isPending && phase === "preview"
-    && windowError === null;
+  const canStart = plan.isSuccess && memberCount > 0 && !run.isPending && phase === "preview";
   const closeDisabled = run.isPending;
 
   const viewFullRun = () => {
@@ -510,32 +489,6 @@ export function RunScheduleDialog({ schedule, onClose }: RunScheduleDialogProps)
                       );
                     })}
                   </div>
-                </div>
-              )}
-
-              {phase === "preview" && (
-                <div className="rounded-md border bg-muted/40 p-3" data-testid="run-schedule-backfill">
-                  <div className="text-[13px] font-medium">Backfill window (optional)</div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Reprocess this source for a date range: the integration flows re-land the files modified in the
-                    window and the silver flows re-pull from the source minimum. Leave empty to run normally.
-                  </p>
-                  <div className="mt-2">
-                    <DateRangeCalendar
-                      from={backfillFrom}
-                      to={backfillTo}
-                      onChange={(from, to) => {
-                        setBackfillFrom(from);
-                        setBackfillTo(to);
-                      }}
-                      testId="run-schedule-backfill"
-                    />
-                  </div>
-                  {windowError !== null && (
-                    <p className="mt-1.5 text-xs font-medium text-destructive" data-testid="run-schedule-backfill-error">
-                      {windowError}
-                    </p>
-                  )}
                 </div>
               )}
 

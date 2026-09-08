@@ -60,7 +60,7 @@ internal static partial class RemoteVerbs
                 return 0;
             }
 
-            Console.WriteLine($"SQLFlow estate on {url} (as of {summary.AsOfUtc:yyyy-MM-dd HH:mm:ss} UTC)");
+            Console.WriteLine($"OSDU Delivery estate on {url} (as of {summary.AsOfUtc:yyyy-MM-dd HH:mm:ss} UTC)");
             Console.WriteLine($"  repos:      {summary.Repos}  pipelines: {summary.ActivePipelines} active of {summary.Pipelines}");
             Console.WriteLine($"  runs:       {summary.Runs.Queued} queued, {summary.Runs.Running} running, {summary.Runs.Succeeded} succeeded, {summary.Runs.Failed} failed, {summary.Runs.Cancelled} cancelled ({summary.Runs.Last24h} in 24h)");
             Console.WriteLine($"  nodes:      {summary.NodesOnline} online of {summary.NodesTotal}");
@@ -466,8 +466,8 @@ internal static partial class RemoteVerbs
 
                     Console.WriteLine(
                         $"OK   synced '{repo.Name}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
-                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; lineage {result.Objects} objects, " +
-                        $"{result.Edges} edges, {result.Waves} waves{(result.Connected ? " (connected)" : string.Empty)}.");
+                        $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; " +
+                        $"runs +{result.RunsAdded} added, {result.RunsSkipped} known, {result.RunsFailed} unreadable.");
                     foreach (var warning in result.Warnings.Take(20))
                     {
                         Console.Error.WriteLine($"WARN  {warning}");
@@ -481,14 +481,14 @@ internal static partial class RemoteVerbs
 
     // ---- pipelines ----------------------------------------------------------------------------------------
 
-    /// <summary>'sqlflow pipelines list|show|columns|files': the pipeline registry. 'show' prints the facts;
+    /// <summary>'sqlflow pipelines list|show': the pipeline registry. 'show' prints the facts;
     /// --yaml or --definition switch stdout to the raw document (LLM- and pipe-friendly).</summary>
     public static async Task<int> PipelinesAsync(string[] positional, string[] args)
     {
         var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : "list";
-        if (sub is not ("list" or "show" or "columns" or "files"))
+        if (sub is not ("list" or "show"))
         {
-            Console.Error.WriteLine("ERROR  'pipelines' supports: list, show <id> [--yaml|--definition], columns <id>, files <id>.");
+            Console.Error.WriteLine("ERROR  'pipelines' supports: list, show <id> [--yaml|--definition].");
             return 1;
         }
 
@@ -567,259 +567,23 @@ internal static partial class RemoteVerbs
                     return 0;
                 }
 
-                case "columns":
-                {
-                    var columns = await client.GetPipelineColumnsAsync(id, Program.GetOption(args, "--kind"), ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(columns, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    foreach (var column in columns)
-                    {
-                        Console.WriteLine(
-                            $"  [{column.Ordinal,3}] {column.Kind,-9} {column.ColumnName,-40} {column.DataType ?? "-",-16}" +
-                            $"{(column.Expression is null ? string.Empty : $"  = {column.Expression}")}");
-                    }
-
-                    Console.WriteLine($"({columns.Count} column(s))");
-                    return 0;
-                }
-
-                default: // files
-                {
-                    var files = await client.GetPipelineFilesAsync(
-                        id, Program.GetOption(args, "--search"),
-                        Program.ParseIntOption(args, 1, "--page"), Program.ParseIntOption(args, 50, "--page-size"), ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(files, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    foreach (var file in files.Items)
-                    {
-                        Console.WriteLine(
-                            $"  {file.Name,-50} {FormatCount(file.Rows),10} row(s)  {file.SizeBytes,12:N0} byte(s)  " +
-                            $"{(file.LastRun ? "last-run" : string.Empty)}  {file.Path ?? string.Empty}");
-                    }
-
-                    Console.WriteLine($"({files.Items.Count} of {files.Total} file(s))");
-                    return 0;
-                }
-            }
-        }).ConfigureAwait(false);
-    }
-
-    // ---- datasources (remote compute tasks) ----------------------------------------------------------------
-
-    private static readonly Dictionary<string, string> ComputeOperationsBySub = new(StringComparer.Ordinal)
-    {
-        ["test"] = "testConnection",
-        ["databases"] = "listDatabases",
-        ["schemas"] = "listSchemas",
-        ["objects"] = "listObjects",
-        ["search"] = "searchObjects",
-        ["introspect"] = "introspectObject",
-        ["detect-unique-key"] = "detectUniqueKey",
-    };
-
-    /// <summary>
-    /// 'sqlflow datasources ...': the remote twins of the local 'catalog' and 'detect-unique-key' verbs,
-    /// executed as queued compute tasks on a worker node INSIDE the network (the same mechanism the GUI's
-    /// browse page uses), so no direct database reachability is needed from this machine. 'list' shows the
-    /// estate's declared references; test/databases/schemas/objects/search/introspect/detect-unique-key queue
-    /// an operation against a reference and wait for the worker's result (JSON on stdout; --no-wait prints the
-    /// task id instead); 'tasks', 'task &lt;id&gt;', and 'cancel &lt;id&gt;' manage the queue. Ctrl+C on a
-    /// waited task requests its cancellation before exiting 130.
-    /// </summary>
-    public static async Task<int> DatasourcesAsync(string[] positional, string[] args)
-    {
-        var sub = positional.Length > 1 ? positional[1].ToLowerInvariant() : "list";
-        if (sub is not ("list" or "tasks" or "task" or "cancel") && !ComputeOperationsBySub.ContainsKey(sub))
-        {
-            Console.Error.WriteLine(
-                "ERROR  'datasources' supports: list, test, databases, schemas, objects, search, introspect, detect-unique-key, tasks, task <id>, cancel <id>.");
-            return 1;
-        }
-
-        var url = RequireUrl(args);
-        using var client = CreateAuthenticatedClient(url, args);
-        using var cancel = InterceptCtrlC();
-        var json = args.Contains("--json");
-        return await GuardedAsync(url, cancel.Token, async ct =>
-        {
-            switch (sub)
-            {
-                case "list":
-                {
-                    var datasources = await client.ListDatasourcesAsync(ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(datasources, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    Console.WriteLine($"{"REFERENCE",-48}  {"KIND",-10}  {"BROWSABLE",-9}  USED BY (src/trg)");
-                    foreach (var datasource in datasources)
-                    {
-                        Console.WriteLine(
-                            $"{Truncate(datasource.Reference, 48),-48}  {datasource.Kind ?? "-",-10}  {(datasource.Resolvable ? "yes" : "no"),-9}  " +
-                            $"{datasource.SourcePipelines}/{datasource.TargetPipelines}");
-                    }
-
-                    Console.WriteLine($"({datasources.Count} reference(s))");
-                    return 0;
-                }
-
-                case "tasks":
-                {
-                    var tasks = await client.ListComputeTasksAsync(
-                        Program.GetOption(args, "--status"), Program.GetOption(args, "--ref"), Program.GetOption(args, "--operation"),
-                        Program.ParseIntOption(args, 1, "--page"), Program.ParseIntOption(args, 50, "--page-size"), ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(tasks, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    Console.WriteLine($"{"TASK",-36}  {"OPERATION",-18}  {"STATUS",-9}  {"TARGET",-30}  {"NODE",-16}  ENQUEUED (UTC)");
-                    foreach (var task in tasks.Items)
-                    {
-                        Console.WriteLine(
-                            $"{task.TaskId,-36}  {task.Operation,-18}  {task.Status,-9}  {Truncate(task.Target ?? "-", 30),-30}  " +
-                            $"{Truncate(task.ClaimedByNode ?? "-", 16),-16}  {task.EnqueuedUtc:yyyy-MM-dd HH:mm:ss}");
-                    }
-
-                    Console.WriteLine($"({tasks.Items.Count} of {tasks.Total} task(s))");
-                    return 0;
-                }
-
-                case "task":
-                {
-                    if (!TryRequireId(positional, "datasources task", out var taskId))
-                    {
-                        return 1;
-                    }
-
-                    var task = await client.GetComputeTaskAsync(taskId, waitMs: 0, ct).ConfigureAwait(false);
-                    if (task is null)
-                    {
-                        Console.Error.WriteLine($"ERROR  no compute task '{taskId}'.");
-                        return 1;
-                    }
-
-                    Console.WriteLine(JsonSerializer.Serialize(task, ControlPlaneClient.JsonIndented));
-                    return task.Status == "failed" ? 1 : 0;
-                }
-
-                case "cancel":
-                {
-                    if (!TryRequireId(positional, "datasources cancel", out var taskId))
-                    {
-                        return 1;
-                    }
-
-                    return PrintCancelOutcome(await client.CancelComputeTaskAsync(taskId, ct).ConfigureAwait(false), "compute task", taskId);
-                }
-
                 default:
-                    return await RunComputeOperationAsync(client, ComputeOperationsBySub[sub], args, json, ct).ConfigureAwait(false);
+                    Console.Error.WriteLine("ERROR  'pipelines' supports: list, show <id> [--yaml|--definition].");
+                    return 1;
             }
         }).ConfigureAwait(false);
-    }
-
-    /// <summary>Queues one compute operation and (unless --no-wait) long-polls it to its terminal state,
-    /// printing the worker's JSON result. The result IS the dataset: pretty JSON on stdout by design, equally
-    /// consumable by a human, a script, or an LLM.</summary>
-    private static async Task<int> RunComputeOperationAsync(
-        ControlPlaneClient client, string operation, string[] args, bool json, CancellationToken ct)
-    {
-        var reference = Program.GetOption(args, "--ref");
-        if (string.IsNullOrWhiteSpace(reference))
-        {
-            Console.Error.WriteLine("ERROR  a datasource operation requires --ref <${env:NAME} reference or @alias> (see 'sqlflow datasources list').");
-            return 1;
-        }
-
-        // --object accepts schema.name (or just the name when --schema is given), mirroring the local verbs.
-        string? schema = Program.GetOption(args, "--schema");
-        string? objectName = Program.GetOption(args, "--object");
-        if (objectName is not null && objectName.Contains('.', StringComparison.Ordinal) && schema is null)
-        {
-            var parts = objectName.Split('.', 2);
-            schema = parts[0];
-            objectName = parts[1];
-        }
-
-        long? sample = Program.GetOption(args, "--sample") is { } s ? long.Parse(s, CultureInfo.InvariantCulture) : null;
-        var request = new ComputeTaskRequest(
-            reference, operation, Program.GetOption(args, "--kind"), Program.GetOption(args, "--pool"),
-            Program.GetOption(args, "--database"), schema, objectName,
-            Program.GetOption(args, "--like"), Program.GetOption(args, "--term"),
-            IncludeSystem: args.Contains("--include-system"),
-            Offset: Program.ParseIntOption(args, 0, "--offset"),
-            Limit: Program.ParseIntOption(args, 200, "--limit"),
-            SampleSize: sample,
-            MaxKeyColumns: Program.ParseIntOption(args, 4, "--max-columns"),
-            MaxCandidates: Program.ParseIntOption(args, 5, "--max-candidates"),
-            VerifyCandidates: !args.Contains("--no-verify"),
-            TrustDeclaredKeys: !args.Contains("--no-metadata"));
-
-        var accepted = await client.CreateComputeTaskAsync(request, ct).ConfigureAwait(false);
-        Note(json: true, $"task {accepted.TaskId} {accepted.Status} ({operation} on {reference}).");
-        if (args.Contains("--no-wait"))
-        {
-            Console.WriteLine(accepted.TaskId);
-            return 0;
-        }
-
-        try
-        {
-            while (true)
-            {
-                var task = await client.GetComputeTaskAsync(accepted.TaskId, waitMs: 20000, ct).ConfigureAwait(false)
-                           ?? throw new SqlFlowException($"compute task {accepted.TaskId} vanished from the queue (expired before a node claimed it?).");
-                switch (task.Status)
-                {
-                    case "succeeded":
-                        Console.WriteLine(task.Result is { } result
-                            ? JsonSerializer.Serialize(result, ControlPlaneClient.JsonIndented)
-                            : "{}");
-                        return 0;
-                    case "failed":
-                        Console.Error.WriteLine($"FAILED  {operation}: {task.Error ?? "(no error recorded)"}");
-                        return 1;
-                    case "cancelled":
-                        Console.Error.WriteLine($"CANCELLED  {operation} was cancelled.");
-                        return 1;
-                    default:
-                        Console.Error.WriteLine($"  {task.Status}{(task.ClaimedByNode is null ? " (waiting for a node; is a worker serving this pool?)" : $" on {task.ClaimedByNode}")}...");
-                        continue;
-                }
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            // Ctrl+C: request the queued/running task's cancellation so no node burns work for a caller that left.
-            await client.CancelComputeTaskAsync(accepted.TaskId, CancellationToken.None).ConfigureAwait(false);
-            Console.Error.WriteLine($"CANCELLED  interrupted; cancellation of task {accepted.TaskId} was requested.");
-            return 130;
-        }
     }
 
     // ---- search -------------------------------------------------------------------------------------------
 
-    /// <summary>'sqlflow search &lt;term&gt;': the global catalog search. Default is the combined view (every
-    /// category counted, top hits previewed); one of --objects/--columns/--definitions/--files/--flows narrows
-    /// to a paged single category.</summary>
+    /// <summary>'sqlflow search &lt;term&gt;': cross-repo search over the flow documents, through the control plane.
+    /// The combined form previews the top hits; --flows pages through them.</summary>
     public static async Task<int> SearchAsync(string[] positional, string[] args)
     {
         var term = positional.Length > 1 ? positional[1] : null;
         if (string.IsNullOrWhiteSpace(term))
         {
-            Console.Error.WriteLine("ERROR  'search' requires a term: sqlflow search <term> [--objects|--columns|--definitions|--files|--flows].");
+            Console.Error.WriteLine("ERROR  'search' requires a term: sqlflow search <term> [--flows].");
             return 1;
         }
 
@@ -830,46 +594,10 @@ internal static partial class RemoteVerbs
         var pageSize = Program.ParseIntOption(args, 50, "--page-size");
         return await GuardedAsync(url, CancellationToken.None, async ct =>
         {
-            if (args.Contains("--objects"))
-            {
-                var hits = await client.SearchAsync<ObjectHitDto>("objects", "name", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.Kind,-10} {h.Name,-40} {h.ServerRef}|{h.Database}|{h.Schema}  [{h.Key}]");
-            }
-
-            if (args.Contains("--columns"))
-            {
-                var hits = await client.SearchAsync<ColumnHitDto>("columns", "name", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.ColumnName,-32} {h.DataType ?? "-",-16} {(h.Nullable ? "null" : "not null"),-8}  {h.ObjectName}  [{h.ObjectKey}]");
-            }
-
-            if (args.Contains("--definitions"))
-            {
-                var hits = await client.SearchAsync<DefinitionHitDto>("definitions", "q", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.Kind,-10} {h.Name,-40} ({h.Source})  ...{Truncate(h.Snippet, 80)}...");
-            }
-
-            if (args.Contains("--files"))
-            {
-                var hits = await client.SearchAsync<FileHitDto>("files", "name", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.Name,-46} {FormatCount(h.Rows),10} row(s)  {h.FlowName}  run {h.RunId}");
-            }
-
             if (args.Contains("--flows"))
             {
                 var hits = await client.SearchAsync<FlowHitDto>("flows", "q", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.Kind,-5} {h.Name,-40} [{h.RepoName}] {h.RelativePath} (matched {h.MatchedIn})");
-            }
-
-            if (args.Contains("--flow-columns"))
-            {
-                var hits = await client.SearchAsync<FlowColumnHitDto>("flow-columns", "name", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.ColumnName,-32} {h.DataType ?? "-",-16} {h.FlowName,-32} ({h.Kind}, matched {h.MatchedIn})");
-            }
-
-            if (args.Contains("--statements"))
-            {
-                var hits = await client.SearchAsync<StatementHitDto>("statements", "q", term, page, pageSize, ct).ConfigureAwait(false);
-                return PrintHits(json, hits, h => $"  {h.FlowName,-40} {h.Step,-20} {FormatCount(h.Occurrences),8}x  ...{Truncate(h.Snippet, 60)}...");
+                return PrintHits(json, hits, h => $"  {h.Kind,-8} {h.Name,-40} [{h.RepoName}] {h.RelativePath} (matched {h.MatchedIn})");
             }
 
             var all = await client.SearchAllAsync(term, ct).ConfigureAwait(false);
@@ -879,46 +607,10 @@ internal static partial class RemoteVerbs
                 return 0;
             }
 
-            Console.WriteLine($"objects ({all.Objects.Total}):");
-            foreach (var hit in all.Objects.Items)
-            {
-                Console.WriteLine($"  {hit.Kind,-10} {hit.Name}  ({hit.ServerRef}|{hit.Database}|{hit.Schema})");
-            }
-
-            Console.WriteLine($"columns ({all.Columns.Total}):");
-            foreach (var hit in all.Columns.Items)
-            {
-                Console.WriteLine($"  {hit.ColumnName,-32} {hit.DataType ?? "-",-16} on {hit.ObjectName}");
-            }
-
-            Console.WriteLine($"definitions ({all.Definitions.Total}):");
-            foreach (var hit in all.Definitions.Items)
-            {
-                Console.WriteLine($"  {hit.Kind,-10} {hit.Name}");
-            }
-
-            Console.WriteLine($"files ({all.Files.Total}):");
-            foreach (var hit in all.Files.Items)
-            {
-                Console.WriteLine($"  {hit.Name}  ({hit.FlowName}, run {hit.RunId})");
-            }
-
             Console.WriteLine($"flows ({all.Flows.Total}):");
             foreach (var hit in all.Flows.Items)
             {
-                Console.WriteLine($"  {hit.Kind,-5} {hit.Name}  [{hit.RepoName}] {hit.RelativePath}");
-            }
-
-            Console.WriteLine($"flow columns ({all.FlowColumns.Total}):");
-            foreach (var hit in all.FlowColumns.Items)
-            {
-                Console.WriteLine($"  {hit.ColumnName,-32} {hit.FlowName}  ({hit.Kind}, matched {hit.MatchedIn})");
-            }
-
-            Console.WriteLine($"executed sql ({all.Statements.Total}, last {all.StatementWindowDays} day(s)):");
-            foreach (var hit in all.Statements.Items)
-            {
-                Console.WriteLine($"  {hit.FlowName,-40} {hit.Step}  ({FormatCount(hit.Occurrences)}x)");
+                Console.WriteLine($"  {hit.Kind,-8} {hit.Name}  [{hit.RepoName}] {hit.RelativePath}");
             }
 
             // A multi-word term is matched word by word, so echoing the parsed tokens explains a surprising result
@@ -928,9 +620,7 @@ internal static partial class RemoteVerbs
                 Console.Error.WriteLine($"NOTE  matched every word of: {string.Join(" + ", all.Tokens)}");
             }
 
-            Console.Error.WriteLine(
-                "NOTE  narrow to one paged category with --objects, --columns, --definitions, --files, --flows, "
-                + "--flow-columns, or --statements.");
+            Console.Error.WriteLine("NOTE  page through the flows with --flows [--page N --page-size N].");
             return 0;
         }).ConfigureAwait(false);
     }
@@ -951,124 +641,6 @@ internal static partial class RemoteVerbs
         Console.WriteLine($"({hits.Items.Count} of {hits.Total} hit(s))");
         return 0;
     }
-
-    // ---- lineage (the graph as data) ----------------------------------------------------------------------
-
-    /// <summary>
-    /// 'sqlflow lineage objects|edges|waves|script': the catalog's lineage graph as DATA. A console cannot
-    /// draw the GUI's graph, but the dataset behind it prints fine, and with --json it is directly consumable
-    /// by an LLM or an integration test: objects (the nodes), edges (who reads/writes what, attributed to
-    /// flows), waves (the execution plan), and script (the code behind any node). The offline
-    /// 'lineage &lt;folder&gt;' verb is untouched; these subcommands query the control plane's synced view.
-    /// </summary>
-    public static async Task<int> LineageRemoteAsync(string[] positional, string[] args)
-    {
-        var sub = positional[1].ToLowerInvariant();
-        var url = RequireUrl(args);
-        using var client = CreateAuthenticatedClient(url, args);
-        var json = args.Contains("--json");
-        var page = Program.ParseIntOption(args, 1, "--page");
-        var pageSize = Program.ParseIntOption(args, 100, "--page-size");
-        return await GuardedAsync(url, CancellationToken.None, async ct =>
-        {
-            switch (sub)
-            {
-                case "objects":
-                {
-                    var objects = await client.ListLineageObjectsAsync(
-                        Program.GetOption(args, "--name"), Program.GetOption(args, "--server"),
-                        Program.GetOption(args, "--database"), Program.GetOption(args, "--schema"),
-                        Program.GetOption(args, "--kind"), page, pageSize, ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(objects, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    foreach (var obj in objects.Items)
-                    {
-                        Console.WriteLine($"  {obj.Kind,-10} {obj.Name,-40} {obj.ServerRef}|{obj.Database}|{obj.Schema}  [{obj.Key}]");
-                    }
-
-                    Console.WriteLine($"({objects.Items.Count} of {objects.Total} object(s))");
-                    return 0;
-                }
-
-                case "edges":
-                {
-                    var repo = await ResolveRepoAsync(client, args, ct).ConfigureAwait(false);
-                    var edges = await client.ListLineageEdgesAsync(
-                        repo.Id, null, Program.GetOption(args, "--object"), Program.GetOption(args, "--relation"),
-                        Program.GetOption(args, "--tier"), page, pageSize, ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(edges, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    foreach (var edge in edges.Items)
-                    {
-                        Console.WriteLine($"  {edge.Flow ?? edge.ViaModule ?? "?",-40} {edge.Relation,-6} {edge.ObjectName,-40} ({edge.Tier})  [{edge.ObjectKey}]");
-                    }
-
-                    Console.WriteLine($"({edges.Items.Count} of {edges.Total} edge(s) in [{repo.Name}])");
-                    return 0;
-                }
-
-                case "waves":
-                {
-                    var repo = await ResolveRepoAsync(client, args, ct).ConfigureAwait(false);
-                    var waves = await client.GetWavesAsync(repo.Id, ct).ConfigureAwait(false);
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(waves, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    foreach (var wave in waves)
-                    {
-                        Console.WriteLine($"wave {wave.Wave} ({wave.Pipelines.Count} flow(s)):");
-                        foreach (var pipeline in wave.Pipelines)
-                        {
-                            Console.WriteLine($"  {pipeline.Kind,-5} {pipeline.Name}");
-                        }
-                    }
-
-                    Console.WriteLine($"({waves.Count} wave(s) in [{repo.Name}])");
-                    return 0;
-                }
-
-                default: // script
-                {
-                    var key = positional.Length > 2 ? positional[2] : null;
-                    if (string.IsNullOrWhiteSpace(key))
-                    {
-                        Console.Error.WriteLine("ERROR  'lineage script' requires a node key or pipeline name: sqlflow lineage script <key|flow>.");
-                        return 1;
-                    }
-
-                    var script = await client.GetNodeScriptAsync(key, ct).ConfigureAwait(false);
-                    if (script is null)
-                    {
-                        Console.Error.WriteLine($"ERROR  no lineage node '{key}'.");
-                        return 1;
-                    }
-
-                    if (json)
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(script, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    Note(json: true, $"{script.Kind} '{script.Name ?? script.Key}' ({script.Language}{(script.Source is null ? string.Empty : $", {script.Source}")}):");
-                    Console.WriteLine(script.Script ?? string.Empty);
-                    return 0;
-                }
-            }
-        }).ConfigureAwait(false);
-    }
-
-    // ---- doctor -------------------------------------------------------------------------------------------
 
     /// <summary>
     /// 'sqlflow doctor': one pass over everything a flow needs to run from THIS machine, so "why does it not

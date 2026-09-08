@@ -5,12 +5,9 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
 using SqlFlow.Core.Compute;
-using SqlFlow.Core.Ingestion;
-using SqlFlow.Core.Model;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Execution;
-using SqlFlow.Orchestration;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Node;
@@ -21,9 +18,9 @@ namespace SqlFlow.Node;
 /// scope, resolving the flow file from the catalog (repo root + relative path), executing it through the shared
 /// <see cref="DocumentExecutor"/> (identical to a CLI run), and recording the outcome from the produced artifact
 /// under the run id the trigger already returned. The queue is the database, so the runtime is stateless and
-/// horizontally scalable: the control plane hosts it in-process, and a self-hosted <c>sqlflow worker</c> hosts the
-/// very same loop on a node inside a private network. Each node resolves every credential from its own
-/// environment, so nothing sensitive travels through the queue.
+/// horizontally scalable: the control plane hosts it in-process, and a self-hosted <c>worker</c> hosts the very
+/// same loop on a node inside a private network. Each node resolves every credential from its own environment,
+/// so nothing sensitive travels through the queue.
 /// </summary>
 /// <remarks>
 /// Robustness: one run's failure never tears down the loop or its sibling runs (per-run try/catch drives the run
@@ -38,9 +35,9 @@ public sealed partial class RunWorker
     public const int DefaultMaxConcurrentRuns = 4;
 
     /// <summary>The default bound on how many claimed COMPUTE TASKS a node executes at once. Deliberately its
-    /// own small gate, separate from the run gate: compute tasks are interactive (an operator browsing a
-    /// datasource in the GUI), so a node saturated with long flow runs must still answer them promptly, and a
-    /// burst of browsing must never starve flow execution of its slots.</summary>
+    /// own small gate, separate from the run gate: compute tasks are interactive (an operator probing a target
+    /// from the GUI), so a node saturated with long runs must still answer them promptly, and a burst of them
+    /// must never starve run execution of its slots.</summary>
     public const int DefaultMaxConcurrentComputeTasks = 2;
 
     /// <summary>How often the node refreshes its fleet heartbeat, on a cadence independent of the drain loop (see
@@ -56,7 +53,7 @@ public sealed partial class RunWorker
     /// to be caught by three stops is then failed outright and blamed for dying, though nothing was ever wrong with
     /// it. Draining is what keeps a scale-in from manufacturing those failures. The default sits under the ten-minute
     /// termination grace the worker's container app declares, so the drain ends on the node's own terms with an
-    /// outcome recorded, rather than being cut off mid-statement by the platform's kill.</summary>
+    /// outcome recorded, rather than being cut off mid-flight by the platform's kill.</summary>
     public static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromMinutes(9);
 
     /// <summary>How often the drain re-checks its in-flight work, and re-polls operator cancels, while it waits.</summary>
@@ -90,8 +87,8 @@ public sealed partial class RunWorker
 
     // The runs this node is currently executing, keyed by run id, each with its own cancellation source linked to
     // the shutdown token. An operator cancel of a running run trips its source (see PollCancellationsAsync), which
-    // aborts the in-flight statement; ExecuteClaimedAsync registers a run here before it starts and removes it when
-    // it ends. Concurrent because the drain loop registers while executing tasks remove.
+    // aborts the in-flight work; ExecuteClaimedAsync registers a run here before it starts and removes it when it
+    // ends. Concurrent because the drain loop registers while executing tasks remove.
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _running = new();
 
     // The compute tasks this node is currently executing, with the same per-item cancellation discipline as
@@ -183,7 +180,7 @@ public sealed partial class RunWorker
             try
             {
                 // Compute tasks drain FIRST: they are interactive (an operator waiting in the GUI) and bounded by
-                // their own gate, so serving them ahead of the run queue costs flow throughput nothing.
+                // their own gate, so serving them ahead of the run queue costs run throughput nothing.
                 await DrainComputeAsync(pools, computeGate, computeInFlight, stoppingToken, abortCts.Token).ConfigureAwait(false);
                 await DrainAsync(pools, gate, inFlight, stoppingToken, abortCts.Token).ConfigureAwait(false);
             }
@@ -352,9 +349,9 @@ public sealed partial class RunWorker
     }
 
     /// <summary>Observes operator cancel requests for the runs this node is executing and trips each matching run's
-    /// cancellation token, which aborts its in-flight statement (SqlClient sends an attention to the server) and
-    /// drives it to <c>cancelled</c>. Best-effort like the heartbeat: it only queries when this node has in-flight
-    /// runs, and a transient catalog error is logged and retried on the next poll rather than stopping the loop.</summary>
+    /// cancellation token, which aborts its in-flight work and drives it to <c>cancelled</c>. Best-effort like the
+    /// heartbeat: it only queries when this node has in-flight runs, and a transient catalog error is logged and
+    /// retried on the next poll rather than stopping the loop.</summary>
     private async Task PollCancellationsAsync(CancellationToken ct)
     {
         if (_running.IsEmpty && _runningTasks.IsEmpty)
@@ -608,7 +605,7 @@ public sealed partial class RunWorker
     /// <param name="shutdownCt">The abort token: a trip (the drain window expired) leaves the task <c>running</c>
     /// for recovery.</param>
     /// <param name="taskCt">The per-task token (linked to shutdown): an operator cancel trips this alone, aborting
-    /// the in-flight query so the task records <c>cancelled</c> rather than requeued.</param>
+    /// the in-flight operation so the task records <c>cancelled</c> rather than requeued.</param>
     private async Task RunClaimedTaskAsync(
         IServiceProvider scope, CatalogDbContext catalog, Guid taskId, CancellationToken shutdownCt, CancellationToken taskCt)
     {
@@ -627,7 +624,7 @@ public sealed partial class RunWorker
             LogTaskStarting(taskId, row.Operation, row.SourceRef);
 
             // The queue row is data from the database: parse AND re-validate it here, so a malformed or
-            // hand-tampered payload fails the task with a precise message instead of reaching a provider.
+            // hand-tampered payload fails the task with a precise message instead of reaching a target.
             ComputeTaskPayload payload;
             try
             {
@@ -641,7 +638,7 @@ public sealed partial class RunWorker
             }
 
             var executor = scope.GetRequiredService<ComputeTaskExecutor>();
-            // The executor runs under the per-task token so an operator cancel aborts only the in-flight query,
+            // The executor runs under the per-task token so an operator cancel aborts only the in-flight operation,
             // while the completion write below stays on the shutdown token (a late cancel never corrupts it).
             var resultJson = await executor.ExecuteAsync(payload, taskCt).ConfigureAwait(false);
 
@@ -655,14 +652,14 @@ public sealed partial class RunWorker
         }
         catch (Exception) when (taskCt.IsCancellationRequested && !shutdownCt.IsCancellationRequested)
         {
-            // The operator cancelled: the per-task token tripped and aborted the in-flight query (surfaced as
-            // OperationCanceledException or a provider exception). Record 'cancelled', not 'failed'.
+            // The operator cancelled: the per-task token tripped and aborted the in-flight operation (surfaced as
+            // OperationCanceledException or a transport exception). Record 'cancelled', not 'failed'.
             LogTaskCancelled(taskId);
             await TryCancelRunningTaskAsync(catalog, taskId).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            // A failed task (unreachable source, bad object, provider error) must never kill the worker: drive it
+            // A failed task (unreachable target, bad argument, transport error) must never kill the worker: drive it
             // terminal (best-effort) and continue.
             LogTaskError(taskId, SecretHygiene.RedactedMessage(ex));
             await TryFailTaskAsync(catalog, taskId, SecretHygiene.RedactedMessage(ex)).ConfigureAwait(false);
@@ -706,7 +703,7 @@ public sealed partial class RunWorker
     /// <param name="shutdownCt">The abort token: it trips only when a stopping node's drain window expired, and the
     /// run is then left <c>running</c> for recovery (never recorded terminal), so severed work is never lost.</param>
     /// <param name="runCt">The per-run token (linked to shutdown): an operator cancel trips this alone, aborting the
-    /// flow's in-flight statement so the run is recorded <c>cancelled</c> rather than requeued.</param>
+    /// flow's in-flight work so the run is recorded <c>cancelled</c> rather than requeued.</param>
     private async Task RunClaimedAsync(
         IServiceProvider scope, CatalogDbContext catalog, ClaimedRun claim, CancellationToken shutdownCt, CancellationToken runCt)
     {
@@ -729,7 +726,6 @@ public sealed partial class RunWorker
                     select new
                     {
                         r.RepoId,
-                        r.PipelineId,
                         r.FlowName,
                         r.CommitSha,
                         r.FlowVersionHash,
@@ -775,7 +771,7 @@ public sealed partial class RunWorker
             // throttling, which libgit2 surfaces as "too many redirects or authentication replays"). The git
             // materialization below remains the fallback for a run that carries no snapshot (enqueued before the
             // snapshot model, or its flow embeds a literal credential), a pruned version row, and a document that
-            // needs the surrounding repo tree (a relative local source/target/repository path).
+            // needs the surrounding repo tree (a relative local path).
             var snapshotRoot = !string.IsNullOrWhiteSpace(run.FlowVersionHash)
                 ? await TryStageSnapshotAsync(scope, catalog, runId, run.FlowVersionHash, relativePath, ct).ConfigureAwait(false)
                 : null;
@@ -832,8 +828,7 @@ public sealed partial class RunWorker
 
             // The claimed run id is the orchestrator-assigned id: the engine stamps it on the run and its artifact,
             // so the run records under exactly the id the trigger returned. Run-log echo stays null (server side).
-            // The run's substitution parameters (the built-in backfill) travel from the queue row into the engine
-            // here: the one handoff point, shared by every flow kind.
+            // The run's parameters travel from the queue row into the engine here: the one handoff point.
             var parameters = new RunParameters
             {
                 FullLoad = run.FullLoad,
@@ -849,77 +844,23 @@ public sealed partial class RunWorker
                 LogParameters(runId, parameters.Describe());
             }
 
-            // Downstream-anchored watermark (the default for every incremental flow): the flow reads its
-            // high-water MAX from the next durable table in the lineage chain (the ods/silver table it feeds), not
-            // its own target, so deleting rows there re-opens the window and the source is re-pulled. Bronze is
-            // driven by what silver holds. The downstream table is resolved here, where the catalog's lineage graph
-            // is available; the engine tier has no catalog, so this is the single point that can compute it. A null
-            // result (no lineage, an ambiguous chain, or a direct CLI run) leaves the probe on the flow's own
-            // target. Both flow kinds that carry an incremental watermark participate: file flows (FlowRunner) and
-            // relational ingestion flows (IngestionFlowRunner).
-            var (incrementalWatermark, ownSchema, ownName) = document switch
-            {
-                IngestionFlowDocument ing when ing.Document.Flow.Incremental.IsIncremental
-                    => (true, ing.Document.Flow.Target.Table.Schema, ing.Document.Flow.Target.Table.Name),
-                FileFlowDocument fileDoc when fileDoc.Flow.Incremental is { FullLoad: false }
-                    => (true, fileDoc.Flow.Target.Schema, fileDoc.Flow.Target.Table),
-                _ => (false, string.Empty, string.Empty),
-            };
-
-            RelationalObject? watermarkSourceTable = null;
-            if (incrementalWatermark)
-            {
-                watermarkSourceTable = await ResolveDownstreamWatermarkTableAsync(
-                    catalog, repoId, run.PipelineId, ownSchema, ownName, ct).ConfigureAwait(false);
-                if (watermarkSourceTable is not null)
-                {
-                    LogDownstreamWatermark(runId, watermarkSourceTable.QualifiedName);
-                }
-            }
-
-            // Landing-reset verdict (load.resetWhenConsolidated, on by default): a chained landing (bronze)
-            // table is pure staging, so once every flow that directly reads its typed view has completed a
-            // successful run after this flow's last successful load, the engine may truncate it before this
-            // run's load. One hop only, by design: delivery to the NEXT phase (silver) frees the landing table;
-            // whether anything further downstream ran is irrelevant. Resolved here because the verdict needs the
-            // catalog's lineage graph and run ledger, which the engine tier does not have. Null (no consumers in
-            // the lineage, or a non-participating flow) leaves the landing table alone without comment.
-            LandingReset? landingReset = null;
-            if (document is FileFlowDocument landingDoc
-                && landingDoc.Flow.Load is { Mode: LoadMode.Append, ResetWhenConsolidated: true }
-                && landingDoc.Flow.Inference.GeneratesView)
-            {
-                landingReset = await ResolveLandingResetAsync(
-                    catalog, repoId, run.PipelineId,
-                    landingDoc.Flow.Target.Schema, landingDoc.Flow.Target.Table, parameters, ct).ConfigureAwait(false);
-                if (landingReset is not null)
-                {
-                    LogLandingReset(runId, landingReset.Authorized ? "authorized" : "blocked", landingReset.Reason);
-                }
-            }
-
-            // The node streams the run's generated SQL and its canonical events into the catalog live: as each
-            // statement executes a CatalogRunStatement row is written, and as each event is published (a file
-            // read, a resolved watermark, a stage summary) a CatalogRunEvent row is written, each on its sink's
-            // own scope/context, so the Statements and Events views update while the run is still running and
-            // both streams survive even a mid-run crash. The sinks are disposed at the end of this block
-            // (draining every queued write) BEFORE the completion write-back below, which deletes these live
-            // rows and re-projects them from run.json: the artifact stays authoritative.
+            // The node streams the run's canonical events into the catalog live: as each event is published a
+            // CatalogRunEvent row is written on the sink's own scope/context, so the run's trace updates while the
+            // run is still running and survives even a mid-run crash. The sink is disposed at the end of this block
+            // (draining every queued write) BEFORE the completion write-back below, which appends only the tail the
+            // live feed did not write: the artifact stays authoritative.
             DocumentExecutionResult exec;
-            await using (var statementSink = new CatalogRunStatementSink(_services, runId, repoId, _logger))
             await using (var eventSink = new CatalogRunEventSink(_services, runId, repoId, _logger))
             {
                 var options = new DocumentExecutionOptions
                 {
-                    RunId = runId, Echo = null, Parameters = parameters, StatementSink = statementSink,
-                    EventSink = eventSink, WatermarkSourceTable = watermarkSourceTable, LandingReset = landingReset,
-                    // The claimed run's flow name selects WHICH flow of the document executes: for an ingestion
-                    // document with an embedded healthCheck: block, the derived hc pipeline runs from the same file.
+                    RunId = runId, Echo = null, Parameters = parameters, EventSink = eventSink,
+                    // The claimed run's flow name selects WHICH flow of the document executes.
                     FlowName = run.FlowName,
                 };
-                // The executor runs under the per-run token: an operator cancel aborts the in-flight statement here
-                // (and only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel
-                // never corrupts the completion write.
+                // The executor runs under the per-run token: an operator cancel aborts the in-flight work here (and
+                // only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel never
+                // corrupts the completion write.
                 exec = await _executor.ExecuteAsync(document, flowFile, options, runCt).ConfigureAwait(false);
             }
 
@@ -933,8 +874,8 @@ public sealed partial class RunWorker
                 {
                     // This node was presumed dead and the run was requeued (and possibly re-claimed) out from under
                     // it: the fence dropped this write, the successor execution's outcome is authoritative, and the
-                    // flow's idempotent load makes the double execution harmless. Loud in the log because it means
-                    // this node's heartbeats went unseen for the reaper's whole stale window.
+                    // flow's idempotent delivery makes the double execution harmless. Loud in the log because it
+                    // means this node's heartbeats went unseen for the reaper's whole stale window.
                     LogStaleClaim(runId, attempt);
                 }
             }
@@ -961,15 +902,14 @@ public sealed partial class RunWorker
         }
         catch (Exception) when (runCt.IsCancellationRequested && !shutdownCt.IsCancellationRequested)
         {
-            // The operator cancelled this run: the per-run token tripped and aborted the in-flight statement (which
-            // SqlClient may surface as OperationCanceledException or a SqlException), so its transaction rolled back.
-            // Record it 'cancelled' - not 'failed' - and continue to the next claim.
+            // The operator cancelled this run: the per-run token tripped and aborted the in-flight work. Record it
+            // 'cancelled' - not 'failed' - and continue to the next claim.
             LogCancelled(runId);
             await TryCancelRunningAsync(catalog, runId, attempt).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            // A failed run (bad flow, unreachable database, IO) must never kill the worker: drive it to a terminal
+            // A failed run (bad flow, unreachable target, IO) must never kill the worker: drive it to a terminal
             // state (best-effort) and continue to the next claim.
             LogRunError(runId, SecretHygiene.RedactedMessage(ex));
             await TryFailAsync(catalog, runId, attempt, SecretHygiene.RedactedMessage(ex)).ConfigureAwait(false);
@@ -1014,7 +954,7 @@ public sealed partial class RunWorker
         try
         {
             var documents = scope.GetRequiredService<YamlDocumentLoader>();
-            if (RequiresRepoTree(documents.Parse(yaml, flowFile)))
+            if (documents.Parse(yaml, flowFile).RequiresRepoTree)
             {
                 return null;
             }
@@ -1063,215 +1003,6 @@ public sealed partial class RunWorker
         }
     }
 
-    /// <summary>True when the document cannot execute from a bare single-file snapshot because it addresses
-    /// sibling files in the repo tree: a relative local source location (a file flow reading committed sample
-    /// data), a relative export target path, or a relative source-control working directory. These resolve
-    /// against the flow file's own directory, which only a full git materialization populates. Cloud URIs
-    /// (<c>scheme://</c>) and absolute local paths resolve identically under either root and stay snapshot-safe.
-    /// Internal for the test suite; only the staging path above calls it in production.</summary>
-    internal static bool RequiresRepoTree(FlowDocument document)
-        => document switch
-        {
-            FileFlowDocument doc => IsLocalRelative(doc.Flow.Source.Location),
-            ExportFlowDocument doc => IsLocalRelative(doc.Document.Flow.TrgPath),
-            SourceControlFlowDocument doc => IsLocalRelative(doc.Document.Flow.Repository.WorkingDirectory),
-            _ => false,
-        };
-
-    private static bool IsLocalRelative(string? path)
-        => !string.IsNullOrWhiteSpace(path)
-           && !path.Contains("://", StringComparison.Ordinal)
-           && !Path.IsPathRooted(path);
-
-    /// <summary>
-    /// Resolves the next durable table downstream of this flow in the lineage chain, for downstream-anchored
-    /// watermarking (incremental.watermarkFromDownstream). It walks the persisted lineage the sync already
-    /// computed: the flow-level dependencies name the flows that consume this one (they read an object it
-    /// writes/creates), and each of those flows' Writes/Creates edges name the durable tables they populate. The
-    /// flow's own target is excluded (a downstream flow writing back to it is not a "next" table). Anchoring is
-    /// applied only when exactly one such table resolves with a full three-part identity: an ambiguous chain (a
-    /// fan-out to several tables) or a partially-identified object is left to fall back to the flow's own target,
-    /// so the watermark is never anchored to a guessed table. Returns null when there is no unambiguous next table.
-    /// </summary>
-    private static async Task<RelationalObject?> ResolveDownstreamWatermarkTableAsync(
-        CatalogDbContext catalog, Guid repoId, Guid pipelineId, string ownSchema, string ownName, CancellationToken ct)
-    {
-        var downstreamPipelineIds = await catalog.FlowDependencies.AsNoTracking()
-            .Where(d => d.RepoId == repoId && d.FromPipelineId == pipelineId)
-            .Select(d => d.ToPipelineId)
-            .Distinct()
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (downstreamPipelineIds.Count == 0)
-        {
-            return null;
-        }
-
-        var writeKeys = await catalog.LineageEdges.AsNoTracking()
-            .Where(e => e.RepoId == repoId
-                && e.PipelineId != null && downstreamPipelineIds.Contains(e.PipelineId.Value)
-                && (e.Relation == "Writes" || e.Relation == "Creates"))
-            .Select(e => e.ObjectKey)
-            .Distinct()
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (writeKeys.Count == 0)
-        {
-            return null;
-        }
-
-        // Resolve the write targets to fully-identified table objects (a table, with a database and schema, so the
-        // engine can introspect and probe it). Views and partially-resolved objects are dropped here.
-        var candidates = await catalog.Objects.AsNoTracking()
-            .Where(o => writeKeys.Contains(o.Key)
-                && o.Kind == "Table"
-                && o.Database != null && o.Schema != null)
-            .Select(o => new { o.Database, o.Schema, o.Name })
-            .ToListAsync(ct).ConfigureAwait(false);
-
-        // Exclude the flow's own target (a downstream flow writing back to it is not a "next" table). Matched on
-        // schema + name only: a file flow's target carries no database part, and a table's schema-qualified name
-        // is unique enough within a repo's estate to identify "this is my own target".
-        var distinct = candidates
-            .Where(c => !(string.Equals(c.Schema, ownSchema, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(c.Name, ownName, StringComparison.OrdinalIgnoreCase)))
-            .GroupBy(c => (
-                c.Database!.ToLowerInvariant(),
-                c.Schema!.ToLowerInvariant(),
-                c.Name.ToLowerInvariant()))
-            .Select(g => g.First())
-            .ToList();
-        if (distinct.Count != 1)
-        {
-            return null;
-        }
-
-        var only = distinct[0];
-        return new RelationalObject { Database = only.Database!, Schema = only.Schema!, Name = only.Name };
-    }
-
-    /// <summary>
-    /// Resolves the landing-reset verdict for a chained landing (file) flow: may the engine truncate the flow's
-    /// landing target before this run's load? The verdict is one hop only, by design: the landing (bronze) table
-    /// is freed when the NEXT phase (silver) has its data, so the gate is that every flow DIRECTLY consuming this
-    /// flow (per the persisted lineage dependencies) has completed a successful run that started after this
-    /// flow's last successful run ended, proving everything the last load staged was visible to and consumed by
-    /// every reader. What any later phase (gold) holds never enters the verdict. Two additional conditions keep
-    /// the truncate honest: every consumer must read the engine's typed view <c>[schema].[v_&lt;table&gt;]</c>
-    /// (the chained landing contract; a consumer reading the base table, or through a hand-written object, may
-    /// depend on rows accumulating, so the reset is refused rather than guessed), and this flow must have a
-    /// prior successful run to anchor the comparison (a seeded table with no run history is never truncated on
-    /// faith). A run bounded to a window or filter (an operator backfill of a slice) is refused outright: the
-    /// whole staged dataset must reach the downstream merge, so a partial re-land never truncates first; a plain
-    /// forced full load keeps the normal gate and becomes a clean staging rebuild when authorized. Returns null
-    /// when the flow has no lineage consumers at all: a plain append flow that is nobody's staging area is left
-    /// alone without comment. Every blocked verdict carries the reason, so a landing table that keeps growing
-    /// has a loud, queryable explanation on each run.
-    /// </summary>
-    internal static async Task<LandingReset?> ResolveLandingResetAsync(
-        CatalogDbContext catalog, Guid repoId, Guid pipelineId, string targetSchema, string targetTable,
-        RunParameters parameters, CancellationToken ct)
-    {
-        var consumers = await catalog.FlowDependencies.AsNoTracking()
-            .Where(d => d.RepoId == repoId && d.FromPipelineId == pipelineId)
-            .Select(d => new { d.ToPipelineId, d.ToFlow })
-            .Distinct()
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (consumers.Count == 0)
-        {
-            return null;
-        }
-
-        // A window- or filter-bounded run (an operator backfilling a specific slice) deliberately re-lands only
-        // part of the source, and the whole staged dataset must reach the downstream merge: resetting first
-        // would leave the landing table holding just the slice, which a downstream full-refresh consumer could
-        // then rebuild from. Never reset a bounded run. A plain forced full load (--full, no window or filter)
-        // keeps the normal gate below: it re-lands everything the definition selects, so an authorized reset
-        // turns it into a clean staging rebuild instead of doubling the table.
-        if (parameters.BackfillFrom is not null || parameters.BackfillTo is not null
-            || !string.IsNullOrWhiteSpace(parameters.FilePattern) || !string.IsNullOrWhiteSpace(parameters.SourceFilter))
-        {
-            return new LandingReset
-            {
-                Authorized = false,
-                Reason = "this run is bounded to a window/filter (backfill); a partial re-land never resets the landing table",
-            };
-        }
-
-        // The chained landing contract: consumers read the engine-generated typed view over the landing table.
-        // Resolve which consumers actually read [targetSchema].[v_<targetTable>] from their persisted Reads
-        // edges; any consumer that depends on this flow through some other object gets the rows preserved.
-        var viewName = $"v_{targetTable}";
-        var consumerIds = consumers.Select(c => c.ToPipelineId).ToList();
-        var reads = await catalog.LineageEdges.AsNoTracking()
-            .Where(e => e.RepoId == repoId
-                && e.PipelineId != null && consumerIds.Contains(e.PipelineId.Value)
-                && e.Relation == "Reads")
-            .Select(e => new { PipelineId = e.PipelineId!.Value, e.ObjectKey })
-            .ToListAsync(ct).ConfigureAwait(false);
-        var readKeys = reads.Select(r => r.ObjectKey).Distinct().ToList();
-        var viewKeys = await catalog.Objects.AsNoTracking()
-            .Where(o => readKeys.Contains(o.Key)
-                && o.Kind == "View"
-                && o.Schema == targetSchema && o.Name == viewName)
-            .Select(o => o.Key)
-            .ToListAsync(ct).ConfigureAwait(false);
-        var viewKeySet = viewKeys.ToHashSet(StringComparer.Ordinal);
-        var viewReaders = reads.Where(r => viewKeySet.Contains(r.ObjectKey)).Select(r => r.PipelineId).ToHashSet();
-        var nonViewConsumer = consumers.FirstOrDefault(c => !viewReaders.Contains(c.ToPipelineId));
-        if (nonViewConsumer is not null)
-        {
-            return new LandingReset
-            {
-                Authorized = false,
-                Reason = $"consumer '{nonViewConsumer.ToFlow}' does not read the typed view [{targetSchema}].[{viewName}], "
-                    + "so its contract with this table is unknown and the staged rows are preserved",
-            };
-        }
-
-        // The consolidation anchor: this flow's last successful load. No prior success means nothing this flow
-        // loaded is proven delivered (a seeded or hand-filled table has no ledger entry to compare against).
-        var lastLoadEnd = await catalog.Runs.AsNoTracking()
-            .Where(r => r.PipelineId == pipelineId && r.Status == RunStatuses.Succeeded && r.EndUtc != null)
-            .MaxAsync(r => (DateTime?)r.EndUtc, ct).ConfigureAwait(false);
-        if (lastLoadEnd is null)
-        {
-            return new LandingReset
-            {
-                Authorized = false,
-                Reason = "this flow has no prior successful run, so nothing staged is proven consolidated",
-            };
-        }
-
-        // Delivery proof, per consumer: a successful run that STARTED after the last load ENDED saw every staged
-        // row (a run that started earlier may have read a partial table, so it proves nothing). A consumer that
-        // is disabled or failing blocks the reset indefinitely, loudly: growth is the correct failure mode when
-        // delivery cannot be proven, silent data loss is not.
-        foreach (var consumer in consumers)
-        {
-            var consumed = await catalog.Runs.AsNoTracking()
-                .AnyAsync(r => r.PipelineId == consumer.ToPipelineId
-                    && r.Status == RunStatuses.Succeeded
-                    && r.StartUtc != null && r.StartUtc >= lastLoadEnd, ct).ConfigureAwait(false);
-            if (!consumed)
-            {
-                return new LandingReset
-                {
-                    Authorized = false,
-                    Reason = $"consumer '{consumer.ToFlow}' has no successful run after this flow's last load at {lastLoadEnd:u}",
-                };
-            }
-        }
-
-        return new LandingReset
-        {
-            Authorized = true,
-            Reason = $"every consumer ({string.Join(", ", consumers.Select(c => c.ToFlow))}) completed a successful run "
-                + $"after this flow's last load at {lastLoadEnd:u}",
-        };
-    }
-
-    // Every outcome write below presents the claim fence (this node's name + the claim's attempt): if crash
-    // recovery has requeued the run in the meantime (this node was presumed dead), the write silently misses and
-    // the successor execution's outcome stands - a stale write must lose to the fence, never race it.
     private Task FailAsync(CatalogDbContext catalog, Guid runId, int attempt, string error, CancellationToken ct)
         => RunQueueStore.FailAsync(catalog, runId, error, _clock.GetUtcNow().UtcDateTime, _node, attempt, ct);
 
@@ -1314,14 +1045,8 @@ public sealed partial class RunWorker
     [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId}: could not stage flow version {ContentHash} into the local cache ({Error}); falling back to git materialization.")]
     private partial void LogSnapshotStageFailed(Guid runId, string contentHash, string error);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: substitution parameters applied: {Parameters}.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: run parameters applied: {Parameters}.")]
     private partial void LogParameters(Guid runId, string parameters);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: watermark anchored to downstream table {Table} (incremental.watermarkFromDownstream).")]
-    private partial void LogDownstreamWatermark(Guid runId, string table);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: landing reset {Verdict} (load.resetWhenConsolidated): {Reason}.")]
-    private partial void LogLandingReset(Guid runId, string verdict, string reason);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId} starting: flow '{FlowName}' in repo '{Repo}'.")]
     private partial void LogStarting(Guid runId, string flowName, string repo);
@@ -1332,7 +1057,7 @@ public sealed partial class RunWorker
     [LoggerMessage(Level = LogLevel.Warning, Message = "Run {RunId} failed: flow '{FlowName}': {Error}")]
     private partial void LogFailed(Guid runId, string flowName, string error);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: operator cancel observed; aborting the in-flight statement.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId}: operator cancel observed; aborting the in-flight work.")]
     private partial void LogCancelling(Guid runId);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Run {RunId} cancelled by operator; recorded cancelled.")]
@@ -1371,7 +1096,7 @@ public sealed partial class RunWorker
     [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId} succeeded ({Operation}).")]
     private partial void LogTaskSucceeded(Guid taskId, string operation);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId}: operator cancel observed; aborting the in-flight query.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId}: operator cancel observed; aborting the in-flight operation.")]
     private partial void LogTaskCancelling(Guid taskId);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Compute task {TaskId} cancelled by operator; recorded cancelled.")]

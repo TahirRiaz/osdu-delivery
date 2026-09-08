@@ -6,13 +6,13 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "13603088384307135391"
+      "templateHash": "2494025258731714384"
     }
   },
   "parameters": {
     "displayName": {
       "type": "string",
-      "defaultValue": "SQLFlow",
+      "defaultValue": "OSDU Delivery",
       "metadata": {
         "description": "Display name of the app registration as it appears in Entra and on the consent prompt."
       }
@@ -34,7 +34,18 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Object id of the Entra security group whose members may sign in. Its members are assigned the SqlFlow.User role. Empty leaves the app with assignment required but no members, so assign a group or users in the enterprise application before anyone can sign in."
+        "description": "Object id of the Entra security group whose members may sign in. Its members are assigned the SqlFlow.User role. Empty leaves the app with assignment required but no members, so assign a group or users in the enterprise application before anyone can sign in. Only reaches users in THIS app's home tenant; a foreign tenant assigns its own users itself once it has consented (see redeploy notes above)."
+      }
+    },
+    "signInAudience": {
+      "type": "string",
+      "defaultValue": "AzureADMyOrg",
+      "allowedValues": [
+        "AzureADMyOrg",
+        "AzureADMultipleOrgs"
+      ],
+      "metadata": {
+        "description": "AzureADMyOrg (default) restricts sign-in to this app's home tenant. AzureADMultipleOrgs additionally allows any tenant that has consented to the app; the control plane's own AllowedTenantIds is the actual gate on which of those tenants are trusted."
       }
     }
   },
@@ -56,7 +67,7 @@
       "properties": {
         "uniqueName": "[parameters('uniqueName')]",
         "displayName": "[parameters('displayName')]",
-        "signInAudience": "AzureADMyOrg",
+        "signInAudience": "[parameters('signInAudience')]",
         "spa": {
           "redirectUris": [
             "[parameters('redirectUri')]"
@@ -68,8 +79,8 @@
             "allowedMemberTypes": [
               "User"
             ],
-            "displayName": "SQLFlow User",
-            "description": "May sign in to SQLFlow. Assignment is required, so only members of this role reach the app.",
+            "displayName": "OSDU Delivery User",
+            "description": "May sign in to OSDU Delivery. Assignment is required, so only members of this role reach the app.",
             "value": "SqlFlow.User",
             "isEnabled": true
           }

@@ -5,16 +5,15 @@ using Microsoft.EntityFrameworkCore.Storage;
 namespace SqlFlow.Catalog;
 
 /// <summary>The outcome of one detection tick: whether a window was actually scanned (false when another replica
-/// holds a fresher watermark or the single watermark row was just bootstrapped) and how many new events of each
-/// family were recorded.</summary>
-public sealed record NotificationDetectionResult(bool Scanned, int RunEvents, int AssertionEvents);
+/// holds a fresher watermark or the single watermark row was just bootstrapped) and how many new events were recorded.</summary>
+public sealed record NotificationDetectionResult(bool Scanned, int RunEvents);
 
 /// <summary>One estate digest as a list reads it: identity, window, headline and counts, without the rendered
 /// bodies (kilobytes each) that only a reader opening the digest needs.</summary>
 public sealed record NotificationDigestSummary(
     Guid Id, string Origin, DateTime PeriodStartUtc, DateTime PeriodEndUtc, DateTime GeneratedUtc,
     Guid? GeneratedByUserId, string Subject, int EventCount, int FlowCount, int FailedCount, int CancelledCount,
-    int SkippedCount, int AssertionFailedCount, bool Truncated);
+    int SkippedCount, bool Truncated);
 
 /// <summary>
 /// Data access for the notification pipeline: event detection, subscription dispatch claims, and the delivery
@@ -57,7 +56,7 @@ public static class NotificationStore
     private const string DetectSql = """
         SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
         SET XACT_ABORT ON;
-        DECLARE @runEvents int = 0, @assertionEvents int = 0, @scanned bit = 0;
+        DECLARE @runEvents int = 0, @scanned bit = 0;
         BEGIN TRANSACTION;
         DECLARE @since datetime2(7);
         SELECT @since = [RunsWatermarkUtc] FROM [catalog].[NotificationWatermark] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = @watermarkId;
@@ -86,41 +85,19 @@ public static class NotificationStore
                   WHERE p.[Id] = r.[PipelineId] AND p.[Lifecycle] <> @lifecycleProduction)
               AND NOT EXISTS (
                   SELECT 1 FROM [catalog].[NotificationEvent] AS e
-                  WHERE e.[RunId] = r.[RunId] AND e.[Kind] <> @kindAssertionFailed);
+                  WHERE e.[RunId] = r.[RunId]);
             SET @runEvents = @@ROWCOUNT;
-
-            -- Assertions are log-only: a run whose assertions failed still reads succeeded, so it needs its own
-            -- event. Failed runs are excluded here (their run_failed event already carries the alert).
-            INSERT INTO [catalog].[NotificationEvent]
-                ([Kind], [RunId], [RepoId], [PipelineId], [GroupId], [FlowName], [FlowKind], [OccurredUtc], [DetectedUtc], [Error])
-            SELECT
-                @kindAssertionFailed, r.[RunId], r.[RepoId], r.[PipelineId], r.[GroupId], r.[FlowName], r.[FlowKind],
-                COALESCE(r.[EndUtc], r.[WrittenUtc]), @now,
-                LEFT((SELECT STRING_AGG(CAST(a.[Name] + N': ' + COALESCE(a.[Error], N'the assertion could not be evaluated') AS nvarchar(max)), N'; ')
-                      FROM [catalog].[RunAssertion] AS a
-                      WHERE a.[RunId] = r.[RunId] AND a.[Evaluated] = 0), 4000)
-            FROM [catalog].[Run] AS r
-            WHERE r.[Status] = @statusSucceeded
-              AND r.[WrittenUtc] > @low AND r.[WrittenUtc] <= @now
-              AND EXISTS (SELECT 1 FROM [catalog].[RunAssertion] AS a WHERE a.[RunId] = r.[RunId] AND a.[Evaluated] = 0)
-              AND NOT EXISTS (
-                  SELECT 1 FROM [catalog].[Pipeline] AS p
-                  WHERE p.[Id] = r.[PipelineId] AND p.[Lifecycle] <> @lifecycleProduction)
-              AND NOT EXISTS (
-                  SELECT 1 FROM [catalog].[NotificationEvent] AS e
-                  WHERE e.[RunId] = r.[RunId] AND e.[Kind] = @kindAssertionFailed);
-            SET @assertionEvents = @@ROWCOUNT;
 
             UPDATE [catalog].[NotificationWatermark] SET [RunsWatermarkUtc] = @now, [UpdatedUtc] = @now WHERE [Id] = @watermarkId;
         END
         COMMIT TRANSACTION;
-        SELECT @scanned AS Scanned, @runEvents AS RunEvents, @assertionEvents AS AssertionEvents;
+        SELECT @scanned AS Scanned, @runEvents AS RunEvents;
         """;
 
     /// <summary>
     /// One detection tick: scans the run history from a little before the watermark up to <paramref name="nowUtc"/>
-    /// and records a <see cref="CatalogNotificationEvent"/> for every non-success terminal run and every succeeded
-    /// run with failed assertions that is not already evented, then advances the mark. Atomic and serialized across
+    /// and records a <see cref="CatalogNotificationEvent"/> for every non-success terminal run that is not already
+    /// evented, then advances the mark. Atomic and serialized across
     /// replicas (see <see cref="DetectSql"/>); safe to call every tick regardless of subscriber count, so the event
     /// stream is always current when someone opts in.
     /// </summary>
@@ -153,11 +130,9 @@ public static class NotificationStore
                 AddParameter(command, "@statusFailed", RunStatuses.Failed);
                 AddParameter(command, "@statusCancelled", RunStatuses.Cancelled);
                 AddParameter(command, "@statusSkipped", RunStatuses.Skipped);
-                AddParameter(command, "@statusSucceeded", RunStatuses.Succeeded);
                 AddParameter(command, "@kindRunFailed", NotificationEventKinds.RunFailed);
                 AddParameter(command, "@kindRunCancelled", NotificationEventKinds.RunCancelled);
                 AddParameter(command, "@kindRunSkipped", NotificationEventKinds.RunSkipped);
-                AddParameter(command, "@kindAssertionFailed", NotificationEventKinds.AssertionFailed);
                 AddParameter(command, "@lifecycleProduction", PipelineLifecycles.Production);
 
                 await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -167,7 +142,7 @@ public static class NotificationStore
                 }
 
                 return new NotificationDetectionResult(
-                    reader.GetBoolean(0), reader.GetInt32(1), reader.GetInt32(2));
+                    reader.GetBoolean(0), reader.GetInt32(1));
             }
             finally
             {
@@ -604,8 +579,7 @@ public static class NotificationStore
             .Take(Math.Clamp(take, 1, 200))
             .Select(d => new NotificationDigestSummary(
                 d.Id, d.Origin, d.PeriodStartUtc, d.PeriodEndUtc, d.GeneratedUtc, d.GeneratedByUserId, d.Subject,
-                d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount, d.AssertionFailedCount,
-                d.Truncated))
+                d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount, d.Truncated))
             .ToListAsync(ct).ConfigureAwait(false);
     }
 

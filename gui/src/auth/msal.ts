@@ -21,7 +21,7 @@ async function getInstance(entra: EntraProviderInfo): Promise<PublicClientApplic
         redirectUri: window.location.origin,
       },
       cache: {
-        // Session-scoped, matching how the SQLFlow token itself is held.
+        // Session-scoped, matching how the OSDU Delivery token itself is held.
         cacheLocation: "sessionStorage",
       },
     });
@@ -44,7 +44,7 @@ export async function signInWithEntra(entra: EntraProviderInfo): Promise<string>
     prompt: "select_account",
   });
   if (!result.idToken) {
-    throw new Error("Entra sign-in completed without an ID token; cannot exchange it for a SQLFlow session.");
+    throw new Error("Entra sign-in completed without an ID token; cannot exchange it for a OSDU Delivery session.");
   }
 
   return result.idToken;

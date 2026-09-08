@@ -56,7 +56,7 @@ const STORAGE_KEY = "sqlflow.session";
 // The token lives in memory plus one web-storage backer, chosen at login time:
 //   - sessionStorage (default): an F5 keeps the session, but closing the tab ends it.
 //   - localStorage ("Keep me signed in on this device"): the session survives a browser restart, and rolls onto a
-//     fresh token whenever SQLFlow is opened, so the device stays signed in up to the server's absolute cap. This
+//     fresh token whenever OSDU Delivery is opened, so the device stays signed in up to the server's absolute cap. This
 //     is the more exposed posture (readable across restarts by any script on the origin), so it is opt-in per
 //     sign-in rather than the default.
 // The bootstrap secret / password never persists anywhere. Whichever backer is not in use is always cleared, so a
@@ -151,7 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Keep the session alive by rolling its token, rather than watching it die. One issued token stays short-lived
   // (so a leaked one is short-lived too) while the person behind it stays signed in for as long as they keep using
-  // SQLFlow, up to the server's absolute cap.
+  // OSDU Delivery, up to the server's absolute cap.
   useEffect(() => {
     if (!session) {
       return;
@@ -244,7 +244,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       later(Math.max(session.expiresAtMs - RENEW_LEAD_MS - Date.now(), RENEW_MIN_DELAY_MS));
     } else {
       // Rolling on load is what makes "keep me signed in on this device" hold overnight: a timer only fires while a
-      // tab is open, so the window has to reset when SQLFlow is opened, not just while it is being watched.
+      // tab is open, so the window has to reset when OSDU Delivery is opened, not just while it is being watched.
       void attempt();
     }
 

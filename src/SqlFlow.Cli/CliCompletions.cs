@@ -3,42 +3,31 @@ using System.Text;
 
 namespace SqlFlow.Cli;
 
-/// <summary>
-/// 'sqlflow completions bash|zsh|powershell': prints a completion script for the requested shell to stdout,
-/// for the operator to source or install (e.g. <c>source &lt;(sqlflow completions bash)</c>). One registry
-/// drives all three generators, so a new verb is added exactly once. Completion covers verbs, their
-/// subcommands, and the shared option set; document paths fall through to the shell's file completion.
-/// </summary>
+/// <summary>Shell completion scripts generated from one registry of verbs, subcommands and common options, so the
+/// three shells never drift from each other or from the verbs the CLI actually dispatches.</summary>
 internal static class CliCompletions
 {
-    /// <summary>Verb -> subcommands (empty when the verb takes a file/flag argument instead).</summary>
     private static readonly (string Verb, string[] Subcommands)[] Registry =
     [
-        ("validate", []), ("plan", []), ("run", []), ("infer", []), ("discover", []), ("paths", []), ("flatten", []),
-        ("catalog", ["databases", "schemas", "tables", "search", "columns", "scaffold", "scaffold-all"]),
-        ("detect-unique-key", []), ("healthcheck", []),
-        ("lineage", ["objects", "edges", "waves", "script"]),
+        ("validate", []), ("run", []),
         ("auth", []), ("db", ["migrate", "sync", "status"]), ("worker", []),
         ("runs", ["list", "show", "trace", "cancel", "local"]),
         ("groups", ["show", "cancel", "rerun"]),
         ("user", ["reset-password"]),
         ("health", []), ("login", []), ("logout", []), ("whoami", []), ("doctor", []),
         ("trigger", []), ("summary", []), ("nodes", []),
-        ("schedules", ["list", "show", "create", "pause", "resume", "delete"]),
+        ("schedules", ["list", "show", "create", "pause", "resume", "delete", "run"]),
         ("repos", ["list", "show", "register", "discover", "sync"]),
-        ("pipelines", ["list", "show", "columns", "files"]),
-        ("datasources", ["list", "test", "databases", "schemas", "objects", "search", "introspect", "detect-unique-key", "tasks", "task", "cancel"]),
+        ("pipelines", ["list", "show"]),
         ("search", []),
         ("completions", ["bash", "zsh", "powershell"]),
     ];
 
-    /// <summary>The options completion offers everywhere. Verb-specific flags stay in --help; completing this
-    /// shared core keeps the script small and never stale for the flags people type most.</summary>
     private static readonly string[] CommonOptions =
     [
         "--url", "--token", "--json", "--repo", "--flow", "--scope", "--batch", "--follow", "--preview",
         "--full", "--from", "--to", "--file-pattern", "--source-filter", "--page", "--page-size", "--status", "--kind",
-        "--source", "--object", "--ref", "--db", "--out", "--verbose", "--help",
+        "--db", "--verbose", "--help",
     ];
 
     public static int Print(string[] positional)

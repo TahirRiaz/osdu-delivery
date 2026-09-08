@@ -1,136 +1,90 @@
-# SQLFlow
+# OSDU Delivery
 
-[![CI](https://github.com/sqlflow/sqlflow/actions/workflows/ci.yml/badge.svg)](https://github.com/sqlflow/sqlflow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4.svg)](https://dotnet.microsoft.com/)
 
-**Metadata-driven, self-evolving incremental ETL for SQL Server - pipelines as YAML, no hand-written T-SQL.**
+**Metadata-driven delivery of subsurface records into an OSDU platform, with every record traceable.**
 
-SQLFlow reads your source, looks at the live target schema, and **generates the ETL on the fly** -
-the `CREATE`/`ALTER` to evolve the schema and the bulk load to move the data. You describe *what*
-you want in a small YAML file; SQLFlow figures out the SQL.
+OSDU Delivery publishes wells, wellbores, well logs, and the other OSDU record kinds from data drops (files
+landed in a lake or a folder) into an OSDU instance. A flow document says where the drop is and which mapping
+turns its rows into OSDU records; the platform schedules it, runs it on a compute node, and writes every
+delivered record, every attempt, and every operator action to a ledger. A record can always be traced,
+verified, re-delivered, or deleted from the GUI or the CLI.
 
-> This is the v3 rebuild: a clean, modern .NET 9 engine. A single flow file runs standalone with
-> no setup (`sqlflow plan` / `sqlflow run`, no control database required). The same repository of
-> flows can also be synced into a shadow catalog (`sqlflow db`, `sqlflow catalog sync`) to unlock
-> lineage (`sqlflow lineage`), scheduling, and a queued-run control plane with worker nodes
-> (`sqlflow worker`).
+It is built on the SQLFlow V3 platform: the control plane API, the SQL Server catalog, the durable run queue
+with autoscaling worker pools, git-synced flow repositories, the scheduler, notifications, identity, the CLI,
+and the React workbench GUI. The SQL Server ETL engines SQLFlow shipped with were removed; the delivery domain
+takes their place.
 
-## Quick start
+## Status
 
-```bash
-# 1. point at your SQL Server (secrets never live in the YAML)
-export SQLFLOW_DW="Server=localhost;Database=DW;Trusted_Connection=True;TrustServerCertificate=True"
-
-# 2. preview exactly what SQL it would run - changes nothing
-dotnet run --project src/SqlFlow.Cli -- plan samples/quickstart/orders.flow.yaml
-
-# 3. run it
-dotnet run --project src/SqlFlow.Cli -- run samples/quickstart/orders.flow.yaml
-```
-
-A pipeline is a YAML file:
-
-```yaml
-name: orders
-source:
-  type: csv
-  location: ./orders.csv
-target:
-  connection: ${env:SQLFLOW_DW}   # a reference, never a secret
-  schema: dbo
-  table: Orders
-schema:
-  evolve: widen                   # create | widen | strict
-load:
-  mode: append                    # append | truncate-load
-```
-
-## Why SQLFlow
-
-- **It writes the SQL, you don't.** Schema-sync DDL and bulk load are generated from your metadata
-  and the live schema - not maintained by hand.
-- **Self-evolving schema.** New columns in the source are added to the target automatically
-  (`widen`), or rejected (`strict`), your choice.
-- **`plan` before you `run`.** See the exact generated T-SQL before anything touches the database.
-- **Config as code.** Pipelines are YAML in git - diffable, reviewable, versioned.
-- **SQL Server native.** Built directly on `Microsoft.Data.SqlClient` + `SqlBulkCopy`.
-
-## How it works
-
-```text
-YAML ──▶ [ model ] ──▶ infer source schema ──▶ introspect target
-                                                      │
-                                                      ▼
-                                  diff ──▶ generate DDL ──▶ execute ──▶ bulk load
-```
-
-A standalone flow is stateless between runs: the target table (via `incremental`) is the only
-state, so a re-run reasons from the live schema and watermark rather than from stored history. A
-flow synced into the shadow catalog additionally gets run history, lineage, and scheduling backed
-by the catalog database. See [docs/architecture.md](docs/architecture.md).
+The platform strip is complete: the solution builds warning-free, both test suites pass, and the GUI builds.
+The delivery domain lands next: the `delivery` flow kind, the mapping renderer, the OSDU protocols, the ledger
+tables, and the record pages in the GUI. Until it does, the platform registers no production flow kind; the
+test suites parse with a test-only kind.
 
 ## Repository layout
 
 | Project | Responsibility |
 | --- | --- |
-| `src/SqlFlow.Core` | Domain model, abstractions, the engine |
-| `src/SqlFlow.Yaml` | YAML to model mapping and validation, every flow document kind |
-| `src/SqlFlow.Execution` | Document loading and execution shared across flow kinds |
-| `src/SqlFlow.SqlServer` | SQL Server introspection, DDL generation, bulk load, type mapping |
-| `src/SqlFlow.Sources` | File source readers (CSV, XLS, JSON, XML, Parquet) and type inference |
-| `src/SqlFlow.DuckDb` | DuckDB-backed source reader (Parquet, CSV, JSON, Delta) |
-| `src/SqlFlow.Providers` | Foreign database catalog discovery (MySQL, PostgreSQL, Oracle) |
-| `src/SqlFlow.Catalog` | The shadow catalog: pipelines, schedules, run history, sync |
-| `src/SqlFlow.Lineage` | Lineage graph computation across the flow estate |
-| `src/SqlFlow.ControlPlane` | Control-plane API: run queue, catalog, and schedule endpoints |
-| `src/SqlFlow.Orchestration` | Batch flow orchestration: dependency waves, parallel execution |
-| `src/SqlFlow.Node` | Worker node: polls the control plane and executes queued runs |
-| `src/SqlFlow.Azure` | Azure auth, ADF/Automation invoke, service principal resolution |
-| `src/SqlFlow.HealthCheck` | ML anomaly-detection engine for health-check flows |
-| `src/SqlFlow.SourceControl` | SMO database scripting to git for source-control flows |
-| `src/SqlFlow.Cli` | The `sqlflow` command-line tool |
-| `tests/SqlFlow.Core.Tests` | Unit and integration tests |
+| `src/SqlFlow.Core` | The run model, run artifacts and events, secret references and hygiene, file stores, flow identity |
+| `src/SqlFlow.Yaml` | The flow document envelope (schedule, mode, lifecycle) and the `flowType` kind registry |
+| `src/SqlFlow.Execution` | Document loading and the execution registry a flow kind plugs into |
+| `src/SqlFlow.Catalog` | The EF Core catalog: repos, pipelines, the run queue, schedules, nodes, users, notifications |
+| `src/SqlFlow.SourceControl` | Git materialization, history, and proposals (pull requests) |
+| `src/SqlFlow.Azure` | Azure credentials, Key Vault references, blob storage |
+| `src/SqlFlow.Node` | The compute node: claims queued runs, executes them, streams the trace |
+| `src/SqlFlow.ControlPlane` | The API and coordination host: auth, catalog, runs, schedules, sync, notifications |
+| `src/SqlFlow.Cli` | The `sqlflow` command line: validate, run, worker, db, and the remote verbs |
+| `gui/` | The React + TypeScript workbench over the API |
+| `tests/` | The engine and control plane suites |
 
-## Build & test
+The `SqlFlow.*` project, namespace, binary, image, and environment-variable names are kept from the platform on
+purpose; the product name is OSDU Delivery.
+
+## Build and test
 
 ```bash
-dotnet build
-dotnet test
+dotnet build SqlFlow.sln
+dotnet test SqlFlow.sln
+cd gui && npm ci && npm run build
 ```
 
-Requires the [.NET 9 SDK](https://dotnet.microsoft.com/download).
+Requires the [.NET 9 SDK](https://dotnet.microsoft.com/download) and Node.js. The DB-backed suites need
+`SQLFLOW_TEST_DB` pointing at a disposable SQL Server database (the git-ignored `.sqlflow/env` file is the usual
+place); they skip when it is unset or unreachable, and the CLI binary suites skip until the CLI has been built.
 
-### Integration tests against a real SQL Server
-
-Most tests are pure unit tests with no dependencies. The tests under `tests/SqlFlow.Core.Tests/Integration`
-exercise the real SQL Server path (table create, bulk load, schema evolution, index disable/rebuild,
-desired indexes) against a live **sink database**. They read the connection from the
-`SQLFlowSinkConStr` environment variable and **skip automatically when it is not set or not reachable**,
-so the default `dotnet test` run stays self-contained.
-
-To run them, point `SQLFlowSinkConStr` at a throwaway database you have `db_owner` on:
+## Running locally
 
 ```bash
-# the value is a normal connection string; use a database you don't mind tables being created/dropped in
-export SQLFlowSinkConStr="Server=localhost,1433;Database=TestDB;User ID=...;Password=...;TrustServerCertificate=True"
-dotnet test --filter Category=Integration
+# the control plane (API + scheduler + managed git sync), against a catalog database it migrates on start
+SQLFLOW_CATALOG_DB="Server=localhost;Database=OsduDelivery;Trusted_Connection=True;TrustServerCertificate=True" \
+ControlPlane__Jwt__SigningKey=<32+ byte secret> \
+ControlPlane__Jwt__BootstrapSecret=<32+ byte secret> \
+ControlPlane__Cors__AllowedOrigins__0=http://localhost:5173 \
+dotnet run --project src/SqlFlow.ControlPlane
+
+# a compute node draining the queue
+dotnet run --project src/SqlFlow.Cli -- worker --db "$SQLFLOW_CATALOG_DB"
+
+# the GUI
+cd gui && npm run dev
 ```
 
-Each integration test creates uniquely named tables and drops them before and after itself, so the
-sink starts fresh every run. The connection must use a reachable endpoint: SQL Server's TCP/IP protocol
-has to be enabled (SQL Server Configuration Manager) and the port in the connection string must match
-the port the instance listens on.
+`dev.bat` wires the same thing up on Windows. See [gui/README.md](gui/README.md) for the GUI and
+[deploy/README.md](deploy/README.md) for containers, Azure Container Apps, and Kubernetes.
 
-## Reference documentation
+## Documentation
 
-[docs/reference/](docs/reference/) has the full generated reference corpus: every CLI command, every `.flow.yaml` section and source type, cross-cutting concepts, and task guides, each fact traced to its source file and line. [docs/reference/flow/keys.json](docs/reference/flow/keys.json) is a machine-readable census of every YAML attribute (type, default, allowed values, validation), and [docs/reference/manifest.json](docs/reference/manifest.json) indexes every page. See [docs/reference/README.md](docs/reference/README.md) for how these are meant to be consumed.
+- [docs/architecture.md](docs/architecture.md): the platform and the delivery domain.
+- [docs/environment-variables.md](docs/environment-variables.md): every environment variable and secret reference.
+- [docs/reference/](docs/reference/): the reference corpus (CLI commands, concepts, guides).
+- [CLAUDE.MD](CLAUDE.MD): the engineering rules the codebase is held to.
 
 ## Contributing
 
-Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md) and our
-[Code of Conduct](CODE_OF_CONDUCT.md).
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). OSDU Delivery is a fork of SQLFlow V3, also MIT.

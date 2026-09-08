@@ -69,7 +69,7 @@ export function ScheduleDefinitionSheet({ schedule, onClose }: { schedule: Sched
               </div>
 
               {data.yaml !== null ? (
-                <CodeView value={data.yaml} language="yaml" height={560} lsp data-testid="schedule-definition-yaml" />
+                <CodeView value={data.yaml} language="yaml" height={560} data-testid="schedule-definition-yaml" />
               ) : (
                 <EmptyState
                   title="No YAML behind this schedule"

@@ -2,21 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { runApi } from "../../api/endpoints";
 import type { RunTraceEntry } from "../../api/types";
 
-/** Orders live entries exactly like the paged endpoint: timestamp, then per-stream ordinal, kind, id. ISO-8601
- * UTC strings compare correctly as strings, and entries without a timestamp (legacy statements) sort first. */
+/** Orders live entries exactly like the paged endpoint: timestamp, then ordinal, then id. ISO-8601 UTC strings
+ * compare correctly as strings. */
 function compareEntries(a: RunTraceEntry, b: RunTraceEntry): number {
-  const ta = a.timestampUtc ?? "";
-  const tb = b.timestampUtc ?? "";
-  if (ta !== tb) {
-    return ta < tb ? -1 : 1;
+  if (a.timestampUtc !== b.timestampUtc) {
+    return a.timestampUtc < b.timestampUtc ? -1 : 1;
   }
 
   if (a.ordinal !== b.ordinal) {
     return a.ordinal - b.ordinal;
-  }
-
-  if (a.kind !== b.kind) {
-    return a.kind < b.kind ? -1 : 1;
   }
 
   return a.id - b.id;
@@ -31,8 +25,8 @@ export interface LiveRunTrace {
 
 /**
  * Subscribes to a run's live trace stream while `live` is true: entries accumulate in timeline order as the
- * executing node persists them, and a dropped connection reconnects after two seconds resuming from per-stream
- * id cursors (no replay, no gaps). The server's tail is an append-only log keyed by a stable id, so every entry
+ * executing node persists them, and a dropped connection reconnects after two seconds resuming from the id
+ * cursor (no replay, no gaps). The server's tail is an append-only log keyed by a stable id, so every entry
  * arrives exactly once and there is no client-side de-duplication; the entries are only sorted for a stable
  * timeline. When the server sends the terminal `end` frame, `onEnded` fires exactly once so the page can refetch
  * the authoritative at-rest timeline. The subscription closes when `live` turns false or the component unmounts.
@@ -51,7 +45,7 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
 
     let disposed = false;
     const controller = new AbortController();
-    const cursors = { afterEventId: 0, afterStatementId: 0 };
+    const cursors = { afterEventId: 0 };
     setEntries([]);
 
     const run = async () => {
@@ -61,14 +55,9 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
           await runApi.streamTrace(runId, cursors, (frame) => {
             if (frame.event === "entry") {
               const entry = JSON.parse(frame.data) as RunTraceEntry;
-              // The tail never re-sends a row and the cursors resume past what we hold, so append unconditionally;
-              // the sort only keeps the two interleaved streams in timeline order.
-              if (entry.kind === "event") {
-                cursors.afterEventId = Math.max(cursors.afterEventId, entry.id);
-              } else {
-                cursors.afterStatementId = Math.max(cursors.afterStatementId, entry.id);
-              }
-
+              // The tail never re-sends a row and the cursor resumes past what we hold, so append unconditionally;
+              // the sort only keeps the timeline stable.
+              cursors.afterEventId = Math.max(cursors.afterEventId, entry.id);
               setEntries((previous) => [...previous, entry].sort(compareEntries));
             } else if (frame.event === "end") {
               ended = true;
@@ -90,7 +79,7 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
         }
 
         // The server closed without an end frame (a control plane restart, a proxy timeout): reconnect from
-        // the cursors so nothing replays and nothing is lost.
+        // the cursor so nothing replays and nothing is lost.
         setConnected(false);
         await new Promise<void>((resolve) => {
           window.setTimeout(resolve, 2000);

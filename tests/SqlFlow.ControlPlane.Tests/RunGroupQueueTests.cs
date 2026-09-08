@@ -153,7 +153,7 @@ public sealed class RunGroupQueueTests
     }
 
     [SkippableFact]
-    public async Task Fail_SkipsDependents_ButLeavesIndependentBranchesRunnable()
+    public async Task Fail_SkipsEveryLaterWave_OfTheGroup()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -163,8 +163,7 @@ public sealed class RunGroupQueueTests
         {
             await using var db = CatalogDatabase.Create(cs);
             string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
-            // B depends on A (wave 1 behind wave 0); C is an independent wave-1 flow with no dependency on A.
-            await SeedDependencyAsync(db, repoId, A, B);
+            // B and C sit in wave 1, behind A in wave 0.
 
             var members = new List<RunScopeMember>
             {
@@ -178,12 +177,12 @@ public sealed class RunGroupQueueTests
 
             Assert.Equal(runA, await ClaimId(db, Node, [], DateTime.UtcNow));
 
-            // A fails: its dependent B is skipped; the independent C stays queued and is now claimable.
+            // A fails: every member queued behind it in a later wave is skipped, and nothing is left to claim.
             await RunQueueStore.FailAsync(db, runA, "boom", DateTime.UtcNow);
             Assert.Equal(RunStatuses.Failed, (await Reload(db, runA)).Status);
             Assert.Equal(RunStatuses.Skipped, (await Reload(db, runB)).Status);
-            Assert.Equal(RunStatuses.Queued, (await Reload(db, runC)).Status);
-            Assert.Equal(runC, await ClaimId(db, Node, [], DateTime.UtcNow));
+            Assert.Equal(RunStatuses.Skipped, (await Reload(db, runC)).Status);
+            Assert.Null(await ClaimId(db, Node, [], DateTime.UtcNow));
         }
         finally
         {
@@ -218,34 +217,6 @@ public sealed class RunGroupQueueTests
 
             var unknown = await RunQueueStore.CancelGroupAsync(db, Guid.NewGuid(), DateTime.UtcNow);
             Assert.False(unknown.Found);
-        }
-        finally
-        {
-            await Cleanup(cs, repoId);
-        }
-    }
-
-    [SkippableFact]
-    public async Task Expand_Node_ReturnsAnchorAndTransitiveDescendants()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
-        var (repoId, suffix) = NewRepo();
-
-        try
-        {
-            await using var db = CatalogDatabase.Create(cs);
-            string A = $"a_{suffix}", B = $"b_{suffix}", C = $"c_{suffix}";
-            await SeedPipelineAsync(db, repoId, A, wave: 0, batch: $"bt_{suffix}");
-            await SeedPipelineAsync(db, repoId, B, wave: 1, batch: $"bt_{suffix}");
-            await SeedPipelineAsync(db, repoId, C, wave: 1, batch: $"bt_{suffix}");
-            await SeedDependencyAsync(db, repoId, A, B);
-
-            var node = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Node);
-            Assert.Equal(new[] { A, B }, node.Members.Select(m => m.FlowName).OrderBy(x => x).ToArray());
-
-            var flow = await RunScopeExpander.ExpandAsync(db, repoId, A, RunScope.Flow);
-            Assert.Equal(new[] { A }, flow.Members.Select(m => m.FlowName).ToArray());
         }
         finally
         {
@@ -363,20 +334,6 @@ public sealed class RunGroupQueueTests
         await db.SaveChangesAsync();
     }
 
-    private static async Task SeedDependencyAsync(CatalogDbContext db, Guid repoId, string from, string to)
-    {
-        db.FlowDependencies.Add(new CatalogFlowDependency
-        {
-            RepoId = repoId,
-            FromFlow = from,
-            ToFlow = to,
-            FromPipelineId = CatalogIdentity.Pipeline(repoId, from),
-            ToPipelineId = CatalogIdentity.Pipeline(repoId, to),
-            ViaObjects = string.Empty,
-        });
-        await db.SaveChangesAsync();
-    }
-
     private static async Task CompleteSuccess(
         CatalogDbContext db, Guid runId, Guid repoId, string flowName, string dir)
     {
@@ -416,11 +373,9 @@ public sealed class RunGroupQueueTests
     {
         await using (var db = CatalogDatabase.Create(cs))
         {
-            await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunGroups.Where(g => g.RepoId == repoId).ExecuteDeleteAsync();
-            await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
             await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
         }
 

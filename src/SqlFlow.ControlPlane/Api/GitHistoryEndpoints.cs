@@ -1,5 +1,4 @@
-﻿using System.Text.Json;
-using LibGit2Sharp;
+﻿using LibGit2Sharp;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
@@ -12,27 +11,13 @@ using SqlFlow.Node;
 namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>
-/// The change-history read surface, over the two things this estate versions and the two questions people
-/// actually ask of them:
-///
-/// <list type="bullet">
-/// <item><b>Flow definitions</b> (<c>/flow-history</c>): how a pipeline's YAML has been edited over time, from the
-/// git history of the repo the estate syncs. "Who changed this flow's merge keys, and when."</item>
-/// <item><b>Managed database schemas</b> (<c>/schema-changes</c>, mapped in CatalogEndpoints, plus the DDL diff
-/// and the window comparison here): which database objects a source-control snapshot found added, changed, or
-/// dropped, what one snapshot's patch was, and what an object's whole script looked like before and after a
-/// window. "When did this column appear on this table, and how does it read now against then."</item>
-/// </list>
-///
-/// They are deliberately separate surfaces because they answer different questions about different artifacts: one
-/// is about the ETL code, the other about the databases it runs against. A caller that conflates them gets a
-/// confidently wrong answer, so neither endpoint accepts the other's identifiers.
+/// The change-history read surface (<c>/flow-history</c>): how a pipeline's YAML has been edited over time, from
+/// the git history of the repo the estate syncs. "Who changed this flow's mapping, and when."
 ///
 /// Credentials never leave the control plane. A caller names a repo or a flow; the credential reference stored
 /// against it is resolved here through the same <see cref="GitMaterializer.ResolveCredentialsAsync"/> path the
-/// managed sync uses, so no client (the GUI, the MCP server, a script) ever holds a git token. Only repositories
-/// the estate already manages are reachable: a registered repo source, or the repository an scm flow declares.
-/// An arbitrary remote URL is not an addressable target.
+/// managed sync uses, so no client (the GUI, a script) ever holds a git token. Only repositories the estate
+/// already manages are reachable: a registered repo source. An arbitrary remote URL is not an addressable target.
 /// </summary>
 public static class GitHistoryEndpoints
 {
@@ -52,11 +37,6 @@ public static class GitHistoryEndpoints
     /// a generated snapshot of a large table can run to megabytes and nothing useful reads it as one blob.</summary>
     private const int MaxPatchChars = 200_000;
 
-    /// <summary>The largest object script returned inline, per side of a comparison. A scripted table or module is
-    /// small, but a data snapshot of a reference table is not, and nothing useful reads megabytes of INSERTs in a
-    /// diff pane; an oversized side is clipped and reported clipped rather than silently shortened.</summary>
-    private const int MaxObjectChars = 200_000;
-
     public static RouteGroupBuilder MapGitHistoryEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -65,10 +45,6 @@ public static class GitHistoryEndpoints
         flows.MapGet("/commits", ListFlowCommitsAsync).WithName("ListFlowDefinitionCommits");
         flows.MapGet("/flows/{pipelineId:guid}", GetFlowFileHistoryAsync).WithName("GetFlowDefinitionHistory");
         flows.MapGet("/diff", GetFlowDiffAsync).WithName("GetFlowDefinitionDiff");
-
-        var schema = group.MapGroup("/schema-changes").WithTags("SchemaChanges");
-        schema.MapGet("/ddl", GetSchemaObjectDdlAsync).WithName("GetSchemaObjectDdl");
-        schema.MapGet("/{id:long}/compare", CompareSchemaObjectAsync).WithName("CompareSchemaObject");
 
         return group;
     }
@@ -147,152 +123,6 @@ public static class GitHistoryEndpoints
             sha, path, ct).ConfigureAwait(false);
     }
 
-    // ---- Managed database schemas (the snapshot repository) ------------------------------------------------
-
-    /// <summary>
-    /// The DDL a source-control snapshot recorded for one database object at one commit: the actual
-    /// <c>CREATE TABLE</c> / <c>CREATE VIEW</c> text that changed, as a patch. The commit and path come from a
-    /// schema-change row, so this is the drill-down behind "this object changed", never a way to browse a
-    /// database.
-    /// </summary>
-    private static async Task<Results<Ok<GitDiffDto>, ProblemHttpResult>> GetSchemaObjectDdlAsync(
-        CatalogDbContext db, ISecretResolver secrets, Guid pipelineId, string sha, string path, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(sha) || string.IsNullOrWhiteSpace(path))
-        {
-            return BadRequest(
-                "Missing commit or path",
-                "Pass the snapshot's commitSha and the object's repository path; both come from a /schema-changes row.");
-        }
-
-        return await WithSnapshotRepositoryAsync<GitDiffDto>(
-            db,
-            pipelineId,
-            repository => ReadDiffAsync(
-                secrets, repository.Remote, repository.Branch, repository.Secret, repository.Username, sha, path, ct),
-            ct).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// One database object's whole script at the two ends of a window: what the snapshot repository held when the
-    /// window opened, against what it holds now. This is the "what actually changed" behind a schema-change row,
-    /// as the two texts rather than a replay of every snapshot between them, so a table four snapshots touched
-    /// still reads as one before and one after.
-    ///
-    /// The row's id carries the object's identity, so the caller names no path: the repository layout is derived
-    /// here from the same convention the snapshot writer emits, and a client cannot address a file the schema
-    /// history does not know about.
-    /// </summary>
-    private static async Task<Results<Ok<SchemaObjectCompareDto>, ProblemHttpResult>> CompareSchemaObjectAsync(
-        long id, CatalogDbContext db, ISecretResolver secrets, DateTime? since, CancellationToken ct)
-    {
-        var change = await db.SchemaChanges.AsNoTracking()
-            .Where(c => c.Id == id)
-            .Select(c => new { c.PipelineId, c.Database, c.Category, c.Schema, c.Name })
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (change is null)
-        {
-            return NotFound("schema change", id);
-        }
-
-        if (change.PipelineId is not { } pipelineId)
-        {
-            return BadRequest(
-                "No snapshot flow",
-                "This change was recorded before its snapshot flow reached the catalog, so the repository it was committed to cannot be resolved. A later snapshot of the same database records one that can.");
-        }
-
-        var path = CatalogProjection.SnapshotPath(change.Database, change.Category, change.Schema, change.Name);
-        return await WithSnapshotRepositoryAsync<SchemaObjectCompareDto>(
-            db,
-            pipelineId,
-            repository => ReadCompareAsync(secrets, repository, path, since, ct),
-            ct).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Resolves the snapshot repository an scm flow commits to and hands its coordinates to <paramref name="read"/>.
-    /// Both schema drill-downs (one snapshot's patch, and the window comparison) come through here, so what makes a
-    /// pipeline readable (it exists, it is an scm flow, and it records a remote) is stated once and answered the
-    /// same way for both.
-    /// </summary>
-    /// <typeparam name="T">The DTO the caller's read returns.</typeparam>
-    private static async Task<Results<Ok<T>, ProblemHttpResult>> WithSnapshotRepositoryAsync<T>(
-        CatalogDbContext db,
-        Guid pipelineId,
-        Func<(string Remote, string Branch, string? Username, string? Secret), Task<Results<Ok<T>, ProblemHttpResult>>> read,
-        CancellationToken ct)
-    {
-        var pipeline = await db.Pipelines.AsNoTracking()
-            .Where(p => p.Id == pipelineId)
-            .Select(p => new { p.Kind, p.Name, p.DefinitionJson })
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (pipeline is null)
-        {
-            return NotFound("pipeline", pipelineId);
-        }
-
-        if (!string.Equals(pipeline.Kind, "scm", StringComparison.OrdinalIgnoreCase))
-        {
-            return BadRequest(
-                "Not a snapshot flow",
-                $"Flow '{pipeline.Name}' is a '{pipeline.Kind}' flow. Object DDL lives in the repository a source-control (scm) flow writes; use /flow-history/diff for a pipeline's own YAML.");
-        }
-
-        if (ReadSnapshotRepository(pipeline.DefinitionJson) is not { } repository)
-        {
-            return BadRequest(
-                "No remote recorded",
-                $"Flow '{pipeline.Name}' declares no repository remote in the catalog, so its snapshots are local to the node that ran them and cannot be read back here.");
-        }
-
-        return await read(repository).ConfigureAwait(false);
-    }
-
-    /// <summary>Pulls the repository coordinates out of an scm flow's stored definition. The secret is a
-    /// <c>${...}</c> reference (the loader rejects literals), so what is stored and resolved here is a pointer,
-    /// never a credential.</summary>
-    internal static (string Remote, string Branch, string? Username, string? Secret)? ReadSnapshotRepository(string? definitionJson)
-    {
-        if (string.IsNullOrWhiteSpace(definitionJson))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(definitionJson);
-            if (!document.RootElement.TryGetProperty("flow", out var flow)
-                || !flow.TryGetProperty("repository", out var repository)
-                || repository.TryGetProperty("remote", out var remote) is false
-                || remote.ValueKind != JsonValueKind.String)
-            {
-                return null;
-            }
-
-            var url = remote.GetString();
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return null;
-            }
-
-            return (
-                url,
-                Str(repository, "branch") ?? "main",
-                Str(repository, "username"),
-                Str(repository, "secret"));
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-
-        static string? Str(JsonElement element, string name)
-            => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-                ? value.GetString()
-                : null;
-    }
-
     // ---- The shared git read path --------------------------------------------------------------------------
 
     /// <summary>Resolves which registered git source backs a repo. With no repoId, the estate's single source is
@@ -368,117 +198,7 @@ public static class GitHistoryEndpoints
             return BadRequest("Diff unavailable", SecretHygiene.RedactedMessage(ex));
         }
     }
-
-    private static async Task<Results<Ok<SchemaObjectCompareDto>, ProblemHttpResult>> ReadCompareAsync(
-        ISecretResolver secrets, (string Remote, string Branch, string? Username, string? Secret) repository,
-        string path, DateTime? since, CancellationToken ct)
-    {
-        try
-        {
-            var credentials = await GitMaterializer
-                .ResolveCredentialsAsync(secrets, repository.Secret, repository.Username, ct).ConfigureAwait(false);
-
-            var comparison = await Task.Run(
-                () =>
-                {
-                    var workingDir = new GitMaterializer()
-                        .EnsureHistoryClone(repository.Remote, repository.Branch, credentials, HistoryFreshness, ct);
-                    using var repo = new Repository(workingDir);
-                    return Compare(repo, path, AsUtc(since));
-                },
-                ct).ConfigureAwait(false);
-
-            return comparison is null
-                ? BadRequest(
-                    "No snapshot history",
-                    $"Branch '{repository.Branch}' of the snapshot repository carries no commits, so there is nothing to compare '{path}' against.")
-                : TypedResults.Ok(comparison);
-        }
-        catch (Exception ex) when (ex is SqlFlowNodeException or SqlFlowException or LibGit2SharpException)
-        {
-            return BadRequest("Comparison unavailable", SecretHygiene.RedactedMessage(ex));
-        }
-    }
-
-    /// <summary>
-    /// One object's script at the two ends of a window. The "after" side is the branch tip, the state the last
-    /// snapshot left; the "before" side is the newest commit at or before <paramref name="since"/>, the state the
-    /// window opened on. With no <paramref name="since"/> (an all-time window) there is no earlier side at all and
-    /// the whole script reads as added, which is exactly what "since this estate began snapshotting" means.
-    ///
-    /// The base is found by walking commits newest-first rather than by filtering the whole history by date: the
-    /// first commit old enough IS the answer, so the walk stops on it, bounded by <see cref="MaxScannedCommits"/>
-    /// so one comparison can never turn into a full history read. Returns null when the branch carries no commits,
-    /// which leaves nothing to compare rather than an empty answer that would read as "nothing changed".
-    /// </summary>
-    internal static SchemaObjectCompareDto? Compare(Repository repo, string path, DateTime? since)
-    {
-        if (repo.Head.Tip is not { } head)
-        {
-            return null;
-        }
-
-        var normalized = path.Replace('\\', '/').TrimStart('/');
-        var baseCommit = since is { } from ? NewestAtOrBefore(repo, from) : null;
-        var (beforeText, beforeTruncated) = ReadObject(baseCommit?.Tree, normalized);
-        var (afterText, afterTruncated) = ReadObject(head.Tree, normalized);
-        var patch = repo.Diff.Compare<Patch>(
-            baseCommit?.Tree, head.Tree, [normalized], new CompareOptions { ContextLines = 3 });
-
-        return new SchemaObjectCompareDto(
-            normalized,
-            baseCommit is null ? null : Revision(baseCommit),
-            Revision(head),
-            beforeText,
-            afterText,
-            patch.LinesAdded,
-            patch.LinesDeleted,
-            beforeTruncated || afterTruncated);
-    }
-
-    /// <summary>The newest commit no later than an instant: the repository's state as the window opened. Null when
-    /// every commit in reach is newer, which means the history itself begins inside the window.</summary>
-    private static Commit? NewestAtOrBefore(Repository repo, DateTime instantUtc)
-    {
-        var scanned = 0;
-        foreach (var commit in repo.Commits)
-        {
-            if (++scanned > MaxScannedCommits)
-            {
-                return null;
-            }
-
-            if (commit.Author.When.UtcDateTime <= instantUtc)
-            {
-                return commit;
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>One object's script at one revision, clipped at the inline limit. A null text (rather than an
-    /// empty one) says the file was not in that tree at all, which is how an object added or dropped inside the
-    /// window is told apart from one whose script happens to be empty.</summary>
-    private static (string? Text, bool Truncated) ReadObject(Tree? tree, string path)
-    {
-        if (tree?[path]?.Target is not Blob blob)
-        {
-            return (null, false);
-        }
-
-        var text = blob.GetContentText();
-        return text.Length > MaxObjectChars ? (text[..MaxObjectChars], true) : (text, false);
-    }
-
-    private static GitRevisionDto Revision(Commit commit)
-        => new(
-            commit.Sha,
-            commit.Sha[..Math.Min(8, commit.Sha.Length)],
-            commit.Author.Name,
-            commit.Author.When.UtcDateTime,
-            commit.MessageShort.Trim());
-
+
     /// <summary>A query-bound instant as UTC. Minimal-API binding parses a trailing 'Z' into a local-kind
     /// DateTime, so comparing it straight against a commit's UTC timestamp would move the window boundary by the
     /// host's offset; an unspecified kind is read as local time, the usual reading of a bare date.</summary>

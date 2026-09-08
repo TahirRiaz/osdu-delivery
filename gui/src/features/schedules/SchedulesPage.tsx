@@ -80,6 +80,11 @@ function instantDetail(utc: string): string {
   return `${format(date, "MMM d, HH:mm:ss")} · ${formatDistanceToNow(date, { addSuffix: true })} · ${iso}`;
 }
 
+/** The schedules a chained link waits for, as one label, or null for a clock-driven schedule. */
+function chainedAfter(schedule: Schedule): string | null {
+  return schedule.afterSchedules && schedule.afterSchedules.length > 0 ? schedule.afterSchedules.join(", ") : null;
+}
+
 /**
  * When a schedule runs, in one cell. The cadence reads in words; the exact expression, the zone it is
  * evaluated in, and whether missed occurrences are backfilled live in the hover, because they answer a
@@ -90,19 +95,19 @@ function instantDetail(utc: string): string {
 function TriggerCell({ schedule }: { schedule: Schedule }) {
   // A chained link has no cadence by design. Naming what fires it is the whole answer to "why does this never
   // run on its own"; a bare dash reads as a broken schedule.
-  if (schedule.cron === null && schedule.intervalSeconds === null && schedule.afterSchedule) {
+  if (schedule.cron === null && schedule.intervalSeconds === null && chainedAfter(schedule)) {
     return (
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex items-center gap-1">
             <Link2 className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
             <span className="text-muted-foreground">after</span>
-            <Mono>{schedule.afterSchedule}</Mono>
+            <Mono>{chainedAfter(schedule)}</Mono>
           </span>
         </TooltipTrigger>
         <TooltipContent>
           Chained, not clocked: no cron and no timezone of its own. It becomes due exactly once, when
-          {" "}{schedule.afterSchedule} has finished, so the two can never overlap.
+          {" "}{chainedAfter(schedule)} has finished, so the two can never overlap.
         </TooltipContent>
       </Tooltip>
     );
@@ -523,14 +528,14 @@ export default function SchedulesPage() {
         // A chained link has no clock, so there is no instant to print. The Trigger cell one column left already
         // names the parent, so repeating it here would just be the same string twice; the dash carries the
         // explanation on hover instead, marked as hoverable so it does not read as a broken schedule.
-        if (row.nextFireUtc === null && row.afterSchedule) {
+        if (row.nextFireUtc === null && chainedAfter(row)) {
           return (
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="cursor-help text-muted-foreground">-</span>
               </TooltipTrigger>
               <TooltipContent>
-                Not on a clock: this becomes due the moment {row.afterSchedule} finishes, so there is no next
+                Not on a clock: this becomes due the moment {chainedAfter(row)} finishes, so there is no next
                 instant to predict.
               </TooltipContent>
             </Tooltip>

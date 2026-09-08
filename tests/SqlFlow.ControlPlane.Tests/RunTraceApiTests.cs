@@ -10,10 +10,8 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The consolidated run trace endpoints end to end against the real catalog: <c>GET /runs/{id}/trace</c> merges
-/// seeded RunEvent and RunStatement rows into ONE timestamp-ordered feed (the UNION the endpoint builds must
-/// translate and page in SQL), statement entries carry their SQL while event entries carry their message, legacy
-/// statements without a timestamp sort first, and paging respects the merged total. The pipeline-anchored form
+/// The run trace endpoints end to end against the real catalog: <c>GET /runs/{id}/trace</c> returns the seeded
+/// RunEvent rows as one timestamp-ordered feed paged in SQL, the pipeline-anchored form
 /// (<c>GET /pipelines/{id}/trace</c>) resolves the pipeline's NEWEST run, and the <c>/trace/text</c> forms render
 /// the whole trace as one plain-text document (the Copy-trace and LLM-debugging surface). Unknown ids are 404s.
 /// Gated on a reachable catalog database, like the other DB-backed tests.
@@ -22,7 +20,7 @@ namespace SqlFlow.ControlPlane.Tests;
 public sealed class RunTraceApiTests
 {
     [SkippableFact]
-    public async Task Trace_MergesStatementsAndEvents_PagesInSql_ResolvesPipelineLatest_AndRendersText()
+    public async Task Trace_OrdersEvents_PagesInSql_ResolvesPipelineLatest_AndRendersText()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -54,30 +52,20 @@ public sealed class RunTraceApiTests
                 });
 
                 db.Runs.Add(SeedRun(runId, pipelineId, repoId, flowName, t0.AddSeconds(30), groupId));
-                // A legacy statement without a timestamp (projected from an old artifact): sorts first.
-                db.RunStatements.Add(new CatalogRunStatement
-                {
-                    RunId = runId, RepoId = repoId, Ordinal = 1, Step = "target.preprocess", Sql = "EXEC pre;",
-                });
-                db.RunStatements.Add(new CatalogRunStatement
-                {
-                    RunId = runId, RepoId = repoId, Ordinal = 2, TimestampUtc = t0.AddSeconds(2),
-                    Step = "staging.create", Sql = "CREATE TABLE #s;",
-                });
-                db.RunStatements.Add(new CatalogRunStatement
-                {
-                    RunId = runId, RepoId = repoId, Ordinal = 3, TimestampUtc = t0.AddSeconds(4),
-                    Step = "upsert.insert", Sql = "INSERT INTO t;", Error = "Cannot insert duplicate key",
-                });
                 db.RunEvents.Add(new CatalogRunEvent
                 {
                     RunId = runId, RepoId = repoId, Ordinal = 1, TimestampUtc = t0.AddSeconds(1), Level = "info",
-                    Step = "incremental", Message = "watermark resolved to 2026-07-08",
+                    Step = "plan", Message = "watermark resolved to 2026-07-08",
                 });
                 db.RunEvents.Add(new CatalogRunEvent
                 {
                     RunId = runId, RepoId = repoId, Ordinal = 2, TimestampUtc = t0.AddSeconds(3), Level = "debug",
-                    Step = "source.open", Message = "read 'a.csv' (31 row(s))", Rows = 31, ElapsedMs = 42.5,
+                    Step = "source.open", Message = "read 'a.parquet' (31 row(s))", Rows = 31, ElapsedMs = 42.5,
+                });
+                db.RunEvents.Add(new CatalogRunEvent
+                {
+                    RunId = runId, RepoId = repoId, Ordinal = 3, TimestampUtc = t0.AddSeconds(4), Level = "error",
+                    Step = "deliver", Message = "run failed: upstream returned 503",
                 });
                 await db.SaveChangesAsync();
             }
@@ -88,50 +76,41 @@ public sealed class RunTraceApiTests
             var trace = await GetJsonAsync<PagedResult<RunTraceEntryDto>>(
                 client, token, $"/api/v1/runs/{runId}/trace?pageSize=200");
 
-            // The two streams come back as one feed: the timestampless legacy statement first, then everything
-            // in time order, statements interleaved between the events that surrounded them.
-            Assert.Equal(5, trace.Total);
-            Assert.Equal(
-                ["target.preprocess", "incremental", "staging.create", "source.open", "upsert.insert"],
-                trace.Items.Select(e => e.Step));
-            Assert.Equal(
-                ["statement", "event", "statement", "event", "statement"],
-                trace.Items.Select(e => e.Kind));
+            // One feed in time order, carrying each event's level, message and measurements.
+            Assert.Equal(3, trace.Total);
+            Assert.Equal(["plan", "source.open", "deliver"], trace.Items.Select(e => e.Step));
 
-            var eventEntry = trace.Items[1];
-            Assert.Equal("info", eventEntry.Level);
-            Assert.Equal("watermark resolved to 2026-07-08", eventEntry.Message);
-            Assert.Null(eventEntry.Sql);
+            var planned = trace.Items[0];
+            Assert.Equal("info", planned.Level);
+            Assert.Equal("watermark resolved to 2026-07-08", planned.Message);
 
-            var fileRead = trace.Items[3];
+            var fileRead = trace.Items[1];
             Assert.Equal(31, fileRead.Rows);
             Assert.Equal(42.5, fileRead.ElapsedMs);
 
-            var failedStatement = trace.Items[4];
-            Assert.Equal("INSERT INTO t;", failedStatement.Sql);
-            Assert.Equal("Cannot insert duplicate key", failedStatement.Error);
-            Assert.Null(failedStatement.Message);
-            Assert.Equal("trace", failedStatement.Level);
+            var failed = trace.Items[2];
+            Assert.Equal("error", failed.Level);
+            Assert.Equal("run failed: upstream returned 503", failed.Message);
 
-            // Paging happens over the merged feed: page 2 of size 2 holds the third and fourth entries.
+            // Paging happens in SQL over the ordered feed: page 2 of size 2 holds the third entry alone.
             var page2 = await GetJsonAsync<PagedResult<RunTraceEntryDto>>(
                 client, token, $"/api/v1/runs/{runId}/trace?page=2&pageSize=2");
-            Assert.Equal(5, page2.Total);
-            Assert.Equal(["staging.create", "source.open"], page2.Items.Select(e => e.Step));
+            Assert.Equal(3, page2.Total);
+            Assert.Equal(["deliver"], page2.Items.Select(e => e.Step));
 
             // The pipeline-anchored form resolves the NEWEST run: its entries, not the older run's.
             var latest = await GetJsonAsync<PagedResult<RunTraceEntryDto>>(
                 client, token, $"/api/v1/pipelines/{pipelineId}/trace?pageSize=200");
-            Assert.Equal(5, latest.Total);
+            Assert.Equal(3, latest.Total);
             Assert.All(latest.Items, e => Assert.Equal(runId, e.RunId));
 
-            // The text rendering: one plain-text document with the run header, event messages, and SQL bodies.
+            // The text rendering: one plain-text document with the run header and every event message.
             var text = await GetTextAsync(client, token, $"/api/v1/pipelines/{pipelineId}/trace/text");
             Assert.Contains($"run {runId}", text, StringComparison.Ordinal);
-            Assert.Contains($"flow '{flowName}' (ing) status succeeded", text, StringComparison.Ordinal);
+            Assert.Contains($"flow '{flowName}' (test) status succeeded", text, StringComparison.Ordinal);
             Assert.Contains("watermark resolved to 2026-07-08", text, StringComparison.Ordinal);
-            Assert.Contains("CREATE TABLE #s;", text, StringComparison.Ordinal);
-            Assert.Contains("!! error: Cannot insert duplicate key", text, StringComparison.Ordinal);
+            Assert.Contains("read 'a.parquet' (31 row(s))", text, StringComparison.Ordinal);
+            Assert.Contains("run failed: upstream returned 503", text, StringComparison.Ordinal);
             Assert.DoesNotContain("the previous run", text, StringComparison.Ordinal);
 
             var runText = await GetTextAsync(client, token, $"/api/v1/runs/{runId}/trace/text");
@@ -143,7 +122,7 @@ public sealed class RunTraceApiTests
             var members = await GetJsonAsync<PagedResult<RunSummaryDto>>(
                 client, token, $"/api/v1/runs?groupId={groupId}&pageSize=50");
             var newest = members.Items.Single(r => r.RunId == runId);
-            Assert.Equal("read 'a.csv' (31 row(s))", newest.LastAction);
+            Assert.Equal("run failed: upstream returned 503", newest.LastAction);
             Assert.NotNull(newest.LastActionUtc);
             var older = members.Items.Single(r => r.RunId == oldRunId);
             Assert.Equal("the previous run", older.LastAction);
@@ -169,7 +148,6 @@ public sealed class RunTraceApiTests
         finally
         {
             await using var db = CatalogDatabase.Create(cs);
-            await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
             await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
         }
@@ -183,7 +161,7 @@ public sealed class RunTraceApiTests
             PipelineId = pipelineId,
             RepoId = repoId,
             FlowName = flowName,
-            FlowKind = "ing",
+            FlowKind = "test",
             Status = RunStatuses.Succeeded,
             Success = true,
             WrittenUtc = writtenUtc,

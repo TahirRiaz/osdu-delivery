@@ -400,10 +400,6 @@ public static class UserStore
                 }
             }
 
-            var conversationIds = catalog.ChatConversations.Where(c => c.UserId == id).Select(c => c.Id);
-            await catalog.ChatMessages.Where(m => conversationIds.Contains(m.ConversationId))
-                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
-            await catalog.ChatConversations.Where(c => c.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await catalog.NotificationDeliveries.Where(d => d.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await catalog.NotificationSubscriptions.Where(s => s.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await catalog.AccessTokens.Where(t => t.UserId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);

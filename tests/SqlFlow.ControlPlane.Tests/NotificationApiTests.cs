@@ -34,9 +34,8 @@ public sealed class NotificationApiTests
         Assert.False(options.Email.Available);
         Assert.False(options.Slack.Available);
         Assert.Equal(email, options.UserEmail);
-        Assert.Equal(4, options.Kinds.Count);
+        Assert.Equal(3, options.Kinds.Count);
         Assert.Contains(NotificationEventKinds.RunFailed, options.DefaultKinds);
-        Assert.Contains(NotificationEventKinds.AssertionFailed, options.DefaultKinds);
 
         // Creating a subscription for the unconfigured channel is rejected with the config key named.
         using var create = await SendAsync(client, token, HttpMethod.Post, "/api/v1/me/notifications/subscriptions",
@@ -71,7 +70,7 @@ public sealed class NotificationApiTests
         Assert.Null(dto.EmailAddress);
         Assert.Equal(5, dto.CooldownMinutes);
         Assert.True(dto.Enabled);
-        Assert.Equal(["run_failed", "assertion_failed"], dto.Kinds);
+        Assert.Equal(["run_failed"], dto.Kinds);
 
         // Switch to a one-hour digest with a flow filter: the next window is scheduled from now.
         using var update = await SendAsync(client, token, HttpMethod.Put, $"/api/v1/me/notifications/subscriptions/{dto.Id}",
@@ -132,7 +131,7 @@ public sealed class NotificationApiTests
         var delivery = Assert.Single(deliveries, d => d.Id == accepted.DeliveryId);
         Assert.Equal("email", delivery.Channel);
         Assert.Equal(email, delivery.Target);
-        Assert.Equal("SQLFlow test notification", delivery.Subject);
+        Assert.Equal("OSDU Delivery test notification", delivery.Subject);
         Assert.Equal(dto.Id, delivery.SubscriptionId);
     }
 

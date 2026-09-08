@@ -9,7 +9,7 @@ namespace SqlFlow.Core.Runs;
 /// projected into the catalog's RunEvent table. It is the durable form of a <see cref="FlowEvent"/>: the file
 /// the engine started reading, the watermark it resolved, the stage that finished with a row count, the decision
 /// it took, the warning it raised. Generated SQL is deliberately NOT here: statements are their own stream
-/// (<see cref="Ingestion.SqlTraceEntry"/>), and the two are interleaved by timestamp when a timeline is shown.
+/// (statement entry), and the two are interleaved by timestamp when a timeline is shown.
 /// </summary>
 public sealed record RunEventRecord
 {

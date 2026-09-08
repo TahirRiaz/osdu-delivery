@@ -6,7 +6,7 @@ namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The notification pipeline's data layer (<see cref="NotificationStore"/>) against the real catalog database:
-/// detection turns terminal runs and failed assertions into deduplicated events (honoring the pipeline lifecycle
+/// detection turns terminal runs into deduplicated events (honoring the pipeline lifecycle
 /// gate), subscription windows and outbox sends are claimed exactly once, cursors only move forward, stuck sends
 /// recover, and retention prunes the aged rows while never touching queued work. The assembly runs serially, so
 /// detection windows only ever contain this test's rows plus other tests' leftovers, which every assertion here
@@ -73,55 +73,6 @@ public sealed class NotificationStoreTests
         {
             await CleanupAsync(db, cancelled.RunId);
             await CleanupAsync(db, skipped.RunId);
-        }
-    }
-
-    [SkippableFact]
-    public async Task Detect_RecordsFailedAssertions_OnAGreenRun()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
-        await using var db = CatalogDatabase.Create(cs);
-        var green = NewRun(RunStatuses.Succeeded, error: null, success: true);
-        var fullyGreen = NewRun(RunStatuses.Succeeded, error: null, success: true);
-
-        try
-        {
-            await NotificationStore.DetectAsync(db, DateTime.UtcNow, Overlap);
-            db.Runs.AddRange(green, fullyGreen);
-            db.RunAssertions.Add(new CatalogRunAssertion
-            {
-                RunId = green.RunId,
-                Name = "row-count-positive",
-                Result = "0",
-                AssertedValue = string.Empty,
-                Evaluated = false,
-                Error = "Invalid object name 'dbo.Missing'.",
-            });
-            db.RunAssertions.Add(new CatalogRunAssertion
-            {
-                RunId = fullyGreen.RunId,
-                Name = "row-count-positive",
-                Result = "42",
-                AssertedValue = "42",
-                Evaluated = true,
-            });
-            await db.SaveChangesAsync();
-
-            await NotificationStore.DetectAsync(db, DateTime.UtcNow, Overlap);
-
-            var evt = Assert.Single(await EventsFor(db, green.RunId));
-            Assert.Equal(NotificationEventKinds.AssertionFailed, evt.Kind);
-            Assert.Contains("row-count-positive", evt.Error, StringComparison.Ordinal);
-            Assert.Contains("Invalid object name", evt.Error, StringComparison.Ordinal);
-
-            // A run whose assertions all evaluated stays silent.
-            Assert.Empty(await EventsFor(db, fullyGreen.RunId));
-        }
-        finally
-        {
-            await CleanupAsync(db, green.RunId);
-            await CleanupAsync(db, fullyGreen.RunId);
         }
     }
 
@@ -400,7 +351,7 @@ public sealed class NotificationStoreTests
         UserId = userId,
         Channel = subscription.Channel,
         Target = "subscriber@example.com",
-        Subject = "SQLFlow: flow 'x' failed",
+        Subject = "OSDU Delivery: flow 'x' failed",
         TextBody = "flow 'x' failed",
         HtmlBody = "<p>flow 'x' failed</p>",
         EventCount = 1,
@@ -422,7 +373,6 @@ public sealed class NotificationStoreTests
     private static async Task CleanupAsync(CatalogDbContext db, Guid runId)
     {
         await db.NotificationEvents.Where(e => e.RunId == runId).ExecuteDeleteAsync();
-        await db.RunAssertions.Where(a => a.RunId == runId).ExecuteDeleteAsync();
         await db.Runs.Where(r => r.RunId == runId).ExecuteDeleteAsync();
     }
 

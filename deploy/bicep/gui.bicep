@@ -1,4 +1,4 @@
-// Deploys the SQLFlow GUI as a Container App: the built SPA served by unprivileged nginx. The API base URL is
+// Deploys the OSDU Delivery GUI as a Container App: the built SPA served by unprivileged nginx. The API base URL is
 // injected at container start (the image writes /config.json from SQLFLOW_API_BASE_URL), so one image serves
 // every environment. On Container Apps each app has its own ingress FQDN, so the usual layout is two origins:
 // point apiBaseUrl at the control plane URL and list this app's origin in the control plane's CORS

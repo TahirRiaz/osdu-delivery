@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 REM ============================================================================
-REM  SQLFlow V3 - prod-v2 container deploy (fast path)
+REM  OSDU Delivery - prod-v2 container deploy (fast path)
 REM
 REM  Builds images in ACR from a git-archive of tracked files (tiny context),
 REM  points the container apps at the new tag, waits for the new control-plane
@@ -27,7 +27,7 @@ REM
 REM  Usage:
 REM    deploy-prod.bat                        control-plane, worker, gui
 REM    deploy-prod.bat control-plane worker   only those apps
-REM  Known apps: control-plane worker gui mcp slack-bot
+REM  Known apps: control-plane worker gui
 REM ============================================================================
 
 cd /d "%~dp0"
@@ -40,12 +40,11 @@ set "PYTHONIOENCODING=utf-8"
 
 set "APPS=%*"
 if "%APPS%"=="" set "APPS=control-plane worker gui"
-REM 'all' deploys every app, mcp and slack-bot included.
-if /i "%APPS%"=="all" set "APPS=control-plane worker gui mcp slack-bot"
+if /i "%APPS%"=="all" set "APPS=control-plane worker gui"
 
 set "TAG="
 for /f "delims=" %%i in ('git rev-parse --short HEAD') do set "TAG=%%i"
-if "%TAG%"=="" ( echo ERROR: could not read git HEAD. Run from the SQLFlow V3 repo. & exit /b 1 )
+if "%TAG%"=="" ( echo ERROR: could not read git HEAD. Run from the OSDU Delivery repo. & exit /b 1 )
 
 for /f "delims=" %%c in ('git status --porcelain -- src gui') do (
   echo WARNING: uncommitted changes in src/ or gui/ - image %TAG% is built from the committed tree and will NOT include them.
@@ -54,7 +53,7 @@ for /f "delims=" %%c in ('git status --porcelain -- src gui') do (
 :dirty_done
 
 echo.
-echo === SQLFlow V3 deploy ===
+echo === OSDU Delivery deploy ===
 echo    tag:  %TAG%
 echo    apps: %APPS%
 echo    rg:   %RG%
@@ -183,7 +182,5 @@ set "SUBDIR="
 if /i "%~1"=="control-plane" ( set "DF=Dockerfile"          & set "SUBDIR=repo" )
 if /i "%~1"=="worker"        ( set "DF=Dockerfile.worker"   & set "SUBDIR=repo" )
 if /i "%~1"=="gui"           ( set "DF=Dockerfile"          & set "SUBDIR=gui"  )
-if /i "%~1"=="mcp"           ( set "DF=Dockerfile.mcp"      & set "SUBDIR=repo" )
-if /i "%~1"=="slack-bot"     ( set "DF=Dockerfile.slackbot" & set "SUBDIR=repo" )
-if not defined DF ( echo ERROR: unknown app '%~1'. Known: control-plane worker gui mcp slack-bot & set "FAILED=1" )
+if not defined DF ( echo ERROR: unknown app '%~1'. Known: control-plane worker gui & set "FAILED=1" )
 exit /b 0

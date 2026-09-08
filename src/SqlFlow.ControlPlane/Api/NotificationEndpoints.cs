@@ -582,8 +582,7 @@ public static partial class NotificationEndpoints
     private static NotificationDigestSummaryDto ToDto(NotificationDigestSummary d, Dictionary<Guid, string> authors)
         => new(
             d.Id, d.Origin, d.PeriodStartUtc, d.PeriodEndUtc, d.GeneratedUtc, Author(d.GeneratedByUserId, authors),
-            d.Subject, d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount,
-            d.AssertionFailedCount, d.Truncated);
+            d.Subject, d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount, d.Truncated);
 
     /// <summary>One digest opened for reading. <paramref name="full"/> is the signature's reminder that this is
     /// the heavy shape: it carries the stored per-flow rows and both composed bodies.</summary>
@@ -592,8 +591,7 @@ public static partial class NotificationEndpoints
     {
         var summary = new NotificationDigestSummaryDto(
             d.Id, d.Origin, d.PeriodStartUtc, d.PeriodEndUtc, d.GeneratedUtc, Author(d.GeneratedByUserId, authors),
-            d.Subject, d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount,
-            d.AssertionFailedCount, d.Truncated);
+            d.Subject, d.EventCount, d.FlowCount, d.FailedCount, d.CancelledCount, d.SkippedCount, d.Truncated);
         IReadOnlyList<NotificationDigestFlowDto> flows = full
             ? NotificationDigestGroups.Deserialize(d.GroupsJson)
                 .Select(g => new NotificationDigestFlowDto(

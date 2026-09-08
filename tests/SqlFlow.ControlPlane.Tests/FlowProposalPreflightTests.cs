@@ -1,41 +1,39 @@
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.SourceControl.Proposals;
+using SqlFlow.Tests;
+using SqlFlow.Yaml;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The proposal preflight's pure core: the same loaders the managed sync parses with, applied before any git
-/// push. Errors are the silent-failure modes (a file the sync would ignore, a valid flow under an undiscoverable
-/// extension); warnings are the design signals a reviewer must see (an endpoint change on a revised flow, a
-/// duplicate flow name). No database or git is involved: the catalog side is handed in as plain records.
+/// The proposal preflight's pure core: the same document loader the managed sync parses with, applied before any
+/// git push. Errors are the silent-failure modes (a file the sync would ignore, a valid flow under an
+/// undiscoverable extension); warnings are the design signals a reviewer must see (an endpoint change on a revised
+/// flow, a duplicate flow name). No database or git is involved: the catalog side is handed in as plain records,
+/// and the documents are the test-only kind, so no engine is needed.
 /// </summary>
 public sealed class FlowProposalPreflightTests
 {
-    private const string IngFlow = """
-        flowType: ing
-        name: orders-ingestion
-        connections:
-          erp: ${env:SQLFLOW_SRC}
-          dwh: ${env:SQLFLOW_DW}
-        source:
-          server: erp
-          object: AdventureWorks.Sales.Orders
-        target:
-          server: dwh
-          object: DW.raw.Orders
-        load:
-          keyColumns: [OrderID]
+    private static readonly YamlDocumentLoader Documents = TestFlowKind.Loader();
+
+    private const string Flow = """
+        flowType: test
+        name: orders-delivery
+        source: lake://raw/orders/
+        target: osdu://partition/orders
+        credentials:
+          lake: ${env:SQLFLOW_LAKE}
         """;
 
     private static ProposalPreflightResult Run(
         IReadOnlyList<ProposalFile> files, params FlowProposalPreflight.ExistingPipeline[] existing)
-        => FlowProposalPreflight.Run(files, existing);
+        => FlowProposalPreflight.Run(Documents, files, existing);
 
     [Fact]
     public void ValidFlow_PassesClean()
     {
-        var result = Run([new ProposalFile("flows/orders.flow.yaml", IngFlow)]);
+        var result = Run([new ProposalFile("flows/orders.flow.yaml", Flow)]);
         Assert.Empty(result.Errors);
         Assert.Empty(result.Warnings);
     }
@@ -43,8 +41,8 @@ public sealed class FlowProposalPreflightTests
     [Fact]
     public void UnparseableFlow_IsAnError_NamingTheLoaderCause()
     {
-        // A missing source block: the sync would treat this as a non-flow yaml and silently import nothing.
-        var yaml = "flowType: ing\nname: broken\nconnections:\n  dwh: x\ntarget:\n  server: dwh\n  object: D.raw.T\n";
+        // A missing source: the sync would treat this as a non-flow yaml and silently import nothing.
+        var yaml = "flowType: test\nname: broken\n";
         var result = Run([new ProposalFile("flows/broken.flow.yaml", yaml)]);
 
         var error = Assert.Single(result.Errors);
@@ -54,9 +52,19 @@ public sealed class FlowProposalPreflightTests
     }
 
     [Fact]
+    public void UnknownKind_IsAnError_NamingTheKindsThisHostKnows()
+    {
+        var result = Run([new ProposalFile("flows/legacy.flow.yaml", "flowType: ing\nname: legacy\n")]);
+
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("unknown flowType 'ing'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'test'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ValidFlowUnderYmlExtension_IsAnError_BecauseTheSyncNeverDiscoversIt()
     {
-        var result = Run([new ProposalFile("flows/orders.flow.yml", IngFlow)]);
+        var result = Run([new ProposalFile("flows/orders.flow.yml", Flow)]);
 
         var error = Assert.Single(result.Errors);
         Assert.Contains(".yaml", error.Message, StringComparison.Ordinal);
@@ -68,9 +76,8 @@ public sealed class FlowProposalPreflightTests
     {
         var result = Run(
         [
-            new ProposalFile("flows/compat_views.sql", "CREATE OR ALTER VIEW arc.V AS SELECT 1 AS x;"),
-            new ProposalFile("flows/README.md", "# notes"),
             new ProposalFile("flows/mapping.json", "{ \"not\": \"a flow\" }"),
+            new ProposalFile("flows/README.md", "# notes"),
         ]);
         Assert.Empty(result.Errors);
         Assert.Empty(result.Warnings);
@@ -79,26 +86,26 @@ public sealed class FlowProposalPreflightTests
     [Fact]
     public void RevisionThatRepointsTheTarget_WarnsWithTheExactEndpointDiff()
     {
-        var revised = IngFlow.Replace("object: DW.raw.Orders", "object: DW.raw.Orders_v2", StringComparison.Ordinal);
+        var revised = Flow.Replace("osdu://partition/orders", "osdu://partition/orders_v2", StringComparison.Ordinal);
         var result = Run(
             [new ProposalFile("flows/orders.flow.yaml", revised)],
-            new FlowProposalPreflight.ExistingPipeline("orders-ingestion", "flows/orders.flow.yaml", IngFlow));
+            new FlowProposalPreflight.ExistingPipeline("orders-delivery", "flows/orders.flow.yaml", Flow));
 
         Assert.Empty(result.Errors);
         var warning = Assert.Single(result.Warnings);
         Assert.Contains("CHANGES its declared endpoints", warning.Message, StringComparison.Ordinal);
-        Assert.Contains("[Orders]", warning.Message, StringComparison.Ordinal);
-        Assert.Contains("[Orders_v2]", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("osdu://partition/orders", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("osdu://partition/orders_v2", warning.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public void RevisionThatOnlyTunesBehavior_DoesNotWarn()
     {
-        // Adding an incremental block and a schedule changes no endpoint, so the revision is silent.
-        var revised = IngFlow + "\nincremental:\n  columns: [ModifiedDate]\n  overlapDays: 7\nschedule: nightly\n";
+        // Joining a schedule and naming a batch changes no endpoint, so the revision is silent.
+        var revised = Flow + "\nschedule: nightly\nbatch: nightly\n";
         var result = Run(
             [new ProposalFile("flows/orders.flow.yaml", revised)],
-            new FlowProposalPreflight.ExistingPipeline("orders-ingestion", "flows/orders.flow.yaml", IngFlow));
+            new FlowProposalPreflight.ExistingPipeline("orders-delivery", "flows/orders.flow.yaml", Flow));
 
         Assert.Empty(result.Errors);
         Assert.Empty(result.Warnings);
@@ -108,8 +115,8 @@ public sealed class FlowProposalPreflightTests
     public void NewFileReusingAnExistingFlowName_Warns()
     {
         var result = Run(
-            [new ProposalFile("flows/orders-copy.flow.yaml", IngFlow)],
-            new FlowProposalPreflight.ExistingPipeline("orders-ingestion", "flows/orders.flow.yaml", IngFlow));
+            [new ProposalFile("flows/orders-copy.flow.yaml", Flow)],
+            new FlowProposalPreflight.ExistingPipeline("orders-delivery", "flows/orders.flow.yaml", Flow));
 
         Assert.Empty(result.Errors);
         var warning = Assert.Single(result.Warnings);
@@ -121,8 +128,8 @@ public sealed class FlowProposalPreflightTests
     {
         var result = Run(
         [
-            new ProposalFile("flows/a.flow.yaml", IngFlow),
-            new ProposalFile("flows/b.flow.yaml", IngFlow),
+            new ProposalFile("flows/a.flow.yaml", Flow),
+            new ProposalFile("flows/b.flow.yaml", Flow),
         ]);
 
         Assert.Empty(result.Errors);
@@ -144,37 +151,26 @@ public sealed class FlowProposalPreflightTests
     }
 
     [Fact]
-    public void FileFlowRevisionThatRepointsTheSourceLocation_Warns()
+    public void RevisionThatRepointsTheSource_Warns()
     {
-        const string fileFlow = """
-            name: citybike-bikes-pre
-            source:
-              type: json
-              location: https://lake.example/raw/citybike/history/bikes/
-            target:
-              connection: ${env:SQLFLOW_DW}
-              schema: pre
-              table: Citybike_Bikes
-            """;
-        var revised = fileFlow.Replace("raw/citybike", "raw/voi", StringComparison.Ordinal);
+        var revised = Flow.Replace("lake://raw/orders/", "lake://raw/voi/", StringComparison.Ordinal);
         var result = Run(
-            [new ProposalFile("Citybike/citybike_bikes_01_jsn.yaml", revised)],
-            new FlowProposalPreflight.ExistingPipeline(
-                "citybike-bikes-pre", "Citybike/citybike_bikes_01_jsn.yaml", fileFlow));
+            [new ProposalFile("flows/orders.flow.yaml", revised)],
+            new FlowProposalPreflight.ExistingPipeline("orders-delivery", "flows/orders.flow.yaml", Flow));
 
         Assert.Empty(result.Errors);
         var warning = Assert.Single(result.Warnings);
-        Assert.Contains("raw/citybike", warning.Message, StringComparison.Ordinal);
-        Assert.Contains("raw/voi", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("lake://raw/orders/", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("lake://raw/voi/", warning.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public void RevisionWhoseStoredCopyNoLongerParses_WarnsAndDoesNotBlock()
     {
         var result = Run(
-            [new ProposalFile("flows/orders.flow.yaml", IngFlow)],
+            [new ProposalFile("flows/orders.flow.yaml", Flow)],
             new FlowProposalPreflight.ExistingPipeline(
-                "orders-ingestion", "flows/orders.flow.yaml", "flowType: ing\nname: orders-ingestion\n"));
+                "orders-delivery", "flows/orders.flow.yaml", "flowType: test\nname: orders-delivery\n"));
 
         Assert.Empty(result.Errors);
         var warning = Assert.Single(result.Warnings);

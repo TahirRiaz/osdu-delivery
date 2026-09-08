@@ -4,16 +4,11 @@ import { expect, test } from "./helpers";
 
 const navTargets: Array<{ nav: string; page: string }> = [
   { nav: "nav-dashboard", page: "page-dashboard" },
-  { nav: "nav-chat", page: "page-chat" },
-  { nav: "nav-insights", page: "page-insights" },
   { nav: "nav-runs", page: "page-runs" },
   { nav: "nav-nodes", page: "page-nodes" },
   { nav: "nav-repos", page: "page-repos" },
   { nav: "nav-pipelines", page: "page-pipelines" },
   { nav: "nav-schedules", page: "page-schedules" },
-  { nav: "nav-datasources", page: "page-datasources" },
-  { nav: "nav-key-detection", page: "page-key-detection" },
-  { nav: "nav-lineage", page: "page-lineage-graph" },
   { nav: "nav-search", page: "page-search" },
   { nav: "nav-users", page: "page-users" },
 ];

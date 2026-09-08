@@ -203,30 +203,24 @@ internal static partial class RemoteVerbs
             var repo = await ResolveRepoAsync(client, args, ct).ConfigureAwait(false);
             var flowName = Program.GetOption(args, "--flow");
             var scope = (Program.GetOption(args, "--scope") ?? "flow").Trim().ToLowerInvariant();
-            if (scope is "batch")
+            if (scope is not "flow")
             {
                 Console.Error.WriteLine(
-                    "ERROR  --scope batch is gone: a whole source runs through its schedule, whose membership is "
-                    + "what a fire runs. Use 'sqlflow schedules list --repo <r>' to find it and 'sqlflow schedules "
-                    + "run <id>' to fire it.");
-                return 1;
-            }
-
-            if (scope is not ("flow" or "node"))
-            {
-                Console.Error.WriteLine($"ERROR  --scope '{scope}' is not one of flow, node.");
+                    $"ERROR  --scope '{scope}' is not supported: a trigger runs one flow. A whole set of flows runs "
+                    + "through its schedule, whose membership is what a fire runs. Use 'sqlflow schedules list --repo <r>' "
+                    + "to find it and 'sqlflow schedules run <id>' to fire it.");
                 return 1;
             }
 
             if (string.IsNullOrWhiteSpace(flowName))
             {
-                Console.Error.WriteLine($"ERROR  --scope {scope} requires --flow <name>.");
+                Console.Error.WriteLine("ERROR  'trigger' requires --flow <name>.");
                 return 1;
             }
 
             if (args.Contains("--preview"))
             {
-                var preview = await client.PreviewScopeAsync(repo.Id, flowName, scope, batch: null, includeAll: args.Contains("--include-all"), ct).ConfigureAwait(false);
+                var preview = await client.PreviewScopeAsync(repo.Id, flowName, scope, ct).ConfigureAwait(false);
                 if (json)
                 {
                     Console.WriteLine(JsonSerializer.Serialize(preview, ControlPlaneClient.JsonIndented));
@@ -236,7 +230,7 @@ internal static partial class RemoteVerbs
                 Console.WriteLine($"{preview.Scope} '{preview.Anchor}': {preview.MemberCount} flow(s) across {preview.WaveCount} wave(s)");
                 foreach (var member in preview.Members)
                 {
-                    Console.WriteLine($"  wave {member.Wave,3}  {member.FlowKind,-5} {member.FlowName}");
+                    Console.WriteLine($"  wave {member.Wave,3}  {member.FlowKind,-8} {member.FlowName}");
                 }
 
                 return 0;
@@ -253,9 +247,7 @@ internal static partial class RemoteVerbs
                 FilePattern: parameters.FilePattern,
                 Scope: scope,
                 AssertionsOnly: parameters.AssertionsOnly,
-                SourceFilter: parameters.SourceFilter,
-                // Node scope's "find all": include mode: manual and mode: disabled descendants in the group.
-                IncludeAll: args.Contains("--include-all"));
+                SourceFilter: parameters.SourceFilter);
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
             if (outcome.Run is { } run)
@@ -382,7 +374,7 @@ internal static partial class RemoteVerbs
                         PrintRunDetail(run);
                     }
 
-                    return await PrintRunSectionsAsync(client, runId, args, json, ct).ConfigureAwait(false) ? 0 : 1;
+                    return 0;
                 }
 
                 case "trace":
@@ -506,30 +498,14 @@ internal static partial class RemoteVerbs
                         return await RerunScheduleGroupAsync(client, group, json, args, ct).ConfigureAwait(false);
                     }
 
-                    // A fresh node expansion of the same anchor flow: the members resolve from the repo's current
-                    // synced state (no commit pin), matching the GUI's re-run semantics.
-                    var request = new RunTriggerRequest(
-                        group.RepoId,
-                        group.Anchor,
-                        Pool: Program.GetOption(args, "--pool"),
-                        Scope: "node");
-                    var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
-                    var rerun = outcome.Group ?? throw new SqlFlowException(
-                        $"the control plane accepted the rerun of '{group.Anchor}' as a single run, not a group; check the group's scope.");
-                    if (json && !args.Contains("--follow"))
-                    {
-                        Console.WriteLine(JsonSerializer.Serialize(rerun, ControlPlaneClient.JsonIndented));
-                        return 0;
-                    }
-
-                    Note(json, $"OK   group {rerun.GroupId} {rerun.Status}: {rerun.MemberCount} member flow(s) ({group.Mode} '{group.Anchor}' re-expanded).");
-                    if (!args.Contains("--follow"))
-                    {
-                        return 0;
-                    }
-
-                    return await FollowGroupAsync(client, rerun.GroupId, json, ct).ConfigureAwait(false);
+                    // Only a schedule fire can be re-expanded faithfully: a group has no other membership
+                    // authority to re-derive its members from.
+                    Console.Error.WriteLine(
+                        $"ERROR  group {group.GroupId} ({group.Mode} '{group.Anchor}') was not fired by a schedule, "
+                        + "so it cannot be rerun as a group. Trigger the flow again with 'sqlflow trigger --flow <name>'.");
+                    return 1;
                 }
+
             }
         }).ConfigureAwait(false);
     }
@@ -599,13 +575,11 @@ internal static partial class RemoteVerbs
     private static async Task<int> FollowRunAsync(ControlPlaneClient client, Guid runId, bool json, CancellationToken ct)
     {
         long afterEventId = 0;
-        long afterStatementId = 0;
         string? terminalStatus = null;
         while (terminalStatus is null)
         {
             ct.ThrowIfCancellationRequested();
-            var path = $"/api/v1/runs/{runId}/trace/stream?afterEventId={afterEventId.ToString(CultureInfo.InvariantCulture)}" +
-                       $"&afterStatementId={afterStatementId.ToString(CultureInfo.InvariantCulture)}";
+            var path = $"/api/v1/runs/{runId}/trace/stream?afterEventId={afterEventId.ToString(CultureInfo.InvariantCulture)}";
             try
             {
                 await foreach (var sse in client.StreamAsync(path, ct).ConfigureAwait(false))
@@ -613,14 +587,7 @@ internal static partial class RemoteVerbs
                     if (sse.Name == "entry")
                     {
                         var entry = ControlPlaneClient.ParseEvent<RunTraceEntryDto>(sse);
-                        if (entry.Kind == "statement")
-                        {
-                            afterStatementId = Math.Max(afterStatementId, entry.Id);
-                        }
-                        else
-                        {
-                            afterEventId = Math.Max(afterEventId, entry.Id);
-                        }
+                        afterEventId = Math.Max(afterEventId, entry.Id);
 
                         if (!json)
                         {
@@ -949,63 +916,6 @@ internal static partial class RemoteVerbs
         }
     }
 
-    /// <summary>Fetches and prints the drill-down sections requested by flags on 'runs show'. Returns false
-    /// only when a requested section's fetch failed in a way that did not throw (none today), so the exit code
-    /// path stays honest if one is added.</summary>
-    private static async Task<bool> PrintRunSectionsAsync(ControlPlaneClient client, Guid runId, string[] args, bool json, CancellationToken ct)
-    {
-        if (args.Contains("--files"))
-        {
-            var files = await client.GetRunSectionAsync<RunFileDto>(runId, "files", 1, 200, ct).ConfigureAwait(false);
-            PrintSection(json, "files", files, f => $"  {f.Name}  {f.Rows} row(s), {f.Columns} column(s), {f.SizeBytes} byte(s){(f.Path is null ? string.Empty : $"  {f.Path}")}");
-        }
-
-        if (args.Contains("--statements"))
-        {
-            var statements = await client.GetRunSectionAsync<RunStatementDto>(runId, "statements", 1, 200, ct).ConfigureAwait(false);
-            PrintSection(json, "statements", statements, s =>
-                $"  [{s.Ordinal}] {s.Step}{(s.Error is null ? string.Empty : $"  ERROR {s.Error}")}\n{Indent(s.Sql, "      ")}");
-        }
-
-        if (args.Contains("--assertions"))
-        {
-            var assertions = await client.GetRunSectionAsync<RunAssertionDto>(runId, "assertions", 1, 200, ct).ConfigureAwait(false);
-            PrintSection(json, "assertions", assertions, a =>
-                $"  {a.Name}: {(a.Error is not null ? $"error: {a.Error}" : a.Evaluated ? $"result: {a.Result} (asserted {a.AssertedValue})" : "skipped")}");
-        }
-
-        if (args.Contains("--keys"))
-        {
-            var keys = await client.GetRunSectionAsync<RunSurrogateKeyDto>(runId, "surrogate-keys", 1, 200, ct).ConfigureAwait(false);
-            PrintSection(json, "surrogate keys", keys, k =>
-                $"  {k.SurrogateTable}.{k.SurrogateColumn}: {(k.Error is not null ? $"error: {k.Error}" : $"{k.KeysGenerated} key(s) generated, {k.RowsStamped} row(s) stamped")}");
-        }
-
-        if (args.Contains("--metrics"))
-        {
-            var metrics = await client.GetRunSectionAsync<RunHealthCheckMetricDto>(runId, "health-metrics", 1, 200, ct).ConfigureAwait(false);
-            PrintSection(json, "health metrics", metrics, m =>
-                $"  {m.Name}: {m.Anomalies} anomalies in {m.SeriesPoints} point(s) ({m.ImputedPoints} imputed, {m.ImmaturePoints} immature){(m.Error is null ? string.Empty : $"  ERROR {m.Error}")}");
-        }
-
-        return true;
-    }
-
-    private static void PrintSection<T>(bool json, string title, PagedResult<T> section, Func<T, string> render)
-    {
-        if (json)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(section, ControlPlaneClient.JsonIndented));
-            return;
-        }
-
-        Console.WriteLine($"{title} ({section.Items.Count} of {section.Total}):");
-        foreach (var item in section.Items)
-        {
-            Console.WriteLine(render(item));
-        }
-    }
-
     private static void PrintRunDetail(RunDetailDto run)
     {
         Console.WriteLine($"run {run.RunId}: {run.Status}");
@@ -1013,66 +923,29 @@ internal static partial class RemoteVerbs
         Console.WriteLine($"  repo:        {run.RepoId?.ToString() ?? "(none)"}  pipeline {run.PipelineId}{(run.GroupId is null ? string.Empty : $"  group {run.GroupId}")}");
         Console.WriteLine($"  lifecycle:   enqueued {FormatUtc(run.EnqueuedUtc)}, start {FormatUtc(run.StartUtc)}, end {FormatUtc(run.EndUtc)}, duration {FormatDuration(run.DurationSeconds)}");
         Console.WriteLine($"  executed by: {run.ClaimedByNode ?? run.Host ?? "(unknown)"}{(run.TargetPool is null ? string.Empty : $" (pool {run.TargetPool})")}{(run.CommitSha is null ? string.Empty : $", commit {run.CommitSha}")}");
-        if (run.RowsLoaded is not null || run.RowsInserted is not null || run.RowsUpdated is not null || run.RowsDeleted is not null || run.FileCount > 0)
+        if (run.RowsLoaded is not null || run.RowsInserted is not null || run.RowsUpdated is not null || run.RowsDeleted is not null)
         {
-            Console.WriteLine($"  rows:        {FormatCount(run.RowsLoaded)} loaded, {FormatCount(run.RowsInserted)} inserted, {FormatCount(run.RowsUpdated)} updated, {FormatCount(run.RowsDeleted)} deleted, {run.FileCount} file(s)");
-        }
-
-        if (run.AssertionsOnly)
-        {
-            Console.WriteLine("  parameters:  assertions only (evaluated against the current target; nothing was loaded)");
+            Console.WriteLine($"  records:     {FormatCount(run.RowsLoaded)} processed, {FormatCount(run.RowsInserted)} created, {FormatCount(run.RowsUpdated)} updated, {FormatCount(run.RowsDeleted)} deleted");
         }
 
         if (run.FullLoad || run.BackfillFrom is not null || run.BackfillTo is not null || run.FilePattern is not null)
         {
-            Console.WriteLine($"  backfill:    {(run.FullLoad ? "full load; " : string.Empty)}window {FormatUtc(run.BackfillFrom)} -> {FormatUtc(run.BackfillTo)}{(run.FilePattern is null ? string.Empty : $"; pattern {run.FilePattern}")}");
-        }
-
-        if (run.ReprocessFromSourceMin)
-        {
-            Console.WriteLine("  backfill:    reprocess from source min (reads MIN from source instead of MAX from target)");
-        }
-
-        if (run.IncrementalMode is not null)
-        {
-            Console.WriteLine($"  incremental: {run.IncrementalMode}{(run.IncrementalWatermark is null ? string.Empty : $", watermark {run.IncrementalWatermark} ({run.IncrementalWatermarkSource})")}{(run.IncrementalFilter is null ? string.Empty : $", filter {run.IncrementalFilter}")}");
-        }
-
-        if (run.DataSetConvention is not null)
-        {
-            Console.WriteLine($"  dataset:     {run.DataSetConvention}");
+            Console.WriteLine($"  parameters:  {(run.FullLoad ? "full; " : string.Empty)}window {FormatUtc(run.BackfillFrom)} -> {FormatUtc(run.BackfillTo)}{(run.FilePattern is null ? string.Empty : $"; pattern {run.FilePattern}")}");
         }
 
         if (run.Error is not null)
         {
             Console.WriteLine($"  error:       {run.Error}");
         }
-
-        if (run.FailedStatementSql is not null)
-        {
-            Console.WriteLine($"  failed at:   statement {run.FailedStatementOrdinal} ({run.FailedStatementStep})");
-            Console.WriteLine(Indent(run.FailedStatementSql, "      "));
-        }
     }
 
     private static void PrintTraceEntry(RunTraceEntryDto entry)
     {
-        var stamp = entry.TimestampUtc?.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture) ?? "--:--:--";
-        if (entry.Kind == "statement")
-        {
-            Console.WriteLine($"{stamp}  sql      {entry.Step ?? string.Empty}{(entry.Error is null ? string.Empty : $"  ERROR {entry.Error}")}");
-            if (entry.Sql is { Length: > 0 } sql)
-            {
-                Console.WriteLine(Indent(sql, "          "));
-            }
-
-            return;
-        }
-
+        var stamp = entry.TimestampUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
         var extras = new StringBuilder();
         if (entry.Rows is { } rows)
         {
-            extras.Append("  [").Append(rows.ToString("N0", CultureInfo.InvariantCulture)).Append(" row(s)");
+            extras.Append("  [").Append(rows.ToString("N0", CultureInfo.InvariantCulture)).Append(" record(s)");
             if (entry.ElapsedMs is { } elapsedWithRows)
             {
                 extras.Append(", ").Append(elapsedWithRows.ToString("0", CultureInfo.InvariantCulture)).Append(" ms");

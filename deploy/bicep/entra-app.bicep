@@ -27,7 +27,7 @@
 extension microsoftGraphV1
 
 @description('Display name of the app registration as it appears in Entra and on the consent prompt.')
-param displayName string = 'SQLFlow'
+param displayName string = 'OSDU Delivery'
 
 @description('Stable unique name for the registration (the Graph identity key used to find and update it across deploys). Lowercase, no spaces.')
 param uniqueName string = 'sqlflow'
@@ -67,8 +67,8 @@ resource application 'Microsoft.Graph/applications@v1.0' = {
       allowedMemberTypes: [
         'User'
       ]
-      displayName: 'SQLFlow User'
-      description: 'May sign in to SQLFlow. Assignment is required, so only members of this role reach the app.'
+      displayName: 'OSDU Delivery User'
+      description: 'May sign in to OSDU Delivery. Assignment is required, so only members of this role reach the app.'
       value: 'SqlFlow.User'
       isEnabled: true
     }

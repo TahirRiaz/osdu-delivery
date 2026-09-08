@@ -56,7 +56,7 @@ const CAPABILITIES: ReadonlyArray<{ icon: LucideIcon; title: string; body: strin
 ];
 
 /**
- * The branded left column, shown only on wide screens: the SQLFlow lockup, what the product does, and the
+ * The branded left column, shown only on wide screens: the OSDU Delivery lockup, what the product does, and the
  * capabilities worth naming, over a navy field carrying concentric arcs that echo the logo mark. It
  * carries the page on large displays, where a lone card would otherwise float in an empty background.
  * Purely decorative, so it is hidden from assistive tech and never rendered on the narrow, form-only layout.
@@ -126,7 +126,7 @@ function BrandPanel() {
 
 /**
  * The sign-in page, the one surface that renders outside the workbench shell: a centered card on the
- * editor background with the SQLFlow lockup above it. Username/password for regular SQLFlow users,
+ * editor background with the OSDU Delivery lockup above it. Username/password for regular OSDU Delivery users,
  * "Sign in with Microsoft" when the control plane has Entra enabled, and the break-glass bootstrap
  * secret tucked behind an expander when one is configured. Which options render is driven by
  * GET /auth/providers, so this page never guesses the server's configuration.
@@ -195,7 +195,7 @@ export default function LoginPage() {
         {/* The lockup sits with the form on narrow screens, where the brand panel is hidden. The navy plaque
             keeps the light-blue mark legible on the light theme's near-white background. */}
         <div className="relative rounded-xl px-6 py-3.5 lg:hidden" style={{ backgroundColor: "var(--brand-navy)" }}>
-          <img src="/brand/logo-full.png" alt="SQLFlow" className="h-11 w-auto object-contain" />
+          <img src="/brand/logo-full.png" alt="OSDU Delivery" className="h-11 w-auto object-contain" />
         </div>
 
         <Card
@@ -205,7 +205,7 @@ export default function LoginPage() {
           <div className="flex flex-col gap-5">
             <div>
               <h1 className="text-[22px] font-semibold tracking-tight">Welcome back</h1>
-              <p className="mt-1.5 text-[13px] text-muted-foreground">Sign in to your SQLFlow account to continue.</p>
+              <p className="mt-1.5 text-[13px] text-muted-foreground">Sign in to your OSDU Delivery account to continue.</p>
             </div>
 
           {sessionEndedReason && (
@@ -346,7 +346,7 @@ export default function LoginPage() {
         </Card>
 
         <p className="relative max-w-[25rem] text-center text-xs text-muted-foreground">
-          Trouble signing in? Your SQLFlow administrator can reset the account or issue a new one.
+          Trouble signing in? Your OSDU Delivery administrator can reset the account or issue a new one.
         </p>
       </div>
     </div>

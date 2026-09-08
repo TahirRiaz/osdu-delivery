@@ -6,37 +6,27 @@ using SqlFlow.Catalog;
 
 namespace SqlFlow.ControlPlane.Api;
 
-/// <summary>How much per-run trace is stored, split by kind, plus how many SQL-statement rows the retention policy
-/// would reclaim and the retention window in effect. Events are reported for context; they are never pruned.
-/// <see cref="RetentionDays"/> is null when SQL statements are kept forever.</summary>
-public sealed record RunTraceStorageDto(
-    long TotalStatements,
-    long TotalEvents,
-    long PrunableStatements,
-    int PrunableRuns,
-    int? RetentionDays);
+/// <summary>How much per-run trace is stored, how many event rows the retention policy would reclaim, and the
+/// retention window in effect. <see cref="RetentionDays"/> is null when traces are kept forever.</summary>
+public sealed record RunTraceStorageDto(long TotalEvents, long PrunableEvents, int PrunableRuns, int? RetentionDays);
 
-/// <summary>A request to change the SQL-statement retention: how many days a superseded successful run keeps its
-/// statements, or null to keep them forever (age-based pruning off).</summary>
+/// <summary>A request to change the trace retention: how many days a superseded successful run keeps its trace,
+/// or null to keep traces forever (age-based pruning off).</summary>
 public sealed record RunTraceRetentionUpdateDto(int? RetentionDays);
 
-/// <summary>The stored SQL-statement retention after an update; null means keep forever.</summary>
+/// <summary>The stored trace retention after an update; null means keep forever.</summary>
 public sealed record RunTraceRetentionDto(int? RetentionDays);
 
-/// <summary>The outcome of a manual SQL-statement purge: how many statement rows it deleted.</summary>
-public sealed record RunStatementPurgeResultDto(int StatementsDeleted);
-
-/// <summary>The outcome of a manual run-event purge: how many event rows it deleted.</summary>
+/// <summary>The outcome of a manual trace prune or purge: how many event rows it deleted.</summary>
 public sealed record RunEventPurgeResultDto(int EventsDeleted);
 
 /// <summary>
-/// Housekeeping the operator can see and drive from the GUI. Today that is the per-run trace, split by kind: the
-/// generated <b>SQL statements</b> (heavy and near-identical every run, so purgeable) and the <b>run events</b> (the
-/// per-run rows-affected and timing, kept for history and analytics, never pruned). A read reports how much of each
-/// is stored and how many statement rows are reclaimable; a write tunes the statement retention (days, or forever);
-/// and a purge deletes all SQL statements now and returns the count (so the GUI shows the real outcome and any
-/// database error surfaces instead of being swallowed). The retention prune also runs automatically in
-/// <c>RunTraceReaper</c>.
+/// Housekeeping the operator can see and drive from the GUI. Today that is the per-run trace (the run events): a
+/// read reports how much is stored and how many rows are reclaimable under the retention policy; a write tunes
+/// the retention (days, or forever); a prune applies the policy now; and a purge deletes every trace row now.
+/// Each mutation returns its count so the GUI shows the real outcome and any database error surfaces instead of
+/// being swallowed. The retention prune also runs automatically in <c>RunTraceReaper</c>. The delivery ledger
+/// (the record history) is never touched here.
 /// </summary>
 public static class MaintenanceEndpoints
 {
@@ -49,8 +39,8 @@ public static class MaintenanceEndpoints
         ArgumentNullException.ThrowIfNull(group);
         var maintenance = group.MapGroup("/maintenance").WithTags("Maintenance");
         maintenance.MapGet("/trace-storage", GetTraceStorageAsync).WithName("GetRunTraceStorage");
-        maintenance.MapPut("/statement-retention", SetTraceRetentionAsync).WithName("SetRunStatementRetention");
-        maintenance.MapPost("/statements/purge", PurgeStatementsAsync).WithName("PurgeRunStatements");
+        maintenance.MapPut("/trace-retention", SetTraceRetentionAsync).WithName("SetRunTraceRetention");
+        maintenance.MapPost("/events/prune", PruneEventsAsync).WithName("PruneRunEvents");
         maintenance.MapPost("/events/purge", PurgeEventsAsync).WithName("PurgeRunEvents");
         return group;
     }
@@ -61,14 +51,10 @@ public static class MaintenanceEndpoints
         CancellationToken ct)
     {
         var retentionDays = await MaintenanceStore.GetRunTraceRetentionDaysAsync(db, ct).ConfigureAwait(false);
-        DateTime? supersededBefore = retentionDays is { } days
-            ? clock.GetUtcNow().UtcDateTime - TimeSpan.FromDays(days)
-            : null;
-        var summary = await RunTraceStore.SummarizeAsync(db, supersededBefore, ct).ConfigureAwait(false);
+        var summary = await RunTraceStore.SummarizeAsync(db, SupersededBefore(clock, retentionDays), ct).ConfigureAwait(false);
         return TypedResults.Ok(new RunTraceStorageDto(
-            summary.TotalStatements,
             summary.TotalEvents,
-            summary.PrunableStatements,
+            summary.PrunableEvents,
             summary.PrunableRuns,
             retentionDays));
     }
@@ -95,25 +81,28 @@ public static class MaintenanceEndpoints
         return TypedResults.Ok(new RunTraceRetentionDto(stored));
     }
 
-    private static async Task<Ok<RunStatementPurgeResultDto>> PurgeStatementsAsync(
+    private static async Task<Ok<RunEventPurgeResultDto>> PruneEventsAsync(
         CatalogDbContext db,
+        TimeProvider clock,
         CancellationToken ct)
     {
-        // Deletes every SQL-statement row here, on the request's own catalog scope (not on any pipeline's path), and
-        // returns the count. Run events and run headers are untouched. A database error propagates to the global
-        // handler as a problem response, so the GUI sees the real failure instead of a false "done".
-        var deleted = await RunTraceStore.PurgeAllStatementsAsync(db, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new RunStatementPurgeResultDto(deleted));
+        // Applies the retention policy now, on the request's own catalog scope, and returns the count: the same
+        // prune the reaper runs on its cadence, so the GUI can show what the policy reclaims without waiting.
+        var retentionDays = await MaintenanceStore.GetRunTraceRetentionDaysAsync(db, ct).ConfigureAwait(false);
+        var deleted = await RunTraceStore.PruneEventsAsync(db, SupersededBefore(clock, retentionDays), ct).ConfigureAwait(false);
+        return TypedResults.Ok(new RunEventPurgeResultDto(deleted));
     }
 
     private static async Task<Ok<RunEventPurgeResultDto>> PurgeEventsAsync(
         CatalogDbContext db,
         CancellationToken ct)
     {
-        // Deletes every run-event row here, on the request's own catalog scope. Run headers and SQL statements are
-        // untouched. A database error propagates as a problem response, so the GUI sees a real failure, not a false
-        // "done". Events are never pruned automatically; this manual purge is the only path that removes them.
+        // Deletes every run-event row here, on the request's own catalog scope. Run headers are untouched. A
+        // database error propagates as a problem response, so the GUI sees a real failure, not a false "done".
         var deleted = await RunTraceStore.PurgeAllEventsAsync(db, ct).ConfigureAwait(false);
         return TypedResults.Ok(new RunEventPurgeResultDto(deleted));
     }
+
+    private static DateTime? SupersededBefore(TimeProvider clock, int? retentionDays)
+        => retentionDays is { } days ? clock.GetUtcNow().UtcDateTime - TimeSpan.FromDays(days) : null;
 }

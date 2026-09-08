@@ -5,46 +5,32 @@ namespace SqlFlow.Tests;
 
 /// <summary>
 /// Guards the CLI argument parser: a value-taking option must consume its value so the value never leaks into
-/// the positional-argument list (the bug that had --join-separator and --xml missing from the value-taking set),
-/// while a plain flag must not swallow the token after it.
+/// the positional-argument list (an option missing from the value-taking set silently turns its value into a
+/// positional), while a plain flag must not swallow the token after it.
 /// </summary>
 public sealed class CliArgumentParsingTests
 {
     [Theory]
-    [InlineData(new[] { "flatten", "folder", "--xml", "//a/b" }, new[] { "flatten", "folder" })]
-    [InlineData(new[] { "flatten", "folder", "--join-separator", "|" }, new[] { "flatten", "folder" })]
-    [InlineData(new[] { "run", "pipe.yaml", "--out", "dir" }, new[] { "run", "pipe.yaml" })]
-    [InlineData(new[] { "flatten", "folder", "--xml", "//a/b", "--join-separator", ";" }, new[] { "flatten", "folder" })]
+    [InlineData(new[] { "run", "pipe.yaml", "--log-level", "debug" }, new[] { "run", "pipe.yaml" })]
+    [InlineData(new[] { "trigger", "--repo", "estate", "--flow", "wells" }, new[] { "trigger" })]
+    [InlineData(new[] { "runs", "list", "--status", "failed", "--page-size", "5" }, new[] { "runs", "list" })]
+    [InlineData(new[] { "schedules", "create", "--cron", "0 4 * * *", "--timezone", "Europe/Oslo" }, new[] { "schedules", "create" })]
     public void ValueTakingOption_DoesNotLeakItsValueIntoPositionals(string[] args, string[] expected)
         => Assert.Equal(expected, Program.PositionalArguments(args));
 
     [Fact]
     public void PlainFlag_DoesNotSwallowTheNextToken()
     {
-        // --up is a boolean flag, not value-taking: the token after it is a real positional.
-        Assert.Equal(["of", "value"], Program.PositionalArguments(["of", "--up", "value"]));
+        // --json is a boolean flag, not value-taking: the token after it is a real positional.
+        Assert.Equal(["runs", "local", "folder"], Program.PositionalArguments(["runs", "--json", "local", "folder"]));
     }
 
     [Fact]
-    public void JoinSeparatorAndXml_AreRegisteredValueTaking()
+    public void TheEstateAndScheduleOptions_AreRegisteredValueTaking()
     {
-        Assert.Contains("--join-separator", Program.ValueTakingOptions);
-        Assert.Contains("--xml", Program.ValueTakingOptions);
-    }
-
-    [Fact]
-    public void MapOption_BindsTheValueFollowingTheFlag()
-    {
-        var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        Program.MapOption(options, ["--xml", "//root/item"], "--xml", "xmlPaths");
-        Assert.Equal("//root/item", options["xmlPaths"]);
-    }
-
-    [Fact]
-    public void MapOption_AbsentFlag_LeavesOptionUnset()
-    {
-        var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        Program.MapOption(options, ["run", "pipe.yaml"], "--xml", "xmlPaths");
-        Assert.DoesNotContain("xmlPaths", options.Keys);
+        Assert.Contains("--cron", Program.ValueTakingOptions);
+        Assert.Contains("--timezone", Program.ValueTakingOptions);
+        Assert.Contains("--credential-ref", Program.ValueTakingOptions);
+        Assert.Contains("--commit", Program.ValueTakingOptions);
     }
 }

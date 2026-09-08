@@ -92,7 +92,7 @@ public sealed class NotificationDigestTests
             NotificationChannels.Email, NotificationModes.Digest, [], MorePending: false,
             "https://sqlflow.example.com", Now, window));
 
-        Assert.Equal("SQLFlow digest: no failures", message.Subject);
+        Assert.Equal("OSDU Delivery digest: no failures", message.Subject);
         Assert.Contains("No failures between 2026-07-10 12:34 UTC and 2026-07-11 12:34 UTC.", message.TextBody,
             StringComparison.Ordinal);
 
@@ -137,7 +137,7 @@ public sealed class NotificationDigestTests
         var message = NotificationComposer.Compose(new NotificationComposition(
             NotificationChannels.Slack, NotificationModes.Immediate, [Event(1)], MorePending: false, null, Now));
 
-        Assert.StartsWith("SQLFlow: ", message.Subject, StringComparison.Ordinal);
+        Assert.StartsWith("OSDU Delivery: ", message.Subject, StringComparison.Ordinal);
         Assert.Null(message.HtmlBody);
         Assert.NotNull(message.SlackBlocksJson);
     }
@@ -151,7 +151,7 @@ public sealed class NotificationDigestTests
         {
             Event(1, flow: "orders-load", error: "Timeout expired."),
             Event(2, flow: "orders-load", error: "The target table vanished."),
-            Event(3, kind: NotificationEventKinds.AssertionFailed, flow: "customers-load", error: null),
+            Event(3, kind: NotificationEventKinds.RunCancelled, flow: "customers-load", error: null),
         };
 
         var json = NotificationDigestGroups.Serialize(NotificationComposer.Group(events));
@@ -167,9 +167,9 @@ public sealed class NotificationDigestTests
         // The flow id rides along, so the digest can link to the flow and not only to the run that failed.
         Assert.Equal(events[1].PipelineId, failed.PipelineId);
 
-        var assertions = Assert.Single(groups, g => g.EventKind == NotificationEventKinds.AssertionFailed);
-        Assert.Null(assertions.LastError);
-        Assert.Equal("customers-load", assertions.FlowName);
+        var cancelled = Assert.Single(groups, g => g.EventKind == NotificationEventKinds.RunCancelled);
+        Assert.Null(cancelled.LastError);
+        Assert.Equal("customers-load", cancelled.FlowName);
     }
 
     [Fact]
@@ -241,7 +241,7 @@ public sealed class NotificationDigestStoreTests
             var second = await NotificationDigestGenerator.GenerateScheduledAsync(
                 db, watermark.DigestCursorEventId, now, now.AddMinutes(1), null);
             Assert.Equal(0, second.EventCount);
-            Assert.Equal("SQLFlow digest: no failures", second.Subject);
+            Assert.Equal("OSDU Delivery digest: no failures", second.Subject);
 
             // An empty window leaves the cursor exactly where it was: there was nothing to skip past.
             var after = await NotificationStore.GetWatermarkAsync(db);

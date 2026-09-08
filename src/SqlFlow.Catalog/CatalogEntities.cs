@@ -24,17 +24,6 @@ public static class RunStatuses
         => status is Succeeded or Failed or Cancelled or Skipped;
 }
 
-/// <summary>The provenance of a <see cref="CatalogPipelineColumn"/>, stored as a short lowercase string (same
-/// convention as <see cref="RunStatuses"/>) so the value is self-describing and filterable with plain equality.</summary>
-public static class PipelineColumnKinds
-{
-    /// <summary>Authored in the flow YAML (the source of truth), projected on every pipeline sync.</summary>
-    public const string Declared = "declared";
-
-    /// <summary>Inferred by a run from the loaded raw data (a type-inference report), projected per run.</summary>
-    public const string Detected = "detected";
-}
-
 /// <summary>
 /// One source repository synced into the catalog. Several git repos can sync into one catalog database, so the
 /// GUI and queries span repos: every pipeline and run is attributed to its repo. Identity is stable from the
@@ -440,406 +429,11 @@ public class CatalogFlowVersion
 }
 
 /// <summary>
-/// One object in the lineage graph: a table/view/procedure/function or a file endpoint. GLOBAL, not repo-scoped:
-/// the key is the canonical identity (server reference + database + schema + name), so the SAME physical object
-/// referenced by flows in different repos is ONE row. That shared identity is the join point for multi-repo
-/// traceability - "what touches dbo.Customer" spans every repo. With the derived tier (a connected sync) the
-/// <see cref="Kind"/> and metadata come from the live catalog; offline it is what the YAML declares.
-/// </summary>
-public class CatalogObject
-{
-    public string Key { get; set; } = string.Empty;
-
-    /// <summary>A database-generated integer surrogate whose only purpose is to be the single-column,
-    /// non-nullable, unique KEY INDEX a SQL Server full-text index requires: <see cref="Key"/> itself is too wide
-    /// (nvarchar(900)) to be a full-text key. Not used by the application; the canonical identity is still
-    /// <see cref="Key"/>.</summary>
-    public long FullTextKey { get; set; }
-
-    /// <summary>The connection reference the object was reached through (a ${env:..}/@alias/redacted identity).</summary>
-    public string ServerRef { get; set; } = string.Empty;
-
-    public string? Database { get; set; }
-
-    public string? Schema { get; set; }
-
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>Table / View / Procedure / Function / Trigger / Synonym / File / Unknown.</summary>
-    public string Kind { get; set; } = string.Empty;
-
-    /// <summary>The module body (the <c>sys.sql_modules</c> definition) for a view/procedure/function/trigger,
-    /// captured by the derived (connected) tier so the catalog is searchable code: "the proc whose body
-    /// references dbo.Orders". Null for plain tables, an unconnected sync, or an encrypted module.</summary>
-    public string? Definition { get; set; }
-
-    /// <summary>The generating DDL the engine emitted for this object (the <c>CREATE TABLE</c> or
-    /// <c>CREATE OR ALTER VIEW</c>), captured from the run trace or a declared hook so the catalog holds the
-    /// object's script even offline. Distinct from <see cref="Definition"/>: that is the live module body read
-    /// from the database, this is the script we ran. Null for a pre-existing source table no tier saw created.</summary>
-    public string? Script { get; set; }
-
-    /// <summary>Which tier supplied <see cref="Script"/>: Declared / Observed / Derived. Null when there is no
-    /// script.</summary>
-    public string? ScriptTier { get; set; }
-
-    /// <summary>When <see cref="Script"/> was last refreshed. Null when there is no script.</summary>
-    public DateTime? ScriptUpdatedUtc { get; set; }
-
-    /// <summary>The object's depth in the estate-wide data-movement graph, computed by the lineage sync: 0 for
-    /// a source nothing produces (a file, a pre-existing table), and one more than the deepest object it is
-    /// derived from (through a flow's read-to-write movement or a view's base-table derivation). Global across
-    /// repos, so a table produced in one repo keeps its depth when another repo only reads it. Null when the
-    /// object takes part in no data movement (a procedure a flow requires, or lineage not computed yet).</summary>
-    public int? Level { get; set; }
-
-    /// <summary>The object's interpreted key columns (its primary/business key), comma-joined in key order.
-    /// Interpreted from the CODEBASE, not the live system catalog (warehouses rarely declare physical keys):
-    /// an explicit PRIMARY KEY clause in parsed DDL, the loading flow's YAML key columns, or the ON clause of
-    /// the MERGE that loads it. Null when nothing in the codebase names a key.</summary>
-    public string? KeyColumns { get; set; }
-
-    /// <summary>How <see cref="KeyColumns"/> was interpreted: Constraint / Declared / Merge. Null with no key.</summary>
-    public string? KeyOrigin { get; set; }
-
-    public DateTime FirstSeenUtc { get; set; }
-
-    public DateTime LastSeenUtc { get; set; }
-}
-
-/// <summary>
-/// One interpreted data-model relationship between two catalog objects: how the tables JOIN, distinct from
-/// the flow/module lineage in <see cref="CatalogLineageEdge"/>. Parsed from the codebase's SQL (explicit
-/// FOREIGN KEY clauses, plus the equality predicates the code actually joins on), both ends resolved to
-/// global object keys, column lists comma-joined and positionally paired. Repo-scoped and fully replaced for
-/// a repo on each sync, like the lineage edges; a dossier deduplicates across repos at read time.
-/// </summary>
-public class CatalogObjectRelationship
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>The constraint name, when parsed from an explicit FOREIGN KEY clause; null for an inferred join.</summary>
-    public string? Name { get; set; }
-
-    /// <summary>The referencing side's global object key.</summary>
-    public string FromObjectKey { get; set; } = string.Empty;
-
-    /// <summary>The referencing columns, comma-joined in predicate/constraint order.</summary>
-    public string FromColumns { get; set; } = string.Empty;
-
-    /// <summary>The referenced side's global object key.</summary>
-    public string ToObjectKey { get; set; } = string.Empty;
-
-    public string ToColumns { get; set; } = string.Empty;
-
-    /// <summary>The comparison operator per column pair, comma-joined in the same order as the columns. Empty
-    /// means every pair is an equality, which is the overwhelmingly common case and is stored as empty rather
-    /// than as a run of "=" so the column stays cheap. Anything else is a range join: an interval containment
-    /// such as a temporal dimension lookup, which a consumer must NOT treat as a key match.</summary>
-    public string Operators { get; set; } = string.Empty;
-
-    /// <summary>The distinct join types the codebase uses for this relationship, comma-joined (Inner, Left,
-    /// Right, Full, Where). More than one means different scripts disagree, which a caller composing a new
-    /// query needs to see: writing INNER where the estate writes LEFT silently drops rows.</summary>
-    public string JoinTypes { get; set; } = string.Empty;
-
-    /// <summary>Constraint / Join: how the relationship was interpreted.</summary>
-    public string Origin { get; set; } = string.Empty;
-
-    /// <summary>Declared / Observed / Derived: the provenance of the strongest observation.</summary>
-    public string Tier { get; set; } = string.Empty;
-
-    /// <summary>How many distinct scripts exhibited the relationship (1 for an explicit constraint).</summary>
-    public int Occurrences { get; set; }
-}
-
-/// <summary>
-/// One attributed lineage fact: a flow (or, in the derived tier, a module body) relating to an object. Repo-scoped
-/// and fully replaced for a repo on each sync, so removed edges do not linger. The <see cref="ObjectKey"/> links
-/// to a global <see cref="CatalogObject"/>; a GUI answers "what reads/writes object X across all repos" by
-/// querying edges on that key, and "what does flow Y touch" by querying on <see cref="PipelineId"/>.
-/// </summary>
-public class CatalogLineageEdge
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>The flow the fact belongs to (null for a module-derived fact).</summary>
-    public string? Flow { get; set; }
-
-    /// <summary>The repo-scoped pipeline id for <see cref="Flow"/> (null for a module-derived fact), for joining.</summary>
-    public Guid? PipelineId { get; set; }
-
-    /// <summary>The module (view/proc/function key) whose body produced this fact (derived tier; null otherwise).</summary>
-    public string? ViaModule { get; set; }
-
-    /// <summary>Reads / Writes / Creates / Requires / Destroys.</summary>
-    public string Relation { get; set; } = string.Empty;
-
-    public string ObjectKey { get; set; } = string.Empty;
-
-    /// <summary>The object's display name, denormalized for listing without a join.</summary>
-    public string ObjectName { get; set; } = string.Empty;
-
-    /// <summary>Declared / Observed / Derived: the provenance of the fact.</summary>
-    public string Tier { get; set; } = string.Empty;
-}
-
-/// <summary>
-/// One data subscriber: a report, workbook, notebook, or application that CONSUMES the warehouse. The V3 form
-/// of a legacy <c>flw.DataSubscriber</c> row, declared in a repo's <c>subscribers.yaml</c> and synced like any
-/// other repo knowledge (repo-scoped, fully replaced on each sync). Its consumption itself is NOT stored here:
-/// the queries are parsed into ordinary <see cref="CatalogLineageEdge"/> rows carrying <see cref="ObjectKey"/>
-/// as <c>ViaModule</c>, so "what consumes table X" is the same edge query as "what writes table X" and needs no
-/// second graph. This row holds only what a person needs about the consumer itself: what it is, who owns it,
-/// and where to find it.
-/// </summary>
-public class CatalogSubscriber
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>The subscriber's name (legacy <c>SubscriberName</c>); its identity across the estate.</summary>
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>What consumes the data (legacy <c>SubscriberType</c>): PowerBI, Tableau, Excel, and so on.</summary>
-    public string Type { get; set; } = string.Empty;
-
-    /// <summary>The subscriber's lineage node key: the <see cref="CatalogLineageEdge.ViaModule"/> of every edge
-    /// its queries produced, and the <see cref="CatalogObject.Key"/> of its node in the object registry.</summary>
-    public string ObjectKey { get; set; } = string.Empty;
-
-    /// <summary>The repo-relative path of the subscriber library file that declares it.</summary>
-    public string File { get; set; } = string.Empty;
-
-    /// <summary>Who to contact before a breaking change to a table it reads (legacy <c>CreatedBy</c>).</summary>
-    public string? Owner { get; set; }
-
-    public string? Description { get; set; }
-
-    /// <summary>Remarks about the subscriber's STATE rather than its purpose: last refreshed long ago, looks
-    /// superseded, could not be opened, an open question. Separate from <see cref="Description"/> because a
-    /// description holds for as long as the report exists while a remark is a review finding meant to be
-    /// resolved and removed.</summary>
-    public string? Notes { get; set; }
-
-    /// <summary>Where the subscriber lives: report URL, workbook path, repository.</summary>
-    public string? Url { get; set; }
-
-    public DateTime FirstSeenUtc { get; set; }
-
-    public DateTime LastSeenUtc { get; set; }
-}
-
-/// <summary>
-/// One query a subscriber runs against the warehouse: the V3 form of a legacy <c>flw.DataSubscriberQuery</c>
-/// row. It is the EVIDENCE behind the subscriber's edges, kept so the catalog can answer "why is this report
-/// linked to that table" with the query that links them rather than an assertion. The queryable index of what
-/// reads what remains <see cref="CatalogLineageEdge"/>; <see cref="ObjectKeys"/> is the per-query breakdown for
-/// display, newline-joined in the order the parser resolved them.
-/// </summary>
-public class CatalogSubscriberQuery
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>The owning subscriber's <see cref="CatalogSubscriber.ObjectKey"/>. Keyed by the node key rather
-    /// than by a surrogate id, matching how every other catalog table references the graph: a repo's subscriber
-    /// rows and their queries are then written and replaced independently, in one pass, with no identity
-    /// round-trip between them.</summary>
-    public string SubscriberKey { get; set; } = string.Empty;
-
-    /// <summary>The query's position within its subscriber, 1-based: the declaration order in the YAML, so the
-    /// catalog lists a report's datasets the way its author wrote them.</summary>
-    public int Ordinal { get; set; }
-
-    /// <summary>The query's label within its subscriber (legacy <c>QueryName</c>).</summary>
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>The server identity the query runs against (legacy <c>srcServer</c>, resolved to a reference).</summary>
-    public string ServerRef { get; set; } = string.Empty;
-
-    /// <summary>The query text as declared (legacy <c>FullyQualifiedQuery</c>).</summary>
-    public string Sql { get; set; } = string.Empty;
-
-    /// <summary>The object keys this one query reads, newline-joined. Empty when the query named nothing
-    /// lineage could resolve.</summary>
-    public string ObjectKeys { get; set; } = string.Empty;
-}
-
-/// <summary>
-/// One flow-level dependency in a repo's execution plan: <see cref="ToFlow"/> must wait for <see cref="FromFlow"/>
-/// because of the objects one writes and the other reads. This is the edge set behind the waves; together with
-/// <see cref="CatalogPipeline.Wave"/> it is the executable order of the estate's pipelines. Repo-scoped and fully
-/// replaced on each sync.
-/// </summary>
-public class CatalogFlowDependency
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    public string FromFlow { get; set; } = string.Empty;
-
-    public string ToFlow { get; set; } = string.Empty;
-
-    public Guid FromPipelineId { get; set; }
-
-    public Guid ToPipelineId { get; set; }
-
-    /// <summary>The object names that mediate the dependency, comma-joined for display.</summary>
-    public string ViaObjects { get; set; } = string.Empty;
-}
-
-/// <summary>One file a run processed (file flows): the drill-down detail under a <see cref="CatalogRun"/>.</summary>
-public class CatalogRunFile
-{
-    public long Id { get; set; }
-
-    public Guid RunId { get; set; }
-
-    public Guid? RepoId { get; set; }
-
-    public string Name { get; set; } = string.Empty;
-
-    public string? Path { get; set; }
-
-    /// <summary>The source file's last-modified timestamp (a file flow's <c>processedFiles[].modified</c>); null
-    /// for an export output or a file whose store did not report one. Persisted so the pipeline-level file view
-    /// can sort by it and answer "what is the newest file this pipeline has seen".</summary>
-    public DateTimeOffset? Modified { get; set; }
-
-    public long Rows { get; set; }
-
-    public int Columns { get; set; }
-
-    public long SizeBytes { get; set; }
-
-    /// <summary>The content hash (lowercase hex MD5) of the file's bytes, when the producing flow records one (a copy
-    /// flow does). Null for a flow that reports no hash. Lets the file view show whether a re-run actually changed the
-    /// file, and a downstream reader compare byte-identity without re-reading the file.</summary>
-    public string? Hash { get; set; }
-}
-
-/// <summary>
-/// One database object a source-control snapshot found added, changed, or dropped since the previous run: the
-/// schema history of the managed estate as a queryable table instead of a git log. An scm run writes one row per
-/// difference, so "what changed in the warehouse this week" is a date-ordered read rather than a diff of commits
-/// nobody has cloned. A run that finds nothing writes no rows, which is the honest answer, and the schema is
-/// unchanged.
-/// </summary>
-public class CatalogSchemaChange
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>The scm run that observed the difference.</summary>
-    public Guid RunId { get; set; }
-
-    /// <summary>The snapshot flow's pipeline, so the change can be traced back to the document that found it.
-    /// Null when the run predates its pipeline row (a run recorded before the estate was synced).</summary>
-    public Guid? PipelineId { get; set; }
-
-    /// <summary>The database the object lives in, as the snapshot resolved it (the repository folder name).</summary>
-    public string Database { get; set; } = string.Empty;
-
-    /// <summary>The object category, which is also its repository folder: Table, View, StoredProcedure, and so on.</summary>
-    public string Category { get; set; } = string.Empty;
-
-    /// <summary>The object's schema, or null for a schema-less object (a database DDL trigger, a schema itself).</summary>
-    public string? Schema { get; set; }
-
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>What happened: <c>Added</c>, <c>Changed</c>, or <c>Deleted</c> (see <see cref="SchemaChangeKinds"/>).</summary>
-    public string ChangeType { get; set; } = string.Empty;
-
-    /// <summary>The commit the snapshot landed on, so a row links straight to the diff that proves it. Null when
-    /// the run committed nothing (a dry run) or pushed no remote.</summary>
-    public string? CommitSha { get; set; }
-
-    /// <summary>When the snapshot ran, in UTC: the resolution at which the change is dated. A daily snapshot dates
-    /// a change to the day it was first SEEN, which is not necessarily the day the DDL ran.</summary>
-    public DateTime OccurredUtc { get; set; }
-}
-
-/// <summary>The three differences a snapshot can record. Compared ordinally; stored as written here.</summary>
-public static class SchemaChangeKinds
-{
-    public const string Added = "Added";
-    public const string Changed = "Changed";
-    public const string Deleted = "Deleted";
-}
-
-/// <summary>One data-quality assertion a run evaluated: the drill-down detail under a <see cref="CatalogRun"/>.</summary>
-public class CatalogRunAssertion
-{
-    public long Id { get; set; }
-
-    public Guid RunId { get; set; }
-
-    public Guid? RepoId { get; set; }
-
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>The assertion's first-column result string ("" / a value / "0" on error).</summary>
-    public string Result { get; set; } = string.Empty;
-
-    public string AssertedValue { get; set; } = string.Empty;
-
-    /// <summary>True when the assertion ran without an evaluation error.</summary>
-    public bool Evaluated { get; set; }
-
-    public string? Error { get; set; }
-}
-
-/// <summary>
-/// One generated SQL statement a run executed, in execution order: the central, queryable trace log. Every
-/// statement the engine produced for a run (the kind-specific <c>sqlTrace</c>, a file flow's <c>ddlExecuted</c>,
-/// and surrogate-key statements) is projected here from the on-disk run.json, so a run's exact SQL can be read,
-/// searched, and diffed from the database instead of the file. Drill-down under a <see cref="CatalogRun"/>; this
-/// is the V3 equivalent of the legacy flw.SysLog.TraceLog.
-/// </summary>
-public class CatalogRunStatement
-{
-    public long Id { get; set; }
-
-    public Guid RunId { get; set; }
-
-    public Guid? RepoId { get; set; }
-
-    /// <summary>1-based position in the run's execution order (across every source, in projection order).</summary>
-    public int Ordinal { get; set; }
-
-    /// <summary>When the statement was generated (UTC): the interleave key that places it at its point in the
-    /// run's event timeline (the Events view merges statements and <see cref="CatalogRunEvent"/> rows by this
-    /// instant). Null on rows projected from an artifact that predates the timestamped trace.</summary>
-    public DateTime? TimestampUtc { get; set; }
-
-    /// <summary>The run step that produced the statement (for example staging.create, target.evolve, schema.ddl,
-    /// surrogateKey).</summary>
-    public string Step { get; set; } = string.Empty;
-
-    public string Sql { get; set; } = string.Empty;
-
-    /// <summary>The error this exact statement raised, or null when it succeeded (or was never reached). Exactly
-    /// one statement per failed run carries this: the one whose execution threw. It lets the Statements view flag
-    /// the culprit instead of leaving every row looking identical.</summary>
-    public string? Error { get; set; }
-}
-
-/// <summary>
 /// One canonical run event: a progress, decision, or warning event the engine published while the run executed
 /// (a file it started reading, the watermark it resolved, a stage summary with rows and timing, an engine
 /// decision, a warning). Projected from the run.json <c>events</c> array at completion; while a run is live the
 /// node streams these rows in as the events happen, so the run detail's Events view updates in flight. Generated
-/// SQL is deliberately not duplicated here: statements live in <see cref="CatalogRunStatement"/> and the two
+/// SQL is deliberately not duplicated here: statements live in the generated-statement trace and the two
 /// streams are interleaved by timestamp when the timeline is shown. Drill-down under a <see cref="CatalogRun"/>.
 /// </summary>
 public class CatalogRunEvent
@@ -879,7 +473,7 @@ public class CatalogMaintenanceSetting
     /// <summary>The fixed singleton key (always 1); one row governs the whole estate.</summary>
     public int Id { get; set; }
 
-    /// <summary>How many days a superseded successful run keeps its SQL trace (<see cref="CatalogRunStatement"/> /
+    /// <summary>How many days a superseded successful run keeps its SQL trace (the generated-statement trace /
     /// <see cref="CatalogRunEvent"/>) before it is pruned; null keeps every trace forever (age-based pruning off,
     /// the default until an operator sets a value). Each pipeline's latest run and every failed run are kept
     /// regardless of this, so the current state and every failure reason always survive.</summary>
@@ -891,154 +485,6 @@ public class CatalogMaintenanceSetting
     /// <summary>Who last changed the settings (the caller's username), for a light audit trail; null before any
     /// edit.</summary>
     public string? UpdatedBy { get; set; }
-}
-
-/// <summary>One surrogate-key generation outcome of a run (ingestion flows): the IDENTITY-backed lookup-table
-/// assignment, log-only (a failure never rolled back the load). Drill-down under a <see cref="CatalogRun"/>; the
-/// statements it ran are in <see cref="CatalogRunStatement"/>.</summary>
-public class CatalogRunSurrogateKey
-{
-    public long Id { get; set; }
-
-    public Guid RunId { get; set; }
-
-    public Guid? RepoId { get; set; }
-
-    public int SurrogateKeyId { get; set; }
-
-    public string SurrogateTable { get; set; } = string.Empty;
-
-    public string SurrogateColumn { get; set; } = string.Empty;
-
-    /// <summary>True when the surrogate was generated on a different server than the flow's target.</summary>
-    public bool IsRemote { get; set; }
-
-    /// <summary>New distinct business keys inserted into the lookup table.</summary>
-    public long KeysGenerated { get; set; }
-
-    /// <summary>Base/target rows stamped with a surrogate value.</summary>
-    public long RowsStamped { get; set; }
-
-    /// <summary>True when the spec ran without an error.</summary>
-    public bool Executed { get; set; }
-
-    public string? Error { get; set; }
-}
-
-/// <summary>One per-metric health-check summary of a run (hc flows): the anomaly and model-provenance counts, so
-/// a GUI can show data-quality dashboards straight from the database (the full scored series stays in the on-disk
-/// healthcheck.json report). Drill-down under a <see cref="CatalogRun"/>.</summary>
-public class CatalogRunHealthCheckMetric
-{
-    public long Id { get; set; }
-
-    public Guid RunId { get; set; }
-
-    public Guid? RepoId { get; set; }
-
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>Dates in the scored series (observed plus imputed).</summary>
-    public int SeriesPoints { get; set; }
-
-    /// <summary>Dates absent from the source whose value was imputed.</summary>
-    public int ImputedPoints { get; set; }
-
-    /// <summary>Trailing points excluded from anomaly counting (data may still be arriving).</summary>
-    public int ImmaturePoints { get; set; }
-
-    public int Anomalies { get; set; }
-
-    /// <summary>Regime changes PELT reported in this metric's residuals.</summary>
-    public int LevelShifts { get; set; }
-
-    /// <summary>True when this run trained the metric's model; false when it scored with the stored one.</summary>
-    public bool ModelTrained { get; set; }
-
-    public string? ModelTrainer { get; set; }
-
-    /// <summary>Why the metric could not be scored, when it failed; null when it scored.</summary>
-    public string? Error { get; set; }
-}
-
-/// <summary>
-/// One column of a catalog object, captured by the derived (connected) lineage tier from the live database, so the
-/// catalog is a cross-repo data dictionary: a GUI answers "every table/view with a column named X" across all
-/// repos. Keyed to its global <see cref="CatalogObject"/> by <see cref="ObjectKey"/> (a soft link, no FK, since
-/// objects are upserted globally). Only populated by a <c>--connect</c> sync.
-/// </summary>
-public class CatalogObjectColumn
-{
-    public long Id { get; set; }
-
-    /// <summary>The owning object's global key (server reference + database + schema + name).</summary>
-    public string ObjectKey { get; set; } = string.Empty;
-
-    /// <summary>1-based column position in the object.</summary>
-    public int Ordinal { get; set; }
-
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>The SQL Server type rendered with length/precision (for example <c>nvarchar(100)</c>, <c>decimal(18,2)</c>).</summary>
-    public string? DataType { get; set; }
-
-    public bool Nullable { get; set; }
-
-    /// <summary>Which tier supplied this column set: <c>Derived</c> (read live from the database),
-    /// <c>Observed</c> (parsed from the CREATE TABLE the run executed), or <c>Declared</c>. The sync keeps a
-    /// live (derived) dictionary from being overwritten by an offline (observed) one.</summary>
-    public string Tier { get; set; } = string.Empty;
-}
-
-/// <summary>
-/// One resolved column of a pipeline's pre-ingestion transformation view: the modernized, central form of a
-/// legacy <c>flw.PreIngestionTransform</c> row, so the estate can be queried for "which transformations are set
-/// or detected on a pipeline". Two provenances share the row shape, distinguished by <see cref="Kind"/>:
-/// <c>declared</c> rows are projected from the flow YAML (the source of truth, refreshed on every pipeline sync),
-/// and <c>detected</c> rows are projected from a type-inference report produced by a run against the loaded raw
-/// data. Repo-scoped and keyed to its pipeline by <see cref="PipelineId"/> (a soft link, no FK, matching the rest
-/// of the catalog). Replaced by (pipeline, kind) so a re-sync or a fresh run reflects the current transforms.
-/// </summary>
-public class CatalogPipelineColumn
-{
-    public long Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>The owning pipeline's stable id (FlowIdentity of the flow name); a soft link (no FK).</summary>
-    public Guid PipelineId { get; set; }
-
-    /// <summary><c>declared</c> (authored in YAML) or <c>detected</c> (inferred by a run from the raw data).</summary>
-    public string Kind { get; set; } = string.Empty;
-
-    /// <summary>1-based position of the column in the resolved transformation view.</summary>
-    public int Ordinal { get; set; }
-
-    /// <summary>The output column name in the view (the alias when the transform renames, else the source name).</summary>
-    public string ColumnName { get; set; } = string.Empty;
-
-    /// <summary>The raw source column the transform reads (legacy ColumnName); null for a virtual/computed column.</summary>
-    public string? SourceColumn { get; set; }
-
-    /// <summary>The SQL expression producing the value, with <c>@ColName</c> already resolved to the source column
-    /// reference; null when the column is a straight pass-through with no transform.</summary>
-    public string? Expression { get; set; }
-
-    /// <summary>The column's SQL type (declared in YAML, or inferred); null when a plain expression's type is not
-    /// declared.</summary>
-    public string? DataType { get; set; }
-
-    /// <summary>The authored sort order (legacy ColumnSortOrder); null when the column keeps its natural position.</summary>
-    public int? SortOrder { get; set; }
-
-    /// <summary>A computed column with no raw source counterpart (legacy Virtual indicator).</summary>
-    public bool IsVirtual { get; set; }
-
-    /// <summary>Computed but dropped from the view's final projection (legacy ExcludeFromView).</summary>
-    public bool ExcludeFromView { get; set; }
-
-    /// <summary>True when a real conversion/expression was applied (as opposed to a raw string pass-through).</summary>
-    public bool Converted { get; set; }
 }
 
 /// <summary>
@@ -1290,55 +736,6 @@ public class CatalogComputeTask
 
     /// <summary>The operation's result as JSON (shape depends on the operation); null until succeeded.</summary>
     public string? ResultJson { get; set; }
-}
-
-/// <summary>
-/// One prepared ad-hoc query, awaiting a human's approval to run.
-///
-/// This row IS the confirmation gate. An agent composing a business question calls prepare, which validates
-/// the statement and writes this row; the row's id is the only thing that can later be executed. Nothing can
-/// run SQL that was not first prepared and shown, because the run endpoint takes a token and never a
-/// statement. The row is single-use (<see cref="ConsumedUtc"/>) and short-lived
-/// (<see cref="ExpiresUtc"/>), so an approval cannot be replayed later or left lying around, and it records
-/// who prepared it beside the exact text, which makes the whole surface auditable after the fact.
-/// </summary>
-public class CatalogQueryPlan
-{
-    /// <summary>The token. Minted server-side, and the only handle the run endpoint accepts.</summary>
-    public Guid PlanId { get; set; }
-
-    /// <summary>The validated statement, exactly as it will be executed and exactly as it was shown.</summary>
-    public string Sql { get; set; } = string.Empty;
-
-    /// <summary>The datasource reference the query will run against; never a secret.</summary>
-    public string SourceRef { get; set; } = string.Empty;
-
-    public string? ProviderKind { get; set; }
-
-    public string? Database { get; set; }
-
-    /// <summary>The pool the run should be routed to, carried from prepare so the approved plan runs where it
-    /// was planned to.</summary>
-    public string? TargetPool { get; set; }
-
-    public int MaxRows { get; set; }
-
-    public int TimeoutSeconds { get; set; }
-
-    /// <summary>Who prepared it (the token subject), recorded so an executed query is attributable.</summary>
-    public string? PreparedBy { get; set; }
-
-    public DateTime PreparedUtc { get; set; }
-
-    /// <summary>When the plan stops being runnable. An approval is a decision about a moment, not a standing
-    /// permission.</summary>
-    public DateTime ExpiresUtc { get; set; }
-
-    /// <summary>When the plan was spent. Non-null means it has already run and cannot run again.</summary>
-    public DateTime? ConsumedUtc { get; set; }
-
-    /// <summary>The compute task the run created, so a plan links to its result.</summary>
-    public Guid? TaskId { get; set; }
 }
 
 /// <summary>The identity providers a <see cref="CatalogUser"/> can come from, stored as a short lowercase string
@@ -1677,18 +1074,14 @@ public static class NotificationEventKinds
     /// <see cref="RunFailed"/> so subscribers can mute the (often numerous) downstream echoes of one failure.</summary>
     public const string RunSkipped = "run_skipped";
 
-    /// <summary>A run succeeded but at least one of its data-quality assertions failed to evaluate. Assertions are
-    /// log-only (a failure never fails the load), so this is the only signal that a "green" run needs attention.</summary>
-    public const string AssertionFailed = "assertion_failed";
-
     /// <summary>Every kind, in display order.</summary>
-    public static readonly IReadOnlyList<string> All = [RunFailed, RunCancelled, RunSkipped, AssertionFailed];
+    public static readonly IReadOnlyList<string> All = [RunFailed, RunCancelled, RunSkipped];
 
     /// <summary>The kinds a new subscription starts with: real failures, without the skipped-run echoes.</summary>
-    public const string DefaultKinds = RunFailed + "," + AssertionFailed;
+    public const string DefaultKinds = RunFailed;
 
     public static bool IsKnown(string kind)
-        => kind is RunFailed or RunCancelled or RunSkipped or AssertionFailed;
+        => kind is RunFailed or RunCancelled or RunSkipped;
 }
 
 /// <summary>The channels a notification subscription can deliver over, stored as short lowercase strings.</summary>
@@ -1751,8 +1144,7 @@ public class CatalogNotificationEvent
     /// <summary>When detection wrote this event.</summary>
     public DateTime DetectedUtc { get; set; }
 
-    /// <summary>The run's error text, or the failed-assertion summary for <see cref="NotificationEventKinds.AssertionFailed"/>;
-    /// secret-redacted upstream (the catalog only ever stores redacted errors). Null when none was recorded.</summary>
+    /// <summary>The run's error text, secret-redacted upstream (the catalog only ever stores redacted errors). Null when none was recorded.</summary>
     public string? Error { get; set; }
 }
 
@@ -1931,7 +1323,6 @@ public class CatalogNotificationWatermark
     public DateTime UpdatedUtc { get; set; }
 }
 
-
 /// <summary>What produced a <see cref="CatalogNotificationDigest"/>, stored as a short lowercase string.</summary>
 public static class NotificationDigestOrigins
 {
@@ -1989,8 +1380,6 @@ public class CatalogNotificationDigest
 
     public int SkippedCount { get; set; }
 
-    public int AssertionFailedCount { get; set; }
-
     /// <summary>The event-id range covered; both 0 when the window held no events.</summary>
     public long FirstEventId { get; set; }
 
@@ -2018,68 +1407,4 @@ public class CatalogNotificationDigest
     /// kept for a year), so a digest read later still shows which flows failed and why, not just a total.
     /// </summary>
     public string GroupsJson { get; set; } = string.Empty;
-}
-/// <summary>
-/// One GUI chat conversation with the SQLFlow assistant: the durable transcript the assistant's
-/// provider-side state is only a cache of (exactly as a Slack thread is for the Slack bot). Owned
-/// by one user; a conversation is never visible to anyone else. The title is derived from the
-/// first question and rename-able. Deleting a conversation deletes its messages.
-/// </summary>
-public class CatalogChatConversation
-{
-    public Guid Id { get; set; }
-
-    /// <summary>The owning user (<see cref="CatalogUser.Id"/>); a soft link, matching the rest of the catalog.</summary>
-    public Guid UserId { get; set; }
-
-    /// <summary>The conversation's display title: the first question's opening words until renamed.</summary>
-    public string Title { get; set; } = string.Empty;
-
-    public DateTime CreatedUtc { get; set; }
-
-    /// <summary>When the conversation last gained a message; what the conversation list orders by.</summary>
-    public DateTime UpdatedUtc { get; set; }
-}
-
-/// <summary>The two author roles a <see cref="CatalogChatMessage"/> can carry, stored as short lowercase strings.</summary>
-public static class ChatMessageRoles
-{
-    public const string User = "user";
-    public const string Assistant = "assistant";
-}
-
-/// <summary>
-/// One message of a GUI chat conversation, append-only in <see cref="Ordinal"/> order: the user's
-/// questions (with their image attachments) and the assistant's answers (with the tool calls the
-/// answer made, for the transcript's tool-activity display). The persisted transcript is what
-/// rebuilds the model conversation when the provider-side chain is lost, so a control-plane
-/// restart or a re-opened browser loses nothing.
-/// </summary>
-public class CatalogChatMessage
-{
-    /// <summary>The append-only, monotonically increasing id (SQL Server IDENTITY).</summary>
-    public long Id { get; set; }
-
-    /// <summary>The conversation this message belongs to (soft link, like every catalog reference).</summary>
-    public Guid ConversationId { get; set; }
-
-    /// <summary>1-based position within the conversation (emission order).</summary>
-    public int Ordinal { get; set; }
-
-    /// <summary>Who authored the message (see <see cref="ChatMessageRoles"/>).</summary>
-    public string Role { get; set; } = string.Empty;
-
-    /// <summary>The message text: the user's question, or the assistant's answer as Markdown.</summary>
-    public string Text { get; set; } = string.Empty;
-
-    /// <summary>A JSON array of <c>data:&lt;mime&gt;;base64,...</c> image URIs attached to a user
-    /// question; null when the message carries no images.</summary>
-    public string? ImagesJson { get; set; }
-
-    /// <summary>A JSON array of the tool calls an assistant answer made (name and final status, in
-    /// call order), so a re-opened transcript still shows what the assistant looked at; null when
-    /// the answer used no tools (or for user messages).</summary>
-    public string? ToolCallsJson { get; set; }
-
-    public DateTime CreatedUtc { get; set; }
 }

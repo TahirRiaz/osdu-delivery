@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    SQLFlow V3 prod container deploy: detect which images actually changed since the
+    OSDU Delivery prod container deploy: detect which images actually changed since the
     tag each app is serving, build those in ACR (fast + parallel), point the container
     apps at the new tag, verify the new revision is actually serving, and roll back
     automatically if it is not.
@@ -16,8 +16,7 @@
         source trees that Dockerfile copies). The tag an app currently serves IS a
         commit SHA, so `git diff <servingTag> HEAD -- <paths>` decides whether the
         image needs a rebuild. Unchanged apps are skipped, with the reason printed.
-      * Bare invocation considers control-plane, worker, and gui; mcp and slack-bot
-        join only via 'all' or by being named. Naming apps explicitly deploys them
+      * Bare invocation considers control-plane, worker, and gui. Naming apps explicitly deploys them
         unconditionally (no change filter): an explicit ask is an order, and it is
         also the escape hatch when detection must be bypassed.
       * An app with no serving image, a foreign image, or a tag that is not a commit
@@ -61,11 +60,11 @@
 
 .EXAMPLE
     .\deploy-prod.ps1 all
-    Same change detection, but across every app: control-plane, worker, gui, mcp, slack-bot.
+    Same change detection, but across every app: control-plane, worker, gui.
 
 .EXAMPLE
     .\deploy-prod.ps1 control-plane worker
-    Force exactly those apps, changed or not. Known: control-plane worker gui mcp slack-bot
+    Force exactly those apps, changed or not. Known: control-plane worker gui
 
 .EXAMPLE
     .\deploy-prod.ps1 -WhatIf
@@ -125,16 +124,12 @@ $Config = [ordered]@{
     'control-plane' = @{ Dockerfile = 'Dockerfile';          Sub = 'repo'; Paths = @('Dockerfile') + $DotnetBuildInputs }
     'worker'        = @{ Dockerfile = 'Dockerfile.worker';   Sub = 'repo'; Paths = @('Dockerfile.worker', 'deploy/docker/worker-entrypoint.sh') + $DotnetBuildInputs }
     'gui'           = @{ Dockerfile = 'Dockerfile';          Sub = 'gui';  Paths = @('gui') }
-    'mcp'           = @{ Dockerfile = 'Dockerfile.mcp';      Sub = 'repo'; Paths = @('Dockerfile.mcp', 'tools', 'docs/reference') }
-    'slack-bot'     = @{ Dockerfile = 'Dockerfile.slackbot'; Sub = 'repo'; Paths = @('Dockerfile.slackbot') + $DotnetBuildInputs }
 }
 
 # Explicitly named apps deploy unconditionally; the bare default and 'all' are candidate sets
 # that change detection narrows to what is actually required.
 $ExplicitSelection = $true
 if (-not $Apps -or $Apps.Count -eq 0) {
-    # mcp and slack-bot are not in the bare default because most deploys are backend/GUI
-    # iterations that do not touch them; 'all' or naming them opts them in.
     $Apps = @('control-plane', 'worker', 'gui')
     $ExplicitSelection = $false
 }
@@ -152,11 +147,11 @@ $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 
 $Tag = (git rev-parse --short HEAD).Trim()
-if (-not $Tag) { throw 'Could not read git HEAD. Run this from the SQLFlow V3 repo.' }
+if (-not $Tag) { throw 'Could not read git HEAD. Run this from the OSDU Delivery repo.' }
 
 # A dirty tree means the image would NOT contain the working changes. That has burned
 # enough deploys to be an error rather than a warning. Checked over the watch paths of
-# every app in play, so an mcp deploy trips on uncommitted tools/ changes too.
+# every app in play.
 $watchPaths = @($Apps | ForEach-Object { $Config[$_].Paths } | Sort-Object -Unique)
 $dirty = git status --porcelain -- @watchPaths
 if ($dirty) {
@@ -294,7 +289,7 @@ function Get-ChangeStatus {
 }
 
 Write-Host ''
-Write-Host '=== SQLFlow V3 deploy ===' -ForegroundColor Cyan
+Write-Host '=== OSDU Delivery deploy ===' -ForegroundColor Cyan
 Write-Host "   tag:  $Tag"
 $mode = if ($ExplicitSelection) { 'forced (named explicitly)' } else { 'candidates (change-filtered below)' }
 Write-Host "   apps: $($Apps -join ', ') [$mode]"

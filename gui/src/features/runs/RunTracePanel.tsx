@@ -12,18 +12,12 @@ import { useRunTraceStream } from "./useRunTraceStream";
 const AT_REST_CAP = 2000;
 
 function toLine(entry: RunTraceEntry): TraceLine {
-  const isStatement = entry.kind === "statement";
   return {
-    key: `${entry.kind}-${entry.id}`,
+    key: String(entry.id),
     timestampUtc: entry.timestampUtc,
-    tag: entry.step ?? entry.kind,
-    // A statement row's level is always "trace"; event rows carry their own level.
-    level: isStatement ? "trace" : entry.level,
-    // A statement row is its SQL (shown as the event); no redundant "statement" label. A failure is carried by
-    // the error field, so it still stands out. Event rows carry their own message.
-    message: isStatement ? "" : entry.message ?? "",
-    sql: entry.sql,
-    error: entry.error,
+    tag: entry.step ?? entry.level,
+    level: entry.level,
+    message: entry.message,
   };
 }
 

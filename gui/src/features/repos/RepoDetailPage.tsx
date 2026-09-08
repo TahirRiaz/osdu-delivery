@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Network, Play, RefreshCw } from "lucide-react";
+import { Loader2, Play, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,7 +101,7 @@ function matchingFolders(folders: RepoFolder[], needle: string): RepoFolder[] {
 }
 
 /** The repo's folders, each a collapsible card of its pipelines and its other files. A project that contains a batch
- * flow (flowType: batch) can be run as a unit: the batch executes its members in lineage wave order, so "Run project"
+ * flow (flowType: batch) can be run as a unit: the batch executes its members in wave order, so "Run project"
  * triggers that ordered run. */
 function RepoProjects({
   repoId, filter, onOpen, onRunBatch,
@@ -218,7 +218,7 @@ function RepoProjects({
   );
 }
 
-/** One repo: its sync facts, quick actions (lineage graph, trigger run), and its pipelines. */
+/** One repo: its sync facts, quick actions (trigger run), and its pipelines. */
 export default function RepoDetailPage() {
   const { repoId = "" } = useParams();
   const navigate = useNavigate();
@@ -262,24 +262,20 @@ export default function RepoDetailPage() {
   });
 
   // A CLI/local-path repo has no git source for the background sync to poll, so it is re-synced inline from its
-  // recorded root path (connected: the derived lineage tier reads the live database). On success the pipeline and
-  // lineage views are refreshed so the new waves/edges show without a manual reload.
+  // recorded root path. On success the pipeline views are refreshed so the changes show without a manual reload.
   const syncLocal = useMutation({
     mutationFn: (id: string) => repoApi.syncLocal(id),
     onSuccess: (result) => {
       const message = `Synced: ${result.pipelinesAdded} added, ${result.pipelinesUpdated} updated, `
-        + `${result.objects} objects, ${result.edges} edges, ${result.waves} waves`
-        + `${result.connected ? " (connected)" : ""}`
+        + `${result.pipelinesDeactivated} deactivated, ${result.runsAdded} run(s) recorded`
         + `${result.warnings.length > 0 ? `; ${result.warnings.length} warning(s)` : ""}`;
-      if (result.connected) {
+      if (result.warnings.length === 0) {
         toast.success(message);
       } else {
         toast.warning(message);
       }
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
       void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
-      void queryClient.invalidateQueries({ queryKey: ["lineage-waves"] });
-      void queryClient.invalidateQueries({ queryKey: ["lineage-object-edges"] });
     },
     onError: (error) =>
       toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
@@ -359,19 +355,10 @@ export default function RepoDetailPage() {
                     </span>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-sm">
-                    {`Re-sync from ${repo.rootPath} (connected: reads the live database for object lineage)`}
+                    {`Re-sync from ${repo.rootPath}`}
                   </TooltipContent>
                 </Tooltip>
               ) : null}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate(`/lineage?repoId=${repoId}`)}
-                data-testid="repo-lineage-graph"
-              >
-                <Network />
-                Lineage graph
-              </Button>
               <Button size="sm" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
                 <Play />
                 Trigger run

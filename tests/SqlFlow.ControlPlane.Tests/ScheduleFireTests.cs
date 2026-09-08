@@ -289,7 +289,6 @@ public sealed class ScheduleFireTests
         await db.Schedules.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
         await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
         await db.RunGroups.Where(g => g.RepoId == repoId).ExecuteDeleteAsync();
-        await db.FlowDependencies.Where(d => d.RepoId == repoId).ExecuteDeleteAsync();
         await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
     }
 }

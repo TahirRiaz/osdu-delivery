@@ -58,24 +58,6 @@ test.describe.serial("pipelines", () => {
     await expect(adminPage.getByTestId("paged-table").first()).toBeVisible();
   });
 
-  test("the header profiles the size of the flow's file deliveries", async ({ adminPage }) => {
-    await adminPage.getByTestId("nav-pipelines").click();
-    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
-    await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
-    await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
-
-    // Every flow carries the profile cell in its header, so the layout does not shift by flow kind.
-    await expect(adminPage.getByText("Avg file size")).toBeVisible();
-
-    // The fixture flow has loaded its CSV, so the Files tab lists it and the header reads a real byte size
-    // (the average is computed from the same files the tab browses).
-    await adminPage.getByTestId("pipeline-tab-files").click();
-    await expect(adminPage.getByTestId("pipeline-files-table").getByTestId("table-row").first())
-      .toBeVisible({ timeout: 30_000 });
-    await expect(adminPage.getByTestId("pipeline-avg-file-size"))
-      .toHaveText(/^\d+(\.\d+)? (B|KiB|MiB|GiB|TiB)$/, { timeout: 15_000 });
-  });
-
   test("trigger from the pipeline detail is prefilled and lands on the run", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     // The folder tree starts collapsed; a search expands it and surfaces the flow row.

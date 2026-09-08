@@ -155,9 +155,9 @@ public sealed partial class NotificationService : BackgroundService
         var result = await NotificationStore.DetectAsync(
             catalog, _clock.GetUtcNow().UtcDateTime, TimeSpan.FromMinutes(_options.DetectionOverlapMinutes), ct)
             .ConfigureAwait(false);
-        if (result.RunEvents > 0 || result.AssertionEvents > 0)
+        if (result.RunEvents > 0)
         {
-            LogDetected(result.RunEvents, result.AssertionEvents);
+            LogDetected(result.RunEvents);
         }
     }
 
@@ -529,8 +529,8 @@ public sealed partial class NotificationService : BackgroundService
     [LoggerMessage(Level = LogLevel.Information, Message = "Notification service started; configured channels: {Channels}.")]
     private partial void LogStarted(string channels);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Notification detection recorded {RunEvents} run event(s) and {AssertionEvents} assertion event(s).")]
-    private partial void LogDetected(int runEvents, int assertionEvents);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Notification detection recorded {RunEvents} run event(s).")]
+    private partial void LogDetected(int runEvents);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Subscription {SubscriptionId} dispatched one {Channel} message covering {EventCount} event(s) as delivery {DeliveryId}.")]
     private partial void LogDispatched(Guid subscriptionId, string channel, int eventCount, Guid deliveryId);

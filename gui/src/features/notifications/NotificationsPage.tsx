@@ -447,13 +447,6 @@ function DigestBreakdown({ summary }: { summary: NotificationDigestSummary }) {
   if (summary.failedCount > 0) {
     parts.push({ key: "failed", label: `${summary.failedCount} failed`, className: "text-destructive" });
   }
-  if (summary.assertionFailedCount > 0) {
-    parts.push({
-      key: "assertions",
-      label: `${summary.assertionFailedCount} assertions`,
-      className: "text-warning",
-    });
-  }
   if (summary.cancelledCount > 0) {
     parts.push({ key: "cancelled", label: `${summary.cancelledCount} cancelled`, className: "" });
   }
@@ -499,12 +492,6 @@ function DigestKpis({ summary }: { summary: NotificationDigestSummary }) {
         value={summary.failedCount}
         color={summary.failedCount > 0 ? "error" : undefined}
         testId="digest-kpi-failed"
-      />
-      <KpiCard
-        label="Assertions"
-        value={summary.assertionFailedCount}
-        color={summary.assertionFailedCount > 0 ? "warning" : undefined}
-        testId="digest-kpi-assertions"
       />
       <KpiCard
         label="Cancelled + skipped"

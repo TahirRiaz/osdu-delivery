@@ -12,6 +12,7 @@ using SqlFlow.Core.Identity;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Node;
 using SqlFlow.SourceControl.Proposals;
+using SqlFlow.Yaml;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -72,6 +73,7 @@ public static class FlowProposalEndpoints
         ClaimsPrincipal user,
         CatalogDbContext db,
         ISecretResolver resolver,
+        YamlDocumentLoader documents,
         IGitProposalPublisher gitPublisher,
         IEnumerable<IPullRequestPublisher> prPublishers,
         CancellationToken ct)
@@ -120,7 +122,7 @@ public static class FlowProposalEndpoints
             .Where(p => p.RepoId == repoId && p.Active)
             .Select(p => new FlowProposalPreflight.ExistingPipeline(p.Name, p.RelativePath, p.Yaml))
             .ToListAsync(ct).ConfigureAwait(false);
-        var preflight = FlowProposalPreflight.Run(filesOrError.Files!, existingPipelines);
+        var preflight = FlowProposalPreflight.Run(documents, filesOrError.Files!, existingPipelines);
         if (preflight.Errors.Count > 0)
         {
             return Problem(
@@ -340,7 +342,7 @@ public static class FlowProposalEndpoints
             return body;
         }
 
-        var section = "## SQLFlow preflight\n\n"
+        var section = "## OSDU Delivery preflight\n\n"
             + string.Join("\n", warnings.Select(f => $"- :warning: `{f.Path}`: {f.Message}"));
         return string.IsNullOrWhiteSpace(body) ? section : $"{body.Trim()}\n\n{section}";
     }

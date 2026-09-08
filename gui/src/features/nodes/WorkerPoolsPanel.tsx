@@ -210,7 +210,7 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
 
 function scaleMessage(request: WorkerPoolScaleRequest, pool: WorkerPool): string {
   const name = poolLabel(pool.pool);
-  if (request.minReplicas !== undefined && request.manualReplicas === undefined) {
+  if (request.minReplicas != null && request.manualReplicas == null) {
     return request.minReplicas > 0
       ? `Keeping at least ${request.minReplicas} worker warm in ${name}.`
       : `Always-on disabled for ${name}; it will scale to zero when idle.`;

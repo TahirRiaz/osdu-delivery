@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.Core</RootNamespace>
-    <Description>SQLFlow core: domain model, abstractions, and the stateless ETL engine. No SQL Server, YAML, or I/O dependencies.</Description>
+    <Description>OSDU Delivery core: the run model, run artifacts and events, secret references and hygiene, file stores, and flow identity. No database or engine dependencies.</Description>
   </PropertyGroup>
 
   <ItemGroup>

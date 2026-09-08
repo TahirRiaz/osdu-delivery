@@ -91,7 +91,7 @@ public sealed partial class RunTraceReaper : BackgroundService
         }
 
         var supersededBefore = _clock.GetUtcNow().UtcDateTime - TimeSpan.FromDays(retentionDays);
-        var deleted = await RunTraceStore.PruneStatementsAsync(catalog, supersededBefore, ct).ConfigureAwait(false);
+        var deleted = await RunTraceStore.PruneEventsAsync(catalog, supersededBefore, ct).ConfigureAwait(false);
         if (deleted > 0)
         {
             LogPruned(deleted, retentionDays);

@@ -1,4 +1,5 @@
 ﻿using SqlFlow.Core;
+using SqlFlow.Tests;
 using SqlFlow.Yaml;
 using Xunit;
 
@@ -110,31 +111,16 @@ public sealed class ScheduleMaxConcurrencyTests
 
     private static ScheduleSpec Inline(string? boundLine)
     {
-        var yaml = "flowType: ing\n"
-            + "name: some_flow_02_ing\n"
+        var yaml = "flowType: test\n"
+            + "name: some_flow_02\n"
             + "schedule:\n"
             + "  name: nightly\n"
             + "  cron: \"0 4 * * *\"\n"
             + (boundLine is null ? string.Empty : boundLine + "\n")
-            + "connections:\n"
-            + "  src: \"Server=s;Database=d;Integrated Security=true;\"\n"
-            + "  ods: \"Server=s;Database=d;Integrated Security=true;\"\n"
-            + "source:\n"
-            + "  server: src\n"
-            + "  object: \"[db].[dbo].[t]\"\n"
-            + "target:\n"
-            + "  server: ods\n"
-            + "  object: \"[db].[arc].[T]\"\n"
-            + "load:\n"
-            + "  keyColumns: [id]\n";
+            + "source: lake://raw/some_flow\n"
+            + "target: osdu://partition/some_flow\n";
 
-        var loader = new YamlDocumentLoader(
-            new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
-            new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-            new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-            new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
-
-        var document = loader.Parse(yaml);
+        var document = TestFlowKind.Loader().Parse(yaml);
         Assert.NotNull(document.Schedule);
         return document.Schedule;
     }

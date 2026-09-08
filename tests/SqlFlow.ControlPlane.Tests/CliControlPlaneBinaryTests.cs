@@ -287,83 +287,6 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Trigger_Preview_NodeScope_ListsTheMembersWithoutEnqueuing()
-    {
-        var (dll, url, cs) = await RequireAsync();
-        var (username, password) = await SeedOperatorAsync(cs);
-        var (repoId, repoName, flowName, _) = await SeedRepoPipelineAsync(cs);
-        var token = await MintPatAsync(url, username, password);
-
-        try
-        {
-            var preview = await CliBinary.RunAsync(
-                dll,
-                ["trigger", "--repo", repoName, "--flow", flowName, "--scope", "node", "--preview"],
-                env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
-
-            Assert.True(preview.Exit == 0, preview.AllOutput);
-            Assert.Contains(flowName, preview.StdOut, StringComparison.Ordinal);
-            Assert.Contains("wave", preview.StdOut, StringComparison.Ordinal);
-
-            await using var db = CatalogDatabase.Create(cs);
-            Assert.False(await db.Runs.AnyAsync(r => r.RepoId == repoId), "preview must not enqueue");
-
-            // There is no ad-hoc batch scope anymore: a whole source runs through its schedule, and the CLI
-            // answers the retired spelling with guidance instead of a server round trip.
-            var batchScope = await CliBinary.RunAsync(
-                dll,
-                ["trigger", "--repo", repoName, "--scope", "batch", "--preview"],
-                env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
-            Assert.Equal(1, batchScope.Exit);
-            Assert.Contains("schedule", batchScope.StdErr, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            await CleanupRepoAsync(cs, repoId);
-            await CleanupUserAsync(cs, username);
-        }
-    }
-
-    [SkippableFact]
-    public async Task Trigger_NodeScope_GroupShowAndRerun()
-    {
-        var (dll, url, cs) = await RequireAsync();
-        var (username, password) = await SeedOperatorAsync(cs);
-        var (repoId, repoName, flowName, _) = await SeedRepoPipelineAsync(cs);
-        var token = await MintPatAsync(url, username, password);
-        var env = CliEnv(url, ("SQLFLOW_TOKEN", token));
-
-        try
-        {
-            var trigger = await CliBinary.RunAsync(
-                dll, ["trigger", "--repo", repoName, "--flow", flowName, "--scope", "node", "--json"],
-                env: env, workingDirectory: _dir);
-            Assert.True(trigger.Exit == 0, trigger.AllOutput);
-            using var accepted = JsonDocument.Parse(trigger.StdOut);
-            var groupId = accepted.RootElement.GetProperty("groupId").GetGuid();
-            Assert.True(accepted.RootElement.GetProperty("memberCount").GetInt32() >= 1);
-
-            var show = await CliBinary.RunAsync(
-                dll, ["groups", "show", groupId.ToString()], env: env, workingDirectory: _dir);
-            Assert.True(show.Exit == 0, show.AllOutput);
-            Assert.Contains("member", show.StdOut, StringComparison.Ordinal);
-            Assert.Contains(flowName, show.StdOut, StringComparison.Ordinal);
-
-            // Rerun re-expands the same anchor freshly and mints a NEW group.
-            var rerun = await CliBinary.RunAsync(
-                dll, ["groups", "rerun", groupId.ToString(), "--json"], env: env, workingDirectory: _dir);
-            Assert.True(rerun.Exit == 0, rerun.AllOutput);
-            using var rerunAccepted = JsonDocument.Parse(rerun.StdOut);
-            Assert.NotEqual(groupId, rerunAccepted.RootElement.GetProperty("groupId").GetGuid());
-        }
-        finally
-        {
-            await CleanupRepoAsync(cs, repoId);
-            await CleanupUserAsync(cs, username);
-        }
-    }
-
-    [SkippableFact]
     public async Task Trigger_Follow_StreamsToTheTerminalOutcome_AndExitsByIt()
     {
         var (dll, url, cs) = await RequireAsync();
@@ -464,7 +387,7 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
         }
     }
 
-    // ---- estate verbs (whoami, summary, nodes, schedules, repos, pipelines, search, lineage, datasources) ---
+    // ---- estate verbs (whoami, summary, nodes, schedules, repos, pipelines, search) ---
 
     [SkippableFact]
     public async Task Whoami_WithPat_ReportsSubjectScopesAndSource()
@@ -640,7 +563,7 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Pipelines_ListShowYamlColumns_ExposeTheRegistry()
+    public async Task Pipelines_ListShowYaml_ExposeTheRegistry()
     {
         var (dll, url, cs) = await RequireAsync();
         var (username, password) = await SeedOperatorAsync(cs);
@@ -663,11 +586,6 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
             Assert.True(yaml.Exit == 0, yaml.AllOutput);
             Assert.Contains("flowType: ing", yaml.StdOut, StringComparison.Ordinal);
             Assert.Contains($"name: {flowName}", yaml.StdOut, StringComparison.Ordinal);
-
-            var columns = await CliBinary.RunAsync(
-                dll, ["pipelines", "columns", pipelineId.ToString()], env: env, workingDirectory: _dir);
-            Assert.True(columns.Exit == 0, columns.AllOutput);
-            Assert.Contains("column(s)", columns.StdOut, StringComparison.Ordinal);
         }
         finally
         {
@@ -695,118 +613,6 @@ public sealed class CliControlPlaneBinaryTests : IDisposable
         }
         finally
         {
-            await CleanupRepoAsync(cs, repoId);
-            await CleanupUserAsync(cs, username);
-        }
-    }
-
-    [SkippableFact]
-    public async Task Lineage_Waves_PrintTheExecutionPlanAsData()
-    {
-        var (dll, url, cs) = await RequireAsync();
-        var (username, password) = await SeedOperatorAsync(cs);
-        var (repoId, repoName, flowName, _) = await SeedRepoPipelineAsync(cs);
-        var token = await MintPatAsync(url, username, password);
-
-        try
-        {
-            var result = await CliBinary.RunAsync(
-                dll, ["lineage", "waves", "--repo", repoName], env: CliEnv(url, ("SQLFLOW_TOKEN", token)), workingDirectory: _dir);
-
-            Assert.True(result.Exit == 0, result.AllOutput);
-            Assert.Contains(flowName, result.StdOut, StringComparison.Ordinal);
-            Assert.Contains("wave", result.StdOut, StringComparison.Ordinal);
-        }
-        finally
-        {
-            await CleanupRepoAsync(cs, repoId);
-            await CleanupUserAsync(cs, username);
-        }
-    }
-
-    [SkippableFact]
-    public async Task Datasources_TaskLifecycle_NoWaitThenCancel()
-    {
-        var (dll, url, cs) = await RequireAsync();
-        var (username, password) = await SeedOperatorAsync(cs);
-        // The datasource reference must be one the estate declares; a pipeline whose definition carries a
-        // connections block makes '${env:CLI_CP_DS}' resolvable as a task target.
-        var suffix = Suffix();
-        var repoName = "cli_cp_ds_" + suffix;
-        var repoId = FlowIdentity.FromName(repoName);
-        var flowName = "cli_cp_ds_flow_" + suffix;
-        var now = DateTime.UtcNow;
-        await using (var db = CatalogDatabase.Create(cs))
-        {
-            db.Repos.Add(new CatalogRepo
-            {
-                Id = repoId, Name = repoName, RootPath = Path.Combine(Path.GetTempPath(), repoName),
-                FirstSeenUtc = now, LastSyncUtc = now,
-            });
-            db.Pipelines.Add(new CatalogPipeline
-            {
-                Id = CatalogIdentity.Pipeline(repoId, flowName),
-                RepoId = repoId, Name = flowName, Kind = "ing",
-                RelativePath = "flows/" + flowName + ".flow.yaml",
-                ContentHash = "0000000000000000000000000000000000000000000000000000000000000000",
-                Yaml = $"name: {flowName}\nflowType: ing\n",
-                DefinitionJson =
-                    $$$"""{"name":"{{{flowName}}}","flowType":"ing","connections":{"src":"${env:CLI_CP_DS}"},"source":{"server":"src","object":"Db.dbo.A"},"target":{"server":"src","object":"Db.dbo.B"}}""",
-                SourceServer = "${env:CLI_CP_DS}", TargetServer = "${env:CLI_CP_DS}",
-                Active = true, Wave = 0, FirstSeenUtc = now, LastSeenUtc = now,
-            });
-            await db.SaveChangesAsync();
-        }
-
-        var token = await MintPatAsync(url, username, password);
-        var env = CliEnv(url, ("SQLFLOW_TOKEN", token));
-
-        try
-        {
-            var list = await CliBinary.RunAsync(dll, ["datasources", "list"], env: env, workingDirectory: _dir);
-            Assert.True(list.Exit == 0, list.AllOutput);
-
-            // Queue without waiting (no worker serves this catalog), then drive the queue surface: the task
-            // is listed, showable, and cancellable, exactly what the GUI's task page does.
-            var queued = await CliBinary.RunAsync(
-                dll, ["datasources", "test", "--ref", "${env:CLI_CP_DS}", "--no-wait"], env: env, workingDirectory: _dir);
-            Assert.True(queued.Exit == 0, queued.AllOutput);
-            var taskId = Guid.Parse(queued.StdOut.Trim().Split('\n')[^1].Trim());
-
-            var tasks = await CliBinary.RunAsync(dll, ["datasources", "tasks"], env: env, workingDirectory: _dir);
-            Assert.True(tasks.Exit == 0, tasks.AllOutput);
-            Assert.Contains(taskId.ToString(), tasks.StdOut, StringComparison.Ordinal);
-
-            // The task races whatever drains the compute queue (a worker may fail the unresolvable reference
-            // within milliseconds), so any lifecycle-consistent cancel answer is legitimate; the CLI's
-            // contract is the faithful mapping, exactly like run cancellation.
-            var cancel = await CliBinary.RunAsync(
-                dll, ["datasources", "cancel", taskId.ToString()], env: env, workingDirectory: _dir);
-            if (cancel.Exit == 0)
-            {
-                Assert.Contains("cancel", cancel.StdOut, StringComparison.OrdinalIgnoreCase);
-            }
-            else
-            {
-                Assert.Contains("already finished", cancel.StdErr, StringComparison.Ordinal);
-            }
-
-            // 'task <id>' always shows the authoritative record; exit 1 only for the failed status.
-            var show = await CliBinary.RunAsync(
-                dll, ["datasources", "task", taskId.ToString()], env: env, workingDirectory: _dir);
-            using var record = JsonDocument.Parse(show.StdOut);
-            Assert.Equal(taskId, record.RootElement.GetProperty("taskId").GetGuid());
-            var status = record.RootElement.GetProperty("status").GetString();
-            Assert.Contains(status, new[] { "queued", "running", "succeeded", "failed", "cancelled" });
-            Assert.Equal(status == "failed" ? 1 : 0, show.Exit);
-        }
-        finally
-        {
-            await using (var db = CatalogDatabase.Create(cs))
-            {
-                await db.ComputeTasks.Where(t => t.SourceRef == "${env:CLI_CP_DS}").ExecuteDeleteAsync();
-            }
-
             await CleanupRepoAsync(cs, repoId);
             await CleanupUserAsync(cs, username);
         }

@@ -257,7 +257,7 @@ export function RegisterSourceDialog({
               {referenceValid ? (
                 <p className="text-xs text-muted-foreground">
                   {"A ${keyvault:vault/secret} or ${env:NAME} reference to the token. Create the secret in "
-                    + "your vault; SQLFlow only references it. Leave blank for a public remote."}
+                    + "your vault; OSDU Delivery only references it. Leave blank for a public remote."}
                 </p>
               ) : (
                 <p className="text-xs text-destructive">

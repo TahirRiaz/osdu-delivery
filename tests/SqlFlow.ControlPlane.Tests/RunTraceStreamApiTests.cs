@@ -89,10 +89,10 @@ public sealed class RunTraceStreamApiTests
                     RunId = runId, RepoId = repoId, Ordinal = 2, TimestampUtc = t0.AddSeconds(1), Level = "info",
                     Step = "source.open", Message = "read 'a.csv' (31 row(s))", Rows = 31,
                 });
-                db.RunStatements.Add(new CatalogRunStatement
+                db.RunEvents.Add(new CatalogRunEvent
                 {
-                    RunId = runId, RepoId = repoId, Ordinal = 1, TimestampUtc = t0.AddSeconds(2),
-                    Step = "staging.create", Sql = "CREATE TABLE #s;",
+                    RunId = runId, RepoId = repoId, Ordinal = 3, TimestampUtc = t0.AddSeconds(2), Level = "info",
+                    Step = "staging.create", Message = "created the staging table",
                 });
                 await db.SaveChangesAsync(ct);
             }
@@ -100,14 +100,12 @@ public sealed class RunTraceStreamApiTests
             var first = await frames.ReadAsync("entry", ct);
             var firstEntry = JsonSerializer.Deserialize<RunTraceEntryDto>(first, JsonWeb.Options);
             Assert.NotNull(firstEntry);
-            Assert.Equal("event", firstEntry.Kind);
             Assert.Equal("read 'a.csv' (31 row(s))", firstEntry.Message);
 
             var second = await frames.ReadAsync("entry", ct);
             var secondEntry = JsonSerializer.Deserialize<RunTraceEntryDto>(second, JsonWeb.Options);
             Assert.NotNull(secondEntry);
-            Assert.Equal("statement", secondEntry.Kind);
-            Assert.Equal("CREATE TABLE #s;", secondEntry.Sql);
+            Assert.Equal("created the staging table", secondEntry.Message);
 
             // The terminal status ends the stream with exactly one end frame carrying that status.
             await using (var db = CatalogDatabase.Create(cs))
@@ -127,7 +125,6 @@ public sealed class RunTraceStreamApiTests
             timeout.CancelAfter(Timeout.InfiniteTimeSpan);
             await using var db = CatalogDatabase.Create(cs);
             await db.RunEvents.Where(e => e.RunId == runId).ExecuteDeleteAsync();
-            await db.RunStatements.Where(s => s.RunId == runId).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RunId == runId).ExecuteDeleteAsync();
             await NodeStore.DeleteAsync(db, "cp-stream-node-" + suffix);
         }

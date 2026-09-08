@@ -31,7 +31,7 @@ function numCell(value: number | null | undefined) {
   return <span className="font-mono tabular-nums">{value ? value.toLocaleString() : "-"}</span>;
 }
 
-// The identity columns lead every layout; the data-impact columns (files read, rows loaded / inserted / updated)
+// The identity columns lead every layout; the data-impact columns (records loaded / inserted / updated)
 // trail it. Pool and commit are omitted here on purpose: they are per-run plumbing details that live on the run
 // detail page, not signal an operator scans a run board for.
 const statusColumn: Column<RunSummary> = {
@@ -56,7 +56,6 @@ const durationColumn: Column<RunSummary> = {
   render: (row) => (row.durationSeconds != null ? formatDurationSeconds(row.durationSeconds) : "-"),
 };
 const impactColumns: Column<RunSummary>[] = [
-  { id: "files", header: "Files", align: "right", render: (row) => numCell(row.fileCount) },
   { id: "loaded", header: "Loaded", align: "right", render: (row) => numCell(row.rowsLoaded) },
   { id: "inserted", header: "Inserted", align: "right", render: (row) => numCell(row.rowsInserted) },
   { id: "updated", header: "Updated", align: "right", render: (row) => numCell(row.rowsUpdated) },
@@ -89,14 +88,13 @@ const flatColumns: Column<RunSummary>[] = [
 ];
 
 /** Aggregates one group's rows for its header line: when it started, total duration, how many failed, and the
- * group's combined data impact (files read and rows loaded / inserted / updated) so a collapsed schedule or batch
+ * group's combined data impact (records loaded / inserted / updated) so a collapsed schedule or batch
  * shows how much data its last run moved without being expanded. */
 function groupStats(rows: RunSummary[]) {
   let durationTotal = 0;
   let hasDuration = false;
   let earliest: string | null = null;
   let failed = 0;
-  let files = 0;
   let loaded = 0;
   let inserted = 0;
   let updated = 0;
@@ -115,19 +113,17 @@ function groupStats(rows: RunSummary[]) {
       failed += 1;
     }
 
-    files += row.fileCount;
     loaded += row.rowsLoaded ?? 0;
     inserted += row.rowsInserted ?? 0;
     updated += row.rowsUpdated ?? 0;
   }
 
-  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed, files, loaded, inserted, updated };
+  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed, loaded, inserted, updated };
 }
 
 function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
   const stats = groupStats(rows);
   const impact: { label: string; value: number }[] = [
-    { label: "files", value: stats.files },
     { label: "loaded", value: stats.loaded },
     { label: "inserted", value: stats.inserted },
     { label: "updated", value: stats.updated },
@@ -147,7 +143,7 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
       )}
       <span className="text-[13px] text-muted-foreground">({rows.length})</span>
       {/* Only non-zero impact metrics show, so a group that loaded nothing stays uncluttered while one that moved
-          data reports its totals inline (e.g. "120 files", "45,678 loaded"). */}
+          data reports its totals inline (e.g. "45,678 loaded"). */}
       {impact.filter((metric) => metric.value > 0).map((metric) => (
         <span key={metric.label} className="text-[13px] tabular-nums text-muted-foreground">
           {metric.value.toLocaleString()} {metric.label}
@@ -168,17 +164,13 @@ type ScheduleByPipeline = Map<string, string>;
 
 const compare = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
 
-// The batch-report layout carried over from classic SQLFlow, now anchored on the SCHEDULE that runs the source:
+// The batch-report layout carried over from classic SQLFlow (the platform this product is built on), now anchored on the SCHEDULE that runs the source:
 // each pipeline's LAST run clusters under its schedule, then under its batch, then under the lineage step, so the
 // grouped view answers "for this source's cadence, what failed and what needs fixing" at a glance. Within a
 // schedule the batches read in cascade (dependency) order, by the earliest wave any of a batch's flows runs at,
 // so a source's copy -> detail flow reads top to bottom and a stray legacy batch cannot wedge itself between two
 // live ones by an alphabetical accident. Full run history lives in the flat view and on the pipeline detail page.
-// The "Run batch" action launches the whole batch (every flow in it, in dependency order) as one run group.
-function makeScheduleGrouping(
-  scheduleByPipeline: ScheduleByPipeline,
-  onRunBatch: (repoId: string | null, batch: string) => void,
-): TableGrouping<RunSummary> {
+function makeScheduleGrouping(scheduleByPipeline: ScheduleByPipeline): TableGrouping<RunSummary> {
   const scheduleOf = (row: RunSummary) => scheduleByPipeline.get(row.pipelineId) ?? UNSCHEDULED;
   // A schedule+batch identity for the cascade-rank map; the NUL delimiter cannot occur in a name, so no pair of
   // distinct (schedule, batch) values collides on it.
@@ -231,25 +223,9 @@ function makeScheduleGrouping(
         key: (row) => row.batch,
         defaultCollapsed: true,
         renderHeader: (rows) => (
-          // grow makes this row fill the header (it is a content-sized flex item inside the node row's cell), so
-          // the button's ml-auto really pushes it to the right edge instead of leaving it mid-row where it would
-          // swallow clicks meant to collapse the group.
-          <div className="flex grow flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="batch-group-header">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-testid="batch-group-header">
             <span className="text-[13px] font-medium">Batch: {rows[0].batch}</span>
             <GroupStatsInline rows={rows} />
-            <Button
-              variant="outline"
-              size="xs"
-              className="ml-auto"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRunBatch(rows[0].repoId, rows[0].batch);
-              }}
-              data-testid="run-batch"
-            >
-              <Play />
-              Run batch
-            </Button>
           </div>
         ),
       },
@@ -276,7 +252,6 @@ export default function RunsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [triggerOpen, setTriggerOpen] = useState(false);
-  const [batchRun, setBatchRun] = useState<{ repoId: string | null; batch: string } | null>(null);
   const [status, setStatus] = useLocalStorageState<RunStatus | null>("sqlflow.filters.runs.status", null);
   const [kind, setKind] = useLocalStorageState("sqlflow.filters.runs.kind", "all");
   const [flowNameInput, setFlowNameInput] = useLocalStorageState("sqlflow.filters.runs.flowName", "");
@@ -356,7 +331,7 @@ export default function RunsPage() {
   }, [schedulesQuery.data]);
 
   const grouping = useMemo(
-    () => makeScheduleGrouping(scheduleByPipeline, (repoId, batchName) => setBatchRun({ repoId, batch: batchName })),
+    () => makeScheduleGrouping(scheduleByPipeline),
     [scheduleByPipeline],
   );
 
@@ -478,13 +453,6 @@ export default function RunsPage() {
       />
 
       <TriggerRunDialog open={triggerOpen} onClose={() => setTriggerOpen(false)} />
-      <TriggerRunDialog
-        open={batchRun !== null}
-        onClose={() => setBatchRun(null)}
-        repoId={batchRun?.repoId ?? undefined}
-        batch={batchRun?.batch}
-        scope="batch"
-      />
     </Page>
   );
 }

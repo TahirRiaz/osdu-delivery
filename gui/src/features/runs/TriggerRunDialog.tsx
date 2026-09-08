@@ -1,9 +1,8 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CalendarClock, Info, Loader2, Play, TriangleAlert } from "lucide-react";
+import { CalendarClock, Loader2, Play } from "lucide-react";
 import { toast } from "sonner";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,10 +11,8 @@ import {
   Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, runApi, scheduleApi } from "../../api/endpoints";
-import type { RunParameterDescriptor, RunScope } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DateRangeCalendar } from "../../components/DateRangeCalendar";
@@ -37,29 +34,14 @@ export interface TriggerRunDialogProps {
   onClose: () => void;
   /** Prefills (and locks) the repo when launched from a repo/pipeline context. */
   repoId?: string;
-  /** Prefills (and locks) the flow when launched from a pipeline detail page or a lineage node. */
+  /** Prefills (and locks) the flow when launched from a pipeline detail page or a run. */
   flowName?: string;
-  /** The flow's pipeline id, when the launching context knows it (pipeline detail, Re-run). Lets the dialog load
-   * the flow's applicable parameters without first resolving the id from the repo's pipeline list. */
+  /** The flow's pipeline id, when the launching context knows it (pipeline detail, Re-run). Lets the dialog find
+   * the flow's schedules without first resolving the id from the repo's pipeline list. */
   flowId?: string;
   /** Prior-run parameter values to prefill (Re-run). */
   initialParameters?: TriggerRunParameterValues;
-  /** The initial execution scope (defaults to "flow"). Set by the lineage graph's Run / Run + descendants / Run
-   * batch actions and by the batch status board. */
-  scope?: RunScope;
-  /** The batch label for a batch-scoped launch (from the status board); locks the dialog to that batch. */
-  batch?: string;
 }
-
-const SCOPE_LABELS: Record<RunScope, string> = {
-  flow: "This flow",
-  node: "This flow + descendants",
-  batch: "Whole batch",
-};
-
-/** The scopes a free-choice trigger offers. "Whole batch" is not a run scope in V3 (the server runs a whole source
- * through its schedule, not a batch trigger), so it is surfaced as the related-schedule section below instead. */
-const OFFERED_SCOPES: RunScope[] = ["flow", "node"];
 
 /** A one-line cadence for a related schedule ("cron 0 2 * * *", "every 3600s", or "manual"). */
 function describeCadence(cron: string | null, intervalSeconds: number | null): string {
@@ -86,24 +68,18 @@ interface ComboOption {
 
 /**
  * The single trigger-run path in the GUI: launched from the runs page (free choice of repo + flow), a pipeline's
- * detail page (prefilled), the lineage graph / batch board (prefilled with a scope), and a run's Re-run (prefilled
- * with the prior parameters). A "flow" run POSTs one flow and navigates to it; a "node" (flow + descendants) or
- * "batch" run POSTs a group and navigates to the group view.
- *
- * The parameter form is built from the selected flow's own definition: the control plane returns exactly the run
- * parameters that flow's kind honors (a copy flow gets a modified-date window, a file flow adds a glob, a
- * relational ingestion adds full-load / assertions and a window when it has a date column, and kinds with no
- * selection surface get none), so a user is never shown a control the run would ignore.
+ * detail page (prefilled), and a run's Re-run (prefilled with the prior parameters). A run POSTs one flow and
+ * navigates to it. The schedules the flow is a member of are listed alongside, since firing one runs the whole
+ * member set in order: that is how a source is run as a whole.
  */
 export function TriggerRunDialog({
-  open, onClose, repoId, flowName, flowId, initialParameters, scope, batch,
+  open, onClose, repoId, flowName, flowId, initialParameters,
 }: TriggerRunDialogProps) {
   const navigate = useNavigate();
   const idPrefix = useId();
   const { track } = useRunDock();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(repoId ?? null);
   const [selectedFlow, setSelectedFlow] = useState<string | null>(flowName ?? null);
-  const [selectedScope, setSelectedScope] = useState<RunScope>(scope ?? "flow");
   const [pool, setPool] = useState("");
   const [commitSha, setCommitSha] = useState("");
   const [fullLoad, setFullLoad] = useState(false);
@@ -112,23 +88,16 @@ export function TriggerRunDialog({
   const [filePattern, setFilePattern] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [assertionsOnly, setAssertionsOnly] = useState(false);
-  // Node scope's "find all": include mode: manual and mode: disabled descendants in the group. Off by default,
-  // so a deactivated branch is only replayed when the operator deliberately asks for it.
-  const [includeAll, setIncludeAll] = useState(false);
 
-  // A batch-locked launch (from the status board) carries no flow: force batch scope and keep it there.
-  const batchLocked = batch !== undefined;
   // Seed the form once per open, so a Re-run opens with the prior run's parameters and a fresh launch opens clean.
   useEffect(() => {
     if (open) {
-      setSelectedScope(batchLocked ? "batch" : scope ?? "flow");
       setFullLoad(initialParameters?.fullLoad ?? false);
       setBackfillFrom(toLocalInput(initialParameters?.backfillFrom));
       setBackfillTo(toLocalInput(initialParameters?.backfillTo));
       setFilePattern(initialParameters?.filePattern ?? "");
       setSourceFilter(initialParameters?.sourceFilter ?? "");
       setAssertionsOnly(initialParameters?.assertionsOnly ?? false);
-      setIncludeAll(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -141,45 +110,22 @@ export function TriggerRunDialog({
 
   const effectiveRepoId = repoId ?? selectedRepoId;
   const effectiveFlow = flowName ?? selectedFlow;
-  // The repo's flows back the free-choice dropdown AND resolve a locked flow's pipeline id, which the applicable-
-  // parameters lookup keys on. A context that already knows the id (Re-run, pipeline detail) skips the list; a
-  // batch-locked launch needs neither, because a group always runs default parameters.
+  // The repo's flows back the free-choice dropdown AND resolve a locked flow's pipeline id, which the schedule
+  // lookup keys on. A context that already knows the id (Re-run, pipeline detail) skips the list.
   const pipelines = useQuery({
     queryKey: ["pipelines", "for-trigger", effectiveRepoId],
     queryFn: () => pipelineApi.list({ repoId: effectiveRepoId!, active: true, page: 1, pageSize: 200 }),
-    enabled: open && !batchLocked && !flowId && Boolean(effectiveRepoId),
+    enabled: open && !flowId && Boolean(effectiveRepoId),
   });
 
-  const isGroup = selectedScope !== "flow";
-  // Both "This flow" and "This flow + descendants" honor a backfill window: a single flow bounds its own read; a
-  // node run bounds its ANCHOR (the parent) and its descendants switch to MIN-from-source so the back-dated rows the
-  // anchor lands are picked up downstream instead of stopping at staging. "Whole batch" (only ever set by a
-  // batch-locked launch) carries no per-run parameters and is surfaced through its schedule instead.
-  const paramsScope: "flow" | "node" | "none" =
-    selectedScope === "flow" ? "flow" : selectedScope === "node" ? "node" : "none";
-
   // The selected flow's pipeline id: given directly by the launching context, or resolved from the repo's pipeline
-  // list for a free-choice launch. Drives the applicable-parameters lookup.
+  // list for a free-choice launch.
   const effectiveFlowId = flowId
     ?? pipelines.data?.items.find((p) => p.name === effectiveFlow)?.id
     ?? null;
 
-  const flowParameters = useQuery({
-    queryKey: ["pipeline-parameters", effectiveFlowId],
-    queryFn: () => pipelineApi.parameters(effectiveFlowId!),
-    enabled: open && paramsScope !== "none" && Boolean(effectiveFlowId),
-  });
-  const applicable = useMemo(() => flowParameters.data?.parameters ?? [], [flowParameters.data]);
-  const paramKeys = useMemo(() => new Set(applicable.map((p) => p.key)), [applicable]);
-  // A node run exposes only the backfill window; full load, file pattern, and assertions-only are single-flow
-  // concepts (a group always runs its members otherwise as defined).
-  const renderable = useMemo(
-    () => (paramsScope === "node" ? applicable.filter((p) => p.key === "backfillWindow") : applicable),
-    [applicable, paramsScope],
-  );
-
-  // The schedule(s) this flow is a member of: firing one runs the whole source in dependency order (the V3
-  // "whole batch"). Membership is the selector, so this asks the API by pipeline id.
+  // The schedule(s) this flow is a member of: firing one runs the whole member set in order. Membership is the
+  // selector, so this asks the API by pipeline id.
   const schedules = useQuery({
     queryKey: ["flow-schedules", effectiveRepoId, effectiveFlowId],
     queryFn: () => scheduleApi.list({ repoId: effectiveRepoId!, pipelineId: effectiveFlowId!, page: 1, pageSize: 50 }),
@@ -205,47 +151,12 @@ export function TriggerRunDialog({
     },
   });
 
-  // "Still resolving" and "could not resolve" are each distinct from "this flow honors no parameters". Collapsing
-  // them would tell an operator a flow runs as defined while its lookup is in flight or failed, hiding the very
-  // overrides the engine would honor (a copy flow's backfill window, for one).
-  const resolvingParameters = pipelines.isLoading || flowParameters.isLoading;
-  const parametersUnavailable = !resolvingParameters
-    && (flowParameters.isError || (effectiveFlowId === null && !isGroup && Boolean(effectiveFlow)));
-
-  // For a Node or Batch scope, preview which flows the run would touch, so the operator sees "will run N flows across
-  // M waves" before committing. A single flow needs no preview.
-  const previewEnabled = open
-    && selectedScope !== "flow"
-    && Boolean(effectiveRepoId)
-    && (batchLocked ? Boolean(batch) : Boolean(effectiveFlow));
-  const preview = useQuery({
-    queryKey: ["run-scope-preview", effectiveRepoId, effectiveFlow, selectedScope, batch, includeAll],
-    queryFn: () => runApi.previewScope({
-      repoId: effectiveRepoId!,
-      flowName: batchLocked ? undefined : effectiveFlow ?? undefined,
-      scope: selectedScope,
-      batch: batchLocked ? batch : undefined,
-      includeAll: selectedScope === "node" ? includeAll : undefined,
-    }),
-    enabled: previewEnabled,
-  });
-
   const trigger = useMutation({
     mutationFn: runApi.trigger,
     onSuccess: (accepted) => {
       onClose();
-      if (accepted.groupId) {
-        // Watch the group in the run tray so it stays reachable after this dialog closes and across a tab change.
-        track(accepted.groupId);
-        const target = selectedScope === "batch"
-          ? `batch ${(batchLocked ? batch : preview.data?.anchor) ?? effectiveFlow ?? ""}`
-          : `${effectiveFlow ?? ""} + descendants`;
-        toast.success(`Run group queued for ${target} (${accepted.memberCount ?? 0} flows).`);
-        navigate(`/runs/groups/${accepted.groupId}`);
-      } else {
-        toast.success(`Run queued: ${effectiveFlow ?? accepted.runId ?? ""}`);
-        navigate(`/runs/${accepted.runId}`);
-      }
+      toast.success(`Run queued: ${effectiveFlow ?? accepted.runId}`);
+      navigate(`/runs/${accepted.runId}`);
     },
     onError: (error) => {
       toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
@@ -267,124 +178,33 @@ export function TriggerRunDialog({
   const hasPattern = filePattern.trim() !== "";
   const hasSourceFilter = sourceFilter.trim() !== "";
 
-  // Client-side mirror of RunParameters.Validate (single-flow only), so obvious mistakes are caught before the round
-  // trip (the server validates authoritatively and its ProblemDetails still renders if anything slips through).
-  const windowError = paramsScope === "none"
-    ? null
-    : assertionsOnly && (fullLoad || hasWindow || hasPattern)
-      ? "Assertions-only cannot be combined with full load, a window, or a file pattern."
-      : trimmedTo !== "" && trimmedFrom === ""
-        ? "An end date needs a start date."
-        : fullLoad && hasWindow
-          ? "Full load and a backfill window are mutually exclusive."
-          : null;
+  // Client-side mirror of RunParameters.Validate, so obvious mistakes are caught before the round trip (the server
+  // validates authoritatively and its ProblemDetails still renders if anything slips through).
+  const windowError = assertionsOnly && (fullLoad || hasWindow || hasPattern)
+    ? "Verify only cannot be combined with a full reprocess, a window, or a file pattern."
+    : trimmedTo !== "" && trimmedFrom === ""
+      ? "An end date needs a start date."
+      : fullLoad && hasWindow
+        ? "A full reprocess and a window are mutually exclusive."
+        : null;
 
-  const hasTarget = batchLocked ? Boolean(batch) : Boolean(effectiveFlow);
-  // A group run stays disabled until the preview confirms there is at least one flow to run.
-  const groupReady = !isGroup || (preview.data !== undefined && preview.data.memberCount > 0);
-  const canSubmit = Boolean(effectiveRepoId) && hasTarget && windowError === null && groupReady && !trigger.isPending;
+  const canSubmit = Boolean(effectiveRepoId) && Boolean(effectiveFlow) && windowError === null && !trigger.isPending;
 
   const submit = () => {
-    // A single flow sends every parameter its kind honors; a node run sends only the backfill window (the server
-    // applies it to the anchor and switches the descendants to MIN-from-source); a batch-locked launch sends none.
-    const applies = (key: string) =>
-      paramsScope !== "none" && paramKeys.has(key) && (paramsScope === "flow" || key === "backfillWindow");
     trigger.mutate({
       repoId: effectiveRepoId!,
-      flowName: batchLocked ? "" : (effectiveFlow ?? "").trim(),
-      scope: selectedScope,
-      batch: batchLocked ? batch : null,
+      flowName: (effectiveFlow ?? "").trim(),
+      scope: "flow",
       pool: pool.trim() === "" ? null : pool.trim(),
       commitSha: commitSha.trim() === "" ? null : commitSha.trim(),
-      // Only the parameters the flow's kind honors are sent; a group always runs default parameters.
-      fullLoad: applies("fullLoad") ? fullLoad : false,
-      backfillFrom: applies("backfillWindow") && trimmedFrom !== "" ? `${trimmedFrom}:00Z` : null,
-      backfillTo: applies("backfillWindow") && trimmedTo !== "" ? `${trimmedTo}:00Z` : null,
-      filePattern: applies("filePattern") && hasPattern ? filePattern.trim() : null,
-      sourceFilter: applies("sourceFilter") && hasSourceFilter ? sourceFilter.trim() : null,
-      assertionsOnly: applies("assertionsOnly") ? assertionsOnly : false,
-      includeAll: selectedScope === "node" ? includeAll : false,
+      fullLoad,
+      backfillFrom: trimmedFrom !== "" ? `${trimmedFrom}:00Z` : null,
+      backfillTo: trimmedTo !== "" ? `${trimmedTo}:00Z` : null,
+      filePattern: hasPattern ? filePattern.trim() : null,
+      sourceFilter: hasSourceFilter ? sourceFilter.trim() : null,
+      assertionsOnly,
     });
   };
-
-  const renderParameter = (desc: RunParameterDescriptor) => {
-    switch (desc.input) {
-      case "Toggle": {
-        const isFull = desc.key === "fullLoad";
-        const checked = isFull ? fullLoad : assertionsOnly;
-        const onChange = isFull ? setFullLoad : setAssertionsOnly;
-        const disabled = isFull ? assertionsOnly : (fullLoad || hasWindow || hasPattern || hasSourceFilter);
-        return (
-          <div key={desc.key} className="flex flex-col gap-1">
-            <Label className="flex items-center gap-2 text-[13px] font-normal">
-              <Switch
-                checked={checked}
-                disabled={disabled}
-                onCheckedChange={onChange}
-                data-testid={`trigger-${desc.key}`}
-              />
-              {desc.label}
-            </Label>
-            <p className="pl-10 text-xs text-muted-foreground">{desc.help}</p>
-          </div>
-        );
-      }
-      case "DateRange":
-        return (
-          <div key={desc.key} className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium">{desc.label}</span>
-            <DateRangeCalendar
-              from={backfillFrom}
-              to={backfillTo}
-              onChange={(from, to) => {
-                setBackfillFrom(from);
-                setBackfillTo(to);
-              }}
-              disabled={fullLoad || assertionsOnly}
-              testId="trigger-backfill"
-            />
-            <p className="text-xs text-muted-foreground">{desc.help}</p>
-          </div>
-        );
-      case "Glob":
-        return (
-          <div key={desc.key} className="flex flex-col gap-1.5">
-            <Label htmlFor={`${idPrefix}-file-pattern`}>{desc.label}</Label>
-            <Input
-              id={`${idPrefix}-file-pattern`}
-              className="h-8 font-mono"
-              placeholder="orders_2026-03*.json"
-              value={filePattern}
-              onChange={(event) => setFilePattern(event.target.value)}
-              disabled={assertionsOnly}
-              data-testid="trigger-file-pattern"
-            />
-            <p className="text-xs text-muted-foreground">{desc.help}</p>
-          </div>
-        );
-      case "SqlPredicate":
-        return (
-          <div key={desc.key} className="flex flex-col gap-1.5">
-            <Label htmlFor={`${idPrefix}-source-filter`}>{desc.label}</Label>
-            <Input
-              id={`${idPrefix}-source-filter`}
-              className="h-8 font-mono"
-              placeholder="AND pk > 92992"
-              value={sourceFilter}
-              onChange={(event) => setSourceFilter(event.target.value)}
-              disabled={assertionsOnly}
-              data-testid="trigger-source-filter"
-            />
-            <p className="text-xs text-muted-foreground">{desc.help}</p>
-          </div>
-        );
-      default:
-        return null;
-    }
-  };
-
-  const showParameters = paramsScope !== "none" && Boolean(effectiveFlow)
-    && (paramsScope === "flow" || renderable.length > 0 || resolvingParameters);
 
   return (
     <Sheet
@@ -399,7 +219,7 @@ export function TriggerRunDialog({
         <SheetHeader>
           <SheetTitle>Trigger run</SheetTitle>
           <SheetDescription>
-            Launch one flow, a flow with its descendants, or a whole batch, in dependency order.
+            Launch one flow now, with one-off parameters applied to this run only.
           </SheetDescription>
         </SheetHeader>
 
@@ -422,18 +242,7 @@ export function TriggerRunDialog({
             />
           )}
 
-          {batchLocked ? (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`${idPrefix}-batch`}>Batch</Label>
-              <Input
-                id={`${idPrefix}-batch`}
-                className="h-8 font-mono"
-                value={batch}
-                disabled
-                data-testid="trigger-batch"
-              />
-            </div>
-          ) : flowName ? (
+          {flowName ? (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${idPrefix}-flow-locked`}>Flow</Label>
               <Input id={`${idPrefix}-flow-locked`} className="h-8 font-mono" value={flowName} disabled />
@@ -450,63 +259,6 @@ export function TriggerRunDialog({
               loading={pipelines.isLoading}
               testId="trigger-flow"
             />
-          )}
-
-          {batchLocked ? null : (
-            <div className="flex flex-col gap-1.5">
-              <Label>Scope</Label>
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                size="sm"
-                value={selectedScope}
-                onValueChange={(value) => {
-                  if (value !== "") {
-                    setSelectedScope(value as RunScope);
-                  }
-                }}
-                data-testid="trigger-scope"
-              >
-                {OFFERED_SCOPES.map((s) => (
-                  <ToggleGroupItem key={s} value={s} data-testid={`trigger-scope-${s}`} className="h-8 px-2.5 text-xs">
-                    {SCOPE_LABELS[s]}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </div>
-          )}
-
-          {selectedScope === "node" && (
-            <div className="flex flex-col gap-1">
-              <Label className="flex items-center gap-2 text-[13px] font-normal">
-                <Switch
-                  checked={includeAll}
-                  onCheckedChange={setIncludeAll}
-                  data-testid="trigger-include-all"
-                />
-                Include disabled and manual descendants
-              </Label>
-              <p className="pl-10 text-xs text-muted-foreground">
-                By default only active (mode: auto) descendants run; turn this on to replay deactivated or
-                manual-only flows together with the anchor.
-              </p>
-            </div>
-          )}
-
-          {isGroup && (
-            <Alert data-testid="trigger-scope-preview">
-              <Info />
-              <AlertDescription>
-                {preview.isLoading
-                  ? "Resolving the flows to run..."
-                  : preview.isError
-                    ? "Could not resolve the flows to run."
-                    : preview.data && preview.data.memberCount > 0
-                      ? `Will run ${preview.data.memberCount} ${preview.data.memberCount === 1 ? "flow" : "flows"} across ${preview.data.waveCount} ${preview.data.waveCount === 1 ? "wave" : "waves"}, in dependency order`
-                        + (selectedScope === "batch" ? ` (batch "${preview.data.anchor}").` : ".")
-                      : "No flows to run for this selection."}
-              </AlertDescription>
-            </Alert>
           )}
 
           <div className="flex flex-col gap-1.5">
@@ -532,50 +284,96 @@ export function TriggerRunDialog({
               data-testid="trigger-commit"
             />
             <p className="text-xs text-muted-foreground">
-              Pin the run to an exact git commit; empty pins to the repo's last synced commit.
+              Pin the run to an exact git commit; empty pins to the repo&apos;s last synced commit.
             </p>
           </div>
 
-          {showParameters && (
-            <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="trigger-parameters">
-              <h3 className="text-[13px] font-medium">Run parameters</h3>
-              {resolvingParameters ? (
-                <div className="mt-2 flex items-center gap-2 text-[13px] text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Loading this flow's parameters...
-                </div>
-              ) : parametersUnavailable ? (
-                <Alert className="mt-2 text-warning" data-testid="trigger-parameters-unavailable">
-                  <TriangleAlert />
-                  <AlertDescription className="text-warning/90">
-                    Could not load this flow's run parameters. Triggering now would run it with its defined defaults.
-                  </AlertDescription>
-                </Alert>
-              ) : renderable.length === 0 ? (
-                <p className="mt-2 text-[13px] text-muted-foreground">
-                  This flow runs as defined; it has no adjustable run parameters.
+          <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="trigger-parameters">
+            <h3 className="text-[13px] font-medium">Run parameters</h3>
+            <div className="mt-2 flex flex-col gap-3">
+              <p className="text-xs text-muted-foreground">
+                One-off overrides applied to this run only. The flow definition in git is unchanged.
+              </p>
+              <div className="flex flex-col gap-1">
+                <Label className="flex items-center gap-2 text-[13px] font-normal">
+                  <Switch
+                    checked={fullLoad}
+                    disabled={assertionsOnly}
+                    onCheckedChange={setFullLoad}
+                    data-testid="trigger-fullLoad"
+                  />
+                  Full reprocess
+                </Label>
+                <p className="pl-10 text-xs text-muted-foreground">
+                  Ignore what was delivered before and process the whole source again.
                 </p>
-              ) : (
-                <div className="mt-2 flex flex-col gap-3">
-                  <p className="text-xs text-muted-foreground">
-                    One-off overrides applied to this run only. The flow definition in git is unchanged.
-                  </p>
-                  {renderable.map(renderParameter)}
-                  {paramsScope === "node" && (
-                    <p className="text-xs text-muted-foreground" data-testid="trigger-node-backfill-note">
-                      The parent applies this window; its descendants read from the source minimum for this run, so the
-                      back-dated rows are picked up instead of stopping at staging.
-                    </p>
-                  )}
-                  {windowError !== null && (
-                    <p className="text-xs font-medium text-destructive" data-testid="trigger-backfill-error">
-                      {windowError}
-                    </p>
-                  )}
-                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="flex items-center gap-2 text-[13px] font-normal">
+                  <Switch
+                    checked={assertionsOnly}
+                    disabled={fullLoad || hasWindow || hasPattern || hasSourceFilter}
+                    onCheckedChange={setAssertionsOnly}
+                    data-testid="trigger-assertionsOnly"
+                  />
+                  Verify only
+                </Label>
+                <p className="pl-10 text-xs text-muted-foreground">
+                  Check the target against what the ledger says was delivered; nothing is written.
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[13px] font-medium">Window</span>
+                <DateRangeCalendar
+                  from={backfillFrom}
+                  to={backfillTo}
+                  onChange={(from, to) => {
+                    setBackfillFrom(from);
+                    setBackfillTo(to);
+                  }}
+                  disabled={fullLoad || assertionsOnly}
+                  testId="trigger-backfill"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Bound the run to the source data inside this window (UTC).
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${idPrefix}-file-pattern`}>File pattern</Label>
+                <Input
+                  id={`${idPrefix}-file-pattern`}
+                  className="h-8 font-mono"
+                  placeholder="wells_2026-03*.parquet"
+                  value={filePattern}
+                  onChange={(event) => setFilePattern(event.target.value)}
+                  disabled={assertionsOnly}
+                  data-testid="trigger-file-pattern"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Only the source files matching this glob are read.
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${idPrefix}-source-filter`}>Source filter</Label>
+                <Input
+                  id={`${idPrefix}-source-filter`}
+                  className="h-8 font-mono"
+                  value={sourceFilter}
+                  onChange={(event) => setSourceFilter(event.target.value)}
+                  disabled={assertionsOnly}
+                  data-testid="trigger-source-filter"
+                />
+                <p className="text-xs text-muted-foreground">
+                  An extra predicate the flow applies when it reads the source.
+                </p>
+              </div>
+              {windowError !== null && (
+                <p className="text-xs font-medium text-destructive" data-testid="trigger-backfill-error">
+                  {windowError}
+                </p>
               )}
             </div>
-          )}
+          </div>
 
           {relatedSchedules.length > 0 && (
             <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="trigger-schedules">
@@ -584,8 +382,7 @@ export function TriggerRunDialog({
                 Runs as part of
               </h3>
               <p className="mt-1 text-xs text-muted-foreground">
-                Executing a schedule fires its whole member set in dependency order (the V3 "whole batch"), without
-                moving the next scheduled fire.
+                Executing a schedule fires its whole member set in order, without moving the next scheduled fire.
               </p>
               <div className="mt-2 flex flex-col gap-2">
                 {relatedSchedules.map((schedule) => (

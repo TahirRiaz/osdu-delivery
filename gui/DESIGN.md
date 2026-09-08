@@ -1,12 +1,12 @@
-# SQLFlow GUI Design Book
+# OSDU Delivery GUI Design Book
 
-The binding reference for every screen in the SQLFlow GUI. Any page, component, or change that does not
+The binding reference for every screen in the OSDU Delivery GUI. Any page, component, or change that does not
 follow this book is wrong, even if it works. When a rule here conflicts with older code, the book wins and
 the code gets ported.
 
 ## 1. Product stance
 
-SQLFlow's GUI is a **workbench, not a website**. The model is VS Code: a dense, keyboard-friendly,
+The OSDU Delivery GUI is a **workbench, not a website**. The model is VS Code: a dense, keyboard-friendly,
 panel-based tool an operator keeps open all day. Every design choice follows from that stance:
 
 - **Density over airiness.** Operators scan tables of runs, flows, and objects. Compact rows, small
@@ -22,7 +22,7 @@ panel-based tool an operator keeps open all day. Every design choice follows fro
 
 ## 2. Identity
 
-- Product name: **SQLFlow** (logo in `public/brand/`).
+- Product name: **OSDU Delivery** (logo in `public/brand/`).
 - Brand anchors: deep navy `#283e56` (`--brand-navy`), navy-deep `#1b2c40`, warm cream `#fdf3e7`.
 - The navy lives in the chrome (activity bar, title bar); the blue accent carries interaction; the cream
   appears only in the logo mark. No other decorative color.
@@ -78,7 +78,7 @@ label; color never carries meaning alone.
 
 Categorical series use `--chart-1` ... `--chart-8`, assigned in **fixed slot order, never cycled, never
 re-assigned when a filter changes the series count**. This exact order passed the dataviz validator's
-six checks on SQLFlow's card surfaces (light `#ffffff`, dark `#16202f`) in July 2026; do not re-order or
+six checks on the card surfaces (light `#ffffff`, dark `#16202f`) in July 2026; do not re-order or
 substitute steps without re-running the validator.
 
 | Slot | Light | Dark |

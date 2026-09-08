@@ -676,11 +676,7 @@ public static class RunQueueStore
                         // transaction.
                         var maxEventOrdinal = await catalog.RunEvents.Where(e => e.RunId == runId)
                             .Select(e => (int?)e.Ordinal).MaxAsync(ct).ConfigureAwait(false) ?? 0;
-                        var maxStatementOrdinal = await catalog.RunStatements.Where(s => s.RunId == runId)
-                            .Select(s => (int?)s.Ordinal).MaxAsync(ct).ConfigureAwait(false) ?? 0;
-                        CatalogSync.AddRunDetail(
-                            catalog, document.RootElement, runId, repoId, maxEventOrdinal, maxStatementOrdinal,
-                            target.PipelineId);
+                        CatalogSync.AddRunDetail(catalog, document.RootElement, runId, repoId, maxEventOrdinal);
                         // A failed group member strands its dependents: skip them in the same transaction so the
                         // completion and its consequences commit together (a no-op for a standalone or succeeded run).
                         if (!projected.Success)
@@ -1058,94 +1054,7 @@ public static class RunQueueStore
 
         return result;
     }
-
-    /// <summary>When a group member reaches a non-success terminal state (failed / cancelled), marks every member
-    /// that transitively depends on it and is still <c>queued</c> as <c>skipped</c>: a broken upstream is never fed
-    /// downstream, while independent branches of the group keep running. A no-op for a standalone run (no group), a
-    /// succeeded run, or a run whose dependents have all already started. Idempotent (guarded on <c>queued</c>), so
-    /// two failures in the same group each skip their own cone without fighting. The reachable set is computed over
-    /// the group's own members only, so a dependent outside this run group is never touched.</summary>
-    private static async Task SkipGroupDescendantsAsync(
-        CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct)
-    {
-        var run = await catalog.Runs.AsNoTracking()
-            .Where(r => r.RunId == runId)
-            .Select(r => new { r.GroupId, r.PipelineId, r.RepoId, r.FlowName, r.Status })
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (run is null || run.GroupId is not { } groupId || run.RepoId is not { } repoId
-            || run.Status == RunStatuses.Succeeded)
-        {
-            return;
-        }
-
-        var memberIds = (await catalog.Runs.AsNoTracking()
-                .Where(r => r.GroupId == groupId)
-                .Select(r => r.PipelineId)
-                .ToListAsync(ct).ConfigureAwait(false))
-            .ToHashSet();
-
-        var edges = await catalog.FlowDependencies.AsNoTracking()
-            .Where(d => d.RepoId == repoId)
-            .Select(d => new { d.FromPipelineId, d.ToPipelineId })
-            .ToListAsync(ct).ConfigureAwait(false);
-
-        var outgoing = new Dictionary<Guid, List<Guid>>();
-        foreach (var edge in edges)
-        {
-            // Only edges wholly inside this group matter: a dependency on a flow that is not part of the run cannot
-            // be satisfied or skipped by it.
-            if (!memberIds.Contains(edge.FromPipelineId) || !memberIds.Contains(edge.ToPipelineId))
-            {
-                continue;
-            }
-
-            if (!outgoing.TryGetValue(edge.FromPipelineId, out var to))
-            {
-                to = new List<Guid>();
-                outgoing[edge.FromPipelineId] = to;
-            }
-
-            to.Add(edge.ToPipelineId);
-        }
-
-        var dependents = new HashSet<Guid>();
-        var queue = new Queue<Guid>();
-        queue.Enqueue(run.PipelineId);
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-            if (!outgoing.TryGetValue(current, out var neighbors))
-            {
-                continue;
-            }
-
-            foreach (var next in neighbors)
-            {
-                if (dependents.Add(next))
-                {
-                    queue.Enqueue(next);
-                }
-            }
-        }
-
-        if (dependents.Count == 0)
-        {
-            return;
-        }
-
-        var dependentIds = dependents.ToList();
-        var reason = $"skipped: an upstream dependency ('{run.FlowName}') did not succeed.";
-        await catalog.Runs
-            .Where(r => r.GroupId == groupId && r.Status == RunStatuses.Queued && dependentIds.Contains(r.PipelineId))
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Status, RunStatuses.Skipped)
-                .SetProperty(r => r.Success, false)
-                .SetProperty(r => r.Error, reason)
-                .SetProperty(r => r.EndUtc, nowUtc)
-                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
-            .ConfigureAwait(false);
-    }
-
+
     private static void ApplyCompletion(CatalogRun target, CatalogRun projected, DateTime nowUtc)
     {
         // Identity fields are the same whether the row was enqueued or is being inserted fresh (RunFromJson derives
@@ -1186,5 +1095,35 @@ public static class RunQueueStore
         parameter.ParameterName = name;
         parameter.Value = value;
         command.Parameters.Add(parameter);
+    }
+
+    /// <summary>When a group member reaches a non-success terminal state (failed / cancelled), marks every member
+    /// of its group in a LATER wave that is still <c>queued</c> as <c>skipped</c>: wave order is the one dependency
+    /// a group carries (a fire runs its members wave by wave), so a broken earlier wave is never fed into the next,
+    /// while the members of the same wave keep running. A no-op for a standalone run (no group), a succeeded run,
+    /// or a run in the group's last wave. Idempotent (guarded on <c>queued</c>), so two failures in the same group
+    /// each skip their own tail without fighting.</summary>
+    private static async Task SkipGroupDescendantsAsync(
+        CatalogDbContext catalog, Guid runId, DateTime nowUtc, CancellationToken ct)
+    {
+        var run = await catalog.Runs.AsNoTracking()
+            .Where(r => r.RunId == runId)
+            .Select(r => new { r.GroupId, r.GroupWave, r.FlowName, r.Status })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (run is null || run.GroupId is not { } groupId || run.Status == RunStatuses.Succeeded)
+        {
+            return;
+        }
+
+        var reason = $"skipped: {run.FlowName} (wave {run.GroupWave}) did not succeed, so the later waves of its group did not run.";
+        await catalog.Runs
+            .Where(r => r.GroupId == groupId && r.GroupWave > run.GroupWave && r.Status == RunStatuses.Queued)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, RunStatuses.Skipped)
+                .SetProperty(r => r.Success, false)
+                .SetProperty(r => r.Error, reason)
+                .SetProperty(r => r.EndUtc, nowUtc)
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+            .ConfigureAwait(false);
     }
 }

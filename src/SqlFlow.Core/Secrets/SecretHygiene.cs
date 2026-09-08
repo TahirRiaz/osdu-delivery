@@ -106,10 +106,9 @@ public static class SecretHygiene
         }
     }
 
-    /// <summary>The warning line for one offending connection. The value itself is never echoed.</summary>
-    public static string Warning(string connectionName, string source)
-        => $"WARN  {source}: connection '{connectionName}' embeds a credential in the document. Files under " +
-           $"source control must carry references instead: use ${{env:NAME}}, ${{keyvault:vault/secret}}, or a " +
-           $"bare '{connectionName}:' (which resolves ${{env:{Connections.ConnectionConvention.EnvironmentVariable(connectionName)}}}); " +
-           "put local values in the git-ignored .sqlflow/env file. See docs/environment-variables.md.";
+    /// <summary>The warning line for one offending credential reference. The value itself is never echoed.</summary>
+    public static string Warning(string referenceName, string source)
+        => $"WARN  {source}: {referenceName} embeds a credential in the document. Files under source control must " +
+           $"carry references instead: use ${{env:NAME}} or ${{keyvault:vault/secret}}; put local values in the " +
+           "git-ignored .sqlflow/env file. See docs/environment-variables.md.";
 }

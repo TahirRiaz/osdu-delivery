@@ -1,6 +1,6 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
-using SqlFlow.Lineage.Collection;
+using SqlFlow.Catalog;
 using SqlFlow.SourceControl.Proposals;
 using SqlFlow.Yaml;
 
@@ -25,7 +25,7 @@ public sealed record ProposalPreflightResult(
 /// parseability it guards the two silent failure modes of an authored proposal: a flow that would never land
 /// (unparseable, or a <c>.yml</c> extension the estate scan does not discover), and a revision that quietly
 /// changes an existing flow's declared source/target endpoints, which is a design decision the reviewer must
-/// see, never a side effect (endpoints are compared through <see cref="FlowDeclaredEndpoints"/> against the
+/// see, never a side effect (endpoints are compared through the declared endpoints against the
 /// catalog's current copy of the flow).
 /// </summary>
 public static class FlowProposalPreflight
@@ -35,20 +35,12 @@ public static class FlowProposalPreflight
     /// Only ACTIVE pipelines participate: a flow that already left git constrains nothing.</summary>
     public sealed record ExistingPipeline(string Name, string RelativePath, string Yaml);
 
-    private static readonly YamlDocumentLoader Documents = new(
-        new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
-        new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-        new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(),
-        new YamlTranslateFlowLoader());
-
     private static readonly YamlScheduleLibraryLoader ScheduleLibraries = new();
 
-    private static readonly YamlSubscriberLibraryLoader SubscriberLibraries = new();
-
     public static ProposalPreflightResult Run(
-        IReadOnlyList<ProposalFile> files, IReadOnlyList<ExistingPipeline> existing)
+        YamlDocumentLoader documents, IReadOnlyList<ProposalFile> files, IReadOnlyList<ExistingPipeline> existing)
     {
+        ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(files);
         ArgumentNullException.ThrowIfNull(existing);
 
@@ -72,19 +64,9 @@ public static class FlowProposalPreflight
                 continue; // companion .sql/.json/.md files carry no flow contract to preflight.
             }
 
-            if (FlowSetCollector.IsScheduleLibraryFile(file.Path))
+            if (EstateScanner.IsScheduleLibraryFile(file.Path))
             {
                 foreach (var warning in ScheduleLibraries.Parse(file.Content, file.Path).Warnings)
-                {
-                    warnings.Add(new ProposalFinding(file.Path, warning));
-                }
-
-                continue;
-            }
-
-            if (FlowSetCollector.IsSubscriberLibraryFile(file.Path))
-            {
-                foreach (var warning in SubscriberLibraries.Parse(file.Content, file.Path).Warnings)
                 {
                     warnings.Add(new ProposalFinding(file.Path, warning));
                 }
@@ -95,7 +77,7 @@ public static class FlowProposalPreflight
             FlowDocument document;
             try
             {
-                document = Documents.Parse(file.Content, file.Path);
+                document = documents.Parse(file.Content, file.Path);
             }
             catch (SqlFlowException ex)
             {
@@ -117,7 +99,7 @@ public static class FlowProposalPreflight
                 continue;
             }
 
-            var headers = FlowDocumentHeaders.Project(document);
+            var headers = new[] { document };
             foreach (var header in headers)
             {
                 if (proposedNames.TryGetValue(header.Name, out var otherFile)
@@ -155,7 +137,7 @@ public static class FlowProposalPreflight
                     continue; // endpoint identity belongs to the document's primary flow.
                 }
 
-                var (removed, added) = DiffEndpoints(current, document, file.Path, warnings);
+                var (removed, added) = DiffEndpoints(documents, current, document, file.Path, warnings);
                 if (removed.Count > 0 || added.Count > 0)
                 {
                     warnings.Add(new ProposalFinding(
@@ -175,12 +157,12 @@ public static class FlowProposalPreflight
     /// revision. A stored document that no longer parses cannot be diffed; that is reported as its own warning
     /// (never an error: the proposal may be the very fix) and the diff is empty.</summary>
     private static (List<string> Removed, List<string> Added) DiffEndpoints(
-        ExistingPipeline current, FlowDocument proposed, string path, List<ProposalFinding> warnings)
+        YamlDocumentLoader documents, ExistingPipeline current, FlowDocument proposed, string path, List<ProposalFinding> warnings)
     {
         FlowDocument currentDocument;
         try
         {
-            currentDocument = Documents.Parse(current.Yaml, current.RelativePath);
+            currentDocument = documents.Parse(current.Yaml, current.RelativePath);
         }
         catch (SqlFlowException ex)
         {
@@ -191,9 +173,26 @@ public static class FlowProposalPreflight
             return ([], []);
         }
 
-        var before = FlowDeclaredEndpoints.Describe(currentDocument).Select(e => e.ToString()).ToList();
-        var after = FlowDeclaredEndpoints.Describe(proposed).Select(e => e.ToString()).ToList();
+        var before = DeclaredEndpoints(currentDocument);
+        var after = DeclaredEndpoints(proposed);
         return (MultisetExcept(before, after), MultisetExcept(after, before));
+    }
+
+    /// <summary>The endpoints a document declares, as the pipeline row shows them: its source and its target.</summary>
+    private static List<string> DeclaredEndpoints(FlowDocument document)
+    {
+        var endpoints = new List<string>(2);
+        if (document.SourceReference is { } source)
+        {
+            endpoints.Add("source " + source);
+        }
+
+        if (document.TargetReference is { } target)
+        {
+            endpoints.Add("target " + target);
+        }
+
+        return endpoints;
     }
 
     /// <summary>Multiset difference (first minus second), order-preserving: two identical copy steps count

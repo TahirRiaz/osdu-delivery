@@ -86,9 +86,9 @@ public static class NotificationComposer
     /// <summary>The message a test send delivers: proof the channel, address, and credentials work end to end.</summary>
     public static NotificationMessage ComposeTest(string channel, string? guiBaseUrl, DateTime nowUtc)
     {
-        const string subject = "SQLFlow test notification";
+        const string subject = "OSDU Delivery test notification";
         var settingsUrl = SettingsUrl(guiBaseUrl);
-        var text = "This is a test notification from SQLFlow, sent at "
+        var text = "This is a test notification from OSDU Delivery, sent at "
             + Stamp(nowUtc)
             + ". If you can read this, the subscription's channel and destination are configured correctly."
             + (settingsUrl is null ? string.Empty : $"\n\nManage your notification settings: {settingsUrl}");
@@ -99,7 +99,7 @@ public static class NotificationComposer
         {
             var body = new StringBuilder();
             body.Append("<div style=\"font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#1f2328\">");
-            body.Append("<h2 style=\"font-size:16px;margin:0 0 8px\">SQLFlow test notification</h2>");
+            body.Append("<h2 style=\"font-size:16px;margin:0 0 8px\">OSDU Delivery test notification</h2>");
             body.Append("<p>This is a test notification, sent at ").Append(WebUtility.HtmlEncode(Stamp(nowUtc)))
                 .Append(". If you can read this, the subscription's channel and destination are configured correctly.</p>");
             if (settingsUrl is not null)
@@ -180,14 +180,13 @@ public static class NotificationComposer
     private static int KindRank(string kind) => kind switch
     {
         NotificationEventKinds.RunFailed => 0,
-        NotificationEventKinds.AssertionFailed => 1,
         NotificationEventKinds.RunCancelled => 2,
         _ => 3,
     };
 
     private static string ComposeSubject(NotificationComposition composition, List<NotificationFlowGroup> groups)
     {
-        var prefix = composition.Mode == NotificationModes.Digest ? "SQLFlow digest: " : "SQLFlow: ";
+        var prefix = composition.Mode == NotificationModes.Digest ? "OSDU Delivery digest: " : "OSDU Delivery: ";
         if (composition.Events.Count == 0)
         {
             return prefix + "no failures";
@@ -200,7 +199,6 @@ public static class NotificationComposer
             return only.Kind switch
             {
                 NotificationEventKinds.RunFailed => $"{prefix}flow '{flow}' failed",
-                NotificationEventKinds.AssertionFailed => $"{prefix}assertions failed on flow '{flow}'",
                 NotificationEventKinds.RunCancelled => $"{prefix}run of flow '{flow}' was cancelled",
                 _ => $"{prefix}run of flow '{flow}' was skipped",
             };
@@ -217,7 +215,6 @@ public static class NotificationComposer
     private static string KindNoun(string kind, int count) => kind switch
     {
         NotificationEventKinds.RunFailed => Plural(count, "failed run", "failed runs"),
-        NotificationEventKinds.AssertionFailed => Plural(count, "assertion failure", "assertion failures"),
         NotificationEventKinds.RunCancelled => Plural(count, "cancelled run", "cancelled runs"),
         _ => Plural(count, "skipped run", "skipped runs"),
     };
@@ -225,7 +222,6 @@ public static class NotificationComposer
     private static string KindVerb(string kind, int count) => kind switch
     {
         NotificationEventKinds.RunFailed => count == 1 ? "failed" : $"failed x{count.ToString(CultureInfo.InvariantCulture)}",
-        NotificationEventKinds.AssertionFailed => count == 1 ? "assertions failed" : $"assertions failed x{count.ToString(CultureInfo.InvariantCulture)}",
         NotificationEventKinds.RunCancelled => count == 1 ? "was cancelled" : $"cancelled x{count.ToString(CultureInfo.InvariantCulture)}",
         _ => count == 1 ? "was skipped (upstream failure)" : $"skipped x{count.ToString(CultureInfo.InvariantCulture)} (upstream failures)",
     };
@@ -362,7 +358,7 @@ public static class NotificationComposer
 
         if (SettingsUrl(composition.GuiBaseUrl) is { } settings)
         {
-            html.Append("<p style=\"margin-top:12px;color:#57606a;font-size:12px\">You receive this because you subscribed to SQLFlow notifications. <a href=\"")
+            html.Append("<p style=\"margin-top:12px;color:#57606a;font-size:12px\">You receive this because you subscribed to OSDU Delivery notifications. <a href=\"")
                 .Append(WebUtility.HtmlEncode(settings)).Append("\">Manage your settings</a>.</p>");
         }
 

@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a problem with SQLFlow
+about: Report a problem with OSDU Delivery
 title: "[bug] "
 labels: bug
 ---
@@ -20,7 +20,7 @@ The command you ran and what happened.
 What you expected to happen.
 
 **Environment**
-- SQLFlow version / commit:
+- OSDU Delivery version / commit:
 - .NET SDK version (`dotnet --version`):
 - SQL Server version / edition:
 - OS:

@@ -7,6 +7,7 @@ using SqlFlow.Catalog;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Node;
+using SqlFlow.Yaml;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -100,7 +101,7 @@ public static class RepoSourceEndpoints
         if (credentialReference is not null && !SecretReferencePattern.IsMatch(credentialReference))
         {
             return TypedResults.Problem(
-                detail: "credentialReference must be a secret reference like ${keyvault:my-vault/github-pat} or ${env:GIT_TOKEN}, not a raw token. Create and maintain the secret in your vault; SQLFlow only references it.",
+                detail: "credentialReference must be a secret reference like ${keyvault:my-vault/github-pat} or ${env:GIT_TOKEN}, not a raw token. Create and maintain the secret in your vault; OSDU Delivery only references it.",
                 statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
@@ -148,7 +149,7 @@ public static class RepoSourceEndpoints
     }
 
     private static async Task<Results<Ok<List<DiscoveredFlowDto>>, ProblemHttpResult>> DiscoverRepoAsync(
-        DiscoverRepoRequest request, ISecretResolver resolver, CancellationToken ct)
+        DiscoverRepoRequest request, ISecretResolver resolver, YamlDocumentLoader documents, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.RemoteUrl))
         {
@@ -180,7 +181,7 @@ public static class RepoSourceEndpoints
                 () =>
                 {
                     var (workingDir, _) = new GitMaterializer().MaterializeBranch(remoteUrl, branch, credentials, ct);
-                    return FlowDiscovery.Discover(workingDir, ct);
+                    return FlowDiscovery.Discover(documents, workingDir, ct);
                 },
                 ct).ConfigureAwait(false);
 

@@ -84,7 +84,6 @@ public static class NotificationDigestGenerator
             FailedCount = events.Count(e => e.Kind == NotificationEventKinds.RunFailed),
             CancelledCount = events.Count(e => e.Kind == NotificationEventKinds.RunCancelled),
             SkippedCount = events.Count(e => e.Kind == NotificationEventKinds.RunSkipped),
-            AssertionFailedCount = events.Count(e => e.Kind == NotificationEventKinds.AssertionFailed),
             FirstEventId = events.Count == 0 ? 0 : events[0].Id,
             LastEventId = events.Count == 0 ? 0 : events[^1].Id,
             Truncated = truncated,

@@ -1,6 +1,6 @@
-// The full SQLFlow estate on Azure Container Apps in one resource-group deployment: Log Analytics and the
-// Container Apps environment, a Key Vault holding every secret, the three Azure SQL databases every estate
-// has (catalog, pre, dwh), and the three apps composed from the per-tier templates in this directory:
+// The full OSDU Delivery estate on Azure Container Apps in one resource-group deployment: Log Analytics and the
+// Container Apps environment, a Key Vault holding every secret, the Azure SQL catalog database, and the three
+// apps composed from the per-tier templates in this directory:
 //
 //   gui.bicep            the SPA, external ingress; calls the control plane cross-origin
 //   control-plane.bicep  the API (in-process worker OFF: API replicas do API work only), CORS'd to the GUI
@@ -82,12 +82,12 @@ param provisionEntraApp bool = true
 param azureAdAllowedGroupObjectId string = ''
 
 @description('Display name for the app registration this template creates when provisionEntraApp is on.')
-param entraAppDisplayName string = 'SQLFlow'
+param entraAppDisplayName string = 'OSDU Delivery'
 
 @description('Stable unique name (Graph identity key) for that registration, so redeploys update the same app. Lowercase, no spaces.')
-param entraAppUniqueName string = 'sqlflow'
+param entraAppUniqueName string = 'osdu-delivery'
 
-@description('PROVISIONED app mode only (provisionEntraApp on): further Entra tenant (directory) ids, beyond this deployment\'s own home tenant (always trusted), whose users may also sign in. A non-empty list makes the app registration multi-tenant automatically; each named tenant\'s own admin must still consent to the app once and then assign the SqlFlow.User role to their own users/groups (this template has no directory access into a tenant it does not own) — see the entraForeignTenantReminder output for that step. Empty keeps the app single-tenant.')
+@description('PROVISIONED app mode only (provisionEntraApp on): further Entra tenant (directory) ids, beyond this deployment\'s own home tenant (always trusted), whose users may also sign in. A non-empty list makes the app registration multi-tenant automatically; each named tenant\'s own admin must still consent to the app once and then assign the SqlFlow.User role to their own users/groups (this template has no directory access into a tenant it does not own); see the entraForeignTenantReminder output for that step. Empty keeps the app single-tenant.')
 param azureAdAdditionalAllowedTenantIds array = []
 
 @description('EXTERNAL app mode only (provisionEntraApp off): Microsoft Entra tenant (directory) ids allowed for GUI single sign-on, against an app registration you manage yourself. Set together with azureAdClientId to offer "Sign in with Microsoft"; leave empty for local sign-in only. Register the GUI origin (the guiUrl output) as a redirect URI on that SPA registration, and make it multi-tenant yourself if this list has more than one entry.')
@@ -99,67 +99,8 @@ param azureAdClientId string = ''
 @description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards in the GUI).')
 param azureAdDefaultRole string = 'viewer'
 
-@description('ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per \${env:...} reference the worker pool\'s flows use: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: \'SQLFLOW_CONN_ERP\', secretName: \'erp-source-conn\' }]. Data-source credentials are put in the vault out of band and never pass through this template; the worker reads them under its own identity, so they never reach the control plane.')
+@description('Flow environment references, one object per \${env:...} reference the worker pool\'s flows use: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: \'OSDU_CLIENT_SECRET\', secretName: \'osdu-client-secret\' }]. Credentials are put in the vault out of band and never pass through this template; the worker reads them under its own identity, so they never reach the control plane.')
 param workerFlowEnv array = []
-
-@description('Name for an Azure AI Foundry account (also its endpoint subdomain, globally unique) deployed alongside the estate, with the control plane and worker identities granted caller access. Empty skips AI Foundry.')
-param aiFoundryName string = ''
-
-@description('Name of the Foundry project created under the AI Foundry account.')
-param aiFoundryProjectName string = 'sqlflow'
-
-@description('Model deployed under the AI Foundry account, e.g. gpt-5.1 (pick one the region still accepts for new deployments: az cognitiveservices model list). Required by the Slack assistant\'s agent; empty deploys no model.')
-param aiFoundryModelName string = ''
-
-@description('Version of that model. Empty lets the service pick the current default version.')
-param aiFoundryModelVersion string = ''
-
-@description('Capacity for the model deployment, in thousands of tokens per minute.')
-param aiFoundryModelCapacity int = 30
-
-@description('Optional audio-transcription model deployed beside the chat model (e.g. gpt-4o-mini-transcribe), enabling the GUI chat assistant\'s server-side voice input. Empty deploys none; the mic then falls back to the browser\'s built-in speech recognition.')
-param aiFoundryTranscriptionModelName string = ''
-
-@description('Version of the transcription model. Empty lets the service pick the current default version.')
-param aiFoundryTranscriptionModelVersion string = ''
-
-@description('Container image for the SQLFlow MCP server in HTTP mode, e.g. <registry>/sqlflow-mcp:latest (built from Dockerfile.mcp). Empty skips it, and with it the Slack assistant.')
-param mcpImage string = ''
-
-@description('Container image for the Slack assistant, e.g. <registry>/sqlflow-slack-bot:latest (built from Dockerfile.slackbot). Empty skips the Slack assistant.')
-param slackBotImage string = ''
-
-@secure()
-@description('Slack app-level token (xapp-...) with connections:write, from the Slack app created with deploy/slack/manifest.yaml. Required for the Slack assistant.')
-param slackAppToken string = ''
-
-@secure()
-@description('Slack bot user OAuth token (xoxb-...) of that app. Required for the Slack assistant.')
-param slackBotToken string = ''
-
-@secure()
-@description('A READ-scoped SQLFlow personal access token (sqlf_...) the assistant presents to the MCP server. Mint it in the GUI or CLI after the estate is up, then redeploy with this set; empty skips the Slack assistant.')
-param slackBotSqlflowToken string = ''
-
-@description('The Slack assistant model provider: AzureFoundry (the Foundry Responses API via managed identity, needs aiFoundryName + aiFoundryModelName), OpenAI (the OpenAI platform via API key), or Anthropic (the Claude API via API key). The two key-based modes have no Azure AI dependency.')
-@allowed(['AzureFoundry', 'OpenAI', 'Anthropic'])
-param slackBotProvider string = 'AzureFoundry'
-
-@secure()
-@description('The provider API key for the OpenAI (sk-...) or Anthropic (sk-ant-...) mode. Required for those modes and ignored for AzureFoundry; empty in a key-based mode skips the Slack assistant.')
-param slackBotModelApiKey string = ''
-
-@description('The OpenAI model, which must support the Responses API with the hosted MCP tool. Used when slackBotProvider is OpenAI.')
-param slackBotOpenAIModel string = 'gpt-5-mini'
-
-@description('The Claude model id. Used when slackBotProvider is Anthropic.')
-param slackBotAnthropicModel string = 'claude-opus-4-8'
-
-@description('Name of the Container App running the MCP server.')
-param mcpName string = 'sqlflow-mcp'
-
-@description('Name of the Container App running the Slack assistant.')
-param slackBotName string = 'sqlflow-slack-bot'
 
 @description('The pool the worker app serves. Empty drains untargeted runs only.')
 param workerPool string = ''
@@ -201,50 +142,17 @@ param sqlServerName string = 'sqlflow-sql-${uniqueString(resourceGroup().id)}'
 @description('Name of the catalog database on that server.')
 param catalogDatabaseName string = 'SqlFlowCatalog'
 
-@description('Name of the staging database flows land raw ingests in, reachable from flow YAML as \${env:SQLFLOW_CONN_PRE}.')
-param preDatabaseName string = 'SqlFlowPre'
-
-@description('Name of the warehouse database flows publish modelled data to, reachable from flow YAML as \${env:SQLFLOW_CONN_DWH}.')
-param dwhDatabaseName string = 'SqlFlowDwh'
-
-@description('Catalog database SKU (ignored when existingSqlServer is set). The catalog is metadata plus the run queue: modest, but polled continuously, so avoid serverless auto-pause.')
+@description('Catalog database SKU (ignored when existingSqlServer is set). The catalog is metadata, the run queue and the delivery ledger: modest, but polled continuously, so avoid serverless auto-pause.')
 param sqlDatabaseSku object = {
-  name: 'S1'
-  tier: 'Standard'
-}
-
-@description('SKU for the pre and dwh databases (ignored when existingSqlServer is set). These carry the data, so they are sized apart from the catalog.')
-param dataDatabaseSku object = {
   name: 'S1'
   tier: 'Standard'
 }
 
 // Secret names shared with the per-tier templates (their defaults match these).
 var catalogConnectionSecretName = 'sqlflow-catalog-db'
-var preConnectionSecretName = 'sqlflow-pre-db'
-var dwhConnectionSecretName = 'sqlflow-dwh-db'
 var jwtSigningKeySecretName = 'sqlflow-jwt-signing-key'
 var adminPasswordSecretName = 'sqlflow-admin-password'
 var gitTokenSecretName = 'sqlflow-git-token'
-var slackAppTokenSecretName = 'sqlflow-slack-app-token'
-var slackBotTokenSecretName = 'sqlflow-slack-bot-token'
-var slackBotSqlflowTokenSecretName = 'sqlflow-slack-bot-access-token'
-var slackBotModelApiKeySecretName = 'sqlflow-slack-bot-model-api-key'
-
-// The MCP server deploys on its own (any MCP client can use it); the Slack assistant additionally needs the
-// Slack app, a SQLFlow access token, and its model provider: a Foundry account with a model in AzureFoundry
-// mode, or the provider API key in the OpenAI/Anthropic modes. Anything missing simply leaves the assistant
-// out of this deployment; the rest of the estate is unaffected.
-var mcpEnabled = !empty(mcpImage)
-// The GUI chat assistant rides on the same building blocks (a Foundry model + the MCP server) and
-// needs nothing else, so it lights up automatically once both exist. It shares the assistant core
-// with the Slack bot but not its identity: every chat run carries the signed-in user's own bearer.
-var chatAssistantEnabled = mcpEnabled && !empty(aiFoundryName) && !empty(aiFoundryModelName)
-var slackBotUsesApiKey = slackBotProvider != 'AzureFoundry'
-var slackBotProviderReady = slackBotUsesApiKey
-  ? !empty(slackBotModelApiKey)
-  : (!empty(aiFoundryName) && !empty(aiFoundryModelName))
-var slackBotEnabled = mcpEnabled && !empty(slackBotImage) && !empty(slackAppToken) && !empty(slackBotToken) && !empty(slackBotSqlflowToken) && slackBotProviderReady
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: logAnalyticsName
@@ -321,29 +229,6 @@ resource catalogDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = 
   }
 }
 
-// The two data databases every estate has: pre stages raw ingests, dwh holds the modelled result. Like the
-// catalog they are only created when this template creates the server; on an existing server (a Managed
-// Instance) the databases are provisioned out of band, and only their connection secrets are wired here.
-resource preDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = if (empty(existingSqlServer)) {
-  parent: sqlServer
-  name: preDatabaseName
-  location: location
-  sku: dataDatabaseSku
-  properties: {
-    collation: 'SQL_Latin1_General_CP1_CI_AS'
-  }
-}
-
-resource dwhDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = if (empty(existingSqlServer)) {
-  parent: sqlServer
-  name: dwhDatabaseName
-  location: location
-  sku: dataDatabaseSku
-  properties: {
-    collation: 'SQL_Latin1_General_CP1_CI_AS'
-  }
-}
-
 // host,port for the connection string: the created server on the standard port, or the existing address with
 // its own port when it carries one (a Managed Instance public endpoint is host,3342).
 var catalogServerAddress = empty(existingSqlServer)
@@ -356,12 +241,6 @@ var catalogServerAddress = empty(existingSqlServer)
 // password is quoted (embedded single quotes doubled) so any complex value survives ADO.NET parsing.
 var quotedSqlAdminPassword = '\'${replace(sqlAdminPassword, '\'', '\'\'')}\''
 var catalogConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${catalogDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
-
-// The pre and dwh connection strings, same server and credential as the catalog, differing only in the
-// database. Flows reach them by the fixed names ${env:SQLFLOW_CONN_PRE} and ${env:SQLFLOW_CONN_DWH}, so a
-// document moves between estates unchanged: only these secrets' values differ.
-var preConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${preDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
-var dwhConnectionString = 'Server=tcp:${catalogServerAddress};Initial Catalog=${dwhDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 
 // A SECOND connection string, for the KEDA scale rule only. The scaler is go-mssqldb, not .NET SqlClient: it
 // does not strip the single quotes ADO.NET puts around the password, so reusing catalogConnectionString makes
@@ -381,22 +260,6 @@ resource catalogDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: catalogConnectionSecretName
   properties: {
     value: catalogConnectionString
-  }
-}
-
-resource preDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: preConnectionSecretName
-  properties: {
-    value: preConnectionString
-  }
-}
-
-resource dwhDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: dwhConnectionSecretName
-  properties: {
-    value: dwhConnectionString
   }
 }
 
@@ -429,38 +292,6 @@ resource gitTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!em
   name: gitTokenSecretName
   properties: {
     value: gitToken
-  }
-}
-
-resource slackAppTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (slackBotEnabled) {
-  parent: keyVault
-  name: slackAppTokenSecretName
-  properties: {
-    value: slackAppToken
-  }
-}
-
-resource slackBotTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (slackBotEnabled) {
-  parent: keyVault
-  name: slackBotTokenSecretName
-  properties: {
-    value: slackBotToken
-  }
-}
-
-resource slackBotSqlflowTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (slackBotEnabled) {
-  parent: keyVault
-  name: slackBotSqlflowTokenSecretName
-  properties: {
-    value: slackBotSqlflowToken
-  }
-}
-
-resource slackBotModelApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (slackBotEnabled && slackBotUsesApiKey) {
-  parent: keyVault
-  name: slackBotModelApiKeySecretName
-  properties: {
-    value: slackBotModelApiKey
   }
 }
 
@@ -520,12 +351,6 @@ module controlPlane 'control-plane.bicep' = {
     azureAdDefaultRole: azureAdDefaultRole
     acrName: acrName
     acrLoginServer: acrLoginServer
-    // The GUI chat assistant, on the estate's own Foundry account and MCP server (see chatAssistantEnabled).
-    assistantEnabled: chatAssistantEnabled
-    assistantFoundryProjectEndpoint: chatAssistantEnabled ? aiFoundryProjectEndpoint : ''
-    assistantFoundryModelDeploymentName: chatAssistantEnabled ? aiFoundryModelName : ''
-    assistantFoundryTranscriptionDeploymentName: chatAssistantEnabled ? aiFoundryTranscriptionModelName : ''
-    assistantMcpServerUrl: chatAssistantEnabled ? mcp!.outputs.mcpUrl : ''
     minReplicas: controlPlaneMinReplicas
     maxReplicas: controlPlaneMaxReplicas
   }
@@ -540,20 +365,6 @@ module controlPlane 'control-plane.bicep' = {
   ]
 }
 
-// The two data databases are wired under fixed names in every estate, so a flow document referencing
-// ${env:SQLFLOW_CONN_PRE} or ${env:SQLFLOW_CONN_DWH} moves from test to prod unchanged. Caller-supplied
-// data-source references follow, and must not reuse these two names.
-var builtInFlowEnv = [
-  {
-    name: 'SQLFLOW_CONN_PRE'
-    secretName: preConnectionSecretName
-  }
-  {
-    name: 'SQLFLOW_CONN_DWH'
-    secretName: dwhConnectionSecretName
-  }
-]
-
 module worker 'worker.bicep' = {
   name: 'sqlflow-worker-app'
   params: {
@@ -566,7 +377,7 @@ module worker 'worker.bicep' = {
     pool: workerPool
     gitTokenSecretName: empty(gitToken) ? '' : gitTokenSecretName
     gitUsername: gitUsername
-    flowEnv: concat(builtInFlowEnv, workerFlowEnv)
+    flowEnv: workerFlowEnv
     scalerConnectionSecretName: scalerConnectionSecretName
     acrName: acrName
     acrLoginServer: acrLoginServer
@@ -575,12 +386,8 @@ module worker 'worker.bicep' = {
   dependsOn: [
     catalogDbSecret
     catalogScalerSecret
-    preDbSecret
-    dwhDbSecret
     gitTokenSecret
     catalogDatabase
-    preDatabase
-    dwhDatabase
     sqlAllowAzureServices
   ]
 }
@@ -596,88 +403,6 @@ module gui 'gui.bicep' = {
     acrName: acrName
     acrLoginServer: acrLoginServer
   }
-}
-
-// Optional: an AI Foundry account + project beside the estate. The app identities are granted caller access
-// (Cognitive Services User), so anything they run can call models keylessly; the Slack assistant's identity
-// is granted the Azure AI User role so it can drive the Foundry Agent Service.
-module aiFoundry 'ai-foundry.bicep' = if (!empty(aiFoundryName)) {
-  name: 'sqlflow-ai-foundry'
-  params: {
-    location: location
-    name: aiFoundryName
-    projectName: aiFoundryProjectName
-    modelName: aiFoundryModelName
-    modelVersion: aiFoundryModelVersion
-    modelCapacity: aiFoundryModelCapacity
-    transcriptionModelName: aiFoundryTranscriptionModelName
-    transcriptionModelVersion: aiFoundryTranscriptionModelVersion
-    userPrincipalIds: [
-      controlPlane.outputs.identityPrincipalId
-      worker.outputs.identityPrincipalId
-    ]
-    // The OpenAI-inference role (Responses API + audio transcription): the Slack bot's identity when
-    // it runs on Foundry, and the control plane's when the GUI chat assistant is on. The key-based
-    // providers never touch the account.
-    agentPrincipalIds: concat(
-      (slackBotEnabled && !slackBotUsesApiKey) ? [
-        slackBot!.outputs.identityPrincipalId
-      ] : [],
-      chatAssistantEnabled ? [
-        controlPlane.outputs.identityPrincipalId
-      ] : [])
-  }
-}
-
-// The MCP server over streamable HTTP: the tool source for the Foundry agent, and for any other remote MCP
-// client that presents a SQLFlow bearer token.
-module mcp 'mcp.bicep' = if (mcpEnabled) {
-  name: 'sqlflow-mcp-app'
-  params: {
-    location: location
-    name: mcpName
-    managedEnvironmentId: managedEnvironment.id
-    image: mcpImage
-    controlPlaneUrl: 'https://${controlPlaneFqdn}'
-    guiUrl: 'https://${guiFqdn}'
-    acrName: acrName
-    acrLoginServer: acrLoginServer
-  }
-}
-
-// The Foundry project endpoint is deterministic from the account and project names, so the Slack bot module
-// never has to wait on (or cycle with) the ai-foundry module, which in turn references the bot's identity
-// for its agent role grant.
-var aiFoundryProjectEndpoint = empty(aiFoundryName) ? '' : 'https://${aiFoundryName}.services.ai.azure.com/api/projects/${aiFoundryProjectName}'
-
-module slackBot 'slack-bot.bicep' = if (slackBotEnabled) {
-  name: 'sqlflow-slack-bot-app'
-  params: {
-    location: location
-    name: slackBotName
-    managedEnvironmentId: managedEnvironment.id
-    image: slackBotImage
-    keyVaultName: keyVault.name
-    assistantProvider: slackBotProvider
-    slackAppTokenSecretName: slackAppTokenSecretName
-    slackBotTokenSecretName: slackBotTokenSecretName
-    sqlflowAccessTokenSecretName: slackBotSqlflowTokenSecretName
-    modelApiKeySecretName: slackBotModelApiKeySecretName
-    foundryProjectEndpoint: aiFoundryProjectEndpoint
-    foundryModelDeploymentName: aiFoundryModelName
-    openaiModel: slackBotOpenAIModel
-    anthropicModel: slackBotAnthropicModel
-    mcpServerUrl: mcp!.outputs.mcpUrl
-    guiBaseUrl: 'https://${guiFqdn}'
-    acrName: acrName
-    acrLoginServer: acrLoginServer
-  }
-  dependsOn: [
-    slackAppTokenSecret
-    slackBotTokenSecret
-    slackBotSqlflowTokenSecret
-    slackBotModelApiKeySecret
-  ]
 }
 
 @description('Sign in here with the bootstrap admin (adminUsername/adminPassword).')
@@ -697,13 +422,13 @@ output entraForeignTenantReminder string = (provisionEntraApp && !empty(azureAdA
   ? 'For each tenant in azureAdAdditionalAllowedTenantIds: an admin there must consent to app ${effectiveAzureAdClientId}, then assign the SqlFlow.User role to their own users/groups in their own enterprise application view.'
   : ''
 
-@description('The API base URL: point the ADF pipeline (deploy/adf) and CLI remotes at this.')
+@description('The API base URL: point CLI remotes (SQLFLOW_URL) and any external scheduler at this.')
 output controlPlaneBaseUrl string = controlPlane.outputs.controlPlaneBaseUrl
 
 @description('Client id of the control plane identity, for granting access to flow secrets beyond this vault.')
 output controlPlaneIdentityClientId string = controlPlane.outputs.identityClientId
 
-@description('Client id of the worker identity, for granting access to the data its pool\'s flows touch.')
+@description('Client id of the worker identity, for granting access to the drops and the OSDU credentials its pool\'s flows use.')
 output workerIdentityClientId string = worker.outputs.identityClientId
 
 @description('Catalog SQL server address (the catalog connection string is in Key Vault as sqlflow-catalog-db).')
@@ -711,12 +436,3 @@ output sqlServerFqdn string = empty(existingSqlServer) ? sqlServer!.properties.f
 
 @description('The vault holding every estate secret; put flow credentials here as \${keyvault:...} targets.')
 output keyVaultUri string = keyVault.properties.vaultUri
-
-@description('The AI Foundry endpoint, or empty when aiFoundryName was not set.')
-output aiFoundryEndpoint string = empty(aiFoundryName) ? '' : aiFoundry!.outputs.endpoint
-
-@description('The Foundry project endpoint agent clients connect to, or empty when aiFoundryName was not set.')
-output aiFoundryProjectEndpoint string = aiFoundryProjectEndpoint
-
-@description('The MCP endpoint URL (register in Foundry, VS Code, or any remote MCP client), or empty when mcpImage was not set.')
-output mcpUrl string = mcpEnabled ? mcp!.outputs.mcpUrl : ''

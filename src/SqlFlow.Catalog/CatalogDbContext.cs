@@ -26,37 +26,9 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogFlowVersion> FlowVersions => Set<CatalogFlowVersion>();
 
-    public DbSet<CatalogObject> Objects => Set<CatalogObject>();
-
-    public DbSet<CatalogLineageEdge> LineageEdges => Set<CatalogLineageEdge>();
-
-    public DbSet<CatalogObjectRelationship> ObjectRelationships => Set<CatalogObjectRelationship>();
-
-    public DbSet<CatalogSubscriber> Subscribers => Set<CatalogSubscriber>();
-
-    public DbSet<CatalogSubscriberQuery> SubscriberQueries => Set<CatalogSubscriberQuery>();
-
-    public DbSet<CatalogFlowDependency> FlowDependencies => Set<CatalogFlowDependency>();
-
-    public DbSet<CatalogRunFile> RunFiles => Set<CatalogRunFile>();
-
-    public DbSet<CatalogRunAssertion> RunAssertions => Set<CatalogRunAssertion>();
-
-    public DbSet<CatalogRunStatement> RunStatements => Set<CatalogRunStatement>();
-
     public DbSet<CatalogRunEvent> RunEvents => Set<CatalogRunEvent>();
 
     public DbSet<CatalogMaintenanceSetting> MaintenanceSettings => Set<CatalogMaintenanceSetting>();
-
-    public DbSet<CatalogRunSurrogateKey> RunSurrogateKeys => Set<CatalogRunSurrogateKey>();
-
-    public DbSet<CatalogRunHealthCheckMetric> RunHealthCheckMetrics => Set<CatalogRunHealthCheckMetric>();
-
-    public DbSet<CatalogSchemaChange> SchemaChanges => Set<CatalogSchemaChange>();
-
-    public DbSet<CatalogObjectColumn> ObjectColumns => Set<CatalogObjectColumn>();
-
-    public DbSet<CatalogPipelineColumn> PipelineColumns => Set<CatalogPipelineColumn>();
 
     public DbSet<CatalogSchedule> Schedules => Set<CatalogSchedule>();
 
@@ -80,14 +52,7 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<CatalogComputeTask> ComputeTasks => Set<CatalogComputeTask>();
 
-    /// <summary>Prepared ad-hoc queries awaiting approval; the confirmation gate for the query surface.</summary>
-    public DbSet<CatalogQueryPlan> QueryPlans => Set<CatalogQueryPlan>();
-
     public DbSet<CatalogNotificationEvent> NotificationEvents => Set<CatalogNotificationEvent>();
-
-    public DbSet<CatalogChatConversation> ChatConversations => Set<CatalogChatConversation>();
-
-    public DbSet<CatalogChatMessage> ChatMessages => Set<CatalogChatMessage>();
 
     public DbSet<CatalogNotificationSubscription> NotificationSubscriptions => Set<CatalogNotificationSubscription>();
 
@@ -211,147 +176,6 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(v => v.Yaml).IsRequired();
         });
 
-        modelBuilder.Entity<CatalogObject>(entity =>
-        {
-            entity.ToTable("Object");
-            entity.HasKey(o => o.Key);
-            entity.Property(o => o.Key).HasMaxLength(900);
-            entity.Property(o => o.ServerRef).HasMaxLength(512).IsRequired();
-            entity.Property(o => o.Database).HasMaxLength(256);
-            entity.Property(o => o.Schema).HasMaxLength(256);
-            entity.Property(o => o.Name).HasMaxLength(512).IsRequired();
-            entity.Property(o => o.Kind).HasMaxLength(32);
-            // The module body is unbounded; nvarchar(max) so a long proc/view definition is never truncated.
-            entity.Property(o => o.Definition);
-            // The generating DDL is unbounded too (a wide CREATE TABLE, a long view body); nvarchar(max).
-            entity.Property(o => o.Script);
-            entity.Property(o => o.ScriptTier).HasMaxLength(16);
-            // The interpreted key: a handful of column names, never a blob; 1024 covers a wide composite key.
-            entity.Property(o => o.KeyColumns).HasMaxLength(1024);
-            entity.Property(o => o.KeyOrigin).HasMaxLength(16);
-            // A DB-generated surrogate that serves only as the full-text KEY INDEX (Key is too wide to be one).
-            entity.Property(o => o.FullTextKey).UseIdentityColumn();
-            entity.HasIndex(o => o.FullTextKey).IsUnique();
-            entity.HasIndex(o => o.Name);
-            entity.HasIndex(o => o.ServerRef);
-        });
-
-        modelBuilder.Entity<CatalogLineageEdge>(entity =>
-        {
-            entity.ToTable("LineageEdge");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Flow).HasMaxLength(400);
-            entity.Property(e => e.ViaModule).HasMaxLength(900);
-            entity.Property(e => e.Relation).HasMaxLength(16).IsRequired();
-            entity.Property(e => e.ObjectKey).HasMaxLength(900).IsRequired();
-            entity.Property(e => e.ObjectName).HasMaxLength(512);
-            entity.Property(e => e.Tier).HasMaxLength(16).IsRequired();
-            // The hot queries: every edge on an object (cross-repo "what touches X"), and a flow's edges.
-            entity.HasIndex(e => e.ObjectKey);
-            entity.HasIndex(e => e.RepoId);
-            entity.HasIndex(e => e.PipelineId);
-        });
-
-        modelBuilder.Entity<CatalogObjectRelationship>(entity =>
-        {
-            entity.ToTable("ObjectRelationship");
-            entity.HasKey(r => r.Id);
-            entity.Property(r => r.Name).HasMaxLength(512);
-            entity.Property(r => r.FromObjectKey).HasMaxLength(900).IsRequired();
-            entity.Property(r => r.FromColumns).HasMaxLength(1024).IsRequired();
-            entity.Property(r => r.ToObjectKey).HasMaxLength(900).IsRequired();
-            entity.Property(r => r.ToColumns).HasMaxLength(1024).IsRequired();
-            // Empty for an equi-join (the common case) and for a declared constraint; a range join carries one
-            // operator per column pair, so this is bounded by the column list it parallels.
-            entity.Property(r => r.Operators).HasMaxLength(128).IsRequired();
-            // At most the five join types, comma-joined.
-            entity.Property(r => r.JoinTypes).HasMaxLength(64).IsRequired();
-            entity.Property(r => r.Origin).HasMaxLength(16).IsRequired();
-            entity.Property(r => r.Tier).HasMaxLength(16).IsRequired();
-            // The hot queries: an object's relationships in either direction, and the per-repo replacement.
-            entity.HasIndex(r => r.FromObjectKey);
-            entity.HasIndex(r => r.ToObjectKey);
-            entity.HasIndex(r => r.RepoId);
-        });
-
-        modelBuilder.Entity<CatalogSubscriber>(entity =>
-        {
-            entity.ToTable("Subscriber");
-            entity.HasKey(s => s.Id);
-            entity.Property(s => s.Name).HasMaxLength(250).IsRequired();
-            entity.Property(s => s.Type).HasMaxLength(250).IsRequired();
-            entity.Property(s => s.ObjectKey).HasMaxLength(900).IsRequired();
-            entity.Property(s => s.File).HasMaxLength(1024).IsRequired();
-            entity.Property(s => s.Owner).HasMaxLength(250);
-            entity.Property(s => s.Description).HasMaxLength(1024);
-            // Notes is deliberately unbounded where Description is capped: a description is one authored line,
-            // whereas a note is whatever a reviewer wrote about the report's state, often several sentences and
-            // sometimes several lines. A cap here would turn a long remark into a failed sync.
-            entity.Property(s => s.Notes);
-            entity.Property(s => s.Url).HasMaxLength(1024);
-            // The hot queries: the per-repo replacement, a subscriber by name, and the join back from an edge's
-            // ViaModule to the consumer it belongs to.
-            entity.HasIndex(s => s.RepoId);
-            entity.HasIndex(s => s.Name);
-            entity.HasIndex(s => s.ObjectKey);
-        });
-
-        modelBuilder.Entity<CatalogSubscriberQuery>(entity =>
-        {
-            entity.ToTable("SubscriberQuery");
-            entity.HasKey(q => q.Id);
-            entity.Property(q => q.SubscriberKey).HasMaxLength(900).IsRequired();
-            entity.Property(q => q.Name).HasMaxLength(250).IsRequired();
-            entity.Property(q => q.ServerRef).HasMaxLength(400).IsRequired();
-            entity.Property(q => q.Sql).IsRequired();
-            entity.HasIndex(q => q.SubscriberKey);
-            entity.HasIndex(q => q.RepoId);
-        });
-
-        modelBuilder.Entity<CatalogFlowDependency>(entity =>
-        {
-            entity.ToTable("FlowDependency");
-            entity.HasKey(d => d.Id);
-            entity.Property(d => d.FromFlow).HasMaxLength(400).IsRequired();
-            entity.Property(d => d.ToFlow).HasMaxLength(400).IsRequired();
-            entity.HasIndex(d => d.RepoId);
-            entity.HasIndex(d => d.FromPipelineId);
-            entity.HasIndex(d => d.ToPipelineId);
-        });
-
-        modelBuilder.Entity<CatalogRunFile>(entity =>
-        {
-            entity.ToTable("RunFile");
-            entity.HasKey(f => f.Id);
-            entity.Property(f => f.Name).HasMaxLength(512).IsRequired();
-            entity.Property(f => f.Path).HasMaxLength(1024);
-            // Hex hash: 32 chars for MD5 today, sized to hold a SHA-256 (64) without a future migration.
-            entity.Property(f => f.Hash).HasMaxLength(128);
-            entity.HasIndex(f => f.RunId);
-        });
-
-        modelBuilder.Entity<CatalogRunAssertion>(entity =>
-        {
-            entity.ToTable("RunAssertion");
-            entity.HasKey(a => a.Id);
-            entity.Property(a => a.Name).HasMaxLength(256).IsRequired();
-            entity.Property(a => a.Result).HasMaxLength(512);
-            entity.Property(a => a.AssertedValue).HasMaxLength(512);
-            entity.HasIndex(a => a.RunId);
-        });
-
-        modelBuilder.Entity<CatalogRunStatement>(entity =>
-        {
-            entity.ToTable("RunStatement");
-            entity.HasKey(s => s.Id);
-            entity.Property(s => s.Step).HasMaxLength(128).IsRequired();
-            // Sql is nvarchar(max): a generated statement (a CREATE TABLE, a MERGE) has no useful length bound.
-            entity.Property(s => s.Sql).IsRequired();
-            // Error is nvarchar(max), null: only the one statement that threw carries it, holding the raw engine
-            // error (a SqlException message can be long), so no length bound applies.
-            entity.HasIndex(s => s.RunId);
-        });
-
         modelBuilder.Entity<CatalogRunEvent>(entity =>
         {
             entity.ToTable("RunEvent");
@@ -371,80 +195,6 @@ public sealed class CatalogDbContext : DbContext
             // A single operator-set row; the id is the fixed singleton key (1), never database-generated.
             entity.Property(s => s.Id).ValueGeneratedNever();
             entity.Property(s => s.UpdatedBy).HasMaxLength(256);
-        });
-
-        modelBuilder.Entity<CatalogRunSurrogateKey>(entity =>
-        {
-            entity.ToTable("RunSurrogateKey");
-            entity.HasKey(s => s.Id);
-            entity.Property(s => s.SurrogateTable).HasMaxLength(776).IsRequired();
-            entity.Property(s => s.SurrogateColumn).HasMaxLength(256).IsRequired();
-            entity.HasIndex(s => s.RunId);
-        });
-
-        modelBuilder.Entity<CatalogRunHealthCheckMetric>(entity =>
-        {
-            entity.ToTable("RunHealthCheckMetric");
-            entity.HasKey(m => m.Id);
-            entity.Property(m => m.Name).HasMaxLength(256).IsRequired();
-            entity.Property(m => m.ModelTrainer).HasMaxLength(128);
-            entity.HasIndex(m => m.RunId);
-        });
-
-        modelBuilder.Entity<CatalogSchemaChange>(entity =>
-        {
-            entity.ToTable("SchemaChange");
-            entity.HasKey(c => c.Id);
-            entity.Property(c => c.Database).HasMaxLength(256).IsRequired();
-            entity.Property(c => c.Category).HasMaxLength(64).IsRequired();
-            entity.Property(c => c.Schema).HasMaxLength(256);
-            entity.Property(c => c.Name).HasMaxLength(512).IsRequired();
-            entity.Property(c => c.ChangeType).HasMaxLength(16).IsRequired();
-            entity.Property(c => c.CommitSha).HasMaxLength(64);
-            // The feed query: the estate's changes newest first, optionally narrowed to one database. Descending
-            // on the date so the index serves the ordering, not just the filter.
-            entity.HasIndex(c => new { c.RepoId, c.OccurredUtc }).IsDescending(false, true);
-            entity.HasIndex(c => new { c.RepoId, c.Database, c.OccurredUtc }).IsDescending(false, false, true);
-            // The run drill-down, and the delete-by-run the re-record path needs to stay idempotent.
-            entity.HasIndex(c => c.RunId);
-            // "Everything that ever happened to this object", the history panel behind one table or view.
-            entity.HasIndex(c => new { c.RepoId, c.Database, c.Schema, c.Name });
-        });
-
-        modelBuilder.Entity<CatalogObjectColumn>(entity =>
-        {
-            entity.ToTable("ObjectColumn");
-            entity.HasKey(c => c.Id);
-            entity.Property(c => c.ObjectKey).HasMaxLength(900).IsRequired();
-            entity.Property(c => c.Name).HasMaxLength(512).IsRequired();
-            entity.Property(c => c.DataType).HasMaxLength(128);
-            entity.Property(c => c.Tier).HasMaxLength(16).IsRequired();
-            // Column-by-name search across every object.
-            entity.HasIndex(c => c.Name);
-            // One row per column position per object: a true invariant (sys.columns.column_id is unique per
-            // object) and the idempotency backstop for the sync's delete-by-key + re-insert. The composite also
-            // serves the "an object's columns, in order" drill-down (ObjectKey is the leftmost prefix).
-            entity.HasIndex(c => new { c.ObjectKey, c.Ordinal }).IsUnique();
-        });
-
-        modelBuilder.Entity<CatalogPipelineColumn>(entity =>
-        {
-            entity.ToTable("PipelineColumn");
-            entity.HasKey(c => c.Id);
-            entity.Property(c => c.Kind).HasMaxLength(16).IsRequired();
-            entity.Property(c => c.ColumnName).HasMaxLength(512).IsRequired();
-            entity.Property(c => c.SourceColumn).HasMaxLength(512);
-            // The expression and type are authored/generated SQL: bounded generously, never a blob, but wide
-            // enough for a real CAST/CASE expression.
-            entity.Property(c => c.Expression).HasMaxLength(4000);
-            entity.Property(c => c.DataType).HasMaxLength(128);
-            // A pipeline's transforms, in order, for the drill-down; and column-by-name search across the estate.
-            entity.HasIndex(c => c.PipelineId);
-            entity.HasIndex(c => c.RepoId);
-            entity.HasIndex(c => c.ColumnName);
-            // One row per column position per (pipeline, kind): the idempotency backstop for the sync/run's
-            // delete-by-(pipeline, kind) + re-insert, and the "a pipeline's declared columns, in order" drill-down.
-            entity.HasIndex(c => new { c.PipelineId, c.Kind, c.Ordinal }).IsUnique();
         });
 
         modelBuilder.Entity<CatalogSchedule>(entity =>
@@ -603,21 +353,6 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(t => t.SourceRef);
         });
 
-        modelBuilder.Entity<CatalogQueryPlan>(entity =>
-        {
-            entity.ToTable("QueryPlan");
-            entity.HasKey(p => p.PlanId);
-            entity.Property(p => p.Sql).IsRequired();
-            entity.Property(p => p.SourceRef).HasMaxLength(512).IsRequired();
-            entity.Property(p => p.ProviderKind).HasMaxLength(16);
-            entity.Property(p => p.Database).HasMaxLength(256);
-            entity.Property(p => p.TargetPool).HasMaxLength(128);
-            entity.Property(p => p.PreparedBy).HasMaxLength(256);
-            // The sweep that clears lapsed plans, and the audit read of what one person prepared.
-            entity.HasIndex(p => p.ExpiresUtc);
-            entity.HasIndex(p => p.PreparedUtc);
-        });
-
         modelBuilder.Entity<CatalogNotificationEvent>(entity =>
         {
             entity.ToTable("NotificationEvent");
@@ -691,28 +426,6 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(d => d.GeneratedUtc);
             // "The latest scheduled digest": the generator's self-healing check that a window is not re-covered.
             entity.HasIndex(d => new { d.Origin, d.PeriodEndUtc });
-        });
-
-        modelBuilder.Entity<CatalogChatConversation>(entity =>
-        {
-            entity.ToTable("ChatConversation");
-            entity.HasKey(c => c.Id);
-            entity.Property(c => c.Title).HasMaxLength(200).IsRequired();
-            // The owner's conversation list, newest activity first.
-            entity.HasIndex(c => new { c.UserId, c.UpdatedUtc });
-        });
-
-        modelBuilder.Entity<CatalogChatMessage>(entity =>
-        {
-            entity.ToTable("ChatMessage");
-            entity.HasKey(m => m.Id);
-            entity.Property(m => m.Role).HasMaxLength(16).IsRequired();
-            // Text / ImagesJson / ToolCallsJson are nvarchar(max): an answer, a set of pasted
-            // screenshots, or a long tool trail has no useful column bound.
-            entity.Property(m => m.Text).IsRequired();
-            // A transcript reads one conversation in emission order; unique because the appender
-            // computes the next ordinal inside the save, so a duplicate is a bug surfaced early.
-            entity.HasIndex(m => new { m.ConversationId, m.Ordinal }).IsUnique();
         });
 
         modelBuilder.Entity<CatalogAccessToken>(entity =>

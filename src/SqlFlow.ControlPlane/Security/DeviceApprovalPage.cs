@@ -28,7 +28,7 @@ public static class DeviceApprovalPage
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SQLFlow · Approve device</title>
+  <title>OSDU Delivery · Approve device</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
@@ -51,7 +51,7 @@ public static class DeviceApprovalPage
 <body>
   <div class="card">
     <h1>Approve device sign-in</h1>
-    <p class="sub">Sign in to authorize a SQLFlow client (such as the MCP server) to act with your read/operate access.</p>
+    <p class="sub">Sign in to authorize an OSDU Delivery client (such as the CLI) to act with your read/operate access.</p>
     <form id="f">
       <label for="code">Device code</label>
       <input id="code" name="code" required autocomplete="off" />

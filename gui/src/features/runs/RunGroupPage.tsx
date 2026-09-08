@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleAlert, Loader2, Radio, RotateCcw } from "lucide-react";
+import { CircleAlert, Loader2, Radio } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,6 @@ import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useRunDock } from "./RunDockContext";
 import { pollingInterval } from "../../hooks/usePolling";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { formatDurationSeconds } from "../../lib/time";
@@ -61,10 +60,9 @@ const memberColumns: Column<RunSummary>[] = [
     header: "Last action",
     render: (row) => <TruncatedText text={row.lastAction} maxWidth={420} />,
   },
-  // The data-impact columns (files read, rows loaded / inserted / updated) tick live as each member lands its
+  // The data-impact columns (records loaded / inserted / updated) tick live as each member lands its
   // data. Pool and commit are omitted: pool is per-run plumbing, and the group's commit is one value shown once
   // in the header rather than repeated on every member row.
-  { id: "files", header: "Files", align: "right", render: (row) => numCell(row.fileCount) },
   { id: "loaded", header: "Loaded", align: "right", render: (row) => numCell(row.rowsLoaded) },
   { id: "inserted", header: "Inserted", align: "right", render: (row) => numCell(row.rowsInserted) },
   { id: "updated", header: "Updated", align: "right", render: (row) => numCell(row.rowsUpdated) },
@@ -134,7 +132,6 @@ export default function RunGroupPage() {
 function RunGroupContent({ groupId }: { groupId: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { track } = useRunDock();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const query = useQuery({
@@ -176,32 +173,6 @@ function RunGroupContent({ groupId }: { groupId: string }) {
   const failures = live
     ? liveMembers.filter((m) => m.status === "failed")
     : failedQuery.data?.items ?? [];
-
-  // Re-run repeats the group's own scope: the same batch, or the same anchor flow plus descendants, expanded
-  // fresh against the current estate (so members added to the batch since last time are included). The new
-  // execution is a new group; the button navigates there.
-  const rerun = useMutation({
-    mutationFn: () => {
-      const g = query.data;
-      if (!g) {
-        throw new Error("The group has not loaded yet.");
-      }
-
-      return runApi.trigger(g.mode === "batch"
-        ? { repoId: g.repoId, flowName: "", scope: "batch", batch: g.anchor }
-        : { repoId: g.repoId, flowName: g.anchor, scope: "node" });
-    },
-    onSuccess: (accepted) => {
-      toast.success(`Re-run enqueued: ${accepted.memberCount ?? 0} member(s).`);
-      if (accepted.groupId) {
-        track(accepted.groupId);
-        navigate(`/runs/groups/${accepted.groupId}`);
-      }
-    },
-    onError: (error) => {
-      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
-    },
-  });
 
   const cancel = useMutation({
     mutationFn: () => runApi.cancelGroup(groupId),
@@ -311,18 +282,7 @@ function RunGroupContent({ groupId }: { groupId: string }) {
               Cancel group
             </Button>
           )
-          : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => rerun.mutate()}
-              disabled={rerun.isPending}
-              data-testid="rerun-group"
-            >
-              {rerun.isPending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
-              Re-run
-            </Button>
-          )}
+          : null}
         meta={(
           <>
             <IdChip label="group" value={group.groupId} testId="group-id" copyTestId="copy-group-id" />

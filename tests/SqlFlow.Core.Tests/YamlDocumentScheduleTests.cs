@@ -5,30 +5,23 @@ namespace SqlFlow.Tests;
 
 /// <summary>
 /// The document-envelope parsing of the <c>schedule:</c> block: it is read once, alongside <c>flowType</c>, and
-/// attached to every kind of flow document (the typed loaders ignore the key). Pure parsing, no database.
+/// attached to every kind of flow document (the kind parser ignores the key). Pure parsing, no database.
 /// </summary>
 public sealed class YamlDocumentScheduleTests
 {
-    private static readonly YamlDocumentLoader Loader = new(
-        new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
-        new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(), new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
+    private static readonly YamlDocumentLoader Loader = TestFlowKind.Loader();
 
     [Fact]
     public void Parse_CronScheduleWithTimezone_IsCaptured()
     {
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
             schedule:
               cron: "0 6 * * *"
               timezone: "Europe/Oslo"
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.NotNull(doc.Schedule);
@@ -42,17 +35,13 @@ public sealed class YamlDocumentScheduleTests
     public void Parse_IntervalSchedule_DefaultsTimezoneToUtc_AndHonorsEnabled()
     {
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
             schedule:
               intervalSeconds: 900
               enabled: false
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.NotNull(doc.Schedule);
@@ -66,14 +55,10 @@ public sealed class YamlDocumentScheduleTests
     public void Parse_NoScheduleBlock_LeavesScheduleNull()
     {
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.Null(doc.Schedule);
@@ -84,16 +69,12 @@ public sealed class YamlDocumentScheduleTests
     {
         // A schedule block with neither cron nor interval declares nothing to fire, so it is not a (broken) schedule.
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
             schedule:
               timezone: "UTC"
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.Null(doc.Schedule);
@@ -105,15 +86,11 @@ public sealed class YamlDocumentScheduleTests
         // `schedule: nightly` is a bare scalar: this flow JOINS the shared schedule named nightly. It carries the
         // name and never a cadence (joining is membership, not a copy); the repo scan binds it to the definition.
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
             schedule: nightly
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.NotNull(doc.Schedule);
@@ -129,15 +106,11 @@ public sealed class YamlDocumentScheduleTests
         // `schedule: [a, b]` lets one flow sit in more than one schedule: a nightly full refresh and an hourly
         // subset, say. Each named schedule fires on its own cadence and runs this flow as one of its members.
         var doc = Loader.Parse("""
+            flowType: test
             name: dim_currency
             schedule: [dwh_nightly, dwh_small_hourly]
-            source:
-              type: csv
-              location: ./dim_currency.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: DimCurrency
+            source: ./dim_currency.csv
+            target: dbo.DimCurrency
             """);
 
         Assert.NotNull(doc.Schedule);
@@ -151,18 +124,14 @@ public sealed class YamlDocumentScheduleTests
     {
         // An inline block may carry a name: to publish itself for other flows to reference by that name.
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
             schedule:
               name: nightly
               cron: "0 6 * * *"
               timezone: "Europe/Oslo"
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.NotNull(doc.Schedule);
@@ -177,15 +146,11 @@ public sealed class YamlDocumentScheduleTests
     public void Parse_BlankScalarSchedule_LeavesScheduleNull()
     {
         var doc = Loader.Parse("""
+            flowType: test
             name: orders
             schedule: ""
-            source:
-              type: csv
-              location: ./orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
+            source: ./orders.csv
+            target: dbo.Orders
             """);
 
         Assert.Null(doc.Schedule);

@@ -2,15 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using SqlFlow.Cli.Remote;
 using SqlFlow.Core;
-using SqlFlow.Core.Batch;
-using SqlFlow.Core.Export;
-using SqlFlow.Core.HealthChecks;
-using SqlFlow.Core.Ingestion;
-using SqlFlow.Core.Invoke;
-using SqlFlow.Core.SourceControl;
-using SqlFlow.Core.StoredProcedures;
 using SqlFlow.Execution;
-using SqlFlow.Orchestration;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Cli;
@@ -31,7 +23,7 @@ internal static class LocalInspectVerbs
     /// excluded) through the exact same loader a single-file validate uses, so both entry points accept and
     /// refuse identically. Text mode prints one line per file; --json emits the full report array. Exit 0 only
     /// when every document is valid, 1 otherwise (including an empty estate, which is a misconfiguration, not
-    /// a success).
+    /// a success). Schedule libraries are not flow documents and are skipped.
     /// </summary>
     public static async Task<int> ValidateEstateAsync(YamlDocumentLoader documents, string target, bool json)
     {
@@ -48,6 +40,7 @@ internal static class LocalInspectVerbs
             files = Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)
                 .Concat(Directory.EnumerateFiles(root, "*.yml", SearchOption.AllDirectories))
                 .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}.sqlflow{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+                .Where(f => !Catalog.EstateScanner.IsScheduleLibraryFile(f))
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
@@ -71,8 +64,7 @@ internal static class LocalInspectVerbs
             {
                 // Parse warnings go to stderr exactly as single-file validate routes them.
                 var document = DocumentLoader.Load(documents, file, Console.Error.WriteLine);
-                var (kind, name) = Describe(document);
-                results.Add(new ValidationResult(relative, true, kind, name, null));
+                results.Add(new ValidationResult(relative, true, document.Kind, document.Name, null));
             }
             catch (SqlFlowException ex)
             {
@@ -100,25 +92,6 @@ internal static class LocalInspectVerbs
         await Task.CompletedTask.ConfigureAwait(false);
         return broken == 0 ? 0 : 1;
     }
-
-    /// <summary>The (kind, name) of a loaded document, mirroring the discriminators single-file validate prints.</summary>
-    private static (string Kind, string Name) Describe(object document) => document switch
-    {
-        FileFlowDocument doc => ("file", doc.Flow.Name),
-        IngestionFlowDocument doc => ("ing", doc.Document.Flow.SysAlias ?? doc.Document.Flow.Target.Table.Name),
-        ExportFlowDocument doc => ("exp", doc.Document.Flow.SysAlias),
-        StoredProcedureFlowDocument doc => ("sp", doc.Document.Flow.SysAlias),
-        InvokeFlowDocument doc => ("inv", doc.Document.Definition.InvokeAlias),
-        HealthCheckFlowDocument doc => ("hc", doc.Document.Flow.SysAlias),
-        SourceControlFlowDocument doc => ("scm", doc.Document.Flow.SysAlias),
-        BatchFlowDocument doc => ("batch", doc.Document.Flow.SysAlias),
-        AcquireFlowDocument doc => ("api", doc.Flow.Name),
-        CopyFlowDocument doc => ("cpy", doc.Flow.Name),
-        SftpFlowDocument doc => ("sftp", doc.Flow.Name),
-        CalendarFlowDocument doc => ("cal", doc.Document.Flow.SysAlias),
-        TranslateFlowDocument doc => ("trl", doc.Document.Flow.SysAlias),
-        _ => throw new SqlFlowException($"Unhandled document kind '{document.GetType().Name}'."),
-    };
 
     /// <summary>The slice of a run.json artifact the local listing shows.</summary>
     internal sealed record LocalRunRow(
@@ -184,11 +157,11 @@ internal static class LocalInspectVerbs
             return 0;
         }
 
-        Console.WriteLine($"{"OUTCOME",-7}  {"KIND",-5}  {"FLOW",-36}  {"RUN",-36}  WRITTEN (UTC)");
+        Console.WriteLine($"{"OUTCOME",-7}  {"KIND",-8}  {"FLOW",-36}  {"RUN",-36}  WRITTEN (UTC)");
         foreach (var row in listed)
         {
             Console.WriteLine(
-                $"{(row.Success ? "ok" : "FAILED"),-7}  {row.FlowKind ?? "-",-5}  {Shorten(row.FlowName ?? "-", 36),-36}  {row.RunId,-36}  " +
+                $"{(row.Success ? "ok" : "FAILED"),-7}  {row.FlowKind ?? "-",-8}  {Shorten(row.FlowName ?? "-", 36),-36}  {row.RunId,-36}  " +
                 $"{row.WrittenUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}");
             if (row.Error is { Length: > 0 })
             {
@@ -206,5 +179,5 @@ internal static class LocalInspectVerbs
         => element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     private static string Shorten(string value, int max)
-        => value.Length <= max ? value : value[..(max - 1)] + "…";
+        => value.Length <= max ? value : value[..(max - 1)] + "...";
 }

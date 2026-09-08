@@ -4,11 +4,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { prettyPrintSql } from "@/lib/sql";
 import { parseUtc } from "../lib/time";
 
 /** One line of a trace, in the terminal-log shape both the run trace and the activity (sync/lineage/...) trace
- * render through. Statement/SQL lines carry `sql`; a failing line carries `error`; `groupKey` draws a separator
+ * render through. A failing line carries `error`; `groupKey` draws a separator
  * between successive groups (a run's attempts, an activity's runs). */
 export interface TraceLine {
   key: string;
@@ -17,7 +16,6 @@ export interface TraceLine {
   tag: string;
   level: "trace" | "debug" | "info" | "warning" | "error";
   message: string;
-  sql?: string | null;
   error?: string | null;
   groupKey?: string;
 }
@@ -102,19 +100,15 @@ function HeaderButton({
   );
 }
 
-/** Flatten any run of whitespace (incl. newlines) to single spaces, for the single-line row preview of a SQL/multi
- * -line message. The untouched original is what the hover card and the copy button carry. */
+/** Flatten any run of whitespace (incl. newlines) to single spaces, for the single-line row preview of a
+ * multi-line message. The untouched original is what the hover card and the copy button carry. */
 function collapse(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-/** The plain-text a single line copies: its message, then its SQL (formatted the way the card shows it), then its
- * error. Computed on demand so the pretty-print cost is paid only when the button is clicked, not per row. */
+/** The plain-text a single line copies: its message, then its error. */
 function lineText(line: TraceLine): string {
   const parts = [line.message.trimEnd()];
-  if (line.sql) {
-    parts.push(prettyPrintSql(line.sql).trimEnd());
-  }
   if (line.error) {
     parts.push(`!! ${line.error}`);
   }
@@ -158,37 +152,21 @@ function CopyLineButton({ getText }: { getText: () => string }) {
   );
 }
 
-/** The pretty-printed SQL block inside a line's hover card. Kept as its own component so the (best-effort) format
- * runs only when a card actually opens, since Radix mounts the card content lazily, never per row up front. */
-function SqlBlock({ sql, className }: { sql: string; className?: string }) {
-  const pretty = useMemo(() => prettyPrintSql(sql), [sql]);
-  return (
-    <pre
-      className={cn(
-        "overflow-x-auto whitespace-pre rounded-sm bg-muted/40 px-2 py-1 text-muted-foreground",
-        className,
-      )}
-    >
-      {pretty}
-    </pre>
-  );
-}
-
 /**
  * One trace line as a table row: a timestamp column and a tag column that both size to their content (the tag is
  * never clipped), then a single event column that takes the remaining width and holds the message with an inline,
- * dimmed one-line SQL/error preview, and finally a narrow expand column.
+ * dimmed one-line error preview, and finally a narrow expand column.
  *
  * Only the event column clips (never wraps, never widens the panel), and the full line lives behind the expand
- * button: a click opens a popover with the message, the SQL pretty-printed, any error, and a copy button. The
+ * button: a click opens a popover with the message, any error, and a copy button. The
  * detail is deliberately click-only. A hover trigger fires on every line the pointer crosses, so scrolling a long
  * trace flashes a string of cards nobody asked for; the button only appears on the row under the pointer (or the
  * focused row) and stays put until it is clicked.
  */
 function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) {
   const level = levelClass(line.level);
-  // A statement row carries no message (its SQL is the event), so the message is only shown when present, and
-  // leading margins are only added between parts that actually render.
+  // A line may carry no message (a bare error), so the message is only shown when present, and leading margins
+  // are only added between parts that actually render.
   const hasMsg = line.message.trim().length > 0;
 
   return (
@@ -211,11 +189,8 @@ function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) 
           <div className="truncate">
             <LevelMark level={line.level} />
             {hasMsg ? <span className={level}>{line.message}</span> : null}
-            {line.sql ? (
-              <span className={cn(hasMsg && "ml-2", "text-muted-foreground/80")}>{collapse(line.sql)}</span>
-            ) : null}
             {line.error ? (
-              <span className={cn((hasMsg || line.sql) && "ml-2", "text-destructive")}>!! {collapse(line.error)}</span>
+              <span className={cn(hasMsg && "ml-2", "text-destructive")}>!! {collapse(line.error)}</span>
             ) : null}
           </div>
         </td>
@@ -253,10 +228,9 @@ function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) 
                     {line.message}
                   </p>
                 ) : null}
-                {line.sql ? <SqlBlock sql={line.sql} className={cn(hasMsg && "mt-2")} /> : null}
                 {line.error ? (
                   <div
-                    className={cn("whitespace-pre-wrap break-words text-destructive", (hasMsg || line.sql) && "mt-2")}
+                    className={cn("whitespace-pre-wrap break-words text-destructive", hasMsg && "mt-2")}
                   >
                     !! {line.error}
                   </div>
@@ -272,8 +246,7 @@ function TraceRow({ line, separated }: { line: TraceLine; separated: boolean }) 
 
 /**
  * The shared bottom-panel trace view: a terminal-style output log for a stream of {@link TraceLine}s, newest line
- * at the bottom, auto-scrolling while it streams. One look for every trace (a pipeline run, a repository sync, a
- * lineage computation): level-tinted lines with a fixed tag column, indented SQL/error blocks, a thin separator
+ * at the bottom, auto-scrolling while it streams. One look for every trace (a pipeline run, a repository sync): level-tinted lines with a fixed tag column, indented error blocks, a thin separator
  * between groups, and a header carrying Copy trace, Clear (console-style, hides current lines while the stream
  * keeps running), and a live/complete/failed pill. Copy is delegated to the owner (which decides what the whole
  * trace is); Clear is a view-only action.
@@ -300,8 +273,8 @@ export function TraceLog({
   // replacement of the array (the live->at-rest swap) drops the watermark, showing everything again.
   const [hiddenUpTo, setHiddenUpTo] = useState<string | null>(null);
   const [copying, setCopying] = useState(false);
-  // Problems-only filter: one click isolates every warning/error line, so a buried failure (a lineage server
-  // the sync could not reach, a degraded tier) is caught without scrolling a hundred info lines.
+  // Problems-only filter: one click isolates every warning/error line, so a buried failure (a remote
+  // the sync could not reach) is caught without scrolling a hundred info lines.
   const [problemsOnly, setProblemsOnly] = useState(false);
 
   const visible = useMemo(() => {

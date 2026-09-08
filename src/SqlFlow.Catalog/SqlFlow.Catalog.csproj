@@ -2,12 +2,12 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.Catalog</RootNamespace>
-    <Description>The EF-managed shadow catalog: a read-model of the git/YAML pipeline estate and the on-disk run history, the backing store for the GUI/API tier. Entity Framework lives ONLY in this assembly; the engine stays EF-free.</Description>
+    <Description>The EF-managed catalog: the read model of the git/YAML flow estate, the run queue, schedules, nodes, users, notifications, and the delivery ledger. Entity Framework lives ONLY in this assembly.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
-    <!-- PasswordHasher (PBKDF2) for local SQLFlow users: the one hashing implementation shared by the control
+    <!-- PasswordHasher (PBKDF2) for local users: the one hashing implementation shared by the control
          plane (via DI) and the CLI's offline 'user' command, so a CLI-set hash verifies at login unchanged. -->
     <PackageReference Include="Microsoft.Extensions.Identity.Core" />
     <!-- Cronos: DST-aware cron parsing for the schedule clock (the scheduling domain - table, store, clock - lives here). -->
@@ -21,7 +21,6 @@
   <ItemGroup>
     <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
     <ProjectReference Include="..\SqlFlow.Yaml\SqlFlow.Yaml.csproj" />
-    <ProjectReference Include="..\SqlFlow.Lineage\SqlFlow.Lineage.csproj" />
   </ItemGroup>
 
   <ItemGroup>

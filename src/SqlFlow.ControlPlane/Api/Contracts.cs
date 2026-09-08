@@ -40,71 +40,9 @@ public sealed record GitDiffDto(
     string Patch,
     bool Truncated);
 
-/// <summary>One commit in a snapshot repository, named as an endpoint of a comparison: enough to say which
-/// snapshot a side of the diff came from, without the changed-path list a log entry carries.</summary>
-public sealed record GitRevisionDto(
-    string Sha,
-    string ShortSha,
-    string AuthorName,
-    DateTime CommittedUtc,
-    string Message);
-
-/// <summary>
-/// One database object's DDL at the two ends of a window: what the snapshot repository held before the window
-/// opened (<c>Before</c>) and what it holds now (<c>After</c>), so a reader sees the net change rather than
-/// replaying one commit at a time.
-///
-/// A null <c>Before</c> revision means the repository has no commit at or before the window start (the history
-/// begins inside the window), and a null text on either side means the object's file was absent at that
-/// revision: no <c>BeforeText</c> is an object added during the window, no <c>AfterText</c> one dropped in it.
-/// <c>Truncated</c> says at least one side was cut at the inline limit, so a clipped script is never mistaken
-/// for the whole of it.
-/// </summary>
-public sealed record SchemaObjectCompareDto(
-    string Path,
-    GitRevisionDto? Before,
-    GitRevisionDto After,
-    string? BeforeText,
-    string? AfterText,
-    int LinesAdded,
-    int LinesDeleted,
-    bool Truncated);
-
-/// <summary>One object a source-control snapshot found added, changed, or dropped, as the schema-history feed
-/// returns it. <c>CommitSha</c> links the row to the commit that carries the diff.</summary>
-public sealed record SchemaChangeDto(
-    long Id,
-    Guid RepoId,
-    Guid RunId,
-    Guid? PipelineId,
-    string Database,
-    string Category,
-    string? Schema,
-    string Name,
-    string ChangeType,
-    string? CommitSha,
-    DateTime OccurredUtc);
-
-/// <summary>One tracked database's change tally over the requested window, and when it last changed.</summary>
-public sealed record SchemaChangeDatabaseDto(
-    string Database,
-    int Total,
-    int Added,
-    int Changed,
-    int Deleted,
-    DateTime LastChangeUtc);
-
 /// <summary>A synced source repository.</summary>
 public sealed record RepoDto(
     Guid Id, string Name, string? RemoteUrl, string? RootPath, DateTime FirstSeenUtc, DateTime LastSyncUtc);
-
-/// <summary>The outcome of a manual local-path repo sync: the pipeline reconciliation counts and the lineage tallies
-/// (objects, columns, edges, waves, dependencies), whether the derived tier connected to the live database, and any
-/// warnings the pass surfaced (bounded). This is the compact summary the GUI shows after a "Sync now".</summary>
-public sealed record RepoSyncResultDto(
-    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated, int PipelinesDeleted,
-    int Objects, int Columns, int Edges, int Waves, int Dependencies,
-    bool Connected, IReadOnlyList<string> Warnings);
 
 /// <summary>One entry in a repository's content listing: a repo-relative, forward-slashed path, whether it is a
 /// folder, and the file's size in bytes (0 for a folder, and for a file the host could not stat).</summary>
@@ -135,61 +73,6 @@ public sealed record PipelineDetailDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,
     string Lifecycle, string? SourceServer, string? TargetServer, string RelativePath, string ContentHash,
     string Yaml, string DefinitionJson, DateTime FirstSeenUtc, DateTime LastSeenUtc);
-
-/// <summary>The run parameters that apply to a pipeline, driven by its flow kind and definition, so the GUI renders
-/// a trigger form of exactly the controls the engine will honor. <see cref="FlowKind"/> is the flow's kind (<c>cpy</c>,
-/// <c>file</c>, <c>ing</c>, ...); <see cref="Parameters"/> is empty for kinds with no selection surface.</summary>
-public sealed record FlowParametersDto(string FlowKind, IReadOnlyList<RunParameterDescriptor> Parameters);
-
-/// <summary>One resolved column of a pipeline's pre-ingestion transformation view: <c>declared</c> rows come
-/// from the flow YAML (the source of truth), <c>detected</c> rows from the latest run's generated view.</summary>
-public sealed record PipelineColumnDto(
-    string Kind, int Ordinal, string ColumnName, string? SourceColumn, string? Expression, string? DataType,
-    int? SortOrder, bool IsVirtual, bool ExcludeFromView, bool Converted);
-
-/// <summary>One distinct file a pipeline has processed across its whole run history (deduplicated by name+path,
-/// carrying the newest processing's metadata). <see cref="LastRun"/> flags the files processed by the pipeline's
-/// most recent file-bearing run, so the view can separate "what the last run found" from "everything ever seen".</summary>
-public sealed record PipelineFileDto(
-    string Name, string? Path, DateTimeOffset? Modified, long Rows, long SizeBytes, bool LastRun, DateTime? LastProcessedUtc);
-
-/// <summary>
-/// The size profile of a pipeline's file deliveries, computed from every distinct file across its whole run
-/// history (deduplicated by name + path, so a re-pulled file counts once): what a normal delivery from this flow
-/// looks like. <see cref="AvgBytes"/> is the headline; <see cref="MedianBytes"/> is the more honest "typical file"
-/// when a few outsized deliveries drag the mean, and <see cref="StdDevBytes"/> (population) is the spread that
-/// tells a caller how much variation is normal before a file counts as anomalous. A pipeline that has processed no
-/// files reports zeros with no timestamps and no <see cref="Recent"/> window.
-/// </summary>
-/// <param name="FileCount">How many distinct files the pipeline has processed.</param>
-/// <param name="TotalBytes">The summed size of those files.</param>
-/// <param name="AvgBytes">The mean file size, rounded to whole bytes.</param>
-/// <param name="MedianBytes">The median file size, rounded to whole bytes.</param>
-/// <param name="MinBytes">The smallest file.</param>
-/// <param name="MaxBytes">The largest file.</param>
-/// <param name="StdDevBytes">The population standard deviation of the file sizes, rounded to whole bytes.</param>
-/// <param name="TotalRows">The summed row count across those files.</param>
-/// <param name="AvgRows">The mean row count per file, rounded.</param>
-/// <param name="OldestModified">The oldest last-modified timestamp seen, null when no file carries one.</param>
-/// <param name="NewestModified">The newest last-modified timestamp seen, null when no file carries one.</param>
-/// <param name="Recent">The newest files' window, for comparing the current regime against the all-time profile.</param>
-public sealed record PipelineFileStatsDto(
-    long FileCount, long TotalBytes, long AvgBytes, long MedianBytes, long MinBytes, long MaxBytes,
-    long StdDevBytes, long TotalRows, long AvgRows,
-    DateTimeOffset? OldestModified, DateTimeOffset? NewestModified, PipelineRecentFilesDto? Recent);
-
-/// <summary>The newest files a pipeline has processed (by last-modified), profiled on their own so a caller can
-/// tell the current delivery shape from the all-time one: a source whose files grew tenfold this month reads as
-/// normal against its lifetime average and abnormal against this window.</summary>
-/// <param name="FileCount">How many files the window covers (at most the window size).</param>
-/// <param name="AvgBytes">The mean size within the window, rounded to whole bytes.</param>
-/// <param name="MinBytes">The smallest file in the window.</param>
-/// <param name="MaxBytes">The largest file in the window.</param>
-/// <param name="OldestModified">The oldest last-modified timestamp in the window, null when none carries one.</param>
-/// <param name="NewestModified">The newest last-modified timestamp in the window, null when none carries one.</param>
-public sealed record PipelineRecentFilesDto(
-    int FileCount, long AvgBytes, long MinBytes, long MaxBytes,
-    DateTimeOffset? OldestModified, DateTimeOffset? NewestModified);
 
 /// <summary>The bootstrap token request body (only honored when a bootstrap secret is configured).</summary>
 public sealed record TokenRequest(string Secret, string? Subject, IReadOnlyList<string>? Scopes);
@@ -288,11 +171,11 @@ public sealed record EstateDigestOptionsDto(
 public sealed record NotificationDigestSummaryDto(
     Guid Id, string Origin, DateTime PeriodStartUtc, DateTime PeriodEndUtc, DateTime GeneratedUtc,
     string? GeneratedBy, string Subject, int EventCount, int FlowCount, int FailedCount, int CancelledCount,
-    int SkippedCount, int AssertionFailedCount, bool Truncated);
+    int SkippedCount, bool Truncated);
 
 /// <summary>One flow's slice of a digest, as the GUI's digest table renders it: what happened, how many times,
 /// when it last happened, the error worth reading, and the run to open. <see cref="Kind"/> is the notification
-/// event kind (<c>run_failed</c>, <c>assertion_failed</c>, ...), not a run status.</summary>
+/// event kind (<c>run_failed</c>, <c>run_cancelled</c>, ...), not a run status.</summary>
 public sealed record NotificationDigestFlowDto(
     string FlowName, string FlowKind, string Kind, int Count, DateTime LastOccurredUtc, Guid LastRunId,
     Guid PipelineId, string? LastError);
@@ -346,3 +229,10 @@ public sealed record NotificationDeliveryDto(
 /// <summary>The response to anything that puts a message on the outbox (a test send, a digest send): the
 /// delivery row to watch in the deliveries history.</summary>
 public sealed record NotificationQueuedDeliveryDto(Guid DeliveryId);
+
+/// <summary>The outcome of a manual local-path repo sync: the pipeline reconciliation counts, the run artifacts
+/// discovered, and any warnings the pass surfaced (bounded). This is the compact summary the GUI shows after a
+/// "Sync now".</summary>
+public sealed record RepoSyncResultDto(
+    int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated, int PipelinesDeleted,
+    int RunsAdded, int RunsSkipped, int RunsFailed, IReadOnlyList<string> Warnings);

@@ -38,6 +38,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 // the CLI and worker nodes, so a triggered run behaves identically. This also provides the secret chain
 // (IAzureCredentialFactory, the env + Key Vault providers, ISecretResolver) the catalog connection provider needs.
 builder.Services.AddSqlFlowEngine();
+builder.Services.AddSingleton<CatalogSync>();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();
 builder.Services.AddSingleton<DeviceCodeStore>();
@@ -153,48 +154,6 @@ if (options.Notifications.Enabled)
     }
 
     builder.Services.AddHostedService<NotificationService>();
-}
-
-// ---- GUI chat assistant: the same SqlFlow.Assistant core the Slack bot runs (one code path, two
-// surfaces), hosted behind /api/v1/chat with streaming and catalog-persisted conversations. The MCP
-// server is shared with the Slack bot unchanged; what differs is authority: every chat run forwards
-// the calling user's own bearer, so the assistant's tool access is exactly that user's access. The
-// gateways are registered only when the feature is enabled; the chat endpoints stay mapped either
-// way and report the switch through /chat/capabilities so the GUI can explain instead of erroring.
-if (options.Assistant.Enabled)
-{
-    builder.Services.AddSingleton(sp =>
-    {
-        var resolver = sp.GetRequiredService<SqlFlow.Core.Secrets.ISecretResolver>();
-        var assistant = sp.GetRequiredService<IOptions<ControlPlaneOptions>>().Value.Assistant;
-        var settings = assistant.ToAssistantSettings();
-        // The ApiKey fields accept ${env:...}/${keyvault:...} references; resolve them here, once,
-        // onto copies so the resolved secrets never flow back into the bound options instances.
-        settings.OpenAI = new SqlFlow.Assistant.OpenAIOptions
-        {
-            ApiKey = resolver.Resolve(assistant.OpenAI.ApiKey),
-            Model = assistant.OpenAI.Model,
-            BaseUrl = assistant.OpenAI.BaseUrl,
-            TranscriptionModel = assistant.OpenAI.TranscriptionModel,
-        };
-        settings.Anthropic = new SqlFlow.Assistant.AnthropicOptions
-        {
-            ApiKey = resolver.Resolve(assistant.Anthropic.ApiKey),
-            Model = assistant.Anthropic.Model,
-            MaxTokens = assistant.Anthropic.MaxTokens,
-        };
-        return settings;
-    });
-    if (options.Assistant.Provider == SqlFlow.Assistant.AssistantProvider.Anthropic)
-    {
-        builder.Services.AddSingleton<SqlFlow.Assistant.IAssistantGateway, SqlFlow.Assistant.AnthropicGateway>();
-    }
-    else
-    {
-        builder.Services.AddSingleton<SqlFlow.Assistant.IAssistantGateway, SqlFlow.Assistant.ResponsesApiGateway>();
-    }
-
-    builder.Services.AddSingleton<SqlFlow.Assistant.TranscriptionGateway>();
 }
 
 // ---- Catalog read model: pooled, read-only, transient-retry --------------------------------------------------
@@ -363,36 +322,25 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapGitHistoryEndpoints()
     .MapRunEndpoints()
     .MapActivityEndpoints()
-    .MapLineageEndpoints()
     .MapSearchEndpoints()
     .MapScheduleReadEndpoints()
     .MapNodeEndpoints()
-    .MapDatasourceReadEndpoints()
     .MapRepoSourceReadEndpoints()
     .MapSummaryEndpoints()
-    .MapInsightsEndpoints()
-    .MapDataStreamEndpoints()
-    .MapIntegrationReadEndpoints()
     // Self-service: any authenticated user manages their own personal access tokens (scopes capped to their own)
     // and their own notification opt-ins.
     .MapMeEndpoints()
     .MapNotificationEndpoints()
-    .MapMaintenanceEndpoints()
-    // The GUI chat assistant: per-user conversations, streamed answers, per-user MCP authority.
-    .MapChatEndpoints();
+    .MapMaintenanceEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.
 v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapCatalogWriteEndpoints()
     .MapRunTriggerEndpoints()
-    .MapDatasourceComputeEndpoints()
-    .MapQueryEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints()
-    .MapSourceDiscoverEndpoints()
-    .MapNodeControlEndpoints()
-    .MapIntegrationDebugEndpoints();
+    .MapNodeControlEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own
 // credential, so it lives under the "author" scope rather than "operate".

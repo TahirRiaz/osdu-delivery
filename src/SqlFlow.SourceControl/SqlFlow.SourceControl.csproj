@@ -2,18 +2,15 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.SourceControl</RootNamespace>
-    <Description>SQLFlow source control: SMO-based scripting of a managed database's objects to disk, committed and pushed to a git remote via LibGit2Sharp.</Description>
+    <Description>OSDU Delivery source control: git materialization, history reads, and proposals (pull requests) for flow repositories.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.SqlClient" />
-    <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" />
     <PackageReference Include="LibGit2Sharp" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
-    <ProjectReference Include="..\SqlFlow.SqlServer\SqlFlow.SqlServer.csproj" />
   </ItemGroup>
 
 </Project>

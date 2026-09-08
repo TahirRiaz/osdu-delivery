@@ -184,15 +184,13 @@ internal sealed class ControlPlaneClient : IDisposable
 
     // ---- runs ---------------------------------------------------------------------------------------------
 
-    /// <summary>Previews what a node/batch scope would enqueue, without enqueuing anything.</summary>
-    public Task<RunScopePreviewDto> PreviewScopeAsync(Guid repoId, string? flowName, string scope, string? batch, bool includeAll, CancellationToken ct)
+    /// <summary>Previews what a trigger would enqueue, without enqueuing anything.</summary>
+    public Task<RunScopePreviewDto> PreviewScopeAsync(Guid repoId, string? flowName, string scope, CancellationToken ct)
     {
         var query = new QueryBuilder()
             .Add("repoId", repoId.ToString())
             .Add("flowName", flowName)
-            .Add("scope", scope)
-            .Add("batch", batch)
-            .Add("includeAll", includeAll ? "true" : null);
+            .Add("scope", scope);
         return GetAsync<RunScopePreviewDto>($"/api/v1/runs/preview{query}", ct);
     }
 
@@ -439,49 +437,6 @@ internal sealed class ControlPlaneClient : IDisposable
     public Task<PipelineDetailDto?> GetPipelineAsync(Guid id, CancellationToken ct)
         => GetOrNullAsync<PipelineDetailDto>($"/api/v1/pipelines/{id}", ct);
 
-    public Task<IReadOnlyList<PipelineColumnDto>> GetPipelineColumnsAsync(Guid id, string? kind, CancellationToken ct)
-        => GetAsync<IReadOnlyList<PipelineColumnDto>>(
-            $"/api/v1/pipelines/{id}/columns{new QueryBuilder().Add("kind", kind)}", ct);
-
-    public Task<PagedResult<PipelineFileDto>> GetPipelineFilesAsync(
-        Guid id, string? search, int page, int pageSize, CancellationToken ct)
-    {
-        var query = new QueryBuilder()
-            .Add("search", search)
-            .Add("page", page.ToString(CultureInfo.InvariantCulture))
-            .Add("pageSize", pageSize.ToString(CultureInfo.InvariantCulture));
-        return GetAsync<PagedResult<PipelineFileDto>>($"/api/v1/pipelines/{id}/files{query}", ct);
-    }
-
-    // ---- datasources and compute tasks --------------------------------------------------------------------
-
-    public Task<IReadOnlyList<DatasourceDto>> ListDatasourcesAsync(CancellationToken ct)
-        => GetAsync<IReadOnlyList<DatasourceDto>>("/api/v1/datasources", ct);
-
-    public Task<ComputeTaskAccepted> CreateComputeTaskAsync(ComputeTaskRequest request, CancellationToken ct)
-        => PostAsync<ComputeTaskAccepted>("/api/v1/datasources/tasks", request, ct);
-
-    /// <summary>One compute task, optionally long-polling (<paramref name="waitMs"/> capped server-side at
-    /// 20s); null when the server does not know the id.</summary>
-    public Task<ComputeTaskDto?> GetComputeTaskAsync(Guid taskId, int waitMs, CancellationToken ct)
-        => GetOrNullAsync<ComputeTaskDto>(
-            $"/api/v1/datasources/tasks/{taskId}?waitMs={waitMs.ToString(CultureInfo.InvariantCulture)}", ct);
-
-    public Task<PagedResult<ComputeTaskSummaryDto>> ListComputeTasksAsync(
-        string? status, string? reference, string? operation, int page, int pageSize, CancellationToken ct)
-    {
-        var query = new QueryBuilder()
-            .Add("status", status)
-            .Add("reference", reference)
-            .Add("operation", operation)
-            .Add("page", page.ToString(CultureInfo.InvariantCulture))
-            .Add("pageSize", pageSize.ToString(CultureInfo.InvariantCulture));
-        return GetAsync<PagedResult<ComputeTaskSummaryDto>>($"/api/v1/datasources/tasks{query}", ct);
-    }
-
-    public Task<RemoteCancelOutcome> CancelComputeTaskAsync(Guid taskId, CancellationToken ct)
-        => PostCancelAsync($"/api/v1/datasources/tasks/{taskId}/cancel", ct);
-
     // ---- search -------------------------------------------------------------------------------------------
 
     /// <summary>The combined search: every category counted in full, top hits previewed.</summary>
@@ -499,45 +454,6 @@ internal sealed class ControlPlaneClient : IDisposable
             .Add("pageSize", pageSize.ToString(CultureInfo.InvariantCulture));
         return GetAsync<PagedResult<T>>($"/api/v1/search/{category}{query}", ct);
     }
-
-    // ---- lineage ------------------------------------------------------------------------------------------
-
-    public Task<PagedResult<ObjectDto>> ListLineageObjectsAsync(
-        string? name, string? serverRef, string? database, string? schema, string? kind,
-        int page, int pageSize, CancellationToken ct)
-    {
-        var query = new QueryBuilder()
-            .Add("name", name)
-            .Add("serverRef", serverRef)
-            .Add("database", database)
-            .Add("schema", schema)
-            .Add("kind", kind)
-            .Add("page", page.ToString(CultureInfo.InvariantCulture))
-            .Add("pageSize", pageSize.ToString(CultureInfo.InvariantCulture));
-        return GetAsync<PagedResult<ObjectDto>>($"/api/v1/lineage/objects{query}", ct);
-    }
-
-    public Task<PagedResult<EdgeDto>> ListLineageEdgesAsync(
-        Guid repoId, Guid? pipelineId, string? objectKey, string? relation, string? tier,
-        int page, int pageSize, CancellationToken ct)
-    {
-        var query = new QueryBuilder()
-            .Add("pipelineId", pipelineId?.ToString())
-            .Add("objectKey", objectKey)
-            .Add("relation", relation)
-            .Add("tier", tier)
-            .Add("page", page.ToString(CultureInfo.InvariantCulture))
-            .Add("pageSize", pageSize.ToString(CultureInfo.InvariantCulture));
-        return GetAsync<PagedResult<EdgeDto>>($"/api/v1/repos/{repoId}/lineage/edges{query}", ct);
-    }
-
-    /// <summary>A repo's execution plan: the dependency waves lineage computed.</summary>
-    public Task<IReadOnlyList<WaveDto>> GetWavesAsync(Guid repoId, CancellationToken ct)
-        => GetAsync<IReadOnlyList<WaveDto>>($"/api/v1/repos/{repoId}/waves", ct);
-
-    /// <summary>The code behind any lineage node (an object key, or a pipeline name/id); null when unknown.</summary>
-    public Task<NodeScriptDto?> GetNodeScriptAsync(string key, CancellationToken ct)
-        => GetOrNullAsync<NodeScriptDto>($"/api/v1/lineage/script{new QueryBuilder().Add("key", key)}", ct);
 
     // ---- plumbing -----------------------------------------------------------------------------------------
 

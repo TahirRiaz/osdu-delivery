@@ -319,9 +319,7 @@ public sealed class RunTriggerApiTests
 
             await using (var db = CatalogDatabase.Create(cs))
             {
-                await db.RunStatements.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
                 await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
-                await db.RunFiles.Where(f => f.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();

@@ -23,6 +23,8 @@
   <ItemGroup>
     <!-- The one CLI child-process harness, shared with the engine suite so there is a single code path. -->
     <Compile Include="..\SqlFlow.Core.Tests\Integration\CliBinary.cs" Link="CliBinary.cs" />
+    <!-- The one test-only document kind, shared with the engine suite so every platform test parses the same way. -->
+    <Compile Include="..\SqlFlow.Core.Tests\TestFlowKind.cs" Link="TestFlowKind.cs" />
   </ItemGroup>
 
 </Project>

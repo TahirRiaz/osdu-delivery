@@ -1,4 +1,4 @@
-// Deploys one SQLFlow worker pool as a Container App: `sqlflow worker`, the pull-based drain loop over the
+// Deploys one OSDU Delivery worker pool as a Container App: `sqlflow worker`, the pull-based drain loop over the
 // durable run queue. Workers expose nothing (no ingress; outbound SQL to the catalog plus outbound git for
 // SHA-pinned materialization) and scale 0..N on QUEUE DEPTH through the built-in KEDA mssql scaler, so an idle
 // pool costs nothing. Because runs are pinned to the repo's synced commit at enqueue, a cold-started replica

@@ -1,78 +1,80 @@
-# SQLFlow Architecture
+# OSDU Delivery Architecture
 
-> This document summarizes design principles and has not been re-verified against the current
-> codebase in full detail. For the current, code-verified behavior see
-> [docs/reference/concepts/architecture-and-execution.md](reference/concepts/architecture-and-execution.md).
+OSDU Delivery publishes subsurface records from data drops into an OSDU platform and keeps every record
+traceable. It is two things: a platform inherited from SQLFlow V3 that schedules, runs, and observes flows,
+and a delivery domain that turns drop rows into OSDU records and records what happened to each of them.
 
-This document summarizes the design principles guiding the v3 rebuild.
-
-## Goals
-
-Modernize SQLFlow into a framework that is workable, portable, open-source friendly, and
-adoptable - without losing the firepower that makes it valuable: **metadata-driven dynamic ETL
-code generation for schema-evolving incremental loads against SQL Server.**
-
-## Core principles
-
-1. **SQL Server is the target, by design.** Deep integration is intentional; we do not pursue
-   multi-engine portability. Language is C#/.NET.
-2. **The generator is the heart, and it is stateful.** Generation is a pure function of
-   `(definition, prior-state, live-schema)`. With prior state it emits *optimal incremental* code;
-   without it, full / externally-bounded loads.
-3. **The database is the source of truth (full mode).** The metadata model - definitions and
-   runtime state - is authoritative. YAML is the authoring interface (git-first *workflow* over a
-   DB-authoritative store), not the master.
-4. **Two modes, one engine.** *Lightweight* (no control DB; runs from YAML; no memory/log) and
-   *Full* (DB-backed; memory, logging, lineage, scheduling). The only difference is which providers
-   are plugged in. **Memory is the upgrade, not the entry fee.**
-5. **Separation of concerns.** The stateless engine is the core; memory, logging, lineage,
-   scheduling, and the control plane are optional layers *on top of it*, never baked in.
-6. **Control plane vs compute.** The control plane decides what/when and owns state; compute workers
-   introspect, generate, and execute *near the data*. Workers pull work (no inbound connectivity),
-   so they can run inside a customer's network and the data never leaves it.
-7. **Secrets never live in YAML.** Credentials are referenced (`${env:…}`), not embedded;
-   identity-based auth preferred; local-first defaults, cloud opt-in.
-8. **Logic in code, not the database.** Generation/orchestration logic lives in the C# engine; the
-   DB is a clean model + state store.
-
-## Pipeline
+## The platform
 
 ```
-YAML ──▶ [ model ] ──▶ infer source schema ──▶ introspect target schema
-                                                       │
-                                                       ▼
-                                   diff ──▶ generate DDL ──▶ execute ──▶ bulk load
-                                                       │
-                            (full mode: read/write memory - watermark, run log)
+git repositories ──sync──▶ catalog (SQL Server) ◀──claim/complete── compute nodes (sqlflow worker)
+      ▲                        ▲          ▲                                  │
+   proposals               API + GUI   scheduler                     executes the flow,
+   (pull requests)         + CLI       (cron / interval / chains)     streams the trace
 ```
 
-## Source-of-truth & sync model (full mode, roadmap)
+- **Flow repositories** are git repositories of YAML documents. The control plane's managed sync clones each
+  registered source, parses every document through the kind registry, and projects it into the catalog as a
+  pipeline row (name, kind, batch, source and target reference, execution mode, lifecycle, the YAML itself and
+  its parsed definition). A run is pinned to the commit it was enqueued from, and the executing node
+  materializes exactly that commit (or the catalog's content snapshot of the document when the document needs
+  no sibling files).
+- **The catalog** (`src/SqlFlow.Catalog`, EF Core on SQL Server) is the read model of the estate and the
+  system of record for everything operational: the durable run queue, run groups and waves, schedules and
+  their chains, nodes and worker pools, users, tokens and roles, notifications, activity traces, and the
+  delivery ledger. Schema changes ship as EF Core migrations.
+- **The control plane** (`src/SqlFlow.ControlPlane`) is the ASP.NET Core host: the `/api/v1` API (JWT and
+  personal access tokens, read / operate / author / admin scopes), the scheduler, the managed git sync, the
+  notification service, the orphan reaper, and bootstrap provisioning. It is stateless across replicas: every
+  claim is an atomic catalog write.
+- **Compute nodes** (`src/SqlFlow.Node`, started by `sqlflow worker`) pull queued runs for the pools they
+  serve, heartbeat, execute through the execution registry, stream run events to the catalog as they happen,
+  and complete the run from its artifact. Pools scale on queue depth (KEDA); a node holds the credentials its
+  pool's flows need, so nothing data-plane ever passes through the control plane.
+- **The CLI** (`src/SqlFlow.Cli`) validates and runs documents locally, hosts the worker, migrates the catalog,
+  and drives the control plane remotely (trigger, runs, schedules, repos, pipelines, search, nodes).
+- **The GUI** (`gui/`) is a React workbench over the API: dashboard, runs with live traces, run groups, nodes
+  and pools, repos and sources, pipelines, schedules and their timeline, search, users, tokens, notifications,
+  and maintenance.
 
-- DB is authoritative; YAML edits become real only via `apply`.
-- Direction is chosen by the operation: `apply` (YAML→DB), `export`/`sync` (DB→YAML).
-- DB wins on drift; optimistic concurrency (version each YAML derives from) keeps it non-destructive.
-- This is **not** pure GitOps: git is a change-proposal + history channel; truth-history lives in
-  the DB audit.
+### Extension points
 
-## Current status (this repo)
+The platform never names a concrete flow kind. Three registries, filled in the host's composition root, are
+the whole contract between the platform and a domain:
 
-Implemented: the **stateless lightweight engine** end-to-end for the CSV → SQL Server slice with
-schema evolution; the **control/compute split** (SqlFlow.ControlPlane + SqlFlow.Node with the durable
-run queue, scheduler, node registry, and managed git sync); **identity** (regular SQLFlow users with
-catalog-backed credentials, Microsoft Entra ID single sign-on via token exchange with JIT
-provisioning, role/scope authorization, and first-run bootstrap provisioning of migrations, roles,
-the initial admin, and an optional demo repo source); and the **GUI** (`gui/`): a React SPA over the
-control plane API with dashboard, runs, fleet, pipelines (read-only Monaco YAML), schedules, repo
-sources, lineage explorer/graph, search, and user administration, verified by a Playwright end-to-end
-suite that boots the whole stack. Roadmap: additional source/target providers and a Monaco-based YAML
-editor (authoring, not just viewing).
+| Registry | Role |
+| --- | --- |
+| `IFlowDocumentKind` (`src/SqlFlow.Yaml`) | Parses the body of a document whose `flowType` it owns; the loader reads the envelope (schedule, mode, lifecycle) once for every kind. |
+| `IFlowDocumentExecutor` (`src/SqlFlow.Execution`) | Executes a parsed document of its kind and produces the run outcome and artifact. |
+| `IComputeOperation` (`src/SqlFlow.Core`) | A named operation a node can run outside a flow (a probe, a delete), queued through the compute task table. |
 
-## Project structure
+Every document exposes the same headers (`FlowDocument`): name, kind, batch, source reference, target
+reference, credential references (for secret hygiene), and whether it needs the repository tree. The estate
+scan, the catalog sync, the run queue, and the GUI work from those headers alone.
 
-| Project | Responsibility | Notable dependencies |
-|---|---|---|
-| `SqlFlow.Core` | Model, abstractions, engine | none (pure) |
-| `SqlFlow.SqlServer` | Introspection, DDL gen, bulk load, type mapping | Microsoft.Data.SqlClient |
-| `SqlFlow.Sources` | Source readers + inference | CsvHelper |
-| `SqlFlow.Yaml` | YAML ↔ model mapping/validation | YamlDotNet |
-| `SqlFlow.Cli` | Command-line tool, DI composition root | Microsoft.Extensions.* |
+## The delivery domain
+
+The delivery domain is the one production flow kind. A delivery flow names a drop (the files to read and their
+format), a mapping (how rows become OSDU records of a kind, which fields identify a record, which reference
+other records), and an OSDU target (endpoint, data partition, legal tags, ACLs, credential references). Running
+it means:
+
+1. **Intake**: snapshot the drop, canonicalize each row, and compute a stable record key and content hash.
+2. **Plan**: compare the snapshot against the ledger to decide what is new, changed, unchanged, or gone.
+3. **Deliver**: render the OSDU record, call the storage API, and write the attempt (request, response, OSDU
+   id and version, error) to the ledger; retries and leases keep concurrent nodes from double-delivering.
+4. **Verify**: read back from OSDU and reconcile with the ledger; publish the known state.
+
+The ledger holds submissions, delivery records, attempts, and operator actions (release, redeliver, delete)
+with who did them and when. Statistics, record history, search, and the re-run actions in the GUI and the CLI
+are all views over the ledger.
+
+## Principles
+
+1. **Traceability over everything.** If it happened to a record, the ledger says so. No path bypasses it.
+2. **Secrets never live in documents.** `${env:...}` and `${keyvault:...}` references only; resolved values are
+   redacted before they reach any log, trace, error, or artifact.
+3. **Control plane versus compute.** The control plane decides what and when and owns state; nodes execute
+   near the data and pull their work, so they can run inside a customer's network.
+4. **Single code path.** One implementation per feature, extended rather than duplicated, at every layer.
+5. **Logic in code, not the database.** The catalog is a clean model and state store; behavior lives in C#.

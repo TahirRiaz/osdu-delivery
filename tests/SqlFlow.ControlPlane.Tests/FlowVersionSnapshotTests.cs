@@ -1,7 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
-using SqlFlow.Node;
-using SqlFlow.Yaml;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -11,9 +9,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// FlowVersion store and stamps the run with its hash, so the executing node loads the document from the catalog
 /// instead of cloning the git remote (the fix for a schedule fanning out a whole batch storming Bitbucket with
 /// authenticated clones). Covers the stamp, the content dedup (single and group enqueue), the deliberate
-/// no-snapshot fallbacks (missing pipeline row, embedded literal credential), and the worker-side decision of
-/// which documents can execute from a bare single-file snapshot at all. DB-backed cases are gated on a reachable
-/// catalog database like the other suites; the repo-tree checks are pure parsing.
+/// no-snapshot fallbacks (missing pipeline row, embedded literal credential). Every case is gated on a reachable
+/// catalog database like the other suites.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class FlowVersionSnapshotTests
@@ -226,102 +223,6 @@ public sealed class FlowVersionSnapshotTests
         {
             await CleanupAsync(cs, name, sharedHash, ownHash);
         }
-    }
-
-    // ---- The worker-side snapshot-executability decision (pure parsing, no database) -------------------------------
-
-    private static readonly YamlDocumentLoader Loader = new(
-        new YamlFlowLoader(), new YamlIngestionFlowLoader(), new YamlExportFlowLoader(),
-        new YamlStoredProcedureFlowLoader(), new YamlInvokeFlowLoader(), new YamlHealthCheckFlowLoader(),
-        new YamlSourceControlFlowLoader(), new YamlBatchFlowLoader(), new YamlAcquireFlowLoader(),
-        new YamlCopyFlowLoader(), new YamlSftpFlowLoader(), new YamlCalendarFlowLoader(), new YamlTranslateFlowLoader());
-
-    [Fact]
-    public void FileFlow_WithARelativeLocalLocation_RequiresTheRepoTree()
-    {
-        // ./data/orders.csv refers to a sibling committed alongside the flow file: only a git checkout has it.
-        var doc = Loader.Parse("""
-            name: orders
-            source:
-              type: csv
-              location: ./data/orders.csv
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
-            """);
-        Assert.True(RunWorker.RequiresRepoTree(doc));
-    }
-
-    [Fact]
-    public void FileFlow_WithACloudLocation_ExecutesFromABareSnapshot()
-    {
-        var doc = Loader.Parse("""
-            name: orders
-            source:
-              type: csv
-              location: https://account.dfs.core.windows.net/lake/raw/orders/
-            target:
-              connection: ${env:SQLFLOW_CONN_DWH}
-              schema: dbo
-              table: Orders
-            """);
-        Assert.False(RunWorker.RequiresRepoTree(doc));
-    }
-
-    [Fact]
-    public void ExportFlow_WithARelativeTargetPath_RequiresTheRepoTree()
-    {
-        var doc = Loader.Parse("""
-            flowType: exp
-            name: orders-export
-            connections:
-              dwh: ${env:DWH}
-            source:
-              server: dwh
-              object: DW.raw.Orders
-            target:
-              path: ./out
-            """);
-        Assert.True(RunWorker.RequiresRepoTree(doc));
-    }
-
-    [Fact]
-    public void SourceControlFlow_WithARelativeRepositoryPath_RequiresTheRepoTree()
-    {
-        var doc = Loader.Parse("""
-            flowType: scm
-            name: warehouse-scm
-            connections:
-              DW:
-            source:
-              server: DW
-            repository:
-              path: ./scm/warehouse
-            """);
-        Assert.True(RunWorker.RequiresRepoTree(doc));
-    }
-
-    [Fact]
-    public void IngestionFlow_ExecutesFromABareSnapshot()
-    {
-        // Relational ingestion addresses servers and objects, never sibling files: always snapshot-safe.
-        var doc = Loader.Parse("""
-            flowType: ing
-            name: orders
-            connections:
-              src: ${env:SRC}
-              dwh: ${env:DWH}
-            source:
-              server: src
-              object: db.dbo.Orders
-            target:
-              server: dwh
-              object: dw.raw.Orders
-            load:
-              keyColumns: [OrderID]
-            """);
-        Assert.False(RunWorker.RequiresRepoTree(doc));
     }
 
     // ---- Helpers ---------------------------------------------------------------------------------------------------
