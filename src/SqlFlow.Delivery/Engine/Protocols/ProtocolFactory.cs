@@ -29,8 +29,9 @@ public static class ProtocolFactory
         {
             DeliveryProtocol.OsduRecord => new OsduRecordProtocol(client, flow.Target.ProtocolOptions),
             DeliveryProtocol.OsduWellLog => new OsduWellLogProtocol(client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduWellLogProtocol>(), flow.Reliability.MaxRequestBodyBytes),
-            _ => throw new FlowValidationException(
-                $"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is declared in the vocabulary but not implemented in this version."),
+            DeliveryProtocol.OsduFile => new OsduFileProtocol(client, flow.Target.ProtocolOptions, flow.Reliability.MaxRequestBodyBytes),
+            DeliveryProtocol.OsduManifest => new OsduManifestProtocol(client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduManifestProtocol>(), flow.Reliability.MaxRequestBodyBytes),
+            _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
     }
 }

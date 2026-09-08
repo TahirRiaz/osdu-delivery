@@ -36,6 +36,9 @@ public sealed class OsduHttpClient
 
     public string Endpoint => _endpoint;
 
+    /// <summary>A header the flow declares on every request (data-partition-id), or null when it does not.</summary>
+    public string? Header(string name) => _headers.TryGetValue(name, out var value) ? value : null;
+
     public Uri Url(string pathTemplate, string? id = null, string? sessionId = null)
     {
         var path = pathTemplate

@@ -200,6 +200,18 @@ internal sealed class ProtocolOptionsYaml
     public int? WorkflowTimeoutMinutes { get; set; }
 
     public string? ManifestKind { get; set; }
+
+    public string? UploadUrlExpiry { get; set; }
+
+    public string? FileDeletePath { get; set; }
+
+    public string? ManifestSection { get; set; }
+
+    public string? WorkflowAppKey { get; set; }
+
+    public Dictionary<string, string>? WorkflowPayload { get; set; }
+
+    public string? RecordQueryPath { get; set; }
 }
 
 internal sealed class FlowReliabilityYaml

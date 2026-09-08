@@ -70,13 +70,13 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
-    public void Floating_mappings_and_unimplemented_protocols_are_rejected()
+    public void Floating_mappings_and_unknown_protocols_are_rejected()
     {
         var loader = new DeliveryDocumentLoader();
         var floating = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("WellLog@1.4.0", "WellLog", StringComparison.Ordinal), "f"));
         Assert.Contains("pinned", floating.Message, StringComparison.Ordinal);
-        var unimplemented = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("osduWellLog", "osduManifest", StringComparison.Ordinal), "f"));
-        Assert.Contains("not implemented", unimplemented.Message, StringComparison.Ordinal);
+        Assert.Equal(DeliveryProtocol.OsduManifest, loader.ParseFlow(Flow.Replace("osduWellLog", "osduManifest", StringComparison.Ordinal), "f").Target.Protocol);
+        Assert.Equal(DeliveryProtocol.OsduFile, loader.ParseFlow(Flow.Replace("osduWellLog", "osduFile", StringComparison.Ordinal), "f").Target.Protocol);
         var unknownProtocol = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("osduWellLog", "ftp", StringComparison.Ordinal), "f"));
         Assert.Contains("target.protocol", unknownProtocol.Message, StringComparison.Ordinal);
     }

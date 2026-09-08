@@ -1,9 +1,8 @@
 namespace SqlFlow.Delivery.Protocols;
 
 /// <summary>
-/// The closed vocabulary of OSDU delivery shapes (design.md section 8). Designed as a set so the four cohere;
-/// <see cref="OsduRecord"/> and <see cref="OsduWellLog"/> are implemented, the other two are declared and
-/// rejected at validation until a second kind makes them real.
+/// The closed vocabulary of OSDU delivery shapes (design.md section 8). Designed as a set so the four cohere: a flow
+/// names one, the factory builds it, and the engine never references a concrete protocol beyond that.
 /// </summary>
 public enum DeliveryProtocol
 {
@@ -13,18 +12,22 @@ public enum DeliveryProtocol
     /// <summary>Record plus bulk: record, then binary payload, optionally via a session (wellbore DDMS).</summary>
     OsduWellLog,
 
-    /// <summary>Record plus file: signed upload URL, upload, register metadata (file/dataset services). Not yet implemented.</summary>
+    /// <summary>
+    /// Record plus files: a signed upload location per file, the file streamed to it, its dataset record registered,
+    /// then the record written with its dataset list (file and storage services).
+    /// </summary>
     OsduFile,
 
-    /// <summary>Manifest ingestion: assemble a manifest, trigger a DAG, poll (workflow service). Not yet implemented.</summary>
+    /// <summary>
+    /// Manifest ingestion: the files uploaded, one manifest per batch handed to the ingestion workflow, the run
+    /// polled, the records read back from storage (file, workflow and storage services).
+    /// </summary>
     OsduManifest,
 }
 
 public static class DeliveryProtocols
 {
-    public static bool IsImplemented(DeliveryProtocol protocol)
-        => protocol is DeliveryProtocol.OsduRecord or DeliveryProtocol.OsduWellLog;
-
+    /// <summary>Protocols that stream a payload set from the drop alongside the record.</summary>
     public static bool CarriesPayload(DeliveryProtocol protocol)
-        => protocol is DeliveryProtocol.OsduWellLog or DeliveryProtocol.OsduFile;
+        => protocol is DeliveryProtocol.OsduWellLog or DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest;
 }

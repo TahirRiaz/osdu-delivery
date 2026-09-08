@@ -89,7 +89,7 @@ public sealed class HttpExecutor
                 if (!decision.ShouldRetry)
                 {
                     var preview = await PreviewAsync(response, ct).ConfigureAwait(false);
-                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {request.RequestUri}: {preview}");
+                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}: {preview}");
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -99,7 +99,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(attempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure calling {request.Method} {request.RequestUri}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure calling {request.Method} {Describe(request.RequestUri)}: {ex.Message}", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -113,7 +113,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(attempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure reading the response from {request.RequestUri}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure reading the response from {Describe(request.RequestUri)}: {ex.Message}", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -124,7 +124,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(attempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP request to {request.RequestUri} timed out after {_client.Timeout.TotalSeconds:0}s.", ex);
+                    throw new DeliveryException($"HTTP request to {Describe(request.RequestUri)} timed out after {_client.Timeout.TotalSeconds:0}s.", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -135,6 +135,10 @@ public sealed class HttpExecutor
             }
         }
     }
+
+    /// <summary>The request URL without its query string: a signed upload URL carries its credential there.</summary>
+    private static string Describe(Uri? uri)
+        => uri is null ? string.Empty : uri.IsAbsoluteUri ? uri.GetLeftPart(UriPartial.Path) : uri.ToString();
 
     private async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, CancellationToken ct)
     {

@@ -348,6 +348,33 @@ public sealed record ProtocolOptions
 
     /// <summary>Manifest protocol: the manifest kind. Default osdu:wks:Manifest:1.0.0.</summary>
     public string ManifestKind { get; init; } = "osdu:wks:Manifest:1.0.0";
+
+    /// <summary>
+    /// File and manifest protocols: how long the signed upload URL stays valid (openapi file v2 expiryTime: 30M,
+    /// 12H, 2D). Null takes the service default of one hour; a large file over a slow link needs more.
+    /// </summary>
+    public string? UploadUrlExpiry { get; init; }
+
+    /// <summary>File and manifest protocols: the path that deletes a dataset record and its file on purge; {id} is the dataset id.</summary>
+    public string? FileDeletePath { get; init; }
+
+    /// <summary>
+    /// Manifest protocol: the manifest section the records go into (one of <see cref="ManifestSections"/>). Null
+    /// derives it from each record's kind.
+    /// </summary>
+    public string? ManifestSection { get; init; }
+
+    /// <summary>Manifest protocol: the AppKey in the workflow's execution context. Default osdu-delivery.</summary>
+    public string WorkflowAppKey { get; init; } = "osdu-delivery";
+
+    /// <summary>Manifest protocol: extra entries of the execution context's Payload, beside AppKey and data-partition-id.</summary>
+    public IReadOnlyDictionary<string, string> WorkflowPayload { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>Manifest protocol: the storage path that reads records back by id after a run. Default /api/storage/v2/query/records.</summary>
+    public string? RecordQueryPath { get; init; }
+
+    /// <summary>The sections of an osdu:wks:Manifest:1.0.0 a record can be placed in.</summary>
+    public static readonly IReadOnlyList<string> ManifestSections = ["ReferenceData", "MasterData", "WorkProduct", "WorkProductComponents", "Datasets"];
 }
 
 public sealed record FlowReliability

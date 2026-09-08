@@ -115,12 +115,6 @@ internal static class FlowMapper
         var target = y.Target ?? throw Missing("target", source);
 
         var protocol = ParseEnum<DeliveryProtocol>(Require(target.Protocol, "target.protocol", source), "target.protocol", source);
-        if (!DeliveryProtocols.IsImplemented(protocol))
-        {
-            throw new FlowValidationException(
-                $"{source}: target.protocol '{target.Protocol}' is declared in the protocol vocabulary but not implemented in this version. Implemented: osduRecord, osduWellLog.");
-        }
-
         var mapping = Require(render.Mapping, "render.mapping", source);
         if (!mapping.Contains('@', StringComparison.Ordinal))
         {
@@ -222,6 +216,21 @@ internal static class FlowMapper
         if (flow.Target.ProtocolOptions.WorkflowPollSeconds < 1 || flow.Target.ProtocolOptions.WorkflowTimeoutMinutes < 1)
         {
             throw new FlowValidationException($"{source}: target.protocolOptions.workflowPollSeconds and workflowTimeoutMinutes must be at least 1.");
+        }
+
+        if (flow.Target.ProtocolOptions.UploadUrlExpiry is { } expiry && !ValidExpiry(expiry))
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.uploadUrlExpiry '{expiry}' must be a whole number of minutes, hours or days, such as 30M, 12H or 2D.");
+        }
+
+        if (flow.Target.ProtocolOptions.ManifestSection is { } section && !ProtocolOptions.ManifestSections.Contains(section, StringComparer.Ordinal))
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.manifestSection '{section}' is not one of {string.Join(", ", ProtocolOptions.ManifestSections)}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(flow.Target.ProtocolOptions.WorkflowAppKey))
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.workflowAppKey must not be empty.");
         }
 
         foreach (var token in Tokens(flow.Source.Work ?? string.Empty))
@@ -340,6 +349,12 @@ internal static class FlowMapper
             WorkflowPollSeconds = o.WorkflowPollSeconds ?? 10,
             WorkflowTimeoutMinutes = o.WorkflowTimeoutMinutes ?? 60,
             ManifestKind = string.IsNullOrWhiteSpace(o.ManifestKind) ? "osdu:wks:Manifest:1.0.0" : o.ManifestKind!.Trim(),
+            UploadUrlExpiry = string.IsNullOrWhiteSpace(o.UploadUrlExpiry) ? null : o.UploadUrlExpiry!.Trim(),
+            FileDeletePath = o.FileDeletePath,
+            ManifestSection = string.IsNullOrWhiteSpace(o.ManifestSection) ? null : o.ManifestSection!.Trim(),
+            WorkflowAppKey = string.IsNullOrWhiteSpace(o.WorkflowAppKey) ? "osdu-delivery" : o.WorkflowAppKey!.Trim(),
+            WorkflowPayload = new Dictionary<string, string>(o.WorkflowPayload ?? [], StringComparer.Ordinal),
+            RecordQueryPath = o.RecordQueryPath,
         };
     }
 
@@ -380,6 +395,10 @@ internal static class FlowMapper
             RenderParallelism = r.RenderParallelism ?? defaults.RenderParallelism,
         };
     }
+
+    /// <summary>The file service's expiryTime shape: a whole number of minutes, hours or days.</summary>
+    private static bool ValidExpiry(string expiry)
+        => expiry.Length >= 2 && expiry[^1] is 'M' or 'H' or 'D' && expiry[..^1].All(char.IsAsciiDigit);
 
     internal static IEnumerable<string> Tokens(string text)
         => System.Text.RegularExpressions.Regex.Matches(text, @"\{(?<name>[A-Za-z0-9_]+)\}").Select(m => m.Groups["name"].Value).Distinct(StringComparer.Ordinal);

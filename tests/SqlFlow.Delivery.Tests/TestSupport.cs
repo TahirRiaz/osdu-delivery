@@ -195,6 +195,13 @@ public sealed class FakeHttpHandler : HttpMessageHandler
     public FakeHttpHandler On(HttpMethod method, string pathSuffix, HttpStatusCode status, string? json = null)
         => On(method, pathSuffix, _ => Json(status, json));
 
+    /// <summary>A rule over the whole request, for URLs the test cannot know in advance (a run id the protocol chose).</summary>
+    public FakeHttpHandler OnMatch(Func<HttpRequestMessage, bool> match, Func<int, HttpResponseMessage> respond)
+    {
+        _rules.Add((match, respond));
+        return this;
+    }
+
     public static HttpResponseMessage Json(HttpStatusCode status, string? json)
     {
         var response = new HttpResponseMessage(status);
