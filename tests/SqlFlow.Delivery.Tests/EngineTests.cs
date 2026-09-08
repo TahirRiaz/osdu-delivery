@@ -386,14 +386,14 @@ public class ProtocolTests
         return (client, handler, runtime);
     }
 
-    private static DeliveryWork Work(bool metadata, bool payload, int chunks, long? existing = null) => new()
+    private static DeliveryWork Work(bool metadata, bool payload, int chunks, long? existing = null, IPayloadSource? source = null) => new()
     {
         Key = SqlFlow.Delivery.Identity.DeliveryKey.Derive("test", ["abc"]),
         TargetId = "dev:work-product-component--WellLog:abc",
         Document = TestSchema.Doc("""{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"Name":"n"}}"""),
         DeliverMetadata = metadata,
         DeliverPayload = payload,
-        Payload = new MemoryPayload(chunks),
+        Payload = source ?? new MemoryPayload(chunks),
         ExistingVersion = existing,
     };
 
@@ -414,7 +414,7 @@ public class ProtocolTests
             Assert.StartsWith("[{", handler.Calls[0].Body, StringComparison.Ordinal);
             Assert.Equal("dev", handler.Calls[0].Headers["data-partition-id"]);
             Assert.Equal("application/x-parquet", handler.Calls[1].ContentType);
-            Assert.Equal("chunk-0", handler.Calls[1].Body);
+            Assert.StartsWith("PAR1", handler.Calls[1].Body, StringComparison.Ordinal);
             Assert.EndsWith("/welllogs/dev%3Awork-product-component--WellLog%3Aabc/data", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
         }
     }
@@ -450,9 +450,88 @@ public class ProtocolTests
             var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 3));
             Assert.Equal(3, outcome.ChunksSent);
-            Assert.Equal(["chunk-0", "chunk-1", "chunk-2"], ok.Calls.Where(c => c.Uri.AbsolutePath.EndsWith("/data", StringComparison.Ordinal)).Select(c => c.Body));
+            var sent = ok.Calls.Where(c => c.Uri.AbsolutePath.EndsWith("/data", StringComparison.Ordinal)).Select(c => c.Body).ToList();
+            Assert.Equal(3, sent.Count);
+            Assert.All(sent, body => Assert.StartsWith("PAR1", body, StringComparison.Ordinal));
+            Assert.Equal(3, sent.Distinct(StringComparer.Ordinal).Count());
             Assert.Contains("commit", ok.Calls.Last().Body, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public async Task WellLog_holds_a_chunk_above_the_wellbore_ddms_bulk_ceilings_before_writing_metadata()
+    {
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/ddms/v3/welllogs", HttpStatusCode.OK, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:1"]}""")
+            .On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            // 40 rows by 4 columns is 160 values, so a ceiling of 100 values holds it.
+            var values = new OsduWellLogProtocol(client, new ProtocolOptions { MaxChunkValues = 100 }, Samples.Logger<OsduWellLogProtocol>());
+            var tooManyValues = await Assert.ThrowsAsync<RecordHeldException>(
+                () => values.DeliverAsync(Work(true, true, 1, source: new MemoryPayload(1, columns: 4, rowsPerChunk: 40))));
+            Assert.Contains("160 values (40 rows by 4 columns)", tooManyValues.Message, StringComparison.Ordinal);
+            Assert.Contains("maxChunkValues", tooManyValues.Message, StringComparison.Ordinal);
+
+            var columns = new OsduWellLogProtocol(client, new ProtocolOptions { MaxChunkColumns = 3 }, Samples.Logger<OsduWellLogProtocol>());
+            var tooManyColumns = await Assert.ThrowsAsync<RecordHeldException>(
+                () => columns.DeliverAsync(Work(true, true, 1, source: new MemoryPayload(1, columns: 4, rowsPerChunk: 2))));
+            Assert.Contains("has 4 columns", tooManyColumns.Message, StringComparison.Ordinal);
+            Assert.Contains("maxChunkColumns", tooManyColumns.Message, StringComparison.Ordinal);
+
+            // The record is held before the metadata write, so a held payload never leaves a record without one.
+            Assert.Empty(handler.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task WellLog_checks_the_shape_only_for_parquet_payloads_and_only_when_a_ceiling_is_in_force()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            // A payload the target takes as JSON is not measurable from a parquet footer, so it is not measured.
+            var json = new ProtocolOptions { PayloadContentType = "application/json", MaxChunkValues = 1, MaxChunkColumns = 1 };
+            var outcome = await new OsduWellLogProtocol(client, json, Samples.Logger<OsduWellLogProtocol>()).DeliverAsync(Work(false, true, 1));
+            Assert.Equal(1, outcome.ChunksSent);
+
+            // Both ceilings off is the explicit opt out for a target that has raised them.
+            var off = new ProtocolOptions { MaxChunkValues = 0, MaxChunkColumns = 0 };
+            var second = await new OsduWellLogProtocol(client, off, Samples.Logger<OsduWellLogProtocol>())
+                .DeliverAsync(Work(false, true, 1, source: new MemoryPayload(1, columns: 8, rowsPerChunk: 8)));
+            Assert.Equal(1, second.ChunksSent);
+        }
+    }
+
+    [Fact]
+    public async Task WellLog_holds_a_chunk_that_is_declared_parquet_but_is_not()
+    {
+        var (client, handler, runtime) = Client();
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var ex = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(Work(true, true, 1, source: new NotParquetPayload())));
+            Assert.Contains("declared as parquet but its footer could not be read", ex.Message, StringComparison.Ordinal);
+            Assert.Empty(handler.Calls);
+        }
+    }
+
+    [Fact]
+    public void Bulk_limits_carry_the_documented_wellbore_ddms_numbers()
+    {
+        Assert.Equal(10_000_000, WellboreDdmsBulkLimits.MaxChunkValues);
+        Assert.Equal(3_000, WellboreDdmsBulkLimits.MaxChunkColumns);
+        Assert.Equal(500, WellboreDdmsBulkLimits.MaxChunkColumnsThroughM25);
+        Assert.Equal(WellboreDdmsBulkLimits.MaxChunkValues, new ProtocolOptions().MaxChunkValues);
+        Assert.Equal(WellboreDdmsBulkLimits.MaxChunkColumns, new ProtocolOptions().MaxChunkColumns);
+
+        // A shape no file can hold saturates instead of overflowing into a value that would pass the check.
+        Assert.Equal(long.MaxValue, WellboreDdmsBulkLimits.Values(long.MaxValue, 2));
+        Assert.Equal(0, WellboreDdmsBulkLimits.Values(10, 0));
+        Assert.Null(WellboreDdmsBulkLimits.Exceeded(0, "chunk_00000.parquet", 1000, 10, 10_000, 3_000));
+        Assert.Null(WellboreDdmsBulkLimits.Exceeded(0, "chunk_00000.parquet", long.MaxValue, 4_000, 0, 0));
     }
 
     [Fact]
@@ -487,12 +566,52 @@ public class ProtocolTests
         }
     }
 
-    private sealed class MemoryPayload(int chunks) : IPayloadSource
+    /// <summary>A chunk the manifest calls parquet that is not one.</summary>
+    private sealed class NotParquetPayload : IPayloadSource
     {
         public Task<IReadOnlyList<Drops.PayloadChunk>> ListChunksAsync(CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<Drops.PayloadChunk>>(Enumerable.Range(0, chunks).Select(i => new Drops.PayloadChunk(i, $"mem://chunk_{i}", 7)).ToList());
+            => Task.FromResult<IReadOnlyList<Drops.PayloadChunk>>([new Drops.PayloadChunk(0, "mem://chunk_0.parquet", 7)]);
 
         public Task<Stream> OpenAsync(Drops.PayloadChunk chunk, CancellationToken ct = default)
-            => Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes("chunk-" + chunk.Index)));
+            => Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes("chunk-0")));
+    }
+
+    /// <summary>
+    /// Real parquet chunks, because the protocol reads each chunk's footer to check it against the wellbore DDMS
+    /// bulk ceilings before sending it. Each chunk carries one row per chunk index so the requests stay distinct.
+    /// </summary>
+    private sealed class MemoryPayload(int chunks, int columns = 2, int rowsPerChunk = 1) : IPayloadSource
+    {
+        public Task<IReadOnlyList<Drops.PayloadChunk>> ListChunksAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<Drops.PayloadChunk>>(
+                Enumerable.Range(0, chunks).Select(i => new Drops.PayloadChunk(i, $"mem://chunk_{i}.parquet", Bytes(i).Length)).ToList());
+
+        public Task<Stream> OpenAsync(Drops.PayloadChunk chunk, CancellationToken ct = default)
+            => Task.FromResult<Stream>(new MemoryStream(Bytes(chunk.Index), writable: false));
+
+        private byte[] Bytes(int index)
+        {
+            var names = new List<(string Name, Type ClrType)> { ("MD", typeof(double)) };
+            for (var c = 1; c < columns; c++)
+            {
+                names.Add(("CURVE_" + c.ToString(System.Globalization.CultureInfo.InvariantCulture), typeof(double)));
+            }
+
+            var rows = new List<IReadOnlyDictionary<string, object?>>(rowsPerChunk);
+            for (var r = 0; r < rowsPerChunk; r++)
+            {
+                var row = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var (name, _) in names)
+                {
+                    row[name] = (double)((index * rowsPerChunk) + r);
+                }
+
+                rows.Add(row);
+            }
+
+            using var buffer = new MemoryStream();
+            SqlFlow.Delivery.Storage.ParquetScopeReader.WriteAsync(buffer, names, rows).GetAwaiter().GetResult();
+            return buffer.ToArray();
+        }
     }
 }

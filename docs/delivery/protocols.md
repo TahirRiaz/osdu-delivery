@@ -68,6 +68,31 @@ a workflow run id. See [design.md](design.md) section 16.3.
 - Every chunk request is built from a factory that re-opens the blob, so the retry stack can resend a chunk
   without buffering it.
 
+### The bulk ceilings
+
+Before the first request, every chunk is checked against two ceilings, so an oversized chunk holds the record
+instead of failing after the metadata write has already landed.
+
+| Ceiling | Where it comes from | Declared as |
+| --- | --- | --- |
+| Request body bytes | The estate: Kestrel, the ingress, the API gateway. Raise it where it is configured. | `reliability.maxRequestBodyBytes` (0 = not declared) |
+| 10,000,000 values per chunk (rows times columns) | The wellbore DDMS itself. Cannot be raised. | `target.protocolOptions.maxChunkValues` |
+| 3,000 columns per chunk | The wellbore DDMS itself. 500 through OSDU M25, 3000 from M26. | `target.protocolOptions.maxChunkColumns` |
+
+The two DDMS numbers are the service's own: the OpenAPI description of `POST /ddms/v3/welllogs/{record_id}/data`
+says bulk over "10 millions values or 3000 columns" must go through the chunking (session) APIs, and the service
+carries them as `WRITE_MAX_TOTAL_VALUES_COUNT = 10_000_000` ("restrict chunk to ~100MB") and
+`WRITE_MAX_COLUMNS_COUNT = 3_000` in `app/bulk_persistence/constants.py`. They bound the frame the service
+materialises, not the request body, so a chunk can be small enough to send and still be too large to accept, and
+the service does not reliably reject it: on the current upstream the write-side value ceiling is unreferenced and
+the column validator is not wired into a route, so exceeding one shows up as a slow write or an out-of-memory
+worker. `SqlFlow.Delivery.Model.WellboreDdmsBulkLimits` holds the numbers and their provenance.
+
+The shape is read from each chunk's parquet footer (the schema and the row group headers), never from its
+contents, so the cost is one footer read per chunk and the memory is the schema. The check runs only when the
+payload content type is parquet and at least one ceiling is above zero; set both to 0 to opt out. A chunk
+declared as parquet whose footer will not read holds the record, because the service would refuse it too.
+
 ## `osduFile`
 
 The files go first, then the record that references them (openapi file v2, storage v2).

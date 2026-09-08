@@ -6,6 +6,7 @@ using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Storage;
 
 namespace SqlFlow.Delivery.Engine.Protocols;
 
@@ -61,8 +62,8 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         IReadOnlyList<Drops.PayloadChunk> chunks = [];
         if (work.DeliverPayload)
         {
-            // Check the payload against the declared ceiling before anything is sent, so an oversized chunk holds
-            // the record instead of failing mid-session after the metadata write (design.md section 14.3).
+            // Check the payload against the ceilings before anything is sent, so an oversized chunk holds the
+            // record instead of failing mid-session after the metadata write (design.md section 14.3).
             var payload = work.Payload ?? throw new RecordHeldException("the record needs a payload but none is attached");
             chunks = await payload.ListChunksAsync(ct).ConfigureAwait(false);
             if (chunks.Count == 0)
@@ -70,17 +71,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
                 throw new RecordHeldException("no payload chunk files were found for the record");
             }
 
-            if (_requestBodyCeiling > 0)
-            {
-                foreach (var chunk in chunks)
-                {
-                    if (chunk.Size > _requestBodyCeiling)
-                    {
-                        throw new RecordHeldException(
-                            $"payload chunk {chunk.Index} is {chunk.Size.ToString(CultureInfo.InvariantCulture)} bytes, above the target's declared request body ceiling of {_requestBodyCeiling.ToString(CultureInfo.InvariantCulture)} bytes (reliability.maxRequestBodyBytes); re-chunk in prepare");
-                    }
-                }
-            }
+            await PreflightAsync(payload, chunks, ct).ConfigureAwait(false);
         }
 
         if (work.DeliverMetadata)
@@ -185,6 +176,69 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         return (int)result.Status == 404
             ? new DeleteOutcome(false, true, "record not found in OSDU")
             : new DeleteOutcome(true, false, purge ? "purged" : "logically deleted");
+    }
+
+    /// <summary>
+    /// Two ceilings bound a chunk, and both are checked before the first request. The estate's request body size is
+    /// declared as <c>reliability.maxRequestBodyBytes</c> and can be raised where it is configured. The wellbore
+    /// DDMS bulk shape (<see cref="WellboreDdmsBulkLimits"/>) cannot: it is the frame the service materialises, so
+    /// a chunk can be small enough to send and still be too large to accept. The shape is read from the parquet
+    /// footer, never from the chunk's contents, and only when the payload is parquet and a ceiling is in force.
+    /// </summary>
+    private async Task PreflightAsync(IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, CancellationToken ct)
+    {
+        var checksShape = (_options.MaxChunkValues > 0 || _options.MaxChunkColumns > 0)
+            && _options.PayloadContentType.Contains("parquet", StringComparison.OrdinalIgnoreCase);
+
+        foreach (var chunk in chunks)
+        {
+            if (_requestBodyCeiling > 0 && chunk.Size > _requestBodyCeiling)
+            {
+                throw new RecordHeldException(
+                    $"payload chunk {chunk.Index.ToString(CultureInfo.InvariantCulture)} is {chunk.Size.ToString(CultureInfo.InvariantCulture)} bytes, above the target's declared request body ceiling of {_requestBodyCeiling.ToString(CultureInfo.InvariantCulture)} bytes (reliability.maxRequestBodyBytes); re-chunk in prepare");
+            }
+
+            if (!checksShape)
+            {
+                continue;
+            }
+
+            var shape = await ShapeAsync(payload, chunk, ct).ConfigureAwait(false);
+            if (WellboreDdmsBulkLimits.Exceeded(chunk.Index, chunk.Path, shape.Rows, shape.Columns, _options.MaxChunkValues, _options.MaxChunkColumns) is { } held)
+            {
+                throw new RecordHeldException(held);
+            }
+        }
+    }
+
+    /// <summary>Reads one chunk's shape from its footer. A chunk that does not parse holds the record: the service would refuse it too.</summary>
+    private static async Task<ParquetShape> ShapeAsync(IPayloadSource payload, Drops.PayloadChunk chunk, CancellationToken ct)
+    {
+        var opened = await payload.OpenAsync(chunk, ct).ConfigureAwait(false);
+        Stream seekable;
+        try
+        {
+            seekable = await ParquetScopeReader.EnsureSeekableAsync(opened, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            await opened.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+
+        await using (seekable.ConfigureAwait(false))
+        {
+            try
+            {
+                return await ParquetScopeReader.ReadShapeAsync(seekable, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new RecordHeldException(
+                    $"payload chunk {chunk.Index.ToString(CultureInfo.InvariantCulture)} ({Path.GetFileName(chunk.Path)}) is declared as parquet but its footer could not be read, so its shape cannot be checked against the target's bulk ceilings: {HeaderRedaction.RedactMessage(ex.Message)}",
+                    ex);
+            }
+        }
     }
 
     private async Task<(int Sent, string SessionId)> SendSessionAsync(DeliveryWork work, IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, long? version, CancellationToken ct)

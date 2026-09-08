@@ -58,6 +58,8 @@ target:
     deletePath: /ddms/v3/welllogs/{id}       # logical delete (osduRecord: POST /api/storage/v2/records/{id}:delete)
     purgePath: /ddms/v3/welllogs/{id}        # physical purge (osduRecord: DELETE /api/storage/v2/records/{id})
     sessionThresholdChunks: 1      # more chunks than this opens a session
+    maxChunkValues: 10000000       # wellbore DDMS ceiling: cells (rows x columns) per chunk (0 = do not check)
+    maxChunkColumns: 3000          # wellbore DDMS ceiling: columns per chunk; 500 on targets before OSDU M26
     payloadContentType: application/x-parquet
     versionPath: recordIdVersions[0]
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]

@@ -787,6 +787,20 @@ derive the chunk cell limit from the measured ceiling rather than from folklore.
 OSDU's own documented bulk limit first, since that is the one ceiling that cannot be
 raised.
 
+That last one is no longer folklore. The wellbore DDMS publishes it: the OpenAPI
+description of `POST /ddms/v3/welllogs/{record_id}/data` says bulk over "10 millions
+values or 3000 columns" must be sent through the chunking APIs, and the service carries
+the same numbers as `WRITE_MAX_TOTAL_VALUES_COUNT = 10_000_000` ("restrict chunk to
+~100MB") and `WRITE_MAX_COLUMNS_COUNT = 3_000`. The column half is milestone-dependent:
+500 through M25, 3000 from M26. `WellboreDdmsBulkLimits` holds both with their provenance,
+`target.protocolOptions.maxChunkValues` and `maxChunkColumns` declare them per flow, and
+the well log protocol checks every chunk against them in the same preflight as the byte
+ceiling.
+
+Measuring the shape needs the parquet footer, which is not a departure from 13.1: the
+schema and the row group headers are read, no column data is, so the memory is the schema
+whatever the chunk holds. The bytes still stream past unparsed.
+
 ## 15. Reading from OSDU
 
 Reads in service of writing were always here: the verify pass by id, schema and reference

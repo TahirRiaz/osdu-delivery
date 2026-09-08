@@ -6,6 +6,13 @@ using Parquet.Schema;
 
 namespace SqlFlow.Delivery.Storage;
 
+/// <summary>The dimensions of a parquet file: its rows, and its top-level scalar columns.</summary>
+public readonly record struct ParquetShape(long Rows, int Columns)
+{
+    /// <summary>Cells in the file, which is what a bulk service budgets against.</summary>
+    public long Values => Model.WellboreDdmsBulkLimits.Values(Rows, Columns);
+}
+
 /// <summary>
 /// Reads the source-shaped metadata rows of one scope file with Parquet.Net, one row group at a time with column
 /// pruning, so peak memory is one row group's selected columns (design.md section 13.1). Only top-level scalar
@@ -43,6 +50,28 @@ public static class ParquetScopeReader
             await spill.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>
+    /// The shape of a file from its footer alone: the schema's top-level scalar columns and the row counts the row
+    /// group headers declare. No column data is read, so the cost is the footer and the memory is the schema,
+    /// whatever the file holds. This is how a payload chunk is measured against the target's bulk ceilings without
+    /// parsing it (design.md sections 13.1 and 14.3).
+    /// </summary>
+    public static async Task<ParquetShape> ReadShapeAsync(Stream seekable, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(seekable);
+        using var reader = await ParquetReader.CreateAsync(seekable, leaveStreamOpen: true, cancellationToken: ct).ConfigureAwait(false);
+        var columns = reader.Schema.Fields.OfType<DataField>().Count();
+        long rows = 0;
+        for (var group = 0; group < reader.RowGroupCount; group++)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var rowGroup = reader.OpenRowGroupReader(group);
+            rows += rowGroup.RowCount;
+        }
+
+        return new ParquetShape(rows, columns);
     }
 
     /// <summary>The top-level scalar column names of a file.</summary>

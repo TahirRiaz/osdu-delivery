@@ -171,6 +171,10 @@ internal sealed class ProtocolOptionsYaml
 
     public int? SessionThresholdChunks { get; set; }
 
+    public long? MaxChunkValues { get; set; }
+
+    public int? MaxChunkColumns { get; set; }
+
     public string? PayloadContentType { get; set; }
 
     public string? VersionPath { get; set; }

@@ -237,6 +237,11 @@ internal static class FlowMapper
             throw new FlowValidationException($"{source}: target.protocolOptions.batchSize must be between 1 and {ProtocolOptions.MaxBatchSize}.");
         }
 
+        if (flow.Target.ProtocolOptions.MaxChunkValues < 0 || flow.Target.ProtocolOptions.MaxChunkColumns < 0)
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.maxChunkValues and maxChunkColumns must not be negative (0 does not check the chunk shape).");
+        }
+
         if (flow.Target.ProtocolOptions.WorkflowPollSeconds < 1 || flow.Target.ProtocolOptions.WorkflowTimeoutMinutes < 1)
         {
             throw new FlowValidationException($"{source}: target.protocolOptions.workflowPollSeconds and workflowTimeoutMinutes must be at least 1.");
@@ -358,6 +363,8 @@ internal static class FlowMapper
             ProbePath = o.ProbePath,
             Payload = o.Payload,
             SessionThresholdChunks = o.SessionThresholdChunks ?? 1,
+            MaxChunkValues = o.MaxChunkValues ?? WellboreDdmsBulkLimits.MaxChunkValues,
+            MaxChunkColumns = o.MaxChunkColumns ?? WellboreDdmsBulkLimits.MaxChunkColumns,
             PayloadContentType = o.PayloadContentType ?? "application/x-parquet",
             VersionPath = o.VersionPath ?? "recordIdVersions[0]",
             PreserveDataKeys = o.PreserveDataKeys ?? [],

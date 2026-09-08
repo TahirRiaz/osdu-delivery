@@ -100,6 +100,26 @@ def delivery_key(source_system: str, *values: str) -> str:
 
 The OSDU record id is `{partition}:{entityType}:{deliveryKey without hyphens}`.
 
+## Chunking the payload
+
+The prepare side decides how a wellbore's grid is split into chunk files, and the delivery side refuses a chunk
+the target cannot accept. Both sides answer to the same two numbers, which belong to the wellbore DDMS and
+cannot be raised by configuring the estate:
+
+- at most **10,000,000 values** per chunk, counting cells (rows times columns);
+- at most **3,000 columns** per chunk (500 if the target runs OSDU M23 or M25).
+
+Source: the OpenAPI description of `POST /ddms/v3/welllogs/{record_id}/data` ("> 10 millions values or > 3000
+columns" must go through the chunking APIs), and the service's own
+`app/bulk_persistence/constants.py` (`WRITE_MAX_TOTAL_VALUES_COUNT`, `WRITE_MAX_COLUMNS_COUNT`). The delivery
+side holds them in `SqlFlow.Delivery.Model.WellboreDdmsBulkLimits` and checks every chunk's parquet footer
+against them before it sends anything ([protocols.md](protocols.md)); a chunk above either one holds the record
+with a message naming the file, the shape and the ceiling it broke.
+
+Slicing by rows keeps every curve in every chunk and is what the ceilings are usually hit by. A wellbore with
+more curves than the column ceiling cannot be fixed by row slicing at all: those curves have to be split across
+chunks, which the session commit aggregates back into one version.
+
 ## The payload hash
 
 Hash the logical grid, never the parquet bytes ([design.md](design.md) section 6.4). Computed inside the

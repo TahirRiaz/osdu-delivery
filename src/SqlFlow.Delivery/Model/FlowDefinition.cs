@@ -298,6 +298,19 @@ public sealed record ProtocolOptions
     /// <summary>Use a session when the chunk count exceeds this. Default 1: single-chunk payloads go in one request.</summary>
     public int SessionThresholdChunks { get; init; } = 1;
 
+    /// <summary>
+    /// Cells (rows times columns) one parquet payload chunk may carry, checked before anything is sent. Defaults to
+    /// the wellbore DDMS ceiling (<see cref="WellboreDdmsBulkLimits.MaxChunkValues"/>); 0 does not check.
+    /// </summary>
+    public long MaxChunkValues { get; init; } = WellboreDdmsBulkLimits.MaxChunkValues;
+
+    /// <summary>
+    /// Columns one parquet payload chunk may carry, checked before anything is sent. Defaults to the wellbore DDMS
+    /// ceiling from OSDU M26 (<see cref="WellboreDdmsBulkLimits.MaxChunkColumns"/>); a target on M23 or M25 declares
+    /// <see cref="WellboreDdmsBulkLimits.MaxChunkColumnsThroughM25"/>; 0 does not check.
+    /// </summary>
+    public int MaxChunkColumns { get; init; } = WellboreDdmsBulkLimits.MaxChunkColumns;
+
     /// <summary>Media type of the payload chunks.</summary>
     public string PayloadContentType { get; init; } = "application/x-parquet";
 
