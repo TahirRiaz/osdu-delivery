@@ -1,4 +1,4 @@
-# The full OSDU Delivery stack for local/parity deployments: SQL Server (catalog + demo sink), the control plane, one
+# The full OSDU Delivery stack for local/parity deployments: SQL Server (the catalog), the control plane, one
 # scalable worker, and the GUI. Copy .env.example to .env and set the secrets first.
 #
 #   docker compose up -d --build
@@ -48,8 +48,6 @@ services:
       ControlPlane__Cors__AllowedOrigins__0: http://localhost:8081
       # Compute belongs to the worker service; this replica is API + scheduler + sync only.
       ControlPlane__Worker__Enabled: "false"
-      # Flows in the demo estate reference this sink.
-      SQLFlowSinkConStr: "Server=mssql;Database=SqlFlowDemo;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
     ports:
       - "5000:8080"
     healthcheck:
@@ -69,7 +67,14 @@ services:
         condition: service_healthy
     environment:
       SQLFLOW_CATALOG_DB: "Server=mssql;Database=SqlFlowCatalog;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
-      SQLFlowSinkConStr: "Server=mssql;Database=SqlFlowDemo;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # Every ${env:...} reference the flows declare resolves here, on the worker, from .env; the sample flow
+      # (samples/recall-welllog) names these six. The control plane carries none of them.
+      PETRODB_URL: ${PETRODB_URL:-}
+      OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:-}
+      OSDU_SCOPE: ${OSDU_SCOPE:-}
+      OSDU_CLIENT_ID: ${OSDU_CLIENT_ID:-}
+      OSDU_CLIENT_SECRET: ${OSDU_CLIENT_SECRET:-}
+      APIM_KEY: ${APIM_KEY:-}
       # Serve a pool by listing it here; empty drains untargeted runs only.
       SQLFLOW_WORKER_POOL: ${SQLFLOW_WORKER_POOL:-}
       SQLFLOW_GIT_TOKEN: ${SQLFLOW_GIT_TOKEN:-}

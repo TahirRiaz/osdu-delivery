@@ -49,7 +49,7 @@ All conventional names are strictly UPPERCASE because environment variables are 
 | `SQLFLOW_GIT_TOKEN` | workers, control plane | Token for cloning private git remotes during SHA-pinned materialization. Unset means anonymous access (public or local-path remotes). |
 | `SQLFLOW_GIT_USERNAME` | workers, control plane | Optional username paired with `SQLFLOW_GIT_TOKEN`; when blank, GitHub's conventional placeholder `x-access-token` is used. |
 | `SQLFLOW_AZURE_AUTH` | every Azure access path | Selects the Azure credential mode (see below). |
-| `SQLFLOW_TEST_DB` | this repository's integration tests | The integration-test sink database; the legacy name `SQLFlowSinkConStr` is honored as a fallback in the tests. |
+| `SQLFLOW_TEST_DB` | this repository's DB-backed test suites | The disposable SQL Server database the suites migrate and seed; unset or unreachable, those suites skip. Never a catalog holding real data. |
 | `SQLFLOW_WORKER_POOL` | `Dockerfile.worker` entrypoint only | Comma-separated pools the container serves; translated to `--pool`. |
 | `SQLFLOW_WORKER_POLL_SECONDS` | `Dockerfile.worker` entrypoint only | Queue poll cadence; translated to `--poll-seconds`. |
 
@@ -81,9 +81,9 @@ Passing a raw connection string as `--db` triggers the secret-hygiene warning: p
 
 Repo attribution for the post-run catalog write-back. Precedence: `--repo`, then `SQLFLOW_REPO` (when non-empty), then the flow file's folder name, then the literal `default`.
 
-### SQLFLOW_TEST_DB and SQLFlowSinkConStr
+### SQLFLOW_TEST_DB
 
-`SQLFLOW_TEST_DB` is the canonical name for this repository's own integration-test sink; the legacy `SQLFlowSinkConStr` is honored as a fallback, and when only the canonical name is set the tests bridge the legacy name into the process environment so `${env:SQLFlowSinkConStr}` references inside test YAML keep resolving. When neither is set (or the sink is unreachable) the integration tests skip. Separately, `sqlflow flatten` writes `${env:SQLFlowSinkConStr}` as the generated formula's `target.connection`, with a comment telling you to set the target before running.
+`SQLFLOW_TEST_DB` names the disposable SQL Server database the DB-backed test suites migrate and seed (the git-ignored `.sqlflow/env` is the usual place to set it). When it is unset or unreachable those suites skip and the always-on suites still run. Never point it at a catalog holding real data.
 
 ## Azure authentication variables
 

@@ -96,7 +96,7 @@ The 32-byte minimums for the signing key and bootstrap secret are enforced at st
 - The control plane runs API-only: `ControlPlane__Worker__Enabled: "false"`. Compute belongs to the separate `worker` service, which you scale with `--scale worker=N`.
 - The GUI is a separate origin in this layout (`http://localhost:8081` vs `http://localhost:5000`), so the control plane carries `ControlPlane__Cors__AllowedOrigins__0: http://localhost:8081` and the GUI reads `SQLFLOW_API_BASE_URL: http://localhost:5000`. Production ingress layouts route both under one host and drop the CORS configuration entirely.
 - The control plane container health check probes `/health/live`. Liveness has no dependencies; readiness (`/health/ready`) probes the catalog database via an EF DbContext check. Both endpoints are exempt from the rate limiter.
-- The demo flows reference their sink via `${env:SQLFlowSinkConStr}`, so both the control plane and the worker carry that variable.
+- Every `${env:...}` reference the flows declare resolves on the worker service from `.env`; the sample flow names its OSDU endpoint, token URL, scope, client id and secret, and APIM subscription key. The control plane carries none of them.
 
 ## The worker image
 
@@ -160,7 +160,9 @@ stringData:
   bootstrap-secret: "CHANGE_ME_32+_RANDOM_BYTES________"
   admin-password: "CHANGE_ME_12+_CHARS"
   git-token: ""
-  sink-connection: "Server=your-sql-server;Database=SqlFlowDemo;User ID=sqlflow;Password=CHANGE_ME;TrustServerCertificate=True"
+  osdu-client-id: "CHANGE_ME"
+  osdu-client-secret: "CHANGE_ME"
+  apim-key: "CHANGE_ME"
 ```
 
 Secrets stay on the tier that uses them: the control plane gets the catalog connection and JWT material; workers additionally get the git token and every `${env:...}` connection their pool's flows reference. Nothing data-plane ever passes through the control plane.
@@ -219,9 +221,9 @@ env:
   - name: SQLFLOW_GIT_TOKEN
     valueFrom:
       secretKeyRef: { name: sqlflow-secrets, key: git-token }
-  - name: SQLFlowSinkConStr
+  - name: OSDU_CLIENT_SECRET      # one entry per ${env:...} reference the pool's flows declare
     valueFrom:
-      secretKeyRef: { name: sqlflow-secrets, key: sink-connection }
+      secretKeyRef: { name: sqlflow-secrets, key: osdu-client-secret }
 ```
 
 The template sets `terminationGracePeriodSeconds: 600` so an in-flight run can finish on scale-down; an interrupted run is requeued anyway.

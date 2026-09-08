@@ -37,10 +37,22 @@ spec:
               valueFrom:
                 secretKeyRef: { name: sqlflow-secrets, key: git-token }
             # Every ${env:...} reference the pool's flows use resolves HERE, on the node, never in the control
-            # plane. Mount one entry per reference; sink-connection covers the samples' SQLFlowSinkConStr.
-            - name: SQLFlowSinkConStr
+            # plane. Mount one entry per reference; these cover the sample flow (samples/recall-welllog).
+            - name: PETRODB_URL
+              value: "https://your-osdu-host"
+            - name: OSDU_TOKEN_URL
+              value: "https://login.microsoftonline.com/your-tenant/oauth2/v2.0/token"
+            - name: OSDU_SCOPE
+              value: "api://your-osdu-app/.default"
+            - name: OSDU_CLIENT_ID
               valueFrom:
-                secretKeyRef: { name: sqlflow-secrets, key: sink-connection }
+                secretKeyRef: { name: sqlflow-secrets, key: osdu-client-id }
+            - name: OSDU_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: osdu-client-secret }
+            - name: APIM_KEY
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: apim-key }
           resources:
             requests: { cpu: 500m, memory: 512Mi }
             limits: { cpu: "2", memory: 2Gi }

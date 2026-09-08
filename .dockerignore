@@ -9,13 +9,8 @@
 artifacts/
 TestResults/
 **/.sqlflow/
-# The Rust workspace's build output (gigabytes once built locally); images rebuild from source.
-tools/target/
 **/node_modules/
 docs/
-# The MCP image embeds the reference corpus (manifest, pages, key census) at compile time; it is the one part
-# of docs/ that belongs in the context (see Dockerfile.mcp).
-!docs/reference/
 *.md
 # The GUI builds in its own image (gui/Dockerfile with the gui/ context); keep its trees out of the .NET context.
 gui/node_modules/
@@ -24,10 +19,3 @@ gui/e2e/
 gui/playwright-report/
 gui/test-results/
 gui/.tsbuild/
-
-# Trees no image needs, kept out of the context because EVERY root-context build (control plane, worker, MCP)
-# tars the whole repository before the daemon applies these rules: 534 MB of upload and scan per build, for
-# files no Dockerfile reads. Excluding them is what keeps a build submitting in seconds rather than minutes.
-next-app/
-_probe_sql/
-data/
