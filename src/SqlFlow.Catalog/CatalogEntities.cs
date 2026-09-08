@@ -1,4 +1,6 @@
-﻿namespace SqlFlow.Catalog;
+﻿using SqlFlow.Core.Runs;
+
+namespace SqlFlow.Catalog;
 
 /// <summary>
 /// The lifecycle states a <see cref="CatalogRun"/> moves through, stored as a short lowercase string so the value
@@ -965,6 +967,10 @@ public class CatalogSchedule
 
     /// <summary><c>yaml</c> (declared in git, overwritten on sync) or <c>api</c> (created through the control plane).</summary>
     public string Source { get; set; } = "api";
+
+    /// <summary>The operation every fire runs its members with: deliver (the default), verify, plan or known-state. A
+    /// drift check is a second schedule on the same flows with operation verify.</summary>
+    public string Operation { get; set; } = RunParameters.DeliverOperation;
 
     /// <summary>The repo-relative path of the file this cadence is written in (a flow document with an inline
     /// <c>schedule:</c> block, or a <c>schedules.yaml</c> library file). Null for an API-created schedule, which has

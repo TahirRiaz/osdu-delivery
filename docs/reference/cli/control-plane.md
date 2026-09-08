@@ -84,7 +84,7 @@ sqlflow groups show <groupId> [--follow] | cancel <groupId> | rerun <groupId>
 sqlflow summary                                    # the dashboard rollup
 sqlflow nodes                                      # the worker fleet, heartbeat-derived liveness
 sqlflow schedules list | show <id> | create --repo r --flow f (--cron "0 6 * * *"|--interval 3600)
-                 [--timezone Europe/Oslo] [--disabled] [--catchup]
+                 [--timezone Europe/Oslo] [--disabled] [--catchup] [--operation verify]
                  | pause <id> | resume <id> | delete <id>
 sqlflow repos list | show <name> | sync <name>     # git source sync-now, or local-path re-sync
 sqlflow repos register --name bb --remote-url https://... --credential-ref '${env:GIT_TOKEN}'

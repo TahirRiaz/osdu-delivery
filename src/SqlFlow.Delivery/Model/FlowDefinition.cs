@@ -106,6 +106,10 @@ public sealed record FlowSource
 
     /// <summary>The root-scope column carrying the source fingerprint for the tier-1 gate (design.md section 6.6).</summary>
     public string? Fingerprint { get; init; }
+
+    /// <summary>Where a known-state publication is written when the run names no location: a directory or storage prefix
+    /// the preparing side reads before its next drop. Supports {parameter} tokens. Null leaves it to the run.</summary>
+    public string? KnownState { get; init; }
 }
 
 public sealed record FlowScope

@@ -145,6 +145,10 @@ public sealed record ScheduleSpec
     /// catches up, firing one missed occurrence per scheduler tick until it is current again.</summary>
     public bool Catchup { get; init; }
 
+    /// <summary>The operation every fire runs its members with: <c>deliver</c> (the default), or <c>verify</c>, <c>plan</c>,
+    /// <c>known-state</c>. A nightly drift check is a second schedule on the same flows with <c>operation: verify</c>.</summary>
+    public string Operation { get; init; } = Runs.RunParameters.DeliverOperation;
+
     /// <summary>
     /// How many of this schedule's members may EXECUTE at the same time, already resolved through
     /// <see cref="ScheduleDefaults.Resolve"/>: a positive bound, or null for UNBOUNDED (which the YAML asks for with

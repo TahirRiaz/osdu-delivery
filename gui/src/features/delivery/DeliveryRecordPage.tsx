@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpenCheck, CircleAlert, Eraser, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
@@ -126,7 +126,16 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   const task = useComputeTask(taskId);
   useTabTitle(query.data ? (query.data.record.label ?? query.data.record.sourceKey) : undefined);
 
-  const refresh = () => void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+  const refresh = useCallback(() => void queryClient.invalidateQueries({ queryKey: ["delivery"] }), [queryClient]);
+
+  // A removal that finished on a node changed the ledger (the record is now deleted and blocked): refetch the
+  // record once the task reaches a terminal state, so the page reflects it without a manual reload.
+  const finishedTask = task.data && ["succeeded", "failed", "cancelled"].includes(task.data.status) ? task.data.taskId : null;
+  useEffect(() => {
+    if (finishedTask !== null) {
+      refresh();
+    }
+  }, [finishedTask, refresh]);
   const fail = (error: unknown) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
 
   const verify = useMutation({
@@ -188,9 +197,6 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending || remove.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const taskState = task.data;
-  if (isTerminalTask(taskState) && taskState?.status === "succeeded" && taskLabel !== "Read back from OSDU" && !query.isFetching && query.dataUpdatedAt < new Date(taskState.endUtc ?? 0).getTime()) {
-    refresh();
-  }
 
   return (
     <Page data-testid="page-delivery-record">

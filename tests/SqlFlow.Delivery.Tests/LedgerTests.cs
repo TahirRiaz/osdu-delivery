@@ -63,6 +63,33 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task Lookup_answers_by_delivery_key_or_by_prefix_across_flows()
+    {
+        var submission = Guid.NewGuid();
+        var otherFlow = FlowId.Of("other-flow");
+        await Ledger.UpsertPendingAsync([
+            Pending("WELL-1", submission),
+            Pending("WELL-2", submission),
+            Pending("OTHER-1", submission) with { FlowId = otherFlow, Label = "Other one" },
+        ]);
+
+        var byKey = await Ledger.LookupAsync(DeliveryKey.Derive("test", ["WELL-1"]).Value.ToString(), 10);
+        Assert.Equal("WELL-1", Assert.Single(byKey).SourceKey);
+
+        var byTargetId = await Ledger.LookupAsync("dev:x:WELL", 10);
+        Assert.Equal(2, byTargetId.Count);
+        Assert.Equal(2, await Ledger.CountLookupAsync("dev:x:WELL"));
+        Assert.Single(await Ledger.LookupAsync("dev:x:WELL", 1));
+
+        var byLabel = await Ledger.LookupAsync("Other", 10);
+        Assert.Equal(otherFlow, Assert.Single(byLabel).FlowId);
+
+        Assert.Empty(await Ledger.LookupAsync("nothing-like-this", 10));
+        Assert.Empty(await Ledger.LookupAsync(Guid.NewGuid().ToString(), 10));
+        await Assert.ThrowsAsync<ArgumentException>(() => Ledger.LookupAsync(" ", 10));
+    }
+
+    [Fact]
     public async Task Claim_leases_pending_records_once_and_complete_promotes_pending_state()
     {
         var submission = Guid.NewGuid();

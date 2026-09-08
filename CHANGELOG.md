@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The sample estate `samples/recall-welllog`, the drop generator `tools/SampleDrop`, and the delivery test suite.
 - Runs record who requested them and the delivery counts they produced; the request body ceiling is an explicit
   setting (`ControlPlane:MaxRequestBodyMegabytes`).
+- Schedules carry the operation they fire (`schedule.operation` in the flow, `operation` in the schedule library,
+  `--operation` on `schedules create`), so a nightly verify pass is a schedule.
+- The search box answers from the ledger as well: a delivery key, or an OSDU id, source key or label prefix,
+  across every flow, from indexed columns.
+- `source.knownState` declares where a known-state run publishes when the run names no location.
 
 ### Changed
 

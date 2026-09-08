@@ -61,4 +61,18 @@ public static class YamlDocumentParts
         => BitConverter.ToInt32(FlowIdentity.FromName(name).ToByteArray(), 0) & 0x7FFFFFFF;
 
     public static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    /// <summary>Parses a schedule's <c>operation</c> (absent is deliver) against the run operations the platform knows.</summary>
+    public static string ParseOperation(string? value, string property, string source)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return RunParameters.DeliverOperation;
+        }
+
+        var operation = value.Trim().ToLowerInvariant();
+        return RunParameters.Operations.Contains(operation, StringComparer.Ordinal)
+            ? operation
+            : throw new FlowValidationException($"{source}: {property} '{value}' must be one of {string.Join(", ", RunParameters.Operations)}.");
+    }
 }

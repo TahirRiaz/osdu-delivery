@@ -8,13 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { searchApi } from "../../api/endpoints";
 import { isApiError } from "../../api/client";
-import type { FlowHit } from "../../api/types";
+import type { DeliveryRecordHit, FlowHit } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
+import { DataTable } from "../../components/DataTable";
 import { EmptyState } from "../../components/EmptyState";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
+import { RelativeTime } from "../../components/RelativeTime";
 import { TruncatedText } from "../../components/TruncatedText";
 
 const flowColumns: Column<FlowHit>[] = [
@@ -39,10 +41,31 @@ const flowColumns: Column<FlowHit>[] = [
   },
 ];
 
+const recordColumns: Column<DeliveryRecordHit>[] = [
+  {
+    id: "record",
+    header: "Record",
+    render: (row) => (
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate font-medium">{row.label ?? row.sourceKey}</span>
+        {row.label !== null && (
+          <span className="truncate font-mono text-[11px] text-muted-foreground">{row.sourceKey}</span>
+        )}
+      </div>
+    ),
+  },
+  { id: "flow", header: "Flow", render: (row) => <Mono>{row.flowName ?? "-"}</Mono> },
+  { id: "status", header: "Status", render: (row) => <Badge variant="secondary">{row.status}</Badge> },
+  { id: "target", header: "OSDU id", render: (row) => <TruncatedText text={row.targetId} mono maxWidth={300} /> },
+  { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
+  { id: "key", header: "Delivery key", render: (row) => <Mono>{row.deliveryKey}</Mono> },
+];
+
 /**
- * Search over the flow documents of every synced repository: by name, path, or body text. A multi-word term is
- * matched word by word (every word must match), which the summary line explains so a surprising miss is readable
- * without knowing the rule. The title-bar search box lands here with ?q=; the table pages through every hit.
+ * Search over the flow documents of every synced repository (by name, path, or body text) and over the delivery
+ * ledger (a delivery key, or an OSDU id, source key or label prefix). A multi-word term is matched word by word
+ * against the documents (every word must match), which the summary line explains so a surprising miss is readable
+ * without knowing the rule. The title-bar search box lands here with ?q=; the flow table pages through every hit.
  */
 export default function SearchPage() {
   const navigate = useNavigate();
@@ -69,7 +92,7 @@ export default function SearchPage() {
         <Input
           value={term}
           onChange={(event) => setTerm(event.target.value)}
-          placeholder="Search term"
+          placeholder="Flow name, path or text; a record key, OSDU id or label"
           aria-label="Search term"
           data-testid="search-input"
           className="h-8 max-w-[480px] flex-1"
@@ -83,7 +106,7 @@ export default function SearchPage() {
       {q === "" && (
         <EmptyState
           icon={<Search />}
-          title="Type a term to search the flow documents by name, path, or body text"
+          title="Type a term to search the flow documents by name, path, or body text, or a record by its key, OSDU id or label"
           data-testid="search-hint"
         />
       )}
@@ -91,6 +114,7 @@ export default function SearchPage() {
       {q !== "" && (
         <>
           <SearchSummary q={q} />
+          <RecordHits q={q} />
           <PagedTable<FlowHit>
             queryKey={["search", "flows", q]}
             fetchPage={(page, pageSize) => searchApi.flows(q, { page, pageSize })}
@@ -106,7 +130,42 @@ export default function SearchPage() {
   );
 }
 
-/** The one-line summary above the table: how many flows match, and how a multi-word term was read. */
+/**
+ * The delivery records the term names: a delivery key lands on one record; an OSDU id, source key or label prefix
+ * lists the records that start with it, across every flow. Hidden when nothing matches, so a plain document search
+ * looks the way it always did.
+ */
+function RecordHits({ q }: { q: string }) {
+  const navigate = useNavigate();
+  const query = useQuery({
+    queryKey: ["search", "all", q],
+    queryFn: () => searchApi.all(q),
+  });
+  const records = query.data?.records;
+  if (records === undefined || records.items.length === 0) {
+    return null;
+  }
+
+  const shown = records.items.length;
+  return (
+    <section className="flex flex-col gap-2" data-testid="search-records">
+      <h2 className="text-[13px] font-medium">
+        {`${records.total.toLocaleString()} delivery record${records.total === 1 ? "" : "s"}`}
+        {records.total > shown && <span className="font-normal text-muted-foreground">{` (first ${shown})`}</span>}
+      </h2>
+      <DataTable
+        columns={recordColumns}
+        rows={records.items}
+        rowKey={(row) => row.deliveryKey}
+        onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
+        emptyMessage="No records match."
+        data-testid="search-records-table"
+      />
+    </section>
+  );
+}
+
+/** The one-line summary above the tables: how many flows and records match, and how a multi-word term was read. */
 function SearchSummary({ q }: { q: string }) {
   const query = useQuery({
     queryKey: ["search", "all", q],
@@ -125,10 +184,12 @@ function SearchSummary({ q }: { q: string }) {
   }
 
   const total = data.flows.total;
+  const records = data.records.total;
+  const recordsText = records > 0 ? ` and ${records.toLocaleString()} delivery record${records === 1 ? "" : "s"}` : "";
   const words = data.tokens.length > 1 ? `; every word must match: ${data.tokens.join(" + ")}` : "";
   return (
     <p className="text-[13px] text-muted-foreground" data-testid="search-summary">
-      {`${total.toLocaleString()} flow${total === 1 ? "" : "s"} match "${q}"${words}`}
+      {`${total.toLocaleString()} flow${total === 1 ? "" : "s"}${recordsText} match "${q}"${words}`}
     </p>
   );
 }

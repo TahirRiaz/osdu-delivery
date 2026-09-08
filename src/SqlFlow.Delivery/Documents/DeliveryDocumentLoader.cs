@@ -148,6 +148,7 @@ internal static class FlowMapper
                     StringComparer.Ordinal),
                 Payloads = src.Payloads ?? new Dictionary<string, string>(StringComparer.Ordinal),
                 Fingerprint = src.Fingerprint,
+                KnownState = string.IsNullOrWhiteSpace(src.KnownState) ? null : src.KnownState!.Trim(),
             },
             Render = new FlowRender
             {
@@ -211,6 +212,14 @@ internal static class FlowMapper
             if (!flow.Parameters.ContainsKey(token))
             {
                 throw new FlowValidationException($"{source}: source.location uses '{{{token}}}', which is not declared under parameters.");
+            }
+        }
+
+        foreach (var token in Tokens(flow.Source.KnownState ?? string.Empty))
+        {
+            if (!flow.Parameters.ContainsKey(token))
+            {
+                throw new FlowValidationException($"{source}: source.knownState uses '{{{token}}}', which is not declared under parameters.");
             }
         }
 

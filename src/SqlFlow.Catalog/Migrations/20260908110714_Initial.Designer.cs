@@ -12,7 +12,7 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    [Migration("20260908094042_Initial")]
+    [Migration("20260908110714_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -1109,6 +1109,11 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<DateTime?>("NextFireUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
                     b.Property<int>("ParentFreshnessHours")
                         .HasColumnType("int");
 
@@ -1611,6 +1616,12 @@ namespace SqlFlow.Catalog.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("DeliveryKey");
+
+                    b.HasIndex("Label");
+
+                    b.HasIndex("SourceKey");
+
+                    b.HasIndex("TargetId");
 
                     b.HasIndex("FlowId", "Label");
 

@@ -34,6 +34,27 @@ public sealed class ScheduleLibraryChainingTests
     }
 
     [Fact]
+    public void Operation_IsCarriedOnTheSchedule_AndAnUnknownOneDropsTheEntry()
+    {
+        var lib = new YamlScheduleLibraryLoader().Parse("""
+            schedules:
+              nightly_verify:
+                cron: "30 3 * * *"
+                operation: verify
+              hourly:
+                cron: "0 * * * *"
+              broken:
+                cron: "0 * * * *"
+                operation: reindex
+            """);
+
+        Assert.Equal("verify", Assert.Single(lib.Schedules, s => s.Name == "nightly_verify").Spec.Operation);
+        Assert.Equal("deliver", Assert.Single(lib.Schedules, s => s.Name == "hourly").Spec.Operation);
+        Assert.DoesNotContain(lib.Schedules, s => s.Name == "broken");
+        Assert.Contains(lib.Warnings, w => w.Contains("schedules.broken.operation", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void After_WithACron_DropsTheCron_SoItCannotFireTwicePerCycle()
     {
         var lib = new YamlScheduleLibraryLoader().Parse("""

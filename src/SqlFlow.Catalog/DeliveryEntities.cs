@@ -321,6 +321,12 @@ public static class DeliveryModel
             e.HasIndex(r => new { r.FlowId, r.UpdatedUtc });
             e.HasIndex(r => new { r.FlowId, r.LastDeliveredUtc });
             e.HasIndex(r => new { r.FlowId, r.LastVerifyOutcome });
+
+            // The global lookup (the search box): a delivery key is the primary key; an OSDU id, a source key or a label
+            // prefix answers from these across every flow.
+            e.HasIndex(r => r.TargetId);
+            e.HasIndex(r => r.SourceKey);
+            e.HasIndex(r => r.Label);
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>

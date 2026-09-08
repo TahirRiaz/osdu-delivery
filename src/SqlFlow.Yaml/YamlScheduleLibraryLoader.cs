@@ -60,6 +60,8 @@ public sealed class YamlScheduleLibraryLoader
         public bool? Catchup { get; set; }
 
         public int? MaxConcurrency { get; set; }
+
+        public string? Operation { get; set; }
     }
 
     /// <summary>Parses a library file's YAML. <paramref name="source"/> only labels warnings.</summary>
@@ -124,6 +126,19 @@ public sealed class YamlScheduleLibraryLoader
                 continue;
             }
 
+            // The operation every fire runs: an unknown one is a mistake worth stopping (a misspelt verify would
+            // silently deliver instead).
+            string operation;
+            try
+            {
+                operation = YamlDocumentParts.ParseOperation(entry.Operation, $"schedules.{name}.operation", source);
+            }
+            catch (FlowValidationException ex)
+            {
+                warnings.Add($"{ex.Message} Schedule '{name}' ignored.");
+                continue;
+            }
+
             schedules.Add(new NamedSchedule(name, new ScheduleSpec
             {
                 Name = name,
@@ -135,6 +150,7 @@ public sealed class YamlScheduleLibraryLoader
                 Enabled = entry.Enabled ?? true,
                 Catchup = entry.Catchup ?? false,
                 MaxConcurrency = NormalizeMaxConcurrency(entry.MaxConcurrency, name, source, warnings),
+                Operation = operation,
             }));
         }
 

@@ -21,6 +21,8 @@ source:
   payloads:
     curves: curves/{deliveryKey}/chunk_*.parquet
   fingerprint: update_date
+  # Where a known-state run publishes the compact view the preparing side reads before its next drop.
+  knownState: samples/recall-welllog/out/{logSource}/known-state
 
 render:
   mapping: WellLog@1.4.0

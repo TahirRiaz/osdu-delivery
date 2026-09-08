@@ -220,6 +220,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(s => s.Cron).HasMaxLength(256);
             entity.Property(s => s.Timezone).HasMaxLength(64).IsRequired();
             entity.Property(s => s.Source).HasMaxLength(16).IsRequired();
+            entity.Property(s => s.Operation).HasMaxLength(16).IsRequired();
             entity.Property(s => s.DefinitionPath).HasMaxLength(1024);
             entity.Property(s => s.DefinitionFlow).HasMaxLength(400);
             entity.Property(s => s.LastStaleParents).HasMaxLength(2000);

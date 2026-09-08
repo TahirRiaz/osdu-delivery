@@ -219,7 +219,8 @@ internal static partial class RemoteVerbs
                         Enabled: !args.Contains("--disabled"),
                         Catchup: args.Contains("--catchup") ? true : null,
                         Name: Program.GetOption(args, "--name"),
-                        MaxConcurrency: maxConcurrency), ct).ConfigureAwait(false);
+                        MaxConcurrency: maxConcurrency,
+                        Operation: Program.GetOption(args, "--operation")), ct).ConfigureAwait(false);
                     if (json)
                     {
                         Console.WriteLine(JsonSerializer.Serialize(created, ControlPlaneClient.JsonIndented));

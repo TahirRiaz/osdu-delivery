@@ -578,6 +578,7 @@ namespace SqlFlow.Catalog.Migrations
                     MaxConcurrency = table.Column<int>(type: "int", nullable: true),
                     Paused = table.Column<bool>(type: "bit", nullable: false),
                     Source = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    Operation = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
                     DefinitionPath = table.Column<string>(type: "nvarchar(1024)", maxLength: 1024, nullable: true),
                     DefinitionFlow = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: true),
                     DefinitionYaml = table.Column<string>(type: "nvarchar(max)", nullable: true),
@@ -1007,10 +1008,28 @@ namespace SqlFlow.Catalog.Migrations
                 columns: new[] { "FlowId", "UpdatedUtc" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_Record_Label",
+                schema: "delivery",
+                table: "Record",
+                column: "Label");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Record_SourceKey",
+                schema: "delivery",
+                table: "Record",
+                column: "SourceKey");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Record_Status_LeaseExpiresUtc",
                 schema: "delivery",
                 table: "Record",
                 columns: new[] { "Status", "LeaseExpiresUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Record_TargetId",
+                schema: "delivery",
+                table: "Record",
+                column: "TargetId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Repo_Name",

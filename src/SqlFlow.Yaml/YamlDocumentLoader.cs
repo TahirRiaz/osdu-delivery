@@ -44,6 +44,8 @@ public sealed class YamlDocumentLoader
         public bool? Catchup { get; set; }
 
         public int? MaxConcurrency { get; set; }
+
+        public string? Operation { get; set; }
     }
 
     /// <summary>The mapping shape the converter delegates an inline <c>schedule:</c> block to: the same inline fields
@@ -57,6 +59,8 @@ public sealed class YamlDocumentLoader
         public string? Cron { get; set; }
 
         public int? IntervalSeconds { get; set; }
+
+        public string? Operation { get; set; }
 
         public string? Timezone { get; set; }
 
@@ -114,6 +118,7 @@ public sealed class YamlDocumentLoader
                 Enabled = inline.Enabled,
                 Catchup = inline.Catchup,
                 MaxConcurrency = inline.MaxConcurrency,
+                Operation = inline.Operation,
             };
         }
 
@@ -173,7 +178,7 @@ public sealed class YamlDocumentLoader
 
         var flowType = probe?.FlowType?.Trim();
         var envelope = new FlowDocumentEnvelope(
-            MapSchedule(probe?.Schedule),
+            MapSchedule(probe?.Schedule, source),
             YamlDocumentParts.ParseExecutionMode(probe?.Mode, "mode", source),
             YamlDocumentParts.ParseLifecycle(probe?.Lifecycle, source));
 
@@ -256,7 +261,7 @@ public sealed class YamlDocumentLoader
         return "Known kinds: " + string.Join("; ", known) + ".";
     }
 
-    private static ScheduleSpec? MapSchedule(ScheduleYaml? schedule)
+    private static ScheduleSpec? MapSchedule(ScheduleYaml? schedule, string source)
     {
         if (schedule is null)
         {
@@ -292,6 +297,7 @@ public sealed class YamlDocumentLoader
             // surface a warning, so a meaningless negative simply falls back to the default (the schedule-library
             // loader, which does have a warning channel, reports it).
             MaxConcurrency = ScheduleDefaults.Resolve(schedule.MaxConcurrency, out _),
+            Operation = YamlDocumentParts.ParseOperation(schedule.Operation, "schedule.operation", source),
         };
     }
 }

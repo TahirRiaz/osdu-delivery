@@ -33,7 +33,7 @@ public sealed record ScheduleDto(
     Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc, DateTime UpdatedUtc, int? MaxConcurrency,
     RunGroupCountsDto? LastCounts, IReadOnlyList<string>? AfterSchedules = null,
     IReadOnlyList<ScheduleChainLinkDto>? TriggersSchedules = null,
-    int ParentFreshnessHours = 24, string? LastStaleParents = null);
+    int ParentFreshnessHours = 24, string? LastStaleParents = null, string Operation = RunParameters.DeliverOperation);
 
 /// <summary>One link a schedule sets off, in chain order: the schedule that will fire, how many flows it runs, and
 /// whether it is currently able to (a disabled or paused link stops the chain there, and an operator about to start
@@ -58,7 +58,7 @@ public sealed record ScheduleDefinitionDto(
 /// product default (<see cref="ScheduleDefaults.MaxConcurrency"/>); <c>0</c> asks for unbounded.</para></summary>
 public sealed record CreateScheduleRequest(
     Guid RepoId, IReadOnlyList<string> Members, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled,
-    bool? Catchup = null, string? Name = null, int? MaxConcurrency = null);
+    bool? Catchup = null, string? Name = null, int? MaxConcurrency = null, string? Operation = null);
 
 /// <summary>The created-schedule acknowledgement.</summary>
 public sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
@@ -258,6 +258,14 @@ public static class ScheduleEndpoints
                 statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
+        var operation = string.IsNullOrWhiteSpace(request.Operation) ? RunParameters.DeliverOperation : request.Operation.Trim().ToLowerInvariant();
+        if (!RunParameters.Operations.Contains(operation, StringComparer.Ordinal))
+        {
+            return TypedResults.Problem(
+                detail: $"operation must be one of {string.Join(", ", RunParameters.Operations)}.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid schedule");
+        }
+
         var timezone = string.IsNullOrWhiteSpace(request.Timezone) ? "UTC" : request.Timezone.Trim();
         if (!ScheduleClock.TryValidate(request.Cron, request.IntervalSeconds, timezone, out var error))
         {
@@ -306,7 +314,7 @@ public static class ScheduleEndpoints
         var id = await ScheduleStore.CreateApiScheduleAsync(
             db, request.RepoId, name, members, request.Cron, request.IntervalSeconds, timezone,
             request.Enabled ?? true, request.Catchup ?? false, ScheduleDefaults.Resolve(request.MaxConcurrency, out _),
-            next ?? now, now, ct).ConfigureAwait(false);
+            next ?? now, now, operation, ct).ConfigureAwait(false);
 
         return TypedResults.Created($"/api/v1/schedules/{id}", new ScheduleCreated(id, next));
     }
@@ -442,7 +450,7 @@ public static class ScheduleEndpoints
         Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds,
         string Timezone, bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc,
         DateTime? LastFireUtc, Guid? LastRunId, Guid? LastGroupId, DateTime CreatedUtc, DateTime UpdatedUtc,
-        int? MaxConcurrency, IReadOnlyList<string> AfterSchedules, int ParentFreshnessHours, string? LastStaleParents);
+        int? MaxConcurrency, IReadOnlyList<string> AfterSchedules, int ParentFreshnessHours, string? LastStaleParents, string Operation);
 
     // An expression (not a method body) so EF Core translates the projection into the SELECT column list. It takes the
     // context because the member count is a correlated subquery over the member table: a schedule's whole meaning is
@@ -454,7 +462,7 @@ public static class ScheduleEndpoints
         s.Enabled, s.Catchup, s.Paused, s.Source, s.NextFireUtc, s.LastFireUtc, s.LastRunId, s.LastGroupId,
         s.CreatedUtc, s.UpdatedUtc, s.MaxConcurrency,
         db.ScheduleParents.Where(p => p.ScheduleId == s.Id).OrderBy(p => p.Ordinal).Select(p => p.ParentName).ToList(),
-        s.ParentFreshnessHours, s.LastStaleParents);
+        s.ParentFreshnessHours, s.LastStaleParents, s.Operation);
 
     /// <summary>
     /// Walks the chain forward from each schedule on the page: which schedules its completion sets off, theirs in
@@ -612,7 +620,7 @@ public static class ScheduleEndpoints
                 // point to it. A single-member fire has no group, so this is always false there.
                 r.LastGroupId is not null && counts is { } c && c.Queued + c.Running > 0,
                 r.CreatedUtc, r.UpdatedUtc, r.MaxConcurrency, counts, r.AfterSchedules, triggers,
-                r.ParentFreshnessHours, r.LastStaleParents);
+                r.ParentFreshnessHours, r.LastStaleParents, r.Operation);
         }).ToList();
     }
 

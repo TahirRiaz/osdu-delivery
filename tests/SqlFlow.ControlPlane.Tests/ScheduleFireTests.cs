@@ -150,6 +150,48 @@ public sealed class ScheduleFireTests
     }
 
     [SkippableFact]
+    public async Task Fire_WithAVerifySchedule_QueuesVerifyRuns_AndForceKeepsTheOperation()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        var (repoId, suffix) = NewRepo();
+        string wells = $"wells_{suffix}", logs = $"logs_{suffix}";
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await SeedPipelineAsync(db, repoId, wells, wave: 0, batch: "recall", kind: "delivery");
+            await SeedPipelineAsync(db, repoId, logs, wave: 1, batch: "recall", kind: "delivery");
+
+            // A nightly drift check: the same flows, a different operation.
+            var schedule = await SeedScheduleAsync(db, repoId, $"verify_{suffix}", [wells, logs], operation: "verify");
+            var fire = await ScheduleFire.EnqueueAsync(db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default);
+            Assert.Equal(ScheduleFire.Outcome.EnqueuedGroup, fire.Outcome);
+            var runs = await db.Runs.AsNoTracking().Where(r => r.RepoId == repoId).ToListAsync();
+            Assert.Equal(2, runs.Count);
+            Assert.All(runs, run => Assert.Equal("verify", run.Operation));
+            Assert.All(runs, run => Assert.False(run.Force));
+
+            // A forced run-now keeps the schedule's operation and adds the force.
+            await db.Runs.Where(r => r.RepoId == repoId).ExecuteDeleteAsync();
+            var forced = await ScheduleFire.EnqueueAsync(
+                db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default,
+                parameters: new SqlFlow.Core.Runs.RunParameters { Force = true });
+            Assert.Equal(ScheduleFire.Outcome.EnqueuedGroup, forced.Outcome);
+            var forcedRuns = await db.Runs.AsNoTracking().Where(r => r.RepoId == repoId).ToListAsync();
+            Assert.All(forcedRuns, run =>
+            {
+                Assert.Equal("verify", run.Operation);
+                Assert.True(run.Force);
+            });
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
     public async Task Fire_WithForce_AppliesItToEveryMember()
     {
         var cs = CatalogTestDb.Require();
@@ -262,11 +304,12 @@ public sealed class ScheduleFireTests
     }
 
     private static async Task<CatalogSchedule> SeedScheduleAsync(
-        CatalogDbContext db, Guid repoId, string scheduleName, IReadOnlyCollection<string> members)
+        CatalogDbContext db, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string operation = "deliver")
     {
         var now = DateTime.UtcNow;
         await ScheduleStore.StageYamlUpsertAsync(
-            db, repoId, scheduleName, members, "0 4 * * *", null, "UTC", enabled: true, catchup: false, maxConcurrency: ScheduleDefaults.MaxConcurrency, now.AddHours(1), now);
+            db, repoId, scheduleName, members, "0 4 * * *", null, "UTC", enabled: true, catchup: false, maxConcurrency: ScheduleDefaults.MaxConcurrency, now.AddHours(1), now,
+            operation: operation);
         await db.SaveChangesAsync();
         var id = CatalogIdentity.YamlSchedule(repoId, scheduleName);
         return await db.Schedules.AsNoTracking().FirstAsync(s => s.Id == id);

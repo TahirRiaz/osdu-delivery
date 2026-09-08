@@ -99,11 +99,11 @@ internal sealed record ScheduleDto(
     Guid Id, Guid RepoId, string Name, IReadOnlyList<Guid> MemberPipelineIds, string? Cron, int? IntervalSeconds,
     string Timezone, bool Enabled, bool Catchup, bool Paused, string Source, DateTime? NextFireUtc,
     DateTime? LastFireUtc, Guid? LastRunId, Guid? LastGroupId, bool LastGroupActive, DateTime CreatedUtc,
-    DateTime UpdatedUtc, int? MaxConcurrency, RunGroupCountsDto? LastCounts);
+    DateTime UpdatedUtc, int? MaxConcurrency, RunGroupCountsDto? LastCounts, string Operation = "deliver");
 
 internal sealed record CreateScheduleRequest(
     Guid RepoId, IReadOnlyList<string> Members, string? Cron, int? IntervalSeconds, string? Timezone, bool? Enabled,
-    bool? Catchup = null, string? Name = null, int? MaxConcurrency = null);
+    bool? Catchup = null, string? Name = null, int? MaxConcurrency = null, string? Operation = null);
 
 internal sealed record ScheduleCreated(Guid Id, DateTime? NextFireUtc);
 

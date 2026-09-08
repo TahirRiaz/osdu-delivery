@@ -1,3 +1,4 @@
+using SqlFlow.Core;
 using SqlFlow.Yaml;
 using Xunit;
 
@@ -29,6 +30,29 @@ public sealed class YamlDocumentScheduleTests
         Assert.Equal("Europe/Oslo", doc.Schedule.Timezone);
         Assert.Null(doc.Schedule.IntervalSeconds);
         Assert.True(doc.Schedule.Enabled);
+    }
+
+    [Fact]
+    public void Parse_ScheduleOperation_DefaultsToDeliver_AndRejectsAnUnknownOne()
+    {
+        const string Body = """
+            flowType: test
+            name: orders
+            schedule:
+              cron: "0 6 * * *"
+              operation: {0}
+            source: ./orders.csv
+            target: dbo.Orders
+            """;
+
+        var verify = Loader.Parse(Body.Replace("{0}", "Verify", StringComparison.Ordinal));
+        Assert.Equal("verify", verify.Schedule!.Operation);
+
+        var plain = Loader.Parse(Body.Replace("operation: {0}", "enabled: true", StringComparison.Ordinal));
+        Assert.Equal("deliver", plain.Schedule!.Operation);
+
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Body.Replace("{0}", "reindex", StringComparison.Ordinal)));
+        Assert.Contains("schedule.operation", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

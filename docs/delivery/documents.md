@@ -18,6 +18,7 @@ source:
   payloads:                        # name -> drop-relative template; must contain {deliveryKey}
     curves: curves/{deliveryKey}/chunk_*.parquet
   fingerprint: update_date         # root-scope column for the tier-1 gate (optional)
+  knownState: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{logSource}/known-state   # where a known-state run publishes when the run names no location (optional)
   scopes:                          # optional overrides of the manifest's child scopes
     curves: { records: curves-meta/*.parquet, key: deliveryKey }
 
@@ -73,8 +74,8 @@ reliability:
   leaseSeconds: 300
   batchSize: 50
 
-schedule: { cron: "0 * * * *", timeZone: UTC }   # service: poll the drop for an unprocessed manifest
-verify: { cron: "30 3 * * *", reconcile: false }  # service: the drift pass
+schedule: { cron: "0 * * * *", timeZone: UTC, operation: deliver }   # service: what to run, and when
+verify: { reconcile: false }       # whether the verify pass re-queues drifted or missing records
 ```
 
 ### Render-affecting versus operational
@@ -85,7 +86,14 @@ document gets there. Raising `reliability.concurrency` or changing `target.endpo
 ### Parameters
 
 Flow parameters are supplied by `--set name=value` or by the manifest (`parameters`). When both are present
-they must agree. `{name}` tokens are substituted in `source.location`.
+they must agree. `{name}` tokens are substituted in `source.location` and `source.knownState`.
+
+### Schedules
+
+The inline `schedule` fires the flow on the platform scheduler; `operation` (deliver by default; verify, plan or
+known-state) is what every fire runs. A nightly drift pass is a second schedule in the repository's schedule
+library with `operation: verify` and the flow as its member. Run-now on a schedule keeps its operation and adds
+`force`.
 
 ## Mapping
 

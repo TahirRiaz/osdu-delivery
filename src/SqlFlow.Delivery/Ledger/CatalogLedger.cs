@@ -432,6 +432,37 @@ public sealed class CatalogLedger : ILedger
         return await Filter(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query).CountAsync(ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(term);
+        await using var db = Open();
+        var rows = await LookupFilter(db.DeliveryRecords.AsNoTracking(), term)
+            .OrderByDescending(r => r.UpdatedUtc)
+            .Take(Math.Clamp(max, 1, 200))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return rows.Select(ToState).ToList();
+    }
+
+    public async Task<int> CountLookupAsync(string term, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(term);
+        await using var db = Open();
+        return await LookupFilter(db.DeliveryRecords.AsNoTracking(), term).CountAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A UUID is a delivery key; anything else is a prefix over the three identity columns, each with its own index.</summary>
+    private static IQueryable<DeliveryRecord> LookupFilter(IQueryable<DeliveryRecord> rows, string term)
+    {
+        var t = term.Trim();
+        if (Guid.TryParse(t, out var key))
+        {
+            return rows.Where(r => r.DeliveryKey == key);
+        }
+
+        return rows.Where(r => (r.TargetId != null && r.TargetId.StartsWith(t)) || r.SourceKey.StartsWith(t) || (r.Label != null && r.Label.StartsWith(t)));
+    }
+
     private static IQueryable<DeliveryRecord> Filter(IQueryable<DeliveryRecord> rows, RecordQuery query)
     {
         if (query.Status is { } status)

@@ -70,11 +70,15 @@ public static class ScheduleFire
             return new FireResult(Outcome.ScopeEmpty, Guid.Empty, null, 0);
         }
 
-        // Explicit parameters (a forced fire from the schedules page) apply to every member alike: a delivery
-        // schedule has no per-layer roles, each member is one flow delivering its own drop.
-        var memberParameters = parameters is null
+        // The schedule's own operation (a nightly verify, say) and any explicit parameters (a forced fire from the
+        // schedules page) apply to every member alike: a delivery schedule has no per-layer roles, each member is
+        // one flow working on its own drop.
+        var operation = string.IsNullOrWhiteSpace(schedule.Operation) ? RunParameters.DeliverOperation : schedule.Operation.Trim().ToLowerInvariant();
+        var scheduled = string.Equals(operation, RunParameters.DeliverOperation, StringComparison.Ordinal) ? null : new RunParameters { Operation = operation };
+        var effective = parameters is null ? scheduled : parameters with { Operation = operation };
+        var memberParameters = effective is null
             ? null
-            : expansion.Members.ToDictionary(m => m.FlowName, _ => parameters, StringComparer.Ordinal);
+            : expansion.Members.ToDictionary(m => m.FlowName, _ => effective, StringComparer.Ordinal);
 
         // A single member is a single run: enqueuing a one-member group would add a group's bookkeeping and its
         // claim gate for nothing.

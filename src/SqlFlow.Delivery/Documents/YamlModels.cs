@@ -65,6 +65,8 @@ internal sealed class FlowSourceYaml
     public Dictionary<string, string>? Payloads { get; set; }
 
     public string? Fingerprint { get; set; }
+
+    public string? KnownState { get; set; }
 }
 
 internal sealed class FlowScopeYaml

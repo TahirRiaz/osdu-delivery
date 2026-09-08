@@ -430,6 +430,13 @@ public interface ILedger
     /// <summary>How many records match a listing, for paging.</summary>
     Task<int> CountAsync(Guid flowId, RecordQuery query, CancellationToken ct = default);
 
+    /// <summary>Records matching a lookup across every flow: an exact delivery key, or a prefix over the OSDU id, the
+    /// source key and the label. Index-backed, newest first.</summary>
+    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default);
+
+    /// <summary>How many records a lookup matches.</summary>
+    Task<int> CountLookupAsync(string term, CancellationToken ct = default);
+
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
 

@@ -930,7 +930,7 @@ internal static class Program
               sqlflow groups show <groupId> [--follow] | cancel <groupId> | rerun <groupId> [--follow]
               sqlflow whoami | summary | nodes | doctor
               sqlflow schedules list | show <id> | create --repo r --flow f[,f2,...] (--cron <expr>|--interval <seconds>)
-                               [--name <n>] [--timezone tz] [--max-concurrency <n>] [--disabled] [--catchup]
+                               [--name <n>] [--timezone tz] [--max-concurrency <n>] [--disabled] [--catchup] [--operation <op>]
                                | run <id> | pause <id> | resume <id> | delete <id>
               sqlflow repos list | show <id> | register --name n --remote-url u [--branch b] [--credential-ref r]
                                | discover --remote-url u [--branch b] | sync <id>

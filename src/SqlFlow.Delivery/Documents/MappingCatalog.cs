@@ -129,4 +129,11 @@ public static class FlowParameters
         ArgumentNullException.ThrowIfNull(flow);
         return Substitute(flow.Source.Location, values);
     }
+
+    /// <summary>The flow's declared known-state location with parameter tokens substituted, or null when it declares none.</summary>
+    public static string? KnownStateLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return flow.Source.KnownState is null ? null : Substitute(flow.Source.KnownState, values);
+    }
 }

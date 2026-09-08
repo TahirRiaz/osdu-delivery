@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -11,6 +14,11 @@ public sealed record FlowHitDto(
     string Id, string Name, string Kind, string? Batch, string RelativePath, string RepoId, string RepoName,
     string MatchedIn, string Snippet);
 
+/// <summary>One delivery record that matched a lookup: where it belongs, how it is identified, and its custody state.</summary>
+public sealed record DeliveryRecordHitDto(
+    Guid DeliveryKey, Guid FlowId, string? FlowName, Guid? PipelineId, string SourceKey, string? Label, string? TargetId,
+    string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc);
+
 public sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items);
 
 /// <summary>The combined search: the parsed tokens (a multi-word term matches word by word, every word required)
@@ -18,7 +26,8 @@ public sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items);
 public sealed record AllSearchDto(
     string Query,
     IReadOnlyList<string> Tokens,
-    SearchCategoryDto<FlowHitDto> Flows);
+    SearchCategoryDto<FlowHitDto> Flows,
+    SearchCategoryDto<DeliveryRecordHitDto> Records);
 
 internal sealed record SearchQuery(string Phrase, IReadOnlyList<string> Tokens)
 {
@@ -117,7 +126,7 @@ public static class SearchEndpoints
     }
 
     private static async Task<Results<Ok<AllSearchDto>, ProblemHttpResult>> SearchAllAsync(
-        CatalogDbContext db, string? q, CancellationToken ct)
+        CatalogDbContext db, ILedger ledger, string? q, CancellationToken ct)
     {
         var term = SearchQuery.Parse(q);
         if (term is null)
@@ -130,10 +139,42 @@ public static class SearchEndpoints
         var flowItems = (await flowQuery.Take(PreviewSize).ToListAsync(ct).ConfigureAwait(false))
             .Select(r => MapFlow(r, term)).ToList();
 
+        // The delivery ledger answers the same box: a delivery key lands on the record, an OSDU id, a source key or
+        // a label prefix lists the records that start with it, across every flow.
+        var records = await ledger.LookupAsync(term.Phrase, PreviewSize, ct).ConfigureAwait(false);
+        var recordTotal = records.Count < PreviewSize ? records.Count : await ledger.CountLookupAsync(term.Phrase, ct).ConfigureAwait(false);
+        var recordItems = await MapRecordsAsync(db, records, ct).ConfigureAwait(false);
+
         return TypedResults.Ok(new AllSearchDto(
             term.Phrase,
             term.Tokens,
-            new SearchCategoryDto<FlowHitDto>(flowTotal, flowItems)));
+            new SearchCategoryDto<FlowHitDto>(flowTotal, flowItems),
+            new SearchCategoryDto<DeliveryRecordHitDto>(recordTotal, recordItems)));
+    }
+
+    /// <summary>Attaches the pipeline (by the delivery flow name behind each record's flow id) so a hit links to its flow.</summary>
+    private static async Task<IReadOnlyList<DeliveryRecordHitDto>> MapRecordsAsync(CatalogDbContext db, IReadOnlyList<RecordState> records, CancellationToken ct)
+    {
+        if (records.Count == 0)
+        {
+            return [];
+        }
+
+        var pipelines = await db.Pipelines.AsNoTracking()
+            .Where(p => p.Kind == FlowDefinition.FlowTypeName)
+            .Select(p => new { p.Id, p.Name, p.Active })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var byFlowId = pipelines
+            .GroupBy(p => FlowId.Of(p.Name))
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.Active).First());
+
+        return records.Select(r =>
+        {
+            var pipeline = byFlowId.GetValueOrDefault(r.FlowId);
+            return new DeliveryRecordHitDto(
+                r.DeliveryKey.Value, r.FlowId, pipeline?.Name, pipeline?.Id, r.SourceKey, r.Label, r.TargetId,
+                r.Status.ToString().ToLowerInvariant(), r.LastDeliveredUtc, r.UpdatedUtc);
+        }).ToList();
     }
 
     // A flow matches on its name, its repo-relative path, or a term anywhere in its YAML body.

@@ -41,6 +41,7 @@ public class YamlDocumentLoaderTests
         Assert.Equal("1.4.0", flow.Render.MappingVersion);
         Assert.Equal(TargetAuthType.OAuth2ClientCredentials, flow.Target.Auth.Type);
         Assert.Equal(["Datasets", "DDMSDatasets", "ExtensionProperties"], flow.Target.ProtocolOptions.PreserveDataKeys);
+        Assert.Equal("samples/recall-welllog/out/{logSource}/known-state", flow.Source.KnownState);
 
         var mapping = new MappingCatalog(Samples.Mappings, loader).Load("WellLog@1.4.0");
         Assert.Equal("osdu:wks:work-product-component--WellLog:1.4.0", mapping.Kind);
@@ -87,6 +88,7 @@ public class YamlDocumentLoaderTests
         Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("drops/{logSource}", "drops/{other}", StringComparison.Ordinal), "f"));
         Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("curves/{deliveryKey}/chunk_*.parquet", "curves/chunk_*.parquet", StringComparison.Ordinal), "f"));
         Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("payload: curves", "payload: grids", StringComparison.Ordinal), "f"));
+        Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("fingerprint: update_date", "fingerprint: update_date\n  knownState: known/{other}", StringComparison.Ordinal), "f"));
     }
 
     [Fact]
@@ -123,6 +125,9 @@ public class YamlDocumentLoaderTests
         Assert.Throws<FlowValidationException>(() => FlowParameters.Resolve(flow, null));
         var values = FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "STAT_COMP" });
         Assert.Equal("drops/STAT_COMP", FlowParameters.DropLocation(flow, values));
+        Assert.Null(FlowParameters.KnownStateLocation(flow, values));
+        var withKnownState = new DeliveryDocumentLoader().ParseFlow(Flow.Replace("fingerprint: update_date", "fingerprint: update_date\n  knownState: known/{logSource}", StringComparison.Ordinal), "f");
+        Assert.Equal("known/STAT_COMP", FlowParameters.KnownStateLocation(withKnownState, values));
         Assert.Throws<FlowValidationException>(() => FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "x", ["nope"] = "y" }));
     }
 }

@@ -215,9 +215,7 @@ export function TriggerRunDialog({
       ? "The submission id must be a UUID."
       : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
         ? "Every record key must be a UUID (one per line)."
-        : operation === "known-state" && trimmedPublishTo === ""
-          ? "A known-state publication needs a location to publish to."
-          : null;
+        : null;
 
   const canSubmit = Boolean(effectiveRepoId) && Boolean(effectiveFlow) && parameterError === null && !trigger.isPending;
 
@@ -234,7 +232,7 @@ export function TriggerRunDialog({
       drop: readsDrop && drop.trim() !== "" ? drop.trim() : null,
       submissionId: operation === "deliver" && trimmedSubmission !== "" ? trimmedSubmission : null,
       recordKeys: takesRecordScope && recordKeys.length > 0 ? recordKeys : undefined,
-      publishTo: operation === "known-state" ? trimmedPublishTo : null,
+      publishTo: operation === "known-state" && trimmedPublishTo !== "" ? trimmedPublishTo : null,
     });
   };
 
@@ -429,7 +427,8 @@ export function TriggerRunDialog({
                     data-testid="trigger-publish-to"
                   />
                   <p className="text-xs text-muted-foreground">
-                    The directory or storage prefix the preparing side reads the known state from.
+                    The directory or storage prefix the preparing side reads the known state from; empty uses the location the
+                    flow declares under source.knownState.
                   </p>
                 </div>
               )}

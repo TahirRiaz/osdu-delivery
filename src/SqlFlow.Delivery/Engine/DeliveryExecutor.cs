@@ -164,8 +164,10 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 return new VerifyRunOutcome(operation, summary.Checked, summary.Matched, summary.Drifted, summary.Missing, summary.Errors, reconcile);
 
             case RunParameters.KnownStateOperation:
+                // The run names the location, or the flow declares one (with the flow parameters substituted).
                 var to = parameters.PublishTo
-                    ?? throw new DeliveryException("A known-state publication needs publishTo: the directory or storage prefix the preparing side reads.");
+                    ?? (flow.Source.KnownState is null ? null : FlowParameters.KnownStateLocation(flow, FlowParameters.Resolve(flow, values)))
+                    ?? throw new DeliveryException("A known-state publication needs a location: publishTo on the run, or source.knownState on the flow.");
                 var published = await runtime.PublishKnownStateAsync(to, ct).ConfigureAwait(false);
                 LogOutcome(log, $"known-state: published {published} record(s) to {to}");
                 return new KnownStateOutcome(operation, to, published);

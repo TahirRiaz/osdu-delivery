@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -16,7 +17,8 @@ import { cn } from "@/lib/utils";
 import { parseUtc } from "../../lib/time";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, scheduleApi } from "../../api/endpoints";
-import type { RunGroupCounts, RunStatus, Schedule } from "../../api/types";
+import type { RunGroupCounts, RunOperation, RunStatus, Schedule } from "../../api/types";
+import { RUN_OPERATIONS } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -160,6 +162,7 @@ function CreateScheduleSheet({ onClose }: { onClose: () => void }) {
   const [timezone, setTimezone] = useState("UTC");
   const [enabled, setEnabled] = useState(true);
   const [catchup, setCatchup] = useState(false);
+  const [operation, setOperation] = useState<RunOperation>("deliver");
 
   const repos = useQuery({
     queryKey: ["repos", "all-for-schedule"],
@@ -199,6 +202,7 @@ function CreateScheduleSheet({ onClose }: { onClose: () => void }) {
       timezone: timezone.trim() === "" ? "UTC" : timezone.trim(),
       enabled,
       catchup,
+      operation,
     });
   };
 
@@ -296,6 +300,21 @@ function CreateScheduleSheet({ onClose }: { onClose: () => void }) {
             />
             <p className="text-xs text-muted-foreground">
               What flows would join with 'schedule: &lt;name&gt;'. Defaults to the first flow's name.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="schedule-operation">Operation</Label>
+            <Select value={operation} onValueChange={(value) => setOperation(value as RunOperation)}>
+              <SelectTrigger id="schedule-operation" size="sm" className="h-8 w-full" data-testid="schedule-operation">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RUN_OPERATIONS.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              What every fire runs its members with: deliver the drop, or verify (the drift check), plan, or publish the known state.
             </p>
           </div>
 
@@ -507,6 +526,13 @@ export default function SchedulesPage() {
       id: "trigger",
       header: "Trigger",
       render: (row) => <TriggerCell schedule={row} />,
+    },
+    {
+      id: "operation",
+      header: "Operation",
+      render: (row) => (row.operation === "deliver"
+        ? <span className="text-muted-foreground">deliver</span>
+        : <Badge variant="secondary" className="bg-info/12 text-info" data-testid="schedule-operation-badge">{row.operation}</Badge>),
     },
     {
       id: "state",

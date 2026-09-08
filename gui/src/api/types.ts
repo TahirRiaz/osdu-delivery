@@ -383,6 +383,8 @@ export interface Schedule {
   triggersSchedules: ScheduleChainLink[] | null;
   parentFreshnessHours: number;
   lastStaleParents: string | null;
+  /** The operation every fire runs its members with (deliver by default; verify for a drift check). */
+  operation: RunOperation;
 }
 
 export interface ScheduleDefinition {
@@ -405,6 +407,7 @@ export interface CreateScheduleRequest {
   catchup?: boolean | null;
   name?: string | null;
   maxConcurrency?: number | null;
+  operation?: RunOperation | null;
 }
 
 export interface ScheduleCreated {
@@ -550,11 +553,27 @@ export interface SearchCategory<T> {
   items: T[];
 }
 
+/** One delivery record that matched a lookup: where it belongs, how it is identified, and its custody state. */
+export interface DeliveryRecordHit {
+  deliveryKey: string;
+  flowId: string;
+  flowName: string | null;
+  pipelineId: string | null;
+  sourceKey: string;
+  label: string | null;
+  targetId: string | null;
+  status: string;
+  lastDeliveredUtc: string | null;
+  updatedUtc: string;
+}
+
 export interface AllSearchResult {
   query: string;
   /** The words the term was split into; every one must match. */
   tokens: string[];
   flows: SearchCategory<FlowHit>;
+  /** Delivery records: an exact delivery key, or a prefix over OSDU id, source key and label, across every flow. */
+  records: SearchCategory<DeliveryRecordHit>;
 }
 
 // ---- Users and roles ------------------------------------------------------------------------------------------------
