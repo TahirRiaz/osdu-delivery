@@ -23,8 +23,9 @@ docker compose up -d --build
 docker compose up -d --scale worker=3   # more compute, nothing else changes
 ```
 
-GUI at <http://localhost:8081>, API at <http://localhost:5000>. Bootstrap provisioning creates the catalog database,
-applies migrations, seeds roles, and creates the admin from `.env` on first start.
+GUI at <http://localhost:8081>, API at <http://localhost:5000>. Bootstrap provisioning creates the catalog database (the
+compose file turns on `ControlPlane__Bootstrap__AllowCreate`; the default only migrates a catalog that already
+exists), applies migrations, seeds roles, and creates the admin from `.env` on first start.
 
 ## Azure Container Apps: `deploy/bicep/`
 
@@ -74,8 +75,9 @@ the user); point CLI remotes at `controlPlaneBaseUrl`. How the k8s layout maps o
   Hardening path: a VNet-integrated environment with a private endpoint to SQL, and least-privilege or Entra
   identities in place of the SQL admin. App config never changes; update the one secret.
 - **Bring your own SQL and network**: `existingSqlServer=<host[,port]>` points the catalog at a server you
-  already run (a Managed Instance FQDN, for example) instead of creating one; bootstrap creates the database on
-  first start. `infrastructureSubnetId` VNet-integrates the environment (an undelegated /23), which is how the
+  already run (a Managed Instance FQDN, for example) instead of creating one. Create the empty catalog database
+  there yourself: bootstrap initialises an empty database on first start, and refuses to create a missing one
+  unless `ControlPlane__Bootstrap__AllowCreate` is on. `infrastructureSubnetId` VNet-integrates the environment (an undelegated /23), which is how the
   apps reach a VNet-only Managed Instance privately.
 - **Private git remotes**: `gitToken` lands in Key Vault and reaches managed sync (control plane) and
   materialization (workers) as `SQLFLOW_GIT_TOKEN`. Hosts that pair the token with a username (Bitbucket app

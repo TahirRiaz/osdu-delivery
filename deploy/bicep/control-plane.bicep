@@ -321,7 +321,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   ]
 }
 
-@description('The control plane base URL to give the ADF pipeline as controlPlaneBaseUrl.')
+@description('The control plane base URL an external scheduler (Databricks, ADF) calls.')
 output controlPlaneBaseUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
 
 @description('The client id of the app identity (grant it db_datareader/writer on the catalog + access to flow secrets).')

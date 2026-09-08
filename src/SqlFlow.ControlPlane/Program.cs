@@ -104,9 +104,9 @@ builder.Services.AddHostedService<SchedulerService>();
 // because a node heartbeats on a cadence independent of its draining (a busy node is never mistaken for a dead one).
 builder.Services.AddHostedService<OrphanRunReaper>();
 
-// ---- Run-trace retention: the two heaviest per-run tables (RunStatement, the full SQL of every generated
-// statement, and RunEvent) grow without bound and are almost never read once a run is old and green. This service
-// prunes them on a cadence to each pipeline's latest run + every failed run + anything still recent, keeping the
+// ---- Run-trace retention: the heaviest per-run table (RunEvent, every line of every run's trace) grows without
+// bound and is almost never read once a run is old and green. This service
+// prunes it on a cadence to each pipeline's latest run + every failed run + anything still recent, keeping the
 // run header (its stats and error message) intact. The delete runs on the service's own loop and connection, never
 // on the request thread or inside a pipeline run. Hosted on every replica like the orphan reaper (its batched
 // delete is idempotent under concurrency); the retention is read fresh each sweep, so a null retention keeps traces
@@ -133,7 +133,7 @@ builder.Services.AddSingleton<IPullRequestPublisher, BitbucketPullRequestPublish
 // clone never outlives the session and a crash leak is reclaimed on the next start.
 builder.Services.AddHostedService<ProposalWorkspaceJanitor>();
 
-// ---- Notifications: detects failed runs (and failed assertions on green runs) and sends opted-in users email
+// ---- Notifications: detects failed runs and sends opted-in users email
 // and/or Slack messages, immediately (cooldown-coalesced) or as periodic digests. The pipeline is durable and
 // claim-based (events + a delivery outbox in the catalog), so replicas never double-send and a channel outage
 // backs up instead of dropping alerts. Which email transport backs IEmailSender is decided here, once, from

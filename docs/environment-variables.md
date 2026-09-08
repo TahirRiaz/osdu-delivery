@@ -30,15 +30,16 @@ only convention that survives a mixed estate. The `SQLFLOW_` prefix is kept from
 | `SQLFLOW_URL` | the remote CLI verbs | The control plane base URL (`https://controlplane.example.com`); `--url` overrides it. |
 | `SQLFLOW_TOKEN` | the remote CLI verbs | A personal access token or session token; `--token` overrides it, and `sqlflow login` stores one in the credentials file instead. |
 | `SQLFLOW_CREDENTIALS_FILE` | `sqlflow login`, `logout`, and the remote verbs | Where the CLI keeps stored credentials (default: under the user profile). |
-| `SQLFLOW_REPO` | `sqlflow trigger` and the estate verbs | The default repository name when `--repo` is omitted. |
+| `SQLFLOW_REPO` | `sqlflow run` with a catalog connection, `sqlflow doctor` | The repository a local run is attributed to in the catalog when `--repo` is omitted (after that, the flow's folder name). The remote verbs take `--repo` explicitly. |
 | `SQLFLOW_GIT_TOKEN` | control plane (managed sync), compute nodes (materialization) | The token for private git remotes, when a repo source declares no credential reference of its own. |
 | `SQLFLOW_GIT_USERNAME` | control plane, compute nodes | The username paired with the git token on hosts that need one (Bitbucket app passwords, `x-token-auth`). |
 | `SQLFLOW_AZURE_AUTH` | every Azure access path (Key Vault, blob storage) | How the process authenticates to Azure: `default`, `cli` (also `azurecli`, `azlogin`), `managedidentity` (also `mi`, `msi`), `serviceprincipal` (also `sp`). The standard `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` family applies, exactly as the Azure SDK defines it. |
 | `SQLFLOW_TEST_DB` | the test suites | A disposable SQL Server database the DB-backed suites migrate and seed; they skip when it is unset or unreachable. Never a catalog holding real data. |
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | compute nodes, the CLI | `true` lets a delivery flow target a loopback address (a local OSDU stub, the tests). Off by default: the URL guard refuses loopback and private targets. |
 
-The container images add two worker settings that the entrypoint turns into CLI options: `SQLFLOW_WORKER_POOL`
-(the pools the node serves) and `SQLFLOW_WORKER_POLL_SECONDS` (the queue poll cadence).
+The container images add three worker settings that the entrypoint turns into CLI options: `SQLFLOW_WORKER_POOL`
+(the pools the node serves), `SQLFLOW_WORKER_POLL_SECONDS` (the queue poll cadence) and
+`SQLFLOW_WORKER_DRAIN_SECONDS` (how long a stopping node waits for its in-flight runs).
 
 Everything else the control plane reads is ASP.NET Core configuration under the `ControlPlane` section
 (`ControlPlane__Jwt__SigningKey`, `ControlPlane__Bootstrap__AdminPasswordReference`,

@@ -1106,7 +1106,7 @@ public static class NotificationModes
 
 /// <summary>
 /// One notification-worthy happening, detected from the run history by the control plane's notification service:
-/// a run that reached a non-success terminal state, or a succeeded run whose assertions failed. Events are the
+/// a run that reached a non-success terminal state (failed, cancelled, skipped). Events are the
 /// durable, deduplicated middle of the pipeline: detection inserts each (run, kind) at most once (unique index),
 /// and every subscription consumes the stream through its own cursor
 /// (<see cref="CatalogNotificationSubscription.LastEventId"/>), so a burst of failures is batched per subscriber

@@ -255,7 +255,7 @@ internal static partial class RemoteVerbs
 
                     Console.WriteLine(fired.GroupId is { } firedGroup
                         ? $"OK   schedule {id} fired; enqueued {fired.MemberCount} member flow(s) as group {firedGroup}. Follow it with: sqlflow groups show {firedGroup} --follow"
-                        : $"OK   schedule {id} fired; enqueued run {fired.RunId}. Follow it with: sqlflow runs show {fired.RunId} --follow");
+                        : $"OK   schedule {id} fired; enqueued run {fired.RunId}. Follow it with: sqlflow runs trace {fired.RunId} --follow");
                     return 0;
                 }
 

@@ -376,7 +376,7 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.FlowName).HasMaxLength(400).IsRequired();
             entity.Property(e => e.FlowKind).HasMaxLength(16).IsRequired();
-            // Error is nvarchar(max): the run's error text or the failed-assertion summary, no useful bound.
+            // Error is nvarchar(max): the run's error text, no useful bound.
             // Detection inserts each (run, kind) at most once: the dedup that makes re-scanning the watermark's
             // overlap window (and any freak concurrent detection) free instead of a source of duplicate alerts.
             entity.HasIndex(e => new { e.RunId, e.Kind }).IsUnique();

@@ -1,32 +1,3 @@
----
-id: cli-auth
-title: sqlflow auth and Azure authentication modes
-type: cli-command
-summary: Verify Azure authentication end to end; resolves SQLFLOW_AZURE_AUTH to a mode and acquires a real token for a chosen scope.
-keywords:
-  - auth
-  - azure
-  - sqlflow_azure_auth
-  - managed identity
-  - service principal
-  - token
-  - defaultazurecredential
-  - diagnostic
-cliCommand: auth
-related:
-  - concept-connections-and-secrets
-  - source-type-duckdb
-  - flow-inv
-  - flow-service-principals
-  - concept-cli-conventions
-sourceRefs:
-  - src/SqlFlow.Cli/Program.cs
-  - src/SqlFlow.Azure/AzureAuth.cs
-  - src/SqlFlow.Azure/AzureCredentialFactory.cs
-  - src/SqlFlow.Azure/AzureEnvironment.cs
-  - src/SqlFlow.Azure/AzureStorageCredentialProvider.cs
----
-
 # sqlflow auth
 
 ## Synopsis
@@ -37,13 +8,19 @@ sqlflow auth [--scope storage|keyvault|arm|<uri>]
 
 ## Description
 
-Verifies Azure authentication end to end in the current environment. The command takes no pipeline file; it is a pure environment check. It reports the raw value of the `SQLFLOW_AZURE_AUTH` environment variable and the auth mode it resolves to, then actually acquires a token for the chosen scope through `IAzureCredentialFactory`, the shared credential factory that Key Vault secret resolution uses for every vault call and that ADF/Automation invoke uses whenever an invoke service principal carries no explicit secret reference. DuckDB cloud object-storage reads resolve their credential through the storage credential provider (src/SqlFlow.Azure/AzureStorageCredentialProvider.cs), which reads the same `SQLFLOW_AZURE_AUTH` intent and the same in-Azure detection. A successful token from `sqlflow auth` therefore confirms the deployment's ambient credential and the one auth intent every one of those paths reads, before you run a cloud flow.
+Verifies Azure authentication end to end in the current environment. The command takes no flow document; it is a pure environment check. It reports the raw value of the `SQLFLOW_AZURE_AUTH` environment variable and the auth mode it resolves to, then actually acquires a token for the chosen scope through `IAzureCredentialFactory` (src/SqlFlow.Azure/IAzureCredentialFactory.cs, implemented by src/SqlFlow.Azure/AzureCredentialFactory.cs), the one credential factory `AddSqlFlowEngine` registers (src/SqlFlow.Execution/SqlFlowEngineServices.cs) and every Azure access path shares:
+
+- Key Vault secret resolution: every `${keyvault:...}` reference in a flow, a mapping, or the control plane's configuration (src/SqlFlow.Azure/AzureKeyVaultSecretProvider.cs and src/SqlFlow.Azure/AzureKeyVaultSecretVault.cs).
+- The Azure blob file store, which reads drop files from `abfss://`, `wasbs://` and `https://<account>.blob|dfs.core.windows.net` locations (src/SqlFlow.Azure/AzureBlobFileStore.cs), and the blob writer that puts snapshots and known-state publications on the lake under the same identity (`AzureBlobFileWriter` in src/SqlFlow.Delivery/Storage/FileStore.cs).
+- The control plane's Microsoft Graph email sender, whenever no explicit app registration is configured for it (src/SqlFlow.ControlPlane/Notifications/GraphEmailSender.cs).
+
+A successful token from `sqlflow auth` therefore confirms the ambient credential every one of those paths reads, before you run a flow that needs it. Like every CLI command, it first applies the nearest git-ignored `.sqlflow/env` file (searched from the current directory upward; a variable already in the process environment always wins), so `SQLFLOW_AZURE_AUTH` and the `AZURE_*` family can come from there during local development.
 
 ## Arguments
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| (none) | n/a | `sqlflow auth` takes no positional arguments and no pipeline file. |
+| (none) | n/a | `sqlflow auth` takes no positional arguments and no flow document. |
 
 ## Options
 
@@ -62,18 +39,20 @@ Verifies Azure authentication end to end in the current environment. The command
 
 ## Authentication modes: SQLFLOW_AZURE_AUTH
 
-`SQLFLOW_AZURE_AUTH` is parsed in exactly one place (`AzureAuth.Mode()` in src/SqlFlow.Azure/AzureAuth.cs) and shared by the .NET credential factory and the cloud-storage credential provider, so Key Vault, invoke executors, and DuckDB object storage obey one auth intent. Values are trimmed and matched case-insensitively:
+`SQLFLOW_AZURE_AUTH` is parsed in exactly one place (`AzureAuth.Mode()` in src/SqlFlow.Azure/AzureAuth.cs), so Key Vault and blob storage obey one auth intent. Values are trimmed and matched case-insensitively:
 
 | Value | Mode | Credential built |
 | --- | --- | --- |
-| `serviceprincipal`, `sp` | ServicePrincipal | `ClientSecretCredential` from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`. A missing variable throws `Service-principal auth requires environment variable '<name>'.` |
+| `serviceprincipal`, `sp` | ServicePrincipal | `ClientSecretCredential` from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`. A missing variable fails with `Service-principal auth requires environment variable '<name>'.` |
 | `managedidentity`, `mi`, `msi` | ManagedIdentity | `ManagedIdentityCredential`. A non-blank `AZURE_CLIENT_ID` selects that user-assigned identity; otherwise the system-assigned identity is used. |
 | `azurecli`, `cli`, `azlogin` | AzureCli | `AzureCliCredential` (uses the `az login` session). |
 | any other value, or unset | DefaultChain | `DefaultAzureCredential` with the options described below. |
 
+The variable and the `AZURE_*` family it relies on are listed, with every other variable, in [Environment variables and secrets](../../environment-variables.md).
+
 ### The default chain and in-Azure detection
 
-In DefaultChain mode the credential is `DefaultAzureCredential` with options from `AzureEnvironment.DefaultCredentialOptions()`:
+In DefaultChain mode the credential is `DefaultAzureCredential` with options from `AzureEnvironment.DefaultCredentialOptions()` (src/SqlFlow.Azure/AzureEnvironment.cs):
 
 - The managed-identity credential is excluded when the process is not running in Azure. This avoids the chain stalling on the IMDS probe, which has no endpoint on a developer machine.
 - The environment, Azure CLI, Visual Studio, VS Code, and interactive browser credentials are all enabled, so a signed-in developer authenticates with no configuration.
@@ -83,16 +62,16 @@ Whether the process is "in Azure" is decided by `AzureEnvironment.IsRunningInAzu
 - The explicit override `IS_RUNNING_IN_AZURE` wins in both directions when set: `true` (case-insensitive) forces in-Azure on; any other non-blank value forces it off.
 - Otherwise the process counts as in Azure when any of these variables is non-empty: `WEBSITE_INSTANCE_ID`, `FUNCTIONS_WORKER_RUNTIME`, `AZURE_CONTAINER_INSTANCE_ROOT_PATH`, `KUBERNETES_SERVICE_HOST`, `AZURE_VM_RESOURCE_GROUP`, `MSI_ENDPOINT`, `MSI_SECRET`, `IDENTITY_HEADER`, `APPSETTING_WEBSITE_SITE_NAME`.
 
-The same in-Azure decision drives the DuckDB cloud-storage credential chain, so every Azure path agrees.
+The credential is cached per distinct auth configuration (mode, principal, and the in-Azure decision) and shared by every consumer, so repeated authentications become cached-token lookups. The detection rules are covered by tests/SqlFlow.Core.Tests/Azure/AzureEnvironmentTests.cs.
 
 ## Behavior and output
 
 The command prints, in order:
 
-1. `SQLFLOW_AZURE_AUTH: <raw value or (unset)> -> <resolved mode>`. For DefaultChain the label explains the chain composition: in Azure it reads `default chain (managed identity -> az CLI -> env)`; off-cloud it reads `default chain (az CLI -> env; managed identity excluded off-cloud)`.
+1. `SQLFLOW_AZURE_AUTH: <raw value or (unset)> -> <resolved mode>`. For DefaultChain the label explains the chain composition: in Azure it reads `default chain (managed identity -> az CLI -> env)`; off-cloud it reads `default chain (az CLI -> env; managed identity excluded off-cloud)`. The other modes print as `ServicePrincipal`, `ManagedIdentity`, or `AzureCli`.
 2. `Acquiring a token for scope: <resolved scope URI>`.
 3. On success: `OK   acquired a token (expires <timestamp> UTC). Azure auth works.`
-4. On failure, to stderr: `FAIL could not acquire a token: <underlying message>`. The failure is reported with the cause message only, no stack trace, because the failure itself is the diagnostic answer.
+4. On failure, to stderr: `FAIL could not acquire a token: <underlying message>`. The failure is reported with the cause message only, no stack trace, because the failure itself is the diagnostic answer. A service-principal mode with a missing `AZURE_*` variable fails here too, before any network call.
 
 ## Examples
 
@@ -108,7 +87,7 @@ Acquiring a token for scope: https://storage.azure.com/.default
 OK   acquired a token (expires 2026-07-02 13:05:11Z UTC). Azure auth works.
 ```
 
-Verify that a CI service principal can reach Key Vault before running a flow that resolves Key Vault secrets:
+Verify that a CI service principal can reach Key Vault before running a flow that resolves `${keyvault:...}` references:
 
 ```bash
 export SQLFLOW_AZURE_AUTH=sp
@@ -135,8 +114,7 @@ sqlflow auth --scope https://management.azure.com/.default
 
 ## See also
 
-- [Connections and secrets](../concepts/connections-and-secrets.md): Key Vault references resolve through this same credential.
-- [DuckDB source](../flow/source-types/duckdb.md): cloud object-storage reads authenticate through the same auth intent.
-- [flowType: inv](../flow/inv.md): invoke service principals without a secret reference authenticate as the deployment's ambient identity through this same factory.
-- [Service principals for flows](../flow/service-principals.md).
-- [CLI conventions](../concepts/cli-conventions.md): argument parsing and exit codes shared by every command.
+- [Environment variables and secrets](../../environment-variables.md): the canonical list, including `SQLFLOW_AZURE_AUTH`, the `AZURE_*` family, and the `.sqlflow/env` file.
+- [Deployment guide](../guides/deployment.md): the Azure Container Apps template sets `SQLFLOW_AZURE_AUTH=mi` and `AZURE_CLIENT_ID` for its user-assigned identity.
+- [Control-plane verbs](control-plane.md): `sqlflow login` and `sqlflow whoami` cover the control plane's own credential, which is separate from Azure authentication.
+- [Authentication and identity](../concepts/authentication-and-identity.md): how the control plane signs users in.

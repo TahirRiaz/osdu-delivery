@@ -96,9 +96,8 @@ spec:
         #   3. an active manual override - [ManualReplicas] while [ManualUntilUtc] is in the future
         #      (a spawn-from-zero or temporary scale-up that reverts on its own).
         # A pool with no WorkerPool row (ISNULL -> 0) still scales to zero once nothing is queued and no node is
-        # busy. REQUIRES the WorkerPool table and [Node].[BusyRuns] (catalog migrations
-        # WorkerPoolDesiredAndNodeRestart + RunAttemptFencingAndNodeBusyRuns): deploy the control plane first so
-        # both migrations land, then apply this. For a pooled copy of this manifest, change the run predicate to
+        # busy. REQUIRES the WorkerPool table and [Node].[BusyRuns] (both in the Initial
+        # migration): deploy the control plane first so the catalog is migrated, then apply this. For a pooled copy of this manifest, change the run predicate to
         # [TargetPool] = '<pool>', the Node predicate to [Pool] = N'<pool>' (dropping the IS NULL alternative),
         # and the two WorkerPool lookups to [Pool] = N'<pool>'.
         # The queued term is divided by the node's own run concurrency (RunWorker.DefaultMaxConcurrentRuns, 4),

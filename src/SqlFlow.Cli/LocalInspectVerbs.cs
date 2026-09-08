@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using SqlFlow.Cli.Remote;
 using SqlFlow.Core;
+using SqlFlow.Core.Secrets;
 using SqlFlow.Execution;
 using SqlFlow.Yaml;
 
@@ -75,7 +76,7 @@ internal static class LocalInspectVerbs
             }
             catch (SqlFlowException ex)
             {
-                results.Add(new ValidationResult(relative, false, null, null, ex.Message));
+                results.Add(new ValidationResult(relative, false, null, null, SecretHygiene.RedactedMessage(ex)));
             }
         }
 

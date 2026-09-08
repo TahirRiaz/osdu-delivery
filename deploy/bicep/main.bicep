@@ -42,7 +42,7 @@ param acrName string = ''
 @description('Login server of a registry outside this resource group (grant AcrPull to the three app identities yourself). Ignored when acrName is set.')
 param acrLoginServer string = ''
 
-@description('Address of an existing SQL Server to host the catalog instead of creating one: host or host,port (a Managed Instance private FQDN, a public-endpoint address with ,3342, or any reachable SQL Server). Empty creates an Azure SQL logical server + database here. With an existing server the network path is yours to provide (for a VNet-only Managed Instance, set infrastructureSubnetId so the apps egress inside its VNet) and the catalog database is created by bootstrap on first start.')
+@description('Address of an existing SQL Server to host the catalog instead of creating one: host or host,port (a Managed Instance private FQDN, a public-endpoint address with ,3342, or any reachable SQL Server). Empty creates an Azure SQL logical server + database here. With an existing server the network path is yours to provide (for a VNet-only Managed Instance, set infrastructureSubnetId so the apps egress inside its VNet) and the empty catalog database is yours to create: bootstrap initialises it on first start and refuses to create a missing one unless ControlPlane__Bootstrap__AllowCreate is on.')
 param existingSqlServer string = ''
 
 @description('Resource id of a vNet subnet to integrate the Container Apps environment into (consumption architecture: an undelegated subnet of at least /23). Empty deploys the environment without VNet integration.')

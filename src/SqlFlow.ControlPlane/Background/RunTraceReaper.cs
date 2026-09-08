@@ -6,8 +6,8 @@ using SqlFlow.Core.Secrets;
 namespace SqlFlow.ControlPlane.Background;
 
 /// <summary>
-/// Prunes the per-run SQL trace (<c>RunStatement</c> and <c>RunEvent</c>) on a cadence, so the two tables that
-/// otherwise grow without bound stay bounded: it keeps each pipeline's latest run, every failed run, and anything
+/// Prunes the per-run trace (<c>RunEvent</c>) on a cadence, so the table that
+/// otherwise grows without bound stays bounded: it keeps each pipeline's latest run, every failed run, and anything
 /// still inside the retention window, and deletes the rest (see <see cref="RunTraceStore"/>). The delete runs here,
 /// on this service's own loop and its own catalog connection (a fresh DI scope), never on the request thread and
 /// never inside a pipeline run: the live trace sinks only ever append, so nothing a running pipeline does pays the

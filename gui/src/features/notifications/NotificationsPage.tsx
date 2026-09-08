@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import {
   Ban, BellPlus, BellRing, CalendarClock, CircleCheck, CircleMinus, CircleX, Clock3, Info, Loader2,
-  RefreshCw, Send, SkipForward, TriangleAlert, type LucideIcon,
+  RefreshCw, Send, SkipForward, type LucideIcon,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -61,7 +61,6 @@ const KIND_LABELS: Record<string, string> = {
   run_failed: "Run failed",
   run_cancelled: "Run cancelled",
   run_skipped: "Run skipped",
-  assertion_failed: "Assertions failed",
 };
 
 function kindLabel(kind: string): string {
@@ -419,7 +418,6 @@ function originText(summary: NotificationDigestSummary): string {
 /** The tone, word, and glyph one notification event kind wears, in the same language as a run's own status. */
 const KIND_VISUALS: Record<string, { tone: "destructive" | "warning" | "muted"; label: string; icon: LucideIcon }> = {
   run_failed: { tone: "destructive", label: "failed", icon: CircleX },
-  assertion_failed: { tone: "warning", label: "assertions", icon: TriangleAlert },
   run_cancelled: { tone: "muted", label: "cancelled", icon: Ban },
   run_skipped: { tone: "muted", label: "skipped", icon: SkipForward },
 };
@@ -778,7 +776,7 @@ function SkeletonRows({ headers, count }: { headers: string[]; count: number }) 
 
 /**
  * Self-service notification subscriptions: email or Slack messages when the caller's flows fail, are cancelled
- * or skipped, or fail assertions, sent either immediately (with a cooldown) or bundled into a digest.
+ * or skipped, sent either immediately (with a cooldown) or bundled into a digest.
  */
 export default function NotificationsPage() {
   const queryClient = useQueryClient();
@@ -864,7 +862,7 @@ export default function NotificationsPage() {
     <Page data-testid="page-notifications">
       <PageHeader
         title="Notifications"
-        subtitle="Get an email or Slack message when your flows fail, are cancelled or skipped, or fail assertions. Immediate subscriptions respect a per-subscription cooldown; digest subscriptions bundle events on an interval. Estate digests below are written on a schedule whether or not anyone subscribes, and can be generated on demand."
+        subtitle="Get an email or Slack message when your flows fail, are cancelled or skipped. Immediate subscriptions respect a per-subscription cooldown; digest subscriptions bundle events on an interval. Estate digests below are written on a schedule whether or not anyone subscribes, and can be generated on demand."
         actions={(
           <Button
             size="sm"
@@ -927,7 +925,7 @@ export default function NotificationsPage() {
                   <EmptyState
                     icon={<BellRing />}
                     title="You have no notification subscriptions yet"
-                    description="Subscribe to be told when your flows fail, are cancelled or skipped, or fail assertions."
+                    description="Subscribe to be told when your flows fail, are cancelled or skipped."
                     action={channelAvailable ? (
                       <Button size="sm" variant="outline" onClick={() => setSheet({ subscription: null })}>
                         New subscription

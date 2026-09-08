@@ -1,30 +1,3 @@
----
-id: cli-delivery
-title: sqlflow check, snapshot, and the delivery run options
-type: cli-command
-summary: The delivery kind's CLI surface. check runs the preflight gate offline, snapshot captures schema and reference snapshots into the flow's repository, and run and trigger take the delivery operation and its scope.
-keywords:
-  - delivery
-  - check
-  - snapshot
-  - operation
-  - plan
-  - verify
-  - known-state
-  - redeliver
-cliCommand: check
-related:
-  - cli-validate
-  - cli-run
-  - cli-control-plane
-  - concept-cli-conventions
-sourceRefs:
-  - src/SqlFlow.Cli/DeliveryVerbs.cs
-  - src/SqlFlow.Cli/Program.cs
-  - src/SqlFlow.Core/Runs/RunParameters.cs
-  - src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
----
-
 # sqlflow check, snapshot, and the delivery run options
 
 ## check
@@ -69,7 +42,7 @@ endpoint). Commit the snapshot store with the flow.
 | `--drop <location>` | Read this drop instead of the flow's declared source location. |
 | `--submission <id>` | Re-run one submission from its own drop, with the parameters it was received with. |
 | `--record <key>` | Scope the run to this delivery key; repeatable. With deliver, the records are redelivered regardless of what OSDU holds; with verify, only they are checked. |
-| `--publish-to <location>` | Where a known-state publication is written. |
+| `--publish-to <location>` | Where a known-state publication is written; without it the flow's `source.knownState` (with the flow parameters substituted) is used. |
 | `--db <ref>` | The catalog connection (default `${env:SQLFLOW_CATALOG_DB}`). With it the ledger is live and the run is recorded; without it `run` plans and checks only. |
 
 The parameters are validated once, at the boundary, and recorded on the run so the history says what was

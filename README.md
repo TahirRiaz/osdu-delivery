@@ -102,7 +102,7 @@ the flow, its mappings and snapshots, and to deliver, verify and intervene from 
 
 - [docs/architecture.md](docs/architecture.md): the platform and the delivery domain.
 - [docs/environment-variables.md](docs/environment-variables.md): every environment variable and secret reference.
-- [docs/reference/](docs/reference/): the reference corpus (CLI commands, concepts, guides).
+- [docs/reference/](docs/reference/README.md): the platform reference: the CLI verbs, the control plane and its authentication, deployment, notifications.
 - [CLAUDE.MD](CLAUDE.MD): the engineering rules the codebase is held to.
 
 ## Contributing

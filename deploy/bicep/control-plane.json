@@ -325,7 +325,7 @@
     "controlPlaneBaseUrl": {
       "type": "string",
       "metadata": {
-        "description": "The control plane base URL to give the ADF pipeline as controlPlaneBaseUrl."
+        "description": "The control plane base URL an external scheduler (Databricks, ADF) calls."
       },
       "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', parameters('name')), '2024-03-01').configuration.ingress.fqdn)]"
     },

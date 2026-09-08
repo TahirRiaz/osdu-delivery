@@ -29,6 +29,18 @@ public sealed class AuthAndSurfaceTests : IClassFixture<ControlPlaneAppFactory>
     }
 
     [Fact]
+    public async Task DevicePage_ApprovesWithTheSessionAccessToken()
+    {
+        // The approval page signs in through /auth/login and must forward the field that response carries
+        // (accessToken); a stale field name would send "Bearer undefined" and every approval would fail.
+        using var client = _factory.CreateClient();
+        var html = await client.GetStringAsync("/device");
+        Assert.Contains("/api/v1/auth/login", html, StringComparison.Ordinal);
+        Assert.Contains("'Bearer ' + session.accessToken", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("session.token", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HealthLive_Returns200()
     {
         using var client = _factory.CreateClient();

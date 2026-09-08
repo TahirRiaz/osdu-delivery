@@ -44,6 +44,9 @@ services:
       ControlPlane__Jwt__BootstrapSecret: ${SQLFLOW_BOOTSTRAP_SECRET:?set SQLFLOW_BOOTSTRAP_SECRET in .env}
       ControlPlane__Bootstrap__AdminUsername: ${SQLFLOW_ADMIN_USERNAME:-admin}
       ControlPlane__Bootstrap__AdminPasswordReference: ${SQLFLOW_ADMIN_PASSWORD:?set SQLFLOW_ADMIN_PASSWORD in .env}
+      # A fresh SQL Server has no catalog; this stack lets bootstrap create it. The default refuses, so a
+      # mistyped connection never provisions against the wrong server.
+      ControlPlane__Bootstrap__AllowCreate: "true"
       # The GUI is a separate origin in this compose layout.
       ControlPlane__Cors__AllowedOrigins__0: http://localhost:8081
       # Compute belongs to the worker service; this replica is API + scheduler + sync only.

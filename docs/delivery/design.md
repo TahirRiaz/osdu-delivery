@@ -1,19 +1,3 @@
----
-id: delivery-design
-title: "OSDU Delivery: the delivery design"
-type: design
-summary: A metadata-driven delivery system that takes custody of prepared data and keeps OSDU matching it. Records, not runs, are the unit of state.
-keywords:
-  - osdu
-  - delivery
-  - ledger
-  - idempotency
-  - change detection
-  - mapping
-  - render context
-status: draft
----
-
 # OSDU Delivery: the delivery design
 
 ## 1. Purpose
@@ -46,8 +30,9 @@ difference shows up entirely in where state lives and at what grain.
   would be slower and more fragile. See section 15.
 - **Not a workflow engine.** Delivery protocols are a small closed vocabulary implemented
   in code, not an authorable step language. See section 8.4.
-- **Not SQLFlow.** It follows SQLFlow's patterns and vendors some of its infrastructure.
-  It does not target SQL Server, generate DDL, or carry SQLFlow's other flow kinds.
+- **Not a separate service.** It is the SQLFlow platform (control plane, catalog, nodes, scheduler,
+  GUI) with the delivery domain as its one flow kind (section 12). It does not target SQL Server,
+  generate DDL, or carry the SQL flow kinds SQLFlow had.
 
 ## 2. Why the current design does not fit
 
@@ -755,34 +740,29 @@ inheriting a default.
 
 ### 14.1 A deliberately small surface
 
-DuckDB cannot be used. It costs nothing here: the drop is plain parquet, so Delta reading
-is not needed, and the managed path is complete. `SqlFlow.Sources` uses `Parquet.Net`,
-pure managed, with no reference to the DuckDB project, and `AzureBlobFileStore` reads
-`abfss` under `Azure.Storage.Blobs` and `Azure.Identity`. No native code on that path.
+The drop is plain parquet, so no Delta reader is needed: the drop reader in `src/SqlFlow.Delivery` uses
+`Parquet.Net`, pure managed, and reads `abfss` through `Azure.Storage.Blobs` and `Azure.Identity`. There is
+no native code on the delivery path.
 
-Target dependency set:
+The direct dependency set of the solution after the strip:
 
-- Microsoft first-party: `Microsoft.Data.SqlClient`, `Microsoft.EntityFrameworkCore.SqlServer`,
-  `Microsoft.Extensions.*`, `Azure.Identity`, `Azure.Storage.Blobs`,
-  `Azure.Security.KeyVault.Secrets`
-- Three third-party, all MIT and mainstream: `Parquet.Net`, `YamlDotNet`, `Cronos`
+- Microsoft first-party: `Microsoft.EntityFrameworkCore.SqlServer` (and `Microsoft.Data.SqlClient` through
+  it), `Microsoft.Extensions.*`, `Microsoft.AspNetCore.Authentication.JwtBearer`,
+  `Microsoft.AspNetCore.OpenApi`, `Microsoft.IdentityModel.Protocols.OpenIdConnect`, `Azure.Identity`,
+  `Azure.Storage.Blobs`, `Azure.Security.KeyVault.Secrets`
+- Third-party, all MIT and mainstream: `Parquet.Net`, `YamlDotNet`, `Cronos`, `MailKit` (the SMTP channel of
+  the notification service; the Graph and Slack channels are plain HTTP), `LibGit2Sharp` (git materialisation)
 
-### 14.2 What to keep out
+### 14.2 What was kept out
 
-If the worker takes a dependency on SQLFlow's `Execution` project as it stands, it
-inherits DuckDB transitively. `SqlFlow.Node` carries `LibGit2Sharp` for git materialisation,
-which is native and carries a GPL-derived licence on the native side. Neither belongs here.
+DuckDB, the SQL Server providers, `Microsoft.ML`, `SSH.NET`, SMO, Oracle, `SlackNet`, `Anthropic` and
+`AWSSDK.S3` left with the SQLFlow flow kinds they served; nothing in the solution references them. The one
+native dependency that remains is `LibGit2Sharp`, confined to `src/SqlFlow.SourceControl` (the managed sync
+of repo sources) and `src/SqlFlow.Node` (materialising the pinned commit a run was enqueued from). A run
+whose document needs no sibling files executes from the catalog's content snapshot and never touches it.
 
-Define the deployable subset before writing code, because it determines which projects
-new code may reference. Getting that boundary right at the start is cheap and unpicking
-it later is not.
-
-The wider SQLFlow solution also carries `Anthropic`, `SlackNet`, `AWSSDK.S3`,
-`Microsoft.ML`, `SSH.NET`, SMO and Oracle. None is needed here, and taking the whole
-solution to review would put all of them in scope.
-
-Run `dotnet list package --include-transitive` against the trimmed project before any
-approval conversation. Transitive dependencies are where enterprise scanning finds things.
+Run `dotnet list package --include-transitive` before any approval conversation. Transitive dependencies are
+where enterprise scanning finds things.
 
 ### 14.3 Three undeclared size ceilings
 

@@ -56,11 +56,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The SQL-era reference pages (architecture and execution modes, CLI conventions, connections and secrets, the
+  reference copy of the environment variables, flow identity, run artifacts, the shadow catalog, getting started)
+  and the reference manifest tooling; the platform pages that remain (the CLI verbs, the control plane,
+  authentication, deployment, notifications) are rewritten for the delivery platform.
 - Every SQL Server ETL flow kind and engine (ingestion, export, stored procedures, health checks, acquisition,
   copy, SFTP, translate, batch, calendar), the source readers and DuckDB, the foreign database providers,
   database-object lineage and schema snapshots, datasources and discovery, data streams, insights, the chat
   assistant, the MCP server, the Slack bot, and their GUI pages, samples, schemas, docs, and deployment assets.
 - The SQL statement trace, run files, run assertions, surrogate keys, and health-check metrics, and the
   assertion-failed notification kind.
+
+### Fixed
+
+- The device approval page forwards the session's `accessToken`; approving a CLI sign-in from the page sent an
+  undefined bearer token before.
+- The compose stack lets bootstrap create its catalog (`ControlPlane__Bootstrap__AllowCreate`), so the first
+  `docker compose up` becomes ready; the Kubernetes and Bicep notes say when the database must exist beforehand.
+- Folder validation redacts the error text of a broken document, as single-file validation does.
+- The `sqlflow db sync` summary punctuation, the `schedules run` hint (it names `runs trace`), and the shell
+  completions, which list the delivery run options instead of the removed backfill flags.
 
 [Unreleased]: ./

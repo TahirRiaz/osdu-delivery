@@ -4,7 +4,7 @@ namespace SqlFlow.Core.Runs;
 /// The canonical envelope of a run.json artifact in the .sqlflow run history. The header fields are a STABLE,
 /// VERSIONED contract: every run.json, for every flow kind, always carries these same top-level fields, so the
 /// flat files can be bulk-loaded into a database or fed into reporting without per-kind parsing. The
-/// kind-specific detail (counts, trace, assertions) rides in <see cref="Result"/>; additions to the header are
+/// kind-specific detail (counts, trace) rides in <see cref="Result"/>; additions to the header are
 /// backward-compatible and any breaking change increments <see cref="CurrentSchemaVersion"/>.
 /// </summary>
 public sealed record RunArtifact

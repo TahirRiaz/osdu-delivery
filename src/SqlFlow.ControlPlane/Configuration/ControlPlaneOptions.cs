@@ -397,10 +397,10 @@ public sealed class ReaperOptions
 }
 
 /// <summary>
-/// Housekeeping for the per-run SQL trace. Every run persists its generated statements (the RunStatement table, a
-/// full SQL blob per statement) and its events (RunEvent); across a busy estate these two tables grow without
-/// bound and are almost never read once a run is old and succeeded. This prunes that detail on a cadence, keeping
-/// only what stays useful: each pipeline's most recent run, every failed run (so the offending SQL is always there
+/// Housekeeping for the per-run trace. Every run persists its events (the RunEvent table: every line and
+/// decision of the run); across a busy estate the table grows without bound and is almost never read once a
+/// run is old and succeeded. This prunes that detail on a cadence, keeping
+/// only what stays useful: each pipeline's most recent run, every failed run (so the trace behind the failure is always there
 /// to debug), any run still in flight, and anything still inside the grace window. The run header row itself (its
 /// stats and its error message) is never touched, so the history and every failure reason stay complete and only
 /// the heavy, unread detail is reclaimed. The manual GUI trigger runs the exact same prune on demand.
@@ -513,7 +513,7 @@ public sealed class ManagedSyncOptions
 }
 
 /// <summary>
-/// The notification pipeline: detects failed runs (and failed assertions on green runs) in the catalog and sends
+/// The notification pipeline: detects failed runs in the catalog and sends
 /// opted-in users email and/or Slack messages, immediately (cooldown-coalesced) or as periodic digests. The
 /// service itself always runs (it keeps the event stream current); a channel is offered to users only when its
 /// section here is configured. Secrets (SMTP password, Graph client secret, Slack bot token) are references
@@ -791,7 +791,7 @@ public sealed class GraphEmailOptions
 
 /// <summary>The Slack channel: proactive messages posted with a bot token (<c>chat:write</c>; direct messages by
 /// email additionally need <c>users:read.email</c> and <c>im:write</c>). Configured when
-/// <see cref="BotTokenReference"/> is set; the same Slack app the SqlFlow Slack assistant uses works here.</summary>
+/// <see cref="BotTokenReference"/> is set.</summary>
 public sealed class SlackNotificationOptions
 {
     /// <summary>The bot token (<c>xoxb-...</c>) as a secret reference; never a literal.</summary>

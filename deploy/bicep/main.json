@@ -52,7 +52,7 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Address of an existing SQL Server to host the catalog instead of creating one: host or host,port (a Managed Instance private FQDN, a public-endpoint address with ,3342, or any reachable SQL Server). Empty creates an Azure SQL logical server + database here. With an existing server the network path is yours to provide (for a VNet-only Managed Instance, set infrastructureSubnetId so the apps egress inside its VNet) and the catalog database is created by bootstrap on first start."
+        "description": "Address of an existing SQL Server to host the catalog instead of creating one: host or host,port (a Managed Instance private FQDN, a public-endpoint address with ,3342, or any reachable SQL Server). Empty creates an Azure SQL logical server + database here. With an existing server the network path is yours to provide (for a VNet-only Managed Instance, set infrastructureSubnetId so the apps egress inside its VNet) and the empty catalog database is yours to create: bootstrap initialises it on first start and refuses to create a missing one unless ControlPlane__Bootstrap__AllowCreate is on."
       }
     },
     "infrastructureSubnetId": {

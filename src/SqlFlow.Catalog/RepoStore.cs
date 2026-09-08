@@ -20,10 +20,8 @@ public sealed record RepoDeletionResult(
 public static class RepoStore
 {
     /// <summary>
-    /// Deletes a repo and every catalog row attributed to it: its pipelines, runs (and each run's file / assertion /
-    /// statement / event / surrogate-key / health-check children), run groups, lineage edges, object relationships,
-    /// flow dependencies, pipeline columns, schedules and schedule members, and its transform-column rows. A managed
-    /// git source registered under the same name is dropped too, together with its sync activity trace, so the
+    /// Deletes a repo and every catalog row attributed to it: its pipelines, runs (and each run's events), run groups,
+    /// schedules and schedule members. A managed git source registered under the same name is dropped too, together with its sync activity trace, so the
     /// background sync cannot recreate the repo on its next tick. The whole purge runs in one serializable
     /// transaction, so a repo is either fully gone or untouched. Returns null when no repo has the given id.
     /// </summary>

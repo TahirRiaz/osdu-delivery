@@ -236,7 +236,7 @@ internal sealed class ControlPlaneClient : IDisposable
     public Task<RunDetailDto?> GetRunAsync(Guid runId, CancellationToken ct)
         => GetOrNullAsync<RunDetailDto>($"/api/v1/runs/{runId}", ct);
 
-    /// <summary>A paged drill-down section under a run (files, statements, assertions, keys, metrics).</summary>
+    /// <summary>A paged section under a run (its trace).</summary>
     public Task<PagedResult<T>> GetRunSectionAsync<T>(Guid runId, string section, int page, int pageSize, CancellationToken ct)
         => GetAsync<PagedResult<T>>(
             $"/api/v1/runs/{runId}/{section}?page={page.ToString(CultureInfo.InvariantCulture)}&pageSize={pageSize.ToString(CultureInfo.InvariantCulture)}", ct);

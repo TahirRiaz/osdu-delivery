@@ -188,9 +188,8 @@ var flowEnvVars = [for (entry, i) in flowEnv: {
 // from the catalog, so the GUI's fleet controls steer scaling without the control plane ever calling the
 // orchestrator (it only writes [catalog].[WorkerPool] rows; KEDA, which already queries the catalog, reads them).
 // The same query shape as deploy/k8s/worker-pool.yaml. A pool with no WorkerPool row (ISNULL -> 0) still scales to
-// zero once nothing is queued and no node is busy. REQUIRES the WorkerPool table AND [Node].[BusyRuns] (catalog
-// migrations WorkerPoolDesiredAndNodeRestart + RunAttemptFencingAndNodeBusyRuns): deploy the control plane first
-// so both migrations land, then this revision.
+// zero once nothing is queued and no node is busy. REQUIRES the WorkerPool table AND [Node].[BusyRuns] (both in the
+// Initial migration): deploy the control plane first so the catalog is migrated, then this revision.
 //
 // The demanded-work term is queued runs PLUS busy nodes (nodes whose heartbeat reports BusyRuns > 0 within the
 // 60s liveness window). Queued runs ask for capacity to start; busy nodes hold the capacity they occupy, so
