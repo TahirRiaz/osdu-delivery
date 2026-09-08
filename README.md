@@ -1,5 +1,7 @@
 # OSDU Delivery
 
+*Powered by SQLFlow.*
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4.svg)](https://dotnet.microsoft.com/)
 

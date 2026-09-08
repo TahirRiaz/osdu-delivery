@@ -53,7 +53,11 @@ export function TitleBar({ onOpenPalette }: { onOpenPalette: () => void }) {
 
       <div className="flex items-center gap-2 pl-1">
         <img src="/brand/logo-white.png" alt="" className="size-5 object-contain" />
-        <span className="hidden text-[13px] font-semibold sm:block">SQLFlow</span>
+        <span className="hidden items-baseline gap-1.5 sm:flex">
+          <span className="text-[13px] font-semibold">OSDU Delivery</span>
+          {/* The platform attribution rides along where there is room for it, and drops out first when there is not. */}
+          <span className="text-[11px] font-normal text-white/45 max-lg:hidden">Powered by SQLFlow</span>
+        </span>
       </div>
 
       <div className="flex-1" />

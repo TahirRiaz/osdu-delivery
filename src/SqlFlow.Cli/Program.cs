@@ -870,7 +870,7 @@ internal static class Program
     {
         Console.WriteLine(
             """
-            sqlflow - the OSDU Delivery command line
+            sqlflow - the OSDU Delivery command line, powered by SQLFlow
             Usage:
               sqlflow validate <flow.yaml|folder>  Validate a flow document, or every document under a folder
                                [--json]            (the CI gate: exit 0 only when every document is valid)
