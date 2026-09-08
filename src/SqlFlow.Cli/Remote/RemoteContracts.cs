@@ -42,9 +42,9 @@ internal sealed record CreateAccessTokenRequest(string Name, IReadOnlyList<strin
 internal sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret);
 
 internal sealed record RunTriggerRequest(
-    Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
-    bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
-    string? Scope = null, bool AssertionsOnly = false, string? SourceFilter = null);
+    Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null, string? Scope = null,
+    string? Operation = null, bool Force = false, IReadOnlyDictionary<string, string>? Values = null, string? Drop = null,
+    Guid? SubmissionId = null, IReadOnlyList<Guid>? RecordKeys = null, string? PublishTo = null);
 
 internal sealed record RunTriggerAccepted(Guid RunId, string Status);
 
@@ -60,7 +60,7 @@ internal sealed record RunSummaryDto(
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, Guid? GroupId,
-    string? LastAction, DateTime? LastActionUtc, string? Error);
+    string? LastAction, DateTime? LastActionUtc, string? Error, string Operation, bool Force);
 
 internal sealed record RunDetailDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
@@ -68,8 +68,8 @@ internal sealed record RunDetailDto(
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
-    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern, bool AssertionsOnly,
-    bool ReprocessFromSourceMin, string? SourceFilter, Guid? GroupId);
+    string Operation, bool Force, Guid? SubmissionId, string? ParametersJson, Guid? ResultSubmissionId,
+    int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId);
 
 internal sealed record RunTraceEntryDto(
     long Id, Guid RunId, Guid? RepoId, int Ordinal, DateTime TimestampUtc, string Level,

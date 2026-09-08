@@ -32,6 +32,10 @@ public sealed record DocumentExecutionOptions
     /// <see cref="RunParameters.None"/>, which changes nothing.</summary>
     public RunParameters Parameters { get; init; } = RunParameters.None;
 
+    /// <summary>Who asked for the run, for kinds that keep an audit trail: the run's trigger source on a node
+    /// (manual:&lt;user&gt;, schedule:&lt;name&gt;), cli:&lt;user&gt; for a direct CLI run. Null records "unknown".</summary>
+    public string? Actor { get; init; }
+
     /// <summary>Receives every canonical run event as it happens, for live persistence: the node streams them into
     /// the catalog so the run detail updates while the run executes. Null (the default, and every direct CLI run)
     /// records nothing live; the events are still collected into the run.json <c>events</c> array and projected

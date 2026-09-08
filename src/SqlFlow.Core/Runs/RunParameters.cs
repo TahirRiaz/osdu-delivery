@@ -1,178 +1,133 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
+
 namespace SqlFlow.Core.Runs;
 
 /// <summary>
-/// Per-run substitution parameters: operational overrides supplied at trigger time (API, CLI flags, or the GUI),
-/// carried on the queued run, and applied by the engine for THAT run only. They never touch the flow's definition
-/// in git, which is what makes a backfill an audited operational act instead of a temporary YAML edit. The set is
-/// deliberately typed and closed (never free-form SQL or YAML patches), so a parameter can be validated at the
-/// trust boundary and can never smuggle an injection into generated statements.
-/// <para>Semantics per flow kind:</para>
-/// <list type="bullet">
-/// <item><see cref="FullLoad"/>: ignore the watermark entirely. File flows read every file their definition
-/// selects; ingestion flows read the whole (optionally filtered) source. Keyed targets still upsert, so a keyed
-/// full reload is idempotent; a keyless append will duplicate (the callers warn).</item>
-/// <item><see cref="BackfillFrom"/>/<see cref="BackfillTo"/>: an externally-bounded window replacing the probed
-/// watermark. File flows bound file dates (the init window, inclusive from / inclusive to); ingestion flows bound
-/// the incremental date column (<c>&gt;= from</c>, <c>&lt; to</c>), and an InitLoad backfill re-windows its chunk
-/// plan. This is the V3 equivalent of the legacy SetFileDate: rewind by parameter, not by mutating state.</item>
-/// <item><see cref="FilePattern"/>: narrows file selection to a glob for this run (reprocess one file or one
-/// prefix). File flows only; ignored by relational flows.</item>
-/// <item><see cref="SourceFilter"/>: an extra predicate ANDed onto the relational source read for this run,
-/// REPLACING the probed watermark the way a backfill window does, so the flow's own incremental bound cannot
-/// clamp the slice away. Written in the SOURCE's dialect (it is composed into the source SELECT, whose
-/// identifiers and functions are the source's), so it serves SQL Server, MySQL, Oracle and Postgres alike, and
-/// unlike a backfill window it needs no declared date column: any column the source exposes will do, including
-/// a surrogate key (<c>AND pk &gt; 92992</c>). Relational ingestion only.</item>
-/// </list>
+/// The per-run parameters a trigger carries into a flow run: which operation the run performs, whether it forces
+/// past the change gates, the flow's own parameter values (a <c>{logSource}</c> token, say), an explicit drop, a
+/// submission to re-run, and the records the run is scoped to. They ride on the run row, reach the executing node
+/// through the claim, and are recorded on the run so the history says exactly what was asked. Defaults mean "the
+/// flow as declared": deliver the flow's drop, skipping what has not changed.
 /// </summary>
-public sealed record RunParameters
+public sealed partial record RunParameters
 {
     public static readonly RunParameters None = new();
 
-    /// <summary>The longest accepted <see cref="FilePattern"/>; a bound so the value is always indexable and
-    /// displayable.</summary>
-    public const int MaxFilePatternLength = 200;
+    /// <summary>Deliver: intake the drop, plan against the ledger, deliver what changed.</summary>
+    public const string DeliverOperation = "deliver";
 
-    /// <summary>The longest accepted <see cref="SourceFilter"/>. Generous enough for a real composite predicate,
-    /// bounded so the value stays loggable and indexable on the run record.</summary>
-    public const int MaxSourceFilterLength = 4000;
+    /// <summary>Verify: the drift pass, reading delivered records back from the target and comparing versions.</summary>
+    public const string VerifyOperation = "verify";
 
-    /// <summary>Sequences a predicate continuation has no legitimate need for, and which are the lever a caller
-    /// would use to break out of the WHERE into another statement or comment the rest of the query away.</summary>
-    private static readonly string[] ForbiddenSourceFilterSequences = [";", "--", "/*", "*/"];
+    /// <summary>Plan: render and compare, report what would be delivered, change nothing.</summary>
+    public const string PlanOperation = "plan";
 
-    /// <summary>Ignore the watermark and read everything the definition selects (a forced full reload).</summary>
-    public bool FullLoad { get; init; }
+    /// <summary>Known state: publish the compact known-state snapshot the preparing side reads.</summary>
+    public const string KnownStateOperation = "known-state";
 
-    /// <summary>Low bound of the externally-bounded window (inclusive), UTC.</summary>
-    public DateTime? BackfillFrom { get; init; }
+    public static readonly IReadOnlyList<string> Operations = [DeliverOperation, VerifyOperation, PlanOperation, KnownStateOperation];
 
-    /// <summary>High bound of the externally-bounded window (exclusive for date columns, inclusive for file
-    /// dates, matching each mechanism's native window semantics), UTC.</summary>
-    public DateTime? BackfillTo { get; init; }
+    public const int MaxDropLength = 2000;
 
-    /// <summary>A glob narrowing which files a file flow reads this run (for example <c>orders_2023-01*.csv</c>).</summary>
-    public string? FilePattern { get; init; }
+    public const int MaxValueLength = 1000;
 
-    /// <summary>An extra predicate fragment ANDed onto a relational source read for this run, in the SOURCE's own
-    /// dialect and beginning with <c>AND</c>/<c>OR</c> (the same raw-append contract the flow's declared
-    /// <c>source.filter</c> uses), for example <c>AND pk &gt; 92992</c>. Supplying it replaces the probed
-    /// watermark for the run, so the slice it names is read whatever the target's high-water mark says. The
-    /// flow's own <c>source.filter</c> still applies: this narrows the read, it does not unlock rows the
-    /// definition excludes. Validated by <see cref="Validate"/>; ignored by file, copy and export flows.</summary>
-    public string? SourceFilter { get; init; }
+    public const int MaxValues = 32;
 
-    /// <summary>Evaluate the flow's data-quality assertions against the CURRENT target and do nothing else: no
-    /// source read, no staging, no load. The on-demand path for assertions declared <c>mode: manual</c> (an
-    /// assertions-only run evaluates the flow's whole assertion list, auto and manual alike). Ingestion flows
-    /// only; every other kind refuses the run rather than loading data the caller did not ask for.</summary>
-    public bool AssertionsOnly { get; init; }
+    public const int MaxRecordKeys = 1000;
 
-    /// <summary>Read MIN from the SOURCE instead of MAX from the TARGET for this run, so back-dated rows already
-    /// sitting in the source (from an upstream backfill) are re-pulled rather than filtered out below the target's
-    /// high-water mark. This is the run-time form of a flow's declared <c>fetchMinValuesFromSource</c>: when a group
-    /// run backfills an anchor with a window, its downstream members carry this so the back-dated data flows through
-    /// instead of stopping at staging. Relational ingestion only; a non-incremental or file/copy flow ignores it.</summary>
-    public bool ReprocessFromSourceMin { get; init; }
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
 
-    /// <summary>True when nothing is overridden: the run behaves exactly as its definition says.</summary>
+    /// <summary>The operation, one of <see cref="Operations"/>. Default deliver.</summary>
+    public string Operation { get; init; } = DeliverOperation;
+
+    /// <summary>Force past the change gates: plan every record even when no source table advanced, re-plan a
+    /// submission that was already completed, verify records verified recently.</summary>
+    public bool Force { get; init; }
+
+    /// <summary>The flow's declared parameter values (name to value), substituted into its source location.</summary>
+    public IReadOnlyDictionary<string, string> Values { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>An explicit drop location, overriding the flow's declared source location for this run.</summary>
+    public string? Drop { get; init; }
+
+    /// <summary>Re-run one submission (its drop and manifest) rather than the flow's current drop.</summary>
+    public Guid? SubmissionId { get; init; }
+
+    /// <summary>The delivery keys the run is scoped to (a verify of a few records, a redelivery of one); empty means every record.</summary>
+    public IReadOnlyList<Guid> RecordKeys { get; init; } = [];
+
+    /// <summary>Where a known-state publication is written; null uses the flow's declared location.</summary>
+    public string? PublishTo { get; init; }
+
     public bool IsDefault
-        => !FullLoad && BackfillFrom is null && BackfillTo is null && string.IsNullOrWhiteSpace(FilePattern)
-           && !AssertionsOnly && !ReprocessFromSourceMin && string.IsNullOrWhiteSpace(SourceFilter);
+        => string.Equals(Operation, DeliverOperation, StringComparison.OrdinalIgnoreCase) && !Force && Values.Count == 0
+           && string.IsNullOrWhiteSpace(Drop) && SubmissionId is null && RecordKeys.Count == 0 && string.IsNullOrWhiteSpace(PublishTo);
 
-    /// <summary>True when this run is an explicit file reprocess (a full load, or a backfill window). The file-fetch
-    /// engines (copy, acquire, sftp) read this to DISABLE their unchanged-file skip for the run, so every selected
-    /// file re-lands with a fresh timestamp instead of being deduplicated away, which is what lets the downstream
-    /// incremental flows pick it up again. A plain run keeps deduplication (an idempotent re-run transfers nothing).</summary>
-    public bool ReprocessFiles => FullLoad || BackfillFrom is not null;
+    /// <summary>True for the operations that write to the target (deliver) as opposed to reading it or the ledger.</summary>
+    public bool WritesTarget => string.Equals(Operation, DeliverOperation, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Validates the combination, throwing <see cref="SqlFlowException"/> with a caller-safe message.
-    /// Called at every trust boundary (API trigger, CLI flags) so a run can never be queued with parameters no
-    /// engine path could honor.</summary>
     public void Validate()
     {
-        if (AssertionsOnly && (FullLoad || BackfillFrom is not null || BackfillTo is not null || FilePattern is not null
-                               || SourceFilter is not null))
+        if (!Operations.Contains(Operation, StringComparer.OrdinalIgnoreCase))
         {
-            throw new SqlFlowException(
-                "assertionsOnly cannot be combined with fullLoad, a backfill window, a file pattern, or a source " +
-                "filter: an assertions-only run reads no source data, so a selection override has nothing to apply to.");
+            throw new SqlFlowException($"operation must be one of {string.Join(", ", Operations)}; '{Operation}' is not.");
         }
 
-        if (FullLoad && (BackfillFrom is not null || BackfillTo is not null))
+        if (Values.Count > MaxValues)
         {
-            throw new SqlFlowException(
-                "fullLoad and a backfill window are mutually exclusive: full load ignores every bound; a window IS the bound.");
+            throw new SqlFlowException($"At most {MaxValues} parameter values can be supplied.");
         }
 
-        if (BackfillFrom is { } from && BackfillTo is { } to && to <= from)
+        foreach (var (name, value) in Values)
         {
-            throw new SqlFlowException("backfillTo must be after backfillFrom.");
-        }
-
-        if (BackfillTo is not null && BackfillFrom is null)
-        {
-            throw new SqlFlowException("backfillTo requires backfillFrom (an upper bound alone is not a window).");
-        }
-
-        if (FilePattern is { } pattern)
-        {
-            if (string.IsNullOrWhiteSpace(pattern) || pattern.Length > MaxFilePatternLength)
+            if (!ParameterName().IsMatch(name))
             {
-                throw new SqlFlowException($"filePattern must be 1 to {MaxFilePatternLength} characters.");
+                throw new SqlFlowException($"Parameter name '{name}' must be an identifier (letters, digits, underscore).");
             }
 
-            if (pattern.Any(char.IsControl))
+            if (value is null || value.Length > MaxValueLength || value.Any(char.IsControl))
             {
-                throw new SqlFlowException("filePattern must not contain control characters.");
+                throw new SqlFlowException($"Parameter '{name}' must be 0 to {MaxValueLength} characters without control characters.");
             }
         }
 
-        if (SourceFilter is { } sourceFilter)
+        if (Drop is { } drop && (string.IsNullOrWhiteSpace(drop) || drop.Length > MaxDropLength || drop.Any(char.IsControl)))
         {
-            var trimmed = sourceFilter.Trim();
-            if (trimmed.Length == 0 || trimmed.Length > MaxSourceFilterLength)
-            {
-                throw new SqlFlowException($"sourceFilter must be 1 to {MaxSourceFilterLength} characters.");
-            }
-
-            if (trimmed.Any(char.IsControl))
-            {
-                throw new SqlFlowException("sourceFilter must not contain control characters.");
-            }
-
-            // A predicate CONTINUATION, never a standalone clause: the fragment is appended to the source read's
-            // `WHERE 1=1`, so requiring a leading boolean connector is what keeps it a predicate and not the start
-            // of something else. This is the same contract the flow's declared source.filter already follows.
-            if (!trimmed.StartsWith("AND ", StringComparison.OrdinalIgnoreCase)
-                && !trimmed.StartsWith("OR ", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new SqlFlowException(
-                    "sourceFilter must begin with AND or OR: it is appended to the source read's WHERE clause as a " +
-                    "predicate continuation, for example \"AND pk > 92992\".");
-            }
-
-            foreach (var forbidden in ForbiddenSourceFilterSequences)
-            {
-                if (trimmed.Contains(forbidden, StringComparison.Ordinal))
-                {
-                    throw new SqlFlowException(
-                        $"sourceFilter must not contain '{forbidden}': a predicate has no need to terminate the " +
-                        "statement or open a comment, and allowing it would let the fragment rewrite the query.");
-                }
-            }
+            throw new SqlFlowException($"drop must be 1 to {MaxDropLength} characters without control characters.");
         }
 
-        if (ReprocessFromSourceMin && (FullLoad || BackfillFrom is not null || BackfillTo is not null || AssertionsOnly))
+        if (SubmissionId is { } submission && submission == Guid.Empty)
         {
-            throw new SqlFlowException(
-                "reprocessFromSourceMin is a distinct incremental strategy and cannot be combined with fullLoad, a " +
-                "backfill window, or assertionsOnly: a backfill's anchor carries the window, its descendants carry " +
-                "this flag, never both on one flow.");
+            throw new SqlFlowException("submissionId must be a non-empty UUID.");
+        }
+
+        if (RecordKeys.Count > MaxRecordKeys)
+        {
+            throw new SqlFlowException($"At most {MaxRecordKeys} record keys can be scoped in one run.");
+        }
+
+        if (RecordKeys.Any(k => k == Guid.Empty))
+        {
+            throw new SqlFlowException("recordKeys must be non-empty UUIDs.");
+        }
+
+        if (PublishTo is { } to && (string.IsNullOrWhiteSpace(to) || to.Length > MaxDropLength || to.Any(char.IsControl)))
+        {
+            throw new SqlFlowException($"publishTo must be 1 to {MaxDropLength} characters without control characters.");
+        }
+
+        if (string.Equals(Operation, KnownStateOperation, StringComparison.OrdinalIgnoreCase) && (SubmissionId is not null || RecordKeys.Count > 0))
+        {
+            throw new SqlFlowException("A known-state publication covers the whole flow; it takes no submission or record scope.");
         }
     }
 
-    /// <summary>A one-line human description for run logs ("full load", "window 2023-01-01 .. 2023-02-01").</summary>
+    /// <summary>A one-line description for logs and listings ("none" for the defaults).</summary>
     public string Describe()
     {
         if (IsDefault)
@@ -180,39 +135,80 @@ public sealed record RunParameters
             return "none";
         }
 
-        var parts = new List<string>(5);
-        if (AssertionsOnly)
+        var parts = new List<string> { $"operation={Operation.ToLowerInvariant()}" };
+        if (Force)
         {
-            parts.Add("assertions only");
+            parts.Add("force");
         }
 
-        if (FullLoad)
+        foreach (var (name, value) in Values.OrderBy(kv => kv.Key, StringComparer.Ordinal))
         {
-            parts.Add("full load");
+            parts.Add($"{name}={value}");
         }
 
-        if (BackfillFrom is { } from)
+        if (!string.IsNullOrWhiteSpace(Drop))
         {
-            parts.Add(BackfillTo is { } to
-                ? $"window {from:yyyy-MM-dd HH:mm:ss} .. {to:yyyy-MM-dd HH:mm:ss}"
-                : $"from {from:yyyy-MM-dd HH:mm:ss}");
+            parts.Add($"drop={Drop}");
         }
 
-        if (!string.IsNullOrWhiteSpace(FilePattern))
+        if (SubmissionId is { } submission)
         {
-            parts.Add($"files '{FilePattern}'");
+            parts.Add($"submission={submission:D}");
         }
 
-        if (!string.IsNullOrWhiteSpace(SourceFilter))
+        if (RecordKeys.Count > 0)
         {
-            parts.Add($"source filter '{SourceFilter.Trim()}'");
+            parts.Add($"records={RecordKeys.Count}");
         }
 
-        if (ReprocessFromSourceMin)
+        if (!string.IsNullOrWhiteSpace(PublishTo))
         {
-            parts.Add("reprocess from source min");
+            parts.Add($"publishTo={PublishTo}");
         }
 
-        return string.Join(", ", parts);
+        return string.Join(" ", parts);
     }
+
+    /// <summary>The JSON form the catalog stores on the run row and the node reads back.</summary>
+    public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
+
+    /// <summary>Parses the stored form; null or blank is the default set.</summary>
+    public static RunParameters FromJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return None;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<RunParameters>(json, JsonOptions) ?? None;
+        }
+        catch (JsonException ex)
+        {
+            throw new SqlFlowException($"The stored run parameters are not valid JSON: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Parses <c>name=value</c> pairs (the CLI's <c>--set</c>) into parameter values.</summary>
+    public static IReadOnlyDictionary<string, string> ParseValues(IEnumerable<string> assignments)
+    {
+        ArgumentNullException.ThrowIfNull(assignments);
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var assignment in assignments)
+        {
+            var eq = assignment.IndexOf('=', StringComparison.Ordinal);
+            if (eq <= 0)
+            {
+                throw new SqlFlowException($"Parameter '{assignment}' must be written as name=value.");
+            }
+
+            values[assignment[..eq].Trim()] = assignment[(eq + 1)..];
+        }
+
+        return values;
+    }
+
+    [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*$")]
+    private static partial Regex ParameterName();
 }

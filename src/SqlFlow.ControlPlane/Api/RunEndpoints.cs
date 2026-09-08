@@ -26,7 +26,7 @@ public sealed record RunSummaryDto(
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, Guid? GroupId,
-    string? LastAction, DateTime? LastActionUtc, string? Error);
+    string? LastAction, DateTime? LastActionUtc, string? Error, string Operation, bool Force);
 
 /// <summary>One run with its full header for the detail view: the summary plus the lifecycle fields (status, when it
 /// was enqueued, the node that claimed it), the schema version, the start/end window, the host, the error, and the
@@ -38,8 +38,8 @@ public sealed record RunDetailDto(
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
-    bool FullLoad, DateTime? BackfillFrom, DateTime? BackfillTo, string? FilePattern, bool AssertionsOnly,
-    bool ReprocessFromSourceMin, string? SourceFilter, Guid? GroupId);
+    string Operation, bool Force, Guid? SubmissionId, string? ParametersJson, Guid? ResultSubmissionId,
+    int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId);
 
 /// <summary>
 /// One entry of a run's trace: a canonical run event (progress, a decision, a stage summary, a warning, an error),
@@ -267,14 +267,14 @@ public static class RunEndpoints
                     .OrderByDescending(e => e.Id).Select(e => (string?)e.Message).FirstOrDefault(),
                 db.RunEvents.Where(e => e.RunId == x.Run.RunId)
                     .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault(),
-                x.Run.Error))
+                x.Run.Error, x.Run.Operation, x.Run.Force))
             : source.Select(x => new RunSummaryDto(
                 x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
                 x.Run.Status, x.Run.Success,
                 x.Run.TargetPool, x.Run.CommitSha, x.Run.WrittenUtc, x.Run.EnqueuedUtc, x.Run.DurationSeconds,
                 x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted, x.Run.GroupId,
                 null, null,
-                x.Run.Error));
+                x.Run.Error, x.Run.Operation, x.Run.Force));
 
     /// <summary>A group's member summaries in execution order: the shape both the group view's member list and
     /// the group stream serve. This is the one list that shows the last action, so it resolves it.</summary>
@@ -301,8 +301,8 @@ public static class RunEndpoints
                     run.TargetPool, run.CommitSha, run.EnqueuedUtc, run.ClaimedByNode, run.CancelRequestedUtc,
                     run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
                     run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host,
-                    run.FullLoad, run.BackfillFrom, run.BackfillTo, run.FilePattern, run.AssertionsOnly,
-                    run.ReprocessFromSourceMin, run.SourceFilter, run.GroupId))
+                    run.Operation, run.Force, run.SubmissionId, run.ParametersJson, run.ResultSubmissionId,
+                    run.RecordsPlanned, run.RecordsDelivered, run.RecordsHeld, run.RecordsFailed, run.RecordsSkipped, run.GroupId))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("run", runId) : TypedResults.Ok(dto);
     }

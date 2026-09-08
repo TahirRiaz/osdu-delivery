@@ -38,6 +38,10 @@ public sealed class ControlPlaneOptions
 
     public RunTraceRetentionOptions RunTrace { get; set; } = new();
 
+    /// <summary>The largest request body the API accepts, in megabytes. Set explicitly (never the server default) so a
+    /// submission manifest listing many records, or a large scoped request, is bounded on purpose. Default 64.</summary>
+    public int MaxRequestBodyMegabytes { get; set; } = 64;
+
 
 
 
@@ -45,6 +49,11 @@ public sealed class ControlPlaneOptions
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
     public void Validate()
     {
+        if (MaxRequestBodyMegabytes is < 1 or > 4096)
+        {
+            throw new InvalidOperationException("ControlPlane:MaxRequestBodyMegabytes must be between 1 and 4096.");
+        }
+
         if (string.IsNullOrWhiteSpace(Catalog.ConnectionReference))
         {
             throw new InvalidOperationException(

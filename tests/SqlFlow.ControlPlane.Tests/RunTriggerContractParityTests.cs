@@ -7,8 +7,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// The CLI carries its own copy of the run-trigger body, so the two records can drift apart without anything
 /// failing to compile: the client simply stops sending a field and the server silently defaults it. That is
-/// how --source-filter came to be accepted by 'sqlflow trigger', parsed into the run parameters, and then
-/// dropped on the floor, turning a bounded backfill into an ordinary incremental run with no error anywhere.
+/// a trigger option could be accepted by 'sqlflow trigger', parsed into the run parameters, and then dropped on
+/// the floor, turning a scoped re-run into an ordinary run with no error anywhere.
 /// This pins the two shapes together so the next field added on either side has to be added on both.
 /// </summary>
 public sealed class RunTriggerContractParityTests
@@ -29,12 +29,19 @@ public sealed class RunTriggerContractParityTests
         Assert.Equal(Parameters(server).ToArray(), Parameters(client).ToArray());
     }
 
-    [Fact]
-    public void SourceFilter_IsCarriedByBothSides()
+    [Theory]
+    [InlineData("Operation")]
+    [InlineData("Force")]
+    [InlineData("Values")]
+    [InlineData("Drop")]
+    [InlineData("SubmissionId")]
+    [InlineData("RecordKeys")]
+    [InlineData("PublishTo")]
+    public void EveryRunParameter_IsCarriedByBothSides(string parameter)
     {
         var client = typeof(SqlFlow.Cli.Remote.RunTriggerAccepted).Assembly.GetType("SqlFlow.Cli.Remote.RunTriggerRequest", throwOnError: true)!;
 
-        Assert.Contains(Parameters(typeof(RunTriggerRequest)), p => p.Name == "SourceFilter");
-        Assert.Contains(Parameters(client), p => p.Name == "SourceFilter");
+        Assert.Contains(Parameters(typeof(RunTriggerRequest)), p => p.Name == parameter);
+        Assert.Contains(Parameters(client), p => p.Name == parameter);
     }
 }

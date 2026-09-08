@@ -729,13 +729,8 @@ public sealed partial class RunWorker
                         r.FlowName,
                         r.CommitSha,
                         r.FlowVersionHash,
-                        r.FullLoad,
-                        r.BackfillFrom,
-                        r.BackfillTo,
-                        r.FilePattern,
-                        r.SourceFilter,
-                        r.AssertionsOnly,
-                        r.ReprocessFromSourceMin,
+                        r.ParametersJson,
+                        r.TriggerSource,
                         RepoName = repo != null ? repo.Name : null,
                         RepoRemoteUrl = repo != null ? repo.RemoteUrl : null,
                         RepoRootPath = repo != null ? repo.RootPath : null,
@@ -828,17 +823,10 @@ public sealed partial class RunWorker
 
             // The claimed run id is the orchestrator-assigned id: the engine stamps it on the run and its artifact,
             // so the run records under exactly the id the trigger returned. Run-log echo stays null (server side).
-            // The run's parameters travel from the queue row into the engine here: the one handoff point.
-            var parameters = new RunParameters
-            {
-                FullLoad = run.FullLoad,
-                BackfillFrom = run.BackfillFrom,
-                BackfillTo = run.BackfillTo,
-                FilePattern = run.FilePattern,
-                SourceFilter = run.SourceFilter,
-                AssertionsOnly = run.AssertionsOnly,
-                ReprocessFromSourceMin = run.ReprocessFromSourceMin,
-            };
+            // The run's parameters travel from the queue row into the engine here: the one handoff point. The row
+            // is data from the database, so the stored JSON is parsed and re-validated before the engine sees it.
+            var parameters = RunParameters.FromJson(run.ParametersJson);
+            parameters.Validate();
             if (!parameters.IsDefault)
             {
                 LogParameters(runId, parameters.Describe());
@@ -857,6 +845,8 @@ public sealed partial class RunWorker
                     RunId = runId, Echo = null, Parameters = parameters, EventSink = eventSink,
                     // The claimed run's flow name selects WHICH flow of the document executes.
                     FlowName = run.FlowName,
+                    // Who asked (a schedule, a person, an API client), for the kinds that keep an audit trail.
+                    Actor = run.TriggerSource,
                 };
                 // The executor runs under the per-run token: an operator cancel aborts the in-flight work here (and
                 // only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel never

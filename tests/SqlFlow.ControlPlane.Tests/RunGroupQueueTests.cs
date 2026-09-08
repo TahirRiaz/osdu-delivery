@@ -57,7 +57,7 @@ public sealed class RunGroupQueueTests
     }
 
     [SkippableFact]
-    public async Task EnqueueGroup_NodeBackfill_WindowsAnchor_AndReprocessesDescendants()
+    public async Task EnqueueGroup_CarriesPerMemberParameters_AndDefaultsTheRest()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -66,23 +66,20 @@ public sealed class RunGroupQueueTests
         try
         {
             await using var db = CatalogDatabase.Create(cs);
-            // A three-layer chain like copy -> file -> ing: the window stays on the anchor, the relational ing
-            // descendant reprocesses from source min, and the file descendant runs at defaults (it catches the
-            // re-landed files through its own normal incremental). This mirrors what TriggerGroupAsync builds.
-            string anchor = $"a_{suffix}", fileChild = $"b_{suffix}", ingChild = $"c_{suffix}";
+            // Three delivery flows in a chain: the anchor is forced, one descendant verifies instead of delivering,
+            // and the other is absent from the map, so it runs as defined.
+            string anchor = $"a_{suffix}", plainChild = $"b_{suffix}", verifyChild = $"c_{suffix}";
             var members = new List<RunScopeMember>
             {
-                new(anchor, "cpy", 0, CatalogPipeline.DefaultBatch),
-                new(fileChild, "file", 1, CatalogPipeline.DefaultBatch),
-                new(ingChild, "ing", 2, CatalogPipeline.DefaultBatch),
+                new(anchor, "delivery", 0, CatalogPipeline.DefaultBatch),
+                new(plainChild, "delivery", 1, CatalogPipeline.DefaultBatch),
+                new(verifyChild, "delivery", 2, CatalogPipeline.DefaultBatch),
             };
-            var from = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-            var to = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
             var memberParameters = new Dictionary<string, RunParameters>(StringComparer.Ordinal)
             {
-                [anchor] = new RunParameters { BackfillFrom = from, BackfillTo = to },
-                [ingChild] = new RunParameters { ReprocessFromSourceMin = true },
-                // fileChild is intentionally absent: a window-honoring descendant runs at defaults.
+                [anchor] = new RunParameters { Force = true },
+                [verifyChild] = new RunParameters { Operation = RunParameters.VerifyOperation },
+                // plainChild is intentionally absent: a member left out of the map runs with default parameters.
             };
             var result = await RunQueueStore.EnqueueGroupAsync(
                 db,
@@ -93,23 +90,22 @@ public sealed class RunGroupQueueTests
             var runs = await db.Runs.AsNoTracking()
                 .Where(r => r.GroupId == result.GroupId).ToListAsync();
             var anchorRun = Assert.Single(runs, r => r.FlowName == anchor);
-            var fileRun = Assert.Single(runs, r => r.FlowName == fileChild);
-            var ingRun = Assert.Single(runs, r => r.FlowName == ingChild);
+            var plainRun = Assert.Single(runs, r => r.FlowName == plainChild);
+            var verifyRun = Assert.Single(runs, r => r.FlowName == verifyChild);
 
-            // The anchor carries the window (it selects the files to re-land at the source).
-            Assert.Equal(from, anchorRun.BackfillFrom);
-            Assert.Equal(to, anchorRun.BackfillTo);
-            Assert.False(anchorRun.ReprocessFromSourceMin);
+            // The anchor delivers, forced past its change gates.
+            Assert.Equal("deliver", anchorRun.Operation);
+            Assert.True(anchorRun.Force);
+            Assert.NotNull(anchorRun.ParametersJson);
 
-            // The file descendant runs at defaults: no window (it cannot re-enforce a modified-date window), no reprocess.
-            Assert.Null(fileRun.BackfillFrom);
-            Assert.Null(fileRun.BackfillTo);
-            Assert.False(fileRun.ReprocessFromSourceMin);
+            // The member absent from the map runs at defaults: a plain deliver with no stored parameters.
+            Assert.Equal("deliver", plainRun.Operation);
+            Assert.False(plainRun.Force);
+            Assert.Null(plainRun.ParametersJson);
 
-            // The relational descendant carries MIN-from-source and no window, so it re-pulls the back-dated rows.
-            Assert.True(ingRun.ReprocessFromSourceMin);
-            Assert.Null(ingRun.BackfillFrom);
-            Assert.Null(ingRun.BackfillTo);
+            // The verifying member carries its operation.
+            Assert.Equal("verify", verifyRun.Operation);
+            Assert.False(verifyRun.Force);
         }
         finally
         {

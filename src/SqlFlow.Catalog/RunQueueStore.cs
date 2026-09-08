@@ -31,12 +31,10 @@ public sealed record RunEnqueueRequest(
 /// <summary>What to enqueue as one multi-flow run group (a Node or Batch execution): the resolved, ordered member
 /// flows (with their waves) plus the shared routing. Every member is enqueued under one <see cref="RunGroupModes"/>
 /// header and gated by wave, so a dependency never runs before what it depends on.
-/// <para>A node backfill carries per-member parameters through <paramref name="MemberParameters"/> (keyed by flow
-/// name): the caller decides, per member, whether it takes the backfill window (the anchor and every window-honoring
-/// descendant, so each layer re-reads the same historical slice) or <see cref="RunParameters.ReprocessFromSourceMin"/>
-/// (a relational descendant, so the back-dated rows an upstream flow re-lands are re-pulled instead of stopping below
-/// the target's high-water mark). A member absent from the map runs with default parameters, so an ordinary group (or
-/// a schedule fire) passes no map and every member runs as defined.</para>
+/// <para>Per-member parameters travel through <paramref name="MemberParameters"/> (keyed by flow name) when the caller
+/// has a reason to run members differently (a forced fire applies <c>force</c> to every member, a scoped group could
+/// re-plan one). A member absent from the map runs with default parameters, so an ordinary group (or a plain schedule
+/// fire) passes no map and every member runs as defined.</para>
 /// <para><paramref name="MaxConcurrency"/> bounds how many members may execute at once (null = unbounded, the
 /// historical behavior). It is stamped onto every member run and applied by the queue's claim gate; because waves are
 /// gated, it is effectively the width of the running wave.</para></summary>
@@ -257,13 +255,10 @@ public static class RunQueueStore
                 TargetPool = string.IsNullOrWhiteSpace(request.TargetPool) ? null : request.TargetPool.Trim(),
                 CommitSha = commitSha,
                 FlowVersionHash = flowVersionHash,
-                FullLoad = parameters.FullLoad,
-                BackfillFrom = parameters.BackfillFrom,
-                BackfillTo = parameters.BackfillTo,
-                FilePattern = string.IsNullOrWhiteSpace(parameters.FilePattern) ? null : parameters.FilePattern.Trim(),
-                SourceFilter = string.IsNullOrWhiteSpace(parameters.SourceFilter) ? null : parameters.SourceFilter.Trim(),
-                AssertionsOnly = parameters.AssertionsOnly,
-                ReprocessFromSourceMin = parameters.ReprocessFromSourceMin,
+                Operation = parameters.Operation.ToLowerInvariant(),
+                Force = parameters.Force,
+                SubmissionId = parameters.SubmissionId,
+                ParametersJson = parameters.IsDefault ? null : parameters.ToJson(),
                 TriggerSource = request.TriggerSource,
                 TriggerScheduleId = request.TriggerScheduleId,
                 Status = RunStatuses.Queued,
@@ -370,13 +365,10 @@ public static class RunQueueStore
                     // A non-positive bound would leave every member unclaimable forever, so it collapses to
                     // unbounded here as a last line of defence; the YAML loaders already reject one with a warning.
                     GroupMaxConcurrency = request.MaxConcurrency is { } max && max >= 1 ? max : null,
-                    FullLoad = memberParameters.FullLoad,
-                    BackfillFrom = memberParameters.BackfillFrom,
-                    BackfillTo = memberParameters.BackfillTo,
-                    FilePattern = string.IsNullOrWhiteSpace(memberParameters.FilePattern) ? null : memberParameters.FilePattern.Trim(),
-                    SourceFilter = string.IsNullOrWhiteSpace(memberParameters.SourceFilter) ? null : memberParameters.SourceFilter.Trim(),
-                    AssertionsOnly = memberParameters.AssertionsOnly,
-                    ReprocessFromSourceMin = memberParameters.ReprocessFromSourceMin,
+                    Operation = memberParameters.Operation.ToLowerInvariant(),
+                    Force = memberParameters.Force,
+                    SubmissionId = memberParameters.SubmissionId,
+                    ParametersJson = memberParameters.IsDefault ? null : memberParameters.ToJson(),
                     TriggerSource = request.TriggerSource,
                     TriggerScheduleId = request.TriggerScheduleId,
                     Status = RunStatuses.Queued,
@@ -1059,7 +1051,7 @@ public static class RunQueueStore
     {
         // Identity fields are the same whether the row was enqueued or is being inserted fresh (RunFromJson derives
         // PipelineId from repo + flow name, exactly as enqueue did); the queue-only fields (EnqueuedUtc,
-        // ClaimedByNode, the run parameters FullLoad/BackfillFrom/BackfillTo/FilePattern) and the claim's
+        // ClaimedByNode, the run parameters Operation/Force/SubmissionId/ParametersJson) and the claim's
         // StartUtc are preserved by simply not assigning them here.
         target.PipelineId = projected.PipelineId;
         target.RepoId = projected.RepoId;
@@ -1078,11 +1070,12 @@ public static class RunQueueStore
         target.RowsDeleted = projected.RowsDeleted;
         target.Error = projected.Error;
         target.Host = projected.Host ?? target.Host;
-        target.IncrementalMode = projected.IncrementalMode;
-        target.IncrementalFilter = projected.IncrementalFilter;
-        target.IncrementalWatermark = projected.IncrementalWatermark;
-        target.IncrementalWatermarkSource = projected.IncrementalWatermarkSource;
-        target.DataSetConvention = projected.DataSetConvention;
+        target.ResultSubmissionId = projected.ResultSubmissionId;
+        target.RecordsPlanned = projected.RecordsPlanned;
+        target.RecordsDelivered = projected.RecordsDelivered;
+        target.RecordsHeld = projected.RecordsHeld;
+        target.RecordsFailed = projected.RecordsFailed;
+        target.RecordsSkipped = projected.RecordsSkipped;
         // Fill only, never overwrite: an enqueued run already carries what asked for it (a schedule, a person),
         // and the projection's view of an artifact is always "cli". This assigns solely on the path where the
         // completion inserts a row that was never enqueued, which IS a node-local execution.

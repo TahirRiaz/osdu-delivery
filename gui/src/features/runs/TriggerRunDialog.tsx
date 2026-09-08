@@ -7,27 +7,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, runApi, scheduleApi } from "../../api/endpoints";
+import type { RunOperation, RunParameters } from "../../api/types";
+import { RUN_OPERATIONS } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
-import { DateRangeCalendar } from "../../components/DateRangeCalendar";
 import { useRunDock } from "./RunDockContext";
-
-/** Prior-run values used to prefill the form on Re-run (ISO strings for the window; they are trimmed to the
- * minute for the datetime-local inputs). Absent fields default to empty/off. */
-export interface TriggerRunParameterValues {
-  fullLoad?: boolean;
-  backfillFrom?: string | null;
-  backfillTo?: string | null;
-  filePattern?: string | null;
-  sourceFilter?: string | null;
-  assertionsOnly?: boolean;
-}
 
 export interface TriggerRunDialogProps {
   open: boolean;
@@ -39,9 +31,26 @@ export interface TriggerRunDialogProps {
   /** The flow's pipeline id, when the launching context knows it (pipeline detail, Re-run). Lets the dialog find
    * the flow's schedules without first resolving the id from the repo's pipeline list. */
   flowId?: string;
-  /** Prior-run parameter values to prefill (Re-run). */
-  initialParameters?: TriggerRunParameterValues;
+  /** Prior-run parameters to prefill (Re-run, or a record page asking for a scoped redelivery or verify). */
+  initialParameters?: RunParameters;
 }
+
+const OPERATION_LABELS: Record<RunOperation, string> = {
+  "deliver": "Deliver",
+  "verify": "Verify (drift check)",
+  "plan": "Plan (dry run)",
+  "known-state": "Publish known state",
+};
+
+const OPERATION_HINTS: Record<RunOperation, string> = {
+  "deliver": "Read the flow's drop, plan it against the ledger, and deliver what changed.",
+  "verify": "Read delivered records back from OSDU and compare versions; drifted records are queued for redelivery when the flow reconciles.",
+  "plan": "Render and compare only, and report what a deliver would do. Nothing is written to OSDU or the ledger.",
+  "known-state": "Publish the compact known-state file the preparing side reads before its next drop.",
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** A one-line cadence for a related schedule ("cron 0 2 * * *", "every 3600s", or "manual"). */
 function describeCadence(cron: string | null, intervalSeconds: number | null): string {
@@ -56,9 +65,25 @@ function describeCadence(cron: string | null, intervalSeconds: number | null): s
   return "manual";
 }
 
-/** An ISO instant (or datetime-local string) trimmed to the "yyyy-MM-ddThh:mm" a datetime-local input expects. */
-function toLocalInput(value: string | null | undefined): string {
-  return value ? value.slice(0, 16) : "";
+/** The non-blank, trimmed lines of a textarea. */
+function lines(text: string): string[] {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+}
+
+/** Parses "name=value" lines into the flow's parameter values; the first malformed line is the error. */
+function parseValues(text: string): { values: Record<string, string>; error: string | null } {
+  const values: Record<string, string> = {};
+  for (const line of lines(text)) {
+    const at = line.indexOf("=");
+    const name = at > 0 ? line.slice(0, at).trim() : "";
+    if (at <= 0 || !IDENTIFIER.test(name)) {
+      return { values, error: `Parameter '${line}' must be written as name=value (the name an identifier).` };
+    }
+
+    values[name] = line.slice(at + 1);
+  }
+
+  return { values, error: null };
 }
 
 interface ComboOption {
@@ -68,9 +93,10 @@ interface ComboOption {
 
 /**
  * The single trigger-run path in the GUI: launched from the runs page (free choice of repo + flow), a pipeline's
- * detail page (prefilled), and a run's Re-run (prefilled with the prior parameters). A run POSTs one flow and
- * navigates to it. The schedules the flow is a member of are listed alongside, since firing one runs the whole
- * member set in order: that is how a source is run as a whole.
+ * detail page (prefilled), a run's Re-run (prefilled with the prior parameters), and a record's redeliver or
+ * verify action (prefilled with the record scope). A run POSTs one flow and navigates to it. The schedules the
+ * flow is a member of are listed alongside, since firing one runs the whole member set in order: that is how a
+ * source is run as a whole.
  */
 export function TriggerRunDialog({
   open, onClose, repoId, flowName, flowId, initialParameters,
@@ -82,22 +108,24 @@ export function TriggerRunDialog({
   const [selectedFlow, setSelectedFlow] = useState<string | null>(flowName ?? null);
   const [pool, setPool] = useState("");
   const [commitSha, setCommitSha] = useState("");
-  const [fullLoad, setFullLoad] = useState(false);
-  const [backfillFrom, setBackfillFrom] = useState("");
-  const [backfillTo, setBackfillTo] = useState("");
-  const [filePattern, setFilePattern] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("");
-  const [assertionsOnly, setAssertionsOnly] = useState(false);
+  const [operation, setOperation] = useState<RunOperation>("deliver");
+  const [force, setForce] = useState(false);
+  const [valuesText, setValuesText] = useState("");
+  const [drop, setDrop] = useState("");
+  const [submissionId, setSubmissionId] = useState("");
+  const [recordKeysText, setRecordKeysText] = useState("");
+  const [publishTo, setPublishTo] = useState("");
 
   // Seed the form once per open, so a Re-run opens with the prior run's parameters and a fresh launch opens clean.
   useEffect(() => {
     if (open) {
-      setFullLoad(initialParameters?.fullLoad ?? false);
-      setBackfillFrom(toLocalInput(initialParameters?.backfillFrom));
-      setBackfillTo(toLocalInput(initialParameters?.backfillTo));
-      setFilePattern(initialParameters?.filePattern ?? "");
-      setSourceFilter(initialParameters?.sourceFilter ?? "");
-      setAssertionsOnly(initialParameters?.assertionsOnly ?? false);
+      setOperation(initialParameters?.operation ?? "deliver");
+      setForce(initialParameters?.force ?? false);
+      setValuesText(Object.entries(initialParameters?.values ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"));
+      setDrop(initialParameters?.drop ?? "");
+      setSubmissionId(initialParameters?.submissionId ?? "");
+      setRecordKeysText((initialParameters?.recordKeys ?? []).join("\n"));
+      setPublishTo(initialParameters?.publishTo ?? "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -172,23 +200,26 @@ export function TriggerRunDialog({
     [pipelines.data],
   );
 
-  const trimmedFrom = backfillFrom.trim();
-  const trimmedTo = backfillTo.trim();
-  const hasWindow = trimmedFrom !== "" || trimmedTo !== "";
-  const hasPattern = filePattern.trim() !== "";
-  const hasSourceFilter = sourceFilter.trim() !== "";
+  const readsDrop = operation === "deliver" || operation === "plan";
+  const takesRecordScope = operation === "deliver" || operation === "verify";
+  const parsedValues = parseValues(valuesText);
+  const recordKeys = lines(recordKeysText);
+  const trimmedSubmission = submissionId.trim();
+  const trimmedPublishTo = publishTo.trim();
 
   // Client-side mirror of RunParameters.Validate, so obvious mistakes are caught before the round trip (the server
   // validates authoritatively and its ProblemDetails still renders if anything slips through).
-  const windowError = assertionsOnly && (fullLoad || hasWindow || hasPattern)
-    ? "Verify only cannot be combined with a full reprocess, a window, or a file pattern."
-    : trimmedTo !== "" && trimmedFrom === ""
-      ? "An end date needs a start date."
-      : fullLoad && hasWindow
-        ? "A full reprocess and a window are mutually exclusive."
-        : null;
+  const parameterError = readsDrop && parsedValues.error !== null
+    ? parsedValues.error
+    : operation === "deliver" && trimmedSubmission !== "" && !UUID.test(trimmedSubmission)
+      ? "The submission id must be a UUID."
+      : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
+        ? "Every record key must be a UUID (one per line)."
+        : operation === "known-state" && trimmedPublishTo === ""
+          ? "A known-state publication needs a location to publish to."
+          : null;
 
-  const canSubmit = Boolean(effectiveRepoId) && Boolean(effectiveFlow) && windowError === null && !trigger.isPending;
+  const canSubmit = Boolean(effectiveRepoId) && Boolean(effectiveFlow) && parameterError === null && !trigger.isPending;
 
   const submit = () => {
     trigger.mutate({
@@ -197,12 +228,13 @@ export function TriggerRunDialog({
       scope: "flow",
       pool: pool.trim() === "" ? null : pool.trim(),
       commitSha: commitSha.trim() === "" ? null : commitSha.trim(),
-      fullLoad,
-      backfillFrom: trimmedFrom !== "" ? `${trimmedFrom}:00Z` : null,
-      backfillTo: trimmedTo !== "" ? `${trimmedTo}:00Z` : null,
-      filePattern: hasPattern ? filePattern.trim() : null,
-      sourceFilter: hasSourceFilter ? sourceFilter.trim() : null,
-      assertionsOnly,
+      operation,
+      force,
+      values: readsDrop && Object.keys(parsedValues.values).length > 0 ? parsedValues.values : undefined,
+      drop: readsDrop && drop.trim() !== "" ? drop.trim() : null,
+      submissionId: operation === "deliver" && trimmedSubmission !== "" ? trimmedSubmission : null,
+      recordKeys: takesRecordScope && recordKeys.length > 0 ? recordKeys : undefined,
+      publishTo: operation === "known-state" ? trimmedPublishTo : null,
     });
   };
 
@@ -294,82 +326,116 @@ export function TriggerRunDialog({
               <p className="text-xs text-muted-foreground">
                 One-off overrides applied to this run only. The flow definition in git is unchanged.
               </p>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${idPrefix}-operation`}>Operation</Label>
+                <Select value={operation} onValueChange={(value) => setOperation(value as RunOperation)}>
+                  <SelectTrigger id={`${idPrefix}-operation`} size="sm" className="h-8 w-full" data-testid="trigger-operation">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RUN_OPERATIONS.map((option) => (
+                      <SelectItem key={option} value={option}>{OPERATION_LABELS[option]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{OPERATION_HINTS[operation]}</p>
+              </div>
               <div className="flex flex-col gap-1">
                 <Label className="flex items-center gap-2 text-[13px] font-normal">
-                  <Switch
-                    checked={fullLoad}
-                    disabled={assertionsOnly}
-                    onCheckedChange={setFullLoad}
-                    data-testid="trigger-fullLoad"
-                  />
-                  Full reprocess
+                  <Switch checked={force} onCheckedChange={setForce} data-testid="trigger-force" />
+                  Force
                 </Label>
                 <p className="pl-10 text-xs text-muted-foreground">
-                  Ignore what was delivered before and process the whole source again.
+                  Push past the change gates: plan every record even when no source table advanced, re-plan a
+                  completed submission, verify records verified recently.
                 </p>
               </div>
-              <div className="flex flex-col gap-1">
-                <Label className="flex items-center gap-2 text-[13px] font-normal">
-                  <Switch
-                    checked={assertionsOnly}
-                    disabled={fullLoad || hasWindow || hasPattern || hasSourceFilter}
-                    onCheckedChange={setAssertionsOnly}
-                    data-testid="trigger-assertionsOnly"
+              {readsDrop && (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={`${idPrefix}-drop`}>Drop location</Label>
+                    <Input
+                      id={`${idPrefix}-drop`}
+                      className="h-8 font-mono"
+                      placeholder="abfss://drops@lake.dfs.core.windows.net/recall/2026-09-01"
+                      value={drop}
+                      onChange={(event) => setDrop(event.target.value)}
+                      data-testid="trigger-drop"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Read this drop instead of the flow&apos;s declared source location.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={`${idPrefix}-values`}>Flow parameters</Label>
+                    <Textarea
+                      id={`${idPrefix}-values`}
+                      className="min-h-16 font-mono text-[12px]"
+                      placeholder={"logSource=north\nregion=NO"}
+                      value={valuesText}
+                      onChange={(event) => setValuesText(event.target.value)}
+                      data-testid="trigger-values"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Values for the parameters the flow declares, one name=value per line.
+                    </p>
+                  </div>
+                </>
+              )}
+              {operation === "deliver" && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${idPrefix}-submission`}>Re-run submission</Label>
+                  <Input
+                    id={`${idPrefix}-submission`}
+                    className="h-8 font-mono"
+                    value={submissionId}
+                    onChange={(event) => setSubmissionId(event.target.value)}
+                    data-testid="trigger-submission"
                   />
-                  Verify only
-                </Label>
-                <p className="pl-10 text-xs text-muted-foreground">
-                  Check the target against what the ledger says was delivered; nothing is written.
-                </p>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-[13px] font-medium">Window</span>
-                <DateRangeCalendar
-                  from={backfillFrom}
-                  to={backfillTo}
-                  onChange={(from, to) => {
-                    setBackfillFrom(from);
-                    setBackfillTo(to);
-                  }}
-                  disabled={fullLoad || assertionsOnly}
-                  testId="trigger-backfill"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Bound the run to the source data inside this window (UTC).
-                </p>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`${idPrefix}-file-pattern`}>File pattern</Label>
-                <Input
-                  id={`${idPrefix}-file-pattern`}
-                  className="h-8 font-mono"
-                  placeholder="wells_2026-03*.parquet"
-                  value={filePattern}
-                  onChange={(event) => setFilePattern(event.target.value)}
-                  disabled={assertionsOnly}
-                  data-testid="trigger-file-pattern"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Only the source files matching this glob are read.
-                </p>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`${idPrefix}-source-filter`}>Source filter</Label>
-                <Input
-                  id={`${idPrefix}-source-filter`}
-                  className="h-8 font-mono"
-                  value={sourceFilter}
-                  onChange={(event) => setSourceFilter(event.target.value)}
-                  disabled={assertionsOnly}
-                  data-testid="trigger-source-filter"
-                />
-                <p className="text-xs text-muted-foreground">
-                  An extra predicate the flow applies when it reads the source.
-                </p>
-              </div>
-              {windowError !== null && (
-                <p className="text-xs font-medium text-destructive" data-testid="trigger-backfill-error">
-                  {windowError}
+                  <p className="text-xs text-muted-foreground">
+                    Re-run one submission from its own drop, with the parameters it was received with.
+                  </p>
+                </div>
+              )}
+              {takesRecordScope && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${idPrefix}-records`}>
+                    {operation === "verify" ? "Verify only these records" : "Redeliver these records"}
+                  </Label>
+                  <Textarea
+                    id={`${idPrefix}-records`}
+                    className="min-h-16 font-mono text-[12px]"
+                    placeholder="one delivery key per line"
+                    value={recordKeysText}
+                    onChange={(event) => setRecordKeysText(event.target.value)}
+                    data-testid="trigger-record-keys"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {operation === "verify"
+                      ? "Delivery keys to check; empty verifies the flow's delivered records."
+                      : "Delivery keys to send again regardless of what OSDU holds; empty delivers what changed."}
+                  </p>
+                </div>
+              )}
+              {operation === "known-state" && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${idPrefix}-publish-to`}>Publish to</Label>
+                  <Input
+                    id={`${idPrefix}-publish-to`}
+                    className="h-8 font-mono"
+                    placeholder="abfss://drops@lake.dfs.core.windows.net/recall/known-state"
+                    value={publishTo}
+                    onChange={(event) => setPublishTo(event.target.value)}
+                    data-testid="trigger-publish-to"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    The directory or storage prefix the preparing side reads the known state from.
+                  </p>
+                </div>
+              )}
+              {parameterError !== null && (
+                <p className="text-xs font-medium text-destructive" data-testid="trigger-parameters-error">
+                  {parameterError}
                 </p>
               )}
             </div>

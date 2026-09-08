@@ -10,13 +10,13 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The built-in backfill through the control plane: the queue persists the substitution parameters on the run
-/// row (auditable history), the enqueue validates them, and the trigger API accepts a valid backfill, rejects an
-/// invalid one at the boundary, and surfaces the parameters on the run detail. Gated on a reachable catalog
-/// database, like the other DB-backed control-plane suites.
+/// The per-run parameters through the control plane: the queue persists them on the run row (the operation and
+/// force as columns, the full set as JSON, so the history says exactly what was asked), the enqueue validates them,
+/// and the trigger API accepts a valid request, rejects an invalid one at the boundary, and surfaces the parameters
+/// on the run detail. Gated on a reachable catalog database, like the other DB-backed control-plane suites.
 /// </summary>
 [Trait("Category", "Integration")]
-public sealed class BackfillParameterApiTests
+public sealed class RunParameterApiTests
 {
     [SkippableFact]
     public async Task Enqueue_PersistsParameters_OnTheRunRow()
@@ -24,28 +24,41 @@ public sealed class BackfillParameterApiTests
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
         var repoId = Guid.NewGuid();
-        var flowName = $"bf-queue-{Guid.NewGuid():N}";
-        var from = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        var to = new DateTime(2023, 2, 1, 0, 0, 0, DateTimeKind.Utc);
+        var flowName = $"rp-queue-{Guid.NewGuid():N}";
+        var submission = Guid.NewGuid();
+        var key = Guid.NewGuid();
 
         try
         {
             await using var db = CatalogDatabase.Create(cs);
             var runId = await RunQueueStore.EnqueueAsync(
                 db,
-                new RunEnqueueRequest(repoId, flowName, "file", Parameters: new RunParameters
+                new RunEnqueueRequest(repoId, flowName, "delivery", Parameters: new RunParameters
                 {
-                    BackfillFrom = from,
-                    BackfillTo = to,
-                    FilePattern = "orders*.csv",
+                    Operation = RunParameters.VerifyOperation,
+                    Force = true,
+                    SubmissionId = submission,
+                    RecordKeys = [key],
+                    Values = new Dictionary<string, string> { ["logSource"] = "north" },
                 }),
                 DateTime.UtcNow);
 
             var run = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == runId);
-            Assert.False(run.FullLoad);
-            Assert.Equal(from, run.BackfillFrom);
-            Assert.Equal(to, run.BackfillTo);
-            Assert.Equal("orders*.csv", run.FilePattern);
+            Assert.Equal("verify", run.Operation);
+            Assert.True(run.Force);
+            Assert.Equal(submission, run.SubmissionId);
+            Assert.NotNull(run.ParametersJson);
+            var restored = RunParameters.FromJson(run.ParametersJson);
+            Assert.Equal([key], restored.RecordKeys);
+            Assert.Equal("north", restored.Values["logSource"]);
+
+            // The defaults are stored as no JSON at all: an unparameterized run reads back as exactly that.
+            var plainId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "delivery"), DateTime.UtcNow);
+            var plain = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == plainId);
+            Assert.Equal("deliver", plain.Operation);
+            Assert.False(plain.Force);
+            Assert.Null(plain.ParametersJson);
+            Assert.True(RunParameters.FromJson(plain.ParametersJson).IsDefault);
         }
         finally
         {
@@ -65,11 +78,7 @@ public sealed class BackfillParameterApiTests
             await using var db = CatalogDatabase.Create(cs);
             await Assert.ThrowsAsync<SqlFlow.Core.SqlFlowException>(() => RunQueueStore.EnqueueAsync(
                 db,
-                new RunEnqueueRequest(repoId, "bad", "file", Parameters: new RunParameters
-                {
-                    FullLoad = true,
-                    BackfillFrom = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-                }),
+                new RunEnqueueRequest(repoId, "bad", "delivery", Parameters: new RunParameters { Operation = "backfill" }),
                 DateTime.UtcNow));
 
             // Nothing was queued for the repo.
@@ -82,11 +91,11 @@ public sealed class BackfillParameterApiTests
     }
 
     [SkippableFact]
-    public async Task TriggerApi_AcceptsABackfill_AndTheRunDetailShowsIt()
+    public async Task TriggerApi_AcceptsParameters_AndTheRunDetailShowsThem()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
-        var name = $"bf-api-{Guid.NewGuid():N}";
+        var name = $"rp-api-{Guid.NewGuid():N}";
         Guid repoId;
 
         try
@@ -101,7 +110,7 @@ public sealed class BackfillParameterApiTests
                     Id = CatalogIdentity.Pipeline(repoId, "flow-a"),
                     RepoId = repoId,
                     Name = "flow-a",
-                    Kind = "ing",
+                    Kind = "delivery",
                     RelativePath = "flow-a.flow.yaml",
                     Active = true,
                     FirstSeenUtc = now,
@@ -114,25 +123,36 @@ public sealed class BackfillParameterApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
-            // An inverted window is refused at the boundary.
+            // An unknown operation is refused at the boundary.
             using var invalid = await SendAsync(client, token, new
             {
                 repoId,
                 flowName = "flow-a",
-                backfillFrom = "2023-02-01T00:00:00Z",
-                backfillTo = "2023-01-01T00:00:00Z",
+                operation = "backfill",
             });
             Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
 
-            // A valid backfill is accepted, and the run detail carries the parameters for the audit trail.
+            // A known-state publication with a record scope is contradictory and refused too.
+            using var contradictory = await SendAsync(client, token, new
+            {
+                repoId,
+                flowName = "flow-a",
+                operation = "known-state",
+                recordKeys = new[] { Guid.NewGuid() },
+            });
+            Assert.Equal(HttpStatusCode.BadRequest, contradictory.StatusCode);
+
+            // A valid request is accepted, and the run detail carries the parameters for the audit trail.
+            var drop = "abfss://drops@lake/recall/2026-09-01";
             using var accepted = await SendAsync(client, token, new
             {
                 repoId,
                 flowName = "flow-a",
-                pool = "bf-unserved",
-                fullLoad = false,
-                backfillFrom = "2023-01-01T00:00:00Z",
-                backfillTo = "2023-02-01T00:00:00Z",
+                pool = "rp-unserved",
+                operation = "plan",
+                force = true,
+                drop,
+                values = new Dictionary<string, string> { ["logSource"] = "north" },
             });
             Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
             var run = await accepted.Content.ReadFromJsonAsync<RunTriggerAccepted>();
@@ -141,9 +161,14 @@ public sealed class BackfillParameterApiTests
             using var detailRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"/api/v1/runs/{run.RunId}", UriKind.Relative));
             detailRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var detail = await client.SendAsync(detailRequest);
-            var body = await detail.Content.ReadAsStringAsync();
-            Assert.Contains("2023-01-01", body, StringComparison.Ordinal);
-            Assert.Contains("2023-02-01", body, StringComparison.Ordinal);
+            var body = await detail.Content.ReadFromJsonAsync<RunDetailDto>();
+            Assert.NotNull(body);
+            Assert.Equal("plan", body.Operation);
+            Assert.True(body.Force);
+            Assert.NotNull(body.ParametersJson);
+            var stored = RunParameters.FromJson(body.ParametersJson);
+            Assert.Equal(drop, stored.Drop);
+            Assert.Equal("north", stored.Values["logSource"]);
         }
         finally
         {

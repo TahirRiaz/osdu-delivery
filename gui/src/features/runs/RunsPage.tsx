@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
 import { readLocalStorageState, useLocalStorageState, useUrlSeed } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,7 +32,7 @@ function numCell(value: number | null | undefined) {
   return <span className="font-mono tabular-nums">{value ? value.toLocaleString() : "-"}</span>;
 }
 
-// The identity columns lead every layout; the data-impact columns (records loaded / inserted / updated)
+// The identity columns lead every layout; the operation and delivered-count columns
 // trail it. Pool and commit are omitted here on purpose: they are per-run plumbing details that live on the run
 // detail page, not signal an operator scans a run board for.
 const statusColumn: Column<RunSummary> = {
@@ -55,10 +56,19 @@ const durationColumn: Column<RunSummary> = {
   header: "Duration",
   render: (row) => (row.durationSeconds != null ? formatDurationSeconds(row.durationSeconds) : "-"),
 };
+const operationColumn: Column<RunSummary> = {
+  id: "operation",
+  header: "Operation",
+  render: (row) => (
+    <span className="inline-flex items-center gap-1.5">
+      <span>{row.operation}</span>
+      {row.force && <Badge variant="secondary" className="bg-warning/15 text-warning">forced</Badge>}
+    </span>
+  ),
+};
 const impactColumns: Column<RunSummary>[] = [
-  { id: "loaded", header: "Loaded", align: "right", render: (row) => numCell(row.rowsLoaded) },
-  { id: "inserted", header: "Inserted", align: "right", render: (row) => numCell(row.rowsInserted) },
-  { id: "updated", header: "Updated", align: "right", render: (row) => numCell(row.rowsUpdated) },
+  operationColumn,
+  { id: "delivered", header: "Delivered", align: "right", render: (row) => numCell(row.rowsLoaded) },
 ];
 
 const baseColumns: Column<RunSummary>[] = [
@@ -88,16 +98,14 @@ const flatColumns: Column<RunSummary>[] = [
 ];
 
 /** Aggregates one group's rows for its header line: when it started, total duration, how many failed, and the
- * group's combined data impact (records loaded / inserted / updated) so a collapsed schedule or batch
+ * group's combined delivered count so a collapsed schedule or batch
  * shows how much data its last run moved without being expanded. */
 function groupStats(rows: RunSummary[]) {
   let durationTotal = 0;
   let hasDuration = false;
   let earliest: string | null = null;
   let failed = 0;
-  let loaded = 0;
-  let inserted = 0;
-  let updated = 0;
+  let delivered = 0;
   for (const row of rows) {
     if (row.durationSeconds != null) {
       durationTotal += row.durationSeconds;
@@ -113,20 +121,16 @@ function groupStats(rows: RunSummary[]) {
       failed += 1;
     }
 
-    loaded += row.rowsLoaded ?? 0;
-    inserted += row.rowsInserted ?? 0;
-    updated += row.rowsUpdated ?? 0;
+    delivered += row.rowsLoaded ?? 0;
   }
 
-  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed, loaded, inserted, updated };
+  return { durationTotal: hasDuration ? durationTotal : null, earliest, failed, delivered };
 }
 
 function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
   const stats = groupStats(rows);
   const impact: { label: string; value: number }[] = [
-    { label: "loaded", value: stats.loaded },
-    { label: "inserted", value: stats.inserted },
-    { label: "updated", value: stats.updated },
+    { label: "delivered", value: stats.delivered },
   ];
   return (
     <>
@@ -142,8 +146,8 @@ function GroupStatsInline({ rows }: { rows: RunSummary[] }) {
         </span>
       )}
       <span className="text-[13px] text-muted-foreground">({rows.length})</span>
-      {/* Only non-zero impact metrics show, so a group that loaded nothing stays uncluttered while one that moved
-          data reports its totals inline (e.g. "45,678 loaded"). */}
+      {/* Only a non-zero count shows, so a group that delivered nothing stays uncluttered while one that did
+          reports its total inline (e.g. "45,678 delivered"). */}
       {impact.filter((metric) => metric.value > 0).map((metric) => (
         <span key={metric.label} className="text-[13px] tabular-nums text-muted-foreground">
           {metric.value.toLocaleString()} {metric.label}

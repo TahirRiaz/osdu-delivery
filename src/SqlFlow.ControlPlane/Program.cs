@@ -17,6 +17,7 @@ using SqlFlow.ControlPlane.Infrastructure;
 using SqlFlow.ControlPlane.Notifications;
 using SqlFlow.ControlPlane.Proposals;
 using SqlFlow.ControlPlane.Security;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Execution;
 using SqlFlow.Node;
 using SqlFlow.SourceControl.Proposals;
@@ -33,11 +34,19 @@ builder.Services.AddOptions<ControlPlaneOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
 
+// The request body ceiling is a deliberate setting, never Kestrel's implicit default: a submission manifest that
+// lists many records must fit, and anything larger is refused on purpose (ControlPlane:MaxRequestBodyMegabytes).
+builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = options.MaxRequestBodyMegabytes * 1024L * 1024L);
+
 // ---- SqlFlow engine: the one shared composition (source readers, secret chain, connection registry, loaders,
 // the flow runner, and the DocumentExecutor). The control plane runs flows through the exact same engine wiring as
 // the CLI and worker nodes, so a triggered run behaves identically. This also provides the secret chain
 // (IAzureCredentialFactory, the env + Key Vault providers, ISecretResolver) the catalog connection provider needs.
 builder.Services.AddSqlFlowEngine();
+// The delivery kind (the one document kind this build serves) with its executor and compute operations, and the
+// ledger over the catalog: each ledger operation opens its own tracking context from the pooled options.
+builder.Services.AddDeliveryKind();
+builder.Services.AddDeliveryLedger(sp => () => new CatalogDbContext(sp.GetRequiredService<DbContextOptions<CatalogDbContext>>()));
 builder.Services.AddSingleton<CatalogSync>();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();

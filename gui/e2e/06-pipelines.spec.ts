@@ -68,7 +68,7 @@ test.describe.serial("pipelines", () => {
     // A flow-locked launch must still resolve its own run parameters: a file flow honors full load, so the toggle
     // is present and the dialog never claims the flow has none. Guards the launching context that prefills the
     // flow without its pipeline id, where the parameter lookup previously never fired.
-    await expect(adminPage.getByTestId("trigger-fullLoad")).toBeVisible();
+    await expect(adminPage.getByTestId("trigger-operation")).toBeVisible();
     await expect(adminPage.getByTestId("trigger-parameters-unavailable")).toHaveCount(0);
     // Repo and flow are locked by the pipeline context; just submit.
     await adminPage.getByTestId("trigger-submit").click();

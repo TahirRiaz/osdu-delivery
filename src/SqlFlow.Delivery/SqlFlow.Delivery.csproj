@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery</RootNamespace>
+    <Description>The OSDU delivery domain: the delivery flow kind, mapping rendering, snapshots, drops, the OSDU protocols, the ledger over the catalog, and the lease-and-retry worker.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Parquet.Net" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
+    <ProjectReference Include="..\SqlFlow.Yaml\SqlFlow.Yaml.csproj" />
+    <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />
+    <ProjectReference Include="..\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlFlow.Delivery.Tests" />
+  </ItemGroup>
+
+</Project>

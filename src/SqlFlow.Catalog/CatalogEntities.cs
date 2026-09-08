@@ -227,35 +227,22 @@ public class CatalogRun
     /// or empty); the node then falls back to git materialization via <see cref="CommitSha"/>.</summary>
     public string? FlowVersionHash { get; set; }
 
-    /// <summary>Per-run substitution: ignore the watermark and read everything the definition selects (the
-    /// built-in backfill's force-full). Recorded on the run, so every backfill is auditable from the history.</summary>
-    public bool FullLoad { get; set; }
+    /// <summary>The operation the run performs (<c>RunParameters.Operations</c>: deliver, verify, plan, known-state).
+    /// Recorded on the run so the history says what was asked, and indexed so a listing can filter on it.</summary>
+    public string Operation { get; set; } = "deliver";
 
-    /// <summary>Per-run substitution: the externally-bounded window's low bound (inclusive, UTC). File flows
-    /// bound file dates; ingestion flows bound the incremental date column; exports re-window their chunk plan.</summary>
-    public DateTime? BackfillFrom { get; set; }
+    /// <summary>Per-run substitution: force past the change gates (plan every record, re-plan a completed submission,
+    /// verify recently verified records). Recorded on the run so a forced run is distinguishable in the history.</summary>
+    public bool Force { get; set; }
 
-    /// <summary>Per-run substitution: the window's high bound (UTC); null leaves the definition's own upper
-    /// bound in effect.</summary>
-    public DateTime? BackfillTo { get; set; }
+    /// <summary>The submission the run re-runs or was scoped to (<c>RunParameters.SubmissionId</c>), or null. Indexed,
+    /// so a submission's page lists every run that touched it.</summary>
+    public Guid? SubmissionId { get; set; }
 
-    /// <summary>Per-run substitution: a glob narrowing which files a file flow reads this run.</summary>
-    public string? FilePattern { get; set; }
-
-    /// <summary>The raw source-read predicate this run was triggered with (<c>RunParameters.SourceFilter</c>), or
-    /// null. Persisted so an operational backfill states on the run record exactly which slice it read.</summary>
-    public string? SourceFilter { get; set; }
-
-    /// <summary>Per-run substitution: evaluate the flow's data-quality assertions against the current target
-    /// and load nothing (the on-demand path for <c>mode: manual</c> assertions). Recorded on the run so an
-    /// assertions-only execution is distinguishable from a load in the history.</summary>
-    public bool AssertionsOnly { get; set; }
-
-    /// <summary>Per-run substitution: read MIN from the source instead of MAX from the target, so back-dated rows
-    /// left in the source by an upstream backfill are re-pulled rather than filtered out below the target's
-    /// high-water mark. Set on a group backfill's downstream members. Recorded on the run so the reprocess is
-    /// auditable from the history.</summary>
-    public bool ReprocessFromSourceMin { get; set; }
+    /// <summary>The full <c>RunParameters</c> the run was triggered with, as JSON (parameter values, an explicit drop, the
+    /// record scope, the publication target), or null for the defaults. The authoritative record of what was asked;
+    /// the node reads the run's parameters back from here.</summary>
+    public string? ParametersJson { get; set; }
 
     /// <summary>The run group this run belongs to when it was enqueued as one member of a multi-flow execution
     /// (a Node run: a flow and its descendants; or a Batch run: a whole data source), or null for a standalone
@@ -319,27 +306,25 @@ public class CatalogRun
     /// <summary>The host that produced the run, when the artifact records it (null until run.json carries it).</summary>
     public string? Host { get; set; }
 
-    /// <summary>The incremental read scope the run computed and applied (full / incremental / backfill / init-load):
-    /// the engine-derived counterpart to the operator's backfill parameters above, projected from
-    /// <c>result.incremental</c>. Null when the flow has no incremental surface (sp/hc flows).</summary>
-    public string? IncrementalMode { get; set; }
+    /// <summary>The submission the run produced or completed, projected from <c>result.submissionId</c>; null for a
+    /// verify, plan or known-state run. Distinct from the requested <see cref="SubmissionId"/> above: a deliver run
+    /// registers the drop's submission here.</summary>
+    public Guid? ResultSubmissionId { get; set; }
 
-    /// <summary>The filter that bounded the read this run: the source <c>WHERE</c> fragment for a relational flow,
-    /// or the "files newer than ..." window for a file flow. Null for a full read.</summary>
-    public string? IncrementalFilter { get; set; }
+    /// <summary>Records the run planned for delivery (<c>result.planned</c>), or checked (a verify run).</summary>
+    public int? RecordsPlanned { get; set; }
 
-    /// <summary>The resolved watermark value the filter was built from (the result of the MAX/MIN probe), null on a
-    /// full read or when no prior watermark existed.</summary>
-    public string? IncrementalWatermark { get; set; }
+    /// <summary>Records delivered by the run (<c>result.delivered</c>), or matched (a verify run).</summary>
+    public int? RecordsDelivered { get; set; }
 
-    /// <summary>Where the watermark came from, including the probed object: e.g. <c>target MAX [dbo].[Orders]</c>,
-    /// <c>run log</c>, or <c>source MIN [dbo].[Orders]</c>. Null when there is no watermark.</summary>
-    public string? IncrementalWatermarkSource { get; set; }
+    /// <summary>Records the run left held (<c>result.held</c>), or found drifted or missing (a verify run).</summary>
+    public int? RecordsHeld { get; set; }
 
-    /// <summary>How <c>DataSet_DW</c> was derived for a file run (e.g. <c>filename dates; month-first (inferred from
-    /// file set)</c> or <c>last-modified</c>), projected from <c>result.dataSetConvention</c>. Null for a flow that
-    /// emits no <c>DataSet_DW</c> (relational ingestion, sp/hc flows).</summary>
-    public string? DataSetConvention { get; set; }
+    /// <summary>Records that failed in the run (<c>result.failed</c>), or errored (a verify run).</summary>
+    public int? RecordsFailed { get; set; }
+
+    /// <summary>Records skipped as unchanged (<c>result.skippedUnchanged</c>).</summary>
+    public int? RecordsSkipped { get; set; }
 }
 
 /// <summary>

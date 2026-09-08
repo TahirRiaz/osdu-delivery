@@ -63,10 +63,26 @@ public sealed class CatalogDbContext : DbContext
     /// <summary>The estate digests: periodic and on-demand summaries of the notification event stream.</summary>
     public DbSet<CatalogNotificationDigest> NotificationDigests => Set<CatalogNotificationDigest>();
 
+    // The delivery ledger (schema delivery): see DeliveryEntities.cs.
+    public DbSet<DeliverySubmission> DeliverySubmissions => Set<DeliverySubmission>();
+
+    public DbSet<DeliveryRecord> DeliveryRecords => Set<DeliveryRecord>();
+
+    public DbSet<DeliveryAttempt> DeliveryAttempts => Set<DeliveryAttempt>();
+
+    public DbSet<DeliverySourceWatermark> DeliveryWatermarks => Set<DeliverySourceWatermark>();
+
+    public DbSet<DeliveryActivity> DeliveryActivities => Set<DeliveryActivity>();
+
+    public DbSet<DeliveryMapping> DeliveryMappings => Set<DeliveryMapping>();
+
+    public DbSet<DeliverySnapshot> DeliverySnapshots => Set<DeliverySnapshot>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
         modelBuilder.HasDefaultSchema(SchemaName);
+        DeliveryModel.Configure(modelBuilder);
 
         modelBuilder.Entity<CatalogRepo>(entity =>
         {
@@ -111,14 +127,12 @@ public sealed class CatalogDbContext : DbContext
             entity.Property(r => r.TargetPool).HasMaxLength(128);
             entity.Property(r => r.CommitSha).HasMaxLength(64);
             entity.Property(r => r.FlowVersionHash).HasMaxLength(64);
-            entity.Property(r => r.FilePattern).HasMaxLength(200);
-            entity.Property(r => r.SourceFilter).HasMaxLength(4000);
+            entity.Property(r => r.Operation).HasMaxLength(16).IsRequired();
             entity.Property(r => r.Host).HasMaxLength(256);
-            entity.Property(r => r.IncrementalMode).HasMaxLength(16);
-            entity.Property(r => r.IncrementalFilter).HasMaxLength(2048);
-            entity.Property(r => r.IncrementalWatermark).HasMaxLength(512);
-            entity.Property(r => r.IncrementalWatermarkSource).HasMaxLength(256);
-            entity.Property(r => r.DataSetConvention).HasMaxLength(128);
+            // The requested submission (a re-run) and the produced one: a submission's page lists both.
+            entity.HasIndex(r => r.SubmissionId);
+            entity.HasIndex(r => r.ResultSubmissionId);
+            entity.HasIndex(r => new { r.PipelineId, r.Operation });
             entity.Property(r => r.TriggerSource).HasMaxLength(16);
             // PipelineId is a soft link (no FK): a run can outlive its pipeline being removed from git, so the
             // history stays even when the Pipeline row is gone. The GUI left-joins on it; it is indexed for that.

@@ -60,12 +60,11 @@ const memberColumns: Column<RunSummary>[] = [
     header: "Last action",
     render: (row) => <TruncatedText text={row.lastAction} maxWidth={420} />,
   },
-  // The data-impact columns (records loaded / inserted / updated) tick live as each member lands its
-  // data. Pool and commit are omitted: pool is per-run plumbing, and the group's commit is one value shown once
+  // The operation each member performs and the records it delivered, ticking live as each member lands its
+  // work. Pool and commit are omitted: pool is per-run plumbing, and the group's commit is one value shown once
   // in the header rather than repeated on every member row.
-  { id: "loaded", header: "Loaded", align: "right", render: (row) => numCell(row.rowsLoaded) },
-  { id: "inserted", header: "Inserted", align: "right", render: (row) => numCell(row.rowsInserted) },
-  { id: "updated", header: "Updated", align: "right", render: (row) => numCell(row.rowsUpdated) },
+  { id: "operation", header: "Operation", render: (row) => `${row.operation}${row.force ? " (forced)" : ""}` },
+  { id: "delivered", header: "Delivered", align: "right", render: (row) => numCell(row.rowsLoaded) },
 ];
 
 /** A right-aligned numeric cell: the value with thousands separators, or "-" when it is null/zero (a member that

@@ -132,6 +132,14 @@ public static class CatalogProjection
             RowsUpdated = result is { } r5 ? Long(r5, "rowsUpdated") : null,
             RowsDeleted = result is { } r6 ? Long(r6, "rowsDeleted") : null,
             Host = NullIfBlank(Str(root, "host")),
+            // The delivery kind's own counts (DeliverOutcome and VerifyRunOutcome in SqlFlow.Delivery): a deliver run
+            // reports what it planned and did to records, a verify run what it checked and found.
+            ResultSubmissionId = result is { } r7 && Prop(r7, "submissionId") is { ValueKind: JsonValueKind.String } sid && sid.TryGetGuid(out var submissionId) ? submissionId : null,
+            RecordsPlanned = result is { } r8 ? Count(Long(r8, "planned") ?? Long(r8, "checked")) : null,
+            RecordsDelivered = result is { } r9 ? Count(Long(r9, "delivered") ?? Long(r9, "matched")) : null,
+            RecordsHeld = result is { } r10 ? Count(Long(r10, "held") ?? Sum(Long(r10, "drifted"), Long(r10, "missing"))) : null,
+            RecordsFailed = result is { } r11 ? Count(Long(r11, "failed") ?? Long(r11, "errors")) : null,
+            RecordsSkipped = result is { } r12 ? Count(Long(r12, "skippedUnchanged")) : null,
         };
     }
 
@@ -192,6 +200,10 @@ public static class CatalogProjection
 
     /// <summary>A long count saturated into int range, so an oversized run.json value never silently overflows.</summary>
     private static int Int(long? value) => (int)Math.Min(value ?? 0, int.MaxValue);
+
+    private static int? Count(long? value) => value is { } v ? (int)Math.Clamp(v, 0, int.MaxValue) : null;
+
+    private static long? Sum(long? a, long? b) => a is null && b is null ? null : (a ?? 0) + (b ?? 0);
 
     private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
 }

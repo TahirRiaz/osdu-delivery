@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isApiError } from "../../api/client";
 import { pipelineApi, runApi } from "../../api/endpoints";
+import type { RunParameters } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -22,13 +23,21 @@ import { RunStatusBadge } from "../../components/StatusBadge";
 import { pollingInterval } from "../../hooks/usePolling";
 import { usePanel } from "../../layout/workbench/PanelContext";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
-import { formatDurationSeconds, parseUtc } from "../../lib/time";
+import { formatDurationSeconds } from "../../lib/time";
 import { RunTracePanel } from "./RunTracePanel";
 import { TriggerRunDialog } from "./TriggerRunDialog";
 
-/** A compact UTC stamp for a window bound (the API sends UTC timestamps). */
-function fmtBound(value: string): string {
-  return parseUtc(value).toISOString().replace("T", " ").replace(/:\d\d\.\d+Z$/, "");
+/** The stored run parameters, or null when the run carried the defaults (or the stored form is unreadable). */
+function parseRunParameters(json: string | null): RunParameters | null {
+  if (json === null) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(json) as RunParameters;
+  } catch {
+    return null;
+  }
 }
 
 /** A record counter: grouped for readability, a real zero kept distinct from an unrecorded value (muted dash). */
@@ -159,8 +168,8 @@ function RunDetailContent({ runId }: { runId: string }) {
   // until polling reflects the terminal "cancelled" status.
   const cancellable = run.status === "queued" || run.status === "running";
   const cancelling = run.status === "running" && run.cancelRequestedUtc !== null;
-  const hasParameters = run.fullLoad || run.backfillFrom !== null || run.filePattern !== null
-    || run.sourceFilter !== null || run.assertionsOnly;
+  const parameters = parseRunParameters(run.parametersJson);
+  const hasParameters = run.operation !== "deliver" || run.force || parameters !== null;
 
   return (
     <Page data-testid="page-run-detail">
@@ -227,6 +236,9 @@ function RunDetailContent({ runId }: { runId: string }) {
             {run.commitSha && (
               <IdChip label="commit" value={run.commitSha} display={run.commitSha.slice(0, 7)} testId="run-commit" copyTestId="copy-run-commit" />
             )}
+            {run.resultSubmissionId && (
+              <IdChip label="submission" value={run.resultSubmissionId} testId="run-submission" copyTestId="copy-run-submission" />
+            )}
           </>
         )}
       >
@@ -238,10 +250,11 @@ function RunDetailContent({ runId }: { runId: string }) {
             {run.durationSeconds != null ? formatDurationSeconds(run.durationSeconds) : "-"}
           </span>
         </DetailPair>
-        <DetailPair label="Records"><RowCount value={run.rowsLoaded} /></DetailPair>
-        <DetailPair label="Inserted"><RowCount value={run.rowsInserted} /></DetailPair>
-        <DetailPair label="Updated"><RowCount value={run.rowsUpdated} /></DetailPair>
-        <DetailPair label="Deleted"><RowCount value={run.rowsDeleted} /></DetailPair>
+        <DetailPair label="Planned"><RowCount value={run.recordsPlanned} /></DetailPair>
+        <DetailPair label="Delivered"><RowCount value={run.recordsDelivered} /></DetailPair>
+        <DetailPair label="Held"><RowCount value={run.recordsHeld} /></DetailPair>
+        <DetailPair label="Failed"><RowCount value={run.recordsFailed} /></DetailPair>
+        <DetailPair label="Unchanged"><RowCount value={run.recordsSkipped} /></DetailPair>
         <DetailPair label="Step">
           <span className="font-mono tabular-nums">{run.wave >= 0 ? run.wave : "-"}</span>
         </DetailPair>
@@ -259,19 +272,19 @@ function RunDetailContent({ runId }: { runId: string }) {
           <AlertDescription>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-foreground">Parameters:</span>
-              {run.fullLoad && <Badge variant="secondary" className="bg-warning/15 text-warning">full load</Badge>}
-              {run.assertionsOnly && <Badge variant="secondary" className="bg-info/12 text-info">verify only</Badge>}
-              {run.backfillFrom && (
-                <Badge variant="secondary" className="font-mono">
-                  {run.backfillTo
-                    ? `window ${fmtBound(run.backfillFrom)} .. ${fmtBound(run.backfillTo)}`
-                    : `from ${fmtBound(run.backfillFrom)}`}
-                </Badge>
+              <Badge variant="secondary" className="bg-info/12 text-info" data-testid="run-operation">{run.operation}</Badge>
+              {run.force && <Badge variant="secondary" className="bg-warning/15 text-warning">forced</Badge>}
+              {parameters?.drop && <Badge variant="secondary" className="font-mono">drop {parameters.drop}</Badge>}
+              {parameters?.submissionId && (
+                <Badge variant="secondary" className="font-mono">submission {parameters.submissionId}</Badge>
               )}
-              {run.filePattern && <Badge variant="secondary" className="font-mono">files '{run.filePattern}'</Badge>}
-              {run.sourceFilter && (
-                <Badge variant="secondary" className="font-mono">source filter '{run.sourceFilter}'</Badge>
+              {parameters?.recordKeys && parameters.recordKeys.length > 0 && (
+                <Badge variant="secondary">{parameters.recordKeys.length} scoped {parameters.recordKeys.length === 1 ? "record" : "records"}</Badge>
               )}
+              {parameters?.publishTo && <Badge variant="secondary" className="font-mono">publish to {parameters.publishTo}</Badge>}
+              {Object.entries(parameters?.values ?? {}).map(([name, value]) => (
+                <Badge key={name} variant="secondary" className="font-mono">{name}={value}</Badge>
+              ))}
             </div>
           </AlertDescription>
         </Alert>
@@ -321,14 +334,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           repoId={run.repoId}
           flowName={run.flowName}
           flowId={run.pipelineId}
-          initialParameters={{
-            fullLoad: run.fullLoad,
-            backfillFrom: run.backfillFrom,
-            backfillTo: run.backfillTo,
-            filePattern: run.filePattern,
-            sourceFilter: run.sourceFilter,
-            assertionsOnly: run.assertionsOnly,
-          }}
+          initialParameters={{ ...(parameters ?? {}), operation: run.operation, force: run.force }}
         />
       )}
     </Page>

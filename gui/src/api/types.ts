@@ -185,6 +185,10 @@ export interface RunSummary {
   lastAction: string | null;
   lastActionUtc: string | null;
   error: string | null;
+  /** What the run does: deliver, verify, plan or known-state. */
+  operation: RunOperation;
+  /** Forced past the change gates. */
+  force: boolean;
 }
 
 export interface RunDetail {
@@ -213,14 +217,41 @@ export interface RunDetail {
   rowsDeleted: number | null;
   error: string | null;
   host: string | null;
-  fullLoad: boolean;
-  backfillFrom: string | null;
-  backfillTo: string | null;
-  filePattern: string | null;
-  assertionsOnly: boolean;
-  reprocessFromSourceMin: boolean;
-  sourceFilter: string | null;
+  operation: RunOperation;
+  force: boolean;
+  /** The submission the run re-ran or was scoped to, when it was. */
+  submissionId: string | null;
+  /** The full run parameters as stored (JSON of RunParameters), null for the defaults. */
+  parametersJson: string | null;
+  /** The submission a deliver run registered or completed, projected from its result. */
+  resultSubmissionId: string | null;
+  recordsPlanned: number | null;
+  recordsDelivered: number | null;
+  recordsHeld: number | null;
+  recordsFailed: number | null;
+  recordsSkipped: number | null;
   groupId: string | null;
+}
+
+/** The operations a delivery run performs. */
+export type RunOperation = "deliver" | "verify" | "plan" | "known-state";
+
+export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state"];
+
+/** The per-run parameters as the run row stores them (parametersJson) and as a trigger sends them. */
+export interface RunParameters {
+  operation?: RunOperation;
+  force?: boolean;
+  /** The flow's declared parameter values, name to value. */
+  values?: Record<string, string>;
+  /** An explicit drop location overriding the flow's declared source. */
+  drop?: string | null;
+  /** Re-run one submission. */
+  submissionId?: string | null;
+  /** The delivery keys the run is scoped to. */
+  recordKeys?: string[];
+  /** Where a known-state publication goes. */
+  publishTo?: string | null;
 }
 
 /** One line of a run's trace: the run events in time order. */
@@ -257,18 +288,12 @@ export interface ActivityEvent {
   status: string | null;
 }
 
-export interface RunTriggerRequest {
+export interface RunTriggerRequest extends RunParameters {
   repoId: string;
   flowName: string;
   pool?: string | null;
   commitSha?: string | null;
-  fullLoad?: boolean;
-  backfillFrom?: string | null;
-  backfillTo?: string | null;
-  filePattern?: string | null;
   scope?: RunScope | null;
-  assertionsOnly?: boolean;
-  sourceFilter?: string | null;
 }
 
 export interface RunTriggerAccepted {

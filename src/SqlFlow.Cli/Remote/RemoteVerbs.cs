@@ -241,13 +241,14 @@ internal static partial class RemoteVerbs
                 repo.Id, flowName,
                 Pool: Program.GetOption(args, "--pool"),
                 CommitSha: Program.GetOption(args, "--commit"),
-                FullLoad: parameters.FullLoad,
-                BackfillFrom: parameters.BackfillFrom,
-                BackfillTo: parameters.BackfillTo,
-                FilePattern: parameters.FilePattern,
                 Scope: scope,
-                AssertionsOnly: parameters.AssertionsOnly,
-                SourceFilter: parameters.SourceFilter);
+                Operation: parameters.Operation,
+                Force: parameters.Force,
+                Values: parameters.Values.Count == 0 ? null : parameters.Values,
+                Drop: parameters.Drop,
+                SubmissionId: parameters.SubmissionId,
+                RecordKeys: parameters.RecordKeys.Count == 0 ? null : parameters.RecordKeys,
+                PublishTo: parameters.PublishTo);
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
             if (outcome.Run is { } run)
@@ -928,9 +929,14 @@ internal static partial class RemoteVerbs
             Console.WriteLine($"  records:     {FormatCount(run.RowsLoaded)} processed, {FormatCount(run.RowsInserted)} created, {FormatCount(run.RowsUpdated)} updated, {FormatCount(run.RowsDeleted)} deleted");
         }
 
-        if (run.FullLoad || run.BackfillFrom is not null || run.BackfillTo is not null || run.FilePattern is not null)
+        if (!string.Equals(run.Operation, "deliver", StringComparison.OrdinalIgnoreCase) || run.Force || run.ParametersJson is not null)
         {
-            Console.WriteLine($"  parameters:  {(run.FullLoad ? "full; " : string.Empty)}window {FormatUtc(run.BackfillFrom)} -> {FormatUtc(run.BackfillTo)}{(run.FilePattern is null ? string.Empty : $"; pattern {run.FilePattern}")}");
+            Console.WriteLine($"  parameters:  {run.Operation}{(run.Force ? " (forced)" : string.Empty)}{(run.ParametersJson is null ? string.Empty : " " + run.ParametersJson)}");
+        }
+
+        if (run.RecordsPlanned is not null || run.RecordsDelivered is not null || run.RecordsHeld is not null || run.RecordsFailed is not null)
+        {
+            Console.WriteLine($"  outcome:     {FormatCount(run.RecordsPlanned)} planned, {FormatCount(run.RecordsDelivered)} delivered, {FormatCount(run.RecordsHeld)} held, {FormatCount(run.RecordsFailed)} failed, {FormatCount(run.RecordsSkipped)} unchanged{(run.ResultSubmissionId is null ? string.Empty : ", submission " + run.ResultSubmissionId)}");
         }
 
         if (run.Error is not null)

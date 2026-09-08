@@ -11,6 +11,7 @@ using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Execution;
 using SqlFlow.Node;
 using SqlFlow.Yaml;
@@ -62,7 +63,7 @@ internal static class Program
             return 1;
         }
 
-        using var provider = BuildServiceProvider(verbose, json: args.Contains("--json"));
+        using var provider = BuildServiceProvider(args, verbose, json: args.Contains("--json"));
         var documents = provider.GetRequiredService<YamlDocumentLoader>();
 
         try
@@ -117,6 +118,7 @@ internal static class Program
                         LogLevel = ParseLogLevel(GetOption(args, "--log-level")),
                         Echo = json ? null : Console.WriteLine,
                         Parameters = parameters,
+                        Actor = "cli:" + Environment.UserName,
                     };
 
                     DocumentExecutionResult exec;
@@ -327,6 +329,8 @@ internal static class Program
             builder.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Information);
         });
         AddCliEngine(services);
+        // The node holds the catalog, so the delivery ledger is always available to the runs it executes.
+        services.AddDeliveryLedger(_ => () => CatalogDatabase.Create(catalogConnection));
         services.AddSingleton(TimeProvider.System);
         services.AddScoped(_ => CatalogDatabase.Create(catalogConnection));
         services.AddSingleton<RunWorker>();
@@ -678,6 +682,11 @@ internal static class Program
         }
     }
 
+    /// <summary>Whether a catalog is configured at all: <c>--db</c> was passed or the catalog variable is set. Without
+    /// either, a run is a pure file operation and the catalog is simply absent (no error, no output).</summary>
+    private static bool HasCatalogConnection(string[] args)
+        => GetOption(args, "--db") is not null || Environment.GetEnvironmentVariable("SQLFLOW_CATALOG_DB") is { Length: > 0 };
+
     /// <summary>Resolves the catalog connection from <c>--db</c> (default <c>${env:SQLFLOW_CATALOG_DB}</c>), warning
     /// when a literal credential was passed on the command line. Null (after printing the error) when it cannot.</summary>
     private static string? ResolveCatalogConnection(IServiceProvider provider, string[] args)
@@ -787,7 +796,7 @@ internal static class Program
         }
     }
 
-    private static ServiceProvider BuildServiceProvider(bool verbose, bool json)
+    private static ServiceProvider BuildServiceProvider(string[] args, bool verbose, bool json)
     {
         var services = new ServiceCollection();
 
@@ -807,6 +816,9 @@ internal static class Program
         });
 
         AddCliEngine(services);
+        // The ledger rides on the catalog connection a run was given (--db, or the catalog variable); without one the
+        // engine validates, plans and captures snapshots, and says so when asked to deliver.
+        services.AddDeliveryLedger(sp => HasCatalogConnection(args) && ResolveCatalogConnection(sp, args) is { } catalog ? () => CatalogDatabase.Create(catalog) : null);
         if (json)
         {
             // With --json the engine's live event stream is re-aimed at stderr too, so stdout is exactly one
@@ -826,6 +838,7 @@ internal static class Program
     private static void AddCliEngine(IServiceCollection services)
     {
         services.AddSqlFlowEngine();
+        services.AddDeliveryKind();
         services.AddSingleton(sp => new DocumentExecutor(sp, Console.Error.WriteLine));
     }
 
@@ -849,7 +862,8 @@ internal static class Program
               sqlflow validate <flow.yaml|folder>  Validate a flow document, or every document under a folder
                                [--json]            (the CI gate: exit 0 only when every document is valid)
               sqlflow run      <flow.yaml>         Execute the flow (Ctrl+C aborts the in-flight work)
-                               [--full] [--from <date>] [--to <date>] [--file-pattern <glob>]
+                               [--operation deliver|verify|plan|known-state] [--force] [--set name=value]...
+                               [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
                                [--log-level info|debug|trace] [--json] [--db <conn-ref>] [--no-db-sync]
               sqlflow auth     [--scope storage|keyvault|arm|<uri>]
                                                    Verify Azure auth in THIS environment: reports the resolved mode
@@ -887,8 +901,9 @@ internal static class Program
                                [--expires-days <N>|--no-expiry] [--scopes "read operate"] [--no-store]
                                                    Sign in and store a personal access token for the URL.
               sqlflow logout                       Revoke the stored token server-side and remove it locally.
-              sqlflow trigger  --repo <name|id> --flow <f> [--pool <p>] [--commit <sha>]
-                               [--full] [--from <date>] [--to <date>] [--file-pattern <glob>] [--preview] [--follow]
+              sqlflow trigger  --repo <name|id> --flow <f> [--pool <p>] [--commit <sha>] [--preview] [--follow]
+                               [--operation deliver|verify|plan|known-state] [--force] [--set name=value]...
+                               [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
                                                    Enqueue a run on the fleet (POST /runs). --preview shows what would
                                                    run without enqueuing; --follow attaches to the live trace.
               sqlflow runs list [--status s] [--flow name] [--batch b] [--kind k] [--repo r] [--group g] [--latest]
@@ -916,37 +931,28 @@ internal static class Program
     };
 
     /// <summary>
-    /// The per-run parameters' CLI surface: <c>--full</c> ignores the flow's change detection, <c>--from</c>/<c>--to</c>
-    /// is an externally-bounded window, and <c>--file-pattern</c> narrows the selection to one glob. Parsed and
-    /// validated here (dates are invariant-culture, e.g. <c>2023-01-15</c> or <c>2023-01-15 06:00:00</c>), the same
-    /// <see cref="RunParameters"/> contract the control-plane trigger validates, so both entry points refuse exactly
-    /// the same nonsense.
+    /// The per-run parameters' CLI surface: <c>--operation deliver|verify|plan|known-state</c> picks the operation
+    /// (deliver by default), <c>--force</c> pushes past the change gates, <c>--set name=value</c> (repeatable) supplies
+    /// the flow's parameter values, <c>--drop</c> overrides the drop location, <c>--submission</c> re-runs one
+    /// submission, <c>--record</c> (repeatable) scopes the run to those delivery keys, and <c>--publish-to</c> names
+    /// where a known-state publication goes. Parsed and validated once here, for a local run and a remote trigger alike.
     /// </summary>
     internal static RunParameters ParseRunParameters(string[] args)
     {
-        static DateTime? ParseDate(string? value, string flag)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            if (DateTime.TryParse(value.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
-            {
-                return parsed;
-            }
-
-            throw new SqlFlowException($"{flag} '{value}' is not a date; use e.g. 2023-01-15 or '2023-01-15 06:00:00'.");
-        }
+        static Guid ParseGuid(string value, string flag)
+            => Guid.TryParse(value.Trim(), out var parsed) && parsed != Guid.Empty
+                ? parsed
+                : throw new SqlFlowException($"{flag} '{value}' is not a UUID.");
 
         var parameters = new RunParameters
         {
-            FullLoad = args.Contains("--full"),
-            BackfillFrom = ParseDate(GetOption(args, "--from"), "--from"),
-            BackfillTo = ParseDate(GetOption(args, "--to"), "--to"),
-            FilePattern = GetOption(args, "--file-pattern"),
-            AssertionsOnly = args.Contains("--assertions-only"),
-            SourceFilter = GetOption(args, "--source-filter"),
+            Operation = GetOption(args, "--operation") ?? RunParameters.DeliverOperation,
+            Force = args.Contains("--force"),
+            Values = RunParameters.ParseValues(GetOptions(args, "--set")),
+            Drop = GetOption(args, "--drop"),
+            SubmissionId = GetOption(args, "--submission") is { } submission ? ParseGuid(submission, "--submission") : null,
+            RecordKeys = GetOptions(args, "--record").Select(r => ParseGuid(r, "--record")).ToList(),
+            PublishTo = GetOption(args, "--publish-to"),
         };
         parameters.Validate();
         return parameters;
@@ -959,7 +965,7 @@ internal static class Program
         // The control-plane verbs (health/login/logout/trigger/runs/groups and the estate family).
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
         "--scope", "--batch", "--pool", "--poll-seconds", "--drain-seconds", "--commit", "--flow", "--status", "--kind", "--group",
-        "--page", "--page-size", "--from", "--to", "--file-pattern", "--source-filter",
+        "--page", "--page-size", "--operation", "--set", "--drop", "--submission", "--record", "--publish-to",
         "--cron", "--interval", "--timezone", "--max-concurrency",
         "--remote-url", "--credential-ref", "--credential-user",
         "--name", "--active", "--enabled", "--last",
@@ -997,6 +1003,22 @@ internal static class Program
         // A value-taking flag with no value would otherwise swallow the next flag. A lone "-" is still allowed.
         var value = args[index + 1];
         return value.Length > 1 && value[0] == '-' ? null : value;
+    }
+
+    /// <summary>Every value of a repeatable option (<c>--set a=1 --set b=2</c>), in order; a value starting with a dash is a flag, not a value.</summary>
+    internal static IReadOnlyList<string> GetOptions(string[] args, string name)
+    {
+        var values = new List<string>();
+        for (var i = 0; i + 1 < args.Length; i++)
+        {
+            var value = args[i + 1];
+            if (string.Equals(args[i], name, StringComparison.Ordinal) && !(value.Length > 1 && value[0] == '-'))
+            {
+                values.Add(value);
+            }
+        }
+
+        return values;
     }
 
     internal static int ParseIntOption(string[] args, int fallback, params string[] names)

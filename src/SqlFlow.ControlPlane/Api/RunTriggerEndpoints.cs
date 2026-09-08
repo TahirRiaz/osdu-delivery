@@ -13,9 +13,9 @@ namespace SqlFlow.ControlPlane.Api;
 /// and the per-run parameters. A secret is never accepted here; the executing node resolves every credential from
 /// its own environment.</summary>
 public sealed record RunTriggerRequest(
-    Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null,
-    bool FullLoad = false, DateTime? BackfillFrom = null, DateTime? BackfillTo = null, string? FilePattern = null,
-    string? Scope = null, bool AssertionsOnly = false, string? SourceFilter = null);
+    Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null, string? Scope = null,
+    string? Operation = null, bool Force = false, IReadOnlyDictionary<string, string>? Values = null, string? Drop = null,
+    Guid? SubmissionId = null, IReadOnlyList<Guid>? RecordKeys = null, string? PublishTo = null);
 
 public sealed record RunTriggerAccepted(Guid RunId, string Status);
 
@@ -85,12 +85,13 @@ public static class RunTriggerEndpoints
         // before it is ever queued.
         var parameters = new RunParameters
         {
-            FullLoad = request.FullLoad,
-            BackfillFrom = request.BackfillFrom,
-            BackfillTo = request.BackfillTo,
-            FilePattern = string.IsNullOrWhiteSpace(request.FilePattern) ? null : request.FilePattern.Trim(),
-            AssertionsOnly = request.AssertionsOnly,
-            SourceFilter = string.IsNullOrWhiteSpace(request.SourceFilter) ? null : request.SourceFilter.Trim(),
+            Operation = string.IsNullOrWhiteSpace(request.Operation) ? RunParameters.DeliverOperation : request.Operation.Trim(),
+            Force = request.Force,
+            Values = request.Values ?? new Dictionary<string, string>(StringComparer.Ordinal),
+            Drop = string.IsNullOrWhiteSpace(request.Drop) ? null : request.Drop.Trim(),
+            SubmissionId = request.SubmissionId,
+            RecordKeys = request.RecordKeys ?? [],
+            PublishTo = string.IsNullOrWhiteSpace(request.PublishTo) ? null : request.PublishTo.Trim(),
         };
         try
         {

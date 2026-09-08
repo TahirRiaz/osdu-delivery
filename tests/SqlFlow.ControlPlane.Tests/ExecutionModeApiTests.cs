@@ -10,8 +10,7 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The execution-mode surface of the control plane: the queue persists the assertions-only flag on the run row,
-/// the trigger API accepts it for an ingestion flow and refuses it for any other kind (and for a group scope),
+/// The execution-mode surface of the control plane: the queue persists the requested operation on the run row,
 /// and a <c>mode: manual</c> pipeline is excluded from batch/node scope expansion while a direct anchor still
 /// runs. Gated on a reachable catalog database, like the other DB-backed control-plane suites.
 /// </summary>
@@ -19,7 +18,7 @@ namespace SqlFlow.ControlPlane.Tests;
 public sealed class ExecutionModeApiTests
 {
     [SkippableFact]
-    public async Task Enqueue_PersistsAssertionsOnly_OnTheRunRow()
+    public async Task Enqueue_PersistsTheOperation_OnTheRunRow()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -31,12 +30,12 @@ public sealed class ExecutionModeApiTests
             await using var db = CatalogDatabase.Create(cs);
             var runId = await RunQueueStore.EnqueueAsync(
                 db,
-                new RunEnqueueRequest(repoId, flowName, "ing", Parameters: new RunParameters { AssertionsOnly = true }),
+                new RunEnqueueRequest(repoId, flowName, "delivery", Parameters: new RunParameters { Operation = RunParameters.VerifyOperation }),
                 DateTime.UtcNow);
 
             var run = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == runId);
-            Assert.True(run.AssertionsOnly);
-            Assert.False(run.FullLoad);
+            Assert.Equal("verify", run.Operation);
+            Assert.False(run.Force);
         }
         finally
         {

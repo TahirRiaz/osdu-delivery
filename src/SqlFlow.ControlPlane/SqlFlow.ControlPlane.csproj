@@ -24,16 +24,15 @@
     <ProjectReference Include="..\SqlFlow.Core\SqlFlow.Core.csproj" />
     <ProjectReference Include="..\SqlFlow.Azure\SqlFlow.Azure.csproj" />
     <ProjectReference Include="..\SqlFlow.Execution\SqlFlow.Execution.csproj" />
-    <!-- The anomaly estimators behind /datastreams. Already in the closure via SqlFlow.Execution (the hc flow
-         kind runs there); referenced directly because this host uses its types. -->
+    <!-- The in-process worker the control plane hosts when it runs flows itself. -->
     <ProjectReference Include="..\SqlFlow.Node\SqlFlow.Node.csproj" />
     <ProjectReference Include="..\SqlFlow.SourceControl\SqlFlow.SourceControl.csproj" />
     <!-- The proposal preflight parses proposed flow files with the engine's own loaders and projects their
          declared endpoints. Already in the closure via SqlFlow.Catalog; referenced directly because this host
          uses their types. -->
     <ProjectReference Include="..\SqlFlow.Yaml\SqlFlow.Yaml.csproj" />
-    <!-- The shared assistant core behind /api/v1/chat: the exact code path the Slack bot answers
-         with, streamed to the GUI with per-user MCP authority. -->
+    <!-- The delivery domain: the flow kind, its executor and compute operations, and the ledger endpoints. -->
+    <ProjectReference Include="..\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
   </ItemGroup>
 
   <ItemGroup>

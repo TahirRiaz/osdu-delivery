@@ -150,46 +150,36 @@ public sealed class ScheduleFireTests
     }
 
     [SkippableFact]
-    public async Task Fire_WithBackfillWindow_RoutesRootToWindow_SilverToReprocessMin_IntermediateToDefault()
+    public async Task Fire_WithForce_AppliesItToEveryMember()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.MigrateAsync(cs);
         var (repoId, suffix) = NewRepo();
-        // The Baatbooking shape by kind: an integration copy root, a file ingestion, and a silver (relational) load.
-        string copy = $"cpy_{suffix}", file = $"file_{suffix}", silver = $"ing_{suffix}";
+        // Three delivery flows of one source, chained by lineage waves.
+        string wells = $"wells_{suffix}", wellbores = $"wellbores_{suffix}", logs = $"logs_{suffix}";
 
         try
         {
             await using var db = CatalogDatabase.Create(cs);
-            await SeedPipelineAsync(db, repoId, copy, wave: 0, batch: "BB", kind: "cpy");
-            await SeedPipelineAsync(db, repoId, file, wave: 1, batch: "BB", kind: "file");
-            await SeedPipelineAsync(db, repoId, silver, wave: 2, batch: "BB", kind: "ing");
+            await SeedPipelineAsync(db, repoId, wells, wave: 0, batch: "recall", kind: "delivery");
+            await SeedPipelineAsync(db, repoId, wellbores, wave: 1, batch: "recall", kind: "delivery");
+            await SeedPipelineAsync(db, repoId, logs, wave: 2, batch: "recall", kind: "delivery");
 
-            var schedule = await SeedScheduleAsync(db, repoId, $"daily_{suffix}", [copy, file, silver]);
-            var from = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-            var to = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
+            var schedule = await SeedScheduleAsync(db, repoId, $"daily_{suffix}", [wells, wellbores, logs]);
             var fire = await ScheduleFire.EnqueueAsync(
                 db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default,
-                backfillWindow: new SqlFlow.Core.Runs.RunParameters { BackfillFrom = from, BackfillTo = to });
+                parameters: new SqlFlow.Core.Runs.RunParameters { Force = true });
 
             Assert.Equal(ScheduleFire.Outcome.EnqueuedGroup, fire.Outcome);
             var runs = await db.Runs.AsNoTracking().Where(r => r.RepoId == repoId).ToListAsync();
-            var copyRun = Assert.Single(runs, r => r.FlowName == copy);
-            var fileRun = Assert.Single(runs, r => r.FlowName == file);
-            var silverRun = Assert.Single(runs, r => r.FlowName == silver);
+            Assert.Equal(3, runs.Count);
 
-            // The root integration flow carries the window (it re-lands the slice).
-            Assert.Equal(from, copyRun.BackfillFrom);
-            Assert.Equal(to, copyRun.BackfillTo);
-            Assert.False(copyRun.ReprocessFromSourceMin);
-
-            // The intermediate file flow runs at defaults (it picks up the re-landed files via its own incremental).
-            Assert.Null(fileRun.BackfillFrom);
-            Assert.False(fileRun.ReprocessFromSourceMin);
-
-            // The silver flow re-pulls from the source minimum.
-            Assert.True(silverRun.ReprocessFromSourceMin);
-            Assert.Null(silverRun.BackfillFrom);
+            // A forced fire has no per-layer roles: every member delivers, forced past its change gates.
+            Assert.All(runs, run =>
+            {
+                Assert.Equal("deliver", run.Operation);
+                Assert.True(run.Force);
+            });
         }
         finally
         {

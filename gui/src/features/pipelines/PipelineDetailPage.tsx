@@ -61,10 +61,8 @@ const runColumns: Column<RunSummary>[] = [
     header: "Duration",
     render: (row) => (row.durationSeconds !== null ? formatDurationSeconds(row.durationSeconds) : "-"),
   },
-  { id: "rowsLoaded", header: "Records", align: "right", render: (row) => numeric(row.rowsLoaded) },
-  { id: "rowsInserted", header: "Inserted", align: "right", render: (row) => numeric(row.rowsInserted) },
-  { id: "rowsUpdated", header: "Updated", align: "right", render: (row) => numeric(row.rowsUpdated) },
-  { id: "rowsDeleted", header: "Deleted", align: "right", render: (row) => numeric(row.rowsDeleted) },
+  { id: "operation", header: "Operation", render: (row) => `${row.operation}${row.force ? " (forced)" : ""}` },
+  { id: "delivered", header: "Delivered", align: "right", render: (row) => numeric(row.rowsLoaded) },
   {
     id: "commit",
     header: "Commit",
