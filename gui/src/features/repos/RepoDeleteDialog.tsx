@@ -94,7 +94,7 @@ export function RepoDeleteDialog({
             <li>
               {runs === undefined ? "…" : runs.toLocaleString()} run{runs === 1 ? "" : "s"} and their history
             </li>
-            <li>lineage (object relationships, edges, waves) and schedules</li>
+            <li>schedules and their flow membership</li>
             {source !== undefined && <li>the managed git source and its sync schedule</li>}
           </ul>
         )}

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, CircleAlert, Info, Loader2, ShieldCheck, Sparkles, Waypoints, Workflow } from "lucide-react";
+import { ChevronDown, CircleAlert, GitCompare, Info, Loader2, ScrollText, ShieldCheck, Workflow } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -35,23 +35,23 @@ function MicrosoftMark() {
 const CAPABILITIES: ReadonlyArray<{ icon: LucideIcon; title: string; body: string }> = [
   {
     icon: Workflow,
-    title: "Pipelines as code",
-    body: "Flows live as YAML in your repository, versioned and reviewed like the rest of your codebase.",
+    title: "Flows and mappings as code",
+    body: "Flow documents and the mappings they pin live as YAML in your repository, versioned and reviewed like the rest of your codebase.",
   },
   {
-    icon: Waypoints,
-    title: "Lineage end to end",
-    body: "Follow every table and column from the source system through to the warehouse it lands in.",
+    icon: ScrollText,
+    title: "Every record accounted for",
+    body: "Which drop it came from, every attempt and its outcome, the OSDU id and version it landed as, and who asked for each change.",
+  },
+  {
+    icon: GitCompare,
+    title: "Only what changed",
+    body: "Rendered documents and their payloads are hashed independently, so an unchanged record is skipped and a changed one is re-sent on its own.",
   },
   {
     icon: ShieldCheck,
     title: "Governed execution",
-    body: "Managed identity, secrets from the vault, and an audited history of every run.",
-  },
-  {
-    icon: Sparkles,
-    title: "AI built in",
-    body: "Ask the assistant about your flows, lineage, and runs; it answers from your own catalog.",
+    body: "Managed identity, secrets resolved from the vault by reference, and an audited history of every run and intervention.",
   },
 ];
 
@@ -101,10 +101,11 @@ function BrandPanel() {
 
         <div className="mt-14">
           <h2 className="text-3xl font-semibold leading-[1.15] tracking-tight text-white xl:text-[2.5rem]">
-            Move data with confidence.
+            Deliver to OSDU with confidence.
           </h2>
           <p className="mt-4 max-w-md text-[15px] leading-relaxed text-white/60">
-            Orchestrate ingestion, transformation, and lineage across your estate from a single control plane.
+            Publish subsurface records from your lake into OSDU, send only what changed, and keep every record
+            traceable from a single control plane.
           </p>
 
           <ul className="mt-12 flex flex-col gap-7">
