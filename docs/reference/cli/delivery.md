@@ -36,7 +36,7 @@ endpoint). Commit the snapshot store with the flow.
 
 | Option | Meaning |
 | --- | --- |
-| `--operation deliver\|verify\|plan\|known-state` | What the run does. Default deliver. |
+| `--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve` | What the run does. Default deliver; a retrieval flow runs retrieve by default and accepts plan. `intake` plans a drop into work batches without delivering, `drain` delivers the pending batches of a submission (`--submission`) or of the whole flow without reading the drop. |
 | `--force` | Push past the change gates: plan every record even when no source table advanced, re-plan a completed submission, verify recently verified records. |
 | `--set name=value` | A flow parameter value; repeatable. |
 | `--drop <location>` | Read this drop instead of the flow's declared source location. |

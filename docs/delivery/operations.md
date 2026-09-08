@@ -20,9 +20,10 @@ Everything the platform already reads ([../environment-variables.md](../environm
 
 ## First deployment
 
-1. Grant the nodes' identity read on the drop container and read/write on the snapshot and known-state
-   locations (the Unity Catalog external-location grant is on the critical path for Databricks; see
-   [design.md](design.md) section 3.1).
+1. Grant the nodes' identity read on the drop container, write on the work location (`source.work`, or the
+   drop's `.work` folder by default), and read/write on the snapshot, known-state and retrieval locations (the
+   Unity Catalog external-location grant is on the critical path for Databricks; see [design.md](design.md)
+   section 3.1).
 2. Provision the catalog: the control plane migrates it on start, or `sqlflow db migrate --db <ref>`. The
    ledger's tables come with it.
 3. In the flow repository, capture the snapshots and commit them:
@@ -53,8 +54,10 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. |
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `drifted`. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
+| `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
+| `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}`, `GET /snapshots` | read | What the repositories hold. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
@@ -64,8 +67,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /ledger/prune` | admin | Age out attempts older than `olderThanDays`, keeping the latest per record. |
 
 Runs carry the delivery parameters on the platform's trigger (`POST /api/v1/runs`): `operation`, `force`,
-`values`, `drop`, `submissionId`, `recordKeys`, `publishTo`. The run row records them, and the delivery counts
-are projected onto it when the run completes.
+`values`, `drop`, `submissionId`, `recordKeys`, `publishTo`, and for a fan-out member `partitions`. The run row
+records them, the delivery counts are projected onto it when the run completes, and its result (the operation's
+outcome as JSON) and its fan-out membership (root, slot, count) are on the run detail.
 
 ## The GUI
 
@@ -75,11 +79,15 @@ are projected onto it when the run completes.
   the Records tab (search and filters, every row opens the record), the Submissions tab.
 - **A record's page**: custody state, hashes, versions, the pending document, the render context; the
   history of attempts and interventions; Verify, Redeliver, Read back, Release, Delete and Purge.
-- **A submission's page**: counts, the runs that carried it, its attempts, a link to its records.
+- **A submission's page**: counts, the runs that carried it, its work batches, its attempts, a link to its
+  records.
+- **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
+  outcome; a row opens the platform run.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents and snapshots the repositories hold.
-- **Runs**: a delivery run is a platform run; its trace streams live and its parameters and record counts show
-  on the run page. Re-run repeats the same parameters.
+- **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
+  result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
+  The trigger dialog offers the operations the flow's kind runs.
 
 ## The CLI
 
@@ -87,7 +95,7 @@ are projected onto it when the run completes.
 | --- | --- |
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
 | `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--json]` | The delivery preflight: mapping against the schema snapshot, the reference snapshot, the drop's manifest when present. |
-| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. With a catalog connection the ledger is live; without one the engine plans and checks only. |
+| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. With a catalog connection the ledger is live; without one the engine plans and checks only. A retrieval flow runs `retrieve` by default. |
 | `sqlflow snapshot <flow.yaml> schema --kind <kind> [--from-dir <dir> \| --endpoint <url>]` | Capture a schema snapshot. |
 | `sqlflow snapshot <flow.yaml> references [--from-dir <dir> \| --spec <spec.json> [--endpoint <url>]] [--no-current]` | Capture a reference snapshot and move the pin. |
 | `sqlflow snapshot <flow.yaml> list` | What the flow's snapshot store holds. |
@@ -106,6 +114,9 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. |
 | Everything re-renders after a change | The render context on the record | Only `render.*` and the mapping enter the hash. Check that the mapping version or a snapshot moved. |
 | Is OSDU reachable with the flow's credentials? | Probe target on the flow's Delivery tab | The probe runs on a node and reports the status of the service's info endpoint. |
+| A submission stays `running` with batches `queued` | The submission's batches; the run page's fan-out family | A drain member failed or a node went away. The parent settles what it can; re-run the submission (or trigger `drain` with the submission) to drain the rest. |
+| Records pending with `workflow run ... failed` | The record's attempts: the `workflow` step names the run | The ingestion DAG failed; its own log says why. The next try triggers a new run automatically; fix the data or the manifest section first when the DAG rejected the content. |
+| A retrieval run `failed` | The Retrievals tab: the row's error; the run's trace | The watermark did not move, so the next run covers the same window. Fix the cause (credentials, the query, the lake location) and run again; a run's directory is never reused. |
 
 ## Size ceilings
 

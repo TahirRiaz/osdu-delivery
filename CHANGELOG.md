@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Streaming intake at any drop size: root rows and child scopes stream through a merge join (partitioned drops)
+  or a disk-backed hash spill, rendering runs on a bounded pipeline, and the rendered documents go to work batch
+  files on the flow's work location (`source.work`); the ledger keys pending records to a batch and a byte range
+  (`delivery.WorkBatch`, `Record.WorkBatch`, `Record.PendingDocumentRef`).
+- Batched delivery with steps and returned values: the record, file and manifest protocols write up to
+  `protocolOptions.batchSize` records per request; every protocol reports each step it took and what the target
+  returned, a retry resumes after the last completed step, and attempts and records carry the returned values
+  (`Attempt.ResultJson`, `Record.TargetStateJson`, `Record.PendingStepJson`).
+- Fan-out: a large submission spreads its intake and its drains over member runs across the fleet
+  (`reliability.fanOut`, `reliability.fanOutMinRecords`), tracked as one run family (`Run.FanOutRoot`, `FanOutSlot`,
+  `FanOutCount`); the `intake` and `drain` operations; the run's result on the run row (`Run.ResultJson`).
+- The `osduFile` protocol (signed upload URL, streamed upload, dataset registration, then the record with its
+  dataset list; purge deletes the datasets and their files) and the `osduManifest` protocol (uploads, one manifest
+  per batch handed to the ingestion workflow, the run polled and resumed across tries, the records read back from
+  storage), with their `protocolOptions` keys.
+- The `retrieval` flow kind (`flowType: retrieval`): OSDU's search index paged into JSON Lines files on the lake
+  per kind, optionally with the full records read back from storage, incremental by watermark, with a manifest per
+  run and a row per run in `delivery.Retrieval`; the `retrieve` operation, the Retrievals tab and
+  `GET /api/v1/delivery/flows/{pipelineId}/retrievals`.
+- Work batches on the submission page and `GET /api/v1/delivery/submissions/{id}/batches`; fan-out membership,
+  the result and the returned values on the run and record pages.
 - The delivery domain as the platform's one flow kind (`src/SqlFlow.Delivery`): `flowType: delivery` documents with
   pinned mappings, schema and reference snapshots kept in the flow's repository, the drop reader, the mapping
   renderer with the preflight gate, two-tier change detection, the OSDU record and well log protocols, and the
@@ -34,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- HTTP errors name the request URL without its query string, so a signed upload URL's credential never reaches
+  an error message, a log line or the ledger.
+- Manifests may declare `partitioned` drops (root file i and child file i sorted by delivery key), which the
+  intake merge-joins without a spill and a fan-out spreads over member runs.
 - Per-run parameters are delivery operations (deliver, verify, plan, known-state) with force, flow parameter
   values, an explicit drop, a submission to re-run, a record scope and a publication target; the SQL-era backfill
   parameters are gone from the API, the CLI, the run row and the GUI.

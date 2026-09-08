@@ -28,6 +28,7 @@ File names are free; the manifest lists them. Parquet scope files need only top-
   "mapping": "WellLog@1.4.0",
   "createdUtc": "2026-09-07T12:00:00Z",
   "recordCount": 3,
+  "partitioned": false,
   "sourceVersions": { "wl_pipelines_dsis_intermediate.recall_logcurve_enriched": 4012 },
   "scopes": {
     "record": { "files": ["metadata/part-00000.parquet"], "columns": [ { "name": "deliveryKey", "type": "string" }, ... ] },
@@ -45,6 +46,7 @@ File names are free; the manifest lists them. Parquet scope files need only top-
 | `flow`, `mapping` | Must equal the flow's name and pinned mapping, or the drop is refused. |
 | `parameters` | The flow parameter values the drop was prepared with. |
 | `sourceVersions` | Delta commit version per source table, for the tier-0 whole-run gate. |
+| `partitioned` | When true, root file i and each child scope's file i hold the same records, every scope declares the same number of files, and every file is sorted by the delivery key's text: the intake joins them partition by partition without a spill, and a fan-out spreads the partitions over member runs. An unsorted file is refused. Without it, child scopes are joined through a disk spill, which works for any layout. |
 | `scopes.record` | The root scope. Must declare every column the mapping binds (the preflight gate checks). |
 | `scopes.<child>` | Child scopes: `parentKey` names the column holding the parent's delivery key; `orderBy` orders rows within a parent. |
 | `payloads.<name>` | Where the chunks live and which root column carries the logical payload hash. |

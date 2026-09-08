@@ -1,6 +1,6 @@
 # 0001: Delivery grain is (source project, log id)
 
-Status: proposed. Owner: the well-log domain team. Design reference: section 5.1 and 16.1.
+Status: proposed. Owner: the well-log domain team. Design reference: sections 5.1 and 17.1.
 
 ## Context
 

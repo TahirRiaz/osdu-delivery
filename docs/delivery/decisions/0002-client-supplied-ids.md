@@ -1,7 +1,7 @@
 # 0002: Deterministic, client-supplied OSDU ids
 
 Status: proposed; needs confirmation that the data partition accepts client-supplied ids for the kinds in
-scope. Design reference: sections 5.3 and 16.2.
+scope. Design reference: sections 5.3 and 17.2.
 
 ## Context
 

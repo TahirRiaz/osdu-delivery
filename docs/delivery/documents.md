@@ -19,6 +19,7 @@ source:
     curves: curves/{deliveryKey}/chunk_*.parquet
   fingerprint: update_date         # root-scope column for the tier-1 gate (optional)
   knownState: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{logSource}/known-state   # where a known-state run publishes when the run names no location (optional)
+  work: abfss://lake@acct.dfs.core.windows.net/osdu-work/{logSource}   # where the intake writes its work batches (default {location}/.work)
   scopes:                          # optional overrides of the manifest's child scopes
     curves: { records: curves-meta/*.parquet, key: deliveryKey }
 
@@ -44,7 +45,7 @@ target:
   headers:                         # extra headers on every request
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: dev
-  protocol: osduWellLog            # osduRecord | osduWellLog (osduFile, osduManifest reserved)
+  protocol: osduWellLog            # osduRecord | osduWellLog | osduFile | osduManifest
   protocolOptions:
     payload: curves                # which source.payloads set the protocol streams
     recordPath: /ddms/v3/welllogs  # protocol defaults shown; override for petrodb-api routes
@@ -60,6 +61,24 @@ target:
     payloadContentType: application/x-parquet
     versionPath: recordIdVersions[0]
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
+    batchSize: 100                 # records per write request where the service takes arrays (osduRecord, osduFile, osduManifest; at most 500)
+    uploadUrlPath: /api/file/v2/files/uploadURL      # osduFile, osduManifest: the signed landing-zone location
+    uploadUrlExpiry: 12H           # how long the signed URL stays valid (30M, 12H, 2D); default the service's one hour
+    uploadHeaders: { x-ms-blob-type: BlockBlob }     # headers on the upload to the signed URL itself
+    fileMetadataPath: /api/file/v2/files/metadata    # osduFile: registers the dataset record
+    fileDeletePath: /api/file/v2/files/{id}/metadata # purge: deletes a dataset record and its file
+    datasetKind: osdu:wks:dataset--File.Generic:1.0.0
+    datasetsProperty: Datasets     # the record's data property listing its dataset ids
+    workflowName: Osdu_ingest      # osduManifest: the ingestion workflow
+    workflowRunPath: /api/workflow/v1/workflow/{workflow}/workflowRun
+    workflowStatusPath: /api/workflow/v1/workflow/{workflow}/workflowRun/{runId}
+    workflowPollSeconds: 10
+    workflowTimeoutMinutes: 60     # a run still going after this fails the try; the next try resumes polling it
+    workflowAppKey: osdu-delivery  # executionContext.Payload.AppKey
+    workflowPayload: {}            # extra executionContext.Payload entries
+    manifestKind: osdu:wks:Manifest:1.0.0
+    manifestSection: WorkProductComponents           # default derived from each record's kind
+    recordQueryPath: /api/storage/v2/query/records   # reads the records back after a workflow run
 
 reliability:
   concurrency: 8
@@ -73,6 +92,10 @@ reliability:
   maxRequestBodyBytes: 0           # the target's declared request body ceiling; a bigger chunk holds the record (0 = not declared)
   leaseSeconds: 300
   batchSize: 50
+  batchRecords: 500                # rendered documents per work batch file
+  renderParallelism: 0             # renderers in the intake pipeline (0 = the machine's cores)
+  fanOut: 0                        # member runs a large submission spreads over (0 = none; at most 64)
+  fanOutMinRecords: 1000           # below this a submission never fans out
 
 schedule: { cron: "0 * * * *", timeZone: UTC, operation: deliver }   # service: what to run, and when
 verify: { reconcile: false }       # whether the verify pass re-queues drifted or missing records
@@ -86,14 +109,72 @@ document gets there. Raising `reliability.concurrency` or changing `target.endpo
 ### Parameters
 
 Flow parameters are supplied by `--set name=value` or by the manifest (`parameters`). When both are present
-they must agree. `{name}` tokens are substituted in `source.location` and `source.knownState`.
+they must agree. `{name}` tokens are substituted in `source.location`, `source.knownState` and `source.work`, and
+in a retrieval flow's `source.query` and `target.location`.
 
 ### Schedules
 
-The inline `schedule` fires the flow on the platform scheduler; `operation` (deliver by default; verify, plan or
-known-state) is what every fire runs. A nightly drift pass is a second schedule in the repository's schedule
+The inline `schedule` fires the flow on the platform scheduler; `operation` (deliver by default; verify, plan,
+known-state, intake or drain, and retrieve or plan on a retrieval flow) is what every fire runs. A nightly drift pass is a second schedule in the repository's schedule
 library with `operation: verify` and the flow as its member. Run-now on a schedule keeps its operation and adds
 `force`.
+
+## Retrieval flow
+
+The reverse direction ([design.md](design.md) section 15): OSDU's search index into JSON Lines files on the lake.
+
+```yaml
+flowType: retrieval
+name: wellbores-out
+parameters:
+  region: { required: true }
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth: { type: oauth2ClientCredentials, secondarySecretRef: ${env:OSDU_CLIENT_ID}, secretRef: ${env:OSDU_CLIENT_SECRET}, token: { url: ${env:OSDU_TOKEN_URL} } }   # as target.auth on a delivery flow
+  headers: { data-partition-id: dev }
+  kinds:                             # one cursor per kind; `kind:` for a single one
+    - "osdu:wks:master-data--Wellbore:1.*.*"
+    - "osdu:wks:master-data--Well:1.*.*"
+  query: 'data.GeoPoliticalEntityID:"{region}"'   # Lucene, optional; {parameter} tokens
+  returnedFields: []                 # project the hits; empty returns whole hits
+  pageSize: 1000                     # at most 1000
+  incremental:                       # optional; without it every run takes everything the query matches
+    field: modifyTime
+    since: 2026-01-01T00:00:00Z      # where the first (and a forced) run starts; omitted means from the beginning
+    lagMinutes: 5
+  fetchRecords: false                # read every hit's full record back from storage
+  fetchParallelism: 4                # storage read-backs in flight per page (a hundred ids each)
+  searchPath: /api/search/v2/query_with_cursor
+  queryPath: /api/search/v2/query    # the plan operation counts here
+  recordQueryPath: /api/storage/v2/query/records
+  probePath: /api/search/v2/info
+
+target:
+  location: abfss://lake@acct.dfs.core.windows.net/osdu-out/{region}   # {run} and {date} tokens too
+  format: jsonl
+  compression: gzip                  # none | gzip
+  rollRecords: 100000                # records per file
+  manifest: manifest.json
+
+reliability: { concurrency: 4, retry: { attempts: 4 } }   # kinds retrieved at once; the HTTP settings as on a delivery flow
+schedule: { cron: "0 3 * * *", timeZone: UTC, operation: retrieve }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `source.kinds` | The kinds to retrieve, `authority:source:entityType:version` with wildcards per segment. Each is one cursor; they run concurrently up to `reliability.concurrency`. |
+| `source.query` | A Lucene query narrowing the kinds. The window of an incremental flow is appended as `AND field:[from TO to}`. |
+| `source.incremental` | The watermark: a run covers `[last completed run's upper bound, now minus lag)` on `field`. Only a completed run advances it; `--force` restarts at `since`. |
+| `source.fetchRecords` | The index holds a projection; set this to land the record as storage holds it. Ids storage cannot return are counted and listed in the manifest. |
+| `target.location` | The run's directory root. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. |
+| `target.rollRecords` | A new file every this many records: `part-00001.jsonl[.gz]`, `part-00002...` under a directory named after the kind. |
+
+A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
+record count and uncompressed bytes, and per kind the records storage could not read back. The ledger's
+`delivery.Retrieval` row carries the same counts, the outcome and the run id; the pipeline's Retrievals tab lists
+them. The operations are `retrieve` (the default for a retrieval flow) and `plan` (count what the query matches,
+write nothing).
 
 ## Mapping
 

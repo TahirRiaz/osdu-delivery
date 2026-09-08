@@ -19,7 +19,8 @@ takes their place.
 ## Status
 
 The platform is stripped to what OSDU Delivery needs and the delivery domain is grafted onto it: the `delivery`
-flow kind (mapping rendering, snapshots, the OSDU record and well log protocols, the lease-and-retry worker),
+flow kind (mapping rendering, snapshots, the four OSDU protocols, the streaming intake with work batches and
+fan-out, the lease-and-retry worker), the `retrieval` flow kind (OSDU's search index into files on the lake),
 the ledger in the catalog, the delivery API, the CLI verbs, and the GUI pages (delivery overview, per-flow
 stats, records and submissions, the record page with its history and interventions, the audit trail, mappings
 and snapshots). The solution builds warning-free, the three test suites pass, and the GUI builds. What is
@@ -37,7 +38,7 @@ not there yet: lineage across delivery flows, and an OSDU emulator for end-to-en
 | `src/SqlFlow.Azure` | Azure credentials, Key Vault references, blob storage |
 | `src/SqlFlow.Node` | The compute node: claims queued runs, executes them, streams the trace |
 | `src/SqlFlow.ControlPlane` | The API and coordination host: auth, catalog, runs, schedules, sync, notifications |
-| `src/SqlFlow.Delivery` | The delivery domain: the `delivery` flow kind, mapping rendering, snapshots, drops, the OSDU protocols, the ledger over the catalog, the worker, the run executor, the compute operations |
+| `src/SqlFlow.Delivery` | The delivery domain: the `delivery` and `retrieval` flow kinds, mapping rendering, snapshots, drops, the four OSDU protocols, the ledger over the catalog, the worker and the fan-out, the run executors, the compute operations |
 | `src/SqlFlow.Cli` | The `sqlflow` command line: validate, check, snapshot, run, worker, db, and the remote verbs |
 | `gui/` | The React + TypeScript workbench over the API |
 | `samples/recall-welllog` | A complete sample estate: a flow, its mapping, captured snapshots, reference data, a generated drop |

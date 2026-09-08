@@ -1,6 +1,6 @@
 # 0005: Attempts are pruned by age, keeping the latest per record
 
-Status: proposed. Design reference: sections 7.7 and 16.6.
+Status: proposed. Design reference: sections 7.7 and 17.6.
 
 ## Context
 

@@ -25,9 +25,9 @@ difference shows up entirely in where state lives and at what grain.
 
 - **Not an ETL engine.** It does not read source systems, join, aggregate, or reshape at
   volume. Databricks does that and hands over prepared data.
-- **Not a bulk inbound reader.** OSDU records already land in the lake by a separate
-  export, and `osdu_to_adx` projects views over them. Rebuilding that as API paging
-  would be slower and more fragile. See section 15.
+- **Not an ETL engine on the way back either.** The retrieval kind (section 15) pages
+  OSDU's search index into files on the lake and stops there; projecting, joining and
+  reshaping what it lands stays with the lake.
 - **Not a workflow engine.** Delivery protocols are a small closed vocabulary implemented
   in code, not an authorable step language. See section 8.4.
 - **Not a separate service.** It is the SQLFlow platform (control plane, catalog, nodes, scheduler,
@@ -190,7 +190,7 @@ Note this is finer than the key the current pipeline tracks on.
 logging runs of the same type on one wellbore silently become one record carrying
 arbitrary values. **Whether the delivery grain is (wellbore, log source) or
 (source project, log id) is an open domain question** and must be settled before the
-ledger schema is built. See section 16.
+ledger schema is built. See section 17.
 
 ### 5.2 Delivery key
 
@@ -439,6 +439,11 @@ From the specs already held in `osdu-csharp-client/openapi_specs/`:
 
 The last is asynchronous and batch-shaped, and it is OSDU's own preferred bulk path.
 
+All four are implemented as named protocols (`osduRecord`, `osduWellLog`, `osduFile`,
+`osduManifest`; [protocols.md](protocols.md)). The record, file and manifest protocols
+batch records per request, and every protocol reports each step it took and what the
+target returned (section 16.3).
+
 ### 8.2 Design the vocabulary up front
 
 Four protocols designed together will be a coherent set. Four discovered one at a time
@@ -647,6 +652,8 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 | `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` | Executes a submission: intake, plan into the ledger, deliver what changed. |
 | `verify` | a run with operation `verify` (the record page queues one scoped to the record) | The drift pass: compares OSDU's current version against `targetVersion`. |
 | `known-state` | a run with operation `known-state` | Publishes the compact known state the preparing side reads. |
+| `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a drop (or some of its partitions) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the drop. |
+| `retrieve` | a run on a retrieval flow (its default); `plan` on the same flow counts | Pages OSDU's search index into files on the lake (section 15). |
 | `snapshot` | CLI: `sqlflow snapshot <flow.yaml> schema`, `references`, `list` | Captures reference and schema snapshots into the repository's snapshot store and mints a new version. |
 | release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. The ones that touch OSDU (delete, read back, probe) run on a node as compute tasks. |
 
@@ -782,29 +789,117 @@ raised.
 
 ## 15. Reading from OSDU
 
-The framework reads from OSDU regardless, and narrowly: the verify pass by id, schema
-snapshot fetches, reference snapshot fetches, and reference resolution on a snapshot miss.
-Those are reads in service of writing and belong here from the start.
+Reads in service of writing were always here: the verify pass by id, schema and reference
+snapshot fetches, reference resolution on a snapshot miss. Bulk inbound is the retrieval
+kind, `flowType: retrieval`, added because the lake needs OSDU's records back without a
+second export pipeline ([decisions/0008](decisions/0008-retrieval-lands-raw-records.md)).
 
-Bulk inbound is a different thing and is already solved. `osdu_to_adx` does not call OSDU
-APIs at all: it reads a Delta table partitioned by kind, landed by a separate export, and
-registers one view per kind. Spark over a partitioned Delta table is the right tool for
-that, and rebuilding it as API paging through Search would be slower and more fragile
-against index eventual consistency.
+### 15.1 The shape
 
-The gap that would justify extending is latency. OSDU has a notification service, and a
-notification-driven incremental reader is something a batch export does not provide. It is
-close in shape to the verify pass: targeted, per record, version aware. Revisit if a use
-case appears.
+A retrieval flow names the OSDU side (endpoint, auth and headers, one or more kinds, an
+optional Lucene query) and the lake side (a location, JSON Lines files rolled by record
+count, optional gzip). A run opens one search cursor per kind
+(`POST /api/search/v2/query_with_cursor`, pages of up to a thousand hits), streams every
+hit through the store's writer into the current file, rolls the file at the declared
+count, and writes a manifest next to the files listing every file with its record count,
+the window the run covered, and the records storage could not read back. Kinds run
+concurrently up to the flow's concurrency; pages within a kind are sequential because a
+cursor is.
 
-Two things cost nothing now and keep the option open: the schema and reference snapshots
-are already direction-neutral, and the renderer's contract should be "produce a document
-from a row scope" rather than "produce a document to POST". Do not build a bidirectional
-mapping abstraction: transforms are not invertible, since an equality transform collapses
-a string to a boolean, a split discards everything but one element, and constants have no
-source at all.
+The index holds a projection of each record. When the flow needs the whole record it sets
+`fetchRecords`, and every page's ids are read back from storage a hundred at a time
+(`POST /api/storage/v2/query/records`), several requests in flight per page; the ids
+storage asks to retry get one more request, and what is still missing is counted and
+listed in the manifest rather than silently dropped.
 
-## 16. Open decisions
+### 15.2 Incremental by watermark
+
+An incremental flow names a record timestamp field (`modifyTime` by default) and a lag.
+A run covers the half-open window from the last completed run's upper bound (or the
+declared start) to now minus the lag, expressed as a range clause appended to the query.
+The lag keeps records the indexer has not caught up with for the next run instead of
+losing them. The upper bound is recorded on the run's ledger row when it completes, and
+only a completed run advances the chain: a failed run leaves the watermark where it was.
+A forced run restarts at the declared start.
+
+### 15.3 Tracked like everything else
+
+Every run writes one row to `delivery.Retrieval` (the window, the location, the counts,
+the outcome, the run id and the actor) when it starts and closes it when it ends, so the
+GUI lists a flow's retrievals, and the manifest on the lake and the row in the ledger say
+the same thing. The trace carries one line per kind, per hundred pages and per file, never
+per record. The plan operation counts what the query matches per kind
+(`POST /api/search/v2/query` with `trackTotalCount`) and writes nothing.
+
+What the retrieval kind does not do: it never renders. A mapping is not invertible, since
+an equality transform collapses a string to a boolean, a split discards everything but one
+element, and constants have no source at all. What lands is the record as OSDU holds it.
+
+## 16. Scale: streaming intake, work batches, returned values and fan-out
+
+A drop can hold millions of rows and a flow billions over time. Nothing in the engine
+holds a drop, a scope or a batch of rendered documents in memory, and one run can spread
+its work across the fleet ([decisions/0006](decisions/0006-work-batches.md)).
+
+### 16.1 The intake streams
+
+The drop reader never materialises a scope. Root rows stream one row group at a time. A
+drop whose manifest declares itself `partitioned` (root file i and child file i hold the
+same records, each file sorted by delivery key) is merge-joined partition by partition in
+lockstep; any other drop's child scopes are spilled to a disk-backed hash partition keyed
+by delivery key (buckets sized to a target of 32 MB, at most 1024 of them) and joined
+bucket by bucket. An unsorted partitioned file is a validation error, not a wrong join.
+
+Rendering runs on a bounded pipeline: batches of source records flow through a bounded
+channel to a configurable number of renderers (`reliability.renderParallelism`), and the
+plan entries stream out the other end into the ledger and the work batches. Peak memory is
+the channel's capacity times the batch size, never the drop.
+
+### 16.2 Work batches
+
+The intake writes rendered documents to JSON Lines work batch files under the flow's work
+location (`source.work`, or `.work` under the drop), `reliability.batchRecords` documents
+per batch, and the ledger's record row carries only the batch number and the document's
+byte range within it. A drain leases a whole batch (its due records under one lease
+token), reads the documents by range, and hands the protocol up to
+`protocolOptions.batchSize` records per request where the service takes arrays. A batch
+that finishes closes with its counts; a crashed drain's lease expires and the next drain
+reclaims the batch. The submission page lists the batches.
+
+### 16.3 Steps and returned values
+
+A protocol reports every step it takes (a record write, an upload, a registration, a
+workflow trigger, a poll) with its timing, the status the target answered and what the
+target returned: record ids and versions, file sources and dataset ids, a session id, a
+workflow run id. A completed step is persisted on the record before the next step starts,
+so a retry resumes after the last step that succeeded instead of repeating it: a file
+uploaded and registered by the previous try is referenced, not uploaded again; a workflow
+run triggered by the previous try is polled, not triggered again. The values the target
+returned merge into the record's target state, and every attempt carries the full step
+list and the returned values, so the ledger reconstructs what the target holds for a
+record and how it got there.
+
+### 16.4 Fan-out
+
+A submission above `reliability.fanOutMinRecords` records, on a flow with
+`reliability.fanOut` above zero, spreads across the fleet. The parent deliver run
+registers the submission, takes its own share of the drop's partitions, and enqueues
+`intake` member runs for the rest (each scoped to a partition set); when the members
+report, it finalises the planning, enqueues `drain` members that lease batches
+concurrently with it, waits for them, settles what is left (expired leases, records in
+backoff), and completes the submission. Members ride the platform's run queue as one
+family under the parent: they pass the pipeline gate together, they are cancelled with
+their root, and the run page shows the family. A host without a catalog cannot fan out
+and runs the whole submission itself.
+
+### 16.5 The trace stays at operation grain
+
+Fifty million rows must not produce fifty million trace events. The run trace carries the
+operations: the intake's counts, every batch's outcome, every protocol step that changed
+the target, the fan-out members, the settle. Per-record lines exist only at the trace log
+level, off by default; per-record history lives in the ledger, where it is indexed.
+
+## 17. Open decisions
 
 These block schema design and should be settled first.
 
@@ -832,7 +927,7 @@ These block schema design and should be settled first.
    separate state implementations totalling 1,089 lines, none shared. Whether they want the
    same contract, or diverge for real reasons, changes the shape of what gets built.
 
-## 17. Sequencing
+## 18. Sequencing
 
 1. Settle decisions 1, 2 and 4.
 2. Build the ledger schema and the record-grained lease-and-retry worker. This is the
@@ -843,7 +938,8 @@ These block schema design and should be settled first.
    the 56 example fixtures before and after.
 5. Add change detection, metadata first, then payload.
 6. Close the loop back to Databricks with the known-state snapshot.
-7. Add the remaining protocols once a second kind is real.
+7. The file and manifest protocols, the streaming intake with work batches and fan-out,
+   and the retrieval kind (sections 8, 15 and 16) landed once the first kind was real.
 
 Change detection is the smallest piece that converts delivery into maintenance, but it
 depends on identity and reproducible rendering, so it lands fourth rather than first.

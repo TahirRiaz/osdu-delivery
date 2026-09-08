@@ -1,6 +1,6 @@
 # 0003: Rendering runs in the delivery service
 
-Status: proposed. Design reference: sections 4.2, 12.3 and 16.3.
+Status: proposed. Design reference: sections 4.2, 12.3 and 17.3.
 
 ## Context
 

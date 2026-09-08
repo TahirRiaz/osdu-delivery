@@ -1,6 +1,6 @@
 # 0004: Datasets, DDMSDatasets and ExtensionProperties are OSDU's
 
-Status: proposed. Design reference: sections 7.6 and 16.5.
+Status: proposed. Design reference: sections 7.6 and 17.5.
 
 ## Context
 
