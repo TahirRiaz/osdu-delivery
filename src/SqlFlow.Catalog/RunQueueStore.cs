@@ -26,7 +26,7 @@ namespace SqlFlow.Catalog;
 public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
     RunParameters? Parameters = null, string TriggerSource = RunTriggerSources.Manual,
-    Guid? TriggerScheduleId = null);
+    Guid? TriggerScheduleId = null, string? RequestedBy = null);
 
 /// <summary>What to enqueue as one multi-flow run group (a Node or Batch execution): the resolved, ordered member
 /// flows (with their waves) plus the shared routing. Every member is enqueued under one <see cref="RunGroupModes"/>
@@ -43,7 +43,7 @@ public sealed record RunGroupEnqueueRequest(
     string? TargetPool = null, string? CommitSha = null,
     IReadOnlyDictionary<string, RunParameters>? MemberParameters = null,
     int? MaxConcurrency = null, string TriggerSource = RunTriggerSources.Manual,
-    Guid? TriggerScheduleId = null);
+    Guid? TriggerScheduleId = null, string? RequestedBy = null);
 
 /// <summary>The outcome of enqueuing a group: the new group id and the ids of every member run, in wave order.</summary>
 public sealed record RunGroupEnqueueResult(Guid GroupId, IReadOnlyList<Guid> RunIds);
@@ -261,6 +261,7 @@ public static class RunQueueStore
                 ParametersJson = parameters.IsDefault ? null : parameters.ToJson(),
                 TriggerSource = request.TriggerSource,
                 TriggerScheduleId = request.TriggerScheduleId,
+                RequestedBy = string.IsNullOrWhiteSpace(request.RequestedBy) ? null : request.RequestedBy.Trim(),
                 Status = RunStatuses.Queued,
                 EnqueuedUtc = nowUtc,
                 // Until the run finishes there is no artifact; seed WrittenUtc with the enqueue time so the run
@@ -371,6 +372,7 @@ public static class RunQueueStore
                     ParametersJson = memberParameters.IsDefault ? null : memberParameters.ToJson(),
                     TriggerSource = request.TriggerSource,
                     TriggerScheduleId = request.TriggerScheduleId,
+                    RequestedBy = string.IsNullOrWhiteSpace(request.RequestedBy) ? null : request.RequestedBy.Trim(),
                     Status = RunStatuses.Queued,
                     EnqueuedUtc = nowUtc,
                     WrittenUtc = nowUtc,

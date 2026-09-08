@@ -87,6 +87,12 @@ internal static class Program
                     return 0;
                 }
 
+                case "check":
+                    return await DeliveryVerbs.CheckAsync(provider, file, args, args.Contains("--json"), CancellationToken.None).ConfigureAwait(false);
+
+                case "snapshot":
+                    return await DeliveryVerbs.SnapshotAsync(provider, file, positional, args, CancellationToken.None).ConfigureAwait(false);
+
                 case "run":
                 {
                     var json = args.Contains("--json");
@@ -656,12 +662,13 @@ internal static class Program
                     // existing catalog, or provision one with 'sqlflow db migrate --create'.
                     await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
                     await using var context = CatalogDatabase.Create(connectionString);
-                    var sync = new CatalogSync(provider.GetRequiredService<YamlDocumentLoader>());
+                    var sync = new CatalogSync(provider.GetRequiredService<YamlDocumentLoader>(), provider.GetServices<ICatalogSyncExtension>());
                     var result = await sync.SyncAsync(context, directory, repoName, repoUrl, DateTime.UtcNow).ConfigureAwait(false);
                     Console.WriteLine(
                         $"OK   synced '{directory}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
                         $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; " +
-                        $"runs +{result.RunsAdded} added ({result.RunEventsAdded} events), {result.RunsSkipped} known, {result.RunsFailed} unreadable.");
+                        $"runs +{result.RunsAdded} added ({result.RunEventsAdded} events), {result.RunsSkipped} known, {result.RunsFailed} unreadable." +
+                        $"; documents +{result.DocumentsAdded} added, {result.DocumentsUpdated} updated, {result.DocumentsRemoved} removed, {result.DocumentsInvalid} invalid.");
                     foreach (var warning in result.Warnings.Take(20))
                     {
                         Console.Error.WriteLine($"WARN  {warning}");
@@ -763,7 +770,7 @@ internal static class Program
             // creates: a mistyped SQLFLOW_CATALOG_DB must not silently conjure a catalog during a run.
             await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
 
-            var sync = new CatalogSync(provider.GetRequiredService<YamlDocumentLoader>());
+            var sync = new CatalogSync(provider.GetRequiredService<YamlDocumentLoader>(), provider.GetServices<ICatalogSyncExtension>());
             var recorded = 0;
             var warnings = new List<string>();
             foreach (var (flowFile, runJson) in candidates)
@@ -861,6 +868,12 @@ internal static class Program
             Usage:
               sqlflow validate <flow.yaml|folder>  Validate a flow document, or every document under a folder
                                [--json]            (the CI gate: exit 0 only when every document is valid)
+              sqlflow check    <flow.yaml>         The delivery preflight: the mapping against the schema snapshot, the
+                               [--drop <location>] [--set name=value]... [--json]
+                                                   reference snapshot, and the drop's manifest when the drop is present
+              sqlflow snapshot <flow.yaml> schema --kind <kind> [--from-dir <dir> | --endpoint <url>]
+              sqlflow snapshot <flow.yaml> references [--from-dir <dir> | --spec <spec.json> [--endpoint <url>]] [--no-current]
+              sqlflow snapshot <flow.yaml> list    Capture or list the schema and reference snapshots the flow renders with
               sqlflow run      <flow.yaml>         Execute the flow (Ctrl+C aborts the in-flight work)
                                [--operation deliver|verify|plan|known-state] [--force] [--set name=value]...
                                [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
@@ -966,6 +979,7 @@ internal static class Program
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
         "--scope", "--batch", "--pool", "--poll-seconds", "--drain-seconds", "--commit", "--flow", "--status", "--kind", "--group",
         "--page", "--page-size", "--operation", "--set", "--drop", "--submission", "--record", "--publish-to",
+        "--kind", "--from-dir", "--spec", "--endpoint",
         "--cron", "--interval", "--timezone", "--max-concurrency",
         "--remote-url", "--credential-ref", "--credential-user",
         "--name", "--active", "--enabled", "--last",

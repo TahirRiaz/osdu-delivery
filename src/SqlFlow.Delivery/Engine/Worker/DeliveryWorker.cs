@@ -177,7 +177,7 @@ public sealed class DeliveryWorker
             _logger.LogWarning("Held {SourceKey}: HTTP {Status} is not retryable ({Message})", record.SourceKey, ex.StatusCode, HeaderRedaction.RedactMessage(ex.Message));
             return await CompleteAsync(record, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, ex.Message, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is DeliveryException or HttpRequestException or IOException or TimeoutException)
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or TimeoutException)
         {
             var attempts = record.AttemptCount;
             if (attempts >= _flow.Reliability.Retry.Attempts)

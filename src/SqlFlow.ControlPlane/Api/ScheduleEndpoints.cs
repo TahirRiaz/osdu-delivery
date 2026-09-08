@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
@@ -333,7 +334,7 @@ public static class ScheduleEndpoints
     /// </summary>
     private static async Task<Results<Accepted<ScheduleRunAccepted>, ProblemHttpResult>> RunScheduleAsync(
         Guid id, [FromQuery] string[]? batch, bool? force, bool? chain,
-        CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, CancellationToken ct)
+        CatalogDbContext db, IRunDispatcher dispatcher, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
     {
         var schedule = await db.Schedules.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
         if (schedule is null)
@@ -351,7 +352,7 @@ public static class ScheduleEndpoints
                 .Distinct(StringComparer.Ordinal).ToList();
         var now = clock.GetUtcNow().UtcDateTime;
         var fire = await ScheduleFire
-            .EnqueueAsync(db, dispatcher, schedule, now, ct, filter, parameters).ConfigureAwait(false);
+            .EnqueueAsync(db, dispatcher, schedule, now, ct, filter, parameters, RequestActor.Of(user)).ConfigureAwait(false);
         if (!fire.Queued)
         {
             var detail = filter is not { Count: > 0 }

@@ -4,7 +4,7 @@ import { expect, test } from "./helpers";
 
 // The features added on top of the read-only operate GUI: the preview-first scan (discover a repo's flows without
 // importing), the project grouping on a repo (root folder = a source's pipelines), and schedule catch-up. These run
-// after the seed (03), so the fixture repo is already synced as "e2e-repo" with its Csv_Basic pipeline.
+// after the seed (03), so the fixture repo is already synced as "e2e-repo" with its recall-welllog pipeline.
 
 function fixtureMeta(): { repoDir: string; headSha: string } {
   const metaPath = join(import.meta.dirname, ".fixtures", "meta.json");
@@ -25,7 +25,7 @@ test.describe.serial("new features", () => {
     // The fixture's single flow appears with its path; parse succeeded (no error chip), and preview opens.
     const flows = adminPage.getByTestId("discovered-flows");
     await expect(flows).toBeVisible({ timeout: 60_000 });
-    const row = adminPage.getByTestId("discovered-flow-row").filter({ hasText: "csv-basic.flow.yaml" });
+    const row = adminPage.getByTestId("discovered-flow-row").filter({ hasText: "flows/recall-welllog.yaml" });
     await expect(row.first()).toBeVisible();
     await expect(row.first().getByTestId("discovered-flow-error")).toHaveCount(0);
     await row.first().getByTestId("discovered-flow-preview").click();
@@ -40,13 +40,13 @@ test.describe.serial("new features", () => {
     await adminPage.getByTestId("table-row").filter({ hasText: "e2e-repo" }).first().click();
     await expect(adminPage.getByTestId("page-repo-detail")).toBeVisible({ timeout: 15_000 });
 
-    // Pipelines are grouped into project (root-folder) sections; the fixture flow sits at the repo root, so it is
-    // under one project accordion. The accordions start collapsed, so opening the "(root)" one reveals its flows.
+    // Pipelines are grouped into project (root-folder) sections; the fixture flow sits under the flows folder, so it is
+    // under one project accordion. The accordions start collapsed, so opening the "flows" one reveals its flows.
     await expect(adminPage.getByTestId("repo-projects")).toBeVisible({ timeout: 15_000 });
-    const rootFolder = adminPage.getByTestId("repo-project").filter({ hasText: "(root)" });
+    const rootFolder = adminPage.getByTestId("repo-project").filter({ hasText: "flows" });
     await expect(rootFolder).toBeVisible();
-    await rootFolder.getByText("(root)").click();
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first()).toBeVisible();
+    await rootFolder.getByText("flows").click();
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first()).toBeVisible();
   });
 
   test("a catch-up schedule shows the catchup chip", async ({ adminPage }) => {
@@ -56,8 +56,8 @@ test.describe.serial("new features", () => {
     await adminPage.getByTestId("open-create-schedule").click();
     await adminPage.getByTestId("schedule-repo").fill("e2e-repo");
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
-    await adminPage.getByTestId("schedule-flow").fill("Csv");
-    await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
+    await adminPage.getByTestId("schedule-flow").fill("recall");
+    await adminPage.getByRole("option", { name: "recall-welllog" }).click();
 
     // A far-out interval so it never actually fires during the suite, with catch-up on.
     await adminPage.getByTestId("schedule-trigger-interval").click();
@@ -65,7 +65,7 @@ test.describe.serial("new features", () => {
     await adminPage.getByTestId("schedule-catchup").click();
     await adminPage.getByTestId("create-schedule-submit").click();
 
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
     await expect(row.getByText("catchup")).toBeVisible();
 
@@ -73,7 +73,7 @@ test.describe.serial("new features", () => {
     await row.getByTestId("schedule-delete").click();
     await expect(adminPage.getByTestId("confirm-dialog")).toBeVisible();
     await adminPage.getByTestId("confirm-dialog-confirm").click();
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }))
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }))
       .toHaveCount(0, { timeout: 15_000 });
   });
 });

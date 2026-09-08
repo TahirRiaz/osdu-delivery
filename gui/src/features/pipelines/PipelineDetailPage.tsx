@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link as RouterLink, useNavigate, useParams } from "react-router-dom";
+import { Link as RouterLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +27,7 @@ import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
+import { DeliveryFlowPanel } from "../delivery/DeliveryFlowPanel";
 
 /** Definition JSON arrives as one compact string; pretty-print it, falling back to the raw text if malformed. */
 function prettyJson(raw: string): string {
@@ -92,7 +93,11 @@ const scheduleColumns: Column<Schedule>[] = [
 export default function PipelineDetailPage() {
   const { pipelineId = "" } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [triggerOpen, setTriggerOpen] = useState(false);
+  // A delivery flow opens on its delivery tab (the overview page and a submission page link there); the tab
+  // query parameter names any other tab explicitly.
+  const requestedTab = searchParams.get("tab");
 
   const detailQuery = useQuery({
     queryKey: ["pipelines", "detail", pipelineId],
@@ -124,6 +129,8 @@ export default function PipelineDetailPage() {
       </Page>
     );
   }
+
+  const isDelivery = detail.kind === "delivery";
 
   return (
     <Page data-testid="page-pipeline-detail">
@@ -217,14 +224,32 @@ export default function PipelineDetailPage() {
         <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} absolute /></DetailPair>
       </DetailHeaderCard>
 
-      <Tabs defaultValue="yaml">
+      <Tabs defaultValue={requestedTab ?? (isDelivery ? "delivery" : "yaml")}>
         <TabsList data-testid="pipeline-tabs">
+          {isDelivery && <TabsTrigger value="delivery" data-testid="pipeline-tab-delivery">Delivery</TabsTrigger>}
+          {isDelivery && <TabsTrigger value="records" data-testid="pipeline-tab-records">Records</TabsTrigger>}
+          {isDelivery && <TabsTrigger value="submissions" data-testid="pipeline-tab-submissions">Submissions</TabsTrigger>}
           <TabsTrigger value="yaml" data-testid="pipeline-tab-yaml">YAML</TabsTrigger>
           <TabsTrigger value="runs" data-testid="pipeline-tab-runs">Runs</TabsTrigger>
           <TabsTrigger value="schedules" data-testid="pipeline-tab-schedules">Schedules</TabsTrigger>
           <TabsTrigger value="definition" data-testid="pipeline-tab-definition">Definition</TabsTrigger>
         </TabsList>
 
+        {isDelivery && (
+          <TabsContent value="delivery">
+            <DeliveryFlowPanel pipelineId={detail.id} flowName={detail.name} section="overview" />
+          </TabsContent>
+        )}
+        {isDelivery && (
+          <TabsContent value="records">
+            <DeliveryFlowPanel pipelineId={detail.id} flowName={detail.name} section="records" />
+          </TabsContent>
+        )}
+        {isDelivery && (
+          <TabsContent value="submissions">
+            <DeliveryFlowPanel pipelineId={detail.id} flowName={detail.name} section="submissions" />
+          </TabsContent>
+        )}
         <TabsContent value="yaml">
           <CodeView value={detail.yaml} language="yaml" height={560} data-testid="pipeline-yaml" />
         </TabsContent>

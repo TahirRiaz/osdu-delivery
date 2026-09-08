@@ -1,0 +1,35 @@
+{
+  "entityType": "reference-data--UnitOfMeasure",
+  "items": [
+    {
+      "Code": "m",
+      "ID": "m",
+      "Name": "metre",
+      "id": "dev:reference-data--UnitOfMeasure:m"
+    },
+    {
+      "Code": "ft",
+      "ID": "ft",
+      "Name": "foot",
+      "id": "dev:reference-data--UnitOfMeasure:ft"
+    },
+    {
+      "Code": "gAPI",
+      "ID": "gAPI",
+      "Name": "API gamma ray unit",
+      "id": "dev:reference-data--UnitOfMeasure:gAPI"
+    },
+    {
+      "Code": "g/cm3",
+      "ID": "g/cm3",
+      "Name": "gram per cubic centimetre",
+      "id": "dev:reference-data--UnitOfMeasure:g%2Fcm3"
+    },
+    {
+      "Code": "%",
+      "ID": "%",
+      "Name": "percent",
+      "id": "dev:reference-data--UnitOfMeasure:%25"
+    }
+  ]
+}

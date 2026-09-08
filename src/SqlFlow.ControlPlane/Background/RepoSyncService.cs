@@ -191,7 +191,8 @@ public sealed partial class RepoSyncService : BackgroundService
             "result",
             $"Pipelines: {result.PipelinesAdded} added, {result.PipelinesUpdated} updated, "
                 + $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, "
-                + $"{result.PipelinesDeleted} removed.",
+                + $"{result.PipelinesDeleted} removed. Documents (mappings, snapshots): {result.DocumentsAdded} added, "
+                + $"{result.DocumentsUpdated} updated, {result.DocumentsRemoved} removed, {result.DocumentsInvalid} invalid.",
             ct).ConfigureAwait(false);
 
         if (result.RunsAdded > 0)

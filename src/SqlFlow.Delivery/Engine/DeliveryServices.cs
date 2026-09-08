@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
 using SqlFlow.Core.Abstractions;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Drops;
@@ -39,6 +40,7 @@ public static class DeliveryServices
         // Documents: the delivery loader behind the platform's envelope probe.
         services.AddSingleton<DeliveryDocumentLoader>();
         services.AddSingleton<IFlowDocumentKind, DeliveryFlowKind>();
+        services.AddSingleton<ICatalogSyncExtension, DeliveryCatalogSync>();
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
         // feed, metrics, a webhook) by registering more IDeliveryListener instances.

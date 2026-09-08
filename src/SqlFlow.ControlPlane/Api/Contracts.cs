@@ -235,4 +235,6 @@ public sealed record NotificationQueuedDeliveryDto(Guid DeliveryId);
 /// "Sync now".</summary>
 public sealed record RepoSyncResultDto(
     int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated, int PipelinesDeleted,
-    int RunsAdded, int RunsSkipped, int RunsFailed, IReadOnlyList<string> Warnings);
+    int RunsAdded, int RunsSkipped, int RunsFailed,
+    int DocumentsAdded, int DocumentsUpdated, int DocumentsUnchanged, int DocumentsRemoved, int DocumentsInvalid,
+    IReadOnlyList<string> Warnings);

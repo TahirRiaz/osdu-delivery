@@ -340,7 +340,9 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     // and their own notification opt-ins.
     .MapMeEndpoints()
     .MapNotificationEndpoints()
-    .MapMaintenanceEndpoints();
+    .MapMaintenanceEndpoints()
+    .MapComputeTaskEndpoints()
+    .MapDeliveryReadEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.
@@ -349,7 +351,9 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapRunTriggerEndpoints()
     .MapScheduleWriteEndpoints()
     .MapRepoSourceWriteEndpoints()
-    .MapNodeControlEndpoints();
+    .MapNodeControlEndpoints()
+    .MapComputeTaskControlEndpoints()
+    .MapDeliveryWriteEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own
 // credential, so it lives under the "author" scope rather than "operate".

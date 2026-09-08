@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The delivery domain as the platform's one flow kind (`src/SqlFlow.Delivery`): `flowType: delivery` documents with
+  pinned mappings, schema and reference snapshots kept in the flow's repository, the drop reader, the mapping
+  renderer with the preflight gate, two-tier change detection, the OSDU record and well log protocols, and the
+  lease-and-retry worker.
+- The ledger in the catalog's `delivery` schema: submissions, records, append-only attempts, source watermarks,
+  the audit trail of runs and interventions (with the requesting user and the run id), and the mapping and
+  snapshot read models the repository sync writes.
+- The delivery API under `/api/v1/delivery`: the manifest notification, per-flow stats, indexed record search,
+  submissions, record history, the audit trail, mappings and snapshots, and the interventions (release,
+  redeliver, verify, read back, delete, probe); the compute task read API under `/api/v1/compute/tasks`.
+- The GUI delivery pages: the delivery overview, the per-flow Delivery, Records and Submissions tabs, the record
+  page with its history and actions, the submission page, the audit trail, and the mappings and snapshots page.
+- The CLI verbs `sqlflow check` and `sqlflow snapshot`, and the delivery run options on `run` and `trigger`
+  (`--operation`, `--force`, `--set`, `--drop`, `--submission`, `--record`, `--publish-to`).
+- The sample estate `samples/recall-welllog`, the drop generator `tools/SampleDrop`, and the delivery test suite.
+- Runs record who requested them and the delivery counts they produced; the request body ceiling is an explicit
+  setting (`ControlPlane:MaxRequestBodyMegabytes`).
+
 ### Changed
+
+- Per-run parameters are delivery operations (deliver, verify, plan, known-state) with force, flow parameter
+  values, an explicit drop, a submission to re-run, a record scope and a publication target; the SQL-era backfill
+  parameters are gone from the API, the CLI, the run row and the GUI.
+- Schedule run-now takes `force` instead of a backfill window.
 
 - Forked from SQLFlow V3 (commit `ddd4ea12`) as OSDU Delivery and stripped to the platform: the control plane
   (auth, users, tokens, repos with managed git sync and proposals, the catalog, schedules, the run queue, nodes

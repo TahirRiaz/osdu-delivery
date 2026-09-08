@@ -134,6 +134,7 @@ public sealed class CatalogDbContext : DbContext
             entity.HasIndex(r => r.ResultSubmissionId);
             entity.HasIndex(r => new { r.PipelineId, r.Operation });
             entity.Property(r => r.TriggerSource).HasMaxLength(16);
+            entity.Property(r => r.RequestedBy).HasMaxLength(200);
             // PipelineId is a soft link (no FK): a run can outlive its pipeline being removed from git, so the
             // history stays even when the Pipeline row is gone. The GUI left-joins on it; it is indexed for that.
             entity.HasIndex(r => r.PipelineId);

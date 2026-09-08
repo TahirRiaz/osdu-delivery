@@ -33,8 +33,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("the synced pipeline appears in the catalog", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
-    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" });
+    await adminPage.getByTestId("filter-name").fill("recall-welllog");
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" });
     await expect(row.first()).toBeVisible({ timeout: 60_000 });
   });
 
@@ -46,7 +46,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     await row.first().click();
     await expect(adminPage.getByTestId("page-repo-detail")).toBeVisible();
     // The project accordions start collapsed; a search opens the matching one and surfaces the flow row.
-    await adminPage.getByTestId("repo-pipeline-search").fill("Csv_Basic");
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first()).toBeVisible();
+    await adminPage.getByTestId("repo-pipeline-search").fill("recall-welllog");
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first()).toBeVisible();
   });
 });

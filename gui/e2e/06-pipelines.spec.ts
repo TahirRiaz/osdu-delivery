@@ -8,8 +8,8 @@ test.describe.serial("pipelines", () => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
 
-    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+    await adminPage.getByTestId("filter-name").fill("recall-welllog");
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first())
       .toBeVisible({ timeout: 15_000 });
 
     await adminPage.getByTestId("filter-name").fill("no-such-pipeline-name");
@@ -25,27 +25,32 @@ test.describe.serial("pipelines", () => {
     await adminPage.getByRole("combobox", { name: "Repo" }).click();
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
 
-    // The fixture flow sits at the repo root, so it groups under the "(root)" project folder. The folders start
-    // collapsed, so open the "(root)" folder to reveal its flows.
-    const rootFolder = adminPage.getByTestId("repo-project").filter({ hasText: "(root)" });
+    // The fixture flow sits under the flows folder, so it groups under the "flows" project folder. The folders start
+    // collapsed, so open the "flows" folder to reveal its flows.
+    const rootFolder = adminPage.getByTestId("repo-project").filter({ hasText: "flows" });
     await expect(rootFolder).toBeVisible({ timeout: 15_000 });
-    await rootFolder.getByText("(root)").click();
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+    await rootFolder.getByText("flows").click();
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first())
       .toBeVisible({ timeout: 15_000 });
   });
 
-  test("pipeline detail shows YAML, definition, runs, and schedules tabs", async ({ adminPage }) => {
+  test("pipeline detail shows the delivery, YAML, definition, runs, and schedules tabs", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     // The folder tree starts collapsed; a search expands it and surfaces the flow row.
-    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
-    await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
+    await adminPage.getByTestId("filter-name").fill("recall-welllog");
+    await adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
     const tabs = adminPage.getByTestId("pipeline-tabs");
+    // A delivery flow opens on its Delivery tab: the stats strip and the flow-level actions.
+    await expect(adminPage.getByTestId("delivery-stats")).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-submit-drop")).toBeVisible();
+    await tabs.getByRole("tab", { name: /records/i }).click();
+    await expect(adminPage.getByTestId("delivery-records-search")).toBeVisible();
     await tabs.getByRole("tab", { name: /yaml/i }).click();
     await expect(adminPage.getByTestId("pipeline-yaml")).toBeVisible();
     // Monaco renders the synced document: the flow name from the fixture YAML is on screen.
-    await expect(adminPage.getByTestId("pipeline-yaml").getByText("Csv_Basic").first())
+    await expect(adminPage.getByTestId("pipeline-yaml").getByText("recall-welllog").first())
       .toBeVisible({ timeout: 30_000 });
 
     await tabs.getByRole("tab", { name: /definition/i }).click();
@@ -61,16 +66,15 @@ test.describe.serial("pipelines", () => {
   test("trigger from the pipeline detail is prefilled and lands on the run", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     // The folder tree starts collapsed; a search expands it and surfaces the flow row.
-    await adminPage.getByTestId("filter-name").fill("Csv_Basic");
-    await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
+    await adminPage.getByTestId("filter-name").fill("recall-welllog");
+    await adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first().click();
     await adminPage.getByTestId("open-trigger-run").click();
     await expect(adminPage.getByTestId("trigger-run-dialog")).toBeVisible();
-    // A flow-locked launch must still resolve its own run parameters: a file flow honors full load, so the toggle
-    // is present and the dialog never claims the flow has none. Guards the launching context that prefills the
-    // flow without its pipeline id, where the parameter lookup previously never fired.
+    // Repo and flow are locked by the pipeline context; a plan of the demo drop needs no OSDU target.
     await expect(adminPage.getByTestId("trigger-operation")).toBeVisible();
-    await expect(adminPage.getByTestId("trigger-parameters-unavailable")).toHaveCount(0);
-    // Repo and flow are locked by the pipeline context; just submit.
+    await adminPage.getByTestId("trigger-operation").click();
+    await adminPage.getByRole("option", { name: "Plan (dry run)" }).click();
+    await adminPage.getByTestId("trigger-values").fill("logSource=demo");
     await adminPage.getByTestId("trigger-submit").click();
     await expect(adminPage.getByTestId("page-run-detail")).toBeVisible({ timeout: 15_000 });
     await expect(adminPage.getByTestId("status-badge").filter({ hasText: /succeeded|running|queued/ }).first())

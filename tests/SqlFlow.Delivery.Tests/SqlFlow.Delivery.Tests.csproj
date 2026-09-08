@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA2007;CA1861</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Xunit.SkippableFact" />
+    <!-- The ledger tests run the catalog model on an in-memory SQLite database, so the ledger's semantics are
+         exercised on every machine; the SQL Server suites elsewhere cover the provider itself. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SqlFlow.Core\SqlFlow.Core.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+    <ProjectReference Include="..\..\tools\SampleDrop\SampleDrop.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The sample estate (flow, mapping, snapshots, references) is linked into the test output as-is. -->
+    <Content Include="..\..\samples\recall-welllog\mappings\**" Link="samples\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall-welllog\snapshots\**" Link="samples\snapshots\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall-welllog\flows\**" Link="samples\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall-welllog\references\**" Link="samples\references\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

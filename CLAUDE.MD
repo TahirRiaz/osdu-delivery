@@ -44,6 +44,8 @@ The SQLFlow history is reachable through the `upstream` remote (the local SQLFlo
 
 **Never change the catalog's shape without its EF Core migration.** Any edit to `src/SqlFlow.Catalog/CatalogEntities.cs` or the model configuration in `CatalogDbContext.cs` (a new entity, a new column, a changed length, a new index) is incomplete until a migration exists. The catalog schema is upgraded ONLY by migrations, never by hand.
 
+The delivery ledger (`src/SqlFlow.Catalog/DeliveryEntities.cs`, schema `delivery`) is part of the catalog model and follows the same rule.
+
 - Generate it with `dotnet ef migrations add <PascalCaseName>` from `src/SqlFlow.Catalog` (the design-time factory there makes this work without a startup project, and `migrations add` never touches a database). Commit all three artifacts together: the `{timestamp}_{Name}.cs` migration, its `.Designer.cs`, and the refreshed `CatalogDbContextModelSnapshot.cs`. The generated files are marked as generated code in `.editorconfig`, so style rules do not apply to them.
 - The SQLFlow migration history was squashed into one `Initial` migration at the fork; no OSDU Delivery catalog exists in production yet. Until the first production catalog is provisioned, re-squash into `Initial` rather than stacking migrations, so the shipped history starts clean.
 - Migrations are discovered from the `SqlFlow.Catalog` assembly. They apply automatically at control-plane startup (`BootstrapProvisioningService` when `ApplyMigrations=true`, the deployed default), via the CLI's `db` verbs, and in every integration test through `CatalogDatabase.MigrateAsync`.
@@ -84,3 +86,5 @@ The declared endpoints of a flow ARE the design. When a flow finds no files or s
 
 - `dotnet test SqlFlow.sln` runs everything. DB-backed suites need `SQLFLOW_TEST_DB` pointing at a disposable SQL Server database (the git-ignored `.sqlflow/env` is the usual place); they skip when it is unset or unreachable, and the CLI binary suites skip when the CLI has not been built.
 - Never point `SQLFLOW_TEST_DB` at a catalog that holds real data: the suites migrate and seed the database they are given.
+- `tests/SqlFlow.Delivery.Tests` runs the delivery domain on every machine: the ledger on an in-memory SQLite copy of the catalog model, and the engine end to end over the sample estate in `samples/recall-welllog` with a fake protocol. It links the sample mapping, snapshots and flow into its output; keep the sample estate valid.
+- The GUI e2e suite (`gui/e2e`) builds its fixture repository from the sample estate and runs flows with the `plan` operation, which needs no OSDU target.

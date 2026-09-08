@@ -3,6 +3,7 @@ using Azure.Storage.Blobs;
 using SqlFlow.Azure;
 using SqlFlow.Core;
 using SqlFlow.Core.Abstractions;
+using SqlFlow.Core.Model;
 using SqlFlow.Core.Storage;
 
 namespace SqlFlow.Delivery.Storage;
@@ -40,11 +41,17 @@ public sealed class FileStoreRegistry
         _writers = writers.ToList();
     }
 
+    /// <summary>
+    /// The store for a location. A location that does not exist lists as empty rather than failing: the callers
+    /// (the drop reader, the snapshot store) turn "nothing there" into their own precise message (a missing manifest,
+    /// an uncaptured snapshot), exactly as a blob prefix with no blobs already does.
+    /// </summary>
     public IFileStore For(string location)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(location);
-        return _stores.FirstOrDefault(s => s.CanHandle(location))
+        var store = _stores.FirstOrDefault(s => s.CanHandle(location))
             ?? throw new DeliveryException($"No file store handles location '{location}'. Use a local path, or an abfss:// or https://<account>.blob.core.windows.net URI.");
+        return new AbsentAsEmptyStore(store);
     }
 
     public Task WriteAsync(string location, Stream content, CancellationToken ct = default)
@@ -59,6 +66,29 @@ public sealed class FileStoreRegistry
         return _writers.FirstOrDefault(w => w.CanHandle(location))
             ?? throw new DeliveryException($"No file writer handles location '{location}'. Snapshots and known-state publications go to a local path or an Azure Storage URI.");
     }
+}
+
+/// <summary>A store whose listing of a local path that is not there is empty (the platform store reports it as an error).</summary>
+internal sealed class AbsentAsEmptyStore : IFileStore
+{
+    private readonly IFileStore _inner;
+
+    public AbsentAsEmptyStore(IFileStore inner)
+    {
+        _inner = inner;
+    }
+
+    public bool CanHandle(string location) => _inner.CanHandle(location);
+
+    public Task<IReadOnlyList<FileRef>> ListAsync(string location, FileDiscovery discovery, CancellationToken ct = default)
+        => IsAbsentLocalPath(location)
+            ? Task.FromResult<IReadOnlyList<FileRef>>([])
+            : _inner.ListAsync(location, discovery, ct);
+
+    public Task<Stream> OpenReadAsync(FileRef file, CancellationToken ct = default) => _inner.OpenReadAsync(file, ct);
+
+    private static bool IsAbsentLocalPath(string location)
+        => !location.Contains("://", StringComparison.Ordinal) && !File.Exists(location) && !Directory.Exists(location);
 }
 
 /// <summary>Writes to the local and UNC file system, atomically (write to a sibling temp file, then move into place).</summary>

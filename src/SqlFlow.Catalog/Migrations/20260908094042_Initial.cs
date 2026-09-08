@@ -495,6 +495,7 @@ namespace SqlFlow.Catalog.Migrations
                     GroupMaxConcurrency = table.Column<int>(type: "int", nullable: true),
                     TriggerSource = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: true),
                     TriggerScheduleId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    RequestedBy = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
                     SchemaVersion = table.Column<int>(type: "int", nullable: false),
                     WrittenUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
                     StartUtc = table.Column<DateTime>(type: "datetime2", nullable: true),

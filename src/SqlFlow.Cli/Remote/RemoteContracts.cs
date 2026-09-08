@@ -67,7 +67,7 @@ internal sealed record RunDetailDto(
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
-    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
+    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host, string? RequestedBy,
     string Operation, bool Force, Guid? SubmissionId, string? ParametersJson, Guid? ResultSubmissionId,
     int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId);
 
@@ -128,7 +128,9 @@ internal sealed record DiscoveredFlowDto(
 
 internal sealed record RepoSyncResultDto(
     int PipelinesAdded, int PipelinesUpdated, int PipelinesUnchanged, int PipelinesDeactivated, int PipelinesDeleted,
-    int RunsAdded, int RunsSkipped, int RunsFailed, IReadOnlyList<string> Warnings);
+    int RunsAdded, int RunsSkipped, int RunsFailed,
+    int DocumentsAdded, int DocumentsUpdated, int DocumentsUnchanged, int DocumentsRemoved, int DocumentsInvalid,
+    IReadOnlyList<string> Warnings);
 
 internal sealed record PipelineSummaryDto(
     Guid Id, Guid RepoId, string Name, string Kind, string? Batch, int Wave, bool Active, string ExecutionMode,

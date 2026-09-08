@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
@@ -46,7 +47,7 @@ public static class RunTriggerEndpoints
     }
 
     private static async Task<Results<Accepted<RunTriggerAccepted>, ProblemHttpResult>> TriggerRunAsync(
-        RunTriggerRequest request, CatalogDbContext db, IRunDispatcher dispatcher, CancellationToken ct)
+        RunTriggerRequest request, CatalogDbContext db, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
         if (request is null)
         {
@@ -121,7 +122,7 @@ public static class RunTriggerEndpoints
         }
 
         var runId = await dispatcher.EnqueueAsync(
-            db, new RunEnqueueRequest(request.RepoId, flowName, pipeline.Kind, request.Pool, request.CommitSha, parameters), ct).ConfigureAwait(false);
+            db, new RunEnqueueRequest(request.RepoId, flowName, pipeline.Kind, request.Pool, request.CommitSha, parameters, RequestedBy: RequestActor.Of(user)), ct).ConfigureAwait(false);
 
         // 202 with the canonical run-detail location: GET /api/v1/runs/{runId} reflects the run from the moment it
         // is queued (status "queued"), through running, to its terminal state.

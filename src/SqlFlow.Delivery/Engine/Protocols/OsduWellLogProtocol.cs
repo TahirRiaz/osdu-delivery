@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
@@ -181,7 +182,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             var url = _client.Url(_options.SessionCommitPath ?? DefaultSessionCommitPath, targetId, sessionId);
             await _client.SendJsonAsync(HttpMethod.Patch, url, new JsonObject { ["state"] = "abandon" }, null, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is DeliveryException or HttpRequestException)
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
         {
             _logger.LogWarning("Could not abandon session {SessionId} for {TargetId}: {Message}", sessionId, targetId, HeaderRedaction.RedactMessage(ex.Message));
         }

@@ -107,7 +107,9 @@ public static class CatalogEndpoints
 
             return TypedResults.Ok(new RepoSyncResultDto(
                 result.PipelinesAdded, result.PipelinesUpdated, result.PipelinesUnchanged, result.PipelinesDeactivated, result.PipelinesDeleted,
-                result.RunsAdded, result.RunsSkipped, result.RunsFailed, result.Warnings.Take(20).ToArray()));
+                result.RunsAdded, result.RunsSkipped, result.RunsFailed,
+                result.DocumentsAdded, result.DocumentsUpdated, result.DocumentsUnchanged, result.DocumentsRemoved, result.DocumentsInvalid,
+                result.Warnings.Take(20).ToArray()));
         }
         catch (SqlFlowException ex)
         {

@@ -1,0 +1,251 @@
+# Mapping: Recall well log -> osdu:wks:work-product-component--WellLog:1.4.0
+#
+# This is the render-affecting document (design.md section 9). It declares only what the OSDU schema cannot know:
+# the source bindings, the transforms, the natural key and the envelope policy. Types, requiredness and
+# relationship targets come from the pinned schema snapshot. Editing this file re-renders and re-hashes every
+# record that uses it, so changes go through `plan` and a canary before promotion (section 10.5).
+documentType: mapping
+name: WellLog
+version: 1.4.0
+kind: osdu:wks:work-product-component--WellLog:1.4.0
+description: Recall well logs (one record per logging run) with curve metadata; the curve grid is streamed as bulk data.
+
+source:
+  system: recall
+  scopes: [curves]
+
+# The delivery key is UUIDv5 over (source system, source project, log id): the grain the source models
+# (design.md section 5.1). See docs/decisions/0001-delivery-grain.md.
+identity:
+  naturalKey: [data.LogSource, data.LogRun]
+  # Display and search only (never in the document): find a wellbore's logs by name in the GUI and the ledger.
+  label: "{wellbore_uwi} / {log_name} / run {log_run} ({log_id})"
+
+envelope:
+  legalTags: [dev-equinor-osdu-reference-default]
+  otherRelevantDataCountries: [NO]
+  acl:
+    owners: [data.default.owners@dev.equinor.p.energy.azure.com]
+    viewers: [data.default.viewers@dev.equinor.p.energy.azure.com]
+  tags:
+    DeliveredBy: osdu-delivery
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+
+properties:
+  # Provenance: the natural key columns are mapped verbatim so the source identity survives in OSDU.
+  - target: data.LogSource
+    source: source_project
+    description: Recall source project (natural key, part 1).
+    examples:
+      - { source: NO_15_9, target: NO_15_9 }
+  - target: data.LogRun
+    source: log_id
+    description: Recall log id (natural key, part 2).
+
+  - target: data.Name
+    source: log_name
+    transform: trim
+    examples:
+      - { source: "STAT_COMP ", target: STAT_COMP }
+
+  - target: data.WellboreID
+    source: wellbore_uwi
+    transform: reference
+    config:
+      type: Wellbore
+      matchBy: [FacilityName]
+      onMiss: hold
+    examples:
+      - { source: "NO 15/9-A-14 T4", target: "dev:master-data--Wellbore:6e2d07ac41864cf2a8af52cfef621260:" }
+
+  - target: data.LogVersion
+    source: log_version
+  - target: data.LogActivity
+    source: log_pass
+    transform: split
+    config: { delimiter: ",", index: 0 }
+    examples:
+      - { source: "MAIN,REPEAT", target: MAIN }
+  - target: data.ActivityType
+    source: creator
+  - target: data.SamplingStart
+    source: index_min
+  - target: data.SamplingStop
+    source: index_max
+  - target: data.SamplingInterval
+    source: index_increment
+  - target: data.TopMeasuredDepth
+    source: index_min
+  - target: data.BottomMeasuredDepth
+    source: index_max
+  - target: data.ReferenceCurveID
+    transform: constant
+    config: { value: MD }
+  - target: data.IsRegular
+    source: depth_coding
+    transform: equals
+    config: { resolve: REGULAR }
+    examples:
+      - { source: REGULAR, target: "true" }
+      - { source: DISCRETE, target: "false" }
+
+  - target: data.VerticalMeasurement
+    properties:
+      - target: VerticalMeasurement
+        source: elev_meas_ref
+        transform: split
+        config: { delimiter: " ", index: 0 }
+        examples:
+          - { source: "23.5 M", target: "23.5" }
+      - target: VerticalMeasurementUnitOfMeasureID
+        source: elev_meas_ref
+        transform: reference
+        config:
+          type: UnitOfMeasure
+          delimiter: " "
+          index: 1
+          matchBy: [Code, Name, id]
+          valueMap: { M: m, FT: ft }
+        examples:
+          - { source: "23.5 M", target: "dev:reference-data--UnitOfMeasure:m:" }
+          - { source: "18 FT", target: "dev:reference-data--UnitOfMeasure:ft:" }
+      - target: VerticalMeasurementTypeID
+        transform: constant
+        config: { value: "{param:dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:" }
+
+  - target: data.Curves
+    collection: true
+    scope: curves
+    definition: Curve
+
+  - target: tags.WellLogNativeUID
+    source: native_uid
+    transform: split
+    config: { delimiter: ",", index: 0 }
+    examples:
+      - { source: "NO_15_9:L-1001,extra", target: "NO_15_9:L-1001" }
+
+definitions:
+  Curve:
+    - target: CurveID
+      source: curve_id
+    - target: CurveUnit
+      source: curve_unit
+      transform: reference
+      config:
+        type: UnitOfMeasure
+        matchBy: [Code, Name, id]
+        valueMap: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, "G/CM3": g/cm3, "V/V": "%" }
+        onMiss: hold
+      examples:
+        - { source: GAPI, target: "dev:reference-data--UnitOfMeasure:gAPI:" }
+        - { source: M, target: "dev:reference-data--UnitOfMeasure:m:" }
+    - target: DepthUnit
+      source: index_unit
+      transform: reference
+      config:
+        type: UnitOfMeasure
+        matchBy: [Code, Name, id]
+        valueMap: { M: m, FT: ft }
+    - target: TopDepth
+      source: index_min
+    - target: BaseDepth
+      source: index_max
+    - target: CurveDescription
+      source: curve_description
+    - target: CurveVersion
+      source: curve_version
+    - target: LogCurveBusinessValueID
+      source: business_value
+      transform: reference
+      config:
+        type: LogCurveBusinessValue
+        matchBy: [Code, Name]
+        onMiss: omit
+
+# Whole-document fixtures: a source record and the exact document it must render to under the pinned context.
+# They are the per-mapping regression suite the preflight gate runs (design.md section 10.3) and the proof that a
+# mapping edit changes only what it meant to change.
+fixtures:
+  - name: L-1001 two curves, regular sampling
+    parameters: { dataPartition: dev }
+    record:
+      source_project: NO_15_9
+      log_id: L-1001
+      wellbore_uwi: NO 15/9-A-14 T4
+      log_name: STAT_COMP
+      log_run: "1"
+      log_source: RECALL
+      index_min: "1000"
+      index_max: "1004"
+      index_increment: "0.5"
+      index_unit: M
+      depth_coding: REGULAR
+      elev_meas_ref: 23.5 M
+      creator: SLB
+      log_version: "1"
+      log_pass: MAIN,REPEAT
+      native_uid: NO_15_9:L-1001,extra
+      update_date: 2026-09-01T10:15:00Z
+    scopes:
+      curves:
+        - { curve_id: GR, curve_unit: GAPI, index_unit: M, index_min: "1000", index_max: "1004", curve_description: Gamma ray, curve_version: "1", business_value: HIGH }
+        - { curve_id: RHOB, curve_unit: G/CM3, index_unit: M, index_min: "1000", index_max: "1004", curve_description: Bulk density, curve_version: "1", business_value: HIGH }
+    expected: |
+      {
+        "id": "dev:work-product-component--WellLog:ac3a5843e5cc5e7e9ecf83fc05872909",
+        "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
+        "acl": {
+          "owners": ["data.default.owners@dev.equinor.p.energy.azure.com"],
+          "viewers": ["data.default.viewers@dev.equinor.p.energy.azure.com"]
+        },
+        "legal": { "legaltags": ["dev-equinor-osdu-reference-default"], "otherRelevantDataCountries": ["NO"] },
+        "tags": { "DeliveredBy": "osdu-delivery", "WellLogNativeUID": "NO_15_9:L-1001" },
+        "data": {
+          "LogSource": "NO_15_9",
+          "LogRun": "L-1001",
+          "Name": "STAT_COMP",
+          "WellboreID": "dev:master-data--Wellbore:6e2d07ac41864cf2a8af52cfef621260:",
+          "LogVersion": "1",
+          "LogActivity": "MAIN",
+          "ActivityType": "SLB",
+          "SamplingStart": 1000,
+          "SamplingStop": 1004,
+          "SamplingInterval": 0.5,
+          "TopMeasuredDepth": 1000,
+          "BottomMeasuredDepth": 1004,
+          "ReferenceCurveID": "MD",
+          "IsRegular": true,
+          "VerticalMeasurement": {
+            "VerticalMeasurement": 23.5,
+            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
+          },
+          "Curves": [
+            {
+              "CurveID": "GR",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 1000,
+              "BaseDepth": 1004,
+              "CurveDescription": "Gamma ray",
+              "CurveVersion": "1",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
+            },
+            {
+              "CurveID": "RHOB",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:g%2Fcm3:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 1000,
+              "BaseDepth": 1004,
+              "CurveDescription": "Bulk density",
+              "CurveVersion": "1",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
+            }
+          ]
+        }
+      }

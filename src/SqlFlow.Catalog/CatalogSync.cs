@@ -22,6 +22,14 @@ public sealed record CatalogSyncResult
     public int RunsSkipped { get; init; }
     public int RunsFailed { get; init; }
     public int RunEventsAdded { get; init; }
+
+    /// <summary>The document families the registered sync extensions reconcile (the delivery kind's mappings and
+    /// snapshots), tallied across every extension.</summary>
+    public int DocumentsAdded { get; init; }
+    public int DocumentsUpdated { get; init; }
+    public int DocumentsUnchanged { get; init; }
+    public int DocumentsRemoved { get; init; }
+    public int DocumentsInvalid { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
@@ -80,9 +88,13 @@ public sealed class CatalogSync
 
     private readonly YamlDocumentLoader _documents;
     private readonly EstateScanner _estate;
+    private readonly IReadOnlyList<ICatalogSyncExtension> _extensions;
 
-    public CatalogSync(YamlDocumentLoader documents)
+    /// <param name="documents">The loader every present flow document is parsed with.</param>
+    /// <param name="extensions">The document families registered kinds add to the sync; none by default.</param>
+    public CatalogSync(YamlDocumentLoader documents, IEnumerable<ICatalogSyncExtension>? extensions = null)
     {
+        _extensions = extensions?.ToList() ?? [];
         ArgumentNullException.ThrowIfNull(documents);
         _documents = documents;
         _estate = new EstateScanner(documents);
@@ -160,8 +172,21 @@ public sealed class CatalogSync
                 var pipelineTally = await ApplyPipelinesAsync(context, repoId, nowUtc, pipelines, presentIds, schedules, excludedFlowPaths, ct).ConfigureAwait(false);
                 var runTally = await ApplyRunsAsync(context, runs, runsSkipped, runsFailed, ct).ConfigureAwait(false);
 
+                // The kinds' own document families (mappings, snapshots) reconcile in the same transaction, so a
+                // sync is one atomic view of the repository.
+                var documentTally = CatalogSyncExtensionResult.Empty;
+                foreach (var extension in _extensions)
+                {
+                    documentTally = documentTally.Add(await extension.SyncAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false));
+                }
+
                 return new CatalogSyncResult
                 {
+                    DocumentsAdded = documentTally.Added,
+                    DocumentsUpdated = documentTally.Updated,
+                    DocumentsUnchanged = documentTally.Unchanged,
+                    DocumentsRemoved = documentTally.Removed,
+                    DocumentsInvalid = documentTally.Invalid,
                     PipelinesAdded = pipelineTally.Added,
                     PipelinesUpdated = pipelineTally.Updated,
                     PipelinesUnchanged = pipelineTally.Unchanged,

@@ -18,10 +18,12 @@ takes their place.
 
 ## Status
 
-The platform strip is complete: the solution builds warning-free, both test suites pass, and the GUI builds.
-The delivery domain lands next: the `delivery` flow kind, the mapping renderer, the OSDU protocols, the ledger
-tables, and the record pages in the GUI. Until it does, the platform registers no production flow kind; the
-test suites parse with a test-only kind.
+The platform is stripped to what OSDU Delivery needs and the delivery domain is grafted onto it: the `delivery`
+flow kind (mapping rendering, snapshots, the OSDU record and well log protocols, the lease-and-retry worker),
+the ledger in the catalog, the delivery API, the CLI verbs, and the GUI pages (delivery overview, per-flow
+stats, records and submissions, the record page with its history and interventions, the audit trail, mappings
+and snapshots). The solution builds warning-free, the three test suites pass, and the GUI builds. What is
+not there yet: lineage across delivery flows, and an OSDU emulator for end-to-end tests against a live target.
 
 ## Repository layout
 
@@ -35,9 +37,12 @@ test suites parse with a test-only kind.
 | `src/SqlFlow.Azure` | Azure credentials, Key Vault references, blob storage |
 | `src/SqlFlow.Node` | The compute node: claims queued runs, executes them, streams the trace |
 | `src/SqlFlow.ControlPlane` | The API and coordination host: auth, catalog, runs, schedules, sync, notifications |
-| `src/SqlFlow.Cli` | The `sqlflow` command line: validate, run, worker, db, and the remote verbs |
+| `src/SqlFlow.Delivery` | The delivery domain: the `delivery` flow kind, mapping rendering, snapshots, drops, the OSDU protocols, the ledger over the catalog, the worker, the run executor, the compute operations |
+| `src/SqlFlow.Cli` | The `sqlflow` command line: validate, check, snapshot, run, worker, db, and the remote verbs |
 | `gui/` | The React + TypeScript workbench over the API |
-| `tests/` | The engine and control plane suites |
+| `samples/recall-welllog` | A complete sample estate: a flow, its mapping, captured snapshots, reference data, a generated drop |
+| `tools/SampleDrop` | Generates realistic drops for the samples and the tests |
+| `tests/` | The core, control plane and delivery suites |
 
 The `SqlFlow.*` project, namespace, binary, image, and environment-variable names are kept from the platform on
 purpose; the product name is OSDU Delivery.
@@ -74,7 +79,26 @@ cd gui && npm run dev
 `dev.bat` wires the same thing up on Windows. See [gui/README.md](gui/README.md) for the GUI and
 [deploy/README.md](deploy/README.md) for containers, Azure Container Apps, and Kubernetes.
 
+## Trying the sample
+
+```bash
+# the preflight gate over the sample estate: mapping against the schema snapshot, the reference snapshot, the drop
+dotnet run --project src/SqlFlow.Cli -- check samples/recall-welllog/flows/recall-welllog.yaml --set logSource=demo
+
+# render the demo drop and report what a delivery would do; nothing is written anywhere
+dotnet run --project src/SqlFlow.Cli -- run samples/recall-welllog/flows/recall-welllog.yaml --operation plan --set logSource=demo
+
+# a fresh drop with a metadata edit on one record, then plan it again
+dotnet run --project tools/SampleDrop -- samples/recall-welllog/out demo --variant changed
+```
+
+Register the `samples/recall-welllog` folder (or a git repository holding it) as a repo source in the GUI to see
+the flow, its mappings and snapshots, and to deliver, verify and intervene from the Delivery pages. See
+[docs/delivery/README.md](docs/delivery/README.md).
+
 ## Documentation
+
+- [docs/delivery/README.md](docs/delivery/README.md): the delivery domain (design, documents, the drop contract, the ledger, protocols, operations).
 
 - [docs/architecture.md](docs/architecture.md): the platform and the delivery domain.
 - [docs/environment-variables.md](docs/environment-variables.md): every environment variable and secret reference.

@@ -1,0 +1,167 @@
+import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { CircleAlert } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isApiError } from "../../api/client";
+import { deliveryApi, type DeliveryAttempt } from "../../api/delivery";
+import { CodeView } from "../../components/CodeView";
+import { CorrelationError } from "../../components/CorrelationError";
+import { DataTable, type Column } from "../../components/DataTable";
+import { DetailHeaderCard } from "../../components/DetailHeaderCard";
+import { DetailPair } from "../../components/DetailPair";
+import { IdChip } from "../../components/IdChip";
+import { Page } from "../../components/Page";
+import { RelativeTime } from "../../components/RelativeTime";
+import { TruncatedText } from "../../components/TruncatedText";
+import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { SubmissionStatusBadge } from "./DeliveryBadges";
+import { prettyJson, SubmissionCounts } from "./DeliveryFlowPanel";
+
+/** Everything the ledger holds about one drop: what it was, how it went, every attempt it produced, and the runs
+ * that carried it, with a way back to the records it touched. */
+export default function DeliverySubmissionPage() {
+  const { submissionId } = useParams<{ submissionId: string }>();
+  if (!submissionId) {
+    return <Navigate to="/delivery" replace />;
+  }
+
+  return <SubmissionContent submissionId={submissionId} />;
+}
+
+function SubmissionContent({ submissionId }: { submissionId: string }) {
+  const navigate = useNavigate();
+  const query = useQuery({
+    queryKey: ["delivery", "submission", submissionId],
+    queryFn: () => deliveryApi.submission(submissionId),
+    refetchInterval: (q) => {
+      const status = q.state.data?.submission.status;
+      return status === "completed" || status === "failed" ? false : 5000;
+    },
+  });
+  const attempts = useQuery({
+    queryKey: ["delivery", "submission", submissionId, "attempts"],
+    queryFn: () => deliveryApi.submissionAttempts(submissionId, 1000),
+    refetchInterval: 10000,
+  });
+  useTabTitle(query.data ? `Submission ${submissionId.slice(0, 8)}` : undefined);
+
+  if (query.isError) {
+    return (
+      <Page data-testid="page-delivery-submission">
+        {isApiError(query.error) ? <CorrelationError error={query.error} /> : <p className="text-[13px] text-destructive">{String(query.error)}</p>}
+      </Page>
+    );
+  }
+
+  const detail = query.data;
+  if (detail === undefined) {
+    return (
+      <Page data-testid="page-delivery-submission">
+        <Skeleton className="h-60 w-full rounded-lg" />
+        <Skeleton className="h-80 w-full rounded-lg" />
+      </Page>
+    );
+  }
+
+  const s = detail.submission;
+  const attemptColumns: Column<DeliveryAttempt>[] = [
+    { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
+    {
+      id: "outcome",
+      header: "Outcome",
+      render: (row) => (
+        <Badge
+          variant="secondary"
+          className={row.outcome === "delivered" ? "bg-success/15 text-success" : row.outcome === "failed" ? "bg-destructive/15 text-destructive" : row.outcome === "held" ? "bg-warning/15 text-warning" : undefined}
+        >
+          {row.outcome}
+        </Badge>
+      ),
+    },
+    { id: "key", header: "Record", render: (row) => <span className="font-mono text-[12px]">{row.deliveryKey}</span> },
+    { id: "phase", header: "Phase", render: (row) => <span className="font-mono text-[12px]">{row.phase}</span> },
+    { id: "version", header: "Version", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.targetVersion ?? "-"}</span> },
+    { id: "worker", header: "Worker", render: (row) => <TruncatedText text={row.worker} mono maxWidth={200} /> },
+    { id: "error", header: "Detail", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
+  ];
+
+  return (
+    <Page data-testid="page-delivery-submission">
+      {s.error !== null && (
+        <Alert variant="destructive" data-testid="submission-error">
+          <CircleAlert />
+          <AlertDescription>{s.error}</AlertDescription>
+        </Alert>
+      )}
+
+      <DetailHeaderCard
+        title={`Submission ${s.submissionId.slice(0, 8)}`}
+        badges={(
+          <>
+            <SubmissionStatusBadge status={s.status} />
+            <Badge variant="outline" data-testid="submission-mapping">{s.mappingReference}</Badge>
+          </>
+        )}
+        actions={detail.pipelineId ? (
+          <Button variant="outline" size="sm" onClick={() => navigate(`/pipelines/${detail.pipelineId}?tab=records&submission=${s.submissionId}`)} data-testid="submission-records">
+            Records of this submission
+          </Button>
+        ) : undefined}
+        meta={(
+          <>
+            <IdChip label="submission" value={s.submissionId} testId="submission-id" copyTestId="copy-submission-id" />
+            {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={s.flowName} to={`/pipelines/${detail.pipelineId}`} testId="submission-pipeline-link" copyTestId="copy-submission-pipeline" />}
+            {detail.runIds.map((runId) => (
+              <IdChip key={runId} label="run" value={runId} to={`/runs/${runId}`} testId={`submission-run-${runId}`} copyTestId={`copy-submission-run-${runId}`} />
+            ))}
+          </>
+        )}
+      >
+        <DetailPair label="Received"><RelativeTime value={s.receivedUtc} absolute /></DetailPair>
+        <DetailPair label="Started"><RelativeTime value={s.startedUtc} absolute /></DetailPair>
+        <DetailPair label="Completed"><RelativeTime value={s.completedUtc} absolute /></DetailPair>
+        <DetailPair label="Drop"><TruncatedText text={s.dropLocation} mono maxWidth={320} copy copyTestId="copy-submission-drop" /></DetailPair>
+        <DetailPair label="Flow">
+          {detail.pipelineId
+            ? <RouterLink to={`/pipelines/${detail.pipelineId}`} className="text-primary hover:underline">{s.flowName}</RouterLink>
+            : s.flowName}
+        </DetailPair>
+        <DetailPair label="Records"><span className="font-mono tabular-nums">{s.recordCount}</span></DetailPair>
+      </DetailHeaderCard>
+
+      <Card className="gap-2 rounded-lg p-3">
+        <h2 className="text-[13px] font-medium">Outcome</h2>
+        <SubmissionCounts submission={s} />
+      </Card>
+
+      <Tabs defaultValue="attempts">
+        <TabsList data-testid="submission-tabs">
+          <TabsTrigger value="attempts" data-testid="submission-tab-attempts">Attempts</TabsTrigger>
+          <TabsTrigger value="parameters" data-testid="submission-tab-parameters">Parameters</TabsTrigger>
+          <TabsTrigger value="context" data-testid="submission-tab-context">Render context</TabsTrigger>
+        </TabsList>
+        <TabsContent value="attempts">
+          <DataTable
+            columns={attemptColumns}
+            rows={attempts.data}
+            rowKey={(row) => row.attemptId}
+            onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
+            emptyMessage="No delivery attempts were made for this submission (everything was unchanged, or it has not run yet)."
+            data-testid="submission-attempts"
+          />
+        </TabsContent>
+        <TabsContent value="parameters">
+          <CodeView value={prettyJson(s.parametersJson)} language="json" height={200} data-testid="submission-parameters" />
+        </TabsContent>
+        <TabsContent value="context">
+          <CodeView value={prettyJson(s.renderContext)} language="json" height={280} data-testid="submission-render-context" />
+        </TabsContent>
+      </Tabs>
+    </Page>
+  );
+}

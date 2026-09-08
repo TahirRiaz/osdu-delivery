@@ -466,4 +466,7 @@ public interface ILedger
     Task<ActivityRecord?> GetActivityAsync(long activityId, CancellationToken ct = default);
 
     Task<IReadOnlyList<ActivityRecord>> ListActivitiesAsync(ActivityQuery query, CancellationToken ct = default);
+
+    /// <summary>How many activities match a listing, for paging.</summary>
+    Task<int> CountActivitiesAsync(ActivityQuery query, CancellationToken ct = default);
 }

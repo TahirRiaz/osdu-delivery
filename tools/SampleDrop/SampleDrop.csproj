@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SqlFlow.Delivery.SampleDrop</RootNamespace>
+    <Description>Writes a small, realistic recall-welllog drop (parquet scopes, payload chunks, manifest) for the samples, the CI smoke test and the tests.</Description>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+  </ItemGroup>
+
+</Project>

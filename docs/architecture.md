@@ -54,20 +54,29 @@ scan, the catalog sync, the run queue, and the GUI work from those headers alone
 
 ## The delivery domain
 
-The delivery domain is the one production flow kind. A delivery flow names a drop (the files to read and their
-format), a mapping (how rows become OSDU records of a kind, which fields identify a record, which reference
-other records), and an OSDU target (endpoint, data partition, legal tags, ACLs, credential references). Running
-it means:
+The delivery domain (`src/SqlFlow.Delivery`, documented in [delivery/README.md](delivery/README.md)) is the one
+production flow kind. A delivery flow names a drop (a storage location the preparing side writes: a manifest,
+parquet record scopes, payload chunks), a pinned mapping (how rows become OSDU records of one kind, which
+columns identify a record, which values resolve against reference data), and an OSDU target (endpoint, auth
+and header references, the delivery protocol). The mapping and the schema and reference snapshots it renders
+with live in the flow's repository and are synced into the catalog as read models. Running the flow means:
 
-1. **Intake**: snapshot the drop, canonicalize each row, and compute a stable record key and content hash.
-2. **Plan**: compare the snapshot against the ledger to decide what is new, changed, unchanged, or gone.
-3. **Deliver**: render the OSDU record, call the storage API, and write the attempt (request, response, OSDU
-   id and version, error) to the ledger; retries and leases keep concurrent nodes from double-delivering.
-4. **Verify**: read back from OSDU and reconcile with the ledger; publish the known state.
+1. **Intake**: register the drop's submission under its manifest id, render every record through the pinned
+   mapping against the pinned snapshots, and decide per record what changed (source versions, fingerprints,
+   independent metadata and payload hashes); write the pending work to the ledger.
+2. **Deliver**: lease pending records in batches, send each through the flow's protocol (a record write, or a
+   record plus a streamed payload), and write one append-only attempt per try; back off and retry, hold what
+   cannot be fixed by retrying, and release leases on a stop so any number of nodes share the work.
+3. **Verify**: read delivered records back from OSDU and compare versions; queue drifted records for
+   redelivery when the flow reconciles. **Known state** publishes the compact view the preparing side reads.
 
-The ledger holds submissions, delivery records, attempts, and operator actions (release, redeliver, delete)
-with who did them and when. Statistics, record history, search, and the re-run actions in the GUI and the CLI
-are all views over the ledger.
+A delivery run is a platform run: its operation (deliver, verify, plan, known-state), scope and force flag
+are its run parameters, its log is the run trace, and its counts are projected onto the run row. The ledger
+(the `delivery` schema of the catalog) holds submissions, records, attempts, source watermarks and the audit
+trail of interventions (release, redeliver, delete, verify) with who did them, when, and the run they ran in.
+The target-side interventions (probe, read back, delete) run on a node as compute tasks. Statistics, record
+search and history, submission views and the interventions in the GUI, the API and the CLI are all views over
+the ledger.
 
 ## Principles
 

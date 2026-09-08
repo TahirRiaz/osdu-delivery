@@ -12,8 +12,13 @@ test.describe.serial("runs", () => {
     await expect(adminPage.getByTestId("trigger-run-dialog")).toBeVisible();
     await adminPage.getByTestId("trigger-repo").fill("e2e-repo");
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
-    await adminPage.getByTestId("trigger-flow").fill("Csv");
-    await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
+    await adminPage.getByTestId("trigger-flow").fill("recall");
+    await adminPage.getByRole("option", { name: "recall-welllog" }).click();
+    // A plan renders the demo drop against the snapshots and the ledger without touching an OSDU target, so the
+    // run succeeds on any machine; the flow parameter names which drop to read.
+    await adminPage.getByTestId("trigger-operation").click();
+    await adminPage.getByRole("option", { name: "Plan (dry run)" }).click();
+    await adminPage.getByTestId("trigger-values").fill("logSource=demo");
     await adminPage.getByTestId("trigger-submit").click();
 
     // 202 accepted: the dialog navigates to the run detail, which polls to a terminal state.
@@ -21,33 +26,20 @@ test.describe.serial("runs", () => {
     await expect(adminPage.getByTestId("status-badge").filter({ hasText: "succeeded" }).first())
       .toBeVisible({ timeout: 180_000 });
 
-    // Every drill-down tab renders; statements carry the generated SQL (this suite's table is unique per run,
-    // so the first trigger CREATEs it and the DDL statement is recorded) and open the full-statement dialog.
-    await expect(async () => {
-      await adminPage.reload();
-      await expect(adminPage.getByTestId("run-tabs")).toBeVisible({ timeout: 10_000 });
-      await adminPage.getByTestId("run-tabs").getByRole("tab", { name: /statements/i }).click();
-      await expect(adminPage.getByTestId("table-row").first()).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 60_000 });
-    const statementRow = adminPage.getByTestId("table-row").first();
-    await statementRow.click();
-    await expect(adminPage.getByTestId("statement-dialog")).toBeVisible();
-    await adminPage.keyboard.press("Escape");
-
-    for (const tab of ["assertions", "files", "surrogate-keys", "health-metrics"]) {
-      await adminPage.getByTestId(`tab-${tab}`).click();
-      await expect(adminPage.getByTestId(`${tab}-table`)).toBeVisible();
-    }
+    // The run records what was asked: the operation and the flow parameter show on the run page.
+    await expect(adminPage.getByTestId("run-parameters")).toBeVisible();
+    await expect(adminPage.getByTestId("run-operation")).toHaveText("plan");
+    await expect(adminPage.getByTestId("run-parameters").getByText("logSource=demo")).toBeVisible();
   });
 
   test("the runs list shows the run and the status filter narrows it", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-runs").click();
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" });
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" });
     await expect(row.first()).toBeVisible({ timeout: 30_000 });
 
     await adminPage.getByTestId("filter-status").click();
     await adminPage.getByRole("option", { name: "succeeded" }).click();
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first()).toBeVisible();
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first()).toBeVisible();
 
     await adminPage.getByTestId("filter-status").click();
     await adminPage.getByRole("option", { name: "failed" }).click();
@@ -65,7 +57,7 @@ test.describe.serial("runs", () => {
 
     // The grouped board nests schedule -> batch -> step, and the schedule (top) level starts COLLAPSED: the
     // schedule headers show, but their subtrees (batch and step nodes and leaf rows) are hidden until drilled
-    // into. Csv_Basic declares no batch and joins no schedule, so it lives under the Unscheduled schedule group.
+    // into. recall-welllog declares the "recall" batch and joins no schedule, so it lives under the Unscheduled schedule group.
     await expect(adminPage.getByTestId("schedule-group-header").first()).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("table-row")).toHaveCount(0);
     await expect(adminPage.getByTestId("subgroup-header-row")).toHaveCount(0);
@@ -104,11 +96,11 @@ test.describe.serial("runs", () => {
     await expect(adminPage.getByRole("columnheader", { name: "Step" })).toBeVisible();
     await expect(adminPage.getByTestId("table-row").first()).toBeVisible();
 
-    // The batch filter is a searchable dropdown of the estate's real batch labels: selecting "default" narrows
+    // The batch filter is a searchable dropdown of the estate's real batch labels: selecting "recall" narrows
     // the flat list to that batch; clearing it restores the full list.
     await adminPage.getByTestId("filter-batch").click();
-    await adminPage.getByPlaceholder("Search batches").fill("default");
-    await adminPage.getByRole("option", { name: /default/ }).first().click();
+    await adminPage.getByPlaceholder("Search batches").fill("recall");
+    await adminPage.getByRole("option", { name: /recall/ }).first().click();
     await expect(adminPage.getByTestId("table-row").first()).toBeVisible({ timeout: 15_000 });
     await adminPage.getByTestId("filter-batch").click();
     await adminPage.getByRole("option", { name: "Clear filter" }).click();
@@ -132,8 +124,8 @@ test.describe.serial("runs", () => {
     await adminPage.getByTestId("open-trigger-run").click();
     await adminPage.getByTestId("trigger-repo").fill("e2e-repo");
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
-    await adminPage.getByTestId("trigger-flow").fill("Csv");
-    await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
+    await adminPage.getByTestId("trigger-flow").fill("recall");
+    await adminPage.getByRole("option", { name: "recall-welllog" }).click();
     // No worker serves this pool, so the run stays queued and the cancel path is deterministic.
     await adminPage.getByTestId("trigger-pool").fill("e2e-unserved-pool");
     await adminPage.getByTestId("trigger-submit").click();
@@ -163,7 +155,7 @@ test.describe.serial("runs", () => {
 
   test("run detail links back to its pipeline and repo", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-runs").click();
-    await adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first().click();
+    await adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first().click();
     await expect(adminPage.getByTestId("page-run-detail")).toBeVisible();
     await adminPage.getByTestId("run-pipeline-link").click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible({ timeout: 15_000 });

@@ -1,0 +1,20 @@
+{
+  "entityType": "reference-data--LogCurveBusinessValue",
+  "items": [
+    {
+      "Code": "HIGH",
+      "Name": "High",
+      "id": "dev:reference-data--LogCurveBusinessValue:High"
+    },
+    {
+      "Code": "MEDIUM",
+      "Name": "Medium",
+      "id": "dev:reference-data--LogCurveBusinessValue:Medium"
+    },
+    {
+      "Code": "LOW",
+      "Name": "Low",
+      "id": "dev:reference-data--LogCurveBusinessValue:Low"
+    }
+  ]
+}

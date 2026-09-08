@@ -35,13 +35,16 @@ only convention that survives a mixed estate. The `SQLFLOW_` prefix is kept from
 | `SQLFLOW_GIT_USERNAME` | control plane, compute nodes | The username paired with the git token on hosts that need one (Bitbucket app passwords, `x-token-auth`). |
 | `SQLFLOW_AZURE_AUTH` | every Azure access path (Key Vault, blob storage) | How the process authenticates to Azure: `default`, `cli` (also `azurecli`, `azlogin`), `managedidentity` (also `mi`, `msi`), `serviceprincipal` (also `sp`). The standard `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` family applies, exactly as the Azure SDK defines it. |
 | `SQLFLOW_TEST_DB` | the test suites | A disposable SQL Server database the DB-backed suites migrate and seed; they skip when it is unset or unreachable. Never a catalog holding real data. |
+| `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | compute nodes, the CLI | `true` lets a delivery flow target a loopback address (a local OSDU stub, the tests). Off by default: the URL guard refuses loopback and private targets. |
 
 The container images add two worker settings that the entrypoint turns into CLI options: `SQLFLOW_WORKER_POOL`
 (the pools the node serves) and `SQLFLOW_WORKER_POLL_SECONDS` (the queue poll cadence).
 
 Everything else the control plane reads is ASP.NET Core configuration under the `ControlPlane` section
 (`ControlPlane__Jwt__SigningKey`, `ControlPlane__Bootstrap__AdminPasswordReference`,
-`ControlPlane__Cors__AllowedOrigins__0`, and so on): environment variables with `__` as the section separator,
+`ControlPlane__Cors__AllowedOrigins__0`, and so on), including
+`ControlPlane__MaxRequestBodyMegabytes`, the API's request body ceiling (default 64, set on purpose rather than
+left at the server default): environment variables with `__` as the section separator,
 or `appsettings.json`. Every value that is a secret takes a `${env:...}` or `${keyvault:...}` reference.
 
 ## Where values come from

@@ -283,6 +283,11 @@ public class CatalogRun
     /// schedule being renamed out of the catalog by a later sync.</summary>
     public Guid? TriggerScheduleId { get; set; }
 
+    /// <summary>Who asked for the run when a person or a client did (the signed-in user of a trigger call, the
+    /// user who fired a schedule by hand); null for the scheduler's own fires and for artifacts synced in from
+    /// disk. Recorded so the history and the delivery ledger's audit trail name the actor.</summary>
+    public string? RequestedBy { get; set; }
+
     public int SchemaVersion { get; set; }
 
     public DateTime WrittenUtc { get; set; }

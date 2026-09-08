@@ -467,7 +467,8 @@ internal static partial class RemoteVerbs
                     Console.WriteLine(
                         $"OK   synced '{repo.Name}': pipelines +{result.PipelinesAdded} added, {result.PipelinesUpdated} updated, " +
                         $"{result.PipelinesUnchanged} unchanged, {result.PipelinesDeactivated} deactivated, {result.PipelinesDeleted} removed; " +
-                        $"runs +{result.RunsAdded} added, {result.RunsSkipped} known, {result.RunsFailed} unreadable.");
+                        $"runs +{result.RunsAdded} added, {result.RunsSkipped} known, {result.RunsFailed} unreadable." +
+                        $"; documents +{result.DocumentsAdded} added, {result.DocumentsUpdated} updated, {result.DocumentsRemoved} removed, {result.DocumentsInvalid} invalid.");
                     foreach (var warning in result.Warnings.Take(20))
                     {
                         Console.Error.WriteLine($"WARN  {warning}");

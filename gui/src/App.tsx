@@ -10,6 +10,11 @@ import { lazyRoute } from "./lib/lazyRoute";
 const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
 const RunsPage = lazyRoute("RunsPage", () => import("./features/runs/RunsPage"));
 const RunDetailPage = lazyRoute("RunDetailPage", () => import("./features/runs/RunDetailPage"));
+const DeliveryOverviewPage = lazyRoute("DeliveryOverviewPage", () => import("./features/delivery/DeliveryOverviewPage"));
+const DeliveryRecordPage = lazyRoute("DeliveryRecordPage", () => import("./features/delivery/DeliveryRecordPage"));
+const DeliverySubmissionPage = lazyRoute("DeliverySubmissionPage", () => import("./features/delivery/DeliverySubmissionPage"));
+const DeliveryActivityPage = lazyRoute("DeliveryActivityPage", () => import("./features/delivery/DeliveryActivityPage"));
+const DeliveryDocumentsPage = lazyRoute("DeliveryDocumentsPage", () => import("./features/delivery/DeliveryDocumentsPage"));
 const RunGroupPage = lazyRoute("RunGroupPage", () => import("./features/runs/RunGroupPage"));
 const NodesPage = lazyRoute("NodesPage", () => import("./features/nodes/NodesPage"));
 const ReposPage = lazyRoute("ReposPage", () => import("./features/repos/ReposPage"));
@@ -40,6 +45,11 @@ export default function App() {
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/groups/:groupId" element={<RunGroupPage />} />
           <Route path="/runs/:runId" element={<RunDetailPage />} />
+          <Route path="/delivery" element={<DeliveryOverviewPage />} />
+          <Route path="/delivery/records/:key" element={<DeliveryRecordPage />} />
+          <Route path="/delivery/submissions/:submissionId" element={<DeliverySubmissionPage />} />
+          <Route path="/delivery/activity" element={<DeliveryActivityPage />} />
+          <Route path="/delivery/documents" element={<DeliveryDocumentsPage />} />
           <Route path="/nodes" element={<NodesPage />} />
           <Route path="/repos" element={<ReposPage />} />
           <Route path="/repos/:repoId" element={<RepoDetailPage />} />

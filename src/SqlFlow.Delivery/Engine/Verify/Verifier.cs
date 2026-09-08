@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -70,7 +71,7 @@ public sealed class Verifier
                 {
                     result = await _protocol.VerifyAsync(record.TargetId!, record.TargetVersion, ct).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is DeliveryException or HttpRequestException)
+                catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
                 {
                     _logger.LogWarning("Verify {SourceKey} failed: {Message}", record.SourceKey, HeaderRedaction.RedactMessage(ex.Message));
                     result = new VerifyResult(VerifyOutcome.Error, null, ex.Message);

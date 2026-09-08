@@ -772,7 +772,43 @@ public sealed class CatalogLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(query);
         await using var db = Open();
-        var rows = db.DeliveryActivities.AsNoTracking().AsQueryable();
+        var list = await FilterActivities(db.DeliveryActivities.AsNoTracking(), query)
+            .OrderByDescending(a => a.StartedUtc)
+            .ThenByDescending(a => a.ActivityId)
+            .Skip(Math.Max(0, query.Offset))
+            .Take(Math.Clamp(query.Max, 1, 1000))
+            .Select(a => new DeliveryActivity
+            {
+                ActivityId = a.ActivityId,
+                FlowId = a.FlowId,
+                FlowName = a.FlowName,
+                Kind = a.Kind,
+                Actor = a.Actor,
+                StartedUtc = a.StartedUtc,
+                CompletedUtc = a.CompletedUtc,
+                Outcome = a.Outcome,
+                ParametersJson = a.ParametersJson,
+                SubmissionId = a.SubmissionId,
+                DeliveryKey = a.DeliveryKey,
+                RunId = a.RunId,
+                Summary = a.Summary,
+                // The log is fetched per activity, not in listings.
+                Log = null,
+            })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return list.Select(ToRecord).ToList();
+    }
+
+    public async Task<int> CountActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        await using var db = Open();
+        return await FilterActivities(db.DeliveryActivities.AsNoTracking(), query).CountAsync(ct).ConfigureAwait(false);
+    }
+
+    private static IQueryable<DeliveryActivity> FilterActivities(IQueryable<DeliveryActivity> rows, ActivityQuery query)
+    {
         if (query.FlowId is { } flowId)
         {
             rows = rows.Where(a => a.FlowId == flowId);
@@ -819,32 +855,7 @@ public sealed class CatalogLedger : ILedger
             rows = rows.Where(a => a.StartedUtc < until);
         }
 
-        var list = await rows
-            .OrderByDescending(a => a.StartedUtc)
-            .ThenByDescending(a => a.ActivityId)
-            .Skip(Math.Max(0, query.Offset))
-            .Take(Math.Clamp(query.Max, 1, 1000))
-            .Select(a => new DeliveryActivity
-            {
-                ActivityId = a.ActivityId,
-                FlowId = a.FlowId,
-                FlowName = a.FlowName,
-                Kind = a.Kind,
-                Actor = a.Actor,
-                StartedUtc = a.StartedUtc,
-                CompletedUtc = a.CompletedUtc,
-                Outcome = a.Outcome,
-                ParametersJson = a.ParametersJson,
-                SubmissionId = a.SubmissionId,
-                DeliveryKey = a.DeliveryKey,
-                RunId = a.RunId,
-                Summary = a.Summary,
-                // The log is fetched per activity, not in listings.
-                Log = null,
-            })
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        return list.Select(ToRecord).ToList();
+        return rows;
     }
 
     private static string? Truncate(string? text, int max)

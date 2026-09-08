@@ -924,6 +924,11 @@ internal static partial class RemoteVerbs
         Console.WriteLine($"  repo:        {run.RepoId?.ToString() ?? "(none)"}  pipeline {run.PipelineId}{(run.GroupId is null ? string.Empty : $"  group {run.GroupId}")}");
         Console.WriteLine($"  lifecycle:   enqueued {FormatUtc(run.EnqueuedUtc)}, start {FormatUtc(run.StartUtc)}, end {FormatUtc(run.EndUtc)}, duration {FormatDuration(run.DurationSeconds)}");
         Console.WriteLine($"  executed by: {run.ClaimedByNode ?? run.Host ?? "(unknown)"}{(run.TargetPool is null ? string.Empty : $" (pool {run.TargetPool})")}{(run.CommitSha is null ? string.Empty : $", commit {run.CommitSha}")}");
+        if (run.RequestedBy is not null)
+        {
+            Console.WriteLine($"  requested by: {run.RequestedBy}");
+        }
+
         if (run.RowsLoaded is not null || run.RowsInserted is not null || run.RowsUpdated is not null || run.RowsDeleted is not null)
         {
             Console.WriteLine($"  records:     {FormatCount(run.RowsLoaded)} processed, {FormatCount(run.RowsInserted)} created, {FormatCount(run.RowsUpdated)} updated, {FormatCount(run.RowsDeleted)} deleted");

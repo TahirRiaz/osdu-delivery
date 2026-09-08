@@ -80,3 +80,11 @@ delivery flow kind, so they pass only once it is registered in the control plane
 
 `src/theme/branding.css` holds the design tokens, and `public/brand/` the logo files. Brand changes happen in
 those two places.
+
+## Delivery pages
+
+`src/features/delivery` holds the delivery domain's pages over `src/api/delivery.ts`: the overview (`/delivery`),
+the per-flow Delivery, Records and Submissions tabs on a delivery pipeline's page, the record page
+(`/delivery/records/:key`) with its history and interventions, the submission page, the audit trail
+(`/delivery/activity`), and the mappings and snapshots page (`/delivery/documents`). Target-side actions (probe,
+read back, delete) queue a compute task and poll it through `useComputeTask`.

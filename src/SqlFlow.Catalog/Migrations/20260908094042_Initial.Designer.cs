@@ -12,7 +12,7 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    [Migration("20260908092517_Initial")]
+    [Migration("20260908094042_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -882,6 +882,10 @@ namespace SqlFlow.Catalog.Migrations
 
                     b.Property<Guid?>("RepoId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RequestedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<Guid?>("ResultSubmissionId")
                         .HasColumnType("uniqueidentifier");

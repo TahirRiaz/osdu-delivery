@@ -731,6 +731,7 @@ public sealed partial class RunWorker
                         r.FlowVersionHash,
                         r.ParametersJson,
                         r.TriggerSource,
+                        r.RequestedBy,
                         RepoName = repo != null ? repo.Name : null,
                         RepoRemoteUrl = repo != null ? repo.RemoteUrl : null,
                         RepoRootPath = repo != null ? repo.RootPath : null,
@@ -845,8 +846,9 @@ public sealed partial class RunWorker
                     RunId = runId, Echo = null, Parameters = parameters, EventSink = eventSink,
                     // The claimed run's flow name selects WHICH flow of the document executes.
                     FlowName = run.FlowName,
-                    // Who asked (a schedule, a person, an API client), for the kinds that keep an audit trail.
-                    Actor = run.TriggerSource,
+                    // Who asked (the person or client that triggered it, else the schedule or source that did), for
+                    // the kinds that keep an audit trail.
+                    Actor = run.RequestedBy ?? run.TriggerSource,
                 };
                 // The executor runs under the per-run token: an operator cancel aborts the in-flight work here (and
                 // only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel never

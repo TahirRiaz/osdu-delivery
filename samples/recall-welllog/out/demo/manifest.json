@@ -1,0 +1,247 @@
+{
+  "manifestVersion": 1,
+  "submissionId": "7d5a2d4c-3f0e-4b6b-9c1a-0d2e8f7a6b51",
+  "flow": "recall-welllog",
+  "parameters": {
+    "logSource": "demo"
+  },
+  "mapping": "WellLog@1.4.0",
+  "createdUtc": "2026-09-07T12:00:00+00:00",
+  "recordCount": 3,
+  "sourceVersions": {
+    "wl_pipelines_dsis_intermediate.recall_logcurve_enriched": 4012
+  },
+  "scopes": {
+    "record": {
+      "files": [
+        "metadata/part-00000.parquet"
+      ],
+      "columns": [
+        {
+          "name": "deliveryKey",
+          "type": "string"
+        },
+        {
+          "name": "source_project",
+          "type": "string"
+        },
+        {
+          "name": "log_id",
+          "type": "string"
+        },
+        {
+          "name": "wellbore_uwi",
+          "type": "string"
+        },
+        {
+          "name": "log_name",
+          "type": "string"
+        },
+        {
+          "name": "log_run",
+          "type": "string"
+        },
+        {
+          "name": "log_source",
+          "type": "string"
+        },
+        {
+          "name": "index_min",
+          "type": "double"
+        },
+        {
+          "name": "index_max",
+          "type": "double"
+        },
+        {
+          "name": "index_increment",
+          "type": "double"
+        },
+        {
+          "name": "index_unit",
+          "type": "string"
+        },
+        {
+          "name": "depth_coding",
+          "type": "string"
+        },
+        {
+          "name": "elev_meas_ref",
+          "type": "string"
+        },
+        {
+          "name": "creator",
+          "type": "string"
+        },
+        {
+          "name": "log_version",
+          "type": "string"
+        },
+        {
+          "name": "log_pass",
+          "type": "string"
+        },
+        {
+          "name": "native_uid",
+          "type": "string"
+        },
+        {
+          "name": "update_date",
+          "type": "string"
+        },
+        {
+          "name": "payloadHash",
+          "type": "string"
+        },
+        {
+          "name": "chunkCount",
+          "type": "long"
+        }
+      ]
+    },
+    "curves": {
+      "files": [
+        "curves-meta/part-00000.parquet"
+      ],
+      "columns": [
+        {
+          "name": "deliveryKey",
+          "type": "string"
+        },
+        {
+          "name": "curve_ordinal",
+          "type": "long"
+        },
+        {
+          "name": "curve_id",
+          "type": "string"
+        },
+        {
+          "name": "curve_unit",
+          "type": "string"
+        },
+        {
+          "name": "index_unit",
+          "type": "string"
+        },
+        {
+          "name": "index_min",
+          "type": "double"
+        },
+        {
+          "name": "index_max",
+          "type": "double"
+        },
+        {
+          "name": "curve_description",
+          "type": "string"
+        },
+        {
+          "name": "curve_version",
+          "type": "string"
+        },
+        {
+          "name": "business_value",
+          "type": "string"
+        }
+      ],
+      "parentKey": "deliveryKey",
+      "orderBy": "curve_ordinal"
+    }
+  },
+  "payloads": {
+    "curves": {
+      "pathTemplate": "curves/{deliveryKey}/chunk_*.parquet",
+      "hashColumn": "payloadHash",
+      "chunkCountColumn": "chunkCount",
+      "contentType": "application/x-parquet"
+    }
+  },
+  "Root": {
+    "files": [
+      "metadata/part-00000.parquet"
+    ],
+    "columns": [
+      {
+        "name": "deliveryKey",
+        "type": "string"
+      },
+      {
+        "name": "source_project",
+        "type": "string"
+      },
+      {
+        "name": "log_id",
+        "type": "string"
+      },
+      {
+        "name": "wellbore_uwi",
+        "type": "string"
+      },
+      {
+        "name": "log_name",
+        "type": "string"
+      },
+      {
+        "name": "log_run",
+        "type": "string"
+      },
+      {
+        "name": "log_source",
+        "type": "string"
+      },
+      {
+        "name": "index_min",
+        "type": "double"
+      },
+      {
+        "name": "index_max",
+        "type": "double"
+      },
+      {
+        "name": "index_increment",
+        "type": "double"
+      },
+      {
+        "name": "index_unit",
+        "type": "string"
+      },
+      {
+        "name": "depth_coding",
+        "type": "string"
+      },
+      {
+        "name": "elev_meas_ref",
+        "type": "string"
+      },
+      {
+        "name": "creator",
+        "type": "string"
+      },
+      {
+        "name": "log_version",
+        "type": "string"
+      },
+      {
+        "name": "log_pass",
+        "type": "string"
+      },
+      {
+        "name": "native_uid",
+        "type": "string"
+      },
+      {
+        "name": "update_date",
+        "type": "string"
+      },
+      {
+        "name": "payloadHash",
+        "type": "string"
+      },
+      {
+        "name": "chunkCount",
+        "type": "long"
+      }
+    ]
+  }
+}

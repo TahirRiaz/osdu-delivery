@@ -104,6 +104,12 @@ export interface RepoSyncResult {
   runsAdded: number;
   runsSkipped: number;
   runsFailed: number;
+  /** The document families the sync extensions reconcile (mappings, snapshots). */
+  documentsAdded: number;
+  documentsUpdated: number;
+  documentsUnchanged: number;
+  documentsRemoved: number;
+  documentsInvalid: number;
   warnings: string[];
 }
 
@@ -217,6 +223,8 @@ export interface RunDetail {
   rowsDeleted: number | null;
   error: string | null;
   host: string | null;
+  /** Who asked for the run (a signed-in user, an API client), null for the scheduler's own fires. */
+  requestedBy: string | null;
   operation: RunOperation;
   force: boolean;
   /** The submission the run re-ran or was scoped to, when it was. */

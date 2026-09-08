@@ -10,22 +10,22 @@ test.describe.serial("schedules", () => {
     await adminPage.getByTestId("open-create-schedule").click();
     await adminPage.getByTestId("schedule-repo").fill("e2e-repo");
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
-    await adminPage.getByTestId("schedule-flow").fill("Csv");
-    await adminPage.getByRole("option", { name: "Csv_Basic" }).click();
+    await adminPage.getByTestId("schedule-flow").fill("recall");
+    await adminPage.getByRole("option", { name: "recall-welllog" }).click();
 
     // Interval trigger: 6 hours, so the scheduler will not actually fire during the suite.
     await adminPage.getByTestId("schedule-trigger-interval").click();
     await adminPage.getByTestId("schedule-interval").fill("21600");
     await adminPage.getByTestId("create-schedule-submit").click();
 
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" });
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" });
     await expect(row.first()).toBeVisible({ timeout: 15_000 });
     await expect(row.first().getByTestId("schedule-badge")).toHaveText("enabled");
   });
 
   test("pause and resume flip the schedule state", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
 
     await row.getByTestId("schedule-pause").click();
@@ -37,14 +37,14 @@ test.describe.serial("schedules", () => {
 
   test("the flow name links to the pipeline detail", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first();
     await row.getByTestId("schedule-flow-link").click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible({ timeout: 15_000 });
   });
 
   test("the definition sheet says an API schedule has no YAML behind it", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
 
     await row.getByTestId("schedule-definition").click();
@@ -60,8 +60,8 @@ test.describe.serial("schedules", () => {
     await adminPage.getByTestId("nav-schedules").click();
     const search = adminPage.getByTestId("filter-schedule-name");
 
-    await search.fill("Csv_Basic");
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+    await search.fill("recall-welllog");
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first())
       .toBeVisible({ timeout: 15_000 });
 
     // A term no schedule carries empties the table rather than quietly ignoring the filter.
@@ -71,19 +71,19 @@ test.describe.serial("schedules", () => {
     // Clearing restores the full list. The term is remembered across visits, so leaving one set here would hand the
     // next test an empty board.
     await adminPage.getByTestId("filter-schedule-name-clear").click();
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first())
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first())
       .toBeVisible({ timeout: 15_000 });
   });
 
   test("delete removes the schedule after confirmation", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }).first();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
 
     await row.getByTestId("schedule-delete").click();
     await expect(adminPage.getByTestId("confirm-dialog")).toBeVisible();
     await adminPage.getByTestId("confirm-dialog-confirm").click();
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "Csv_Basic" }))
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }))
       .toHaveCount(0, { timeout: 15_000 });
   });
 });

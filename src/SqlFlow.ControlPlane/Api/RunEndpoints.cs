@@ -37,7 +37,7 @@ public sealed record RunDetailDto(
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime? EnqueuedUtc, string? ClaimedByNode, DateTime? CancelRequestedUtc,
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
-    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host,
+    long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host, string? RequestedBy,
     string Operation, bool Force, Guid? SubmissionId, string? ParametersJson, Guid? ResultSubmissionId,
     int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId);
 
@@ -300,7 +300,7 @@ public static class RunEndpoints
                     run.Status, run.Success,
                     run.TargetPool, run.CommitSha, run.EnqueuedUtc, run.ClaimedByNode, run.CancelRequestedUtc,
                     run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
-                    run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host,
+                    run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host, run.RequestedBy,
                     run.Operation, run.Force, run.SubmissionId, run.ParametersJson, run.ResultSubmissionId,
                     run.RecordsPlanned, run.RecordsDelivered, run.RecordsHeld, run.RecordsFailed, run.RecordsSkipped, run.GroupId))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
