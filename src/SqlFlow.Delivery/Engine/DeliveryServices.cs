@@ -44,6 +44,7 @@ public static class DeliveryServices
         // Documents: the delivery loader behind the platform's envelope probe.
         services.AddSingleton<DeliveryDocumentLoader>();
         services.AddSingleton<IFlowDocumentKind, DeliveryFlowKind>();
+        services.AddSingleton<IFlowDocumentKind, RetrievalFlowKind>();
         services.AddSingleton<ICatalogSyncExtension, DeliveryCatalogSync>();
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
@@ -66,6 +67,7 @@ public static class DeliveryServices
         // Execution: the run executor behind the platform's DocumentExecutor, and the ad-hoc compute operations
         // a node runs for the control plane (target probe, record read-back, record removal).
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
+        services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
         services.AddSingleton<IComputeOperation, ReadRecordOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();

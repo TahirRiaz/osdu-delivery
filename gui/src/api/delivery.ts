@@ -308,12 +308,37 @@ export interface DeliveryActivityListQuery extends PageQuery {
   until?: string;
 }
 
+/** One retrieval run of a retrieval flow: the window it covered, where its files went, and its outcome. */
+export interface DeliveryRetrieval {
+  retrievalId: number;
+  flowId: string;
+  flowName: string;
+  runId: string | null;
+  actor: string;
+  kinds: string;
+  query: string | null;
+  windowField: string | null;
+  windowFrom: string | null;
+  windowTo: string | null;
+  location: string;
+  manifestLocation: string | null;
+  status: "running" | "done" | "failed" | "cancelled";
+  records: number;
+  files: number;
+  bytes: number;
+  startedUtc: string;
+  completedUtc: string | null;
+  error: string | null;
+}
+
 export const deliveryApi = {
   stats: (pipelineId: string) => get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
     get<PagedResult<DeliveryRecord>>(`/api/v1/delivery/flows/${pipelineId}/records`, query as QueryParams),
   submissions: (pipelineId: string, max?: number) =>
     get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, max ? { max } : {}),
+  retrievals: (pipelineId: string, max?: number) =>
+    get<DeliveryRetrieval[]>(`/api/v1/delivery/flows/${pipelineId}/retrievals`, max ? { max } : {}),
   record: (key: string) => get<DeliveryRecordDetail>(`/api/v1/delivery/records/${key}`),
   attempts: (key: string, max?: number) =>
     get<DeliveryAttempt[]>(`/api/v1/delivery/records/${key}/attempts`, max ? { max } : {}),

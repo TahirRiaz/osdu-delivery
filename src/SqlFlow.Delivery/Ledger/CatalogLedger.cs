@@ -1089,6 +1089,98 @@ public sealed class CatalogLedger : ILedger
             .ConfigureAwait(false);
     }
 
+    // ---- Retrievals ----------------------------------------------------------------------------------------------
+
+    public async Task<RetrievalState> StartRetrievalAsync(RetrievalState retrieval, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(retrieval);
+        await using var db = Open();
+        var entity = new DeliveryRetrieval
+        {
+            FlowId = retrieval.FlowId,
+            FlowName = retrieval.FlowName,
+            RunId = retrieval.RunId,
+            Actor = retrieval.Actor,
+            Kinds = retrieval.Kinds,
+            Query = retrieval.Query,
+            WindowField = retrieval.WindowField,
+            WindowFrom = retrieval.WindowFrom,
+            WindowTo = retrieval.WindowTo,
+            Location = retrieval.Location,
+            ManifestLocation = retrieval.ManifestLocation,
+            Status = retrieval.Status,
+            Records = retrieval.Records,
+            Files = retrieval.Files,
+            Bytes = retrieval.Bytes,
+            StartedUtc = retrieval.StartedUtc,
+            CompletedUtc = retrieval.CompletedUtc,
+            Error = Truncate(retrieval.Error, 4000),
+        };
+        db.DeliveryRetrievals.Add(entity);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return retrieval with { RetrievalId = entity.RetrievalId };
+    }
+
+    public async Task CompleteRetrievalAsync(long retrievalId, string status, long records, int files, long bytes, string? manifestLocation, string? failure, DateTime completedUtc, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(status);
+        await using var db = Open();
+        var entity = await db.DeliveryRetrievals.FirstOrDefaultAsync(r => r.RetrievalId == retrievalId, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException($"Retrieval {retrievalId} is not in the ledger.");
+        entity.Status = status;
+        entity.Records = records;
+        entity.Files = files;
+        entity.Bytes = bytes;
+        entity.ManifestLocation = manifestLocation ?? entity.ManifestLocation;
+        entity.Error = Truncate(failure, 4000);
+        entity.CompletedUtc = completedUtc;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<RetrievalState?> LastRetrievalAsync(Guid flowId, string status, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var entity = await db.DeliveryRetrievals.AsNoTracking()
+            .Where(r => r.FlowId == flowId && r.Status == status)
+            .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return entity is null ? null : ToState(entity);
+    }
+
+    public async Task<IReadOnlyList<RetrievalState>> ListRetrievalsAsync(Guid flowId, int max, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var rows = await db.DeliveryRetrievals.AsNoTracking()
+            .Where(r => r.FlowId == flowId)
+            .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
+            .Take(Math.Clamp(max, 1, 1000))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows.Select(ToState).ToList();
+    }
+
+    private static RetrievalState ToState(DeliveryRetrieval r) => new()
+    {
+        RetrievalId = r.RetrievalId,
+        FlowId = r.FlowId,
+        FlowName = r.FlowName,
+        RunId = r.RunId,
+        Actor = r.Actor,
+        Kinds = r.Kinds,
+        Query = r.Query,
+        WindowField = r.WindowField,
+        WindowFrom = r.WindowFrom is { } from ? DateTime.SpecifyKind(from, DateTimeKind.Utc) : null,
+        WindowTo = r.WindowTo is { } to ? DateTime.SpecifyKind(to, DateTimeKind.Utc) : null,
+        Location = r.Location,
+        ManifestLocation = r.ManifestLocation,
+        Status = r.Status,
+        Records = r.Records,
+        Files = r.Files,
+        Bytes = r.Bytes,
+        StartedUtc = DateTime.SpecifyKind(r.StartedUtc, DateTimeKind.Utc),
+        CompletedUtc = r.CompletedUtc is { } completed ? DateTime.SpecifyKind(completed, DateTimeKind.Utc) : null,
+        Error = r.Error,
+    };
+
     public async Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(activity);

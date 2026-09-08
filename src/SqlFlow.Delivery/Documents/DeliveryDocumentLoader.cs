@@ -8,9 +8,9 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Loads the delivery kind's documents: flows (behind the platform's envelope probe, which dispatches on flowType)
-/// and mappings (which the platform never sees). Unknown keys are a hard parse error (design.md section 10.4);
-/// every failure is a <see cref="FlowValidationException"/> prefixed with the file path.
+/// Loads the kind's documents: delivery flows and retrieval flows (behind the platform's envelope probe, which
+/// dispatches on flowType) and mappings (which the platform never sees). Unknown keys are a hard parse error
+/// (design.md section 10.4); every failure is a <see cref="FlowValidationException"/> prefixed with the file path.
 /// </summary>
 public sealed class DeliveryDocumentLoader
 {
@@ -35,6 +35,17 @@ public sealed class DeliveryDocumentLoader
         return ParseFlow(File.ReadAllText(path), path);
     }
 
+    public RetrievalDefinition LoadRetrieval(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!File.Exists(path))
+        {
+            throw new FlowValidationException($"Flow file not found: '{path}'.");
+        }
+
+        return ParseRetrieval(File.ReadAllText(path), path);
+    }
+
     public MappingDefinition LoadMapping(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -46,7 +57,7 @@ public sealed class DeliveryDocumentLoader
         return ParseMapping(File.ReadAllText(path), path);
     }
 
-    /// <summary>The discriminator of a document: "delivery" for a flow, "mapping" for a mapping.</summary>
+    /// <summary>The discriminator of a document: "delivery" or "retrieval" for a flow, "mapping" for a mapping.</summary>
     public string Probe(string yaml, string source = "<inline>")
     {
         var probe = Deserialize<DocumentProbeYaml>(_probe, yaml, source);
@@ -60,7 +71,7 @@ public sealed class DeliveryDocumentLoader
             return probe!.DocumentType!;
         }
 
-        throw new FlowValidationException($"{source}: the document declares neither 'flowType: delivery' nor 'documentType: mapping'.");
+        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval) and no 'documentType: mapping'.");
     }
 
     public FlowDefinition ParseFlow(string yaml, string source = "<inline>")
@@ -74,6 +85,19 @@ public sealed class DeliveryDocumentLoader
 
         var y = Deserialize<FlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return FlowMapper.Map(y, source);
+    }
+
+    public RetrievalDefinition ParseRetrieval(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var kind = Probe(yaml, source);
+        if (!kind.Equals(RetrievalDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{source}: expected 'flowType: {RetrievalDefinition.FlowTypeName}', found '{kind}'.");
+        }
+
+        var y = Deserialize<RetrievalYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        return RetrievalMapper.Map(y, source);
     }
 
     public MappingDefinition ParseMapping(string yaml, string source = "<inline>")
@@ -287,7 +311,7 @@ internal static class FlowMapper
         }
     }
 
-    private static TargetAuth MapAuth(TargetAuthYaml? a, string source)
+    internal static TargetAuth MapAuth(TargetAuthYaml? a, string source, string key = "target.auth")
     {
         if (a is null)
         {
@@ -296,7 +320,7 @@ internal static class FlowMapper
 
         return new TargetAuth
         {
-            Type = ParseEnum(a.Type, TargetAuthType.None, "target.auth.type", source),
+            Type = ParseEnum(a.Type, TargetAuthType.None, key + ".type", source),
             SecretRef = a.SecretRef,
             SecondarySecretRef = a.SecondarySecretRef,
             HeaderName = a.HeaderName,
@@ -358,7 +382,7 @@ internal static class FlowMapper
         };
     }
 
-    private static FlowReliability MapReliability(FlowReliabilityYaml? r, string source)
+    internal static FlowReliability MapReliability(FlowReliabilityYaml? r, string source)
     {
         var defaults = new FlowReliability();
         if (r is null)

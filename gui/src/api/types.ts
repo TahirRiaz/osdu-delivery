@@ -248,9 +248,15 @@ export interface RunDetail {
 }
 
 /** The operations a delivery run performs. */
-export type RunOperation = "deliver" | "verify" | "plan" | "known-state" | "intake" | "drain";
+export type RunOperation = "deliver" | "verify" | "plan" | "known-state" | "intake" | "drain" | "retrieve";
 
-export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain"];
+export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain", "retrieve"];
+
+/** The operations a delivery flow runs. */
+export const DELIVERY_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain"];
+
+/** The operations a retrieval flow runs. */
+export const RETRIEVAL_OPERATIONS: readonly RunOperation[] = ["retrieve", "plan"];
 
 /** The per-run parameters as the run row stores them (parametersJson) and as a trigger sends them. */
 export interface RunParameters {

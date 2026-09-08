@@ -80,6 +80,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliverySnapshot> DeliverySnapshots => Set<DeliverySnapshot>();
 
+    public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

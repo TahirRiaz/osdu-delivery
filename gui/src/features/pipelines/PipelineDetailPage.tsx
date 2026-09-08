@@ -28,6 +28,7 @@ import { formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { DeliveryFlowPanel } from "../delivery/DeliveryFlowPanel";
+import { RetrievalFlowPanel } from "../delivery/RetrievalFlowPanel";
 
 /** Definition JSON arrives as one compact string; pretty-print it, falling back to the raw text if malformed. */
 function prettyJson(raw: string): string {
@@ -131,6 +132,7 @@ export default function PipelineDetailPage() {
   }
 
   const isDelivery = detail.kind === "delivery";
+  const isRetrieval = detail.kind === "retrieval";
 
   return (
     <Page data-testid="page-pipeline-detail">
@@ -224,11 +226,12 @@ export default function PipelineDetailPage() {
         <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} absolute /></DetailPair>
       </DetailHeaderCard>
 
-      <Tabs defaultValue={requestedTab ?? (isDelivery ? "delivery" : "yaml")}>
+      <Tabs defaultValue={requestedTab ?? (isDelivery ? "delivery" : isRetrieval ? "retrievals" : "yaml")}>
         <TabsList data-testid="pipeline-tabs">
           {isDelivery && <TabsTrigger value="delivery" data-testid="pipeline-tab-delivery">Delivery</TabsTrigger>}
           {isDelivery && <TabsTrigger value="records" data-testid="pipeline-tab-records">Records</TabsTrigger>}
           {isDelivery && <TabsTrigger value="submissions" data-testid="pipeline-tab-submissions">Submissions</TabsTrigger>}
+          {isRetrieval && <TabsTrigger value="retrievals" data-testid="pipeline-tab-retrievals">Retrievals</TabsTrigger>}
           <TabsTrigger value="yaml" data-testid="pipeline-tab-yaml">YAML</TabsTrigger>
           <TabsTrigger value="runs" data-testid="pipeline-tab-runs">Runs</TabsTrigger>
           <TabsTrigger value="schedules" data-testid="pipeline-tab-schedules">Schedules</TabsTrigger>
@@ -248,6 +251,11 @@ export default function PipelineDetailPage() {
         {isDelivery && (
           <TabsContent value="submissions">
             <DeliveryFlowPanel pipelineId={detail.id} flowName={detail.name} section="submissions" />
+          </TabsContent>
+        )}
+        {isRetrieval && (
+          <TabsContent value="retrievals">
+            <RetrievalFlowPanel pipelineId={detail.id} />
           </TabsContent>
         )}
         <TabsContent value="yaml">
@@ -290,6 +298,7 @@ export default function PipelineDetailPage() {
           repoId={detail.repoId}
           flowName={detail.name}
           flowId={detail.id}
+          flowKind={detail.kind}
         />
       )}
     </Page>

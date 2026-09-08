@@ -158,8 +158,7 @@ public static class WorkBatchFile
         }
     }
 
-    private static string Join(string root, string name)
-        => root.Contains("://", StringComparison.Ordinal) ? root.TrimEnd('/') + "/" + name : Path.Combine(root, name);
+    private static string Join(string root, string name) => FileStoreRegistry.Join(root, name);
 }
 
 /// <summary>Writes one work batch file, line by line, straight to storage; the batch is complete when disposed.</summary>

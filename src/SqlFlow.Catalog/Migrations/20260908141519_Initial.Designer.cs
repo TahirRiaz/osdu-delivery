@@ -12,7 +12,7 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    [Migration("20260908131620_Initial")]
+    [Migration("20260908141519_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -1678,6 +1678,92 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("FlowId", "Status", "NextAttemptUtc");
 
                     b.ToTable("Record", "delivery");
+                });
+
+            modelBuilder.Entity("SqlFlow.Catalog.DeliveryRetrieval", b =>
+                {
+                    b.Property<long>("RetrievalId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("RetrievalId"));
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<long>("Bytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int>("Files")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("FlowId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FlowName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Kinds")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("Location")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("ManifestLocation")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Query")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("Records")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("WindowField")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("WindowFrom")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("WindowTo")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("RetrievalId");
+
+                    b.HasIndex("RunId");
+
+                    b.HasIndex("FlowId", "StartedUtc");
+
+                    b.HasIndex("FlowId", "Status", "StartedUtc");
+
+                    b.ToTable("Retrieval", "delivery");
                 });
 
             modelBuilder.Entity("SqlFlow.Catalog.DeliverySnapshot", b =>

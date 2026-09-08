@@ -30,6 +30,12 @@ public sealed record DeliverySubmissionDto(
     long Planned, long SkippedUnchanged, long Blocked, long Delivered, long Held, long Failed, string? Error,
     string? WorkLocation, int BatchCount, int Partitions);
 
+/// <summary>One retrieval run of a retrieval flow: the window it covered, where its files went, and its outcome.</summary>
+public sealed record DeliveryRetrievalDto(
+    long RetrievalId, Guid FlowId, string FlowName, Guid? RunId, string Actor, string Kinds, string? Query, string? WindowField,
+    DateTime? WindowFrom, DateTime? WindowTo, string Location, string? ManifestLocation, string Status, long Records, int Files, long Bytes,
+    DateTime StartedUtc, DateTime? CompletedUtc, string? Error);
+
 /// <summary>One work batch of a submission: a file of rendered documents and how far its drain got.</summary>
 public sealed record DeliveryWorkBatchDto(
     Guid SubmissionId, int Index, string Location, int RecordCount, string Status, string? LeaseOwner, DateTime? LeaseExpiresUtc, Guid? RunId,
@@ -123,6 +129,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
         delivery.MapGet("/flows/{pipelineId:guid}/submissions", ListSubmissionsAsync).WithName("ListDeliverySubmissions");
+        delivery.MapGet("/flows/{pipelineId:guid}/retrievals", ListRetrievalsAsync).WithName("ListDeliveryRetrievals");
         delivery.MapGet("/records/{key:guid}", GetRecordAsync).WithName("GetDeliveryRecord");
         delivery.MapGet("/records/{key:guid}/attempts", ListRecordAttemptsAsync).WithName("ListDeliveryRecordAttempts");
         delivery.MapGet("/records/{key:guid}/activities", ListRecordActivitiesAsync).WithName("ListDeliveryRecordActivities");
@@ -221,6 +228,29 @@ public static class DeliveryEndpoints
 
         var submissions = await ledger.ListSubmissionsAsync(flow.FlowId, Math.Clamp(max ?? 100, 1, 1000), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliverySubmissionDto>>(submissions.Select(ToDto).ToList());
+    }
+
+    /// <summary>A retrieval flow's runs, newest first. The flow id derives from the pipeline's name, as the executor derives it.</summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryRetrievalDto>>, ProblemHttpResult>> ListRetrievalsAsync(
+        Guid pipelineId, int? max, CatalogDbContext db, ILedger ledger, CancellationToken ct)
+    {
+        var pipeline = await db.Pipelines.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pipelineId, ct).ConfigureAwait(false);
+        if (pipeline is null)
+        {
+            return NotFound("pipeline", pipelineId);
+        }
+
+        if (!string.Equals(pipeline.Kind, RetrievalDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            return TypedResults.Problem(
+                detail: $"Pipeline '{pipeline.Name}' is a '{pipeline.Kind}' flow, not a retrieval flow.",
+                statusCode: StatusCodes.Status409Conflict, title: "Not a retrieval flow");
+        }
+
+        var rows = await ledger.ListRetrievalsAsync(FlowId.Of(pipeline.Name), Math.Clamp(max ?? 100, 1, 1000), ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryRetrievalDto>>(rows.Select(r => new DeliveryRetrievalDto(
+            r.RetrievalId, r.FlowId, r.FlowName, r.RunId, r.Actor, r.Kinds, r.Query, r.WindowField, r.WindowFrom, r.WindowTo, r.Location, r.ManifestLocation,
+            r.Status, r.Records, r.Files, r.Bytes, r.StartedUtc, r.CompletedUtc, r.Error)).ToList());
     }
 
     private static async Task<Results<Ok<DeliveryRecordDetailDto>, ProblemHttpResult>> GetRecordAsync(

@@ -82,9 +82,15 @@ public static class FlowParameters
     public static IReadOnlyDictionary<string, string> Resolve(FlowDefinition flow, IReadOnlyDictionary<string, string>? supplied)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var where = flow.SourcePath ?? flow.Name;
+        return Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, supplied);
+    }
+
+    /// <summary>The same resolution over any declared parameter set (a retrieval flow's, say); <paramref name="where"/> names the document in errors.</summary>
+    public static IReadOnlyDictionary<string, string> Resolve(IReadOnlyDictionary<string, FlowParameter> parameters, string where, IReadOnlyDictionary<string, string>? supplied)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (name, parameter) in flow.Parameters)
+        foreach (var (name, parameter) in parameters)
         {
             if (supplied is not null && supplied.TryGetValue(name, out var v))
             {
@@ -104,7 +110,7 @@ public static class FlowParameters
         {
             foreach (var name in supplied.Keys)
             {
-                if (!flow.Parameters.ContainsKey(name))
+                if (!parameters.ContainsKey(name))
                 {
                     throw new FlowValidationException($"{where}: parameter '{name}' is not declared under parameters.");
                 }

@@ -70,6 +70,14 @@ public sealed class FileStoreRegistry
     /// (the drop reader, the snapshot store) turn "nothing there" into their own precise message (a missing manifest,
     /// an uncaptured snapshot), exactly as a blob prefix with no blobs already does.
     /// </summary>
+    /// <summary>Joins a name onto a location, whichever store the location belongs to (a URI gets '/', a local path the platform separator).</summary>
+    public static string Join(string root, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return root.Contains("://", StringComparison.Ordinal) ? root.TrimEnd('/') + "/" + name : Path.Combine(root, name);
+    }
+
     public IFileStore For(string location)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(location);

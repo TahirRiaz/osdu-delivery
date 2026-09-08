@@ -35,7 +35,10 @@ public sealed partial record RunParameters
     /// <summary>Drain: deliver the pending work of a submission (or of the whole flow) from its work batches; no intake.</summary>
     public const string DrainOperation = "drain";
 
-    public static readonly IReadOnlyList<string> Operations = [DeliverOperation, VerifyOperation, PlanOperation, KnownStateOperation, IntakeOperation, DrainOperation];
+    /// <summary>Retrieve: a retrieval flow's run, paging OSDU's search index into files on the lake.</summary>
+    public const string RetrieveOperation = "retrieve";
+
+    public static readonly IReadOnlyList<string> Operations = [DeliverOperation, VerifyOperation, PlanOperation, KnownStateOperation, IntakeOperation, DrainOperation, RetrieveOperation];
 
     public const int MaxDropLength = 2000;
 
@@ -137,6 +140,11 @@ public sealed partial record RunParameters
         if (string.Equals(Operation, KnownStateOperation, StringComparison.OrdinalIgnoreCase) && (SubmissionId is not null || RecordKeys.Count > 0))
         {
             throw new SqlFlowException("A known-state publication covers the whole flow; it takes no submission or record scope.");
+        }
+
+        if (string.Equals(Operation, RetrieveOperation, StringComparison.OrdinalIgnoreCase) && (SubmissionId is not null || RecordKeys.Count > 0 || !string.IsNullOrWhiteSpace(Drop)))
+        {
+            throw new SqlFlowException("A retrieval covers the whole flow; it takes no drop, submission or record scope.");
         }
 
         if (Partitions.Count > MaxPartitions)

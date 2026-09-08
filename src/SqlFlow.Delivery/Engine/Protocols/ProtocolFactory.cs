@@ -17,14 +17,7 @@ public static class ProtocolFactory
         ArgumentNullException.ThrowIfNull(secrets);
         ArgumentNullException.ThrowIfNull(loggers);
 
-        var endpoint = await secrets.ResolveAsync(flow.Target.Endpoint, ct).ConfigureAwait(false);
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, value) in flow.Target.Headers)
-        {
-            headers[name] = await secrets.ResolveAsync(value, ct).ConfigureAwait(false);
-        }
-
-        var client = new OsduHttpClient(http, endpoint, flow.Target.Auth, headers);
+        var client = await ClientAsync(http, flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, secrets, ct).ConfigureAwait(false);
         return flow.Target.Protocol switch
         {
             DeliveryProtocol.OsduRecord => new OsduRecordProtocol(client, flow.Target.ProtocolOptions),
@@ -33,5 +26,23 @@ public static class ProtocolFactory
             DeliveryProtocol.OsduManifest => new OsduManifestProtocol(client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduManifestProtocol>(), flow.Reliability.MaxRequestBodyBytes),
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
+    }
+
+    /// <summary>The OSDU client over a declared endpoint, auth and headers, every secret reference resolved here and nowhere else.</summary>
+    public static async Task<OsduHttpClient> ClientAsync(HttpRuntime http, string endpoint, TargetAuth auth, IReadOnlyDictionary<string, string> headers, ISecretResolver secrets, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(http);
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        ArgumentNullException.ThrowIfNull(auth);
+        ArgumentNullException.ThrowIfNull(headers);
+        ArgumentNullException.ThrowIfNull(secrets);
+        var resolvedEndpoint = await secrets.ResolveAsync(endpoint, ct).ConfigureAwait(false);
+        var resolvedHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in headers)
+        {
+            resolvedHeaders[name] = await secrets.ResolveAsync(value, ct).ConfigureAwait(false);
+        }
+
+        return new OsduHttpClient(http, resolvedEndpoint, auth, resolvedHeaders);
     }
 }

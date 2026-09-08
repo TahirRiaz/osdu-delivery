@@ -419,6 +419,61 @@ public sealed record ActivityQuery
 /// One operator or scheduler action, persisted for the audit trail: who did what, when, with which inputs, and
 /// what came of it. Record-level history lives in attempts; this is the history of runs and interventions.
 /// </summary>
+/// <summary>The statuses of a retrieval run.</summary>
+public static class RetrievalStatus
+{
+    public const string Running = "running";
+    public const string Done = "done";
+    public const string Failed = "failed";
+    public const string Cancelled = "cancelled";
+}
+
+/// <summary>One retrieval run as the ledger holds it: the window it covered, where its files went, and its outcome.</summary>
+public sealed record RetrievalState
+{
+    public long RetrievalId { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    public required string FlowName { get; init; }
+
+    public Guid? RunId { get; init; }
+
+    public string Actor { get; init; } = "unknown";
+
+    /// <summary>The kinds the run covered, comma separated.</summary>
+    public required string Kinds { get; init; }
+
+    /// <summary>The query as it ran, window included.</summary>
+    public string? Query { get; init; }
+
+    public string? WindowField { get; init; }
+
+    public DateTime? WindowFrom { get; init; }
+
+    /// <summary>The upper bound of the window: the next run's lower bound once this one is done.</summary>
+    public DateTime? WindowTo { get; init; }
+
+    public required string Location { get; init; }
+
+    public string? ManifestLocation { get; init; }
+
+    public string Status { get; init; } = RetrievalStatus.Running;
+
+    public long Records { get; init; }
+
+    public int Files { get; init; }
+
+    /// <summary>Uncompressed bytes written.</summary>
+    public long Bytes { get; init; }
+
+    public DateTime StartedUtc { get; init; }
+
+    public DateTime? CompletedUtc { get; init; }
+
+    public string? Error { get; init; }
+}
+
 public sealed record ActivityRecord
 {
     public long ActivityId { get; init; }
@@ -596,6 +651,18 @@ public interface ILedger
 
     /// <summary>Removes attempts older than the cut-off, keeping the latest attempt per record.</summary>
     Task<int> PruneAttemptsAsync(DateTime olderThanUtc, CancellationToken ct = default);
+
+    /// <summary>Opens the row of a retrieval run and returns it with its id.</summary>
+    Task<RetrievalState> StartRetrievalAsync(RetrievalState retrieval, CancellationToken ct = default);
+
+    /// <summary>Closes a retrieval run with its outcome and counts.</summary>
+    Task CompleteRetrievalAsync(long retrievalId, string status, long records, int files, long bytes, string? manifestLocation, string? failure, DateTime completedUtc, CancellationToken ct = default);
+
+    /// <summary>The flow's most recent retrieval run in the given status (the watermark chain reads the last done one), or null.</summary>
+    Task<RetrievalState?> LastRetrievalAsync(Guid flowId, string status, CancellationToken ct = default);
+
+    /// <summary>The flow's retrieval runs, newest first.</summary>
+    Task<IReadOnlyList<RetrievalState>> ListRetrievalsAsync(Guid flowId, int max, CancellationToken ct = default);
 
     Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default);
 

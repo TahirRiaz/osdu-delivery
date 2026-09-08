@@ -329,6 +329,51 @@ public sealed class DeliverySnapshot
 }
 
 /// <summary>The EF model of the delivery ledger, in the <c>delivery</c> schema of the catalog database.</summary>
+/// <summary>One retrieval run: the window it covered, where its files went, and its outcome.</summary>
+public sealed class DeliveryRetrieval
+{
+    public long RetrievalId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    public Guid? RunId { get; set; }
+
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>The kinds the run covered, comma separated.</summary>
+    public string Kinds { get; set; } = string.Empty;
+
+    /// <summary>The query as it ran, window included.</summary>
+    public string? Query { get; set; }
+
+    public string? WindowField { get; set; }
+
+    public DateTime? WindowFrom { get; set; }
+
+    public DateTime? WindowTo { get; set; }
+
+    public string Location { get; set; } = string.Empty;
+
+    public string? ManifestLocation { get; set; }
+
+    public string Status { get; set; } = "running";
+
+    public long Records { get; set; }
+
+    public int Files { get; set; }
+
+    /// <summary>Uncompressed bytes written.</summary>
+    public long Bytes { get; set; }
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public string? Error { get; set; }
+}
+
 public static class DeliveryModel
 {
     public const string SchemaName = "delivery";
@@ -453,6 +498,25 @@ public static class DeliveryModel
             e.HasIndex(a => new { a.Kind, a.StartedUtc });
             e.HasIndex(a => new { a.Actor, a.StartedUtc });
             e.HasIndex(a => a.StartedUtc);
+        });
+
+        modelBuilder.Entity<DeliveryRetrieval>(e =>
+        {
+            e.ToTable("Retrieval", SchemaName);
+            e.HasKey(r => r.RetrievalId);
+            e.Property(r => r.RetrievalId).ValueGeneratedOnAdd();
+            e.Property(r => r.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Kinds).HasMaxLength(4000).IsRequired();
+            e.Property(r => r.WindowField).HasMaxLength(200);
+            e.Property(r => r.Location).HasMaxLength(2000).IsRequired();
+            e.Property(r => r.ManifestLocation).HasMaxLength(2000);
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Error).HasMaxLength(4000);
+            // The flow's listing, the watermark chain (the last done run), and the run's row.
+            e.HasIndex(r => new { r.FlowId, r.StartedUtc });
+            e.HasIndex(r => new { r.FlowId, r.Status, r.StartedUtc });
+            e.HasIndex(r => r.RunId);
         });
 
         modelBuilder.Entity<DeliveryMapping>(e =>

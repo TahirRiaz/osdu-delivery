@@ -881,7 +881,7 @@ internal static class Program
               sqlflow snapshot <flow.yaml> references [--from-dir <dir> | --spec <spec.json> [--endpoint <url>]] [--no-current]
               sqlflow snapshot <flow.yaml> list    Capture or list the schema and reference snapshots the flow renders with
               sqlflow run      <flow.yaml>         Execute the flow (Ctrl+C aborts the in-flight work)
-                               [--operation deliver|verify|plan|known-state] [--force] [--set name=value]...
+                               [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
                                [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
                                [--log-level info|debug|trace] [--json] [--db <conn-ref>] [--no-db-sync]
               sqlflow auth     [--scope storage|keyvault|arm|<uri>]
@@ -921,7 +921,7 @@ internal static class Program
                                                    Sign in and store a personal access token for the URL.
               sqlflow logout                       Revoke the stored token server-side and remove it locally.
               sqlflow trigger  --repo <name|id> --flow <f> [--pool <p>] [--commit <sha>] [--preview] [--follow]
-                               [--operation deliver|verify|plan|known-state] [--force] [--set name=value]...
+                               [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
                                [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
                                                    Enqueue a run on the fleet (POST /runs). --preview shows what would
                                                    run without enqueuing; --follow attaches to the live trace.
@@ -950,7 +950,7 @@ internal static class Program
     };
 
     /// <summary>
-    /// The per-run parameters' CLI surface: <c>--operation deliver|verify|plan|known-state</c> picks the operation
+    /// The per-run parameters' CLI surface: <c>--operation deliver|verify|plan|known-state|intake|drain|retrieve</c> picks the operation
     /// (deliver by default), <c>--force</c> pushes past the change gates, <c>--set name=value</c> (repeatable) supplies
     /// the flow's parameter values, <c>--drop</c> overrides the drop location, <c>--submission</c> re-runs one
     /// submission, <c>--record</c> (repeatable) scopes the run to those delivery keys, and <c>--publish-to</c> names

@@ -16,12 +16,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, runApi, scheduleApi } from "../../api/endpoints";
 import type { RunOperation, RunParameters } from "../../api/types";
-import { RUN_OPERATIONS } from "../../api/types";
+import { DELIVERY_OPERATIONS, RETRIEVAL_OPERATIONS } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
 import { useRunDock } from "./RunDockContext";
 
 export interface TriggerRunDialogProps {
+  /** The flow's kind when the launching context knows it; a retrieval flow offers retrieve and plan. */
+  flowKind?: string | null;
   open: boolean;
   onClose: () => void;
   /** Prefills (and locks) the repo when launched from a repo/pipeline context. */
@@ -42,6 +44,7 @@ const OPERATION_LABELS: Record<RunOperation, string> = {
   "known-state": "Publish known state",
   "intake": "Intake (plan into batches)",
   "drain": "Drain (deliver pending batches)",
+  "retrieve": "Retrieve (OSDU into lake files)",
 };
 
 const OPERATION_HINTS: Record<RunOperation, string> = {
@@ -51,6 +54,7 @@ const OPERATION_HINTS: Record<RunOperation, string> = {
   "known-state": "Publish the compact known-state file the preparing side reads before its next drop.",
   "intake": "Read the flow's drop, plan it against the ledger and write the rendered documents to work batches; nothing reaches OSDU until a drain.",
   "drain": "Deliver the pending work batches of a submission (or of the whole flow) to OSDU; the drop is not read.",
+  "retrieve": "Page the flow's kinds out of OSDU's search index into JSON Lines files on the lake, continuing from the last run's watermark; force restarts at the declared start.",
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -103,7 +107,7 @@ interface ComboOption {
  * source is run as a whole.
  */
 export function TriggerRunDialog({
-  open, onClose, repoId, flowName, flowId, initialParameters,
+  open, onClose, repoId, flowName, flowId, flowKind, initialParameters,
 }: TriggerRunDialogProps) {
   const navigate = useNavigate();
   const idPrefix = useId();
@@ -123,7 +127,7 @@ export function TriggerRunDialog({
   // Seed the form once per open, so a Re-run opens with the prior run's parameters and a fresh launch opens clean.
   useEffect(() => {
     if (open) {
-      setOperation(initialParameters?.operation ?? "deliver");
+      setOperation(initialParameters?.operation ?? (flowKind === "retrieval" ? "retrieve" : "deliver"));
       setForce(initialParameters?.force ?? false);
       setValuesText(Object.entries(initialParameters?.values ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"));
       setDrop(initialParameters?.drop ?? "");
@@ -194,6 +198,16 @@ export function TriggerRunDialog({
       toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
     },
   });
+
+  // A retrieval flow runs retrieve and plan; every other kind the delivery operations. The kind comes from the
+  // launching context, or from the repo's pipeline list for a free-choice launch.
+  const selectedKind = flowKind ?? pipelines.data?.items.find((p) => p.name === effectiveFlow)?.kind ?? null;
+  const operations = selectedKind === "retrieval" ? RETRIEVAL_OPERATIONS : DELIVERY_OPERATIONS;
+  useEffect(() => {
+    if (!operations.includes(operation)) {
+      setOperation(operations[0]);
+    }
+  }, [operations, operation]);
 
   const repoOptions = useMemo<ComboOption[]>(
     () => (repos.data?.items ?? []).map((repo) => ({ value: repo.id, label: repo.name })),
@@ -336,7 +350,7 @@ export function TriggerRunDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {RUN_OPERATIONS.map((option) => (
+                    {operations.map((option) => (
                       <SelectItem key={option} value={option}>{OPERATION_LABELS[option]}</SelectItem>
                     ))}
                   </SelectContent>
