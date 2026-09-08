@@ -94,8 +94,8 @@ function BrandPanel() {
       />
 
       {/* Content stays a readable column and centres itself once the panel grows past it. */}
-      <div className="relative mx-auto flex h-full w-full max-w-xl flex-col justify-center px-12 py-14 xl:px-16 xl:py-16">
-        <img src="/brand/logo-full.png" alt="" className="h-20 w-auto self-start object-contain xl:h-24" />
+      <div className="relative mx-auto flex h-full w-full max-w-2xl flex-col justify-center px-12 py-14 xl:px-16 xl:py-16">
+        <img src="/brand/logo-full.png" alt="" className="h-[5.25rem] w-auto max-w-full self-start object-contain" />
 
         <div className="mt-14">
           <h2 className="text-3xl font-semibold leading-[1.15] tracking-tight text-white xl:text-[2.5rem]">
@@ -196,7 +196,7 @@ export default function LoginPage() {
         {/* The lockup sits with the form on narrow screens, where the brand panel is hidden. The navy plaque
             keeps the light-blue mark legible on the light theme's near-white background. */}
         <div className="relative rounded-xl px-6 py-3.5 lg:hidden" style={{ backgroundColor: "var(--brand-navy)" }}>
-          <img src="/brand/logo-full.png" alt="OSDU Delivery" className="h-11 w-auto object-contain" />
+          <img src="/brand/logo-full.png" alt="OSDU Delivery" className="h-10 w-auto max-w-full object-contain" />
         </div>
 
         <Card

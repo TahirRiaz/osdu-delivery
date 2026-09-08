@@ -12,7 +12,7 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    [Migration("20260908141519_Initial")]
+    [Migration("20260908200611_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
