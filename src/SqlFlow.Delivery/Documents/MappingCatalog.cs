@@ -130,6 +130,13 @@ public static class FlowParameters
         return Substitute(flow.Source.Location, values);
     }
 
+    /// <summary>The work root the intake writes batches under: the declared <c>source.work</c> (tokens substituted) or the drop's <c>.work</c> folder.</summary>
+    public static string WorkLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values, string dropLocation)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return FlowSource.WorkRoot(flow.Source.Work is null ? null : Substitute(flow.Source.Work, values), dropLocation);
+    }
+
     /// <summary>The flow's declared known-state location with parameter tokens substituted, or null when it declares none.</summary>
     public static string? KnownStateLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
     {

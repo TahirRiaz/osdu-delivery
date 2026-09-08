@@ -176,4 +176,23 @@ public sealed class RunParametersTests
         Assert.Throws<SqlFlowException>(() => RunParameters.ParseValues(["novalue"]));
         Assert.Throws<SqlFlowException>(() => RunParameters.ParseValues(["=x"]));
     }
+    [Fact]
+    public void Partitions_parse_from_indexes_and_ranges_and_apply_to_intake_only()
+    {
+        Assert.Equal([0, 1, 2, 3, 7, 10, 11], RunParameters.ParsePartitions("0-3,7,10-11"));
+        Assert.Empty(RunParameters.ParsePartitions(""));
+        Assert.Throws<SqlFlowException>(() => RunParameters.ParsePartitions("3-1"));
+        Assert.Throws<SqlFlowException>(() => RunParameters.ParsePartitions("x"));
+
+        var intake = new RunParameters { Operation = RunParameters.IntakeOperation, Partitions = [4, 5], SubmissionId = Guid.NewGuid() };
+        intake.Validate();
+        Assert.Contains("partitions=4,5", intake.Describe(), StringComparison.Ordinal);
+        Assert.False(intake.IsDefault);
+        Assert.Equal(intake.Partitions, RunParameters.FromJson(intake.ToJson()).Partitions);
+
+        Assert.Throws<SqlFlowException>(() => new RunParameters { Operation = RunParameters.DeliverOperation, Partitions = [1] }.Validate());
+        Assert.Throws<SqlFlowException>(() => new RunParameters { Operation = RunParameters.IntakeOperation, Partitions = [-1] }.Validate());
+        new RunParameters { Operation = RunParameters.DrainOperation, SubmissionId = Guid.NewGuid() }.Validate();
+        Assert.True(new RunParameters { Operation = RunParameters.DrainOperation }.WritesTarget);
+    }
 }

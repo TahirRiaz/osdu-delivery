@@ -239,12 +239,18 @@ export interface RunDetail {
   recordsFailed: number | null;
   recordsSkipped: number | null;
   groupId: string | null;
+  /** For a fan-out member (an intake partition or a drain a deliver run spread across the fleet): the run that fanned it out. */
+  fanOutRoot: string | null;
+  fanOutSlot: number | null;
+  fanOutCount: number | null;
+  /** The run's result object as JSON: the kind-specific outcome (counts, submission, partitions), null until it finished. */
+  resultJson: string | null;
 }
 
 /** The operations a delivery run performs. */
-export type RunOperation = "deliver" | "verify" | "plan" | "known-state";
+export type RunOperation = "deliver" | "verify" | "plan" | "known-state" | "intake" | "drain";
 
-export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state"];
+export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain"];
 
 /** The per-run parameters as the run row stores them (parametersJson) and as a trigger sends them. */
 export interface RunParameters {

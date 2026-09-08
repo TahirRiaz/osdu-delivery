@@ -24,7 +24,7 @@ public class SqlLedgerTests : IDisposable
         MappingName = "Thing",
         TargetId = "dev:x:" + sourceKey,
         LastSubmissionId = submission,
-        PendingDocument = "{\"data\":{}}",
+        PendingDocumentRef = "0:0:10",
         PendingRenderContext = "{}",
         PendingSourceFingerprint = "fp",
         PendingMetadataHash = "mh",
@@ -121,7 +121,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal("ph", delivered.PayloadHash);
         Assert.Equal("fp", delivered.SourceFingerprint);
         Assert.Equal(42, delivered.TargetVersion);
-        Assert.Null(delivered.PendingDocument);
+        Assert.Null(delivered.PendingDocumentRef);
         Assert.Null(delivered.LeaseOwner);
         Assert.Equal(0, delivered.AttemptCount);
         Assert.Single(await Ledger.ListAttemptsAsync(record.DeliveryKey, 10));
@@ -248,6 +248,122 @@ public class SqlLedgerTests : IDisposable
         });
         Assert.Equal(1, await Ledger.ReleaseAsync(_flow, null, Now));
         Assert.Equal(RecordStatus.Pending, (await Ledger.GetRecordAsync(_flow, cRecord.DeliveryKey))!.Status);
+    }
+
+    [Fact]
+    public async Task Work_batches_lease_their_due_records_and_close_with_counts()
+    {
+        var submission = Guid.NewGuid();
+        await Ledger.RegisterSubmissionAsync(Submission(submission));
+        await Ledger.UpsertPendingAsync([
+            Pending("a", submission) with { WorkBatch = 3, PendingDocumentRef = "3:0:10" },
+            Pending("b", submission) with { WorkBatch = 3, PendingDocumentRef = "3:11:10" },
+            Pending("c", submission) with { WorkBatch = 4, PendingDocumentRef = "4:0:10" },
+        ]);
+        await Ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = submission, FlowId = _flow, Index = 3, Location = "batch-3", RecordCount = 2, CreatedUtc = Now });
+        await Ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = submission, FlowId = _flow, Index = 4, Location = "batch-4", RecordCount = 1, CreatedUtc = Now.AddSeconds(1) });
+        Assert.Equal(2, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
+
+        var claimed = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w1", TimeSpan.FromMinutes(5), Now, runId: Guid.NewGuid());
+        Assert.NotNull(claimed);
+        Assert.Equal(3, claimed!.Batch.Index);
+        Assert.Equal(WorkBatchStatus.Running, claimed.Batch.Status);
+        Assert.Equal(2, claimed.Records.Count);
+        Assert.All(claimed.Records, r => Assert.Equal(RecordStatus.Delivering, r.Status));
+        Assert.All(claimed.Records, r => Assert.Equal(claimed.Batch.LeaseOwner, r.LeaseOwner));
+
+        // Records leased under the batch are invisible to the individual claim; a record of a queued batch is not.
+        var loose = await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Equal("c", Assert.Single(loose).SourceKey);
+        Assert.True(await Ledger.RenewWorkBatchLeaseAsync(submission, 3, claimed.Batch.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        Assert.False(await Ledger.RenewWorkBatchLeaseAsync(submission, 3, "someone-else", TimeSpan.FromMinutes(5), Now));
+
+        await Ledger.CompleteManyAsync(claimed.Records.Select(r => new RecordCompletion
+        {
+            DeliveryKey = r.DeliveryKey,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 5,
+            TargetStateJson = "{\"recordId\":\"x\"}",
+            Attempt = new AttemptRecord { DeliveryKey = r.DeliveryKey, SubmissionId = submission, Worker = "w1", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata", ResultJson = "{\"steps\":[]}", WorkBatch = 3 },
+        }).ToList());
+        await Ledger.CompleteWorkBatchAsync(submission, 3, claimed.Batch.LeaseOwner!, WorkBatchStatus.Done, 2, 0, 0, 0, null, Now);
+
+        var batches = await Ledger.ListWorkBatchesAsync(submission, 10, 0);
+        var done = batches.Single(b => b.Index == 3);
+        Assert.Equal(WorkBatchStatus.Done, done.Status);
+        Assert.Equal(2, done.Delivered);
+        Assert.Null(done.LeaseOwner);
+        Assert.NotNull(done.CompletedUtc);
+        var a = await Ledger.GetRecordAsync(_flow, claimed.Records[0].DeliveryKey);
+        Assert.Equal(RecordStatus.Delivered, a!.Status);
+        Assert.Null(a.PendingDocumentRef);
+        Assert.Null(a.WorkBatch);
+        Assert.Equal("{\"recordId\":\"x\"}", a.TargetStateJson);
+        var attempts = await Ledger.ListAttemptsAsync(a.DeliveryKey, 5);
+        Assert.Equal(3, attempts[0].WorkBatch);
+        Assert.Equal("{\"steps\":[]}", attempts[0].ResultJson);
+
+        // Batch 4: its only record is leased by w2, so the claim finds nothing due; a release hands the batch back.
+        var second = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w1", TimeSpan.FromMinutes(5), Now);
+        Assert.NotNull(second);
+        Assert.Equal(4, second!.Batch.Index);
+        Assert.Empty(second.Records);
+        Assert.True(await Ledger.ReleaseWorkBatchAsync(submission, 4, second.Batch.LeaseOwner!, Now));
+        Assert.Equal(1, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
+
+        // An expired batch lease is reclaimed by the sweep.
+        var third = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w3", TimeSpan.FromMinutes(1), Now);
+        Assert.NotNull(third);
+        Assert.Equal(0, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        await Ledger.ReclaimExpiredLeasesAsync(_flow, Now);
+        Assert.Equal(1, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
+        Assert.Null(await Ledger.ClaimWorkBatchAsync(Guid.NewGuid(), null, "w4", TimeSpan.FromMinutes(1), Now));
+    }
+
+    [Fact]
+    public async Task Step_progress_and_next_due_are_tracked_on_the_record()
+    {
+        var submission = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync([Pending("s", submission)]);
+        var claimed = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
+        var key = claimed[0].DeliveryKey;
+        await Ledger.SaveStepAsync(key, "{\"metadata\":{\"version\":\"3\"}}");
+        Assert.Equal("{\"metadata\":{\"version\":\"3\"}}", (await Ledger.GetRecordAsync(_flow, key))!.PendingStepJson);
+
+        var next = Now + TimeSpan.FromMinutes(10);
+        await Ledger.CompleteAsync(new RecordCompletion
+        {
+            DeliveryKey = key,
+            Status = RecordStatus.Pending,
+            NextAttemptUtc = next,
+            Error = "503",
+            PendingStepJson = "{\"metadata\":{\"version\":\"3\"}}",
+            Attempt = new AttemptRecord { DeliveryKey = key, SubmissionId = submission, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Failed, Phase = "none", Error = "503" },
+        });
+        Assert.Equal(next, await Ledger.NextDueAsync(_flow, submission, Now));
+        Assert.Null(await Ledger.NextDueAsync(_flow, submission, next));
+        Assert.True(await Ledger.HasPendingAsync(_flow, submission, Now));
+        Assert.Equal("{\"metadata\":{\"version\":\"3\"}}", (await Ledger.GetRecordAsync(_flow, key))!.PendingStepJson);
+
+        _clock.Advance(TimeSpan.FromMinutes(11));
+        var again = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Single(again);
+        await Ledger.CompleteAsync(new RecordCompletion
+        {
+            DeliveryKey = key,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 4,
+            TargetStateJson = JsonMerge.Merge(again[0].TargetStateJson, "{\"version\":\"4\"}"),
+            Attempt = new AttemptRecord { DeliveryKey = key, SubmissionId = submission, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata" },
+        });
+        var delivered = await Ledger.GetRecordAsync(_flow, key);
+        Assert.Null(delivered!.PendingStepJson);
+        Assert.Equal("{\"version\":\"4\"}", delivered.TargetStateJson);
+        Assert.Null(await Ledger.NextDueAsync(_flow, submission, Now));
+        Assert.False(await Ledger.HasPendingAsync(_flow, submission, Now));
     }
 
     [Fact]

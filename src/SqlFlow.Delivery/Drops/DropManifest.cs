@@ -46,6 +46,19 @@ public sealed record DropManifest
     [JsonPropertyName("payloads")]
     public Dictionary<string, ManifestPayload> Payloads { get; init; } = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// True when every scope is co-partitioned with the root scope (design.md section 16.1): file i of a child scope
+    /// holds exactly the children of the records in file i of the root scope, and every file is sorted by its key
+    /// (the delivery key for the root, the parent key for a child). The intake then streams each partition as a
+    /// merge join in constant memory, and partitions can be spread across nodes. Without it, children are joined
+    /// through a disk-backed hash partition, which is bounded but slower.
+    /// </summary>
+    [JsonPropertyName("partitioned")]
+    public bool Partitioned { get; init; }
+
+    /// <summary>The number of root-scope files: the unit an intake can be split by.</summary>
+    public int PartitionCount => Root.Files.Count;
+
     public const string RootScope = "record";
 
     public ManifestScope Root => Scopes.TryGetValue(RootScope, out var s)
@@ -136,6 +149,12 @@ public sealed record DropManifest
                 {
                     throw new FlowValidationException($"{source}: scope '{name}' file '{file}' must be a relative path inside the drop.");
                 }
+            }
+
+            if (Partitioned && name != RootScope && scope.Files.Count != Scopes[RootScope].Files.Count)
+            {
+                throw new FlowValidationException(
+                    $"{source}: the manifest is partitioned, so scope '{name}' must list one file per root file ({Scopes[RootScope].Files.Count}); it lists {scope.Files.Count}.");
             }
         }
 

@@ -70,6 +70,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliveryAttempt> DeliveryAttempts => Set<DeliveryAttempt>();
 
+    public DbSet<DeliveryWorkBatch> DeliveryWorkBatches => Set<DeliveryWorkBatch>();
+
     public DbSet<DeliverySourceWatermark> DeliveryWatermarks => Set<DeliverySourceWatermark>();
 
     public DbSet<DeliveryActivity> DeliveryActivities => Set<DeliveryActivity>();
@@ -165,9 +167,14 @@ public sealed class CatalogDbContext : DbContext
             // share (and drop) one staging table. This filtered unique index makes the gate atomic: the loser's
             // claim fails with a duplicate key, which ClaimNextAsync reads as "another node just took this
             // pipeline" and answers by moving on to the next candidate run.
+            // Fan-out members (a delivery flow spreading one run's intake or drains across the fleet) are the one
+            // sanctioned way to have several runs of a pipeline executing at once: they share the ledger's leases,
+            // never a staging table. They are exempt from the index; the claim gate keeps them within one family.
             entity.HasIndex(r => r.PipelineId, "UX_Run_RunningPipeline")
                 .IsUnique()
-                .HasFilter($"[Status] = '{RunStatuses.Running}'");
+                .HasFilter($"[Status] = '{RunStatuses.Running}' AND [FanOutRoot] IS NULL");
+            // A fan-out root reads its members' state while it waits for them, and cancels them with itself.
+            entity.HasIndex(r => new { r.FanOutRoot, r.Status });
         });
 
         modelBuilder.Entity<CatalogRunGroup>(entity =>

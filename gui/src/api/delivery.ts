@@ -57,6 +57,31 @@ export interface DeliverySubmission {
   held: number;
   failed: number;
   error: string | null;
+  /** Where the intake wrote the work batches (the rendered documents the drains read). */
+  workLocation: string | null;
+  batchCount: number;
+  /** How many root-scope partitions the drop declared. */
+  partitions: number;
+}
+
+/** One work batch of a submission: a file of rendered documents and how far its drain got. */
+export interface DeliveryWorkBatch {
+  submissionId: string;
+  index: number;
+  location: string;
+  recordCount: number;
+  status: "queued" | "running" | "done" | "failed";
+  leaseOwner: string | null;
+  leaseExpiresUtc: string | null;
+  runId: string | null;
+  createdUtc: string;
+  startedUtc: string | null;
+  completedUtc: string | null;
+  delivered: number;
+  held: number;
+  failed: number;
+  retrying: number;
+  error: string | null;
 }
 
 export interface DeliverySubmissionDetail {
@@ -96,6 +121,13 @@ export interface DeliveryRecord {
   blocked: boolean;
   createdUtc: string;
   updatedUtc: string;
+  /** Where the pending document sits in the submission's work batches (batch:offset:length), when one is waiting. */
+  pendingDocumentRef: string | null;
+  workBatch: number | null;
+  /** The identifiers the target returned for what it holds now (record id and version, dataset ids, a workflow run). */
+  targetState: Record<string, unknown> | null;
+  /** The steps of the pending delivery an earlier try completed, with what they returned. */
+  pendingSteps: Record<string, unknown> | null;
 }
 
 export interface DeliveryRecordDetail {
@@ -103,8 +135,22 @@ export interface DeliveryRecordDetail {
   pipelineId: string | null;
   repoId: string | null;
   flowName: string | null;
-  /** The rendered document waiting to be delivered, when the record is pending. */
-  pendingDocument: string | null;
+}
+
+/** One step of a delivery try: what it did, how long it took, what the target answered. */
+export interface DeliveryAttemptStep {
+  name: string;
+  startedUtc?: string;
+  ms?: number;
+  status?: number;
+  resumed?: boolean;
+  error?: string;
+  returned?: Record<string, string>;
+}
+
+export interface DeliveryAttemptResult {
+  steps: DeliveryAttemptStep[];
+  returned?: Record<string, string>;
 }
 
 /** One delivery try, as the append-only history holds it. */
@@ -122,6 +168,9 @@ export interface DeliveryAttempt {
   payloadHash: string | null;
   targetVersion: number | null;
   error: string | null;
+  /** The steps the try took and what the target returned, null for tries that recorded none. */
+  result: DeliveryAttemptResult | null;
+  workBatch: number | null;
 }
 
 /** One entry of the audit trail: who did what, when, with which inputs, and how it ended. */
@@ -273,6 +322,8 @@ export const deliveryApi = {
   submission: (submissionId: string) => get<DeliverySubmissionDetail>(`/api/v1/delivery/submissions/${submissionId}`),
   submissionAttempts: (submissionId: string, max?: number) =>
     get<DeliveryAttempt[]>(`/api/v1/delivery/submissions/${submissionId}/attempts`, max ? { max } : {}),
+  submissionBatches: (submissionId: string, query: PageQuery & { status?: DeliveryWorkBatch["status"] } = {}) =>
+    get<PagedResult<DeliveryWorkBatch>>(`/api/v1/delivery/submissions/${submissionId}/batches`, query as QueryParams),
   activities: (query: DeliveryActivityListQuery = {}) =>
     get<PagedResult<DeliveryActivity>>("/api/v1/delivery/activities", query as QueryParams),
   activity: (activityId: number) => get<DeliveryActivity>(`/api/v1/delivery/activities/${activityId}`),

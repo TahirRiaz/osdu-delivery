@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 
@@ -193,10 +194,16 @@ public static class RunQueueStore
                   WHERE w.[GroupId] = r.[GroupId] AND w.[Status] = @running) < r.[GroupMaxConcurrency])
               AND NOT EXISTS (
                   SELECT 1 FROM [catalog].[Run] AS p
-                  WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = @running)
+                  WHERE p.[PipelineId] = r.[PipelineId] AND p.[Status] = @running
+                    AND COALESCE(p.[FanOutRoot], p.[RunId]) <> COALESCE(r.[FanOutRoot], r.[RunId]))
             ORDER BY r.[EnqueuedUtc], r.[RunId])
           AND [Status] = @queued;
         """;
+
+    // The pipeline gate above compares FAMILIES, not runs: a run's family is its fan-out root (or itself). A fan-out
+    // root and its members all belong to one family and execute together; any run of another family waits. The
+    // filtered unique index still makes the standalone case atomic (roots and standalone runs carry no FanOutRoot);
+    // members rely on the gate, which is enough because their root holds the index slot for as long as it runs.
 
     /// <summary>Enqueues a run: inserts a <c>queued</c> <see cref="CatalogRun"/> row and returns its newly minted
     /// (time-ordered) id. The caller hands that id back to the trigger's caller, and the run is recorded under it,
@@ -759,8 +766,13 @@ public static class RunQueueStore
             // Cancelling a queued group member is a non-success terminal too: its dependents in the group can no
             // longer run, so skip them (a no-op for a standalone run).
             await SkipGroupDescendantsAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
+            await CancelFanOutMembersAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
             return CancelOutcome.Cancelled;
         }
+
+        // A fan-out root takes its members with it: the ones still queued are cancelled outright, the running ones
+        // get the same durable request their root gets below.
+        await CancelFanOutMembersAsync(catalog, runId, nowUtc, ct).ConfigureAwait(false);
 
         // Still-running: record the request for the owning node. Stamp CancelRequestedUtc only when it is not yet
         // set, so the request reflects when the operator first asked (a repeated click does not keep moving it).
@@ -785,6 +797,128 @@ public static class RunQueueStore
             RunStatuses.Running => CancelOutcome.CancelRequested,
             _ => CancelOutcome.NotCancellable,
         };
+    }
+
+    /// <summary>Cancels the fan-out members of a root run (queued ones outright, running ones by request). Returns
+    /// how many members were touched; zero for a run that fanned nothing out.</summary>
+    public static async Task<int> CancelFanOutMembersAsync(
+        CatalogDbContext catalog, Guid rootRunId, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var cancelled = await catalog.Runs
+            .Where(r => r.FanOutRoot == rootRunId && r.Status == RunStatuses.Queued)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, RunStatuses.Cancelled)
+                .SetProperty(r => r.EndUtc, nowUtc)
+                .SetProperty(r => r.WrittenUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+        var requested = await catalog.Runs
+            .Where(r => r.FanOutRoot == rootRunId && r.Status == RunStatuses.Running && r.CancelRequestedUtc == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.CancelRequestedUtc, nowUtc), ct)
+            .ConfigureAwait(false);
+        return cancelled + requested;
+    }
+
+    /// <summary>
+    /// Enqueues the fan-out members of a running root run: one queued run per member, routed exactly as the root
+    /// (same pipeline, pool, commit and flow version, same requester), each carrying its own parameters (an intake
+    /// member's partitions, a drain member's submission) and stamped with the root so the claim gate runs them
+    /// alongside it. The members form one run group of mode <see cref="RunGroupModes.FanOut"/> for the GUI.
+    /// Members that already exist for the root and operation and are not terminal are returned instead of being
+    /// enqueued again, so a root re-executed after a crash rejoins its fan-out rather than doubling it.
+    /// </summary>
+    public static async Task<RunGroupEnqueueResult> EnqueueFanOutAsync(
+        CatalogDbContext catalog, Guid rootRunId, string operation, IReadOnlyList<RunParameters> members, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        ArgumentNullException.ThrowIfNull(members);
+        if (members.Count == 0)
+        {
+            throw new ArgumentException("A fan-out needs at least one member.", nameof(members));
+        }
+
+        foreach (var member in members)
+        {
+            member.Validate();
+        }
+
+        var op = operation.Trim().ToLowerInvariant();
+        var existing = await catalog.Runs.AsNoTracking()
+            .Where(r => r.FanOutRoot == rootRunId && r.Operation == op && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
+            .OrderBy(r => r.FanOutSlot)
+            .Select(r => new { r.RunId, r.GroupId })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        if (existing.Count > 0 && existing[0].GroupId is { } existingGroup)
+        {
+            var all = await catalog.Runs.AsNoTracking()
+                .Where(r => r.GroupId == existingGroup)
+                .OrderBy(r => r.FanOutSlot)
+                .Select(r => r.RunId)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            return new RunGroupEnqueueResult(existingGroup, all);
+        }
+
+        var root = await catalog.Runs.AsNoTracking().FirstOrDefaultAsync(r => r.RunId == rootRunId, ct).ConfigureAwait(false)
+            ?? throw new SqlFlowException($"Run {rootRunId} is not in the catalog; nothing to fan out from.");
+        if (root.RepoId is not { } repoId)
+        {
+            throw new SqlFlowException($"Run {rootRunId} has no repository; only catalog-dispatched runs can fan out.");
+        }
+
+        var groupId = Guid.CreateVersion7();
+        return await CatalogTransaction.InSerializableAsync(catalog, () =>
+        {
+            catalog.RunGroups.Add(new CatalogRunGroup
+            {
+                GroupId = groupId,
+                RepoId = repoId,
+                Mode = RunGroupModes.FanOut,
+                Anchor = root.FlowName,
+                MemberCount = members.Count,
+                CommitSha = root.CommitSha,
+                EnqueuedUtc = nowUtc,
+            });
+
+            var runIds = new List<Guid>(members.Count);
+            for (var i = 0; i < members.Count; i++)
+            {
+                var parameters = members[i];
+                var runId = Guid.CreateVersion7();
+                runIds.Add(runId);
+                catalog.Runs.Add(new CatalogRun
+                {
+                    RunId = runId,
+                    PipelineId = root.PipelineId,
+                    RepoId = repoId,
+                    FlowName = root.FlowName,
+                    FlowKind = root.FlowKind,
+                    TargetPool = root.TargetPool,
+                    CommitSha = root.CommitSha,
+                    FlowVersionHash = root.FlowVersionHash,
+                    GroupId = groupId,
+                    GroupWave = 0,
+                    Operation = parameters.Operation.ToLowerInvariant(),
+                    Force = parameters.Force,
+                    SubmissionId = parameters.SubmissionId,
+                    ParametersJson = parameters.IsDefault ? null : parameters.ToJson(),
+                    TriggerSource = root.TriggerSource,
+                    TriggerScheduleId = root.TriggerScheduleId,
+                    RequestedBy = root.RequestedBy,
+                    FanOutRoot = rootRunId,
+                    FanOutSlot = i + 1,
+                    FanOutCount = members.Count,
+                    Status = RunStatuses.Queued,
+                    EnqueuedUtc = nowUtc,
+                    WrittenUtc = nowUtc,
+                    Success = false,
+                });
+            }
+
+            return Task.FromResult(new RunGroupEnqueueResult(groupId, runIds));
+        }, ct);
     }
 
     /// <summary>Cancels a whole run group as a unit: every still-<c>queued</c> member is cancelled outright and every
@@ -1048,7 +1182,7 @@ public static class RunQueueStore
 
         return result;
     }
-
+
     private static void ApplyCompletion(CatalogRun target, CatalogRun projected, DateTime nowUtc)
     {
         // Identity fields are the same whether the row was enqueued or is being inserted fresh (RunFromJson derives
@@ -1078,6 +1212,7 @@ public static class RunQueueStore
         target.RecordsHeld = projected.RecordsHeld;
         target.RecordsFailed = projected.RecordsFailed;
         target.RecordsSkipped = projected.RecordsSkipped;
+        target.ResultJson = projected.ResultJson;
         // Fill only, never overwrite: an enqueued run already carries what asked for it (a schedule, a person),
         // and the projection's view of an artifact is always "cli". This assigns solely on the path where the
         // completion inserts a row that was never enqueued, which IS a node-local execution.

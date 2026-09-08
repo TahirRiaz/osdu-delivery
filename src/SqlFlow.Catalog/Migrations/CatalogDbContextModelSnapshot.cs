@@ -821,6 +821,15 @@ namespace SqlFlow.Catalog.Migrations
                     b.Property<string>("Error")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int?>("FanOutCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("FanOutRoot")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("FanOutSlot")
+                        .HasColumnType("int");
+
                     b.Property<string>("FlowKind")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -884,6 +893,9 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("ResultJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<Guid?>("ResultSubmissionId")
                         .HasColumnType("uniqueidentifier");
 
@@ -944,6 +956,8 @@ namespace SqlFlow.Catalog.Migrations
 
                     b.HasIndex("WrittenUtc");
 
+                    b.HasIndex("FanOutRoot", "Status");
+
                     b.HasIndex("PipelineId", "Operation");
 
                     b.HasIndex("Status", "EnqueuedUtc");
@@ -959,7 +973,7 @@ namespace SqlFlow.Catalog.Migrations
 
                     b.HasIndex(new[] { "PipelineId" }, "UX_Run_RunningPipeline")
                         .IsUnique()
-                        .HasFilter("[Status] = 'running'");
+                        .HasFilter("[Status] = 'running' AND [FanOutRoot] IS NULL");
 
                     b.ToTable("Run", "catalog");
                 });
@@ -1393,6 +1407,9 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
+                    b.Property<string>("ResultJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<Guid?>("RunId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1404,6 +1421,9 @@ namespace SqlFlow.Catalog.Migrations
 
                     b.Property<long?>("TargetVersion")
                         .HasColumnType("bigint");
+
+                    b.Property<int?>("WorkBatch")
+                        .HasColumnType("int");
 
                     b.Property<string>("Worker")
                         .IsRequired()
@@ -1557,8 +1577,9 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
-                    b.Property<string>("PendingDocument")
-                        .HasColumnType("nvarchar(max)");
+                    b.Property<string>("PendingDocumentRef")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<bool>("PendingMetadata")
                         .HasColumnType("bit");
@@ -1585,6 +1606,9 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("PendingStepJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("RenderContext")
                         .HasColumnType("nvarchar(max)");
 
@@ -1606,15 +1630,23 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<string>("TargetStateJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<long?>("TargetVersion")
                         .HasColumnType("bigint");
 
                     b.Property<DateTime>("UpdatedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int?>("WorkBatch")
+                        .HasColumnType("int");
+
                     b.HasKey("DeliveryKey");
 
                     b.HasIndex("Label");
+
+                    b.HasIndex("LeaseOwner");
 
                     b.HasIndex("SourceKey");
 
@@ -1635,6 +1667,8 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("FlowId", "TargetId");
 
                     b.HasIndex("FlowId", "UpdatedUtc");
+
+                    b.HasIndex("LastSubmissionId", "WorkBatch");
 
                     b.HasIndex("Status", "LeaseExpiresUtc");
 
@@ -1726,14 +1760,17 @@ namespace SqlFlow.Catalog.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int>("Blocked")
+                    b.Property<int>("BatchCount")
                         .HasColumnType("int");
+
+                    b.Property<long>("Blocked")
+                        .HasColumnType("bigint");
 
                     b.Property<DateTime?>("CompletedUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int>("Delivered")
-                        .HasColumnType("int");
+                    b.Property<long>("Delivered")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("DropLocation")
                         .IsRequired()
@@ -1744,8 +1781,8 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("nvarchar(4000)");
 
-                    b.Property<int>("Failed")
-                        .HasColumnType("int");
+                    b.Property<long>("Failed")
+                        .HasColumnType("bigint");
 
                     b.Property<Guid>("FlowId")
                         .HasColumnType("uniqueidentifier");
@@ -1755,8 +1792,8 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<int>("Held")
-                        .HasColumnType("int");
+                    b.Property<long>("Held")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("MappingReference")
                         .IsRequired()
@@ -1767,21 +1804,24 @@ namespace SqlFlow.Catalog.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("Planned")
+                    b.Property<int>("Partitions")
                         .HasColumnType("int");
+
+                    b.Property<long>("Planned")
+                        .HasColumnType("bigint");
 
                     b.Property<DateTime>("ReceivedUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int>("RecordCount")
-                        .HasColumnType("int");
+                    b.Property<long>("RecordCount")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("RenderContext")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("SkippedUnchanged")
-                        .HasColumnType("int");
+                    b.Property<long>("SkippedUnchanged")
+                        .HasColumnType("bigint");
 
                     b.Property<DateTime?>("StartedUtc")
                         .HasColumnType("datetime2");
@@ -1791,6 +1831,10 @@ namespace SqlFlow.Catalog.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
 
+                    b.Property<string>("WorkLocation")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
                     b.HasKey("SubmissionId");
 
                     b.HasIndex("FlowId", "ReceivedUtc");
@@ -1798,6 +1842,76 @@ namespace SqlFlow.Catalog.Migrations
                     b.HasIndex("FlowId", "Status");
 
                     b.ToTable("Submission", "delivery");
+                });
+
+            modelBuilder.Entity("SqlFlow.Catalog.DeliveryWorkBatch", b =>
+                {
+                    b.Property<Guid>("SubmissionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("Delivered")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<long>("Failed")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("FlowId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Held")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Location")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("RecordCount")
+                        .HasColumnType("int");
+
+                    b.Property<long>("Retrying")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("SubmissionId", "Index");
+
+                    b.HasIndex("Status", "LeaseExpiresUtc");
+
+                    b.HasIndex("SubmissionId", "Status");
+
+                    b.HasIndex("FlowId", "Status", "CreatedUtc");
+
+                    b.ToTable("WorkBatch", "delivery");
                 });
 
             modelBuilder.Entity("SqlFlow.Catalog.CatalogScheduleParent", b =>

@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
@@ -112,12 +113,27 @@ public sealed class FakeProtocol : IDeliveryProtocol
             }
         }
 
+        var version = work.DeliverMetadata ? Interlocked.Increment(ref _version) : work.ExistingVersion;
+        var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
+        if (version is { } v)
+        {
+            returned["version"] = v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (work.DeliverPayload)
+        {
+            returned["chunks"] = chunks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        var now = DateTime.UtcNow;
         return new DeliveryOutcome
         {
             MetadataDelivered = work.DeliverMetadata,
             PayloadDelivered = work.DeliverPayload,
-            TargetVersion = work.DeliverMetadata ? Interlocked.Increment(ref _version) : work.ExistingVersion,
+            TargetVersion = version,
             ChunksSent = chunks,
+            Returned = returned,
+            Steps = [new DeliveryStep("fake", now, now, 200, returned)],
         };
     }
 
@@ -129,7 +145,7 @@ public sealed class FakeProtocol : IDeliveryProtocol
 
     public List<(string TargetId, bool Purge)> Deletes { get; } = [];
 
-    public Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, CancellationToken ct = default)
+    public Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
         Deletes.Add((targetId, purge));
         return Task.FromResult(new DeleteOutcome(true, false, purge ? "purged" : "logically deleted"));
@@ -145,6 +161,19 @@ public sealed class FakeProtocol : IDeliveryProtocol
 
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => Task.FromResult(new ProbeOutcome(Reachable, Reachable ? 200 : 503, Reachable ? "the service answered" : "service unavailable", "/about"));
+}
+
+/// <summary>Hands the engine a ready-made protocol instead of building one over HTTP.</summary>
+public sealed class FakeProtocolFactory : IProtocolFactory
+{
+    private readonly IDeliveryProtocol _protocol;
+
+    public FakeProtocolFactory(IDeliveryProtocol protocol)
+    {
+        _protocol = protocol;
+    }
+
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default) => Task.FromResult(_protocol);
 }
 
 /// <summary>A scripted HTTP handler: matches requests by method and path, records bodies, returns canned responses.</summary>
@@ -223,7 +252,7 @@ public static class Samples
     }
 
     /// <summary>The platform file stores plus the delivery writers, exactly as the hosts register them.</summary>
-    public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()]);
+    public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()], [new LocalFileReader()]);
 
     public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null)
     {
@@ -254,8 +283,8 @@ public static class Samples
                 Auth = new TargetAuth { Type = TargetAuthType.None },
                 Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
             },
-            // SQLite in-memory shares one connection, so the test worker runs one record at a time.
-            Reliability = flow.Reliability with { Concurrency = 1, Retry = flow.Reliability.Retry with { Attempts = 3, RecordBaseDelayMinutes = 1 } },
+            // SQLite in-memory shares one connection, so the test worker runs one record at a time and one renderer.
+            Reliability = flow.Reliability with { Concurrency = 1, RenderParallelism = 1, Retry = flow.Reliability.Retry with { Attempts = 3, RecordBaseDelayMinutes = 1 } },
         };
     }
 

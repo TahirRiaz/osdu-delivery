@@ -52,7 +52,7 @@ public class EndToEndTests : IDisposable
             return WorkerSummary.Empty;
         }
 
-        var worker = new DeliveryWorker(ledger, runtime.Context.Drops, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker");
+        var worker = new DeliveryWorker(ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
         var summary = await worker.DrainAsync(submission);
         await runtime.Intake.CompleteAsync(submission, runtime.Flow.Id);
         return summary;
@@ -255,7 +255,7 @@ public class EndToEndTests : IDisposable
             Assert.Equal(SubmissionStatus.Running, (await ledger.GetSubmissionAsync(Submission1))!.Status);
 
             _clock.Advance(TimeSpan.FromMinutes(2));
-            var worker = new DeliveryWorker(ledger, runtime.Context.Drops, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker");
+            var worker = new DeliveryWorker(ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
             var later = await worker.DrainAsync(Submission1);
             Assert.Equal(1, later.Delivered);
             var attempts = await ledger.ListAttemptsAsync(records[0].Key, 10);
@@ -287,7 +287,7 @@ public class EndToEndTests : IDisposable
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             };
 
-            var worker = new DeliveryWorker(ledger, runtime.Context.Drops, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "stopping-worker");
+            var worker = new DeliveryWorker(ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "stopping-worker") { MaxWait = null };
             var drain = worker.DrainAsync(Submission1, stop.Token);
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await stop.CancelAsync();
@@ -303,7 +303,7 @@ public class EndToEndTests : IDisposable
 
             // A fresh worker picks everything up at once; nothing waited for a lease to expire.
             protocol.Before = null;
-            var resumed = new DeliveryWorker(ledger, runtime.Context.Drops, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "next-worker");
+            var resumed = new DeliveryWorker(ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "next-worker") { MaxWait = null };
             var summary = await resumed.DrainAsync(Submission1);
             Assert.Equal(3, summary.Delivered);
             Assert.Single(await ledger.ListAttemptsAsync(key, 10));
@@ -388,6 +388,7 @@ public class ProtocolTests
 
     private static DeliveryWork Work(bool metadata, bool payload, int chunks, long? existing = null) => new()
     {
+        Key = SqlFlow.Delivery.Identity.DeliveryKey.Derive("test", ["abc"]),
         TargetId = "dev:work-product-component--WellLog:abc",
         Document = TestSchema.Doc("""{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"Name":"n"}}"""),
         DeliverMetadata = metadata,

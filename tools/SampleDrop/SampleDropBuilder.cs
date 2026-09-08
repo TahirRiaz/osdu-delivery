@@ -85,10 +85,12 @@ public static class SampleDropBuilder
         IReadOnlyList<SampleRecord> records,
         Guid submissionId,
         long sourceVersion,
+        int partitions = 1,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(records);
+        ArgumentOutOfRangeException.ThrowIfLessThan(partitions, 1);
         Directory.CreateDirectory(Path.Combine(root, "metadata"));
         Directory.CreateDirectory(Path.Combine(root, "curves-meta"));
 
@@ -166,14 +168,35 @@ public static class SampleDropBuilder
             }
         }
 
-        await using (var file = File.Create(Path.Combine(root, "metadata", "part-00000.parquet")))
+        // A partitioned drop (docs/drop-contract.md): root file i and child file i hold the same records, every file
+        // sorted by its key, so the delivery service streams each partition as a merge join. Keys are dealt
+        // round-robin in sorted order, which keeps the partitions balanced.
+        var rootFiles = new List<string>();
+        var curveFiles = new List<string>();
+        var ordered = rootRows.OrderBy(r => (string)r["deliveryKey"]!, StringComparer.Ordinal).ToList();
+        for (var partition = 0; partition < partitions; partition++)
         {
-            await ParquetScopeReader.WriteAsync(file, rootColumns, rootRows, ct).ConfigureAwait(false);
-        }
+            var name = "part-" + partition.ToString("D5", CultureInfo.InvariantCulture) + ".parquet";
+            var mine = partitions == 1 ? ordered : ordered.Where((_, i) => i % partitions == partition).ToList();
+            var keys = new HashSet<string>(mine.Select(r => (string)r["deliveryKey"]!), StringComparer.Ordinal);
+            var curves = curveRows
+                .Where(r => keys.Contains((string)r["deliveryKey"]!))
+                .OrderBy(r => (string)r["deliveryKey"]!, StringComparer.Ordinal)
+                .ThenBy(r => (long)r["curve_ordinal"]!)
+                .ToList();
 
-        await using (var file = File.Create(Path.Combine(root, "curves-meta", "part-00000.parquet")))
-        {
-            await ParquetScopeReader.WriteAsync(file, curveColumns, curveRows, ct).ConfigureAwait(false);
+            await using (var file = File.Create(Path.Combine(root, "metadata", name)))
+            {
+                await ParquetScopeReader.WriteAsync(file, rootColumns, mine, ct).ConfigureAwait(false);
+            }
+
+            await using (var file = File.Create(Path.Combine(root, "curves-meta", name)))
+            {
+                await ParquetScopeReader.WriteAsync(file, curveColumns, curves, ct).ConfigureAwait(false);
+            }
+
+            rootFiles.Add("metadata/" + name);
+            curveFiles.Add("curves-meta/" + name);
         }
 
         var manifest = new DropManifest
@@ -185,16 +208,17 @@ public static class SampleDropBuilder
             CreatedUtc = new DateTimeOffset(2026, 9, 7, 12, 0, 0, TimeSpan.Zero),
             RecordCount = records.Count,
             SourceVersions = new Dictionary<string, long>(StringComparer.Ordinal) { [SourceTable] = sourceVersion },
+            Partitioned = partitions > 1,
             Scopes = new Dictionary<string, ManifestScope>(StringComparer.Ordinal)
             {
                 ["record"] = new()
                 {
-                    Files = ["metadata/part-00000.parquet"],
+                    Files = rootFiles,
                     Columns = rootColumns.Select(c => new ManifestColumn { Name = c.Item1, Type = TypeName(c.Item2) }).ToList(),
                 },
                 ["curves"] = new()
                 {
-                    Files = ["curves-meta/part-00000.parquet"],
+                    Files = curveFiles,
                     ParentKey = "deliveryKey",
                     OrderBy = "curve_ordinal",
                     Columns = curveColumns.Select(c => new ManifestColumn { Name = c.Item1, Type = TypeName(c.Item2) }).ToList(),

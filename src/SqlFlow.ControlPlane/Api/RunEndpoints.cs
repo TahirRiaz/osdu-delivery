@@ -39,7 +39,8 @@ public sealed record RunDetailDto(
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host, string? RequestedBy,
     string Operation, bool Force, Guid? SubmissionId, string? ParametersJson, Guid? ResultSubmissionId,
-    int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId);
+    int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId,
+    Guid? FanOutRoot, int? FanOutSlot, int? FanOutCount, string? ResultJson);
 
 /// <summary>
 /// One entry of a run's trace: a canonical run event (progress, a decision, a stage summary, a warning, an error),
@@ -302,7 +303,8 @@ public static class RunEndpoints
                     run.SchemaVersion, run.WrittenUtc, run.StartUtc, run.EndUtc, run.DurationSeconds,
                     run.RowsLoaded, run.RowsInserted, run.RowsUpdated, run.RowsDeleted, run.Error, run.Host, run.RequestedBy,
                     run.Operation, run.Force, run.SubmissionId, run.ParametersJson, run.ResultSubmissionId,
-                    run.RecordsPlanned, run.RecordsDelivered, run.RecordsHeld, run.RecordsFailed, run.RecordsSkipped, run.GroupId))
+                    run.RecordsPlanned, run.RecordsDelivered, run.RecordsHeld, run.RecordsFailed, run.RecordsSkipped, run.GroupId,
+                    run.FanOutRoot, run.FanOutSlot, run.FanOutCount, run.ResultJson))
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return dto is null ? NotFound("run", runId) : TypedResults.Ok(dto);
     }

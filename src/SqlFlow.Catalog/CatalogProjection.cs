@@ -140,6 +140,9 @@ public static class CatalogProjection
             RecordsHeld = result is { } r10 ? Count(Long(r10, "held") ?? Sum(Long(r10, "drifted"), Long(r10, "missing"))) : null,
             RecordsFailed = result is { } r11 ? Count(Long(r11, "failed") ?? Long(r11, "errors")) : null,
             RecordsSkipped = result is { } r12 ? Count(Long(r12, "skippedUnchanged")) : null,
+            // The whole result, for the run page and for a fan-out root reading its members' outcomes. Bounded so a
+            // kind that reports per-record detail cannot bloat the row; the artifact on disk keeps the rest.
+            ResultJson = result is { } r13 && r13.ValueKind == JsonValueKind.Object ? Bounded(r13.GetRawText(), 32_000) : null,
         };
     }
 
@@ -197,6 +200,8 @@ public static class CatalogProjection
         => Prop(element, name) is { ValueKind: JsonValueKind.String } p && p.TryGetDateTime(out var v) ? v : null;
 
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static string Bounded(string value, int max) => value.Length <= max ? value : value[..max];
 
     /// <summary>A long count saturated into int range, so an oversized run.json value never silently overflows.</summary>
     private static int Int(long? value) => (int)Math.Min(value ?? 0, int.MaxValue);

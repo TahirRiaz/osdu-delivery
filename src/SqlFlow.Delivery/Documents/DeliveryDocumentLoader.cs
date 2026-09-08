@@ -149,6 +149,7 @@ internal static class FlowMapper
                 Payloads = src.Payloads ?? new Dictionary<string, string>(StringComparer.Ordinal),
                 Fingerprint = src.Fingerprint,
                 KnownState = string.IsNullOrWhiteSpace(src.KnownState) ? null : src.KnownState!.Trim(),
+                Work = string.IsNullOrWhiteSpace(src.Work) ? null : src.Work!.Trim(),
             },
             Render = new FlowRender
             {
@@ -191,6 +192,44 @@ internal static class FlowMapper
         if (flow.Reliability.Retry.Attempts < 1)
         {
             throw new FlowValidationException($"{source}: reliability.retry.attempts must be at least 1.");
+        }
+
+        if (flow.Reliability.BatchRecords is < 1 or > 100_000)
+        {
+            throw new FlowValidationException($"{source}: reliability.batchRecords must be between 1 and 100000.");
+        }
+
+        if (flow.Reliability.FanOut is < 0 or > FlowReliability.MaxFanOut)
+        {
+            throw new FlowValidationException($"{source}: reliability.fanOut must be between 0 and {FlowReliability.MaxFanOut}.");
+        }
+
+        if (flow.Reliability.FanOutMinRecords < 1)
+        {
+            throw new FlowValidationException($"{source}: reliability.fanOutMinRecords must be at least 1.");
+        }
+
+        if (flow.Reliability.RenderParallelism is < 0 or > 256)
+        {
+            throw new FlowValidationException($"{source}: reliability.renderParallelism must be between 0 and 256.");
+        }
+
+        if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.batchSize must be between 1 and {ProtocolOptions.MaxBatchSize}.");
+        }
+
+        if (flow.Target.ProtocolOptions.WorkflowPollSeconds < 1 || flow.Target.ProtocolOptions.WorkflowTimeoutMinutes < 1)
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.workflowPollSeconds and workflowTimeoutMinutes must be at least 1.");
+        }
+
+        foreach (var token in Tokens(flow.Source.Work ?? string.Empty))
+        {
+            if (!flow.Parameters.ContainsKey(token))
+            {
+                throw new FlowValidationException($"{source}: source.work uses '{{{token}}}', which is not declared under parameters.");
+            }
         }
 
         if (DeliveryProtocols.CarriesPayload(flow.Target.Protocol) && flow.Target.ProtocolOptions.Payload is { } payload
@@ -289,6 +328,18 @@ internal static class FlowMapper
             PayloadContentType = o.PayloadContentType ?? "application/x-parquet",
             VersionPath = o.VersionPath ?? "recordIdVersions[0]",
             PreserveDataKeys = o.PreserveDataKeys ?? [],
+            BatchSize = o.BatchSize ?? 100,
+            UploadUrlPath = o.UploadUrlPath,
+            FileMetadataPath = o.FileMetadataPath,
+            DatasetKind = string.IsNullOrWhiteSpace(o.DatasetKind) ? "osdu:wks:dataset--File.Generic:1.0.0" : o.DatasetKind!.Trim(),
+            UploadHeaders = new Dictionary<string, string>(o.UploadHeaders ?? [], StringComparer.OrdinalIgnoreCase),
+            DatasetsProperty = string.IsNullOrWhiteSpace(o.DatasetsProperty) ? "Datasets" : o.DatasetsProperty!.Trim(),
+            WorkflowName = string.IsNullOrWhiteSpace(o.WorkflowName) ? "Osdu_ingest" : o.WorkflowName!.Trim(),
+            WorkflowRunPath = o.WorkflowRunPath,
+            WorkflowStatusPath = o.WorkflowStatusPath,
+            WorkflowPollSeconds = o.WorkflowPollSeconds ?? 10,
+            WorkflowTimeoutMinutes = o.WorkflowTimeoutMinutes ?? 60,
+            ManifestKind = string.IsNullOrWhiteSpace(o.ManifestKind) ? "osdu:wks:Manifest:1.0.0" : o.ManifestKind!.Trim(),
         };
     }
 
@@ -323,6 +374,10 @@ internal static class FlowMapper
             MaxRequestBodyBytes = r.MaxRequestBodyBytes ?? defaults.MaxRequestBodyBytes,
             LeaseSeconds = r.LeaseSeconds ?? defaults.LeaseSeconds,
             BatchSize = r.BatchSize ?? defaults.BatchSize,
+            BatchRecords = r.BatchRecords ?? defaults.BatchRecords,
+            FanOut = r.FanOut ?? defaults.FanOut,
+            FanOutMinRecords = r.FanOutMinRecords ?? defaults.FanOutMinRecords,
+            RenderParallelism = r.RenderParallelism ?? defaults.RenderParallelism,
         };
     }
 

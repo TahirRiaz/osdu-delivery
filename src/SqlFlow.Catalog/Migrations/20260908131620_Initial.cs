@@ -105,7 +105,9 @@ namespace SqlFlow.Catalog.Migrations
                     MetadataHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
                     PayloadHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
                     TargetVersion = table.Column<long>(type: "bigint", nullable: true),
-                    Error = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true)
+                    Error = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
+                    ResultJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    WorkBatch = table.Column<int>(type: "int", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -391,7 +393,10 @@ namespace SqlFlow.Catalog.Migrations
                     AttemptCount = table.Column<int>(type: "int", nullable: false),
                     NextAttemptUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
                     LastError = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
-                    PendingDocument = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    PendingDocumentRef = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
+                    WorkBatch = table.Column<int>(type: "int", nullable: true),
+                    TargetStateJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    PendingStepJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
                     PendingRenderContext = table.Column<string>(type: "nvarchar(max)", nullable: true),
                     PendingSourceFingerprint = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
                     PendingMetadataHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
@@ -512,7 +517,11 @@ namespace SqlFlow.Catalog.Migrations
                     RecordsDelivered = table.Column<int>(type: "int", nullable: true),
                     RecordsHeld = table.Column<int>(type: "int", nullable: true),
                     RecordsFailed = table.Column<int>(type: "int", nullable: true),
-                    RecordsSkipped = table.Column<int>(type: "int", nullable: true)
+                    RecordsSkipped = table.Column<int>(type: "int", nullable: true),
+                    ResultJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    FanOutRoot = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    FanOutSlot = table.Column<int>(type: "int", nullable: true),
+                    FanOutCount = table.Column<int>(type: "int", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -659,17 +668,20 @@ namespace SqlFlow.Catalog.Migrations
                     RenderContext = table.Column<string>(type: "nvarchar(max)", nullable: false),
                     DropLocation = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: false),
                     ParametersJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    RecordCount = table.Column<int>(type: "int", nullable: false),
+                    RecordCount = table.Column<long>(type: "bigint", nullable: false),
+                    WorkLocation = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
+                    BatchCount = table.Column<int>(type: "int", nullable: false),
+                    Partitions = table.Column<int>(type: "int", nullable: false),
                     Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
                     ReceivedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
                     StartedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
                     CompletedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
-                    Planned = table.Column<int>(type: "int", nullable: false),
-                    SkippedUnchanged = table.Column<int>(type: "int", nullable: false),
-                    Blocked = table.Column<int>(type: "int", nullable: false),
-                    Delivered = table.Column<int>(type: "int", nullable: false),
-                    Held = table.Column<int>(type: "int", nullable: false),
-                    Failed = table.Column<int>(type: "int", nullable: false),
+                    Planned = table.Column<long>(type: "bigint", nullable: false),
+                    SkippedUnchanged = table.Column<long>(type: "bigint", nullable: false),
+                    Blocked = table.Column<long>(type: "bigint", nullable: false),
+                    Delivered = table.Column<long>(type: "bigint", nullable: false),
+                    Held = table.Column<long>(type: "bigint", nullable: false),
+                    Failed = table.Column<long>(type: "bigint", nullable: false),
                     Error = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true)
                 },
                 constraints: table =>
@@ -698,6 +710,34 @@ namespace SqlFlow.Catalog.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_User", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "WorkBatch",
+                schema: "delivery",
+                columns: table => new
+                {
+                    SubmissionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Index = table.Column<int>(type: "int", nullable: false),
+                    FlowId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Location = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: false),
+                    RecordCount = table.Column<int>(type: "int", nullable: false),
+                    Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    LeaseOwner = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
+                    LeaseExpiresUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
+                    RunId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+                    StartedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
+                    CompletedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
+                    Delivered = table.Column<long>(type: "bigint", nullable: false),
+                    Held = table.Column<long>(type: "bigint", nullable: false),
+                    Failed = table.Column<long>(type: "bigint", nullable: false),
+                    Retrying = table.Column<long>(type: "bigint", nullable: false),
+                    Error = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_WorkBatch", x => new { x.SubmissionId, x.Index });
                 });
 
             migrationBuilder.CreateTable(
@@ -1014,6 +1054,18 @@ namespace SqlFlow.Catalog.Migrations
                 column: "Label");
 
             migrationBuilder.CreateIndex(
+                name: "IX_Record_LastSubmissionId_WorkBatch",
+                schema: "delivery",
+                table: "Record",
+                columns: new[] { "LastSubmissionId", "WorkBatch" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Record_LeaseOwner",
+                schema: "delivery",
+                table: "Record",
+                column: "LeaseOwner");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Record_SourceKey",
                 schema: "delivery",
                 table: "Record",
@@ -1050,6 +1102,12 @@ namespace SqlFlow.Catalog.Migrations
                 schema: "catalog",
                 table: "RepoSource",
                 column: "NextSyncUtc");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Run_FanOutRoot_Status",
+                schema: "catalog",
+                table: "Run",
+                columns: new[] { "FanOutRoot", "Status" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Run_FlowName",
@@ -1125,7 +1183,7 @@ namespace SqlFlow.Catalog.Migrations
                 table: "Run",
                 column: "PipelineId",
                 unique: true,
-                filter: "[Status] = 'running'");
+                filter: "[Status] = 'running' AND [FanOutRoot] IS NULL");
 
             migrationBuilder.CreateIndex(
                 name: "IX_RunEvent_RunId",
@@ -1215,6 +1273,24 @@ namespace SqlFlow.Catalog.Migrations
                 table: "User",
                 column: "Username",
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_WorkBatch_FlowId_Status_CreatedUtc",
+                schema: "delivery",
+                table: "WorkBatch",
+                columns: new[] { "FlowId", "Status", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_WorkBatch_Status_LeaseExpiresUtc",
+                schema: "delivery",
+                table: "WorkBatch",
+                columns: new[] { "Status", "LeaseExpiresUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_WorkBatch_SubmissionId_Status",
+                schema: "delivery",
+                table: "WorkBatch",
+                columns: new[] { "SubmissionId", "Status" });
         }
 
         /// <inheritdoc />
@@ -1331,6 +1407,10 @@ namespace SqlFlow.Catalog.Migrations
             migrationBuilder.DropTable(
                 name: "User",
                 schema: "catalog");
+
+            migrationBuilder.DropTable(
+                name: "WorkBatch",
+                schema: "delivery");
 
             migrationBuilder.DropTable(
                 name: "WorkerPool",

@@ -67,6 +67,8 @@ internal sealed class FlowSourceYaml
     public string? Fingerprint { get; set; }
 
     public string? KnownState { get; set; }
+
+    public string? Work { get; set; }
 }
 
 internal sealed class FlowScopeYaml
@@ -174,6 +176,30 @@ internal sealed class ProtocolOptionsYaml
     public string? VersionPath { get; set; }
 
     public List<string>? PreserveDataKeys { get; set; }
+
+    public int? BatchSize { get; set; }
+
+    public string? UploadUrlPath { get; set; }
+
+    public string? FileMetadataPath { get; set; }
+
+    public string? DatasetKind { get; set; }
+
+    public Dictionary<string, string>? UploadHeaders { get; set; }
+
+    public string? DatasetsProperty { get; set; }
+
+    public string? WorkflowName { get; set; }
+
+    public string? WorkflowRunPath { get; set; }
+
+    public string? WorkflowStatusPath { get; set; }
+
+    public int? WorkflowPollSeconds { get; set; }
+
+    public int? WorkflowTimeoutMinutes { get; set; }
+
+    public string? ManifestKind { get; set; }
 }
 
 internal sealed class FlowReliabilityYaml
@@ -199,6 +225,14 @@ internal sealed class FlowReliabilityYaml
     public int? LeaseSeconds { get; set; }
 
     public int? BatchSize { get; set; }
+
+    public int? BatchRecords { get; set; }
+
+    public int? FanOut { get; set; }
+
+    public int? FanOutMinRecords { get; set; }
+
+    public int? RenderParallelism { get; set; }
 }
 
 internal sealed class FlowRetryYaml

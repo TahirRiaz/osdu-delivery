@@ -1,8 +1,11 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Engine.FanOut;
 using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.KnownState;
 using SqlFlow.Delivery.Engine.Planning;
@@ -29,7 +32,8 @@ public sealed record EngineContext(
     TimeProvider Time,
     ILoggerFactory Loggers,
     IProtocolFactory Protocols,
-    IDeliveryListener Listener)
+    IDeliveryListener Listener,
+    IFanOutDispatcher? FanOut = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
@@ -38,24 +42,36 @@ public sealed record EngineContext(
     public static bool LoopbackAllowed
         => Environment.GetEnvironmentVariable(AllowLoopbackVariable) is { } v && v.Equals("true", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>The fan-out dispatcher, never null: a host without a catalog gets one that is not available.</summary>
+    public IFanOutDispatcher Dispatcher => FanOut ?? NoFanOutDispatcher.Instance;
+
     /// <summary>A context with a different logger factory: the node swaps in the run log for one run.</summary>
     public EngineContext WithLoggers(ILoggerFactory loggers) => this with { Loggers = loggers };
 }
 
-public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, SubmissionState Submission);
+/// <summary>What a deliver run did: the intake, the drain, the submission it left, and how far it fanned out.</summary>
+public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, SubmissionState Submission, int IntakeMembers = 0, int DrainMembers = 0);
 
 /// <summary>
 /// One flow, resolved and ready: parameters applied, render inputs pinned (from the mappings and snapshots the
 /// flow's repository layout locates), and (when a ledger and a target are wired) the protocol, worker, verifier
 /// and publisher over them. Every operation an operator can trigger goes through here and is recorded in the
 /// ledger's activity trail with the <see cref="Actor"/> that asked for it and the platform <see cref="RunId"/>
-/// it ran as.
+/// it ran as. A deliver run coordinates its own fan-out (design.md section 16.4): intake partitions first, then
+/// drains, each a member run of the same flow on any node of the pool, waited for and completed here.
 /// </summary>
 public sealed class FlowRuntime : IDisposable
 {
+    private static readonly TimeSpan MemberPoll = TimeSpan.FromSeconds(5);
+
+    private static readonly TimeSpan MemberProgress = TimeSpan.FromSeconds(60);
+
+    private static readonly TimeSpan LeaseSettle = TimeSpan.FromSeconds(30);
+
     private readonly EngineContext _context;
     private readonly ResolvedMapping? _mapping;
     private readonly string? _drop;
+    private readonly ILogger _log;
     private HttpRuntime? _http;
     private IDeliveryProtocol? _protocol;
 
@@ -69,6 +85,7 @@ public sealed class FlowRuntime : IDisposable
         Parameters = parameters;
         _mapping = mapping;
         _drop = dropLocation;
+        _log = context.Loggers.CreateLogger("run");
     }
 
     public FlowDefinition Flow { get; }
@@ -126,8 +143,8 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>
     /// A runtime for the operations that touch the target and the ledger but never the drop (verify, delete,
-    /// release, redeliver, known-state, probe): no parameters are required and no mapping is resolved, so they
-    /// work for a flow whose drop parameters are unknown or whose snapshots are not on this host.
+    /// release, redeliver, known-state, probe, drain): no parameters are required and no mapping is resolved, so
+    /// they work for a flow whose drop parameters are unknown or whose snapshots are not on this host.
     /// </summary>
     public static FlowRuntime ForTarget(EngineContext context, FlowDefinition flow)
     {
@@ -150,11 +167,11 @@ public sealed class FlowRuntime : IDisposable
 
     public Planner Planner => new(_context.Drops, _context.Ledger, _context.Loggers.CreateLogger<Planner>());
 
-    /// <summary>Renders the drop and reports what would change. Changes nothing, records nothing.</summary>
+    /// <summary>Renders the drop and reports what would change, every entry collected. Changes nothing, records nothing.</summary>
     public Task<DeliveryPlan> PlanAsync(bool force = false, CancellationToken ct = default)
         => Planner.PlanAsync(Flow, Mapping, Parameters, DropLocation, force, ct);
 
-    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId };
+    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId };
 
     public async Task<IDeliveryProtocol> ProtocolAsync(CancellationToken ct = default)
     {
@@ -169,40 +186,51 @@ public sealed class FlowRuntime : IDisposable
     }
 
     public async Task<DeliveryWorker> WorkerAsync(CancellationToken ct = default)
-        => new(RequireLedger(), _context.Drops, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId };
+        => new(RequireLedger(), _context.Drops, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId };
 
     public async Task<Verifier> VerifierAsync(CancellationToken ct = default)
         => new(RequireLedger(), await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<Verifier>());
 
     public KnownStatePublisher Publisher => new(RequireLedger(), _context.Stores, _context.Time, _context.Loggers.CreateLogger<KnownStatePublisher>());
 
-    /// <summary>Intake plus drain: the <c>deliver</c> operation.</summary>
+    /// <summary>Intake plus drain, fanned out across the fleet when the flow asks for it: the <c>deliver</c> operation.</summary>
     public Task<RunResult> RunAsync(bool force, CancellationToken ct = default)
-        => TrackAsync("deliver", new { force, drop = DropLocation, parameters = Parameters }, null, async () =>
+        => TrackAsync("deliver", new { force, drop = DropLocation, parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
         {
-            var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, ct).ConfigureAwait(false);
-            if (intake.NothingToDo)
+            FanOutHandle? handle = null;
+            try
             {
-                return (new RunResult(intake, WorkerSummary.Empty, intake.Submission), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
+                var (intake, intakeMembers) = await IntakeWithFanOutAsync(force, h => handle = h, ct).ConfigureAwait(false);
+                handle = null;
+                if (intake.NothingToDo)
+                {
+                    return (new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
+                }
+
+                var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);
+                handle = null;
+                var submission = await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false);
+                return (new RunResult(intake, work, submission, intakeMembers, drainMembers), SubmissionIntake.Summarize(submission), submission.SubmissionId);
             }
-
-            var worker = await WorkerAsync(ct).ConfigureAwait(false);
-            var work = await worker.DrainAsync(intake.Submission.SubmissionId, ct).ConfigureAwait(false);
-            var submission = await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false);
-            return (new RunResult(intake, work, submission), SubmissionIntake.Summarize(submission), submission.SubmissionId);
+            catch (OperationCanceledException) when (ct.IsCancellationRequested && handle is not null)
+            {
+                // A cancelled root takes its members with it.
+                await CancelMembersAsync(handle).ConfigureAwait(false);
+                throw;
+            }
         }, ct);
 
-    /// <summary>Intake only: register and plan the drop, leave the delivery to a later drain.</summary>
-    public Task<IntakeResult> SubmitAsync(bool force, CancellationToken ct = default)
-        => TrackAsync("submit", new { force, drop = DropLocation, parameters = Parameters }, null, async () =>
+    /// <summary>Intake only: register and plan the drop (or a subset of its partitions) into work batches, leaving the delivery to a drain.</summary>
+    public Task<IntakeResult> IntakeAsync(bool force, IReadOnlyList<int>? partitions = null, CancellationToken ct = default)
+        => TrackAsync("intake", new { force, drop = DropLocation, parameters = Parameters, partitions = partitions is null ? null : SubmissionIntake.DescribePartitions(partitions) }, null, async () =>
         {
-            var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, ct).ConfigureAwait(false);
-            return (intake, SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
+            var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, partitions, ct).ConfigureAwait(false);
+            return (intake, intake.AlreadyProcessed ? SubmissionIntake.Summarize(intake.Submission) : intake.Counts.ToString(), intake.Submission.SubmissionId);
         }, ct);
 
-    /// <summary>Drains the pending records of the flow (one pass, or until nothing is due), optionally of one submission.</summary>
+    /// <summary>Drains the pending work of the flow (one pass, or until nothing is due), optionally of one submission: the <c>drain</c> operation.</summary>
     public Task<WorkerSummary> WorkAsync(bool once, Guid? submissionId = null, CancellationToken ct = default)
-        => TrackAsync("work", new { once, submissionId }, null, async () =>
+        => TrackAsync("drain", new { once, submissionId }, null, async () =>
         {
             var worker = await WorkerAsync(ct).ConfigureAwait(false);
             var summary = once ? await worker.PassAsync(submissionId, ct).ConfigureAwait(false) : await worker.DrainAsync(submissionId, ct).ConfigureAwait(false);
@@ -211,7 +239,7 @@ public sealed class FlowRuntime : IDisposable
                 await Intake.CompleteAsync(s, Flow.Id, ct).ConfigureAwait(false);
             }
 
-            return (summary, $"{summary.Processed} processed: {summary.Delivered} delivered, {summary.Retried} retrying later, {summary.Held} held, {summary.Failed} failed", submissionId);
+            return (summary, summary.ToString(), submissionId);
         }, ct);
 
     /// <summary>The drift pass: the <c>verify</c> operation.</summary>
@@ -223,11 +251,11 @@ public sealed class FlowRuntime : IDisposable
             return (summary, summary.ToString(), (Guid?)null);
         }, ct);
 
-    public Task<int> PublishKnownStateAsync(string to, CancellationToken ct = default)
+    public Task<long> PublishKnownStateAsync(string to, CancellationToken ct = default)
         => TrackAsync("known-state", new { to }, null, async () =>
         {
             var count = await Publisher.PublishAsync(Flow, to, ct).ConfigureAwait(false);
-            return (count, $"published {count} record(s) to {to}", (Guid?)null);
+            return (count, string.Create(CultureInfo.InvariantCulture, $"published {count} record(s) to {to}"), (Guid?)null);
         }, ct);
 
     /// <summary>Releases held, failed or deleted records (all of them when <paramref name="keys"/> is null).</summary>
@@ -270,7 +298,7 @@ public sealed class FlowRuntime : IDisposable
             }
 
             var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
-            var outcome = await protocol.DeleteAsync(record.TargetId, purge, ct).ConfigureAwait(false);
+            var outcome = await protocol.DeleteAsync(record.TargetId, purge, JsonMerge.ToValues(record.TargetStateJson), ct).ConfigureAwait(false);
             await ledger.MarkDeletedAsync(key, purge, Actor, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             await _context.Listener.OnEventAsync(new DeliveryEvent
             {
@@ -290,6 +318,184 @@ public sealed class FlowRuntime : IDisposable
             }, ct).ConfigureAwait(false);
             return (outcome, $"{record.TargetId}: {outcome.Detail}", record.LastSubmissionId);
         }, ct);
+
+    /// <summary>
+    /// The intake, spread across the fleet when the flow declares a fan-out, the drop is partitioned, and the
+    /// catalog can enqueue runs: every member plans its share of the partitions into work batches, this run plans
+    /// its own share, waits for the members, and finalises the submission with the totals.
+    /// </summary>
+    private async Task<(IntakeResult Result, int Members)> IntakeWithFanOutAsync(bool force, Action<FanOutHandle?> track, CancellationToken ct)
+    {
+        var dispatcher = _context.Dispatcher;
+        var fanOut = Flow.Reliability.FanOut;
+        var header = await Planner.OpenAsync(Flow, Mapping, Parameters, DropLocation, force, ct).ConfigureAwait(false);
+        var manifest = header.Drop.Manifest;
+        var applies = fanOut > 0 && dispatcher.Available && RunId is not null && manifest.Partitioned && header.Partitions >= 2 && !header.SkippedWholeRun
+            && (manifest.RecordCount == 0 || manifest.RecordCount >= Flow.Reliability.FanOutMinRecords)
+            && header.Partitions - 1 <= SubmissionIntake.MaxFanOutPartition;
+        if (!applies)
+        {
+            if (fanOut > 0 && !header.SkippedWholeRun && manifest.PartitionCount >= 2 && !manifest.Partitioned)
+            {
+                _log.LogInformation("The drop is not declared partitioned, so its intake runs on this node alone with {Parallelism} renderer(s); declare it partitioned to spread it across {FanOut} member run(s).", Flow.Reliability.EffectiveRenderParallelism, fanOut);
+            }
+
+            return (await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, null, ct).ConfigureAwait(false), 0);
+        }
+
+        var shares = Split(header.Partitions, fanOut + 1);
+        var members = shares.Skip(1).Where(s => s.Count > 0).Select(share => new RunParameters
+        {
+            Operation = RunParameters.IntakeOperation,
+            Force = force,
+            Drop = DropLocation,
+            Values = Parameters,
+            SubmissionId = manifest.SubmissionId,
+            Partitions = share,
+        }).ToList();
+
+        // The submission is registered first, so every member finds it and the drop's identity is settled once.
+        var own = await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, shares[0], ct).ConfigureAwait(false);
+        if (own.AlreadyProcessed)
+        {
+            return (own, 0);
+        }
+
+        var handle = await dispatcher.EnqueueAsync(RunId!.Value, RunParameters.IntakeOperation, members, ct).ConfigureAwait(false);
+        track(handle);
+        _log.LogInformation("Fanned the intake of {Partitions} partition(s) out to {Members} member run(s) (group {GroupId}); this run planned partitions {Own}.", header.Partitions, members.Count, handle.GroupId, SubmissionIntake.DescribePartitions(shares[0]));
+        var state = await WaitForMembersAsync(handle, "intake", ct).ConfigureAwait(false);
+        track(null);
+
+        var totals = own.Counts;
+        foreach (var member in state.Members)
+        {
+            if (!member.Succeeded)
+            {
+                throw new DeliveryException($"Intake member {member.Slot} (run {member.RunId:D}) {member.Status}: {member.Error ?? "no error recorded"}. The submission stays planned as far as it got; re-run it to finish the intake.");
+            }
+
+            var outcome = IntakeOutcome.Parse(member.ResultJson)
+                ?? throw new DeliveryException($"Intake member {member.Slot} (run {member.RunId:D}) reported no outcome.");
+            totals = totals.Add(outcome.ToCounts());
+        }
+
+        var submission = await Intake.FinalizePlanningAsync(Flow, manifest.SubmissionId, Parameters, DropManifestSummary.Of(manifest), totals, ct).ConfigureAwait(false);
+        return (new IntakeResult(submission, header, totals, AlreadyProcessed: false), members.Count);
+    }
+
+    /// <summary>
+    /// The drain, with member drains across the fleet when the flow declares a fan-out and the submission is big
+    /// enough: this run drains too, waits for the members, then settles whatever their leases or backoffs left.
+    /// </summary>
+    private async Task<(WorkerSummary Work, int Members)> DrainWithFanOutAsync(SubmissionState submission, Action<FanOutHandle?> track, CancellationToken ct)
+    {
+        var dispatcher = _context.Dispatcher;
+        var fanOut = Flow.Reliability.FanOut;
+        var members = 0;
+        FanOutHandle? handle = null;
+        if (fanOut > 0 && dispatcher.Available && RunId is not null && submission.Planned >= Flow.Reliability.FanOutMinRecords)
+        {
+            var parameters = Enumerable.Range(0, fanOut)
+                .Select(_ => new RunParameters { Operation = RunParameters.DrainOperation, SubmissionId = submission.SubmissionId })
+                .ToList();
+            handle = await dispatcher.EnqueueAsync(RunId.Value, RunParameters.DrainOperation, parameters, ct).ConfigureAwait(false);
+            track(handle);
+            members = parameters.Count;
+            _log.LogInformation("Fanned the drain of {Planned} record(s) in {Batches} batch(es) out to {Members} member run(s) (group {GroupId}); this run drains too.", submission.Planned, submission.BatchCount, members, handle.GroupId);
+        }
+
+        var worker = await WorkerAsync(ct).ConfigureAwait(false);
+        var total = await worker.DrainAsync(submission.SubmissionId, ct).ConfigureAwait(false);
+        if (handle is not null)
+        {
+            var state = await WaitForMembersAsync(handle, "drain", ct).ConfigureAwait(false);
+            track(null);
+            foreach (var member in state.Members.Where(m => !m.Succeeded))
+            {
+                _log.LogWarning("Drain member {Slot} (run {RunId}) {Status}: {Error}; its records are picked up here.", member.Slot, member.RunId, member.Status, member.Error ?? "no error recorded");
+            }
+        }
+
+        // Whatever is left belongs to nobody alive: leases held by a member that died expire and are reclaimed,
+        // records in backoff come due. Keep draining until the submission is settled or the run is cancelled.
+        var ledger = RequireLedger();
+        while (await ledger.HasPendingAsync(Flow.Id, submission.SubmissionId, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false))
+        {
+            ct.ThrowIfCancellationRequested();
+            var reclaimed = await ledger.ReclaimExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            if (reclaimed > 0)
+            {
+                _log.LogInformation("Reclaimed {Count} record(s) whose lease expired.", reclaimed);
+            }
+
+            var more = await worker.DrainAsync(submission.SubmissionId, ct).ConfigureAwait(false);
+            total = total.Add(more);
+            if (more.Processed == 0 && more.Batches == 0)
+            {
+                if (!await ledger.HasPendingAsync(Flow.Id, submission.SubmissionId, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                _log.LogInformation("Records are still leased elsewhere; waiting {Seconds}s for the leases to settle.", (int)LeaseSettle.TotalSeconds);
+                await Task.Delay(LeaseSettle, _context.Time, ct).ConfigureAwait(false);
+            }
+        }
+
+        return (total, members);
+    }
+
+    private async Task<FanOutState> WaitForMembersAsync(FanOutHandle handle, string what, CancellationToken ct)
+    {
+        var dispatcher = _context.Dispatcher;
+        var lastProgress = _context.Time.GetUtcNow();
+        while (true)
+        {
+            var state = await dispatcher.StateAsync(handle, ct).ConfigureAwait(false);
+            if (state.AllTerminal)
+            {
+                _log.LogInformation("The {What} members finished: {State}.", what, state);
+                return state;
+            }
+
+            var now = _context.Time.GetUtcNow();
+            if (now - lastProgress >= MemberProgress)
+            {
+                lastProgress = now;
+                _log.LogInformation("Waiting for the {What} members: {State}.", what, state);
+            }
+
+            await Task.Delay(MemberPoll, _context.Time, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task CancelMembersAsync(FanOutHandle handle)
+    {
+        try
+        {
+            await _context.Dispatcher.CancelAsync(handle, CancellationToken.None).ConfigureAwait(false);
+            _log.LogInformation("Cancelled the member runs of group {GroupId} with this run.", handle.GroupId);
+        }
+        catch (Exception ex) when (ex is DeliveryException or InvalidOperationException or System.Data.Common.DbException)
+        {
+            _log.LogWarning("Could not cancel the member runs of group {GroupId}: {Message}", handle.GroupId, ex.Message);
+        }
+    }
+
+    /// <summary>Deals partitions round-robin over <paramref name="workers"/> shares; share 0 is the coordinator's own.</summary>
+    public static IReadOnlyList<IReadOnlyList<int>> Split(int partitions, int workers)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(partitions);
+        ArgumentOutOfRangeException.ThrowIfLessThan(workers, 1);
+        var shares = Enumerable.Range(0, workers).Select(_ => new List<int>()).ToList();
+        for (var p = 0; p < partitions; p++)
+        {
+            shares[p % workers].Add(p);
+        }
+
+        return shares;
+    }
 
     private async Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<Task<(T Result, string Summary, Guid? SubmissionId)>> action, CancellationToken ct)
     {
@@ -338,7 +544,7 @@ public sealed class FlowRuntime : IDisposable
             summary = $"{summary} (submission {s:D})";
         }
 
-        await ledger.CompleteActivityAsync(activityId, outcome, summary, log, _context.Time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
+        await ledger.CompleteActivityAsync(activityId, outcome, summary, log, _context.Time.GetUtcNow().UtcDateTime, submissionId, CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task EmitAsync(string kind, IReadOnlyList<DeliveryKey>? keys, string detail, CancellationToken ct)

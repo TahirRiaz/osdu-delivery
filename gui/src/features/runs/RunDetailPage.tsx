@@ -12,6 +12,7 @@ import { isApiError } from "../../api/client";
 import { pipelineApi, runApi } from "../../api/endpoints";
 import type { RunParameters } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
+import { prettyJson } from "../delivery/DeliveryFlowPanel";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DetailHeaderCard } from "../../components/DetailHeaderCard";
@@ -233,6 +234,9 @@ function RunDetailContent({ runId }: { runId: string }) {
             {run.groupId && (
               <IdChip label="group" value={run.groupId} to={`/runs/groups/${run.groupId}`} testId="run-group-link" copyTestId="copy-run-group" />
             )}
+            {run.fanOutRoot && (
+              <IdChip label="fan-out of" value={run.fanOutRoot} to={`/runs/${run.fanOutRoot}`} testId="run-fanout-root" copyTestId="copy-run-fanout-root" />
+            )}
             {run.commitSha && (
               <IdChip label="commit" value={run.commitSha} display={run.commitSha.slice(0, 7)} testId="run-commit" copyTestId="copy-run-commit" />
             )}
@@ -258,6 +262,11 @@ function RunDetailContent({ runId }: { runId: string }) {
         <DetailPair label="Step">
           <span className="font-mono tabular-nums">{run.wave >= 0 ? run.wave : "-"}</span>
         </DetailPair>
+        {run.fanOutSlot !== null && (
+          <DetailPair label="Fan-out">
+            <span className="font-mono tabular-nums" data-testid="run-fanout-slot">{`member ${run.fanOutSlot} of ${run.fanOutCount ?? "?"}`}</span>
+          </DetailPair>
+        )}
         <DetailPair label="Target pool">{run.targetPool ?? "-"}</DetailPair>
         <DetailPair label="Node"><span className="break-all font-mono text-[12px]">{run.claimedByNode ?? "-"}</span></DetailPair>
         {/* Host repeats the node name on a single-container node; surface it only when it actually adds a value. */}
@@ -288,6 +297,14 @@ function RunDetailContent({ runId }: { runId: string }) {
             </div>
           </AlertDescription>
         </Alert>
+      )}
+
+      {run.resultJson !== null && (
+        <Card className="gap-2 rounded-lg p-3" data-testid="run-result">
+          <h2 className="text-[13px] font-medium">Outcome</h2>
+          <p className="text-[13px] text-muted-foreground">What the run reported when it finished: its counts, the submission it worked on, and how far it fanned out.</p>
+          <CodeView value={prettyJson(run.resultJson)} language="json" height={220} data-testid="run-result-json" />
+        </Card>
       )}
 
       <Card className="gap-2 rounded-lg p-3" data-testid="run-source">

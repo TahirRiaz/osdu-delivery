@@ -13,7 +13,11 @@ namespace SqlFlow.Delivery.Storage;
 /// </summary>
 public static class ParquetScopeReader
 {
-    /// <summary>Parquet needs a seekable stream (the footer is at the end); a remote stream is buffered.</summary>
+    /// <summary>
+    /// Parquet needs a seekable stream (the footer is at the end). A forward-only stream is spilled to a temporary
+    /// file that is deleted when the returned stream closes: disk, never memory, so a scope file of any size reads
+    /// in bounded memory. Stores that can seek natively (local files, blobs through the range reader) never come here.
+    /// </summary>
     public static async Task<Stream> EnsureSeekableAsync(Stream stream, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -22,14 +26,23 @@ public static class ParquetScopeReader
             return stream;
         }
 
-        var buffer = new MemoryStream();
-        await using (stream.ConfigureAwait(false))
+        var path = Path.Combine(Path.GetTempPath(), "osdu-delivery-spill-" + Guid.NewGuid().ToString("N") + ".parquet");
+        var spill = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1 << 16, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+        try
         {
-            await stream.CopyToAsync(buffer, ct).ConfigureAwait(false);
-        }
+            await using (stream.ConfigureAwait(false))
+            {
+                await stream.CopyToAsync(spill, ct).ConfigureAwait(false);
+            }
 
-        buffer.Position = 0;
-        return buffer;
+            spill.Position = 0;
+            return spill;
+        }
+        catch
+        {
+            await spill.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>The top-level scalar column names of a file.</summary>
@@ -124,6 +137,57 @@ public static class ParquetScopeReader
         }
     }
 
-    private static Type MakeNullable(Type type)
+    internal static Type MakeNullable(Type type)
         => type.IsValueType && Nullable.GetUnderlyingType(type) is null ? typeof(Nullable<>).MakeGenericType(type) : type;
+}
+
+/// <summary>Writes a parquet file one row group at a time, so a publication of any size never sits in memory whole.</summary>
+public sealed class ParquetRowGroupWriter : IAsyncDisposable
+{
+    private readonly ParquetWriter _writer;
+    private readonly DataField[] _fields;
+    private readonly IReadOnlyList<(string Name, Type ClrType)> _columns;
+
+    private ParquetRowGroupWriter(ParquetWriter writer, DataField[] fields, IReadOnlyList<(string Name, Type ClrType)> columns)
+    {
+        _writer = writer;
+        _fields = fields;
+        _columns = columns;
+    }
+
+    public static async Task<ParquetRowGroupWriter> CreateAsync(Stream target, IReadOnlyList<(string Name, Type ClrType)> columns, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(columns);
+        var fields = columns.Select(c => new DataField(c.Name, ParquetScopeReader.MakeNullable(c.ClrType))).ToArray();
+        var schema = new ParquetSchema(fields.Cast<Field>().ToArray());
+        var writer = await ParquetWriter.CreateAsync(schema, target, cancellationToken: ct).ConfigureAwait(false);
+        writer.CompressionMethod = CompressionMethod.Snappy;
+        return new ParquetRowGroupWriter(writer, fields, columns);
+    }
+
+    public async Task WriteRowGroupAsync(IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        using var rowGroup = _writer.CreateRowGroup();
+        for (var i = 0; i < _fields.Length; i++)
+        {
+            var name = _columns[i].Name;
+            var clr = ParquetScopeReader.MakeNullable(_columns[i].ClrType);
+            var array = Array.CreateInstance(clr, rows.Count);
+            for (var r = 0; r < rows.Count; r++)
+            {
+                var v = rows[r].TryGetValue(name, out var raw) ? raw : null;
+                array.SetValue(v is null ? null : Convert.ChangeType(v, Nullable.GetUnderlyingType(clr) ?? clr, System.Globalization.CultureInfo.InvariantCulture), r);
+            }
+
+            await rowGroup.WriteColumnAsync(new DataColumn(_fields[i], array), ct).ConfigureAwait(false);
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _writer.Dispose();
+        return ValueTask.CompletedTask;
+    }
 }

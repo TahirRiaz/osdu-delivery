@@ -24,7 +24,16 @@ public sealed class DeliverySubmission
 
     public string ParametersJson { get; set; } = "{}";
 
-    public int RecordCount { get; set; }
+    public long RecordCount { get; set; }
+
+    /// <summary>The work location the intake wrote its batches under.</summary>
+    public string? WorkLocation { get; set; }
+
+    /// <summary>How many work batches the intake wrote.</summary>
+    public int BatchCount { get; set; }
+
+    /// <summary>How many root-scope partitions the drop declared.</summary>
+    public int Partitions { get; set; }
 
     public string Status { get; set; } = "received";
 
@@ -34,17 +43,17 @@ public sealed class DeliverySubmission
 
     public DateTime? CompletedUtc { get; set; }
 
-    public int Planned { get; set; }
+    public long Planned { get; set; }
 
-    public int SkippedUnchanged { get; set; }
+    public long SkippedUnchanged { get; set; }
 
-    public int Blocked { get; set; }
+    public long Blocked { get; set; }
 
-    public int Delivered { get; set; }
+    public long Delivered { get; set; }
 
-    public int Held { get; set; }
+    public long Held { get; set; }
 
-    public int Failed { get; set; }
+    public long Failed { get; set; }
 
     public string? Error { get; set; }
 }
@@ -94,7 +103,17 @@ public sealed class DeliveryRecord
 
     public string? LastError { get; set; }
 
-    public string? PendingDocument { get; set; }
+    /// <summary>Where the pending document sits in the submission's work batches (batch:offset:length).</summary>
+    public string? PendingDocumentRef { get; set; }
+
+    /// <summary>The work batch the pending document was written in.</summary>
+    public int? WorkBatch { get; set; }
+
+    /// <summary>The identifiers the target returned for what it holds now (a JSON object merged step by step).</summary>
+    public string? TargetStateJson { get; set; }
+
+    /// <summary>The completed steps of the pending delivery and what they returned (a JSON object keyed by step).</summary>
+    public string? PendingStepJson { get; set; }
 
     public string? PendingRenderContext { get; set; }
 
@@ -144,6 +163,51 @@ public sealed class DeliveryAttempt
     public string? PayloadHash { get; set; }
 
     public long? TargetVersion { get; set; }
+
+    public string? Error { get; set; }
+
+    /// <summary>The steps of the try and what the target answered, as JSON.</summary>
+    public string? ResultJson { get; set; }
+
+    /// <summary>The work batch the try belonged to, when it ran from one.</summary>
+    public int? WorkBatch { get; set; }
+}
+
+/// <summary>One work batch of a submission: a file of rendered documents, claimed and drained as one unit.</summary>
+public sealed class DeliveryWorkBatch
+{
+    public Guid SubmissionId { get; set; }
+
+    public int Index { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string Location { get; set; } = string.Empty;
+
+    public int RecordCount { get; set; }
+
+    /// <summary>queued, running, done, failed.</summary>
+    public string Status { get; set; } = "queued";
+
+    public string? LeaseOwner { get; set; }
+
+    public DateTime? LeaseExpiresUtc { get; set; }
+
+    public Guid? RunId { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime? StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public long Delivered { get; set; }
+
+    public long Held { get; set; }
+
+    public long Failed { get; set; }
+
+    public long Retrying { get; set; }
 
     public string? Error { get; set; }
 }
@@ -281,6 +345,7 @@ public static class DeliveryModel
             e.Property(s => s.MappingReference).HasMaxLength(200).IsRequired();
             e.Property(s => s.RenderContext).IsRequired();
             e.Property(s => s.DropLocation).HasMaxLength(2000).IsRequired();
+            e.Property(s => s.WorkLocation).HasMaxLength(2000);
             e.Property(s => s.ParametersJson).IsRequired();
             e.Property(s => s.Status).HasMaxLength(16).IsRequired();
             e.Property(s => s.Error).HasMaxLength(4000);
@@ -307,9 +372,12 @@ public static class DeliveryModel
             e.Property(r => r.PendingMetadataHash).HasMaxLength(64);
             e.Property(r => r.PendingPayloadHash).HasMaxLength(64);
             e.Property(r => r.PendingPayloadLocation).HasMaxLength(2000);
+            e.Property(r => r.PendingDocumentRef).HasMaxLength(64);
 
             // Worker and intake paths.
             e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc });
+            e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
+            e.HasIndex(r => r.LeaseOwner);
             e.HasIndex(r => new { r.FlowId, r.LastSubmissionId });
             e.HasIndex(r => new { r.Status, r.LeaseExpiresUtc });
             e.HasIndex(r => new { r.FlowId, r.LastVerifiedUtc });
@@ -344,6 +412,20 @@ public static class DeliveryModel
             e.HasIndex(a => a.StartedUtc);
             e.HasIndex(a => a.SubmissionId);
             e.HasIndex(a => a.RunId);
+        });
+
+        modelBuilder.Entity<DeliveryWorkBatch>(e =>
+        {
+            e.ToTable("WorkBatch", SchemaName);
+            e.HasKey(b => new { b.SubmissionId, b.Index });
+            e.Property(b => b.Location).HasMaxLength(2000).IsRequired();
+            e.Property(b => b.Status).HasMaxLength(16).IsRequired();
+            e.Property(b => b.LeaseOwner).HasMaxLength(200);
+            e.Property(b => b.Error).HasMaxLength(2000);
+            // The claim: the oldest queued batch of a flow (or a submission), and the lease sweep.
+            e.HasIndex(b => new { b.FlowId, b.Status, b.CreatedUtc });
+            e.HasIndex(b => new { b.SubmissionId, b.Status });
+            e.HasIndex(b => new { b.Status, b.LeaseExpiresUtc });
         });
 
         modelBuilder.Entity<DeliverySourceWatermark>(e =>

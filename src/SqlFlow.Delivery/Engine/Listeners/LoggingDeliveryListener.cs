@@ -1,10 +1,14 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Ledger;
 
 namespace SqlFlow.Delivery.Engine.Listeners;
 
-/// <summary>The default completion callback: one structured log line per event, so every completion is traceable in the host's logs.</summary>
+/// <summary>
+/// The completion callback that logs: submission, batch and verify events at information level (the operations
+/// an operator follows), record-level events at debug (fifty million records must never become fifty million
+/// lines in a host's log; the ledger's attempts are the per-record history). Holds and failures of individual
+/// records surface at debug too; the worker itself logs the first few of each batch as warnings.
+/// </summary>
 public sealed class LoggingDeliveryListener : IDeliveryListener
 {
     private readonly ILogger<LoggingDeliveryListener> _logger;
@@ -18,58 +22,15 @@ public sealed class LoggingDeliveryListener : IDeliveryListener
     public ValueTask OnEventAsync(DeliveryEvent evt, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(evt);
-        var level = evt.Kind switch
+        var level = evt.Kind.StartsWith("record.", StringComparison.Ordinal) ? LogLevel.Debug : LogLevel.Information;
+        if (_logger.IsEnabled(level))
         {
-            "record.held" or "record.failed" or "verify.drifted" => LogLevel.Warning,
-            "record.retry" => LogLevel.Information,
-            _ => LogLevel.Information,
-        };
-        _logger.Log(
-            level,
-            "{Kind} flow={Flow} submission={Submission} key={Key} source={SourceKey} label={Label} target={TargetId} version={Version} worker={Worker} phase={Phase} duration={Duration} detail={Detail}",
-            evt.Kind, evt.FlowName, evt.SubmissionId, evt.DeliveryKey, evt.SourceKey, evt.Label, evt.TargetId, evt.TargetVersion, evt.Worker, evt.Phase, evt.Duration, evt.Detail);
-        return ValueTask.CompletedTask;
-    }
-}
-
-/// <summary>
-/// Keeps the most recent events in memory for a live activity feed. Bounded: the ledger's attempts and activities
-/// are the durable history; this is the last few minutes at a glance.
-/// </summary>
-public sealed class RecentEventsListener : IDeliveryListener
-{
-    private readonly ConcurrentQueue<DeliveryEvent> _events = new();
-    private readonly int _capacity;
-    private long _sequence;
-
-    public RecentEventsListener(int capacity = 1000)
-    {
-        _capacity = Math.Max(capacity, 10);
-    }
-
-    /// <summary>The sequence number of the newest event, so a client can poll for what it has not seen.</summary>
-    public long Sequence => Interlocked.Read(ref _sequence);
-
-    public ValueTask OnEventAsync(DeliveryEvent evt, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(evt);
-        _events.Enqueue(evt);
-        Interlocked.Increment(ref _sequence);
-        while (_events.Count > _capacity && _events.TryDequeue(out _))
-        {
+            _logger.Log(
+                level,
+                "{Kind} flow={Flow} submission={Submission} key={Key} source={SourceKey} label={Label} target={TargetId} version={Version} worker={Worker} phase={Phase} duration={Duration} detail={Detail}",
+                evt.Kind, evt.FlowName, evt.SubmissionId, evt.DeliveryKey, evt.SourceKey, evt.Label, evt.TargetId, evt.TargetVersion, evt.Worker, evt.Phase, evt.Duration, evt.Detail);
         }
 
         return ValueTask.CompletedTask;
-    }
-
-    public IReadOnlyList<DeliveryEvent> Recent(int max = 200, Guid? flowId = null)
-    {
-        IEnumerable<DeliveryEvent> events = _events.Reverse();
-        if (flowId is { } f)
-        {
-            events = events.Where(e => e.FlowId == f);
-        }
-
-        return events.Take(Math.Clamp(max, 1, _capacity)).ToList();
     }
 }

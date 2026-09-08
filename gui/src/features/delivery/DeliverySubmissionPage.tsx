@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
-import { deliveryApi, type DeliveryAttempt } from "../../api/delivery";
+import { deliveryApi, type DeliveryAttempt, type DeliveryWorkBatch } from "../../api/delivery";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
@@ -46,6 +46,11 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
   const attempts = useQuery({
     queryKey: ["delivery", "submission", submissionId, "attempts"],
     queryFn: () => deliveryApi.submissionAttempts(submissionId, 1000),
+    refetchInterval: 10000,
+  });
+  const batches = useQuery({
+    queryKey: ["delivery", "submission", submissionId, "batches"],
+    queryFn: () => deliveryApi.submissionBatches(submissionId, { page: 1, pageSize: 500 }),
     refetchInterval: 10000,
   });
   useTabTitle(query.data ? `Submission ${submissionId.slice(0, 8)}` : undefined);
@@ -88,6 +93,36 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
     { id: "version", header: "Version", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.targetVersion ?? "-"}</span> },
     { id: "worker", header: "Worker", render: (row) => <TruncatedText text={row.worker} mono maxWidth={200} /> },
     { id: "error", header: "Detail", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
+  ];
+  const batchColumns: Column<DeliveryWorkBatch>[] = [
+    { id: "index", header: "Batch", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.index}</span> },
+    {
+      id: "status",
+      header: "Status",
+      render: (row) => (
+        <Badge
+          variant="secondary"
+          className={row.status === "done" ? "bg-success/15 text-success" : row.status === "failed" ? "bg-destructive/15 text-destructive" : row.status === "running" ? "bg-info/12 text-info" : undefined}
+        >
+          {row.status}
+        </Badge>
+      ),
+    },
+    { id: "records", header: "Records", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.recordCount}</span> },
+    { id: "delivered", header: "Delivered", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.delivered}</span> },
+    { id: "held", header: "Held", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.held}</span> },
+    { id: "failed", header: "Failed", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.failed}</span> },
+    { id: "retrying", header: "Retrying", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.retrying}</span> },
+    { id: "started", header: "Started", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
+    { id: "completed", header: "Completed", render: (row) => <RelativeTime value={row.completedUtc} absolute /> },
+    {
+      id: "run",
+      header: "Run",
+      render: (row) => (row.runId
+        ? <RouterLink to={`/runs/${row.runId}`} className="font-mono text-[12px] text-primary hover:underline">{row.runId.slice(0, 8)}</RouterLink>
+        : <span className="text-muted-foreground">-</span>),
+    },
+    { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={300} /> },
   ];
 
   return (
@@ -132,6 +167,9 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
             : s.flowName}
         </DetailPair>
         <DetailPair label="Records"><span className="font-mono tabular-nums">{s.recordCount}</span></DetailPair>
+        <DetailPair label="Batches"><span className="font-mono tabular-nums">{s.batchCount}</span></DetailPair>
+        <DetailPair label="Partitions"><span className="font-mono tabular-nums">{s.partitions}</span></DetailPair>
+        <DetailPair label="Work"><TruncatedText text={s.workLocation} mono maxWidth={320} /></DetailPair>
       </DetailHeaderCard>
 
       <Card className="gap-2 rounded-lg p-3">
@@ -142,6 +180,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
       <Tabs defaultValue="attempts">
         <TabsList data-testid="submission-tabs">
           <TabsTrigger value="attempts" data-testid="submission-tab-attempts">Attempts</TabsTrigger>
+          <TabsTrigger value="batches" data-testid="submission-tab-batches">Batches</TabsTrigger>
           <TabsTrigger value="parameters" data-testid="submission-tab-parameters">Parameters</TabsTrigger>
           <TabsTrigger value="context" data-testid="submission-tab-context">Render context</TabsTrigger>
         </TabsList>
@@ -153,6 +192,15 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
             onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
             emptyMessage="No delivery attempts were made for this submission (everything was unchanged, or it has not run yet)."
             data-testid="submission-attempts"
+          />
+        </TabsContent>
+        <TabsContent value="batches">
+          <DataTable
+            columns={batchColumns}
+            rows={batches.data?.items}
+            rowKey={(row) => row.index}
+            emptyMessage="No work batches: the intake planned nothing to deliver, or it has not run yet."
+            data-testid="submission-batches"
           />
         </TabsContent>
         <TabsContent value="parameters">

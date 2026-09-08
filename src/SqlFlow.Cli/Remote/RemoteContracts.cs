@@ -69,7 +69,8 @@ internal sealed record RunDetailDto(
     int SchemaVersion, DateTime WrittenUtc, DateTime? StartUtc, DateTime? EndUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, string? Error, string? Host, string? RequestedBy,
     string Operation, bool Force, Guid? SubmissionId, string? ParametersJson, Guid? ResultSubmissionId,
-    int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId);
+    int? RecordsPlanned, int? RecordsDelivered, int? RecordsHeld, int? RecordsFailed, int? RecordsSkipped, Guid? GroupId,
+    Guid? FanOutRoot, int? FanOutSlot, int? FanOutCount, string? ResultJson);
 
 internal sealed record RunTraceEntryDto(
     long Id, Guid RunId, Guid? RepoId, int Ordinal, DateTime TimestampUtc, string Level,

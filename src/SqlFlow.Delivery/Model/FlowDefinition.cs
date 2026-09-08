@@ -110,6 +110,26 @@ public sealed record FlowSource
     /// <summary>Where a known-state publication is written when the run names no location: a directory or storage prefix
     /// the preparing side reads before its next drop. Supports {parameter} tokens. Null leaves it to the run.</summary>
     public string? KnownState { get; init; }
+
+    /// <summary>
+    /// Where the intake writes its work batches (the rendered documents the drains read back, design.md section
+    /// 16.2): a directory or storage prefix the nodes can write. Supports {parameter} tokens. Null writes under
+    /// <c>{location}/.work</c>, which then needs write access on the drop container.
+    /// </summary>
+    public string? Work { get; init; }
+
+    /// <summary>The resolved work root for a drop location: the declared one, or the drop's own <c>.work</c> folder.</summary>
+    public static string WorkRoot(string? declaredWork, string dropLocation)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dropLocation);
+        if (!string.IsNullOrWhiteSpace(declaredWork))
+        {
+            return declaredWork.TrimEnd('/', '\\');
+        }
+
+        var root = dropLocation.TrimEnd('/', '\\');
+        return root.Contains("://", StringComparison.Ordinal) ? root + "/.work" : Path.Combine(root, ".work");
+    }
 }
 
 public sealed record FlowScope
@@ -289,6 +309,45 @@ public sealed record ProtocolOptions
     /// 7.6). Empty means the rendered document replaces the whole data block.
     /// </summary>
     public IReadOnlyList<string> PreserveDataKeys { get; init; } = [];
+
+    /// <summary>Records per write request for the protocols that accept arrays (the storage service takes up to 500). Default 100.</summary>
+    public int BatchSize { get; init; } = 100;
+
+    /// <summary>The largest array the target accepts in one write; a flow cannot raise <see cref="BatchSize"/> above it.</summary>
+    public const int MaxBatchSize = 500;
+
+    /// <summary>File and manifest protocols: the path that hands out a signed upload location (file service v2).</summary>
+    public string? UploadUrlPath { get; init; }
+
+    /// <summary>File and manifest protocols: the path that registers a file's metadata record after the upload.</summary>
+    public string? FileMetadataPath { get; init; }
+
+    /// <summary>The kind of the dataset record registered per uploaded file. Default osdu:wks:dataset--File.Generic:1.0.0.</summary>
+    public string DatasetKind { get; init; } = "osdu:wks:dataset--File.Generic:1.0.0";
+
+    /// <summary>Extra headers on the signed-URL upload itself (the Azure landing zone needs x-ms-blob-type: BlockBlob).</summary>
+    public IReadOnlyDictionary<string, string> UploadHeaders { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The data property of the record that lists the dataset ids of its files. Default Datasets.</summary>
+    public string DatasetsProperty { get; init; } = "Datasets";
+
+    /// <summary>Manifest protocol: the workflow (DAG) name the manifest is handed to. Default Osdu_ingest.</summary>
+    public string WorkflowName { get; init; } = "Osdu_ingest";
+
+    /// <summary>Manifest protocol: the path that triggers a workflow run; {workflow} is the workflow name.</summary>
+    public string? WorkflowRunPath { get; init; }
+
+    /// <summary>Manifest protocol: the path that reports a run's status; {workflow} and {runId} are substituted.</summary>
+    public string? WorkflowStatusPath { get; init; }
+
+    /// <summary>Manifest protocol: seconds between status polls. Default 10.</summary>
+    public int WorkflowPollSeconds { get; init; } = 10;
+
+    /// <summary>Manifest protocol: how long a workflow run may take before the record is retried. Default 60 minutes.</summary>
+    public int WorkflowTimeoutMinutes { get; init; } = 60;
+
+    /// <summary>Manifest protocol: the manifest kind. Default osdu:wks:Manifest:1.0.0.</summary>
+    public string ManifestKind { get; init; } = "osdu:wks:Manifest:1.0.0";
 }
 
 public sealed record FlowReliability
@@ -319,8 +378,32 @@ public sealed record FlowReliability
     /// <summary>How long a worker's lease on a record lasts before a sweep may reclaim it.</summary>
     public int LeaseSeconds { get; init; } = 300;
 
-    /// <summary>Records claimed per ledger round trip.</summary>
+    /// <summary>Records claimed per ledger round trip when retrying individual records.</summary>
     public int BatchSize { get; init; } = 50;
+
+    /// <summary>
+    /// Records per work batch: one file of rendered documents the intake writes, one claim a drain takes, one unit of
+    /// progress the submission page shows (design.md section 16.2). Default 500.
+    /// </summary>
+    public int BatchRecords { get; init; } = 500;
+
+    /// <summary>
+    /// How many additional runs a deliver run fans its work out to across the fleet: intake partitions first, then
+    /// drains (design.md section 16.4). 0 runs everything on the node that claimed the run.
+    /// </summary>
+    public int FanOut { get; init; }
+
+    /// <summary>Fan out only when the drop or the submission holds at least this many records. Default 1000.</summary>
+    public int FanOutMinRecords { get; init; } = 1000;
+
+    /// <summary>Drop partitions rendered concurrently on one node. 0 means half the processors, at least one.</summary>
+    public int RenderParallelism { get; init; }
+
+    /// <summary>The largest fan-out a flow may declare.</summary>
+    public const int MaxFanOut = 64;
+
+    /// <summary>The effective render parallelism for this host.</summary>
+    public int EffectiveRenderParallelism => RenderParallelism > 0 ? RenderParallelism : Math.Max(1, Environment.ProcessorCount / 2);
 }
 
 public enum BackoffKind

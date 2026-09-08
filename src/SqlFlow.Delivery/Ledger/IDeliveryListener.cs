@@ -31,6 +31,9 @@ public sealed record DeliveryEvent
     public TimeSpan? Duration { get; init; }
 
     public string? Detail { get; init; }
+
+    /// <summary>The attempt result JSON (the steps and what the target returned), for record-level events.</summary>
+    public string? Returned { get; init; }
 }
 
 /// <summary>

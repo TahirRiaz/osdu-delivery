@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
-import { deliveryApi, type DeliveryActivity, type DeliveryAttempt } from "../../api/delivery";
+import { deliveryApi, type DeliveryActivity, type DeliveryAttempt, type DeliveryAttemptResult } from "../../api/delivery";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -25,6 +25,31 @@ import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { prettyJson } from "./DeliveryFlowPanel";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
+
+/** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
+function AttemptSteps({ result }: { result: DeliveryAttemptResult | null }) {
+  if (result === null || result.steps.length === 0) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {result.steps.map((step, index) => (
+        <Badge
+          key={`${step.name}-${index}`}
+          variant="outline"
+          className={step.error !== undefined ? "text-destructive" : undefined}
+          title={step.returned !== undefined ? JSON.stringify(step.returned) : undefined}
+        >
+          {step.name}
+          {step.status !== undefined ? ` ${step.status}` : ""}
+          {step.ms !== undefined ? ` ${step.ms}ms` : ""}
+          {step.resumed === true ? " (resumed)" : ""}
+        </Badge>
+      ))}
+    </div>
+  );
+}
 
 const attemptColumns: Column<DeliveryAttempt>[] = [
   { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
@@ -41,7 +66,9 @@ const attemptColumns: Column<DeliveryAttempt>[] = [
     ),
   },
   { id: "phase", header: "Phase", render: (row) => <span className="font-mono text-[12px]">{row.phase}</span> },
+  { id: "steps", header: "Steps", render: (row) => <AttemptSteps result={row.result} /> },
   { id: "version", header: "Version", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.targetVersion ?? "-"}</span> },
+  { id: "batch", header: "Batch", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.workBatch ?? "-"}</span> },
   { id: "worker", header: "Worker", render: (row) => <TruncatedText text={row.worker} mono maxWidth={200} /> },
   { id: "run", header: "Run", render: (row) => (row.runId ? <RunLink runId={row.runId} /> : <span className="text-muted-foreground">-</span>) },
   { id: "submission", header: "Submission", render: (row) => (row.submissionId ? <SubmissionLink submissionId={row.submissionId} /> : <span className="text-muted-foreground">-</span>) },
@@ -306,7 +333,7 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
         <TabsList data-testid="record-tabs">
           <TabsTrigger value="history" data-testid="record-tab-history">History</TabsTrigger>
           <TabsTrigger value="activity" data-testid="record-tab-activity">Interventions</TabsTrigger>
-          <TabsTrigger value="document" data-testid="record-tab-document">Pending document</TabsTrigger>
+          <TabsTrigger value="document" data-testid="record-tab-document">Target state</TabsTrigger>
           <TabsTrigger value="context" data-testid="record-tab-context">Render context</TabsTrigger>
         </TabsList>
         <TabsContent value="history">
@@ -316,9 +343,27 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
           <DataTable columns={activityColumns} rows={activities.data} rowKey={(row) => row.activityId} emptyMessage="No interventions on this record." data-testid="record-activities" />
         </TabsContent>
         <TabsContent value="document">
-          {detail.pendingDocument
-            ? <CodeView value={prettyJson(detail.pendingDocument)} language="json" height={520} data-testid="record-pending-document" />
-            : <p className="text-[13px] text-muted-foreground">No document is waiting: the record is not pending. Use Read back to see what OSDU holds.</p>}
+          <div className="flex flex-col gap-3">
+            {record.hasPendingDocument
+              ? (
+                <p className="text-[13px] text-muted-foreground" data-testid="record-pending-ref">
+                  {`A rendered document is waiting in work batch ${record.workBatch ?? "?"} of submission ${record.lastSubmissionId ?? "?"} (reference ${record.pendingDocumentRef}); the node that drains the batch reads it from the flow's work location.`}
+                </p>
+              )
+              : <p className="text-[13px] text-muted-foreground">No document is waiting: the record is not pending. Use Read back to see what OSDU holds.</p>}
+            {record.pendingSteps !== null && (
+              <div className="flex flex-col gap-1">
+                <h3 className="text-[13px] font-medium">Steps the last try completed</h3>
+                <CodeView value={prettyJson(JSON.stringify(record.pendingSteps))} language="json" height={160} data-testid="record-pending-steps" />
+              </div>
+            )}
+            <div className="flex flex-col gap-1">
+              <h3 className="text-[13px] font-medium">What OSDU returned</h3>
+              {record.targetState !== null
+                ? <CodeView value={prettyJson(JSON.stringify(record.targetState))} language="json" height={220} data-testid="record-target-state" />
+                : <p className="text-[13px] text-muted-foreground">Nothing yet: the record has not been delivered.</p>}
+            </div>
+          </div>
         </TabsContent>
         <TabsContent value="context">
           {record.renderContext

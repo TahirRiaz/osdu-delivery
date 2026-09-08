@@ -19,15 +19,21 @@ namespace SqlFlow.ControlPlane.Api;
 
 /// <summary>A delivery flow's record counts by state, drift, throughput, and its last submission: the flow's dashboard card.</summary>
 public sealed record DeliveryFlowStatsDto(
-    Guid PipelineId, string FlowName, Guid FlowId, int Total, int Pending, int Delivering, int Delivered, int Held, int Failed,
-    int Deleted, int Drifted, int DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, int Submissions,
+    Guid PipelineId, string FlowName, Guid FlowId, long Total, long Pending, long Delivering, long Delivered, long Held, long Failed,
+    long Deleted, long Drifted, long DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, long Submissions,
     DeliverySubmissionDto? LastSubmission);
 
 /// <summary>One drop as the ledger received it and what became of it.</summary>
 public sealed record DeliverySubmissionDto(
     Guid SubmissionId, Guid FlowId, string FlowName, string MappingReference, string RenderContext, string DropLocation,
-    string ParametersJson, int RecordCount, string Status, DateTime ReceivedUtc, DateTime? StartedUtc, DateTime? CompletedUtc,
-    int Planned, int SkippedUnchanged, int Blocked, int Delivered, int Held, int Failed, string? Error);
+    string ParametersJson, long RecordCount, string Status, DateTime ReceivedUtc, DateTime? StartedUtc, DateTime? CompletedUtc,
+    long Planned, long SkippedUnchanged, long Blocked, long Delivered, long Held, long Failed, string? Error,
+    string? WorkLocation, int BatchCount, int Partitions);
+
+/// <summary>One work batch of a submission: a file of rendered documents and how far its drain got.</summary>
+public sealed record DeliveryWorkBatchDto(
+    Guid SubmissionId, int Index, string Location, int RecordCount, string Status, string? LeaseOwner, DateTime? LeaseExpiresUtc, Guid? RunId,
+    DateTime CreatedUtc, DateTime? StartedUtc, DateTime? CompletedUtc, long Delivered, long Held, long Failed, long Retrying, string? Error);
 
 /// <summary>The current state of one deliverable: what OSDU holds for it, what is pending, and why it is where it is.</summary>
 public sealed record DeliveryRecordDto(
@@ -35,16 +41,18 @@ public sealed record DeliveryRecordDto(
     string? SourceFingerprint, string? MetadataHash, string? PayloadHash, string? TargetId, long? TargetVersion, string Status,
     DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, string? LastVerifyOutcome, string? LeaseOwner, DateTime? LeaseExpiresUtc,
     Guid? LastSubmissionId, int AttemptCount, DateTime? NextAttemptUtc, string? LastError, bool HasPendingDocument,
-    bool PendingMetadata, bool PendingPayload, string? PendingPayloadLocation, bool Blocked, DateTime CreatedUtc, DateTime UpdatedUtc);
+    bool PendingMetadata, bool PendingPayload, string? PendingPayloadLocation, bool Blocked, DateTime CreatedUtc, DateTime UpdatedUtc,
+    string? PendingDocumentRef, int? WorkBatch, JsonElement? TargetState, JsonElement? PendingSteps);
 
-/// <summary>A record with the pipeline it belongs to and the document waiting to be delivered, when one is.</summary>
+/// <summary>A record with the pipeline it belongs to. The pending document itself lives in the submission's work batches on
+/// storage, which the nodes read; its reference and batch are on the record.</summary>
 public sealed record DeliveryRecordDetailDto(
-    DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName, string? PendingDocument);
+    DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName);
 
-/// <summary>One delivery try, as the append-only history holds it.</summary>
+/// <summary>One delivery try, as the append-only history holds it: its outcome, and every step with what the target returned.</summary>
 public sealed record DeliveryAttemptDto(
     long AttemptId, Guid DeliveryKey, Guid? SubmissionId, Guid? RunId, string Worker, DateTime StartedUtc, DateTime CompletedUtc,
-    string Outcome, string Phase, string? MetadataHash, string? PayloadHash, long? TargetVersion, string? Error);
+    string Outcome, string Phase, string? MetadataHash, string? PayloadHash, long? TargetVersion, string? Error, JsonElement? Result, int? WorkBatch);
 
 /// <summary>One entry of the audit trail: who did what, when, with which inputs, and how it ended.</summary>
 public sealed record DeliveryActivityDto(
@@ -120,6 +128,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/records/{key:guid}/activities", ListRecordActivitiesAsync).WithName("ListDeliveryRecordActivities");
         delivery.MapGet("/submissions/{submissionId:guid}", GetSubmissionAsync).WithName("GetDeliverySubmission");
         delivery.MapGet("/submissions/{submissionId:guid}/attempts", ListSubmissionAttemptsAsync).WithName("ListDeliverySubmissionAttempts");
+        delivery.MapGet("/submissions/{submissionId:guid}/batches", ListSubmissionBatchesAsync).WithName("ListDeliverySubmissionBatches");
         delivery.MapGet("/activities", ListActivitiesAsync).WithName("ListDeliveryActivities");
         delivery.MapGet("/activities/{activityId:long}", GetActivityAsync).WithName("GetDeliveryActivity");
         delivery.MapGet("/mappings", ListMappingsAsync).WithName("ListDeliveryMappings");
@@ -224,7 +233,7 @@ public static class DeliveryEndpoints
         }
 
         var pipeline = await FindPipelineAsync(db, record.FlowId, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryRecordDetailDto(ToDto(record), pipeline?.Id, pipeline?.RepoId, pipeline?.Name, record.PendingDocument));
+        return TypedResults.Ok(new DeliveryRecordDetailDto(ToDto(record), pipeline?.Id, pipeline?.RepoId, pipeline?.Name));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryAttemptDto>>, ProblemHttpResult>> ListRecordAttemptsAsync(
@@ -283,6 +292,39 @@ public static class DeliveryEndpoints
 
         var attempts = await ledger.ListAttemptsForSubmissionAsync(submissionId, Math.Clamp(max ?? 500, 1, 5000), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryAttemptDto>>(attempts.Select(ToDto).ToList());
+    }
+
+    private static async Task<Results<Ok<PagedResult<DeliveryWorkBatchDto>>, ProblemHttpResult>> ListSubmissionBatchesAsync(
+        Guid submissionId, string? status, int? page, int? pageSize, ILedger ledger, CancellationToken ct)
+    {
+        var submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false);
+        if (submission is null)
+        {
+            return NotFound("submission", submissionId);
+        }
+
+        WorkBatchStatus? statusFilter = null;
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            if (!Enum.TryParse<WorkBatchStatus>(status, ignoreCase: true, out var parsed))
+            {
+                return TypedResults.Problem(
+                    detail: $"status must be one of {string.Join(", ", Enum.GetNames<WorkBatchStatus>().Select(n => n.ToLowerInvariant()))}.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+            }
+
+            statusFilter = parsed;
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var items = await ledger.ListWorkBatchesAsync(submissionId, size, (p - 1) * size, ct).ConfigureAwait(false);
+        if (statusFilter is { } wanted)
+        {
+            items = items.Where(b => b.Status == wanted).ToList();
+        }
+
+        var total = await ledger.CountWorkBatchesAsync(submissionId, statusFilter, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<DeliveryWorkBatchDto>(items.Select(ToDto).ToList(), p, size, (int)Math.Min(total, int.MaxValue)));
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryActivityDto>>, ProblemHttpResult>> ListActivitiesAsync(
@@ -695,17 +737,22 @@ public static class DeliveryEndpoints
     private static DeliverySubmissionDto ToDto(SubmissionState s) => new(
         s.SubmissionId, s.FlowId, s.FlowName, s.MappingReference, s.RenderContext, s.DropLocation, s.ParametersJson, s.RecordCount,
         s.Status.ToString().ToLowerInvariant(), s.ReceivedUtc, s.StartedUtc, s.CompletedUtc, s.Planned, s.SkippedUnchanged, s.Blocked,
-        s.Delivered, s.Held, s.Failed, s.Error);
+        s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Partitions);
+
+    private static DeliveryWorkBatchDto ToDto(WorkBatchState b) => new(
+        b.SubmissionId, b.Index, b.Location, b.RecordCount, b.Status.ToString().ToLowerInvariant(), b.LeaseOwner, b.LeaseExpiresUtc, b.RunId,
+        b.CreatedUtc, b.StartedUtc, b.CompletedUtc, b.Delivered, b.Held, b.Failed, b.Retrying, b.Error);
 
     private static DeliveryRecordDto ToDto(RecordState r) => new(
         r.DeliveryKey.Value, r.FlowId, r.SourceKey, r.Label, r.MappingName, r.RenderContext, r.SourceFingerprint, r.MetadataHash, r.PayloadHash,
         r.TargetId, r.TargetVersion, r.Status.ToString().ToLowerInvariant(), r.LastDeliveredUtc, r.LastVerifiedUtc,
         r.LastVerifyOutcome?.ToString().ToLowerInvariant(), r.LeaseOwner, r.LeaseExpiresUtc, r.LastSubmissionId, r.AttemptCount, r.NextAttemptUtc,
-        r.LastError, r.PendingDocument is not null, r.PendingMetadata, r.PendingPayload, r.PendingPayloadLocation, r.Blocked, r.CreatedUtc, r.UpdatedUtc);
+        r.LastError, r.PendingDocumentRef is not null, r.PendingMetadata, r.PendingPayload, r.PendingPayloadLocation, r.Blocked, r.CreatedUtc, r.UpdatedUtc,
+        r.PendingDocumentRef, r.WorkBatch, ParseJsonOrNull(r.TargetStateJson), ParseJsonOrNull(r.PendingStepJson));
 
     private static DeliveryAttemptDto ToDto(AttemptRecord a) => new(
         a.AttemptId, a.DeliveryKey.Value, a.SubmissionId, a.RunId, a.Worker, a.StartedUtc, a.CompletedUtc, a.Outcome.ToString().ToLowerInvariant(),
-        a.Phase, a.MetadataHash, a.PayloadHash, a.TargetVersion, a.Error);
+        a.Phase, a.MetadataHash, a.PayloadHash, a.TargetVersion, a.Error, ParseJsonOrNull(a.ResultJson), a.WorkBatch);
 
     private static DeliveryActivityDto ToDto(ActivityRecord a) => new(
         a.ActivityId, a.FlowId, a.FlowName, a.Kind, a.Actor, a.StartedUtc, a.CompletedUtc, a.Outcome, a.ParametersJson, a.SubmissionId,
@@ -717,6 +764,24 @@ public static class DeliveryEndpoints
 
     private static DeliverySnapshotDto ToDto(DeliverySnapshot s) => new(
         s.Id, s.RepoId, s.Kind, s.Name, s.Version, s.CapturedUtc, s.Current, s.RelativePath, ParseJson(s.SummaryJson), s.FirstSeenUtc, s.LastSeenUtc);
+
+    private static JsonElement? ParseJsonOrNull(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private static JsonElement ParseJson(string json)
     {

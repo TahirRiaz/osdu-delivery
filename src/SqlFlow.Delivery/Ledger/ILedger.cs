@@ -61,9 +61,18 @@ public sealed record SubmissionState
 
     public string ParametersJson { get; init; } = "{}";
 
-    public int RecordCount { get; init; }
+    public long RecordCount { get; init; }
 
     public SubmissionStatus Status { get; init; } = SubmissionStatus.Received;
+
+    /// <summary>The work location the intake wrote its batches under (design.md section 16.2).</summary>
+    public string? WorkLocation { get; init; }
+
+    /// <summary>How many work batches the intake wrote.</summary>
+    public int BatchCount { get; init; }
+
+    /// <summary>How many root-scope partitions the drop declared.</summary>
+    public int Partitions { get; init; }
 
     public DateTime ReceivedUtc { get; init; }
 
@@ -71,18 +80,18 @@ public sealed record SubmissionState
 
     public DateTime? CompletedUtc { get; init; }
 
-    public int Planned { get; init; }
+    public long Planned { get; init; }
 
-    public int SkippedUnchanged { get; init; }
+    public long SkippedUnchanged { get; init; }
 
     /// <summary>Records held, failed or deleted earlier whose source has not changed; they need a release.</summary>
-    public int Blocked { get; init; }
+    public long Blocked { get; init; }
 
-    public int Delivered { get; init; }
+    public long Delivered { get; init; }
 
-    public int Held { get; init; }
+    public long Held { get; init; }
 
-    public int Failed { get; init; }
+    public long Failed { get; init; }
 
     public string? Error { get; init; }
 }
@@ -139,8 +148,26 @@ public sealed record RecordState
     /// <summary>Redacted message of the last failure, or the hold reason.</summary>
     public string? LastError { get; init; }
 
-    /// <summary>The rendered document waiting to be delivered (canonical JSON), and the hashes it will establish.</summary>
-    public string? PendingDocument { get; init; }
+    /// <summary>
+    /// Where the rendered document waiting to be delivered sits in the submission's work batches
+    /// (batch:offset:length, see <see cref="Storage.DocumentRef"/>), and the hashes it will establish.
+    /// </summary>
+    public string? PendingDocumentRef { get; init; }
+
+    /// <summary>The work batch the pending document was written in.</summary>
+    public int? WorkBatch { get; init; }
+
+    /// <summary>
+    /// The identifiers the target returned for what it currently holds (record id and version, dataset ids and
+    /// file sources, a workflow run id), as a JSON object merged step by step (design.md section 16.3).
+    /// </summary>
+    public string? TargetStateJson { get; init; }
+
+    /// <summary>
+    /// The steps of the pending delivery that already completed and what they returned, so a retry resumes after
+    /// them instead of repeating an upload (a JSON object keyed by step name).
+    /// </summary>
+    public string? PendingStepJson { get; init; }
 
     public string? PendingRenderContext { get; init; }
 
@@ -199,6 +226,15 @@ public sealed record AttemptRecord
     public long? TargetVersion { get; init; }
 
     public string? Error { get; init; }
+
+    /// <summary>
+    /// What the try did and what the target answered, step by step: a JSON object with a <c>steps</c> array (name,
+    /// started and completed times, status, the values returned) and the values the record now carries.
+    /// </summary>
+    public string? ResultJson { get; init; }
+
+    /// <summary>The work batch the try belonged to, when it ran from one.</summary>
+    public int? WorkBatch { get; init; }
 }
 
 /// <summary>What the worker writes back after processing a claimed record.</summary>
@@ -220,6 +256,12 @@ public sealed record RecordCompletion
     public DateTime? NextAttemptUtc { get; init; }
 
     public string? Error { get; init; }
+
+    /// <summary>The target state to merge into the record (the returned identifiers), when the try changed it.</summary>
+    public string? TargetStateJson { get; init; }
+
+    /// <summary>The step progress to keep on the record for the next try (null clears it).</summary>
+    public string? PendingStepJson { get; init; }
 }
 
 /// <summary>Tier-0 watermark: the Delta commit version of a source table for one flow scope (design.md section 6.6).</summary>
@@ -231,33 +273,85 @@ public sealed record KnownState(DeliveryKey DeliveryKey, string SourceKey, strin
 /// <summary>What is uploaded and what is not, per flow: the numbers an operator looks at first.</summary>
 public sealed record FlowStats
 {
-    public int Total { get; init; }
+    public long Total { get; init; }
 
-    public int Pending { get; init; }
+    public long Pending { get; init; }
 
-    public int Delivering { get; init; }
+    public long Delivering { get; init; }
 
-    public int Delivered { get; init; }
+    public long Delivered { get; init; }
 
-    public int Held { get; init; }
+    public long Held { get; init; }
 
-    public int Failed { get; init; }
+    public long Failed { get; init; }
 
-    public int Deleted { get; init; }
+    public long Deleted { get; init; }
 
     /// <summary>Delivered records whose last verify found drift or a missing record.</summary>
-    public int Drifted { get; init; }
+    public long Drifted { get; init; }
 
-    public int DeliveredLast24h { get; init; }
+    public long DeliveredLast24h { get; init; }
 
     public DateTime? LastDeliveredUtc { get; init; }
 
     public DateTime? LastVerifiedUtc { get; init; }
 
-    public int Submissions { get; init; }
+    public long Submissions { get; init; }
 
     public SubmissionState? LastSubmission { get; init; }
 }
+
+/// <summary>The life of one work batch: queued by the intake, claimed by a drain, done or failed.</summary>
+public enum WorkBatchStatus
+{
+    Queued,
+    Running,
+    Done,
+    Failed,
+}
+
+/// <summary>One work batch of a submission (design.md section 16.2): a file of rendered documents and its progress.</summary>
+public sealed record WorkBatchState
+{
+    public required Guid SubmissionId { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    public required int Index { get; init; }
+
+    public required string Location { get; init; }
+
+    public int RecordCount { get; init; }
+
+    public WorkBatchStatus Status { get; init; } = WorkBatchStatus.Queued;
+
+    public string? LeaseOwner { get; init; }
+
+    public DateTime? LeaseExpiresUtc { get; init; }
+
+    /// <summary>The platform run that is draining, or drained, the batch.</summary>
+    public Guid? RunId { get; init; }
+
+    public DateTime CreatedUtc { get; init; }
+
+    public DateTime? StartedUtc { get; init; }
+
+    public DateTime? CompletedUtc { get; init; }
+
+    public long Delivered { get; init; }
+
+    public long Held { get; init; }
+
+    public long Failed { get; init; }
+
+    /// <summary>Records left pending with a retry time when the batch closed.</summary>
+    public long Retrying { get; init; }
+
+    public string? Error { get; init; }
+}
+
+/// <summary>A claimed batch with the pending records it leased for the claimer.</summary>
+public sealed record ClaimedWorkBatch(WorkBatchState Batch, IReadOnlyList<RecordState> Records);
 
 /// <summary>Which half of a record a forced redelivery re-sends.</summary>
 public enum RedeliverScope
@@ -385,8 +479,11 @@ public interface ILedger
     /// <summary>Finds a record by key across flows (the key is globally unique).</summary>
     Task<RecordState?> FindRecordAsync(DeliveryKey key, CancellationToken ct = default);
 
-    /// <summary>Inserts or updates records with pending work. Existing current-state columns are preserved.</summary>
-    Task UpsertPendingAsync(IEnumerable<RecordState> records, CancellationToken ct = default);
+    /// <summary>
+    /// Inserts or updates records with pending work; existing current-state columns are preserved. A record another
+    /// worker is delivering right now is left alone. Returns how many records were staged.
+    /// </summary>
+    Task<int> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default);
 
     /// <summary>Records a tier-1 or tier-2 skip without queueing work: touches the submission pointer only.</summary>
     Task MarkSkippedAsync(Guid flowId, IEnumerable<DeliveryKey> keys, Guid submissionId, CancellationToken ct = default);
@@ -411,12 +508,43 @@ public interface ILedger
     /// <summary>Writes the attempt and the resulting record state, releasing the lease.</summary>
     Task CompleteAsync(RecordCompletion completion, CancellationToken ct = default);
 
+    /// <summary>Writes many completions in one round trip (a drained batch); each is the same write as <see cref="CompleteAsync"/>.</summary>
+    Task CompleteManyAsync(IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default);
+
+    /// <summary>Keeps a delivery's step progress on the record mid-try, so a crash after an upload never repeats it.</summary>
+    Task SaveStepAsync(DeliveryKey key, string stepJson, CancellationToken ct = default);
+
     /// <summary>Releases leases that expired before <paramref name="beforeUtc"/> and returns how many were reclaimed.</summary>
     Task<int> ReclaimExpiredLeasesAsync(Guid flowId, DateTime beforeUtc, CancellationToken ct = default);
 
-    Task<int> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default);
+    Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default);
 
     Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>The earliest retry time among pending records that are not yet due, or null when nothing waits.</summary>
+    Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Registers a work batch the intake wrote (idempotent on submission and index).</summary>
+    Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomically claims the oldest queued (or lease-expired) work batch of the flow, or of one submission, and
+    /// leases its pending records for <paramref name="owner"/>. Null when nothing is claimable.
+    /// </summary>
+    Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default);
+
+    /// <summary>Extends the lease on a batch and on every record leased under its token.</summary>
+    Task<bool> RenewWorkBatchLeaseAsync(Guid submissionId, int batch, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Closes a batch with its counts; records it did not reach are handed back to pending.</summary>
+    Task CompleteWorkBatchAsync(Guid submissionId, int batch, string owner, WorkBatchStatus status, long delivered, long held, long failed, long retrying, string? failure, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Hands a claimed batch (and its leased records) back on a stop, without charging attempts.</summary>
+    Task<bool> ReleaseWorkBatchAsync(Guid submissionId, int batch, string owner, DateTime nowUtc, CancellationToken ct = default);
+
+    Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default);
+
+    Task<long> CountWorkBatchesAsync(Guid submissionId, WorkBatchStatus? status, CancellationToken ct = default);
 
     Task<IReadOnlyList<RecordState>> ListAsync(Guid flowId, RecordQuery query, CancellationToken ct = default);
 
@@ -459,6 +587,9 @@ public interface ILedger
 
     Task<IReadOnlyList<KnownState>> KnownStateAsync(Guid flowId, CancellationToken ct = default);
 
+    /// <summary>The known state of every record of the flow, streamed in key order in pages, for publications of any size.</summary>
+    IAsyncEnumerable<KnownState> StreamKnownStateAsync(Guid flowId, int pageSize = 10_000, CancellationToken ct = default);
+
     Task<IReadOnlyList<SourceWatermark>> GetWatermarksAsync(Guid flowId, string scope, CancellationToken ct = default);
 
     Task SetWatermarksAsync(IEnumerable<SourceWatermark> watermarks, CancellationToken ct = default);
@@ -468,7 +599,8 @@ public interface ILedger
 
     Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default);
 
-    Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, CancellationToken ct = default);
+    /// <summary>Closes an activity with its outcome, summary and captured log, and the submission it turned out to work on.</summary>
+    Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, Guid? submissionId = null, CancellationToken ct = default);
 
     Task<ActivityRecord?> GetActivityAsync(long activityId, CancellationToken ct = default);
 

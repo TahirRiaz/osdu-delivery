@@ -23,17 +23,19 @@ public sealed record PayloadChunk(int Index, string Path, long Size);
 
 /// <summary>
 /// Reads a drop: the manifest, the source-shaped records (parsed, one row group at a time), and the opaque payload
-/// chunks (never parsed: opened as streams and copied, design.md section 13.1).
+/// chunks (never parsed: opened as streams and copied, design.md section 13.1). Records stream in bounded memory
+/// whatever the drop's size: a partitioned drop is merge-joined partition by partition, any other drop is joined
+/// through a disk-backed hash partition (design.md section 16.1).
 /// </summary>
 public interface IDropReader
 {
     Task<Drop> OpenAsync(string location, string manifestName, CancellationToken ct = default);
 
     /// <summary>
-    /// Streams every record with its child-scope rows attached. Child scopes are read fully and indexed by parent
-    /// key before the root scope streams, because a record needs all its children to render.
+    /// Streams every record with its child-scope rows attached. <paramref name="partitions"/> restricts the read to
+    /// those root files (by index in the manifest); null reads them all.
     /// </summary>
-    IAsyncEnumerable<SourceRecord> ReadRecordsAsync(Drop drop, CancellationToken ct = default);
+    IAsyncEnumerable<SourceRecord> ReadRecordsAsync(Drop drop, IReadOnlyList<int>? partitions = null, CancellationToken ct = default);
 
     /// <summary>Lists the chunks of one record's payload, ordered by chunk name.</summary>
     Task<IReadOnlyList<PayloadChunk>> ListPayloadChunksAsync(Drop drop, string payloadName, Guid deliveryKey, CancellationToken ct = default);

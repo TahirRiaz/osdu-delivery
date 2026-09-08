@@ -13,7 +13,9 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// Record plus bulk (design.md sections 8.1 and 8.3): the metadata record through the wellbore DDMS record endpoint,
 /// then the payload chunks streamed past the service. A single chunk goes in one request; more than the threshold
 /// opens an overwrite session, streams each chunk in order and commits. Chunks are never buffered: each request
-/// re-opens its blob so the retry stack can resend it.
+/// re-opens its blob so the retry stack can resend it, and carries its length. Each step reports what the service
+/// returned (the record version, the session id, the chunk count); a retry after a payload failure resumes past
+/// the metadata step it already completed.
 /// </summary>
 public sealed class OsduWellLogProtocol : IDeliveryProtocol
 {
@@ -26,12 +28,16 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     public const string DefaultDeletePath = "/ddms/v3/welllogs/{id}";
     public const string DefaultProbePath = "/about";
 
+    public const string MetadataStep = "metadata";
+    public const string PayloadStep = "payload";
+
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
     private readonly long _requestBodyCeiling;
     private readonly ILogger _logger;
+    private readonly TimeProvider _time;
 
-    public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0)
+    public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
@@ -40,6 +46,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         _options = options;
         _logger = logger;
         _requestBodyCeiling = requestBodyCeiling;
+        _time = time ?? TimeProvider.System;
     }
 
     public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
@@ -47,6 +54,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(work);
+        var steps = new DeliverySteps(_time);
         var version = work.ExistingVersion;
         var metadataDelivered = false;
 
@@ -77,7 +85,27 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
 
         if (work.DeliverMetadata)
         {
-            version = await RecordWriter.WriteAsync(_client, _options, _options.RecordPath ?? DefaultRecordPath, _options.RecordMethod ?? "POST", _options.VerifyPath ?? DefaultVerifyPath, work, ct).ConfigureAwait(false) ?? version;
+            if (work.Completed(MetadataStep) is { } done)
+            {
+                // The previous try wrote the record and failed later: reuse its version, do not write it again.
+                steps.Resumed(MetadataStep, done);
+                version = done.TryGetValue("version", out var text) ? RecordWriter.ParseVersion(text) ?? version : version;
+            }
+            else
+            {
+                var started = steps.Now;
+                var (written, status) = await RecordWriter.WriteAsync(_client, _options, _options.RecordPath ?? DefaultRecordPath, _options.RecordMethod ?? "POST", _options.VerifyPath ?? DefaultVerifyPath, work, ct).ConfigureAwait(false);
+                version = written ?? version;
+                var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
+                if (version is { } v)
+                {
+                    returned["version"] = v.ToString(CultureInfo.InvariantCulture);
+                }
+
+                steps.Add(MetadataStep, started, status, returned);
+                await work.ReportStepAsync(MetadataStep, returned, ct).ConfigureAwait(false);
+            }
+
             metadataDelivered = true;
         }
 
@@ -86,21 +114,37 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         if (work.DeliverPayload)
         {
             var payload = work.Payload!;
+            var started = steps.Now;
+            string? sessionId = null;
             if (chunks.Count <= Math.Max(1, _options.SessionThresholdChunks))
             {
                 foreach (var chunk in chunks)
                 {
                     var url = _client.Url(_options.DataPath ?? DefaultDataPath, work.TargetId);
-                    await _client.SendStreamAsync(HttpMethod.Post, url, () => OpenSync(payload, chunk), _options.PayloadContentType, ct).ConfigureAwait(false);
+                    await _client.SendStreamAsync(HttpMethod.Post, url, () => OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct).ConfigureAwait(false);
                     chunksSent++;
                 }
             }
             else
             {
-                chunksSent = await SendSessionAsync(work, payload, chunks, version, ct).ConfigureAwait(false);
+                (chunksSent, sessionId) = await SendSessionAsync(work, payload, chunks, version, ct).ConfigureAwait(false);
             }
 
+            var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["chunks"] = chunksSent.ToString(CultureInfo.InvariantCulture) };
+            if (sessionId is not null)
+            {
+                returned["sessionId"] = sessionId;
+            }
+
+            steps.Add(PayloadStep, started, null, returned);
             payloadDelivered = true;
+        }
+
+        var all = new Dictionary<string, string>(steps.Returned, StringComparer.Ordinal);
+        all["recordId"] = work.TargetId;
+        if (version is { } finalVersion)
+        {
+            all["version"] = finalVersion.ToString(CultureInfo.InvariantCulture);
         }
 
         return new DeliveryOutcome
@@ -110,6 +154,8 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             TargetVersion = version,
             ChunksSent = chunksSent,
             Detail = chunksSent > 0 ? $"{chunksSent} chunk(s)" : null,
+            Returned = all,
+            Steps = steps.Steps,
         };
     }
 
@@ -126,7 +172,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     /// Wellbore DDMS semantics (openapi wellbore_ddms, DELETE /ddms/v3/welllogs/{record_id}): a logical deletion of
     /// the record by default, a physical one with <c>?purge=true</c>; no recursive delete of owned entities; 204.
     /// </summary>
-    public async Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, CancellationToken ct = default)
+    public async Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         var url = _client.Url(_options.DeletePath ?? DefaultDeletePath, targetId);
@@ -141,7 +187,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             : new DeleteOutcome(true, false, purge ? "purged" : "logically deleted");
     }
 
-    private async Task<int> SendSessionAsync(DeliveryWork work, IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, long? version, CancellationToken ct)
+    private async Task<(int Sent, string SessionId)> SendSessionAsync(DeliveryWork work, IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, long? version, CancellationToken ct)
     {
         var createUrl = _client.Url(_options.SessionPath ?? DefaultSessionPath, work.TargetId);
         var createBody = new JsonObject
@@ -160,13 +206,13 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             foreach (var chunk in chunks)
             {
                 var url = _client.Url(_options.SessionDataPath ?? DefaultSessionDataPath, work.TargetId, sessionId);
-                await _client.SendStreamAsync(HttpMethod.Post, url, () => OpenSync(payload, chunk), _options.PayloadContentType, ct).ConfigureAwait(false);
+                await _client.SendStreamAsync(HttpMethod.Post, url, () => OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct).ConfigureAwait(false);
                 sent++;
             }
 
             var commitUrl = _client.Url(_options.SessionCommitPath ?? DefaultSessionCommitPath, work.TargetId, sessionId);
             await _client.SendJsonAsync(HttpMethod.Patch, commitUrl, new JsonObject { ["state"] = "commit" }, null, ct).ConfigureAwait(false);
-            return sent;
+            return (sent, sessionId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -189,6 +235,6 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     }
 
     /// <summary>The request factory is synchronous; opening a blob stream is cheap and the copy is what streams.</summary>
-    private static Stream OpenSync(IPayloadSource payload, Drops.PayloadChunk chunk)
+    internal static Stream OpenSync(IPayloadSource payload, Drops.PayloadChunk chunk)
         => payload.OpenAsync(chunk).GetAwaiter().GetResult();
 }

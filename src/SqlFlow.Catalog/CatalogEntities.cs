@@ -332,6 +332,23 @@ public class CatalogRun
 
     /// <summary>Records skipped as unchanged (<c>result.skippedUnchanged</c>).</summary>
     public int? RecordsSkipped { get; set; }
+
+    /// <summary>The artifact's <c>result</c> object as JSON: the kind-specific outcome (a deliver run's counts and
+    /// submission, a fan-out member's partition counts), for the run page and for the run that fanned it out.</summary>
+    public string? ResultJson { get; set; }
+
+    /// <summary>
+    /// For a fan-out member (an intake partition or a drain a deliver run spread across the fleet): the run that
+    /// fanned it out. Members run concurrently with their root and with each other on one pipeline; the claim gate
+    /// serializes only runs of different families. Null for every other run.
+    /// </summary>
+    public Guid? FanOutRoot { get; set; }
+
+    /// <summary>The member's slot (1-based) within its fan-out, for display.</summary>
+    public int? FanOutSlot { get; set; }
+
+    /// <summary>How many members the fan-out has, for display.</summary>
+    public int? FanOutCount { get; set; }
 }
 
 /// <summary>
@@ -364,6 +381,9 @@ public static class RunGroupModes
 
     /// <summary>Every active flow in one batch / data source (the legacy "Batch" execution), run in wave order.</summary>
     public const string Batch = "batch";
+
+    /// <summary>The members a deliver run fanned its intake or its drains out to, all in one wave.</summary>
+    public const string FanOut = "fan-out";
 }
 
 /// <summary>

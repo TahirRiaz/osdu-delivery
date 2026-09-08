@@ -40,6 +40,8 @@ const OPERATION_LABELS: Record<RunOperation, string> = {
   "verify": "Verify (drift check)",
   "plan": "Plan (dry run)",
   "known-state": "Publish known state",
+  "intake": "Intake (plan into batches)",
+  "drain": "Drain (deliver pending batches)",
 };
 
 const OPERATION_HINTS: Record<RunOperation, string> = {
@@ -47,6 +49,8 @@ const OPERATION_HINTS: Record<RunOperation, string> = {
   "verify": "Read delivered records back from OSDU and compare versions; drifted records are queued for redelivery when the flow reconciles.",
   "plan": "Render and compare only, and report what a deliver would do. Nothing is written to OSDU or the ledger.",
   "known-state": "Publish the compact known-state file the preparing side reads before its next drop.",
+  "intake": "Read the flow's drop, plan it against the ledger and write the rendered documents to work batches; nothing reaches OSDU until a drain.",
+  "drain": "Deliver the pending work batches of a submission (or of the whole flow) to OSDU; the drop is not read.",
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -200,7 +204,8 @@ export function TriggerRunDialog({
     [pipelines.data],
   );
 
-  const readsDrop = operation === "deliver" || operation === "plan";
+  const readsDrop = operation === "deliver" || operation === "plan" || operation === "intake";
+  const takesSubmission = operation === "deliver" || operation === "intake" || operation === "drain";
   const takesRecordScope = operation === "deliver" || operation === "verify";
   const parsedValues = parseValues(valuesText);
   const recordKeys = lines(recordKeysText);
@@ -211,7 +216,7 @@ export function TriggerRunDialog({
   // validates authoritatively and its ProblemDetails still renders if anything slips through).
   const parameterError = readsDrop && parsedValues.error !== null
     ? parsedValues.error
-    : operation === "deliver" && trimmedSubmission !== "" && !UUID.test(trimmedSubmission)
+    : takesSubmission && trimmedSubmission !== "" && !UUID.test(trimmedSubmission)
       ? "The submission id must be a UUID."
       : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
         ? "Every record key must be a UUID (one per line)."
@@ -230,7 +235,7 @@ export function TriggerRunDialog({
       force,
       values: readsDrop && Object.keys(parsedValues.values).length > 0 ? parsedValues.values : undefined,
       drop: readsDrop && drop.trim() !== "" ? drop.trim() : null,
-      submissionId: operation === "deliver" && trimmedSubmission !== "" ? trimmedSubmission : null,
+      submissionId: takesSubmission && trimmedSubmission !== "" ? trimmedSubmission : null,
       recordKeys: takesRecordScope && recordKeys.length > 0 ? recordKeys : undefined,
       publishTo: operation === "known-state" && trimmedPublishTo !== "" ? trimmedPublishTo : null,
     });
@@ -380,9 +385,9 @@ export function TriggerRunDialog({
                   </div>
                 </>
               )}
-              {operation === "deliver" && (
+              {takesSubmission && (
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={`${idPrefix}-submission`}>Re-run submission</Label>
+                  <Label htmlFor={`${idPrefix}-submission`}>{operation === "drain" ? "Submission to drain" : operation === "intake" ? "Submission" : "Re-run submission"}</Label>
                   <Input
                     id={`${idPrefix}-submission`}
                     className="h-8 font-mono"
@@ -391,7 +396,9 @@ export function TriggerRunDialog({
                     data-testid="trigger-submission"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Re-run one submission from its own drop, with the parameters it was received with.
+                    {operation === "drain"
+                      ? "Deliver the pending batches of this submission; empty drains every pending record of the flow."
+                      : "Work on one submission from its own drop, with the parameters it was received with."}
                   </p>
                 </div>
               )}
