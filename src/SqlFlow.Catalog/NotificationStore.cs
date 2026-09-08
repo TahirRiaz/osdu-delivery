@@ -63,8 +63,10 @@ public static class NotificationStore
         IF @since IS NULL
         BEGIN
             -- Bootstrap: the mark starts at now, so nothing that predates enabling notifications is evented.
-            INSERT INTO [catalog].[NotificationWatermark] ([Id], [RunsWatermarkUtc], [UpdatedUtc])
-            VALUES (@watermarkId, @now, @now);
+            -- DigestCursorEventId is NOT NULL with no default, so the bootstrap row must carry it: a fresh
+            -- watermark has covered no events, and the first scheduled digest starts from the stream's head.
+            INSERT INTO [catalog].[NotificationWatermark] ([Id], [RunsWatermarkUtc], [DigestCursorEventId], [UpdatedUtc])
+            VALUES (@watermarkId, @now, 0, @now);
         END
         ELSE IF @since < @now
         BEGIN
