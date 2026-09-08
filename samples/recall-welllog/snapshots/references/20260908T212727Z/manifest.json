@@ -1,0 +1,11 @@
+{
+  "capturedUtc": "2026-09-08T21:27:27.8242741Z",
+  "contentHash": "ddedda7be72c1d636e3c4451e0ada356a4ecc2d9428f3a0578f64153414f37aa",
+  "types": [
+    "LogCurveBusinessValue",
+    "UnitOfMeasure",
+    "VerticalMeasurementType",
+    "Wellbore"
+  ],
+  "version": "20260908T212727Z"
+}

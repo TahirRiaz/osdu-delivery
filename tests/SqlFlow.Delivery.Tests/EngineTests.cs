@@ -68,9 +68,9 @@ public class EndToEndTests : IDisposable
         Assert.Equal(3, plan.Entries.Count);
         Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
         Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
-        Assert.All(plan.Entries, e => Assert.StartsWith("dev:work-product-component--WellLog:", e.TargetId!, StringComparison.Ordinal));
+        Assert.All(plan.Entries, e => Assert.StartsWith("opendes:work-product-component--WellLog:", e.TargetId!, StringComparison.Ordinal));
         var doc = plan.Entries[0].Render!.Document;
-        Assert.Equal("dev:reference-data--UnitOfMeasure:m:", doc["data"]!["VerticalMeasurement"]!["VerticalMeasurementUnitOfMeasureID"]!.GetValue<string>());
+        Assert.Equal("opendes:reference-data--UnitOfMeasure:m:", doc["data"]!["VerticalMeasurement"]!["VerticalMeasurementUnitOfMeasureID"]!.GetValue<string>());
     }
 
     [Fact]

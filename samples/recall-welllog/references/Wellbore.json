@@ -1,7 +1,7 @@
 {
   "entityType": "master-data--Wellbore",
   "items": [
-    { "id": "dev:master-data--Wellbore:6e2d07ac41864cf2a8af52cfef621260", "FacilityName": "NO 15/9-A-14 T4" },
-    { "id": "dev:master-data--Wellbore:0a9f3c11b2d84e6f9d3a5b7c8e1f2a3b", "FacilityName": "NO 16/2-D-3" }
+    { "id": "opendes:master-data--Wellbore:OSDU-DEV-1-A", "FacilityName": "OSDU-DEV-1-A" },
+    { "id": "opendes:master-data--Wellbore:OSDU-DEV-1-B", "FacilityName": "OSDU-DEV-1-B" }
   ]
 }

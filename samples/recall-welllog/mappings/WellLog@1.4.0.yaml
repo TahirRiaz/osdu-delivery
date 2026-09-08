@@ -22,11 +22,11 @@ identity:
   label: "{wellbore_uwi} / {log_name} / run {log_run} ({log_id})"
 
 envelope:
-  legalTags: [dev-equinor-osdu-reference-default]
+  legalTags: [opendes-reference-data-default]
   otherRelevantDataCountries: [NO]
   acl:
-    owners: [data.default.owners@dev.equinor.p.energy.azure.com]
-    viewers: [data.default.viewers@dev.equinor.p.energy.azure.com]
+    owners: [data.default.owners@opendes.dataservices.energy]
+    viewers: [data.default.viewers@opendes.dataservices.energy]
   tags:
     DeliveredBy: osdu-delivery
 
@@ -60,7 +60,7 @@ properties:
       matchBy: [FacilityName]
       onMiss: hold
     examples:
-      - { source: "NO 15/9-A-14 T4", target: "dev:master-data--Wellbore:6e2d07ac41864cf2a8af52cfef621260:" }
+      - { source: "OSDU-DEV-1-A", target: "opendes:master-data--Wellbore:OSDU-DEV-1-A:" }
 
   - target: data.LogVersion
     source: log_version
@@ -111,8 +111,8 @@ properties:
           matchBy: [Code, Name, id]
           valueMap: { M: m, FT: ft }
         examples:
-          - { source: "23.5 M", target: "dev:reference-data--UnitOfMeasure:m:" }
-          - { source: "18 FT", target: "dev:reference-data--UnitOfMeasure:ft:" }
+          - { source: "23.5 M", target: "opendes:reference-data--UnitOfMeasure:m:" }
+          - { source: "18 FT", target: "opendes:reference-data--UnitOfMeasure:ft:" }
       - target: VerticalMeasurementTypeID
         transform: constant
         config: { value: "{param:dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:" }
@@ -142,8 +142,8 @@ definitions:
         valueMap: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, "G/CM3": g/cm3, "V/V": "%" }
         onMiss: hold
       examples:
-        - { source: GAPI, target: "dev:reference-data--UnitOfMeasure:gAPI:" }
-        - { source: M, target: "dev:reference-data--UnitOfMeasure:m:" }
+        - { source: GAPI, target: "opendes:reference-data--UnitOfMeasure:gAPI:" }
+        - { source: M, target: "opendes:reference-data--UnitOfMeasure:m:" }
     - target: DepthUnit
       source: index_unit
       transform: reference
@@ -172,11 +172,11 @@ definitions:
 # mapping edit changes only what it meant to change.
 fixtures:
   - name: L-1001 two curves, regular sampling
-    parameters: { dataPartition: dev }
+    parameters: { dataPartition: opendes }
     record:
       source_project: NO_15_9
       log_id: L-1001
-      wellbore_uwi: NO 15/9-A-14 T4
+      wellbore_uwi: OSDU-DEV-1-A
       log_name: STAT_COMP
       log_run: "1"
       log_source: RECALL
@@ -197,19 +197,19 @@ fixtures:
         - { curve_id: RHOB, curve_unit: G/CM3, index_unit: M, index_min: "1000", index_max: "1004", curve_description: Bulk density, curve_version: "1", business_value: HIGH }
     expected: |
       {
-        "id": "dev:work-product-component--WellLog:ac3a5843e5cc5e7e9ecf83fc05872909",
+        "id": "opendes:work-product-component--WellLog:ac3a5843e5cc5e7e9ecf83fc05872909",
         "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
         "acl": {
-          "owners": ["data.default.owners@dev.equinor.p.energy.azure.com"],
-          "viewers": ["data.default.viewers@dev.equinor.p.energy.azure.com"]
+          "owners": ["data.default.owners@opendes.dataservices.energy"],
+          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
         },
-        "legal": { "legaltags": ["dev-equinor-osdu-reference-default"], "otherRelevantDataCountries": ["NO"] },
+        "legal": { "legaltags": ["opendes-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
         "tags": { "DeliveredBy": "osdu-delivery", "WellLogNativeUID": "NO_15_9:L-1001" },
         "data": {
           "LogSource": "NO_15_9",
           "LogRun": "L-1001",
           "Name": "STAT_COMP",
-          "WellboreID": "dev:master-data--Wellbore:6e2d07ac41864cf2a8af52cfef621260:",
+          "WellboreID": "opendes:master-data--Wellbore:OSDU-DEV-1-A:",
           "LogVersion": "1",
           "LogActivity": "MAIN",
           "ActivityType": "SLB",
@@ -222,29 +222,29 @@ fixtures:
           "IsRegular": true,
           "VerticalMeasurement": {
             "VerticalMeasurement": 23.5,
-            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
-            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
+            "VerticalMeasurementUnitOfMeasureID": "opendes:reference-data--UnitOfMeasure:m:",
+            "VerticalMeasurementTypeID": "opendes:reference-data--VerticalMeasurementType:KellyBushing:"
           },
           "Curves": [
             {
               "CurveID": "GR",
-              "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
-              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "CurveUnit": "opendes:reference-data--UnitOfMeasure:gAPI:",
+              "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
               "TopDepth": 1000,
               "BaseDepth": 1004,
               "CurveDescription": "Gamma ray",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
+              "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:High:"
             },
             {
               "CurveID": "RHOB",
-              "CurveUnit": "dev:reference-data--UnitOfMeasure:g%2Fcm3:",
-              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "CurveUnit": "opendes:reference-data--UnitOfMeasure:g%2Fcm3:",
+              "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
               "TopDepth": 1000,
               "BaseDepth": 1004,
               "CurveDescription": "Bulk density",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
+              "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:High:"
             }
           ]
         }

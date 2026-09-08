@@ -28,7 +28,7 @@ render:
   mapping: WellLog@1.4.0
   references: pinned
   parameters:
-    dataPartition: dev
+    dataPartition: opendes
 
 change:
   detect: renderedHash
@@ -47,7 +47,7 @@ target:
         scope: ${env:OSDU_SCOPE}
   headers:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
-    data-partition-id: dev
+    data-partition-id: opendes
   protocol: osduWellLog
   protocolOptions:
     payload: curves

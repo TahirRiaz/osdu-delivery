@@ -157,6 +157,8 @@
       "contentType": "application/x-parquet"
     }
   },
+  "partitioned": false,
+  "PartitionCount": 1,
   "Root": {
     "files": [
       "metadata/part-00000.parquet"

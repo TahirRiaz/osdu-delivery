@@ -4,12 +4,12 @@
     {
       "Code": "KB",
       "Name": "Kelly Bushing",
-      "id": "dev:reference-data--VerticalMeasurementType:KellyBushing"
+      "id": "opendes:reference-data--VerticalMeasurementType:KellyBushing"
     },
     {
       "Code": "RT",
       "Name": "Rotary Table",
-      "id": "dev:reference-data--VerticalMeasurementType:RotaryTable"
+      "id": "opendes:reference-data--VerticalMeasurementType:RotaryTable"
     }
   ]
 }

@@ -53,7 +53,7 @@ public static class SampleDropBuilder
     public static IReadOnlyList<SampleRecord> DefaultRecords(string logSource = "STAT_COMP") =>
     [
         new(
-            SourceProject: "NO_15_9", LogId: "L-1001", WellboreUwi: "NO 15/9-A-14 T4", LogName: logSource, LogRun: "1", LogSource: "RECALL",
+            SourceProject: "NO_15_9", LogId: "L-1001", WellboreUwi: "OSDU-DEV-1-A", LogName: logSource, LogRun: "1", LogSource: "RECALL",
             IndexMin: 1000, IndexMax: 1004, Increment: 0.5, IndexUnit: "M", DepthCoding: "REGULAR", ElevMeasRef: "23.5 M", Creator: "SLB",
             LogVersion: "1", LogPass: "MAIN,REPEAT", NativeUid: "NO_15_9:L-1001,extra", UpdateDate: "2026-09-01T10:15:00Z",
             Curves:
@@ -62,7 +62,7 @@ public static class SampleDropBuilder
                 new("RHOB", "G/CM3", "Bulk density", "HIGH", "1", [2.31, 2.33, 2.35, 2.34, 2.36, 2.38, 2.37, 2.35, 2.33]),
             ]),
         new(
-            SourceProject: "NO_15_9", LogId: "L-1002", WellboreUwi: "NO 15/9-A-14 T4", LogName: logSource, LogRun: "2", LogSource: "RECALL",
+            SourceProject: "NO_15_9", LogId: "L-1002", WellboreUwi: "OSDU-DEV-1-A", LogName: logSource, LogRun: "2", LogSource: "RECALL",
             IndexMin: 2000, IndexMax: 2002, Increment: 0.5, IndexUnit: "M", DepthCoding: "REGULAR", ElevMeasRef: "23.5 M", Creator: "SLB",
             LogVersion: "1", LogPass: "MAIN", NativeUid: "NO_15_9:L-1002", UpdateDate: "2026-09-02T08:00:00Z",
             Curves:
@@ -70,7 +70,7 @@ public static class SampleDropBuilder
                 new("GR", "GAPI", "Gamma ray", "HIGH", "1", [61.0, 63.5, 60.2, 58.9, 62.1]),
             ]),
         new(
-            SourceProject: "NO_16_2", LogId: "L-2001", WellboreUwi: "NO 16/2-D-3", LogName: logSource, LogRun: "1", LogSource: "RECALL",
+            SourceProject: "NO_16_2", LogId: "L-2001", WellboreUwi: "OSDU-DEV-1-B", LogName: logSource, LogRun: "1", LogSource: "RECALL",
             IndexMin: 1500, IndexMax: 1501.5, Increment: 0.5, IndexUnit: "FT", DepthCoding: "DISCRETE", ElevMeasRef: "18 FT", Creator: "BHGE",
             LogVersion: "2", LogPass: "MAIN", NativeUid: "NO_16_2:L-2001", UpdateDate: "2026-08-20T00:00:00Z",
             Curves:
