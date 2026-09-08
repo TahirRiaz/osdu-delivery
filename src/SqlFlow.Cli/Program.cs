@@ -79,6 +79,12 @@ internal static class Program
                         return await LocalInspectVerbs.ValidateEstateAsync(documents, file, args.Contains("--json")).ConfigureAwait(false);
                     }
 
+                    if (File.Exists(file) && documents.ParseCompanion(await File.ReadAllTextAsync(file).ConfigureAwait(false), file) is { } companion)
+                    {
+                        Console.WriteLine($"OK  '{companion.Name}' is valid ({companion.DocumentType}).");
+                        return 0;
+                    }
+
                     var document = DocumentLoader.Load(documents, file, Console.Error.WriteLine);
                     var endpoints = document.SourceReference is null && document.TargetReference is null
                         ? string.Empty

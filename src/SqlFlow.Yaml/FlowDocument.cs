@@ -75,3 +75,17 @@ public interface IFlowDocumentKind
     /// <summary>Parses the document body. <paramref name="source"/> labels errors (the file path, or "&lt;inline&gt;").</summary>
     FlowDocument Parse(string yaml, string source, FlowDocumentEnvelope envelope);
 }
+
+/// <summary>
+/// A document family a kind owns beside its flows and keys by a top-level <c>documentType</c> (the delivery
+/// kind's mapping documents, say). Implemented by the kind alongside <see cref="IFlowDocumentKind"/>, so the
+/// CLI validates such a document under its own type instead of reporting a missing <c>flowType</c>.
+/// </summary>
+public interface ICompanionDocumentKind
+{
+    /// <summary>The <c>documentType</c> value that selects this family (compared case-insensitively).</summary>
+    string DocumentType { get; }
+
+    /// <summary>Parses the document, returning its display name; a failure is a <see cref="FlowValidationException"/> naming the source.</summary>
+    string ParseCompanion(string yaml, string source);
+}

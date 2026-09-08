@@ -28,8 +28,9 @@ public sealed record DeliveryFlowDocument : FlowDocument
     public override bool RequiresRepoTree => true;
 }
 
-/// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor.</summary>
-public sealed class DeliveryFlowKind : IFlowDocumentKind
+/// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor; it also owns
+/// the mapping documents (<c>documentType: mapping</c>) the flows pin, so validate reports them under their own type.</summary>
+public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
 {
     private readonly DeliveryDocumentLoader _loader;
 
@@ -42,6 +43,16 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind
     public string FlowType => FlowDefinition.FlowTypeName;
 
     public string Description => "deliver prepared records from a drop into OSDU (record and well log protocols)";
+
+    /// <summary>The mapping documents a delivery flow pins (<c>documentType: mapping</c>).</summary>
+    public string DocumentType => MappingDefinition.DocumentTypeName;
+
+    public string ParseCompanion(string yaml, string source)
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var mapping = _loader.ParseMapping(yaml, source);
+        return $"{mapping.Reference} -> {mapping.Kind}";
+    }
 
     public FlowDocument Parse(string yaml, string source, FlowDocumentEnvelope envelope)
     {

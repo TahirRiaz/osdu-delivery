@@ -62,7 +62,14 @@ internal static class LocalInspectVerbs
             var relative = Path.GetRelativePath(root, file);
             try
             {
-                // Parse warnings go to stderr exactly as single-file validate routes them.
+                // A companion document (a mapping, say) validates under the kind that owns it; a flow document goes
+                // through the loader with its parse warnings on stderr, exactly as single-file validate routes them.
+                if (File.Exists(file) && documents.ParseCompanion(await File.ReadAllTextAsync(file).ConfigureAwait(false), file) is { } companion)
+                {
+                    results.Add(new ValidationResult(relative, true, companion.DocumentType, companion.Name, null));
+                    continue;
+                }
+
                 var document = DocumentLoader.Load(documents, file, Console.Error.WriteLine);
                 results.Add(new ValidationResult(relative, true, document.Kind, document.Name, null));
             }

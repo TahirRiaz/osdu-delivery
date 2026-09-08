@@ -6,6 +6,7 @@ using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -146,21 +147,27 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 }
 
                 var run = await runtime.RunAsync(force: parameters.Force || submission is not null, ct).ConfigureAwait(false);
+                LogOutcome(log, SubmissionIntake.Summarize(run.Submission));
                 return DeliverOutcome.From(run, runtime.DropLocation);
 
             case RunParameters.PlanOperation:
                 var plan = await runtime.PlanAsync(parameters.Force, ct).ConfigureAwait(false);
+                LogOutcome(log, plan.SkippedWholeRun
+                    ? $"plan: whole run skipped, {plan.SkipReason}"
+                    : $"plan: {plan.Entries.Count} record(s), {plan.Deliveries} to deliver, {plan.Skips} unchanged, {plan.Holds} held, {plan.Blocked} blocked");
                 return PlanOutcome.From(plan, runtime.DropLocation);
 
             case RunParameters.VerifyOperation:
                 var reconcile = flow.Verify.Reconcile;
                 var summary = await runtime.VerifyAsync(VerifyBatch, parameters.Force ? null : VerifyInterval, reconcile, keys.Count == 0 ? null : keys, ct).ConfigureAwait(false);
+                LogOutcome(log, $"verify: {summary}");
                 return new VerifyRunOutcome(operation, summary.Checked, summary.Matched, summary.Drifted, summary.Missing, summary.Errors, reconcile);
 
             case RunParameters.KnownStateOperation:
                 var to = parameters.PublishTo
                     ?? throw new DeliveryException("A known-state publication needs publishTo: the directory or storage prefix the preparing side reads.");
                 var published = await runtime.PublishKnownStateAsync(to, ct).ConfigureAwait(false);
+                LogOutcome(log, $"known-state: published {published} record(s) to {to}");
                 return new KnownStateOutcome(operation, to, published);
 
             default:
@@ -204,6 +211,9 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     private static void LogRedeliver(ILogger log, int marked, int requested)
         => log.LogInformation("marked {Marked} of {Requested} record(s) for redelivery", marked, requested);
+
+    private static void LogOutcome(ILogger log, string outcome)
+        => log.LogInformation("{Outcome}", outcome);
 
     private static void LogDone(ILogger log, string operation, double seconds)
         => log.LogInformation("{Operation} completed in {Seconds:0.###}s", operation, seconds);

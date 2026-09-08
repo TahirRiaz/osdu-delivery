@@ -193,6 +193,56 @@ public sealed class YamlDocumentLoader
     /// <summary>Whether a document's <c>flowType</c> names a kind this loader knows, without parsing the body.</summary>
     public bool IsKnownKind(string? flowType) => !string.IsNullOrWhiteSpace(flowType) && _kinds.ContainsKey(flowType.Trim());
 
+    /// <summary>
+    /// Recognises a companion document (one a registered kind owns beside its flows, keyed by a top-level
+    /// <c>documentType</c>) and parses it through its kind, returning the type and the display name. Null when the
+    /// text declares no <c>documentType</c>; a <see cref="FlowValidationException"/> when it declares one no kind
+    /// owns, or when the kind rejects it.
+    /// </summary>
+    public (string DocumentType, string Name)? ParseCompanion(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var documentType = TopLevelValue(yaml, "documentType");
+        if (documentType is null)
+        {
+            return null;
+        }
+
+        var kind = _kinds.Values.OfType<ICompanionDocumentKind>()
+            .FirstOrDefault(k => k.DocumentType.Equals(documentType, StringComparison.OrdinalIgnoreCase))
+            ?? throw new FlowValidationException($"{source}: no registered kind owns documentType '{documentType}'.");
+        return (kind.DocumentType, kind.ParseCompanion(yaml, source));
+    }
+
+    /// <summary>The scalar value of a top-level key, read textually: the cheap probe that decides which family a
+    /// document belongs to before anything is parsed.</summary>
+    private static string? TopLevelValue(string yaml, string key)
+    {
+        foreach (var raw in yaml.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0 || line[0] is ' ' or '\t' or '#')
+            {
+                continue;
+            }
+
+            var colon = line.IndexOf(':', StringComparison.Ordinal);
+            if (colon > 0 && line[..colon].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                var value = line[(colon + 1)..].Trim();
+                var comment = value.IndexOf('#', StringComparison.Ordinal);
+                if (comment >= 0)
+                {
+                    value = value[..comment].Trim();
+                }
+
+                return string.IsNullOrWhiteSpace(value) ? null : value.Trim('"', '\'');
+            }
+        }
+
+        return null;
+    }
+
     private string KnownKinds()
     {
         if (_kinds.Count == 0)
