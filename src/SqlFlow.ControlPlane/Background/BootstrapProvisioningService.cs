@@ -110,23 +110,29 @@ public sealed class BootstrapProvisioningService : BackgroundService
                 _logger.LogWarning(
                     "Bootstrap:AllowCreate is enabled: the catalog database will be created if it does not exist ({Target}).",
                     CatalogDatabase.DescribeTarget(connectionString));
-                await CatalogDatabase.MigrateAsync(connectionString, ct).ConfigureAwait(false);
+                await CatalogDatabase.ProvisionAsync(connectionString, ct).ConfigureAwait(false);
             }
             else
             {
-                // Guarded default: migrate an existing catalog only. A missing database or a populated
-                // non-catalog database raises CatalogProvisioningException instead of being provisioned.
-                await CatalogDatabase.MigrateExistingAsync(connectionString, ct).ConfigureAwait(false);
+                // Guarded default: initialise an existing but empty database, and otherwise only verify. A
+                // missing database or a populated non-catalog database raises CatalogProvisioningException
+                // instead of being provisioned.
+                await CatalogDatabase.ProvisionExistingAsync(connectionString, ct).ConfigureAwait(false);
             }
         }
         else
         {
-            var (_, pending) = await CatalogDatabase.StatusAsync(connectionString, ct).ConfigureAwait(false);
-            if (pending.Count > 0)
+            var (provisioned, missing) = await CatalogDatabase.StatusAsync(connectionString, ct).ConfigureAwait(false);
+            if (!provisioned)
             {
                 _logger.LogWarning(
-                    "Catalog migrations are disabled (ControlPlane:Bootstrap:ApplyMigrations=false) but {Count} migration(s) are pending: {Migrations}. Apply them out of band; parts of the API may fail until then.",
-                    pending.Count, string.Join(", ", pending));
+                    "Catalog provisioning is disabled (ControlPlane:Bootstrap:ApplyMigrations=false) and the database holds no catalog tables. Provision it out of band; the API will fail until then.");
+            }
+            else if (missing.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Catalog provisioning is disabled (ControlPlane:Bootstrap:ApplyMigrations=false) and the database is missing {Count} table(s) this build declares: {Tables}. The schema is created from the model and nothing upgrades it in place, so provision the database again; parts of the API will fail until then.",
+                    missing.Count, string.Join(", ", missing));
             }
         }
 

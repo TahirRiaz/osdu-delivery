@@ -23,7 +23,7 @@ public sealed class RunTimeWindowApiTests
     public async Task RunsApi_FromTo_WindowsHistoryByWrittenUtc()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_window_" + suffix;

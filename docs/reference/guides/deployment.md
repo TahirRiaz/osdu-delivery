@@ -33,7 +33,7 @@ docker compose up -d --scale worker=3   # more compute, nothing else changes
 - Control plane API: `http://localhost:5000` (OpenAPI at `/openapi/v1.json`)
 - SQL Server: published on host port `14333` for host-side tooling only
 
-On first start, bootstrap provisioning (`src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs`) applies the catalog migrations, seeds the built-in roles, and creates the initial admin from `.env`. Bootstrap is idempotent: restarts converge to the same state and never reset an existing admin's password. It does not create the catalog database itself: `ControlPlane:Bootstrap:AllowCreate` defaults to `false`, so against a missing database it logs a critical `Bootstrap provisioning refused` error and stops, with readiness staying red. The SQL Server container starts with no `SqlFlowCatalog` database, so provision it once, either by adding `ControlPlane__Bootstrap__AllowCreate: "true"` to the `controlplane` service for the first start, or from the host with `sqlflow db migrate --create --db "Server=localhost,14333;Database=SqlFlowCatalog;User ID=sa;Password=<MSSQL_SA_PASSWORD>;TrustServerCertificate=True"` (see [db](../cli/db.md)).
+On first start, bootstrap provisioning (`src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs`) provisions the catalog schema from the EF model, seeds the built-in roles, and creates the initial admin from `.env`. Bootstrap is idempotent: restarts converge to the same state and never reset an existing admin's password. It does not create the catalog database itself: `ControlPlane:Bootstrap:AllowCreate` defaults to `false`, so against a missing database it logs a critical `Bootstrap provisioning refused` error and stops, with readiness staying red. The SQL Server container starts with no `SqlFlowCatalog` database, so provision it once, either by adding `ControlPlane__Bootstrap__AllowCreate: "true"` to the `controlplane` service for the first start, or from the host with `sqlflow db migrate --create --db "Server=localhost,14333;Database=SqlFlowCatalog;User ID=sa;Password=<MSSQL_SA_PASSWORD>;TrustServerCertificate=True"` (see [db](../cli/db.md)).
 
 ### Required .env values
 
@@ -102,7 +102,7 @@ kubectl apply -f deploy/k8s/ingress.yaml
 kubectl apply -f deploy/k8s/worker-pool.yaml
 ```
 
-The catalog database must exist before the control plane starts (bootstrap migrates an existing catalog and refuses to create one; provision it with `sqlflow db migrate --create`), and the control plane must have applied the migrations before the worker's ScaledObject is created, since its scale query reads catalog tables.
+The catalog database must exist before the control plane starts (bootstrap initialises an existing empty database and refuses to create one; provision it with `sqlflow db migrate --create`), and the control plane must have provisioned the schema before the worker's ScaledObject is created, since its scale query reads catalog tables.
 
 ### Secrets
 
@@ -207,7 +207,7 @@ az deployment group create -g osdu-delivery -f deploy/bicep/main.bicep \
      adminPassword='<initial admin password, 12+ chars>'
 ```
 
-The template creates the catalog database (empty), so first start behaves like a provisioned compose stack: bootstrap applies the catalog migrations and creates the initial admin (`adminUsername`/`adminPassword`), and the `guiUrl` output is sign-in ready. The other outputs: `controlPlaneBaseUrl` (for CLI remotes via `SQLFLOW_URL` and for any external scheduler, see below), `controlPlaneIdentityClientId` and `workerIdentityClientId` (grant them access to the drops, secrets and OSDU credentials the flows touch), `sqlServerFqdn`, `keyVaultUri`, and the Entra outputs `entraClientId`, `entraRedirectUri`, `entraAssignmentReminder`, `entraForeignTenantReminder`.
+The template creates the catalog database (empty), so first start behaves like a provisioned compose stack: bootstrap provisions the catalog schema and creates the initial admin (`adminUsername`/`adminPassword`), and the `guiUrl` output is sign-in ready. The other outputs: `controlPlaneBaseUrl` (for CLI remotes via `SQLFLOW_URL` and for any external scheduler, see below), `controlPlaneIdentityClientId` and `workerIdentityClientId` (grant them access to the drops, secrets and OSDU credentials the flows touch), `sqlServerFqdn`, `keyVaultUri`, and the Entra outputs `entraClientId`, `entraRedirectUri`, `entraAssignmentReminder`, `entraForeignTenantReminder`.
 
 How the Kubernetes layout maps onto Container Apps:
 
@@ -223,7 +223,7 @@ How the Kubernetes layout maps onto Container Apps:
 
 ## Azure: the control plane alone, and triggering from an external scheduler
 
-OSDU Delivery runs under Azure Data Factory (or any scheduler) as a thin trigger, not as a container booted per run. The model is an always-on control plane that a small pipeline of Web Activities calls: authenticate, trigger, poll, fail on failure. Nothing is provisioned per run; a trigger is a sub-second authenticated call. No pipeline definition ships in `deploy/`; the endpoints in step 3 are the whole contract. The steps below deploy the single-app mode into an existing environment. On the full estate above, the image, app and migrations are already in place: register your repos (step 2's post-deploy notes) and continue at step 3 with the estate's `controlPlaneBaseUrl` output.
+OSDU Delivery runs under Azure Data Factory (or any scheduler) as a thin trigger, not as a container booted per run. The model is an always-on control plane that a small pipeline of Web Activities calls: authenticate, trigger, poll, fail on failure. Nothing is provisioned per run; a trigger is a sub-second authenticated call. No pipeline definition ships in `deploy/`; the endpoints in step 3 are the whole contract. The steps below deploy the single-app mode into an existing environment. On the full estate above, the image, app and catalog schema are already in place: register your repos (step 2's post-deploy notes) and continue at step 3 with the estate's `controlPlaneBaseUrl` output.
 
 ### 1. Build and push the image
 

@@ -101,7 +101,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task Login_WithSeededUser_IssuesASessionThatWorksOnItsScopeSurface()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var username = $"login-test-{Guid.NewGuid():N}";
         const string password = "a-long-test-password-1234";
 
@@ -142,7 +142,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task Login_AfterRepeatedFailures_LocksOutWith429()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var username = $"lockout-test-{Guid.NewGuid():N}";
         const string password = "a-long-test-password-1234";
 
@@ -174,7 +174,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task ResetPassword_AppliedThroughTheCliPath_SignsInWithTheNewPassword_AndRejectsTheOld()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var username = $"reset-test-{Guid.NewGuid():N}";
         const string oldPassword = "old-password-1234567";
         const string newPassword = "new-password-7654321";
@@ -222,7 +222,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task Exchange_ProvisionsJustInTime_ThenSignsInWithoutDuplicating()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var objectId = Guid.NewGuid().ToString("N");
         var username = $"sso-test-{Guid.NewGuid():N}@example.test";
         var profile = new ExternalUserProfile(objectId, username, "SSO Test User", username);
@@ -275,7 +275,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task Renew_RollsALiveSessionOntoAFreshToken_ThatOpensTheSameSurface()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var username = $"renew-test-{Guid.NewGuid():N}";
         const string password = "a-long-test-password-1234";
 
@@ -311,7 +311,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task Renew_ForAnAccountDeactivatedSinceSignIn_Returns401()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var username = $"renew-off-{Guid.NewGuid():N}";
         const string password = "a-long-test-password-1234";
 
@@ -346,7 +346,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task Exchange_ForADeactivatedUser_Returns403()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var objectId = Guid.NewGuid().ToString("N");
         var username = $"sso-off-{Guid.NewGuid():N}@example.test";
 
@@ -380,7 +380,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task UserAdmin_CreateSetRoleDeactivate_EnforcesTheGuards()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = $"admin-api-{Guid.NewGuid():N}";
 
         try
@@ -477,7 +477,7 @@ public sealed class IdentityApiTests : IClassFixture<ControlPlaneAppFactory>
     public async Task BootstrapProvisioning_SeedsRolesAndTheInitialAdmin_Idempotently()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var adminUsername = $"bootstrap-admin-{Guid.NewGuid():N}";
         const string adminPassword = "bootstrap-admin-password-1";
 

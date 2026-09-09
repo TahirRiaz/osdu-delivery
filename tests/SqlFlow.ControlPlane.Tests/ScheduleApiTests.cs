@@ -55,7 +55,7 @@ public sealed class ScheduleApiTests
     public async Task CreateSchedule_ForUnknownPipeline_Returns404()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
@@ -72,7 +72,7 @@ public sealed class ScheduleApiTests
     public async Task CreateSchedule_ForActivePipeline_RunsTheFullLifecycle()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
@@ -157,7 +157,7 @@ public sealed class ScheduleApiTests
     public async Task RunScheduleNow_ForUnknownSchedule_Returns404()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
@@ -173,7 +173,7 @@ public sealed class ScheduleApiTests
     public async Task RunScheduleNow_EnqueuesARun_StampsLastRun_AndLeavesTheCadence()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
 
@@ -230,7 +230,7 @@ public sealed class ScheduleApiTests
     public async Task RunScheduleNow_WithABatchFilter_FiresOnlyThatBatchsMembers()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var alphaOne = flowName + "_a1";
         var alphaTwo = flowName + "_a2";
@@ -290,7 +290,7 @@ public sealed class ScheduleApiTests
     public async Task Scheduler_FiresADueSchedule_EnqueuingARunForThePipeline()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
         var scheduleId = Guid.NewGuid();
@@ -371,7 +371,7 @@ public sealed class ScheduleApiTests
         // "Did the last execution work" must be answerable from the list: the schedule row carries the tally of the
         // fire's members, so a group with one failure reads as failed rather than merely "fired".
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
         var scheduleId = Guid.NewGuid();
@@ -440,7 +440,7 @@ public sealed class ScheduleApiTests
         // The three shapes a definition can take: an inline block (serve the declaring flow's stored document), a
         // schedules.yaml entry (serve the library text on the row), and an API schedule (no file, so no YAML).
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var inlineId = Guid.NewGuid();
         var libraryId = Guid.NewGuid();
@@ -519,7 +519,7 @@ public sealed class ScheduleApiTests
         // an estate's schedules would look like no match at all. Proved with a page of one: the term selects its
         // schedule out of three even though only one row fits on a page, and the total counts only the matches.
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);

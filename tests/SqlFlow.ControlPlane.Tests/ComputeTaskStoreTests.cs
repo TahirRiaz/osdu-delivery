@@ -20,7 +20,7 @@ public sealed class ComputeTaskStoreTests
     public async Task Enqueue_Claim_Complete_MovesThroughTheLifecycle()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceRef = NewSourceRef();
 
         try
@@ -66,7 +66,7 @@ public sealed class ComputeTaskStoreTests
     public async Task Claim_HonorsPoolRouting()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceRef = NewSourceRef();
 
         try
@@ -92,7 +92,7 @@ public sealed class ComputeTaskStoreTests
     public async Task Cancel_QueuedIsImmediate_RunningIsARequest_TerminalIsRefused()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceRef = NewSourceRef();
 
         try
@@ -131,7 +131,7 @@ public sealed class ComputeTaskStoreTests
     public async Task Fail_RecordsTheError_AndNeverOverwritesATerminalTask()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceRef = NewSourceRef();
 
         try
@@ -161,7 +161,7 @@ public sealed class ComputeTaskStoreTests
     public async Task Recovery_RequeuesThisNodesRunningTasks()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceRef = NewSourceRef();
 
         try
@@ -191,7 +191,7 @@ public sealed class ComputeTaskStoreTests
     public async Task Expiry_FailsStaleQueuedAndRunningTasks_AndLeavesFreshOnesAlone()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceRef = NewSourceRef();
 
         try

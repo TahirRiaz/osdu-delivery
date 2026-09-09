@@ -9,7 +9,7 @@ It exists so that a team has one place to observe the estate (repos, pipelines, 
 `src/SqlFlow.ControlPlane/Program.cs` builds the host in one pass:
 
 - Configuration is bound from the `ControlPlane` section and validated eagerly at startup (`options.Validate()` plus `ValidateOnStart()`), so a misconfigured deployment never starts serving. Kestrel's request body ceiling is set on purpose from `ControlPlane:MaxRequestBodyMegabytes` (default 64), never left at the server default, so a submission manifest that lists many records fits and anything larger is refused deliberately.
-- The catalog is read through a pooled `CatalogDbContext` with `NoTracking` query behavior; the provider setup (migrations history table, transient-error resiliency) is the one `CatalogDatabase.Configure` shared with the CLI, the worker, and bootstrap.
+- The catalog is read through a pooled `CatalogDbContext` with `NoTracking` query behavior; the provider setup (transient-error resiliency) is the one `CatalogDatabase.Configure` shared with the CLI, the worker, and bootstrap.
 - Background services host bootstrap provisioning (`BootstrapProvisioningService`), the run worker (`RunExecutionWorker`, only when `Worker:Enabled` is true), the schedule scanner (`SchedulerService`), the orphan reaper (`OrphanRunReaper`), the run-trace pruner (`RunTraceReaper`, when `RunTrace:Enabled`), the managed git sync (`RepoSyncService`), the proposal staging janitor (`ProposalWorkspaceJanitor`), and the notification pipeline (`NotificationService`, when `Notifications:Enabled`).
 - When the in-process worker is hosted, the host's shutdown timeout is raised to the worker's drain window plus 30 seconds (`RunWorker.DefaultDrainTimeout`, 9 minutes), so a stop lets in-flight runs record their own outcomes instead of severing them.
 - The run queue is the catalog's `Run` table itself: the trigger endpoint enqueues a `queued` row through `IRunDispatcher`, a worker claims the oldest queued run atomically (single-statement `UPDATE ... WITH (UPDLOCK, READPAST, ROWLOCK)` in src/SqlFlow.Catalog/RunQueueStore.cs), and the outcome is recorded under the same id the trigger returned. Runs survive a restart and are visible to the read API from the moment they are queued.
@@ -129,7 +129,7 @@ All settings bind from the `ControlPlane` configuration section (environment var
 | `AzureAd:ClientId` | unset | The app registration the SPA signs in with |
 | `AzureAd:Authority` | `https://login.microsoftonline.com` | The OIDC authority host; override for sovereign clouds. The per-tenant authority is `{host}/{tenantId}/v2.0` |
 | `AzureAd:DefaultRole` | `viewer` | Role a first-time Entra user is provisioned with |
-| `Bootstrap:ApplyMigrations` | `true` | `false` logs pending migrations as a warning instead of applying them |
+| `Bootstrap:ApplyMigrations` | `true` | `false` logs a warning when the database is unprovisioned or missing tables, instead of provisioning it |
 | `Bootstrap:AllowCreate` | `false` | When `false` (the default), startup only migrates an EXISTING catalog: a missing database or a populated non-catalog database is refused loudly and startup stops without retrying, so a wrong or mistyped connection never provisions against the wrong (possibly production) server. `true` lets startup CREATE the catalog database and initialise its schema into an empty one, for first-time provisioning or ephemeral/test databases |
 | `Bootstrap:AdminUsername` / `Bootstrap:AdminPasswordReference` | unset | Must be set together; the password is a secret reference, never a literal |
 | `Bootstrap:DemoRepo` | unset | `Name` and `RemoteUrl` required when configured; `Branch` default `main`; `SyncIntervalSeconds` default `300` (must be positive) |
@@ -155,7 +155,7 @@ Before provisioning anything, the service applies the `Bootstrap:AllowCreate` gu
 
 Order of operations, all idempotent:
 
-1. Apply pending EF catalog migrations when `Bootstrap:ApplyMigrations` is true (the default). With it false, pending migrations are logged as a warning: "Apply them out of band; parts of the API may fail until then."
+1. Provision the catalog schema from the EF model when `Bootstrap:ApplyMigrations` is true (the default), and verify it against the model either way. With it false, an unprovisioned or stale database is logged as a warning instead.
 2. Seed the built-in roles: `admin` (scopes `read operate admin author`), `operator` (`read operate author`), `viewer` (`read`). Existing role rows are kept as-is (`EnsureRoleAsync` inserts only when the role is absent).
 3. Create the initial admin from `Bootstrap:AdminUsername` and `Bootstrap:AdminPasswordReference` (resolved through the secret resolver) when the user is absent. An existing admin's password is never reset. An empty resolved password, or one shorter than 12 characters (`LocalPasswords.MinLength`), logs an error and skips creation rather than provisioning a weak credential. With no admin configured and no users in the catalog, a warning says that only the bootstrap secret can access the API.
 4. Register the optional demo repo source (`Bootstrap:DemoRepo`) as an upsert, so configuration stays the desired state across restarts.

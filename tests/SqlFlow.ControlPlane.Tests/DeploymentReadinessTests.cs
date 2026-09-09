@@ -98,7 +98,7 @@ public sealed class DeploymentReadinessTests
     public async Task ApiOnlyReplica_LeavesQueuedRunsForStandaloneWorkers()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var flowName = $"api-only-{Guid.NewGuid():N}";
 

@@ -40,7 +40,7 @@ public sealed class ControlPlaneProcessFixture : IAsyncLifetime
 
             var dll = ControlPlaneDllPath();
             Assert.True(dll is not null, "Built control plane not found; run 'dotnet build -c Release' first.");
-            await Catalog.CatalogDatabase.MigrateAsync(catalogConnection);
+            await Catalog.CatalogDatabase.ProvisionAsync(catalogConnection);
 
             var port = FreePort();
             BaseUrl = $"http://127.0.0.1:{port}";

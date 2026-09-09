@@ -21,7 +21,7 @@ public sealed class NotificationStoreTests
     public async Task Detect_RecordsAFailedRun_ExactlyOnce()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var run = NewRun(RunStatuses.Failed, error: "the target table vanished");
 
@@ -54,7 +54,7 @@ public sealed class NotificationStoreTests
     public async Task Detect_MapsCancelledAndSkipped_ToTheirKinds()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var cancelled = NewRun(RunStatuses.Cancelled, error: "cancelled by an operator");
         var skipped = NewRun(RunStatuses.Skipped, error: "skipped: an upstream dependency did not succeed.");
@@ -80,7 +80,7 @@ public sealed class NotificationStoreTests
     public async Task Detect_HonorsThePipelineLifecycleGate()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
 
         var repoId = Guid.NewGuid();
@@ -118,7 +118,7 @@ public sealed class NotificationStoreTests
     public async Task SubscriptionClaim_IsWonExactlyOnce_AndTheCursorNeverRegresses()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var userId = Guid.NewGuid();
         var subscription = NewSubscription(userId);
@@ -166,7 +166,7 @@ public sealed class NotificationStoreTests
     public async Task DueScan_FindsImmediateOnlyWithPendingEvents_AndDigestByScheduleAlone()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var userId = Guid.NewGuid();
         var immediate = NewSubscription(userId);
@@ -205,7 +205,7 @@ public sealed class NotificationStoreTests
     public async Task DeliveryOutbox_ClaimsSendsRetriesAndRecovers()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var userId = Guid.NewGuid();
         var subscription = NewSubscription(userId);
@@ -269,7 +269,7 @@ public sealed class NotificationStoreTests
     public async Task Purge_PrunesAgedRows_ButNeverQueuedWork()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var userId = Guid.NewGuid();
         var subscription = NewSubscription(userId);

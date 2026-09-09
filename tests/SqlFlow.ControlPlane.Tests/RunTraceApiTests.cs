@@ -23,7 +23,7 @@ public sealed class RunTraceApiTests
     public async Task Trace_OrdersEvents_PagesInSql_ResolvesPipelineLatest_AndRendersText()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoId = FlowIdentity.FromName("cp_trace_" + suffix);

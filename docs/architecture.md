@@ -22,7 +22,7 @@ git repositories ──sync──▶ catalog (SQL Server) ◀──claim/complet
 - **The catalog** (`src/SqlFlow.Catalog`, EF Core on SQL Server) is the read model of the estate and the
   system of record for everything operational: the durable run queue, run groups and waves, schedules and
   their chains, nodes and worker pools, users, tokens and roles, notifications, activity traces, and the
-  delivery ledger. Schema changes ship as EF Core migrations.
+  delivery ledger. The schema is created from the EF model; a schema change means provisioning the database again.
 - **The control plane** (`src/SqlFlow.ControlPlane`) is the ASP.NET Core host: the `/api/v1` API (JWT and
   personal access tokens, read / operate / author / admin scopes), the scheduler, the managed git sync, the
   notification service, the orphan reaper, and bootstrap provisioning. It is stateless across replicas: every

@@ -42,7 +42,7 @@ public sealed class WorkerPoolStoreTests
     public async Task SaveScale_UpsertsFacetsAndResolvesTargetAgainstQueueDepth()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var pool = "wp-" + Guid.NewGuid().ToString("N")[..8];
 
         try
@@ -80,7 +80,7 @@ public sealed class WorkerPoolStoreTests
     public async Task RequestNodeRestart_StampsExistingNode_AndHeartbeatReturnsIt()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var node = "wp-node-" + Guid.NewGuid().ToString("N")[..8];
 
         try
@@ -109,7 +109,7 @@ public sealed class WorkerPoolStoreTests
     public async Task DeleteAndPrune_RemoveNodesFromTheFleetRegistry()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var live = "np-live-" + Guid.NewGuid().ToString("N")[..8];
         var dead = "np-dead-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -161,7 +161,7 @@ public sealed class WorkerPoolStoreTests
     public async Task CountOnlineInPool_CountsOnlyFreshNodesOfThatPool()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var pool = "cnpool-" + suffix;
         var otherPool = "cnother-" + suffix;

@@ -730,11 +730,14 @@ internal static partial class RemoteVerbs
         {
             try
             {
-                var (appliedMigrations, pending) = await CatalogDatabase.StatusAsync(catalogConnection).ConfigureAwait(false);
-                Console.WriteLine(pending.Count == 0
-                    ? $"catalog db:    OK ({appliedMigrations.Count} migration(s) applied, schema current)"
-                    : $"catalog db:    FAIL ({pending.Count} migration(s) pending; run 'sqlflow db migrate')");
-                failed |= pending.Count != 0;
+                var (provisioned, missing) = await CatalogDatabase.StatusAsync(catalogConnection).ConfigureAwait(false);
+                Console.WriteLine((provisioned, missing.Count) switch
+                {
+                    (false, _) => "catalog db:    FAIL (not provisioned; run 'sqlflow db migrate --create')",
+                    (true, 0) => "catalog db:    OK (provisioned, schema matches this build)",
+                    _ => $"catalog db:    FAIL ({missing.Count} table(s) missing: {string.Join(", ", missing)}; the schema comes from the model, so provision the database again)",
+                });
+                failed |= !provisioned || missing.Count != 0;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

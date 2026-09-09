@@ -22,7 +22,7 @@ public sealed class RunGroupQueueTests
     public async Task EnqueueGroup_InsertsHeaderAndMembers_QueuedInWaveOrder()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try
@@ -60,7 +60,7 @@ public sealed class RunGroupQueueTests
     public async Task EnqueueGroup_CarriesPerMemberParameters_AndDefaultsTheRest()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try
@@ -117,7 +117,7 @@ public sealed class RunGroupQueueTests
     public async Task Claim_GatesByWave_HigherWaveWaitsForLowerWaveToSucceed()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         var dir = NewTempDir();
 
@@ -152,7 +152,7 @@ public sealed class RunGroupQueueTests
     public async Task Fail_SkipsEveryLaterWave_OfTheGroup()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try
@@ -190,7 +190,7 @@ public sealed class RunGroupQueueTests
     public async Task CancelGroup_CancelsQueuedMembers_AndReportsUnknownGroup()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try
@@ -224,7 +224,7 @@ public sealed class RunGroupQueueTests
     public async Task ExpandSchedule_ReturnsItsMembersInWaveOrder_AndOnlyItsMembers()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try
@@ -254,7 +254,7 @@ public sealed class RunGroupQueueTests
     public async Task ExpandSchedule_BatchFilter_NarrowsToTaggedMembersOnly()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try

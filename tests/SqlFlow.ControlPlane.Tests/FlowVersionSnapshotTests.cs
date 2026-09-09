@@ -21,7 +21,7 @@ public sealed class FlowVersionSnapshotTests
     public async Task Enqueue_SnapshotsThePipelineYaml_AndDedupsRepeatedEnqueues()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
         var yaml = FlowYaml(name);
         var hash = CatalogProjection.Hash(yaml);
@@ -57,7 +57,7 @@ public sealed class FlowVersionSnapshotTests
     public async Task Enqueue_WithAnEmbeddedCredential_TakesNoSnapshot_AndKeepsTheGitPin()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
         // The catalog stores this flow's YAML redacted, so a snapshot would not be the committed bytes: the run
         // must stay on the git materialization path (and keep its commit pin so that path works).
@@ -93,7 +93,7 @@ public sealed class FlowVersionSnapshotTests
     public async Task Enqueue_PinnedToANonSyncedCommit_TakesNoSnapshot_SoTheGitPathRunsTheExactCommit()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
         var yaml = FlowYaml(name);
         var hash = CatalogProjection.Hash(yaml);
@@ -124,7 +124,7 @@ public sealed class FlowVersionSnapshotTests
     public async Task Enqueue_PinnedToTheSyncedCommit_StillSnapshots()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
         var yaml = FlowYaml(name);
         var hash = CatalogProjection.Hash(yaml);
@@ -153,7 +153,7 @@ public sealed class FlowVersionSnapshotTests
     public async Task Enqueue_WithoutAPipelineRow_TakesNoSnapshot()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
 
         try
@@ -178,7 +178,7 @@ public sealed class FlowVersionSnapshotTests
     public async Task EnqueueGroup_StampsEveryMember_AndDedupsASharedVersionWithinOneTransaction()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
         // Two members deliberately share identical YAML text (and so one content hash): the group enqueue stages
         // the version row once for both, exercising the in-transaction dedup, while the third member carries its

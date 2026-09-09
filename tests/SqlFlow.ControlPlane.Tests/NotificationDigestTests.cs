@@ -211,7 +211,7 @@ public sealed class NotificationDigestStoreTests
     public async Task ScheduledDigest_AdvancesTheCursor_SoTheNextWindowStartsWhereThisOneEnded()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var run = NewFailedRun();
 
@@ -262,7 +262,7 @@ public sealed class NotificationDigestStoreTests
     public async Task ManualDigest_LeavesTheScheduledCursorAlone()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var userId = Guid.NewGuid();
         var before = (await NotificationStore.GetWatermarkAsync(db))?.DigestCursorEventId ?? 0;
@@ -293,7 +293,7 @@ public sealed class NotificationDigestStoreTests
     public async Task DigestWindow_IsClaimedByExactlyOneReplica()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
 
         try
@@ -326,7 +326,7 @@ public sealed class NotificationDigestStoreTests
     public async Task DigestTick_ArmsTheClockFirst_ThenGeneratesEachDueWindowOnce()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
 
         try
@@ -371,7 +371,7 @@ public sealed class NotificationDigestStoreTests
     public async Task Retention_PrunesAgedDigests()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var ancient = DateTime.UtcNow.AddDays(-400);
         var aged = await NotificationDigestGenerator.GenerateManualAsync(
@@ -398,7 +398,7 @@ public sealed class NotificationDigestStoreTests
     public async Task DigestList_ReadsNewestFirst_WithoutTheBodies()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         await using var db = CatalogDatabase.Create(cs);
         var now = DateTime.UtcNow;
         var older = await NotificationDigestGenerator.GenerateManualAsync(

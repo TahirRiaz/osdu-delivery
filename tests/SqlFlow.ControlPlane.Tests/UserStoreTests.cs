@@ -18,7 +18,7 @@ public sealed class UserStoreTests
     public async Task CreateLocal_Roundtrips_AndRefusesADuplicateUsername()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = NewPrefix();
         var username = $"{prefix}-alice";
 
@@ -57,7 +57,7 @@ public sealed class UserStoreTests
     public async Task EnsureExternal_ProvisionsOnFirstSight_ThenUpdatesInPlace()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = NewPrefix();
         var objectId = Guid.NewGuid().ToString("N");
 
@@ -119,7 +119,7 @@ public sealed class UserStoreTests
     public async Task LastActiveAdmin_CanNeitherBeDemotedNorDeactivated()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = NewPrefix();
 
         try
@@ -172,7 +172,7 @@ public sealed class UserStoreTests
     public async Task SetPasswordHash_IsRefusedForAnSsoUser()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = NewPrefix();
 
         try
@@ -198,7 +198,7 @@ public sealed class UserStoreTests
     public async Task UpdateProfile_RenamesALocalUser_AndRefusesATakenNameOrAnSsoRename()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = NewPrefix();
 
         try
@@ -262,7 +262,7 @@ public sealed class UserStoreTests
     public async Task Delete_RemovesTheUserAndTheirOwnedRows_AndRefusesTheLastActiveAdmin()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var prefix = NewPrefix();
 
         try
@@ -324,7 +324,7 @@ public sealed class UserStoreTests
     public async Task EnsureRole_SeedsOnce_AndNeverOverwritesAnEditedRole()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var roleName = $"testrole-{Guid.NewGuid():N}";
 
         try

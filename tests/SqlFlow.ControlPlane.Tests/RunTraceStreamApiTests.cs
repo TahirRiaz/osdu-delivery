@@ -25,7 +25,7 @@ public sealed class RunTraceStreamApiTests
     public async Task Stream_PushesEntriesAsTheyLand_ResumesFromCursors_AndEndsOnTerminalStatus()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoId = FlowIdentity.FromName("cp_stream_" + suffix);

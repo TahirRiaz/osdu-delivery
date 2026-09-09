@@ -70,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The catalog schema is created from the EF model and there are no migrations: `CatalogDatabase.ProvisionAsync`
+  (explicit) and `ProvisionExistingAsync` (guarded) replace the migrate pair, both verifying the database against
+  the model afterwards and refusing to run when a table the model declares is missing, naming it. `sqlflow db
+  status` reports whether the catalog is provisioned and what it lacks. A schema change now means dropping the
+  database and provisioning it again; the trade is that a production catalog would have no incremental upgrade
+  path, so migrations would have to be reintroduced before one exists.
 - HTTP errors name the request URL without its query string, so a signed upload URL's credential never reaches
   an error message, a log line or the ledger.
 - Manifests may declare `partitioned` drops (root file i and child file i sorted by delivery key), which the

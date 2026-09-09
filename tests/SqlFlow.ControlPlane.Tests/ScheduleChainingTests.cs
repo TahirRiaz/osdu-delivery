@@ -20,7 +20,7 @@ public sealed class ScheduleChainingTests
     public async Task ChainedChild_IsReady_OnlyAfterParentsRunsAreTerminal()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var parentFire = new DateTime(2026, 8, 2, 20, 10, 0, DateTimeKind.Utc);
         var groupId = Guid.NewGuid();
@@ -66,7 +66,7 @@ public sealed class ScheduleChainingTests
     public async Task ChainedChild_FiresOncePerParentFire_AndOnlyOneNodeWins()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var parentFire = new DateTime(2026, 8, 2, 20, 10, 0, DateTimeKind.Utc);
         var groupId = Guid.NewGuid();
@@ -113,7 +113,7 @@ public sealed class ScheduleChainingTests
     public async Task ChainedChild_IsNeverInTheClockDueScan()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
 
         try
@@ -141,7 +141,7 @@ public sealed class ScheduleChainingTests
     public async Task YamlUpsert_MakingAScheduleChained_ClearsItsPendingClockFire()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var now = DateTime.UtcNow;
         var nextFire = now.AddHours(1);
@@ -201,7 +201,7 @@ public sealed class ScheduleChainingTests
     public async Task FanInChild_WaitsForEveryParent_NotJustTheFirstToFire()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var aFire = new DateTime(2026, 8, 5, 5, 0, 0, DateTimeKind.Utc);
         var bFire = new DateTime(2026, 8, 5, 5, 30, 0, DateTimeKind.Utc);
@@ -271,7 +271,7 @@ public sealed class ScheduleChainingTests
     public async Task FanInChild_ReportsStaleParents_ButStillFires()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var now = new DateTime(2026, 8, 6, 5, 0, 0, DateTimeKind.Utc);
         var freshFire = now.AddMinutes(-10);
@@ -330,7 +330,7 @@ public sealed class ScheduleChainingTests
     public async Task FanInChild_IsNotSuppressed_WhenOneParentSkipsItsChain()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var fire = new DateTime(2026, 8, 5, 5, 0, 0, DateTimeKind.Utc);
 

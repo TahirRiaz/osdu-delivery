@@ -19,7 +19,7 @@ public sealed class NodeRegistryTests
     public async Task Heartbeat_InsertsThenRefreshes_PreservingFirstSeen()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var node = "node_" + Guid.NewGuid().ToString("N")[..8];
         var t1 = DateTime.UtcNow.AddMinutes(-1);
         var t2 = DateTime.UtcNow;
@@ -50,7 +50,7 @@ public sealed class NodeRegistryTests
     public async Task ListNodes_ReportsOnlineByRecencyOfLastSeen()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var onlineNode = "node_on_" + suffix;
         var offlineNode = "node_off_" + suffix;
@@ -91,7 +91,7 @@ public sealed class NodeRegistryTests
     public async Task PurgeOffline_RemovesStaleNodes_AndLeavesLiveOnesAlone()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var onlineNode = "node_on_" + suffix;
         var offlineNode = "node_off_" + suffix;

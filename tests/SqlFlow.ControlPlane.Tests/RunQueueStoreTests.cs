@@ -23,7 +23,7 @@ public sealed class RunQueueStoreTests
     public async Task Enqueue_Claim_Complete_MovesThroughTheLifecycle()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var dir = NewTempDir();
 
@@ -79,7 +79,7 @@ public sealed class RunQueueStoreTests
     public async Task ClaimNext_ConcurrentClaims_NeverGiveTheSameRunToTwoWorkers()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         try
@@ -111,7 +111,7 @@ public sealed class RunQueueStoreTests
     public async Task ClaimNext_SamePipeline_NeverRunsTwiceConcurrently()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var otherFlow = flowName + "_other";
         var dir = NewTempDir();
@@ -149,7 +149,7 @@ public sealed class RunQueueStoreTests
     public async Task ClaimNext_ConcurrentClaimsOfOnePipeline_StartOnlyOneExecution()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         try
@@ -190,7 +190,7 @@ public sealed class RunQueueStoreTests
     public async Task RunningPipelineIndex_RefusesASecondRunningRunOfOnePipeline()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         try
@@ -220,7 +220,7 @@ public sealed class RunQueueStoreTests
     public async Task ClaimNext_RoutesByPool_OnlyAnEligibleNodeClaimsATargetedRun()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var pool = "pool_" + Guid.NewGuid().ToString("N")[..6];
 
@@ -260,7 +260,7 @@ public sealed class RunQueueStoreTests
     public async Task Cancel_QueuedRun_CancelsIt_AndItIsNeverClaimed()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         try
@@ -288,7 +288,7 @@ public sealed class RunQueueStoreTests
     public async Task Cancel_RunningRun_RequestsCancellation_ForTheOwningNodeToObserveAndRecord()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var node = "cancel-node-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -334,7 +334,7 @@ public sealed class RunQueueStoreTests
     public async Task CancelRunning_DoesNotOverwriteAnAlreadyCompletedRun()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var dir = NewTempDir();
 
@@ -363,7 +363,7 @@ public sealed class RunQueueStoreTests
     public async Task RecoverStuckRunning_RequeuesThisNodesOrphans_AndFailsOneOutOfAttempts()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var (repoId2, flowName2) = NewIds();
         var node = "recover-node-" + Guid.NewGuid().ToString("N")[..8];
@@ -405,7 +405,7 @@ public sealed class RunQueueStoreTests
     public async Task ReapOrphanedRunning_RequeuesRunsWhoseNodeHasStoppedHeartbeating()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var deadNode = "reap-dead-" + Guid.NewGuid().ToString("N")[..8];
         var goneNode = "reap-gone-" + Guid.NewGuid().ToString("N")[..8];
@@ -459,7 +459,7 @@ public sealed class RunQueueStoreTests
     public async Task ReapOrphanedRunning_FailsARunThatExhaustedItsAttempts()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var deadNode = "reap-cap-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -501,7 +501,7 @@ public sealed class RunQueueStoreTests
     public async Task ReapOrphanedRunning_RecordsCancelled_WhenAnOperatorCancelWasPending()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var deadNode = "reap-cancel-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -535,7 +535,7 @@ public sealed class RunQueueStoreTests
     public async Task ClaimFence_DropsAZombiesLateWrites_AfterTheRunWasRequeuedAndReclaimed()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var zombieNode = "fence-zombie-" + Guid.NewGuid().ToString("N")[..8];
         var successorNode = "fence-successor-" + Guid.NewGuid().ToString("N")[..8];
@@ -593,7 +593,7 @@ public sealed class RunQueueStoreTests
     public async Task ReapOrphanedRunning_LeavesRunsOfALiveNodeAlone()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var liveNode = "reap-live-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -627,7 +627,7 @@ public sealed class RunQueueStoreTests
     public async Task Fail_DrivesARunningRunToFailed_AndIsTerminalRespecting()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
 
         try
@@ -656,7 +656,7 @@ public sealed class RunQueueStoreTests
     public async Task CompleteFromArtifact_KeepsACompleteLiveTraceUnderStableIds_AppendingNothing()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var dir = NewTempDir();
 
@@ -710,7 +710,7 @@ public sealed class RunQueueStoreTests
     public async Task CompleteFromArtifact_AppendsOnlyTheTailWhenALiveFeedBrokeMidRun()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var dir = NewTempDir();
 

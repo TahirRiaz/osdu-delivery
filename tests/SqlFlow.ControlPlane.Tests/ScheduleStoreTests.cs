@@ -19,7 +19,7 @@ public sealed class ScheduleStoreTests
     public async Task ClaimFire_Concurrently_OnlyOneNodeWinsTheOccurrence()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var due = new DateTime(2026, 6, 19, 6, 0, 0, DateTimeKind.Utc);
         var nextA = due.AddDays(1);
@@ -52,7 +52,7 @@ public sealed class ScheduleStoreTests
     public async Task ListDue_ExcludesPausedAndFutureSchedules()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var pastDue = DateTime.UtcNow.AddMinutes(-5);
 
@@ -82,7 +82,7 @@ public sealed class ScheduleStoreTests
     public async Task UpsertYamlSchedule_PreservesAnApiPause_AcrossReSync()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, flowName) = NewIds();
         var now = DateTime.UtcNow;
 

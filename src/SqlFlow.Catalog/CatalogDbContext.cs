@@ -4,7 +4,7 @@ namespace SqlFlow.Catalog;
 
 /// <summary>
 /// The EF Core context for the shadow catalog (schema <c>catalog</c>). EF owns this schema: it is created and
-/// upgraded by migrations (<see cref="CatalogDatabase.MigrateAsync"/>), never by hand. This is the only place in
+/// created from this model (<see cref="CatalogDatabase.ProvisionAsync"/>), never by hand. This is the only place in
 /// the product that uses Entity Framework; the engine stays on direct ADO.NET.
 /// </summary>
 public sealed class CatalogDbContext : DbContext

@@ -21,7 +21,7 @@ public sealed class ExecutionModeApiTests
     public async Task Enqueue_PersistsTheOperation_OnTheRunRow()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var flowName = $"ao-queue-{Guid.NewGuid():N}";
 

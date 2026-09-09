@@ -24,7 +24,7 @@ public sealed class ActivityTraceApiTests
     public async Task Writer_AppendsOrderedEvents_AndPrunesToTheNewestActivitiesPerSubject()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var subject = Guid.NewGuid().ToString("N");
 
         try
@@ -85,7 +85,7 @@ public sealed class ActivityTraceApiTests
     public async Task Stream_PushesEventsAsTheyLand_ResumesFromCursor_AndEndsOnTerminal()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var subject = Guid.NewGuid().ToString("N");
         var t0 = new DateTime(2026, 7, 20, 8, 0, 0, DateTimeKind.Utc);
 
@@ -171,7 +171,7 @@ public sealed class ActivityTraceApiTests
     public async Task Stream_UnknownSubject_EndsIdleImmediately()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

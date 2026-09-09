@@ -25,7 +25,7 @@ public sealed class RunGroupStreamApiTests
     public async Task GroupStream_SnapshotsMembers_PushesLastActionAndStatusChanges_AndEndsWithTheRollup()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoId = FlowIdentity.FromName("cp_gstream_" + suffix);

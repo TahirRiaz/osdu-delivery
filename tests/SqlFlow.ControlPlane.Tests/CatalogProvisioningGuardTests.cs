@@ -5,7 +5,7 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The provisioning guardrails on <see cref="CatalogDatabase.MigrateExistingAsync"/>: the automatic paths
+/// The provisioning guardrails on <see cref="CatalogDatabase.ProvisionExistingAsync"/>: the automatic paths
 /// (control-plane startup, per-run write-back, db sync) must refuse to conjure a database, so a wrong or mistyped
 /// connection can never provision against the wrong (possibly production) server. Gated on a reachable server like
 /// the other DB-backed suites.
@@ -22,7 +22,7 @@ public sealed class CatalogProvisioningGuardTests
 
         // The server is reachable but this database does not exist: refuse, do not create.
         var ex = await Assert.ThrowsAsync<CatalogProvisioningException>(
-            () => CatalogDatabase.MigrateExistingAsync(missing));
+            () => CatalogDatabase.ProvisionExistingAsync(missing));
         Assert.Contains("does not exist", ex.Message);
         Assert.Contains(missingName, ex.Message);
         // The message is safe to log: it names the target but never a secret.
@@ -37,9 +37,9 @@ public sealed class CatalogProvisioningGuardTests
     {
         var cs = CatalogTestDb.Require();
         // Explicitly provision/upgrade the reachable test catalog (idempotent), so it exists with history.
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         // The guarded path then succeeds because the target is a real catalog.
-        await CatalogDatabase.MigrateExistingAsync(cs);
+        await CatalogDatabase.ProvisionExistingAsync(cs);
     }
 
     private static async Task<bool> DatabaseExistsAsync(string serverConnectionString, string databaseName)

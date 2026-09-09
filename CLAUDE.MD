@@ -40,16 +40,15 @@ This means: zero occurrences in prose, headings, descriptions, code comments, do
 
 The SQLFlow history is reachable through the `upstream` remote (the local SQLFlow V3 checkout) for reference; nothing is merged from it.
 
-## Catalog Schema Changes Require a Migration
+## The EF Model Is The Catalog Schema
 
-**Never change the catalog's shape without its EF Core migration.** Any edit to `src/SqlFlow.Catalog/CatalogEntities.cs` or the model configuration in `CatalogDbContext.cs` (a new entity, a new column, a changed length, a new index) is incomplete until a migration exists. The catalog schema is upgraded ONLY by migrations, never by hand.
+**There are no migrations. The schema is created from the EF model, and nothing upgrades it in place.** `src/SqlFlow.Catalog/CatalogEntities.cs` and the model configuration in `CatalogDbContext.cs` are the master; `EnsureCreated` builds the database from them. The delivery ledger (`src/SqlFlow.Catalog/DeliveryEntities.cs`, schema `delivery`) is part of the same model.
 
-The delivery ledger (`src/SqlFlow.Catalog/DeliveryEntities.cs`, schema `delivery`) is part of the catalog model and follows the same rule.
-
-- Generate it with `dotnet ef migrations add <PascalCaseName>` from `src/SqlFlow.Catalog` (the design-time factory there makes this work without a startup project, and `migrations add` never touches a database). Commit all three artifacts together: the `{timestamp}_{Name}.cs` migration, its `.Designer.cs`, and the refreshed `CatalogDbContextModelSnapshot.cs`. The generated files are marked as generated code in `.editorconfig`, so style rules do not apply to them.
-- The SQLFlow migration history was squashed into one `Initial` migration at the fork; no OSDU Delivery catalog exists in production yet. Until the first production catalog is provisioned, re-squash into `Initial` rather than stacking migrations, so the shipped history starts clean.
-- Migrations are discovered from the `SqlFlow.Catalog` assembly. They apply automatically at control-plane startup (`BootstrapProvisioningService` when `ApplyMigrations=true`, the deployed default), via the CLI's `db` verbs, and in every integration test through `CatalogDatabase.MigrateAsync`.
-- The tell-tale of a forgotten migration: the model snapshot differs from the last migration, tests fail with "Invalid column name", or the control plane logs pending-migration warnings.
+- **A schema change means re-minting the database.** Change the entities, drop the database, provision it again (`sqlflow db migrate --create --db <ref>`, or a control plane started with `Bootstrap:AllowCreate=true` against an empty database). There is no incremental path, by design, while no production catalog exists.
+- Provisioning goes through `CatalogDatabase`: `ProvisionAsync` is the explicit path (may create the database), `ProvisionExistingAsync` the guarded one every automatic caller uses (refuses a missing database, and refuses to inject catalog tables into a populated non-catalog database).
+- **Both verify the schema against the model afterwards** and refuse to run when a table the model declares is missing, naming it. That is what turns "this database predates the current build" into one clear failure at startup instead of an `Invalid object name` 500 on whichever request first touches a missing table.
+- `sqlflow db status` reports whether the catalog is provisioned and which of the model's tables it lacks.
+- **This trades away the upgrade path.** Once a production catalog exists, the first schema change after it has no incremental route, and migrations have to be reintroduced against a live database. That was a deliberate choice while the model is still moving daily.
 
 ## Never Change a Flow's Source or Destination
 

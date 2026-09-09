@@ -408,8 +408,8 @@ copy-on-write file rewrites for a single row, optimistic concurrency instead of 
 locking, and no point lookups.
 
 Use SQL Server through EF Core, following SQLFlow's catalog pattern including its
-migration discipline: any change to the entities is incomplete until its migration
-exists, and the schema is upgraded only by migrations.
+provisioning discipline: the EF model is the master, the schema is created from it,
+and a change to the entities means the database is provisioned again.
 
 ### 7.2 Three levels
 
@@ -752,9 +752,9 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
   and camelCase keys; the platform reads the envelope (`schedule`, `mode`, `lifecycle`) and
   hands the body to the delivery kind through `IFlowDocumentKind`. Runs go through
   `IFlowDocumentExecutor`, target-side operations through `IComputeOperation`.
-- **A catalog on SQL Server through EF Core, with migrations as the only upgrade path.**
+- **A catalog on SQL Server through EF Core, with the model as the schema's only source.**
   The ledger's tables live in the catalog's `delivery` schema, so one database, one
-  migration history and one connection serve both.
+  model and one connection serve both.
 - **The run queue, nodes and pools, schedules and chains, the git sync, identity, tokens,
   notifications and the GUI workbench.** Every delivery run is a platform run with a live
   trace and a run artifact; every intervention is an activity in the ledger and, when it

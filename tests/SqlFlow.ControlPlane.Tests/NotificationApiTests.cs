@@ -24,7 +24,7 @@ public sealed class NotificationApiTests
     public async Task Options_ReportUnavailableChannels_OnAnUnconfiguredHost()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
         var (token, _, email) = await NewUserSessionAsync(client);
@@ -48,7 +48,7 @@ public sealed class NotificationApiTests
     public async Task Subscriptions_FullLifecycle_OnAnSmtpConfiguredHost()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = SmtpConfigured(new ControlPlaneAppFactory().WithCatalog(cs));
         using var client = factory.CreateClient();
         var (token, _, _) = await NewUserSessionAsync(client);
@@ -111,7 +111,7 @@ public sealed class NotificationApiTests
     public async Task TestSend_QueuesARealOutboxRow_VisibleInTheHistory()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = SmtpConfigured(new ControlPlaneAppFactory().WithCatalog(cs));
         using var client = factory.CreateClient();
         var (token, _, email) = await NewUserSessionAsync(client);
@@ -139,7 +139,7 @@ public sealed class NotificationApiTests
     public async Task BootstrapSession_HasNoAccount_AndIsRefused()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
 
@@ -159,7 +159,7 @@ public sealed class NotificationApiTests
     public async Task Digests_AreGeneratedOnDemand_ListedEstateWide_AndOpenable()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
         var (token, _, _) = await NewUserSessionAsync(client);
@@ -205,7 +205,7 @@ public sealed class NotificationApiTests
     public async Task Digests_RejectAPeriodOutsideTheServedBounds()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
         var (token, _, _) = await NewUserSessionAsync(client);
@@ -236,7 +236,7 @@ public sealed class NotificationApiTests
     public async Task Digest_ForToday_IsClampedToNow_RatherThanRefused()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
         var (token, _, _) = await NewUserSessionAsync(client);
@@ -257,7 +257,7 @@ public sealed class NotificationApiTests
     public async Task Digest_IsSentThroughTheCallersOwnSubscription_AndAppearsInTheHistory()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         using var factory = SmtpConfigured(new ControlPlaneAppFactory().WithCatalog(cs));
         using var client = factory.CreateClient();
         var (token, _, email) = await NewUserSessionAsync(client);

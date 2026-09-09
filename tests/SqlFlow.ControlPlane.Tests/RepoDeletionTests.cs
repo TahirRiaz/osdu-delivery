@@ -22,7 +22,7 @@ public sealed class RepoDeletionTests
     public async Task DeleteAsync_PurgesEveryRepoScopedRow_DropsTheSource_AndLeavesGlobalAndOtherRepoRows()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "del_" + suffix;
@@ -111,7 +111,7 @@ public sealed class RepoDeletionTests
     public async Task DeleteAsync_ForUnknownRepo_ReturnsNull()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var db = CatalogDatabase.Create(cs);
         Assert.Null(await RepoStore.DeleteAsync(db, Guid.NewGuid()));
@@ -122,7 +122,7 @@ public sealed class RepoDeletionTests
     public async Task DeleteSource_RemovesASourceOnlyRow_AndReportsUnknown()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var name = "srconly_" + suffix;
@@ -163,7 +163,7 @@ public sealed class RepoDeletionTests
     public async Task DeleteRepoEndpoint_ForUnknownId_Returns404_UnderOperateScope()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();

@@ -24,7 +24,7 @@ public sealed class RunPinningTests
     public async Task Enqueue_WithoutSha_PinsToTheLastSyncedCommit()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
 
         try
@@ -48,7 +48,7 @@ public sealed class RunPinningTests
     public async Task Enqueue_WithExplicitSha_HonorsItOverTheSyncedCommit()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
         const string explicitSha = "fedcba9876543210fedcba9876543210fedcba98";
 
@@ -73,7 +73,7 @@ public sealed class RunPinningTests
     public async Task Enqueue_WhenTheRepoHasNoManagedSource_StaysUnpinned()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
 
         try
@@ -97,7 +97,7 @@ public sealed class RunPinningTests
     public async Task Enqueue_WhenTheRepoHasNoRemoteToMaterializeFrom_StaysUnpinned()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
 
         try
@@ -123,7 +123,7 @@ public sealed class RunPinningTests
     public async Task TriggerApi_PinsTheRun_AndTheDetailShowsTheCommit()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = UniqueName();
 
         try

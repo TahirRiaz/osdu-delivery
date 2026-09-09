@@ -23,7 +23,7 @@ public sealed class CatalogReadApiIntegrationTests
     public async Task ReadApi_OverSeededCatalog_ReturnsReposPipelinesDetailAndHandlesMissing()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_api_" + suffix;

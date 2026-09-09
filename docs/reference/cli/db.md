@@ -14,11 +14,11 @@ sqlflow db sync    [path] [--db <conn-ref>] [--repo <name>] [--repo-url <url>]
 
 The command takes a subcommand instead of a document:
 
-- `migrate` upgrades an existing catalog to the current schema version by applying all pending EF Core migrations. It does NOT auto-create a missing database: without `--create` it calls `CatalogDatabase.MigrateExistingAsync` and refuses a missing or non-catalog database, so a mistyped `--db` can never silently provision the wrong (possibly production) server. Pass `--create` to provision a new catalog (create the database, or initialise the schema in an empty one).
-- `status` reports applied versus pending migrations without changing anything.
-- `sync` migrates first (never creates), then projects the local estate under `[path]` into the catalog: each flow document becomes a pipeline row, YAML-declared schedules are mirrored, each `run.json` in the estate's run history becomes a run row with its events, and the delivery kind's sync extension projects the mapping documents and the snapshot stores.
+- `migrate` provisions the catalog schema from the EF model and verifies an existing one against it. It does NOT auto-create a missing database: without `--create` it calls `CatalogDatabase.ProvisionExistingAsync` and refuses a missing or non-catalog database, so a mistyped `--db` can never silently provision the wrong (possibly production) server. Pass `--create` to provision a new catalog (create the database, or initialise the schema in an empty one).
+- `status` reports whether the catalog is provisioned and which of the model's tables it lacks, without changing anything.
+- `sync` verifies (and initialises, when empty) the catalog first, never creating the database, then projects the local estate under `[path]` into the catalog: each flow document becomes a pipeline row, YAML-declared schedules are mirrored, each `run.json` in the estate's run history becomes a run row with its events, and the delivery kind's sync extension projects the mapping documents and the snapshot stores.
 
-Migration history is tracked in `catalog.__CatalogMigrationsHistory`; the platform tables live in the SQL Server schema `catalog` (`CatalogDbContext.SchemaName`) and the ledger in `delivery`. The catalog is the only place in the product that uses Entity Framework Core, and its schema changes only through migrations (src/SqlFlow.Catalog/Migrations). The control plane applies the same migrations at startup (`Bootstrap:ApplyMigrations`, on by default), and its managed git sync runs the same projection over the repositories it pulls ([control plane](../concepts/control-plane.md#managed-git-to-catalog-sync-repo-sources)); this verb is the local, manual counterpart.
+The platform tables live in the SQL Server schema `catalog` (`CatalogDbContext.SchemaName`) and the ledger in `delivery`. The catalog is the only place in the product that uses Entity Framework Core. There are no migrations: the schema is created from the EF model and nothing upgrades it in place, so a model change means dropping the database and provisioning it again (see the repository's CLAUDE.MD). The control plane provisions the same way at startup (`Bootstrap:ApplyMigrations`, on by default), and its managed git sync runs the same projection over the repositories it pulls ([control plane](../concepts/control-plane.md#managed-git-to-catalog-sync-repo-sources)); this verb is the local, manual counterpart.
 
 ## Arguments
 
@@ -34,7 +34,7 @@ All flags take their value as the next argument (`--db "$REF"`, not `--db=REF`).
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--db` | connection reference | `${env:SQLFLOW_CATALOG_DB}` | Reference to the catalog connection string, resolved through the secret resolver (`${env:NAME}` and `${keyvault:vault/secret}`), with local values supplied by the git-ignored `.sqlflow/env` file, searched from the current directory upward. |
-| `--create` | switch | off | `migrate` only: provision a new catalog (create the database, or initialise the schema in an empty database) before applying migrations. Without it, `migrate` upgrades an existing catalog only. |
+| `--create` | switch | off | `migrate` only: provision a new catalog, creating the database itself when it does not exist. Without it, `migrate` initialises an existing but empty database and otherwise only verifies. |
 | `--repo` | string | folder name of `[path]`, fallback `default` | `sync` only: the repository name the synced estate is attributed to. The repository id is derived from the name, and pipelines, schedules, runs, mappings and snapshots are scoped to it inside the catalog. |
 | `--repo-url` | string | (none) | `sync` only: records the git remote URL on the repo row. A later sync without it preserves the previously recorded URL. |
 
@@ -48,33 +48,37 @@ WARN  --db embeds a credential on the command line (it lands in shell history). 
 
 ### migrate
 
-`db migrate` without `--create` calls `CatalogDatabase.MigrateExistingAsync` (src/SqlFlow.Catalog/CatalogDatabase.cs): it applies exactly the pending migrations to an existing catalog and refuses, with exit 1, a database that does not exist or one that holds tables but no catalog migration history:
+`db migrate` without `--create` calls `CatalogDatabase.ProvisionExistingAsync` (src/SqlFlow.Catalog/CatalogDatabase.cs): it initialises an existing but empty database, verifies it against the model, and refuses, with exit 1, a database that does not exist, one that holds tables but none of the catalog's own, or one missing tables this build declares:
 
 ```text
 ERROR  catalog 'migrate' failed: The catalog database does not exist (server '<server>', database '<db>'). Refusing to create it automatically. Provision it explicitly with 'sqlflow db migrate --create --db <ref>', or point the connection at your existing catalog.
-ERROR  catalog 'migrate' failed: The database (server '<server>', database '<db>') exists and contains <N> table(s) but has no SqlFlow catalog schema. Refusing to initialise catalog tables into a populated database that may not be a catalog. If this really is a new, dedicated catalog database, provision it with 'sqlflow db migrate --create'.
+ERROR  catalog 'migrate' failed: The database (server '<server>', database '<db>') exists and contains <N> table(s) but none of the catalog's own. Refusing to initialise catalog tables into a populated database that may not be a catalog. If this really is a new, dedicated catalog database, provision it with 'sqlflow db migrate --create'.
 ```
 
-Add `--create` to call `CatalogDatabase.MigrateAsync` instead, which on an empty server creates the database and the `catalog` schema before applying migrations. Each migration runs in its own transaction, so no migration is ever half-applied. The initial CREATE DATABASE itself is not transactional, but re-running `migrate` is always safe, so the command is idempotent (a no-op when already current). On success it reads the status back and prints one line:
+Add `--create` to call `CatalogDatabase.ProvisionAsync` instead, which on an empty server creates the database and then the whole schema from the EF model. Re-running `migrate` is always safe, so the command is idempotent (a no-op when the catalog already matches the model). On success it prints one line:
 
 ```text
-OK   catalog database current at '<last-migration>' (N migration(s) applied, 0 pending).
+OK   catalog database provisioned and matches this build's model.
 ```
 
-When no migrations have ever been applied, the migration name is printed as `(none)`. The migration history was squashed into a single `Initial` migration at the fork, so a freshly provisioned catalog reports one migration applied.
+Because nothing upgrades a schema in place, `migrate` also refuses a database that is missing tables this build declares, naming them:
 
-For EF design-time tooling (`dotnet ef migrations add`), the factory in src/SqlFlow.Catalog/CatalogDatabase.cs reads `SQLFLOW_CATALOG_DB` and falls back to `Server=(localdb)\MSSQLLocalDB;Database=SqlFlowCatalog;Trusted_Connection=True;TrustServerCertificate=True`.
+```text
+ERROR  catalog 'migrate' failed: The catalog database (server '<server>', database '<db>') is missing <N> table(s) this build declares: delivery.UpdateTag. The schema is created from the model and nothing upgrades it in place, so a database provisioned before a model change has to be provisioned again: drop it and run 'sqlflow db migrate --create --db <ref>'.
+```
 
 ### status
 
-`db status` compares the migrations this build knows against those recorded in the database and prints:
+`db status` compares the tables the EF model declares against those the database actually has, and prints one of:
 
 ```text
-catalog: N migration(s) applied, M pending.
-  pending: <migration-name>
+catalog: not provisioned (the database holds none of the catalog's tables).
+catalog: provisioned and matches this build's model.
+catalog: provisioned but missing N table(s) this build declares.
+  missing: <schema>.<table>
 ```
 
-with one `pending:` line (indented two spaces) per pending migration. It exits 0 when the database is current and 2 when any migration is pending, so it works as a CI drift gate.
+with one `missing:` line (indented two spaces) per absent table. It exits 0 when the database matches the model and 2 otherwise, so it works as a CI drift gate.
 
 ### sync
 
@@ -100,7 +104,7 @@ OK   synced '<path>': pipelines +A added, U updated, N unchanged, D deactivated,
 
 ### Run write-back (keeping the catalog current without manual syncs)
 
-After any `sqlflow run`, when `--db` is passed or `SQLFLOW_CATALOG_DB` is set, the produced run is recorded into the catalog automatically (`RecordRunsInCatalogAsync` in src/SqlFlow.Cli/Program.cs): the repo row and the single flow that ran are upserted with the same redaction, hashing and projection the full sync uses, and the run and its events are inserted once by id. Opt out with `--no-db-sync`. Repository attribution follows `--repo`, then `SQLFLOW_REPO`, then the flow document's folder name; `--repo-url` is honored. The catalog is upgraded first with the same guarded migration `sync` uses (never created). The write-back deliberately does not scan sibling flows, mirror schedules, or reconcile mappings and snapshots; those remain `db sync`'s job. On success it prints, after the run's own output (not with `--json`), plus up to 10 warnings:
+After any `sqlflow run`, when `--db` is passed or `SQLFLOW_CATALOG_DB` is set, the produced run is recorded into the catalog automatically (`RecordRunsInCatalogAsync` in src/SqlFlow.Cli/Program.cs): the repo row and the single flow that ran are upserted with the same redaction, hashing and projection the full sync uses, and the run and its events are inserted once by id. Opt out with `--no-db-sync`. Repository attribution follows `--repo`, then `SQLFLOW_REPO`, then the flow document's folder name; `--repo-url` is honored. The catalog is verified first with the same guarded provisioning `sync` uses (never created). The write-back deliberately does not scan sibling flows, mirror schedules, or reconcile mappings and snapshots; those remain `db sync`'s job. On success it prints, after the run's own output (not with `--json`), plus up to 10 warnings:
 
 ```text
   catalog: 1 of 1 run(s) recorded into [<repo>].
@@ -124,10 +128,10 @@ Provision a catalog and check it, using the canonical environment variable:
 export SQLFLOW_CATALOG_DB="Server=localhost;Database=SqlFlowCatalog;Integrated Security=True;TrustServerCertificate=True"
 
 sqlflow db migrate --create
-# OK   catalog database current at '20260908110714_Initial' (1 migration(s) applied, 0 pending).
+# OK   catalog database provisioned and matches this build's model.
 
 sqlflow db status
-# catalog: 1 migration(s) applied, 0 pending.
+# catalog: provisioned and matches this build's model.
 ```
 
 Project the sample estate (samples/recall-welllog: one flow, one mapping, one schema snapshot and one reference snapshot version) into the catalog under the repository name `recall-welllog`, from a fresh clone with no local run history:
@@ -158,16 +162,16 @@ fi
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | `migrate` or `sync` succeeded (warnings on stderr do not affect it); `status` found no pending migrations. |
+| 0 | `migrate` or `sync` succeeded (warnings on stderr do not affect it); `status` found the database matching the model. |
 | 1 | Unknown or missing subcommand (usage printed); the `--db` reference failed to resolve; the provisioning guard refused; or any EF Core / SqlClient failure, reported as `ERROR  catalog '<sub>' failed: <redacted message>`. |
-| 2 | `status` found pending migrations. |
+| 2 | `status` found the database unprovisioned, or missing tables the model declares. |
 
 Error messages pass through the credential redactor, so a connection string quoted by a driver exception never leaks a password into logs.
 
 ## See also
 
-- [Control plane](../concepts/control-plane.md): startup migrations, the managed git sync that runs the same projection, the durable run queue.
+- [Control plane](../concepts/control-plane.md): startup provisioning, the managed git sync that runs the same projection, the durable run queue.
 - [sqlflow worker](worker.md): the compute node that drains the queue the catalog holds.
-- [The ledger](../../delivery/ledger.md): the `delivery` schema, `delivery.Mapping` and `delivery.Snapshot`, retention, migrations.
+- [The ledger](../../delivery/ledger.md): the `delivery` schema, `delivery.Mapping` and `delivery.Snapshot`, retention, provisioning.
 - [Architecture](../../architecture.md): where the catalog sits in the platform.
 - [Environment variables](../../environment-variables.md): `SQLFLOW_CATALOG_DB`, `SQLFLOW_REPO`, and the `.sqlflow/env` file.

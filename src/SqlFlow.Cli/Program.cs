@@ -603,11 +603,10 @@ internal static class Program
     /// <summary>
     /// The shadow-catalog (database mode) operations: <c>sqlflow db migrate|sync|status [path] [--db &lt;ref&gt;]</c>.
     /// The catalog is an EF-managed read-model of the git/YAML estate and the on-disk run history; git stays the
-    /// source of truth. <c>migrate</c> upgrades an existing catalog to the current schema version, and with
-    /// <c>--create</c> provisions a new one (create the database, or initialise the catalog in an empty database);
-    /// without <c>--create</c> a missing or non-catalog database is refused. <c>sync</c> projects the estate +
-    /// run.json artifacts into an existing catalog (upgrading it first); <c>status</c> reports applied vs pending
-    /// migrations. The connection is a reference (default <c>${env:SQLFLOW_CATALOG_DB}</c>), never an embedded secret.
+    /// source of truth. <c>migrate</c> provisions the schema from the EF model, and with <c>--create</c> may
+    /// create the database itself; without <c>--create</c> a missing or non-catalog database is refused.
+    /// <c>sync</c> projects the estate + run.json artifacts into an existing catalog; <c>status</c> reports whether
+    /// the catalog is provisioned and which of the model's tables it is missing. The connection is a reference (default <c>${env:SQLFLOW_CATALOG_DB}</c>), never an embedded secret.
     /// </summary>
     private static async Task<int> RunDbAsync(IServiceProvider provider, string[] positional, string[] args)
     {
@@ -631,30 +630,35 @@ internal static class Program
                     // it, migrate upgrades an EXISTING catalog only and refuses anything else.
                     if (args.Contains("--create"))
                     {
-                        await CatalogDatabase.MigrateAsync(connectionString).ConfigureAwait(false);
+                        await CatalogDatabase.ProvisionAsync(connectionString).ConfigureAwait(false);
                     }
                     else
                     {
-                        await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
+                        await CatalogDatabase.ProvisionExistingAsync(connectionString).ConfigureAwait(false);
                     }
 
-                    var (applied, pending) = await CatalogDatabase.StatusAsync(connectionString).ConfigureAwait(false);
-                    Console.WriteLine(
-                        $"OK   catalog database current at '{(applied.Count > 0 ? applied[^1] : "(none)")}' " +
-                        $"({applied.Count} migration(s) applied, {pending.Count} pending).");
+                    Console.WriteLine("OK   catalog database provisioned and matches this build's model.");
                     return 0;
                 }
 
                 case "status":
                 {
-                    var (applied, pending) = await CatalogDatabase.StatusAsync(connectionString).ConfigureAwait(false);
-                    Console.WriteLine($"catalog: {applied.Count} migration(s) applied, {pending.Count} pending.");
-                    foreach (var migration in pending)
+                    var (provisioned, missing) = await CatalogDatabase.StatusAsync(connectionString).ConfigureAwait(false);
+                    if (!provisioned)
                     {
-                        Console.WriteLine($"  pending: {migration}");
+                        Console.WriteLine("catalog: not provisioned (the database holds none of the catalog's tables).");
+                        return 2;
                     }
 
-                    return pending.Count == 0 ? 0 : 2;
+                    Console.WriteLine(missing.Count == 0
+                        ? "catalog: provisioned and matches this build's model."
+                        : $"catalog: provisioned but missing {missing.Count} table(s) this build declares.");
+                    foreach (var table in missing)
+                    {
+                        Console.WriteLine($"  missing: {table}");
+                    }
+
+                    return missing.Count == 0 ? 0 : 2;
                 }
 
                 case "sync":
@@ -664,9 +668,10 @@ internal static class Program
                         ? r
                         : (new DirectoryInfo(Path.GetFullPath(directory)).Name is { Length: > 0 } folder ? folder : "default");
                     var repoUrl = GetOption(args, "--repo-url");
-                    // Upgrade an existing catalog's schema first, so a sync just works. Never creates: point at an
-                    // existing catalog, or provision one with 'sqlflow db migrate --create'.
-                    await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
+                    // Verify (and initialise, when empty) an existing catalog first, so a sync just works. Never
+                    // creates the database: point at an existing catalog, or provision one with
+                    // 'sqlflow db migrate --create'.
+                    await CatalogDatabase.ProvisionExistingAsync(connectionString).ConfigureAwait(false);
                     await using var context = CatalogDatabase.Create(connectionString);
                     var sync = new CatalogSync(provider.GetRequiredService<YamlDocumentLoader>(), provider.GetServices<ICatalogSyncExtension>());
                     var result = await sync.SyncAsync(context, directory, repoName, repoUrl, DateTime.UtcNow).ConfigureAwait(false);
@@ -772,9 +777,9 @@ internal static class Program
             var repoUrl = GetOption(args, "--repo-url");
 
             var connectionString = provider.GetRequiredService<ISecretResolver>().Resolve(reference);
-            // Upgrade an existing catalog's schema once, so a configured run's write-back just works. Never
-            // creates: a mistyped SQLFLOW_CATALOG_DB must not silently conjure a catalog during a run.
-            await CatalogDatabase.MigrateExistingAsync(connectionString).ConfigureAwait(false);
+            // Verify the catalog once, so a configured run's write-back just works. Never creates the database:
+            // a mistyped SQLFLOW_CATALOG_DB must not silently conjure a catalog during a run.
+            await CatalogDatabase.ProvisionExistingAsync(connectionString).ConfigureAwait(false);
 
             var sync = new CatalogSync(provider.GetRequiredService<YamlDocumentLoader>(), provider.GetServices<ICatalogSyncExtension>());
             var recorded = 0;

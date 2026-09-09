@@ -120,7 +120,7 @@ public sealed class FlowProposalApiTests
     public async Task Propose_FlowThatWouldNeverImport_Returns422_BeforeAnyGitWork()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var sourceId = Guid.NewGuid();
 
         await using (var db = CatalogDatabase.Create(cs))

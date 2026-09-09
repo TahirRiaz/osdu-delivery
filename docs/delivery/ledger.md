@@ -2,10 +2,10 @@
 
 The ledger is the system ([design.md](design.md) section 7): the tables in the catalog database's `delivery`
 schema that say, per record, what OSDU holds, what is waiting, and everything that ever happened to it. It is
-upgraded only by the catalog's EF Core migrations. Everything an operator or a dashboard asks is answered from
+created from the catalog's EF model. Everything an operator or a dashboard asks is answered from
 here, and every answer is index-backed.
 
-The ledger sits in the same database as the platform's catalog, so one connection, one migration history and
+The ledger sits in the same database as the platform's catalog, so one connection, one model and
 one backup cover both, and a run row and the attempts it produced are joined by id.
 
 ## Tables
@@ -186,15 +186,17 @@ source key and target id. A slower "contains" mode exists for the rare case, and
 
 Attempts grow per delivery try. `POST /api/v1/delivery/ledger/prune` (admin scope) with `olderThanDays`
 deletes older attempts while keeping the latest per record, so a record's last outcome is always explainable.
-Activities are small and kept; partition either table by time in a migration if volume demands it (see
+Activities are small and kept; partition either table by time in the model if volume demands it (see
 [decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)).
 
 For the analytical view, publish the known state (a `known-state` run) and, when needed, snapshot the tables
 into Delta. The ledger is a live status store, not a reporting table.
 
-## Migrations
+## Provisioning
 
 The ledger's model is part of the catalog's: `src/SqlFlow.Catalog/DeliveryEntities.cs` declares the entities
-and `DeliveryModel.Configure` the schema, and the catalog's migration covers both. Generate a migration from
-`src/SqlFlow.Catalog` exactly as for any other catalog change (see the repository's CLAUDE.MD); the control
-plane applies it on start, and `sqlflow db migrate` applies it by hand.
+and `DeliveryModel.Configure` the schema. There are no migrations: the database is created from the EF model,
+and nothing upgrades it in place, so a change to these entities means dropping the database and provisioning it
+again (see the repository's CLAUDE.MD). The control plane provisions on start against an empty database when
+`Bootstrap:AllowCreate` is set; `sqlflow db migrate --create` does it by hand, and `sqlflow db status` reports
+whether the database matches the model.

@@ -1,35 +1,36 @@
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace SqlFlow.Catalog;
 
 /// <summary>
-/// The bootstrap and upgrade surface for the shadow catalog database. There are two entry points with different
-/// safety postures:
+/// The provisioning surface for the catalog database. The EF model is the master: the schema is created from it
+/// directly, and there are no migrations. While no production catalog exists, a schema change means dropping the
+/// database and provisioning it again, which is deliberate (see the repository's CLAUDE.MD).
 /// <list type="bullet">
-/// <item><see cref="MigrateAsync"/> is the EXPLICIT provisioning path: on an empty server it creates the database
-/// and the <c>catalog</c> schema, and on an existing database it applies the pending migrations. Use it only when
-/// the caller has knowingly asked to provision (the <c>sqlflow db migrate --create</c> verb, tests, ephemeral
-/// databases).</item>
-/// <item><see cref="MigrateExistingAsync"/> is the GUARDED path used by every AUTOMATIC caller (control-plane
+/// <item><see cref="ProvisionAsync"/> is the EXPLICIT path: on an empty server it creates the database and the whole
+/// schema from the model. Reserve it for callers that have deliberately asked to provision (the
+/// <c>sqlflow db migrate --create</c> verb, tests, ephemeral databases).</item>
+/// <item><see cref="ProvisionExistingAsync"/> is the GUARDED path used by every AUTOMATIC caller (control-plane
 /// startup, the per-run catalog write-back, <c>db sync</c>): it refuses to create a missing database or to inject
 /// catalog tables into a populated non-catalog database, so a wrong or mistyped connection fails loudly instead of
 /// provisioning against the wrong (possibly production) server.</item>
 /// </list>
-/// Both apply exactly the pending migrations tracked in <c>catalog.__CatalogMigrationsHistory</c>, each in its own
-/// transaction (no migration is ever half-applied), and both are idempotent (a no-op when already current).
+/// Both are idempotent: an already-provisioned catalog is left alone. Because nothing alters an existing schema,
+/// both also VERIFY it against the model afterwards and refuse to run against a database that is missing tables the
+/// code needs, so a stale database fails at startup with the tables named instead of surfacing later as
+/// "Invalid object name" on whichever request happened to touch one.
 /// </summary>
 public static class CatalogDatabase
 {
     /// <summary>
-    /// THE single definition of how a catalog <see cref="DbContext"/> talks to SQL Server: the migrations history
-    /// table pinned into the catalog schema, and transient-error resiliency. Every catalog context in the product is
-    /// configured through here (this class's <see cref="BuildOptions"/> for the CLI, the worker and bootstrap; the
-    /// control plane's pooled registration for the API), so no host can end up with weaker resiliency than another.
+    /// THE single definition of how a catalog <see cref="DbContext"/> talks to SQL Server: transient-error
+    /// resiliency, applied everywhere. Every catalog context in the product is configured through here (this
+    /// class's <see cref="BuildOptions"/> for the CLI, the worker and bootstrap; the control plane's pooled
+    /// registration for the API), so no host can end up with weaker resiliency than another.
     ///
     /// The resiliency is not optional polish. The catalog is a genuinely concurrent OLTP workload: one schedule fire
     /// enqueues every member flow at once and each run writes its own claim, status, event and statement rows, and
@@ -49,11 +50,7 @@ public static class CatalogDatabase
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-        builder.UseSqlServer(connectionString, sql =>
-        {
-            sql.MigrationsHistoryTable("__CatalogMigrationsHistory", CatalogDbContext.SchemaName);
-            sql.EnableRetryOnFailure();
-        });
+        builder.UseSqlServer(connectionString, sql => sql.EnableRetryOnFailure());
     }
 
     /// <summary>The EF options for the catalog, configured by <see cref="Configure"/>.</summary>
@@ -67,22 +64,27 @@ public static class CatalogDatabase
 
     public static CatalogDbContext Create(string connectionString) => new(BuildOptions(connectionString));
 
-    /// <summary>EXPLICIT provisioning: creates the database if missing and applies all pending migrations. This is
-    /// the only path that may bring a database into existence, so reserve it for callers that have deliberately
-    /// asked to provision (the <c>db migrate --create</c> verb, tests). Automatic callers use
-    /// <see cref="MigrateExistingAsync"/> instead.</summary>
-    public static async Task MigrateAsync(string connectionString, CancellationToken ct = default)
+    /// <summary>
+    /// EXPLICIT provisioning: creates the database if missing and the whole schema from the model if the database
+    /// holds no tables. This is the only path that may bring a database into existence, so reserve it for callers
+    /// that have deliberately asked to provision (the <c>db migrate --create</c> verb, tests). Automatic callers use
+    /// <see cref="ProvisionExistingAsync"/> instead. An already-provisioned catalog is left untouched and verified.
+    /// </summary>
+    public static async Task ProvisionAsync(string connectionString, CancellationToken ct = default)
     {
         await using var context = Create(connectionString);
-        await context.Database.MigrateAsync(ct).ConfigureAwait(false);
+        await context.Database.EnsureCreatedAsync(ct).ConfigureAwait(false);
+        await VerifyAsync(context, connectionString, ct).ConfigureAwait(false);
     }
 
-    /// <summary>GUARDED migration for automatic callers: applies pending migrations to an EXISTING catalog, but
-    /// never creates a missing database and never initialises catalog tables into a database that already holds
-    /// unrelated objects. Throws <see cref="CatalogProvisioningException"/> in those cases (a configuration
-    /// mistake to surface, not retry). A server that is unreachable throws the underlying transient error, which a
-    /// retrying caller can distinguish from the deterministic <see cref="CatalogProvisioningException"/>.</summary>
-    public static async Task MigrateExistingAsync(string connectionString, CancellationToken ct = default)
+    /// <summary>
+    /// GUARDED provisioning for automatic callers: initialises an EXISTING but empty database, and otherwise only
+    /// verifies. It never creates a missing database and never initialises catalog tables into a database that
+    /// already holds unrelated objects. Throws <see cref="CatalogProvisioningException"/> in those cases (a
+    /// configuration mistake to surface, not retry). A server that is unreachable throws the underlying transient
+    /// error, which a retrying caller can distinguish from the deterministic exception.
+    /// </summary>
+    public static async Task ProvisionExistingAsync(string connectionString, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         await using var context = Create(connectionString);
@@ -99,24 +101,41 @@ public static class CatalogDatabase
                 "connection at your existing catalog.");
         }
 
-        // The database exists. With no catalog migration history it is either an empty database made for the
-        // catalog (safe to initialise) or, dangerously, an unrelated populated database (e.g. a data warehouse)
-        // this connection reached by mistake. Never inject catalog tables into the latter.
-        var applied = await context.Database.GetAppliedMigrationsAsync(ct).ConfigureAwait(false);
-        if (!applied.Any())
+        // The database exists. With none of the catalog's own tables present it is either an empty database made
+        // for the catalog (safe to initialise) or, dangerously, an unrelated populated database (e.g. a data
+        // warehouse) this connection reached by mistake. Never inject catalog tables into the latter.
+        var present = await PresentTablesAsync(context, ct).ConfigureAwait(false);
+        if (present.Count == 0)
         {
             var existingTables = await CountUserTablesAsync(context, ct).ConfigureAwait(false);
             if (existingTables > 0)
             {
                 throw new CatalogProvisioningException(
                     $"The database ({DescribeTarget(connectionString)}) exists and contains {existingTables} table(s) " +
-                    "but has no SqlFlow catalog schema. Refusing to initialise catalog tables into a populated database " +
+                    "but none of the catalog's own. Refusing to initialise catalog tables into a populated database " +
                     "that may not be a catalog. If this really is a new, dedicated catalog database, provision it with " +
                     "'sqlflow db migrate --create'.");
             }
+
+            await context.Database.EnsureCreatedAsync(ct).ConfigureAwait(false);
         }
 
-        await context.Database.MigrateAsync(ct).ConfigureAwait(false);
+        await VerifyAsync(context, connectionString, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether the catalog is provisioned, and which of the model's tables the database is missing. Nothing alters
+    /// an existing schema, so a non-empty missing list means the database predates a model change and has to be
+    /// provisioned again.
+    /// </summary>
+    public static async Task<(bool Provisioned, IReadOnlyList<string> Missing)> StatusAsync(
+        string connectionString, CancellationToken ct = default)
+    {
+        await using var context = Create(connectionString);
+        var expected = ExpectedTables(context);
+        var present = await PresentTablesAsync(context, ct).ConfigureAwait(false);
+        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
+        return (present.Count > 0, missing);
     }
 
     /// <summary>A human-readable, secret-free description of a connection's target (server and database), for logs
@@ -136,9 +155,75 @@ public static class CatalogDatabase
         }
     }
 
-    /// <summary>Counts real user tables in the connected database, ignoring the EF migrations-history table an
-    /// interrupted first run may have left behind. Used to tell an empty database (safe to initialise) from a
-    /// populated one (refuse).</summary>
+    /// <summary>
+    /// Refuses to run against a database that is missing tables the model declares. Without migrations nothing
+    /// upgrades a schema in place, so this is what turns "the database predates this build" into one clear failure
+    /// at startup rather than an "Invalid object name" 500 on whichever request first touches a missing table.
+    /// </summary>
+    private static async Task VerifyAsync(CatalogDbContext context, string connectionString, CancellationToken ct)
+    {
+        var expected = ExpectedTables(context);
+        var present = await PresentTablesAsync(context, ct).ConfigureAwait(false);
+        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        throw new CatalogProvisioningException(
+            $"The catalog database ({DescribeTarget(connectionString)}) is missing {missing.Count} table(s) this build " +
+            $"declares: {string.Join(", ", missing)}. The schema is created from the model and nothing upgrades it in " +
+            "place, so a database provisioned before a model change has to be provisioned again: drop it and run " +
+            "'sqlflow db migrate --create --db <ref>'.");
+    }
+
+    /// <summary>Every table the model declares, as <c>schema.table</c>.</summary>
+    private static HashSet<string> ExpectedTables(CatalogDbContext context)
+    {
+        var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entity in context.Model.GetEntityTypes())
+        {
+            if (entity.GetTableName() is { Length: > 0 } table)
+            {
+                tables.Add((entity.GetSchema() ?? CatalogDbContext.SchemaName) + "." + table);
+            }
+        }
+
+        return tables;
+    }
+
+    /// <summary>The model's tables that the connected database actually has, as <c>schema.table</c>.</summary>
+    private static async Task<HashSet<string>> PresentTablesAsync(CatalogDbContext context, CancellationToken ct)
+    {
+        var expected = ExpectedTables(context);
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT s.name + N'.' + t.name FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id";
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var name = reader.GetString(0);
+                if (expected.Contains(name))
+                {
+                    present.Add(name);
+                }
+            }
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+
+        return present;
+    }
+
+    /// <summary>Counts real user tables in the connected database. Used to tell an empty database (safe to
+    /// initialise) from a populated one (refuse).</summary>
     private static async Task<int> CountUserTablesAsync(CatalogDbContext context, CancellationToken ct)
     {
         var connection = context.Database.GetDbConnection();
@@ -146,9 +231,7 @@ public static class CatalogDatabase
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText =
-                "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id " +
-                "WHERE NOT (s.name = N'catalog' AND t.name = N'__CatalogMigrationsHistory')";
+            command.CommandText = "SELECT COUNT(*) FROM sys.tables";
             var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
             return result is int n ? n : Convert.ToInt32(result, CultureInfo.InvariantCulture);
         }
@@ -157,23 +240,13 @@ public static class CatalogDatabase
             await context.Database.CloseConnectionAsync().ConfigureAwait(false);
         }
     }
-
-    /// <summary>The migration names this build knows (applied) vs. those already in the database (so a caller can
-    /// report drift). Empty pending means the database is current.</summary>
-    public static async Task<(IReadOnlyList<string> Applied, IReadOnlyList<string> Pending)> StatusAsync(
-        string connectionString, CancellationToken ct = default)
-    {
-        await using var context = Create(connectionString);
-        var applied = (await context.Database.GetAppliedMigrationsAsync(ct).ConfigureAwait(false)).ToList();
-        var pending = (await context.Database.GetPendingMigrationsAsync(ct).ConfigureAwait(false)).ToList();
-        return (applied, pending);
-    }
 }
 
 /// <summary>
-/// Raised by <see cref="CatalogDatabase.MigrateExistingAsync"/> when it refuses to provision: the target database
-/// does not exist, or exists but is not a SqlFlow catalog. It marks a deterministic configuration mistake (a wrong
-/// or mistyped connection), so callers surface it to the operator rather than retrying.
+/// Raised by <see cref="CatalogDatabase.ProvisionExistingAsync"/> when it refuses to provision: the target database
+/// does not exist, exists but is not a SqlFlow catalog, or is missing tables this build declares. It marks a
+/// deterministic configuration mistake (a wrong or mistyped connection, or a database that predates a model
+/// change), so callers surface it to the operator rather than retrying.
 /// </summary>
 public sealed class CatalogProvisioningException : Exception
 {
@@ -185,20 +258,5 @@ public sealed class CatalogProvisioningException : Exception
     public CatalogProvisioningException(string message, Exception innerException)
         : base(message, innerException)
     {
-    }
-}
-
-/// <summary>
-/// Design-time factory so the EF tools (<c>dotnet ef migrations add ...</c>) can construct the context without the
-/// app's DI. The connection string is irrelevant for generating migrations; a real value is only needed when the
-/// tool talks to a database, supplied via <c>SQLFLOW_CATALOG_DB</c>.
-/// </summary>
-public sealed class CatalogDbContextFactory : IDesignTimeDbContextFactory<CatalogDbContext>
-{
-    public CatalogDbContext CreateDbContext(string[] args)
-    {
-        var connectionString = Environment.GetEnvironmentVariable("SQLFLOW_CATALOG_DB")
-            ?? "Server=(localdb)\\MSSQLLocalDB;Database=SqlFlowCatalog;Trusted_Connection=True;TrustServerCertificate=True";
-        return new CatalogDbContext(CatalogDatabase.BuildOptions(connectionString));
     }
 }

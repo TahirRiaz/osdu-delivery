@@ -33,7 +33,7 @@ public sealed class DashboardApiTests
     public async Task Summary_AggregatesEstateRunsAndQueue()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoId = FlowIdentity.FromName("dash_" + suffix);
         var flowName = "dash_flow_" + suffix;

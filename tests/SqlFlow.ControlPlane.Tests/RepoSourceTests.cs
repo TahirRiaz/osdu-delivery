@@ -52,7 +52,7 @@ public sealed class RepoSourceTests
     public async Task ManagedSync_PullsAGitRepo_AndProjectsItsFlowIntoTheCatalog()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "src_" + suffix;
         var flowName = "src_orders_" + suffix;
@@ -123,7 +123,7 @@ public sealed class RepoSourceTests
     public async Task TriggerNow_RequestsForcedLineage_AndASuccessfulSyncClearsIt()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var name = "src_force_" + suffix;
         var id = FlowIdentity.FromName($"reposource/{name}");

@@ -20,7 +20,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_SingleMember_EnqueuesOneRun_AndNoGroup()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         var solo = $"a_{suffix}";
 
@@ -50,7 +50,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_ManyMembers_EnqueuesOneWaveOrderedGroup()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         string copy = $"cpy_{suffix}", pre = $"pre_{suffix}", ods = $"ods_{suffix}", other = $"oth_{suffix}";
 
@@ -92,7 +92,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_BatchFilter_RunsOnlyTheTaggedMembers()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         string small1 = $"s1_{suffix}", small2 = $"s2_{suffix}", large = $"lg_{suffix}";
 
@@ -124,7 +124,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_ManualMember_IsNeverRunByASchedule()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         string auto = $"a_{suffix}", manual = $"m_{suffix}";
 
@@ -153,7 +153,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_WithAVerifySchedule_QueuesVerifyRuns_AndForceKeepsTheOperation()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         string wells = $"wells_{suffix}", logs = $"logs_{suffix}";
 
@@ -195,7 +195,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_WithForce_AppliesItToEveryMember()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
         // Three delivery flows of one source, chained by lineage waves.
         string wells = $"wells_{suffix}", wellbores = $"wellbores_{suffix}", logs = $"logs_{suffix}";
@@ -233,7 +233,7 @@ public sealed class ScheduleFireTests
     public async Task Fire_NoRunnableMember_EnqueuesNothing()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var (repoId, suffix) = NewRepo();
 
         try

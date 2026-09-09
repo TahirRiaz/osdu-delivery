@@ -22,7 +22,7 @@ public sealed class RunParameterApiTests
     public async Task Enqueue_PersistsParameters_OnTheRunRow()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
         var flowName = $"rp-queue-{Guid.NewGuid():N}";
         var submission = Guid.NewGuid();
@@ -70,7 +70,7 @@ public sealed class RunParameterApiTests
     public async Task Enqueue_RejectsInvalidParameters_BeforeQueueing()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var repoId = Guid.NewGuid();
 
         try
@@ -94,7 +94,7 @@ public sealed class RunParameterApiTests
     public async Task TriggerApi_AcceptsParameters_AndTheRunDetailShowsThem()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var name = $"rp-api-{Guid.NewGuid():N}";
         Guid repoId;
 

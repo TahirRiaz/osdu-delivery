@@ -57,7 +57,7 @@ public sealed class RunTriggerApiTests
     public async Task TriggerRun_WithOperateToken_ForSeededPipeline_Returns202WithRunIdAndLocation()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_trigger_" + suffix;
@@ -118,7 +118,7 @@ public sealed class RunTriggerApiTests
     public async Task TriggerRun_WithOperateToken_ForUnknownPipeline_Returns404()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
@@ -141,7 +141,7 @@ public sealed class RunTriggerApiTests
         // GET /api/v1/runs/{runId} actually finds its run. This drives the whole path end to end: trigger -> queue
         // -> background worker -> shared DocumentExecutor -> catalog write-back -> read API, against the real DB.
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_rt_" + suffix;
@@ -357,7 +357,7 @@ public sealed class RunTriggerApiTests
     public async Task CancelRun_ForUnknownRun_Returns404()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
         using var client = factory.CreateClient();
@@ -374,7 +374,7 @@ public sealed class RunTriggerApiTests
     public async Task CancelRun_ForRunningRun_Returns202Cancelling_AndStampsTheRequest()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoId = FlowIdentity.FromName("cp_cancel_" + suffix);
@@ -442,7 +442,7 @@ public sealed class RunTriggerApiTests
     public async Task TriggerRun_WithPool_QueuesItForThatPool_AndTheUntargetedWorkerLeavesItQueued()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.MigrateAsync(cs);
+        await CatalogDatabase.ProvisionAsync(cs);
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_pool_" + suffix;
         var repoId = FlowIdentity.FromName(repoName);
