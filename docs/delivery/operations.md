@@ -61,8 +61,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}`, `GET /snapshots` | read | What the repositories hold. |
-| `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records the current snapshot holds for it. |
-| `GET /cache/items` | read | The cached records, paged, filtered by `type` and searched with `search` over every value they hold. |
+| `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records it holds at `version` (the current snapshot when none is named). |
+| `GET /cache/items` | read | The cached records at one snapshot `version` (the current one when none is named), paged, filtered by `type` and searched with `search` over every value they hold. |
+| `GET /cache/versions` | read | The snapshot versions of the cache, newest capture first, each with whether it is current, whether the catalog still carries its records, and how many. |
 | `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each with what it reaches and how far the rollout has carried it. |
 | `POST /cache/tags/decide` | operate | Approves or rejects changes (`tagIds`, `approve`). Approving hands the change to the batched rollout; rejecting leaves OSDU as it is. |
 | `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the cached item, the path and the value. |
@@ -126,11 +127,15 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents and snapshots the repositories hold.
 - **OSDU cache** (Workspace): the reference and master data every delivered document is built from. What each
-  retrieval flow declares it caches and at which paths, how many records the current snapshot holds, a search over
-  the cached values by id, code, name or alias, and the Updates tab: the delivered records whose cached values have
-  moved, each with the value before and after, how many delivered records it reaches and how far the rollout has
-  carried it, approved or rejected in bulk. The definitions are read-only because they live in the flow document
-  in git; the decision on a change is the one thing made here.
+  retrieval flow declares it caches and at which paths, how many records it holds, a search over the cached values
+  by id, code, name or alias, and the Updates tab: the delivered records whose cached values have moved, each with
+  the value before and after, how many delivered records it reaches and how far the rollout has carried it,
+  approved or rejected in bulk. The definitions are read-only because they live in the flow document in git; the
+  decision on a change is the one thing made here.
+- **Reading the cache as it stood.** The version picker reads the whole page (the type counts and the records
+  alike) at one snapshot version. It opens on the current version, the one deliveries resolve against; picking an
+  earlier one says so on the page, because nothing shown then is what a render would read today. Versions the
+  catalog no longer carries the records of are listed but cannot be picked; the snapshot files still hold them.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
   The trigger dialog offers the operations the flow's kind runs.

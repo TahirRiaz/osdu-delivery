@@ -105,8 +105,17 @@ public sealed record DeliveryTagDecisionResult(int Decided, bool Approved);
 /// <summary>One cached value a record was built from, for its history page.</summary>
 public sealed record DeliveryCacheUseDto(string TypeName, string ItemId, string Path, string Kind, string Value);
 
-/// <summary>One cached record: its OSDU id and the values captured at the declared paths.</summary>
-public sealed record DeliveryCachedItemDto(long ItemId, Guid SnapshotId, string TypeName, string EntityType, string RecordId, JsonElement Fields);
+/// <summary>One cached record: its OSDU id and the values captured at the declared paths, in one snapshot version.</summary>
+public sealed record DeliveryCachedItemDto(
+    long ItemId, Guid SnapshotId, string Version, string TypeName, string EntityType, string RecordId, JsonElement Fields);
+
+/// <summary>
+/// One reference snapshot version of a repository's cache: what an operator picks between to read the cache as it
+/// stood then. <c>Carried</c> says whether the catalog still holds this version's items; older versions keep their
+/// row and their counts after their items are aged out, and the snapshot files stay complete either way.
+/// </summary>
+public sealed record DeliveryCacheVersionDto(
+    Guid RepoId, string RepoName, string Version, DateTime? CapturedUtc, bool Current, bool Carried, long Items);
 
 /// <summary>The manifest notification: the preparing side has finished a drop and asks for it to be delivered. The flow
 /// is named by pipeline id, or by repository and flow name, or by flow name alone when it is unique.</summary>
@@ -175,6 +184,9 @@ public static class DeliveryEndpoints
 {
     private const int MaxAttempts = 500;
 
+    /// <summary>Reference snapshot versions a cache listing will consider at once, across every repository in scope.</summary>
+    private const int MaxCacheVersions = 500;
+
     public static RouteGroupBuilder MapDeliveryReadEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -197,6 +209,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/snapshots", ListSnapshotsAsync).WithName("ListDeliverySnapshots");
         delivery.MapGet("/cache", ListCacheDefinitionsAsync).WithName("ListDeliveryCacheDefinitions");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
+        delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");
         delivery.MapGet("/cache/tags", ListUpdateTagsAsync).WithName("ListDeliveryUpdateTags");
         delivery.MapGet("/records/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
         return group;
@@ -527,7 +540,7 @@ public static class DeliveryEndpoints
     /// YAML; this is what the sync last read there.
     /// </summary>
     private static async Task<Ok<IReadOnlyList<DeliveryCacheDefinitionDto>>> ListCacheDefinitionsAsync(
-        Guid? repoId, string? search, CatalogDbContext db, CancellationToken ct)
+        Guid? repoId, string? search, string? version, CatalogDbContext db, CancellationToken ct)
     {
         var query = db.DeliveryCacheDefinitions.AsNoTracking().AsQueryable();
         if (repoId is { } r)
@@ -544,10 +557,11 @@ public static class DeliveryEndpoints
         var rows = await query.OrderBy(c => c.Name).ThenBy(c => c.FlowName).Take(1000).ToListAsync(ct).ConfigureAwait(false);
         var repos = rows.Select(c => c.RepoId).Distinct().ToList();
 
-        // What the cache actually holds now: the current reference snapshot of each repository, and its items per type.
-        var current = await db.DeliverySnapshots.AsNoTracking()
-            .Where(s => repos.Contains(s.RepoId) && s.Kind == "references" && s.Current)
-            .ToListAsync(ct).ConfigureAwait(false);
+        // What the cache holds at the version being read: each repository's snapshot for it, and its items per type.
+        // The counts follow the version picker, so the declaration list never describes a version other than the one
+        // the records table is showing.
+        var resolved = await ResolveCacheSnapshotsAsync(db, repoId, version, ct).ConfigureAwait(false);
+        var current = resolved.Where(s => repos.Contains(s.RepoId)).ToList();
         var snapshots = current.ToDictionary(s => s.RepoId, s => s);
         var snapshotIds = current.Select(s => s.Id).ToList();
         var counts = await db.DeliverySnapshotItems.AsNoTracking()
@@ -570,17 +584,24 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// The cached records themselves, filtered by type and searched over every value they hold, so an operator can
-    /// answer "is this unit cached, and under which id" without opening a snapshot file.
+    /// answer "is this unit cached, and under which id" without opening a snapshot file. The listing is always
+    /// scoped to exactly one snapshot version per repository: <paramref name="version"/> names it, and without one
+    /// it is the current version, the one <c>pinned</c> resolves to. Scoping it is not a filter but a correctness
+    /// requirement, since the catalog carries several versions and their items are otherwise indistinguishable.
     /// </summary>
     private static async Task<Ok<PagedResult<DeliveryCachedItemDto>>> ListCachedItemsAsync(
-        Guid? repoId, string? type, string? search, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
+        Guid? repoId, string? type, string? search, string? version, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
     {
-        var query = db.DeliverySnapshotItems.AsNoTracking().AsQueryable();
-        if (repoId is { } r)
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var snapshots = await ResolveCacheSnapshotsAsync(db, repoId, version, ct).ConfigureAwait(false);
+        if (snapshots.Count == 0)
         {
-            query = query.Where(i => i.RepoId == r);
+            return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>([], p, size, 0));
         }
 
+        var labels = snapshots.ToDictionary(x => x.Id, x => x.Version);
+        var ids = labels.Keys.ToList();
+        var query = db.DeliverySnapshotItems.AsNoTracking().Where(i => ids.Contains(i.SnapshotId));
         if (!string.IsNullOrWhiteSpace(type))
         {
             var t = type.Trim();
@@ -593,15 +614,94 @@ public static class DeliveryEndpoints
             query = query.Where(i => i.RecordId.Contains(term) || i.Terms.Contains(term));
         }
 
-        var (p, size) = PageRequest.Normalize(page, pageSize);
         var total = await query.CountAsync(ct).ConfigureAwait(false);
         var items = await query
             .OrderBy(i => i.TypeName).ThenBy(i => i.RecordId)
             .Skip((p - 1) * size).Take(size)
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>(
-            items.Select(i => new DeliveryCachedItemDto(i.ItemId, i.SnapshotId, i.TypeName, i.EntityType, i.RecordId, ParseJson(i.FieldsJson))).ToList(),
+            items.Select(i => new DeliveryCachedItemDto(
+                i.ItemId, i.SnapshotId, labels.GetValueOrDefault(i.SnapshotId, string.Empty), i.TypeName, i.EntityType, i.RecordId,
+                ParseJson(i.FieldsJson))).ToList(),
             p, size, total));
+    }
+
+    /// <summary>
+    /// The reference snapshot versions of the cache, newest capture first: what the version picker offers, with
+    /// whether the catalog still carries each version's items and how many it holds.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<DeliveryCacheVersionDto>>> ListCacheVersionsAsync(
+        Guid? repoId, CatalogDbContext db, CancellationToken ct)
+    {
+        var query = db.DeliverySnapshots.AsNoTracking().Where(s => s.Kind == "references");
+        if (repoId is { } r)
+        {
+            query = query.Where(s => s.RepoId == r);
+        }
+
+        var snapshots = await query
+            .OrderByDescending(s => s.CapturedUtc)
+            .ThenByDescending(s => s.Version)
+            .Take(MaxCacheVersions)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (snapshots.Count == 0)
+        {
+            return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>([]);
+        }
+
+        var ids = snapshots.Select(s => s.Id).ToList();
+        var counts = (await db.DeliverySnapshotItems.AsNoTracking()
+            .Where(i => ids.Contains(i.SnapshotId))
+            .GroupBy(i => i.SnapshotId)
+            .Select(g => new { SnapshotId = g.Key, Items = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false))
+            .ToDictionary(c => c.SnapshotId, c => c.Items);
+        var repoIds = snapshots.Select(s => s.RepoId).Distinct().ToList();
+        var names = await db.Repos.AsNoTracking()
+            .Where(x => repoIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct).ConfigureAwait(false);
+
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>(snapshots.Select(s =>
+        {
+            var items = counts.GetValueOrDefault(s.Id);
+            return new DeliveryCacheVersionDto(
+                s.RepoId, names.GetValueOrDefault(s.RepoId, string.Empty), s.Version, s.CapturedUtc, s.Current, items > 0, items);
+        }).ToList());
+    }
+
+    /// <summary>One reference snapshot a cache read is scoped to.</summary>
+    private sealed record CacheSnapshotRef(Guid Id, Guid RepoId, string Version, DateTime? CapturedUtc, bool Current);
+
+    /// <summary>
+    /// The snapshot rows a cache read is scoped to: the named version of each repository in scope, or each
+    /// repository's current version when none is named. A version label is minted from the capture instant rather
+    /// than owned by one repository, so naming one selects that version wherever it exists. Every read of the cache
+    /// goes through this, because the catalog carries several versions and their items are otherwise
+    /// indistinguishable from one another.
+    /// </summary>
+    private static async Task<IReadOnlyList<CacheSnapshotRef>> ResolveCacheSnapshotsAsync(
+        CatalogDbContext db, Guid? repoId, string? version, CancellationToken ct)
+    {
+        var query = db.DeliverySnapshots.AsNoTracking().Where(s => s.Kind == "references");
+        if (repoId is { } r)
+        {
+            query = query.Where(s => s.RepoId == r);
+        }
+
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            query = query.Where(s => s.Current);
+        }
+        else
+        {
+            var v = version.Trim();
+            query = query.Where(s => s.Version == v);
+        }
+
+        return await query
+            .Select(s => new CacheSnapshotRef(s.Id, s.RepoId, s.Version, s.CapturedUtc, s.Current))
+            .Take(MaxCacheVersions)
+            .ToListAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -48,6 +48,29 @@ test.describe.serial("osdu cache", () => {
     await expect(items.getByText("reference-data--UnitOfMeasure:m").first()).toBeVisible({ timeout: 30_000 });
   });
 
+  test("the version picker reads the cache at one named snapshot version", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-delivery-cache").click();
+    await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
+
+    const items = adminPage.getByTestId("delivery-cache-items-table");
+    await expect(items.getByText("reference-data--UnitOfMeasure:m").first()).toBeVisible({ timeout: 30_000 });
+
+    // The page opens on whichever version is current, and the picker offers the captured ones by label.
+    const picker = adminPage.getByTestId("delivery-cache-version");
+    await expect(picker).toContainText("Current version");
+    await picker.click();
+    await adminPage.getByRole("option").filter({ hasText: /^\d{8}T\d{6}Z/ }).first().click();
+
+    // Naming that version reads the same cache, and it is not flagged as historic: it IS the current one.
+    await expect(picker).not.toContainText("Current version");
+    await expect(adminPage.getByTestId("delivery-cache-historic")).toHaveCount(0);
+    await expect(items.getByText("reference-data--UnitOfMeasure:m").first()).toBeVisible({ timeout: 30_000 });
+
+    // The row says which version it is the record as of.
+    await items.getByText("reference-data--UnitOfMeasure:m").first().click();
+    await expect(adminPage.getByTestId("delivery-cache-item-version")).toContainText(/\d{8}T\d{6}Z/);
+  });
+
   test("the updates tab is empty until a cached value moves", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await adminPage.getByTestId("delivery-cache-tab-updates").click();

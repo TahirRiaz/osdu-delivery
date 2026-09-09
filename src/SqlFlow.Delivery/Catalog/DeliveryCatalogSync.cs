@@ -31,6 +31,15 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     /// <summary>How many cached items of one snapshot the catalog carries for search; the snapshot itself is whole.</summary>
     private const int MaxCachedItemsPerSnapshot = 200_000;
 
+    /// <summary>
+    /// How many reference snapshot versions per repository the catalog carries the items of, newest first and the
+    /// current version always among them. Older versions keep their snapshot row (and stay listed with their
+    /// counts), but their items are dropped: the snapshot files remain the authority a render resolves against, and
+    /// this is only the queryable copy. The ceiling is what keeps the copy proportional to what an operator will
+    /// actually look back through, rather than to how often the cache has been refreshed.
+    /// </summary>
+    private const int CachedVersionsRetained = 10;
+
     /// <summary>Rows per insert batch, so a large cache does not build one enormous command.</summary>
     private const int CachedItemChunk = 2_000;
 
@@ -161,8 +170,16 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     {
         var existing = await context.DeliverySnapshots.Where(s => s.RepoId == repoId).AsTracking().ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
-        var itemsToSync = new Dictionary<Guid, (string Store, string Version)>();
+        var references = new List<CachedVersion>();
         int added = 0, updated = 0, unchanged = 0, invalid = 0;
+
+        // Which versions already have their items in the catalog, in one query rather than one per snapshot: an
+        // unchanged version whose items are present is never re-read from the store.
+        var carried = (await context.DeliverySnapshotItems.AsNoTracking()
+            .Where(i => i.RepoId == repoId)
+            .Select(i => i.SnapshotId)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false)).ToHashSet();
 
         foreach (var store in EnumerateSnapshotStores(root))
         {
@@ -191,10 +208,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 {
                     row.LastSeenUtc = nowUtc;
                     unchanged++;
-                    if (found.Kind == "references" && found.Current && !found.Invalid
-                        && !await context.DeliverySnapshotItems.AnyAsync(i => i.SnapshotId == id, ct).ConfigureAwait(false))
+                    if (found.Kind == "references" && !found.Invalid)
                     {
-                        itemsToSync[id] = (store, found.Version);
+                        references.Add(new CachedVersion(id, store, found.Version, found.CapturedUtc, found.Current, Stale: !carried.Contains(id)));
                     }
 
                     continue;
@@ -212,25 +228,34 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 row.RelativePath = found.RelativePath;
                 row.SummaryJson = found.SummaryJson;
                 row.LastSeenUtc = nowUtc;
-                if (found.Kind == "references" && found.Current && !found.Invalid)
+                if (found.Kind == "references" && !found.Invalid)
                 {
-                    itemsToSync[id] = (store, found.Version);
+                    // A version whose row changed is re-read whatever the catalog holds for it: its contents may
+                    // have changed with it.
+                    references.Add(new CachedVersion(id, store, found.Version, found.CapturedUtc, found.Current, Stale: true));
                 }
             }
         }
 
-        // The current snapshot's items are carried into the catalog. Rows are written after the snapshot rows are
+        // The retained versions' items are carried into the catalog. Rows are written after the snapshot rows are
         // saved, so an item always has its snapshot to hang from.
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
-        foreach (var (id, (store, version)) in itemsToSync)
+        var retained = Retain(references);
+        foreach (var version in retained.Where(v => v.Stale))
         {
-            await SyncSnapshotItemsAsync(context, repoId, id, store, version, warnings, ct).ConfigureAwait(false);
+            await SyncSnapshotItemsAsync(context, repoId, version.Id, version.Store, version.Version, warnings, ct).ConfigureAwait(false);
         }
 
-        var staleItems = existing.Keys.Where(id => !seen.Contains(id)).ToList();
-        if (staleItems.Count > 0)
+        // Items are dropped for the versions the catalog no longer carries: the ones that fell out of the retention
+        // window, and the ones whose snapshot has left the repository altogether.
+        var keep = retained.Select(v => v.Id).ToHashSet();
+        var dropItems = carried.Where(id => !keep.Contains(id))
+            .Concat(existing.Keys.Where(id => !seen.Contains(id)))
+            .Distinct()
+            .ToList();
+        if (dropItems.Count > 0)
         {
-            await context.DeliverySnapshotItems.Where(i => staleItems.Contains(i.SnapshotId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await context.DeliverySnapshotItems.Where(i => dropItems.Contains(i.SnapshotId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         }
 
         var removed = 0;
@@ -349,11 +374,27 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
     }
 
+    /// <summary>One reference snapshot version the sync found, and whether its items still need reading.</summary>
+    private sealed record CachedVersion(Guid Id, string Store, string Version, DateTime? CapturedUtc, bool Current, bool Stale);
+
     /// <summary>
-    /// Writes the items of the current reference snapshot into the catalog, so the cache can be searched where
-    /// everything else about a delivery is. Only the current version is carried: it is the one <c>pinned</c>
-    /// resolves to, and older versions stay listed with their counts. The store keeps being the authority a render
-    /// resolves against; these rows are the queryable copy.
+    /// The versions whose items the catalog carries: the current one, then the newest by capture time, up to
+    /// <see cref="CachedVersionsRetained"/>. Capture time is the ordering that matches how an operator thinks about
+    /// the cache, and the version label breaks ties for snapshots captured in the same instant (the label is minted
+    /// from that instant, so ties are near-impossible in practice and deterministic when they happen).
+    /// </summary>
+    private static List<CachedVersion> Retain(List<CachedVersion> versions)
+        => versions
+            .OrderByDescending(v => v.Current)
+            .ThenByDescending(v => v.CapturedUtc ?? DateTime.MinValue)
+            .ThenByDescending(v => v.Version, StringComparer.Ordinal)
+            .Take(CachedVersionsRetained)
+            .ToList();
+
+    /// <summary>
+    /// Writes the items of one reference snapshot version into the catalog, so the cache can be searched where
+    /// everything else about a delivery is, and so an operator can read it as it stood at an earlier version. The
+    /// store keeps being the authority a render resolves against; these rows are the queryable copy.
     /// </summary>
     private static async Task SyncSnapshotItemsAsync(
         CatalogDbContext context, Guid repoId, Guid snapshotId, string store, string version, ICollection<string> warnings, CancellationToken ct)

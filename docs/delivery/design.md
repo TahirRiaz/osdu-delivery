@@ -270,11 +270,22 @@ version always describes the whole cache rather than the slice one run refreshed
 capture is deliberately not the retrieval's incremental window: a cache holding only the
 last hour's changes cannot answer a lookup.
 
-**Where it is visible.** The repository sync carries the definitions and the current
-snapshot's records into the catalog (`delivery.CacheDefinition`, `delivery.SnapshotItem`),
-so the GUI's OSDU cache page shows what each flow declares, what the snapshot holds and
-searches the cached values. Those rows are a read model; the snapshot in the store stays
-the authority a render resolves against, which is what keeps a plan working offline.
+**Where it is visible.** The repository sync carries the definitions and the records of the
+recent snapshot versions into the catalog (`delivery.CacheDefinition`,
+`delivery.SnapshotItem`), so the GUI's OSDU cache page shows what each flow declares, what
+a version holds and searches the cached values. Those rows are a read model; the snapshot
+in the store stays the authority a render resolves against, which is what keeps a plan
+working offline.
+
+Every read of that read model is scoped to exactly one version per repository, the current
+one unless another is named. That is not a filter but a correctness requirement: the
+catalog carries several versions at once and their records are otherwise indistinguishable,
+so an unscoped listing would show one cached record several times over and count it as
+many. The sync carries the current version and the nine newest captures behind it; a
+version that falls out of that window keeps its snapshot row and its counts and loses only
+its records, because the snapshot files remain complete and are what a render reads. The
+window is what keeps the read model proportional to what an operator looks back through
+rather than to how often the cache has been refreshed.
 
 **What a new version does to what is already delivered.** A cache is an input to every
 document built from it, so a changed value means delivered records no longer match what

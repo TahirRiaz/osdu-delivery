@@ -814,7 +814,9 @@ public static class DeliveryModel
             e.Property(i => i.FieldsJson).IsRequired();
             e.Property(i => i.Terms).IsRequired();
             e.HasIndex(i => new { i.SnapshotId, i.TypeName, i.RecordId }).IsUnique();
-            e.HasIndex(i => new { i.RepoId, i.TypeName });
+            // One cached record across every version the catalog carries: the type listing is its prefix, so this
+            // one index answers both the version-scoped listing and a value's history.
+            e.HasIndex(i => new { i.RepoId, i.TypeName, i.RecordId });
         });
     }
 }

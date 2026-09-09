@@ -232,7 +232,7 @@ export interface DeliveryCacheDefinition {
   query: string | null;
   fields: DeliveryCacheField[];
   makeCurrent: boolean;
-  /** How many records the current snapshot holds for this type. */
+  /** How many records the snapshot version being read holds for this type. */
   items: number;
   version: string | null;
   capturedUtc: string | null;
@@ -244,10 +244,27 @@ export interface DeliveryCacheDefinition {
 export interface DeliveryCachedItem {
   itemId: number;
   snapshotId: string;
+  /** The snapshot version this row is the record as of. */
+  version: string;
   typeName: string;
   entityType: string;
   recordId: string;
   fields: Record<string, unknown>;
+}
+
+/**
+ * One reference snapshot version of the cache: what the version picker offers. `carried` says whether the catalog
+ * still holds this version's items; older versions stay listed after their items are aged out, and the snapshot
+ * files remain complete either way.
+ */
+export interface DeliveryCacheVersion {
+  repoId: string;
+  repoName: string;
+  version: string;
+  capturedUtc: string | null;
+  current: boolean;
+  carried: boolean;
+  items: number;
 }
 
 /** One cache change and what happens about it: it covers every delivered record built from the value that moved. */
@@ -495,11 +512,14 @@ export const deliveryApi = {
   mapping: (mappingId: string) => get<DeliveryMappingDetail>(`/api/v1/delivery/mappings/${mappingId}`),
   snapshots: (repoId?: string, kind?: string) =>
     get<DeliverySnapshot[]>("/api/v1/delivery/snapshots", { repoId, kind }),
-  /** The cache as the repositories declare it: one row per cached type, with what it captures and holds. */
-  cache: (repoId?: string, search?: string) =>
-    get<DeliveryCacheDefinition[]>("/api/v1/delivery/cache", { repoId, search }),
-  /** The cached records themselves, filtered by type and searched over every value they hold. */
-  cachedItems: (query: PageQuery & { repoId?: string; type?: string; search?: string }) =>
+  /** The cache as the repositories declare it: one row per cached type, with what it captures and holds at `version`. */
+  cache: (repoId?: string, search?: string, version?: string) =>
+    get<DeliveryCacheDefinition[]>("/api/v1/delivery/cache", { repoId, search, version }),
+  /** The snapshot versions of the cache, newest capture first: what the version picker offers. */
+  cacheVersions: (repoId?: string) =>
+    get<DeliveryCacheVersion[]>("/api/v1/delivery/cache/versions", { repoId }),
+  /** The cached records themselves at one snapshot version (the current one when none is named). */
+  cachedItems: (query: PageQuery & { repoId?: string; type?: string; search?: string; version?: string }) =>
     get<PagedResult<DeliveryCachedItem>>("/api/v1/delivery/cache/items", query as QueryParams),
   /** The cache changes delivered records were built from, by status: pending, approved, rolling, rejected, applied. */
   updateTags: (query: PageQuery & { status?: string }) =>

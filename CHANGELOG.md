@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A version picker on the OSDU cache page: the type counts and the cached records are read at one reference
+  snapshot version, the current one unless another is named, so the cache can be read as it stood at an earlier
+  capture. `GET /api/v1/delivery/cache/versions` lists the versions; `GET /cache` and `GET /cache/items` take
+  `version`. The repository sync now carries the records of the current version and the nine newest captures
+  behind it, dropping the records (never the snapshot row or its counts) of versions that fall out of that window.
+
+### Fixed
+
+- The cached records list showed every snapshot version's records at once. Items were only ever written for the
+  current version but were never removed when a version stopped being current, and the listing was scoped by
+  repository and type but not by version, so a second capture would have shown each cached record once per version
+  with nothing to tell them apart and counted it as many. Every read of the cache read model is now scoped to one
+  version per repository.
+
 - Schedules carry the flow parameter values every fire supplies (`values:` in a flow's inline `schedule` block or a
   schedule library entry, `values` on `POST /api/v1/schedules`). Without them a flow that declares a required
   parameter could not be scheduled at all: the fire supplied nothing and every run failed validation. A run-now's

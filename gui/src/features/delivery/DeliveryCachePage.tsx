@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Database, X } from "lucide-react";
+import { Check, Database, History, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
-import { deliveryApi, type DeliveryCacheDefinition, type DeliveryCachedItem, type DeliveryUpdateTag } from "../../api/delivery";
+import {
+  deliveryApi, type DeliveryCacheDefinition, type DeliveryCachedItem, type DeliveryCacheVersion, type DeliveryUpdateTag,
+} from "../../api/delivery";
 import { repoApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
 import { FilterBar } from "../../components/FilterBar";
@@ -24,6 +26,15 @@ import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
 
 const ALL = "all";
+
+/** The picker's value for "whichever version is current", which is what the page opens on. */
+const CURRENT = "current";
+
+/** A version as the picker labels it: the version, when it was captured, and whether it is the pinned one. */
+function versionLabel(version: DeliveryCacheVersion): string {
+  const captured = version.capturedUtc ? new Date(version.capturedUtc).toLocaleString() : "never captured";
+  return `${version.version} · ${captured}${version.current ? " · current" : ""}`;
+}
 
 /** A cached value on one line: a scalar as itself, a set as its values, an object as its JSON. */
 function cachedText(value: unknown): string {
@@ -85,18 +96,39 @@ export default function DeliveryCachePage() {
   const [repoFilter, setRepoFilter] = useLocalStorageState("sqlflow.filters.delivery-cache.repo", ALL);
   const [type, setType] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // The picker holds a version label, not a snapshot id: a label identifies the same capture across repositories,
+  // and CURRENT follows the pinned version rather than freezing on whichever one happens to be pinned right now.
+  const [versionFilter, setVersionFilter] = useState<string>(CURRENT);
   const [tagStatus, setTagStatus] = useLocalStorageState("sqlflow.filters.delivery-cache.tag-status", "pending");
   const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(new Set());
   const [item, setItem] = useState<DeliveryCachedItem | null>(null);
 
   const repos = useQuery({ queryKey: ["repos", "all-for-delivery-cache"], queryFn: () => repoApi.list({ page: 1, pageSize: 200 }) });
   const repoId = repoFilter === ALL ? undefined : repoFilter;
-  const definitions = useQuery({ queryKey: ["delivery", "cache", repoId], queryFn: () => deliveryApi.cache(repoId) });
+  const versions = useQuery({
+    queryKey: ["delivery", "cache", "versions", repoId],
+    queryFn: () => deliveryApi.cacheVersions(repoId),
+  });
+  const version = versionFilter === CURRENT ? undefined : versionFilter;
+  const definitions = useQuery({
+    queryKey: ["delivery", "cache", repoId, version],
+    queryFn: () => deliveryApi.cache(repoId, undefined, version),
+  });
   const pending = useQuery({
     queryKey: ["delivery", "cache", "tags", "pending-count"],
     queryFn: () => deliveryApi.updateTags({ page: 1, pageSize: 100, status: "pending" }),
   });
   const pendingRecords = (pending.data?.items ?? []).reduce((sum, tag) => sum + tag.affectedRecords, 0);
+
+  // Narrowing the repo, or a version leaving the store, can strand the picker on a version that no longer exists,
+  // which would read as an empty cache rather than as a stale selection. Fall back to the current version.
+  const known = versions.data;
+  if (versionFilter !== CURRENT && known !== undefined && !known.some((v) => v.version === versionFilter)) {
+    setVersionFilter(CURRENT);
+  }
+
+  const selected = known?.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));
+  const historic = selected !== undefined && !selected.current;
 
   const rows = definitions.data ?? [];
   const snapshot = rows.find((d) => d.version)?.version ?? null;
@@ -134,7 +166,10 @@ export default function DeliveryCachePage() {
         <KpiCard
           label="Snapshot"
           value={snapshot ?? "none"}
-          caption={capturedUtc ? `captured ${new Date(capturedUtc).toLocaleString()}` : "never captured"}
+          color={historic ? "warning" : undefined}
+          caption={historic
+            ? "an earlier version, not the one deliveries resolve against"
+            : capturedUtc ? `captured ${new Date(capturedUtc).toLocaleString()}` : "never captured"}
           testId="cache-kpi-snapshot"
         />
         <KpiCard
@@ -154,12 +189,39 @@ export default function DeliveryCachePage() {
             {(repos.data?.items ?? []).map((repo) => <SelectItem key={repo.id} value={repo.id}>{repo.name}</SelectItem>)}
           </SelectContent>
         </Select>
+        <Select value={versionFilter} onValueChange={setVersionFilter} disabled={(versions.data?.length ?? 0) === 0}>
+          <SelectTrigger size="sm" className="h-8 w-[26rem]" data-testid="delivery-cache-version">
+            <History className="size-3.5 shrink-0 text-muted-foreground" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={CURRENT}>Current version</SelectItem>
+            {(versions.data ?? []).map((v) => (
+              <SelectItem key={`${v.repoId}:${v.version}`} value={v.version} disabled={!v.carried}>
+                {versionLabel(v)}{v.carried ? "" : " · not carried"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {type && (
           <Button variant="ghost" size="sm" className="h-8" onClick={() => setType(null)} data-testid="delivery-cache-clear-type">
             Showing {type} <X className="ml-1 size-3" />
           </Button>
         )}
       </FilterBar>
+
+      {historic && (
+        <Card className="flex-row items-center gap-2 rounded-lg border-warning/40 bg-warning/5 p-3 text-[13px]" data-testid="delivery-cache-historic">
+          <History className="size-4 shrink-0 text-warning" />
+          <span>
+            Reading the cache as it stood at <span className="font-mono">{selected!.version}</span>. Deliveries resolve
+            against the current version; nothing here is what a render would read today.
+          </span>
+          <Button variant="outline" size="sm" className="ml-auto h-7" onClick={() => setVersionFilter(CURRENT)} data-testid="delivery-cache-back-to-current">
+            Back to current
+          </Button>
+        </Card>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="flex flex-col gap-2" data-testid="delivery-cache-types">
@@ -199,8 +261,10 @@ export default function DeliveryCachePage() {
               testId="delivery-cache-search"
             />
             <PagedTable
-              queryKey={["delivery", "cache", "items", repoId, type, search]}
-              fetchPage={(page, pageSize) => deliveryApi.cachedItems({ page, pageSize, repoId, type: type ?? undefined, search: search || undefined })}
+              queryKey={["delivery", "cache", "items", repoId, type, search, version]}
+              fetchPage={(page, pageSize) => deliveryApi.cachedItems({
+                page, pageSize, repoId, type: type ?? undefined, search: search || undefined, version,
+              })}
               columns={[
                 { id: "type", header: "Type", render: (row) => <Badge variant="outline">{row.typeName}</Badge> },
                 { id: "recordId", header: "OSDU id", render: (row) => <TruncatedText text={row.recordId} mono maxWidth={380} /> },
@@ -265,7 +329,14 @@ export default function DeliveryCachePage() {
         <SheetContent className="w-full gap-0 sm:max-w-2xl" data-testid="delivery-cache-item-detail">
           <SheetHeader>
             <SheetTitle>{item?.typeName ?? "Cached record"}</SheetTitle>
-            <SheetDescription>{item ? `${item.entityType} · ${item.recordId}` : "Loading."}</SheetDescription>
+            <SheetDescription>
+              {item ? `${item.entityType} · ${item.recordId}` : "Loading."}
+            </SheetDescription>
+            {item && (
+              <p className="px-4 text-[12px] text-muted-foreground" data-testid="delivery-cache-item-version">
+                As cached at version <span className="font-mono">{item.version}</span>.
+              </p>
+            )}
           </SheetHeader>
           {item && (
             <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
