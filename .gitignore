@@ -48,6 +48,9 @@ secrets.json
 ## SQLFlow run artifacts, model state, and local secrets (.sqlflow/env)
 .sqlflow/
 
+## A run's staging area inside a drop: work batches an intake wrote, never part of the sample estate.
+.work/
+
 ## Docker sample-data dumps (fetched on demand by docker/fetch-samples; hand-written init scripts stay tracked)
 docker/mysql/initdb/*.sql
 docker/postgres/initdb/*.sql

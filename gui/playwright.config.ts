@@ -21,7 +21,11 @@ export const E2E = {
   adminUsername: "e2e-admin",
   adminPassword: "e2e-admin-password-123456",
   bootstrapSecret: "e2e-bootstrap-secret-0123456789-PADDING",
-  catalogDb: "Server=localhost;Database=SqlFlowCatalogE2E;Trusted_Connection=True;TrustServerCertificate=True",
+  // Overridable so a run can provision its own catalog next to an existing one: a database left behind by an
+  // older build (a pre-fork migration history, say) cannot be migrated forward, and pointing the suite at a
+  // fresh name is the non-destructive way past it. The suite creates whatever database it is given.
+  catalogDb: process.env.SQLFLOW_E2E_CATALOG_DB
+    ?? "Server=localhost;Database=SqlFlowCatalogE2E;Trusted_Connection=True;TrustServerCertificate=True",
 } as const;
 
 export default defineConfig({

@@ -30,6 +30,10 @@ export default function globalSetup(): void {
     .replace("location: samples/recall-welllog/out/{logSource}", `location: ${dropRoot.replace(/\\/g, "/")}/{logSource}`);
   writeFileSync(join(repoDir, "flows", "recall-welllog.yaml"), flowYaml);
 
+  // The metadata sync flow comes along unchanged. The suite never runs it (that would need an OSDU target), but
+  // the repository sync projects its cache section, which is what the OSDU cache page reads.
+  cpSync(join(samplesDir, "flows", "osdu-cache-sync.yaml"), join(repoDir, "flows", "osdu-cache-sync.yaml"));
+
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString("utf8").trim();
 
