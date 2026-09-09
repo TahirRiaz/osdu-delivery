@@ -430,6 +430,36 @@ mod tests {
     }
 
     #[test]
+    fn exp_census_resolves_the_legacy_delivery_keys() {
+        let c = Census::for_flow_type(Some("exp"));
+        // A shape mismatch in keys.exp.json empties the census silently rather than failing the parse, so
+        // assert it actually loaded before trusting anything it says about a key.
+        assert!(c.entries.len() > 20, "exp census should load, got {}", c.entries.len());
+
+        // The keys that carry a legacy export's byte format. Each was in the model but unreachable from YAML
+        // until they were exposed, so the census is what tells the editor they are real.
+        for path in [
+            vec!["source", "withHint"],
+            vec!["target", "valueFormat"],
+            vec!["target", "zip"],
+        ] {
+            assert!(
+                matches!(c.resolve(&ak(&path)), Resolution::Exact(_)),
+                "exp census should document {}",
+                path.join(".")
+            );
+        }
+
+        // The BOM-bearing UTF-8 the legacy writer always emitted has to be an accepted enum value, or the
+        // editor flags the one encoding a ported delivery actually needs.
+        let Resolution::Exact(encoding) = c.resolve(&ak(&["target", "encoding"])) else {
+            panic!("exp census should document target.encoding");
+        };
+        let values = encoding.enum_values.as_ref().expect("target.encoding is an enum");
+        assert!(values.iter().any(|v| v == "utf8bom"), "target.encoding should accept utf8bom, got {values:?}");
+    }
+
+    #[test]
     fn subscriber_census_resolves_the_library_format() {
         let c = Census::for_subscribers();
         assert!(!c.entries.is_empty(), "subscriber census should load");
