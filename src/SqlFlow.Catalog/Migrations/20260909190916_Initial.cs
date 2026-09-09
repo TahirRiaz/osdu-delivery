@@ -115,6 +115,29 @@ namespace SqlFlow.Catalog.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CacheDefinition",
+                schema: "delivery",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RepoId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    FlowName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    RelativePath = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
+                    Name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    EntityType = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    Kind = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false),
+                    Query = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
+                    FieldsJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    MakeCurrent = table.Column<bool>(type: "bit", nullable: false),
+                    FirstSeenUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+                    LastSeenUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CacheDefinition", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "ComputeTask",
                 schema: "catalog",
                 columns: table => new
@@ -672,6 +695,26 @@ namespace SqlFlow.Catalog.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "SnapshotItem",
+                schema: "delivery",
+                columns: table => new
+                {
+                    ItemId = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    SnapshotId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RepoId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    TypeName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    EntityType = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    RecordId = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
+                    FieldsJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    Terms = table.Column<string>(type: "nvarchar(max)", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_SnapshotItem", x => x.ItemId);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "SourceWatermark",
                 schema: "delivery",
                 columns: table => new
@@ -894,6 +937,19 @@ namespace SqlFlow.Catalog.Migrations
                 schema: "delivery",
                 table: "Attempt",
                 column: "SubmissionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CacheDefinition_Name",
+                schema: "delivery",
+                table: "CacheDefinition",
+                column: "Name");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CacheDefinition_RepoId_FlowName_Name",
+                schema: "delivery",
+                table: "CacheDefinition",
+                columns: new[] { "RepoId", "FlowName", "Name" },
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_ComputeTask_EnqueuedUtc",
@@ -1297,6 +1353,19 @@ namespace SqlFlow.Catalog.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_SnapshotItem_RepoId_TypeName",
+                schema: "delivery",
+                table: "SnapshotItem",
+                columns: new[] { "RepoId", "TypeName" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_SnapshotItem_SnapshotId_TypeName_RecordId",
+                schema: "delivery",
+                table: "SnapshotItem",
+                columns: new[] { "SnapshotId", "TypeName", "RecordId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Submission_FlowId_ReceivedUtc",
                 schema: "delivery",
                 table: "Submission",
@@ -1359,6 +1428,10 @@ namespace SqlFlow.Catalog.Migrations
 
             migrationBuilder.DropTable(
                 name: "Attempt",
+                schema: "delivery");
+
+            migrationBuilder.DropTable(
+                name: "CacheDefinition",
                 schema: "delivery");
 
             migrationBuilder.DropTable(
@@ -1447,6 +1520,10 @@ namespace SqlFlow.Catalog.Migrations
 
             migrationBuilder.DropTable(
                 name: "Snapshot",
+                schema: "delivery");
+
+            migrationBuilder.DropTable(
+                name: "SnapshotItem",
                 schema: "delivery");
 
             migrationBuilder.DropTable(

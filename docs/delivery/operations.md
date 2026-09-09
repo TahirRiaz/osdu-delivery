@@ -61,6 +61,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}`, `GET /snapshots` | read | What the repositories hold. |
+| `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records the current snapshot holds for it. |
+| `GET /cache/items` | read | The cached records, paged, filtered by `type` and searched with `search` over every value they hold. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload, `run` true queues the deliver run); queue a verify run scoped to it. |
@@ -120,6 +122,9 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   outcome; a row opens the platform run.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents and snapshots the repositories hold.
+- **OSDU cache** (Workspace): the reference and master data the mappings resolve against. What each retrieval flow
+  declares it caches and at which paths, how many records the current snapshot holds, and a search over the cached
+  values by id, code, name or alias. Read-only: the definition lives in the flow document in git.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
   The trigger dialog offers the operations the flow's kind runs.
@@ -132,7 +137,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--json]` | The delivery preflight: mapping against the schema snapshot, the reference snapshot, the drop's manifest when present. |
 | `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. With a catalog connection the ledger is live; without one the engine plans and checks only. A retrieval flow runs `retrieve` by default. |
 | `sqlflow snapshot <flow.yaml> schema --kind <kind> [--from-dir <dir> \| --endpoint <url>]` | Capture a schema snapshot. |
-| `sqlflow snapshot <flow.yaml> references [--from-dir <dir> \| --spec <spec.json> [--endpoint <url>]] [--no-current]` | Capture a reference snapshot and move the pin. |
+| `sqlflow snapshot <flow.yaml> references [--from-dir <dir> \| --spec <spec.json> [--endpoint <url>]] [--no-current]` | Capture a reference snapshot and move the pin. A capture from OSDU refreshes the types its spec declares and merges them onto the current snapshot, so the minted version holds the whole cache. |
 | `sqlflow snapshot <flow.yaml> list` | What the flow's snapshot store holds. |
 | `sqlflow trigger --repo <r> --flow <f> [the same run options]` | Queue a run on the fleet. |
 

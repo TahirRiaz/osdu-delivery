@@ -80,6 +80,10 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliverySnapshot> DeliverySnapshots => Set<DeliverySnapshot>();
 
+    public DbSet<DeliveryCacheDefinition> DeliveryCacheDefinitions => Set<DeliveryCacheDefinition>();
+
+    public DbSet<DeliverySnapshotItem> DeliverySnapshotItems => Set<DeliverySnapshotItem>();
+
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

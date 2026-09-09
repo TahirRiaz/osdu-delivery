@@ -249,6 +249,33 @@ replicas, or before and after a refresh interval, and `OsduReferenceCachesHosted
 logs initial-load failures and continues by design, so a replica can serve from an empty
 reference set with no signal.
 
+**What the cache holds.** A cached record is its OSDU id and the values found at the paths
+the cache declares. A path is cached in whatever shape OSDU returned it: a scalar, a set of
+values, or a nested object. Paths cross arrays implicitly, so `data.NameAlias.AliasName`
+reaches through an array of objects and caches the set of aliases it found. Nothing is
+narrowed to text on the way in, because a cache that quietly drops what it cannot flatten
+looks, at render time, exactly like bad source data.
+
+**How it is matched and read.** A field holding a set matches on any one of its values.
+Matching is case-insensitive and trimmed; ambiguity resolves to the first record in
+snapshot order, which is stable for a version. The `reference` transform takes the matched
+record's id; the `lookup` transform takes the value at a path inside it, which is how a
+mapping builds a document out of cached data rather than only pointing at it. A path the
+cache does not hold fails the preflight gate rather than holding every record at run time.
+
+**Who fills it.** The retrieval flow that syncs a kind's metadata declares the cache it
+maintains (`cache.types` in its document, section 15). A retrieve run sweeps each declared
+type in full, merges the result onto the current snapshot and mints a new version, so a
+version always describes the whole cache rather than the slice one run refreshed. The
+capture is deliberately not the retrieval's incremental window: a cache holding only the
+last hour's changes cannot answer a lookup.
+
+**Where it is visible.** The repository sync carries the definitions and the current
+snapshot's records into the catalog (`delivery.CacheDefinition`, `delivery.SnapshotItem`),
+so the GUI's OSDU cache page shows what each flow declares, what the snapshot holds and
+searches the cached values. Those rows are a read model; the snapshot in the store stays
+the authority a render resolves against, which is what keeps a plan working offline.
+
 ### 6.3 Two hashes, decided independently
 
 The metadata document and the payload are delivered by different calls and change at very

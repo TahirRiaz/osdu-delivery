@@ -209,6 +209,47 @@ public class ReferenceCacheTests
     }
 
     [Fact]
+    public void A_cached_field_called_ID_is_allowed_and_shadows_the_record_id()
+    {
+        // OSDU reference data carries data.ID, and the sample estate caches it. Only the exact key 'id' collides.
+        var spec = ReferenceCaptureSpec.Parse("""
+            {
+              "types": [
+                {
+                  "name": "UnitOfMeasure",
+                  "entityType": "reference-data--UnitOfMeasure",
+                  "kind": "osdu:wks:reference-data--UnitOfMeasure:*",
+                  "fields": ["data.Code", "data.ID"]
+                }
+              ]
+            }
+            """, "spec.json");
+        Assert.Equal(["Code", "ID"], Assert.Single(spec.Types).Fields.Select(f => f.Name));
+
+        var type = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:m", new Dictionary<string, string> { ["Code"] = "m", ["ID"] = "metre-id" }),
+        ]);
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m", type.Match("ID", "metre-id")!.Id);
+        Assert.Null(type.Match("id", "dev:reference-data--UnitOfMeasure:m"));
+        Assert.False(type.MeansRecordId("id"));
+
+        var ex = Assert.Throws<FlowValidationException>(() => ReferenceCaptureSpec.Parse("""
+            {
+              "types": [
+                {
+                  "name": "UnitOfMeasure",
+                  "entityType": "reference-data--UnitOfMeasure",
+                  "kind": "osdu:wks:reference-data--UnitOfMeasure:*",
+                  "fields": [{ "path": "data.Code", "as": "id" }]
+                }
+              ]
+            }
+            """, "spec.json"));
+        Assert.Contains("the key the record id is written under", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Retrieval_flow_declares_the_cache_it_maintains()
     {
         var flow = new DeliveryDocumentLoader().ParseRetrieval("""

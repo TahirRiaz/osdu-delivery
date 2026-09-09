@@ -83,6 +83,14 @@ public sealed record DeliverySnapshotDto(
     Guid Id, Guid RepoId, string Kind, string Name, string Version, DateTime? CapturedUtc, bool Current, string RelativePath,
     JsonElement Summary, DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
+/// <summary>A cached OSDU type as a retrieval flow declares it: what is cached and which paths are captured.</summary>
+public sealed record DeliveryCacheDefinitionDto(
+    Guid Id, Guid RepoId, string FlowName, string RelativePath, string Name, string EntityType, string Kind, string? Query,
+    JsonElement Fields, bool MakeCurrent, long Items, string? Version, DateTime? CapturedUtc, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+
+/// <summary>One cached record: its OSDU id and the values captured at the declared paths.</summary>
+public sealed record DeliveryCachedItemDto(long ItemId, Guid SnapshotId, string TypeName, string EntityType, string RecordId, JsonElement Fields);
+
 /// <summary>The manifest notification: the preparing side has finished a drop and asks for it to be delivered. The flow
 /// is named by pipeline id, or by repository and flow name, or by flow name alone when it is unique.</summary>
 public sealed record DeliverySubmissionRequest(
@@ -170,6 +178,8 @@ public static class DeliveryEndpoints
         delivery.MapGet("/mappings", ListMappingsAsync).WithName("ListDeliveryMappings");
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
         delivery.MapGet("/snapshots", ListSnapshotsAsync).WithName("ListDeliverySnapshots");
+        delivery.MapGet("/cache", ListCacheDefinitionsAsync).WithName("ListDeliveryCacheDefinitions");
+        delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         return group;
     }
 
@@ -489,6 +499,89 @@ public static class DeliveryEndpoints
 
         var rows = await query.OrderBy(s => s.Kind).ThenBy(s => s.Name).Take(1000).ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliverySnapshotDto>>(rows.Select(ToDto).ToList());
+    }
+
+    /// <summary>
+    /// The cache as the repositories declare it: one row per cached type, with the paths it captures and how many
+    /// items the current snapshot holds for it. Read-only, because the definition lives in the retrieval flow's
+    /// YAML; this is what the sync last read there.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<DeliveryCacheDefinitionDto>>> ListCacheDefinitionsAsync(
+        Guid? repoId, string? search, CatalogDbContext db, CancellationToken ct)
+    {
+        var query = db.DeliveryCacheDefinitions.AsNoTracking().AsQueryable();
+        if (repoId is { } r)
+        {
+            query = query.Where(c => c.RepoId == r);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(c => c.Name.Contains(term) || c.EntityType.Contains(term) || c.FlowName.Contains(term));
+        }
+
+        var rows = await query.OrderBy(c => c.Name).ThenBy(c => c.FlowName).Take(1000).ToListAsync(ct).ConfigureAwait(false);
+        var repos = rows.Select(c => c.RepoId).Distinct().ToList();
+
+        // What the cache actually holds now: the current reference snapshot of each repository, and its items per type.
+        var current = await db.DeliverySnapshots.AsNoTracking()
+            .Where(s => repos.Contains(s.RepoId) && s.Kind == "references" && s.Current)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var snapshots = current.ToDictionary(s => s.RepoId, s => s);
+        var snapshotIds = current.Select(s => s.Id).ToList();
+        var counts = await db.DeliverySnapshotItems.AsNoTracking()
+            .Where(i => snapshotIds.Contains(i.SnapshotId))
+            .GroupBy(i => new { i.SnapshotId, i.TypeName })
+            .Select(g => new { g.Key.SnapshotId, g.Key.TypeName, Items = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var byType = counts.ToDictionary(c => (c.SnapshotId, c.TypeName), c => c.Items);
+
+        var dtos = rows.Select(c =>
+        {
+            var snapshot = snapshots.GetValueOrDefault(c.RepoId);
+            var items = snapshot is null ? 0 : byType.GetValueOrDefault((snapshot.Id, c.Name));
+            return new DeliveryCacheDefinitionDto(
+                c.Id, c.RepoId, c.FlowName, c.RelativePath, c.Name, c.EntityType, c.Kind, c.Query, ParseJson(c.FieldsJson),
+                c.MakeCurrent, items, snapshot?.Version, snapshot?.CapturedUtc, c.FirstSeenUtc, c.LastSeenUtc);
+        }).ToList();
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheDefinitionDto>>(dtos);
+    }
+
+    /// <summary>
+    /// The cached records themselves, filtered by type and searched over every value they hold, so an operator can
+    /// answer "is this unit cached, and under which id" without opening a snapshot file.
+    /// </summary>
+    private static async Task<Ok<PagedResult<DeliveryCachedItemDto>>> ListCachedItemsAsync(
+        Guid? repoId, string? type, string? search, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
+    {
+        var query = db.DeliverySnapshotItems.AsNoTracking().AsQueryable();
+        if (repoId is { } r)
+        {
+            query = query.Where(i => i.RepoId == r);
+        }
+
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            var t = type.Trim();
+            query = query.Where(i => i.TypeName == t);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(i => i.RecordId.Contains(term) || i.Terms.Contains(term));
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var total = await query.CountAsync(ct).ConfigureAwait(false);
+        var items = await query
+            .OrderBy(i => i.TypeName).ThenBy(i => i.RecordId)
+            .Skip((p - 1) * size).Take(size)
+            .ToListAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>(
+            items.Select(i => new DeliveryCachedItemDto(i.ItemId, i.SnapshotId, i.TypeName, i.EntityType, i.RecordId, ParseJson(i.FieldsJson))).ToList(),
+            p, size, total));
     }
 
     // ---- Interventions -------------------------------------------------------------------------------------------

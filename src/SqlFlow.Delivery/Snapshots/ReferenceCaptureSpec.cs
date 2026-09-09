@@ -106,9 +106,11 @@ public sealed record ReferenceTypeSpec
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var field in Fields)
         {
-            if (ReferenceField.IsId(field.Name))
+            // A field named ID (OSDU reference data has one) is fine and shadows the record id under that name;
+            // the exact key 'id' is not, because that is the key the record id itself is written under.
+            if (field.Name.Equals("id", StringComparison.Ordinal))
             {
-                throw new FlowValidationException($"Cached type '{Name}' captures '{field.Path}' as 'id', which is always captured; cache it under another name.");
+                throw new FlowValidationException($"Cached type '{Name}' caches '{field.Path}' as 'id', which is the key the record id is written under; cache it under another name.");
             }
 
             if (!seen.Add(field.Name))

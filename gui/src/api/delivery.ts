@@ -214,6 +214,42 @@ export interface DeliveryMappingDetail {
   yaml: string;
 }
 
+/** One path a cache captures, and the name it is cached under. */
+export interface DeliveryCacheField {
+  path: string;
+  as: string;
+}
+
+/** A cached OSDU type as a retrieval flow declares it: what is cached and which paths are captured. */
+export interface DeliveryCacheDefinition {
+  id: string;
+  repoId: string;
+  flowName: string;
+  relativePath: string;
+  name: string;
+  entityType: string;
+  kind: string;
+  query: string | null;
+  fields: DeliveryCacheField[];
+  makeCurrent: boolean;
+  /** How many records the current snapshot holds for this type. */
+  items: number;
+  version: string | null;
+  capturedUtc: string | null;
+  firstSeenUtc: string;
+  lastSeenUtc: string;
+}
+
+/** One cached record: its OSDU id and the values captured at the declared paths, in whatever shape they came. */
+export interface DeliveryCachedItem {
+  itemId: number;
+  snapshotId: string;
+  typeName: string;
+  entityType: string;
+  recordId: string;
+  fields: Record<string, unknown>;
+}
+
 /** A schema or reference snapshot version as the sync found it. */
 export interface DeliverySnapshot {
   id: string;
@@ -419,6 +455,12 @@ export const deliveryApi = {
   mapping: (mappingId: string) => get<DeliveryMappingDetail>(`/api/v1/delivery/mappings/${mappingId}`),
   snapshots: (repoId?: string, kind?: string) =>
     get<DeliverySnapshot[]>("/api/v1/delivery/snapshots", { repoId, kind }),
+  /** The cache as the repositories declare it: one row per cached type, with what it captures and holds. */
+  cache: (repoId?: string, search?: string) =>
+    get<DeliveryCacheDefinition[]>("/api/v1/delivery/cache", { repoId, search }),
+  /** The cached records themselves, filtered by type and searched over every value they hold. */
+  cachedItems: (query: PageQuery & { repoId?: string; type?: string; search?: string }) =>
+    get<PagedResult<DeliveryCachedItem>>("/api/v1/delivery/cache/items", query as QueryParams),
   /** The manifest notification: queues the deliver run for a drop. */
   submit: (request: DeliverySubmissionRequest) => post<DeliverySubmissionAccepted>("/api/v1/delivery/submissions", request),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */

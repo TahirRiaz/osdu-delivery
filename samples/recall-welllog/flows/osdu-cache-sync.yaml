@@ -1,0 +1,70 @@
+# Flow: osdu-cache-sync
+#
+# The metadata sync (docs/delivery/design.md sections 6.2 and 15). It pages OSDU's search index into files on the
+# lake and, in the same run, refreshes the cache the WellLog mapping resolves against: the reference and master
+# data it matches units, curve business values, vertical measurement types and wellbores by. The cache section is
+# the git-managed definition of what is cached and at which paths; a run mints a new reference snapshot version in
+# the store next to this flow, and the repository sync carries it into the catalog for the GUI's OSDU cache page.
+#
+# The same types can be captured from the CLI with capture-spec.json, which holds the same declaration in the
+# spec-file form: sqlflow snapshot flows/osdu-cache-sync.yaml references --spec capture-spec.json
+flowType: retrieval
+name: osdu-cache-sync
+batch: recall
+
+source:
+  endpoint: ${env:PETRODB_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
+    data-partition-id: opendes
+  kinds:
+    - "osdu:wks:reference-data--UnitOfMeasure:*"
+    - "osdu:wks:reference-data--LogCurveBusinessValue:*"
+    - "osdu:wks:reference-data--VerticalMeasurementType:*"
+    - "osdu:wks:master-data--Wellbore:*"
+
+target:
+  # The records as the index holds them, kept as evidence of what the cache was built from.
+  location: samples/recall-welllog/out/metadata
+
+cache:
+  makeCurrent: true
+  types:
+    - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+      name: UnitOfMeasure
+      entityType: reference-data--UnitOfMeasure
+      fields: [data.Code, data.Name, data.ID]
+    - kind: "osdu:wks:reference-data--LogCurveBusinessValue:*"
+      name: LogCurveBusinessValue
+      entityType: reference-data--LogCurveBusinessValue
+      fields: [data.Code, data.Name]
+    - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
+      name: VerticalMeasurementType
+      entityType: reference-data--VerticalMeasurementType
+      fields: [data.Code, data.Name]
+    - kind: "osdu:wks:master-data--Wellbore:*"
+      name: Wellbore
+      entityType: master-data--Wellbore
+      fields:
+        - data.FacilityName
+        # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a
+        # drop naming a wellbore by any one of them resolves to the same record.
+        - path: data.NameAlias.AliasName
+          as: Alias
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+
+# Nightly, well before the hourly delivery runs, so a delivery renders against a cache captured the same day.
+schedule:
+  cron: "0 2 * * *"

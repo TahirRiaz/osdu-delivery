@@ -12,7 +12,7 @@ using SqlFlow.Catalog;
 namespace SqlFlow.Catalog.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    [Migration("20260908200611_Initial")]
+    [Migration("20260909190916_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -1446,6 +1446,67 @@ namespace SqlFlow.Catalog.Migrations
                     b.ToTable("Attempt", "delivery");
                 });
 
+            modelBuilder.Entity("SqlFlow.Catalog.DeliveryCacheDefinition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FieldsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("FirstSeenUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FlowName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("MakeCurrent")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Query")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("RelativePath")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid>("RepoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name");
+
+                    b.HasIndex("RepoId", "FlowName", "Name")
+                        .IsUnique();
+
+                    b.ToTable("CacheDefinition", "delivery");
+                });
+
             modelBuilder.Entity("SqlFlow.Catalog.DeliveryMapping", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1817,6 +1878,53 @@ namespace SqlFlow.Catalog.Migrations
                         .IsUnique();
 
                     b.ToTable("Snapshot", "delivery");
+                });
+
+            modelBuilder.Entity("SqlFlow.Catalog.DeliverySnapshotItem", b =>
+                {
+                    b.Property<long>("ItemId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("ItemId"));
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FieldsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RecordId")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<Guid>("RepoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Terms")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TypeName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("ItemId");
+
+                    b.HasIndex("RepoId", "TypeName");
+
+                    b.HasIndex("SnapshotId", "TypeName", "RecordId")
+                        .IsUnique();
+
+                    b.ToTable("SnapshotItem", "delivery");
                 });
 
             modelBuilder.Entity("SqlFlow.Catalog.DeliverySourceWatermark", b =>

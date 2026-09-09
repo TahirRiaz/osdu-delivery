@@ -159,6 +159,19 @@ target:
   rollRecords: 100000                # records per file
   manifest: manifest.json
 
+cache:                               # optional: the OSDU cache this flow keeps current for the mappings
+  makeCurrent: true                  # the minted snapshot becomes what `references: pinned` resolves to
+  snapshots: ../snapshots            # optional store; the nearest `snapshots` directory by default
+  types:
+    - kind: "osdu:wks:master-data--Wellbore:1.0.0"   # optional when the flow retrieves exactly one kind
+      name: Wellbore                 # optional: derived from the entity type in the kind
+      entityType: master-data--Wellbore              # optional: derived from the kind
+      query: "*"                     # optional; {parameter} tokens
+      fields:                        # the paths to cache; a path crosses arrays implicitly
+        - data.FacilityName
+        - path: data.NameAlias.AliasName
+          as: Alias
+
 reliability: { concurrency: 4, retry: { attempts: 4 } }   # kinds retrieved at once; the HTTP settings as on a delivery flow
 schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 ```
@@ -171,6 +184,12 @@ schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 | `source.fetchRecords` | The index holds a projection; set this to land the record as storage holds it. Ids storage cannot return are counted and listed in the manifest. |
 | `target.location` | The run's directory root. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. |
 | `target.rollRecords` | A new file every this many records: `part-00001.jsonl[.gz]`, `part-00002...` under a directory named after the kind. |
+| `cache.types` | The OSDU types this flow keeps cached for the mappings to resolve against ([design.md](design.md) section 6.2). A retrieve run sweeps each in full and mints a reference snapshot version merged onto the current one, so a version always describes the whole cache. |
+| `cache.types[].fields` | The paths to cache, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAlias.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
+
+The cache sweep is independent of `source.incremental`: the window governs which records land as files, while the
+cache is captured in full, because a cache holding only the last hour's changes cannot answer a lookup. The GUI's
+OSDU cache page shows what each flow declares, what the current snapshot holds, and searches the cached values.
 
 A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
 record count and uncompressed bytes, and per kind the records storage could not read back. The ledger's
@@ -240,11 +259,20 @@ fixtures:                          # whole-document regression fixtures
 | `equals` | `resolve` | Boolean, case-insensitive. |
 | `map` | `values`, `default`, `onMiss` | Dictionary lookup. |
 | `reference` | `type`, `matchBy`, `valueMap`, `onMiss`, optional `delimiter`/`index` | An OSDU reference (`id:`) resolved from the reference snapshot. Already-formed ids pass through. |
+| `lookup` | `type`, `matchBy`, `select`, `valueMap`, `onMiss`, optional `delimiter`/`index` | A value read out of the cached record the source value matches: the same match as `reference`, but `select` names what to take from it (`Name`, `NameAlias.AliasName`, or `id`, the default). |
 | `deliveredReference` | `type` (entity type), `system`, `keys` | The computed id of a record this system also delivers. |
 | `template` | `format` with `{column}` and `{param:name}` tokens | A formatted string. |
 | `dateTime` | `inputFormat` | RFC 3339 UTC. |
 
 `onMiss` is `hold` (default: the record is held until intervention), `omit` (drop the property) or `error`.
+
+`matchBy` and `select` name cached fields by the name capture stored them under (the path without its `data.`
+root, or the `as` it declared), and a path inside one (`NameAlias.AliasName`) when the field was cached whole. A
+field holding a set matches on any one of its values, so a record with three aliases is found by any of them; two
+records sharing a value resolve to the first in snapshot order, which is stable for a snapshot version. A cached
+field of its own called `ID` shadows the record id under that name, so `matchBy: [ID]` reads what OSDU calls
+`data.ID` while `matchBy: [id]` on a type caching no such field reads the record id. A `lookup` whose `select`
+yields a set writes an array where the schema takes one, and holds the record where it takes a single value.
 
 ### Coercion
 
@@ -254,7 +282,9 @@ cannot be coerced holds the record with a reason naming the property. Nulls are 
 ### What the preflight gate checks
 
 1. Every source binding exists in the drop's declared schema.
-2. Every reference type exists in the reference snapshot.
+2. Every reference type exists in the reference snapshot, and holds the fields the mapping matches by and the value
+   a `lookup` selects. A `matchBy` field the cache does not hold is a warning; a type holding none of them, or a
+   `select` path nothing caches, is an error, because it would hold every record at run time.
 3. Every schema-required property has a binding.
 4. Every target path exists in the pinned schema with an agreeing shape.
 5. Every example and fixture renders exactly as declared under this context.

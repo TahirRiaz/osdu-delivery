@@ -7,6 +7,7 @@ using SqlFlow.Core;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 
 namespace SqlFlow.Delivery.Catalog;
@@ -27,6 +28,12 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     private static readonly JsonSerializerOptions SummaryJson = new(JsonSerializerDefaults.Web);
 
+    /// <summary>How many cached items of one snapshot the catalog carries for search; the snapshot itself is whole.</summary>
+    private const int MaxCachedItemsPerSnapshot = 200_000;
+
+    /// <summary>Rows per insert batch, so a large cache does not build one enormous command.</summary>
+    private const int CachedItemChunk = 2_000;
+
     private readonly DeliveryDocumentLoader _documents;
 
     public DeliveryCatalogSync(DeliveryDocumentLoader documents)
@@ -43,8 +50,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         ArgumentNullException.ThrowIfNull(warnings);
 
         var mappings = await SyncMappingsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        var caches = await SyncCacheDefinitionsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var snapshots = await SyncSnapshotsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
-        return mappings.Add(snapshots);
+        return mappings.Add(caches).Add(snapshots);
     }
 
     private async Task<CatalogSyncExtensionResult> SyncMappingsAsync(
@@ -153,6 +161,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     {
         var existing = await context.DeliverySnapshots.Where(s => s.RepoId == repoId).AsTracking().ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
+        var itemsToSync = new Dictionary<Guid, (string Store, string Version)>();
         int added = 0, updated = 0, unchanged = 0, invalid = 0;
 
         foreach (var store in EnumerateSnapshotStores(root))
@@ -182,6 +191,12 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 {
                     row.LastSeenUtc = nowUtc;
                     unchanged++;
+                    if (found.Kind == "references" && found.Current && !found.Invalid
+                        && !await context.DeliverySnapshotItems.AnyAsync(i => i.SnapshotId == id, ct).ConfigureAwait(false))
+                    {
+                        itemsToSync[id] = (store, found.Version);
+                    }
+
                     continue;
                 }
                 else
@@ -197,7 +212,25 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 row.RelativePath = found.RelativePath;
                 row.SummaryJson = found.SummaryJson;
                 row.LastSeenUtc = nowUtc;
+                if (found.Kind == "references" && found.Current && !found.Invalid)
+                {
+                    itemsToSync[id] = (store, found.Version);
+                }
             }
+        }
+
+        // The current snapshot's items are carried into the catalog. Rows are written after the snapshot rows are
+        // saved, so an item always has its snapshot to hang from.
+        await context.SaveChangesAsync(ct).ConfigureAwait(false);
+        foreach (var (id, (store, version)) in itemsToSync)
+        {
+            await SyncSnapshotItemsAsync(context, repoId, id, store, version, warnings, ct).ConfigureAwait(false);
+        }
+
+        var staleItems = existing.Keys.Where(id => !seen.Contains(id)).ToList();
+        if (staleItems.Count > 0)
+        {
+            await context.DeliverySnapshotItems.Where(i => staleItems.Contains(i.SnapshotId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         }
 
         var removed = 0;
@@ -213,6 +246,203 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
         return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
     }
+
+    /// <summary>
+    /// The cached types the repository's retrieval flows declare (<c>cache.types</c>): the definition side of the
+    /// cache, so the GUI can show what a flow keeps cached and which paths it captures without opening the YAML.
+    /// </summary>
+    private async Task<CatalogSyncExtensionResult> SyncCacheDefinitionsAsync(
+        CatalogDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
+    {
+        var existing = await context.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).AsTracking().ToDictionaryAsync(c => c.Id, ct).ConfigureAwait(false);
+        var seen = new HashSet<Guid>();
+        int added = 0, updated = 0, unchanged = 0, invalid = 0;
+
+        foreach (var file in EnumerateYaml(root))
+        {
+            ct.ThrowIfCancellationRequested();
+            string yaml;
+            try
+            {
+                yaml = await File.ReadAllTextAsync(file, ct).ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                // The mapping pass reports an unreadable file; one warning per file is enough.
+                continue;
+            }
+
+            if (!LooksLikeCachingRetrieval(yaml))
+            {
+                continue;
+            }
+
+            var relative = Relative(root, file);
+            RetrievalDefinition retrieval;
+            try
+            {
+                retrieval = _documents.ParseRetrieval(yaml, relative);
+            }
+            catch (FlowValidationException ex)
+            {
+                invalid++;
+                warnings.Add($"{relative}: {ex.Message}");
+                continue;
+            }
+
+            if (retrieval.Cache is not { } cache)
+            {
+                continue;
+            }
+
+            foreach (var type in cache.Types)
+            {
+                var id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/{retrieval.Name}/{type.Name}");
+                if (!seen.Add(id))
+                {
+                    warnings.Add($"{relative}: cached type '{type.Name}' of flow '{retrieval.Name}' is declared more than once; the first wins.");
+                    continue;
+                }
+
+                var fields = JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson);
+                if (!existing.TryGetValue(id, out var row))
+                {
+                    row = new DeliveryCacheDefinition { Id = id, RepoId = repoId, FirstSeenUtc = nowUtc };
+                    context.DeliveryCacheDefinitions.Add(row);
+                    added++;
+                }
+                else if (row.Kind == type.Kind && row.Query == type.Query && row.FieldsJson == fields
+                         && row.EntityType == type.EntityType && row.RelativePath == relative && row.MakeCurrent == cache.MakeCurrent)
+                {
+                    row.LastSeenUtc = nowUtc;
+                    unchanged++;
+                    continue;
+                }
+                else
+                {
+                    updated++;
+                }
+
+                row.FlowName = retrieval.Name;
+                row.RelativePath = relative;
+                row.Name = type.Name;
+                row.EntityType = type.EntityType;
+                row.Kind = type.Kind;
+                row.Query = type.Query;
+                row.FieldsJson = fields;
+                row.MakeCurrent = cache.MakeCurrent;
+                row.LastSeenUtc = nowUtc;
+            }
+        }
+
+        var removed = 0;
+        foreach (var (id, row) in existing)
+        {
+            if (!seen.Contains(id))
+            {
+                context.DeliveryCacheDefinitions.Remove(row);
+                removed++;
+            }
+        }
+
+        await context.SaveChangesAsync(ct).ConfigureAwait(false);
+        return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
+    }
+
+    /// <summary>
+    /// Writes the items of the current reference snapshot into the catalog, so the cache can be searched where
+    /// everything else about a delivery is. Only the current version is carried: it is the one <c>pinned</c>
+    /// resolves to, and older versions stay listed with their counts. The store keeps being the authority a render
+    /// resolves against; these rows are the queryable copy.
+    /// </summary>
+    private static async Task SyncSnapshotItemsAsync(
+        CatalogDbContext context, Guid repoId, Guid snapshotId, string store, string version, ICollection<string> warnings, CancellationToken ct)
+    {
+        var directory = Path.Combine(store, "references", version);
+        var manifest = Path.Combine(directory, "manifest.json");
+        if (!File.Exists(manifest))
+        {
+            return;
+        }
+
+        var node = JsonNode.Parse(await File.ReadAllTextAsync(manifest, ct).ConfigureAwait(false)) as JsonObject;
+        var rows = new List<DeliverySnapshotItem>();
+        var truncated = false;
+        foreach (var name in (node?["types"] as JsonArray)?.Select(t => t?.GetValue<string>()).Where(t => !string.IsNullOrWhiteSpace(t)) ?? [])
+        {
+            var file = Path.Combine(directory, name + ".json");
+            if (!File.Exists(file))
+            {
+                continue;
+            }
+
+            var typeNode = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject;
+            if (typeNode is null)
+            {
+                continue;
+            }
+
+            var type = ReferenceType.FromJson(name!, typeNode);
+            foreach (var item in type.Items)
+            {
+                if (rows.Count >= MaxCachedItemsPerSnapshot)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                rows.Add(new DeliverySnapshotItem
+                {
+                    SnapshotId = snapshotId,
+                    RepoId = repoId,
+                    TypeName = type.Name,
+                    EntityType = type.EntityType,
+                    RecordId = item.Id,
+                    FieldsJson = Fields(item),
+                    Terms = Terms(item),
+                });
+            }
+
+            if (truncated)
+            {
+                break;
+            }
+        }
+
+        if (truncated)
+        {
+            warnings.Add($"Reference snapshot '{version}' holds more than {MaxCachedItemsPerSnapshot} items; the catalog carries the first {MaxCachedItemsPerSnapshot} for search. The snapshot itself is complete.");
+        }
+
+        await context.DeliverySnapshotItems.Where(i => i.SnapshotId == snapshotId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        foreach (var chunk in rows.Chunk(CachedItemChunk))
+        {
+            context.DeliverySnapshotItems.AddRange(chunk);
+            await context.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The item's captured values, as the JSON the GUI renders and the API returns.</summary>
+    private static string Fields(ReferenceItem item)
+    {
+        var fields = new JsonObject();
+        foreach (var (name, value) in item.Fields.OrderBy(f => f.Key, StringComparer.Ordinal))
+        {
+            fields[name] = value.Node.DeepClone();
+        }
+
+        return fields.ToJsonString();
+    }
+
+    /// <summary>Every scalar the item holds, newline separated, so a text search over the cache is one predicate.</summary>
+    private static string Terms(ReferenceItem item)
+        => string.Join('\n', item.Fields.Values.SelectMany(v => v.Terms).Distinct(StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>A cheap textual pre-check: only a retrieval flow that declares a cache is parsed.</summary>
+    private static bool LooksLikeCachingRetrieval(string yaml)
+        => yaml.Contains("flowType:", StringComparison.Ordinal)
+           && yaml.Contains(RetrievalDefinition.FlowTypeName, StringComparison.Ordinal)
+           && yaml.Contains("cache:", StringComparison.Ordinal);
 
     private sealed record FoundSnapshot(string Kind, string Name, string Version, DateTime? CapturedUtc, bool Current, string RelativePath, string SummaryJson, bool Invalid);
 

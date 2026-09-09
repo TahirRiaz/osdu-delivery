@@ -328,6 +328,75 @@ public sealed class DeliverySnapshot
     public DateTime LastSeenUtc { get; set; }
 }
 
+/// <summary>
+/// A cached OSDU type as a retrieval flow declares it: what the flow keeps cached for the mappings to resolve
+/// against, and which paths of each record it captures. The sync reads it out of the flow document, so the GUI
+/// shows what the cache is meant to hold without opening the repository.
+/// </summary>
+public sealed class DeliveryCacheDefinition
+{
+    /// <summary>Stable id: derived from the repo id, the flow name and the cached type name.</summary>
+    public Guid Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The retrieval flow that maintains this cached type.</summary>
+    public string FlowName { get; set; } = string.Empty;
+
+    public string RelativePath { get; set; } = string.Empty;
+
+    /// <summary>The short name mappings use (UnitOfMeasure).</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The OSDU entity type (reference-data--UnitOfMeasure).</summary>
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The search kind the capture sweeps.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The search query narrowing the capture.</summary>
+    public string? Query { get; set; }
+
+    /// <summary>The captured paths as JSON: <c>[{ "path": "data.Code", "as": "Code" }]</c>.</summary>
+    public string FieldsJson { get; set; } = "[]";
+
+    /// <summary>Whether a refresh makes its snapshot the one <c>pinned</c> resolves to.</summary>
+    public bool MakeCurrent { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// One cached record of the current reference snapshot: its OSDU id and the values captured at the declared paths.
+/// The sync writes these so the cache is queryable where everything else about a delivery is, without reading the
+/// snapshot files. The snapshot in the store stays the authority a render resolves against.
+/// </summary>
+public sealed class DeliverySnapshotItem
+{
+    public long ItemId { get; set; }
+
+    /// <summary>The <see cref="DeliverySnapshot"/> row the item belongs to.</summary>
+    public Guid SnapshotId { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The cached type's short name (UnitOfMeasure).</summary>
+    public string TypeName { get; set; } = string.Empty;
+
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The OSDU record id, without a version.</summary>
+    public string RecordId { get; set; } = string.Empty;
+
+    /// <summary>The captured values as JSON, in whatever shape the paths yielded.</summary>
+    public string FieldsJson { get; set; } = "{}";
+
+    /// <summary>Every scalar the item holds, newline separated: what a search over cached values matches on.</summary>
+    public string Terms { get; set; } = string.Empty;
+}
+
 /// <summary>The EF model of the delivery ledger, in the <c>delivery</c> schema of the catalog database.</summary>
 /// <summary>One retrieval run: the window it covered, where its files went, and its outcome.</summary>
 public sealed class DeliveryRetrieval
@@ -547,6 +616,34 @@ public static class DeliveryModel
             e.Property(s => s.RelativePath).HasMaxLength(1000).IsRequired();
             e.Property(s => s.SummaryJson).IsRequired();
             e.HasIndex(s => new { s.RepoId, s.Kind, s.Name }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryCacheDefinition>(e =>
+        {
+            e.ToTable("CacheDefinition", SchemaName);
+            e.HasKey(c => c.Id);
+            e.Property(c => c.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(c => c.RelativePath).HasMaxLength(1000).IsRequired();
+            e.Property(c => c.Name).HasMaxLength(200).IsRequired();
+            e.Property(c => c.EntityType).HasMaxLength(200).IsRequired();
+            e.Property(c => c.Kind).HasMaxLength(400).IsRequired();
+            e.Property(c => c.Query).HasMaxLength(4000);
+            e.Property(c => c.FieldsJson).IsRequired();
+            e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name }).IsUnique();
+            e.HasIndex(c => c.Name);
+        });
+
+        modelBuilder.Entity<DeliverySnapshotItem>(e =>
+        {
+            e.ToTable("SnapshotItem", SchemaName);
+            e.HasKey(i => i.ItemId);
+            e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
+            e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();
+            e.Property(i => i.RecordId).HasMaxLength(512).IsRequired();
+            e.Property(i => i.FieldsJson).IsRequired();
+            e.Property(i => i.Terms).IsRequired();
+            e.HasIndex(i => new { i.SnapshotId, i.TypeName, i.RecordId }).IsUnique();
+            e.HasIndex(i => new { i.RepoId, i.TypeName });
         });
     }
 }
