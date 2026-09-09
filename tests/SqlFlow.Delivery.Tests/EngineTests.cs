@@ -74,6 +74,41 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Tier0_plans_the_scope_again_when_the_cache_moved_under_an_unchanged_source()
+    {
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("t0", records, Submission1, sourceVersion: 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop);
+        using (runtime)
+        {
+            await RunAsync(runtime, protocol, ledger, Submission1);
+        }
+
+        // The same drop again, same source version: nothing moved, so the whole run is skipped.
+        var again = await DropAsync("t0b", records, Submission2, sourceVersion: 1);
+        var (unchanged, _, unchangedLedger) = await RuntimeAsync(again);
+        using (unchanged)
+        {
+            Assert.True((await unchanged.PlanAsync()).SkippedWholeRun);
+        }
+
+        // Now the render context moves, which is what a cache refresh does to it. The source is still where it
+        // was, and the scope is planned anyway: this is the gate that used to leave OSDU on stale cached values.
+        var scope = SqlFlow.Delivery.Engine.Planning.Planner.ScopeKey(new Dictionary<string, string> { ["logSource"] = "STAT_COMP" });
+        var watermarks = await unchangedLedger.GetWatermarksAsync(runtime.Flow.Id, scope);
+        Assert.NotEmpty(watermarks);
+        await unchangedLedger.SetWatermarksAsync(watermarks.Select(w => w with { ContextHash = "a-different-cache-version" }));
+
+        var (moved, _, _) = await RuntimeAsync(again);
+        using (moved)
+        {
+            var plan = await moved.PlanAsync();
+            Assert.False(plan.SkippedWholeRun);
+            Assert.Equal(records.Count, plan.Entries.Count);
+        }
+    }
+
+    [Fact]
     public async Task Run_delivers_then_skips_unchanged_then_updates_only_what_changed()
     {
         var records = SampleDropBuilder.DefaultRecords("STAT_COMP");

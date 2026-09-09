@@ -63,6 +63,12 @@ public sealed record PlanHeader
 
     public required IReadOnlyList<ValidationIssue> Issues { get; init; }
 
+    /// <summary>
+    /// The cache sets an unapproved change is holding back, read once per plan. Membership is the whole gate, so a
+    /// run that must skip millions of records reads a handful of ids rather than a column on every one of them.
+    /// </summary>
+    public IReadOnlySet<long> GatedCacheSets { get; init; } = new HashSet<long>();
+
     public bool SkippedWholeRun { get; init; }
 
     public string? SkipReason { get; init; }
@@ -220,14 +226,37 @@ public sealed class Planner
 
         var payloadName = PayloadName(flow);
         var scopeKey = ScopeKey(parameters);
-        var header = new PlanHeader { Flow = flow, Drop = drop, Mapping = resolved, Parameters = parameters, Issues = issues, PayloadName = payloadName };
+        var gatedSets = _ledger is null ? [] : (await _ledger.GatedCacheSetsAsync(ct).ConfigureAwait(false)).ToHashSet();
+        var header = new PlanHeader
+        {
+            Flow = flow,
+            Drop = drop,
+            Mapping = resolved,
+            Parameters = parameters,
+            Issues = issues,
+            PayloadName = payloadName,
+            GatedCacheSets = gatedSets,
+        };
 
         if (!force && _ledger is not null && flow.Change.UseSourceVersions && manifest.SourceVersions.Count > 0)
         {
             var watermarks = await _ledger.GetWatermarksAsync(flow.Id, scopeKey, ct).ConfigureAwait(false);
             var known = watermarks.ToDictionary(w => w.Table, w => w.Version, StringComparer.Ordinal);
             var advanced = manifest.SourceVersions.Where(kv => !known.TryGetValue(kv.Key, out var v) || v < kv.Value).Select(kv => kv.Key).ToList();
-            if (advanced.Count == 0)
+
+            // The source is only one of the four inputs. A cache, mapping or schema version that moved changes what
+            // every record renders to, so the scope is re-rendered even when no source table advanced; skipping on
+            // the source alone is how an estate silently keeps serving values the cache no longer holds.
+            var contextHash = resolved.Context.Hash();
+            var contextMoved = watermarks.Count == 0 || watermarks.Any(w => !string.Equals(w.ContextHash, contextHash, StringComparison.Ordinal));
+            if (advanced.Count == 0 && contextMoved)
+            {
+                _logger.LogInformation(
+                    "Tier 0: no source table advanced for scope {Scope}, but the render context moved to {Context}; planning the scope.",
+                    scopeKey, contextHash);
+            }
+
+            if (advanced.Count == 0 && !contextMoved)
             {
                 _logger.LogInformation("Tier 0: no source table advanced since the last run for scope {Scope}; skipping the whole run.", scopeKey);
                 return header with
@@ -406,6 +435,7 @@ public sealed class Planner
         var payloadName = header.PayloadName;
         var renderer = resolved.Renderer;
         var context = resolved.Context.Canonical();
+        var gatedSets = header.GatedCacheSets;
         var keyed = new List<(SourceRecord Record, DeliveryKey? Key, string SourceKey, string? Label)>(batch.Count);
         foreach (var record in batch)
         {
@@ -432,6 +462,29 @@ public sealed class Planner
             var fingerprint = flow.Source.Fingerprint is { } fp ? record.Row.GetString(fp) : null;
             var payloadHash = payload is null ? null : record.Row.GetString(payload.HashColumn);
             var hasPayload = payload is not null;
+
+            // A cache change is tagged against the values this record was built from and nobody has approved it:
+            // OSDU keeps the document it has. The gate is a set membership test, not a column on the record, so
+            // holding back millions of records costs one small query per run. It sits ahead of the change tiers on
+            // purpose: the render context moved with the cache version, so tier 1 would otherwise re-render and
+            // send exactly the update being held back.
+            if (state?.CacheSetId is { } cacheSet && gatedSets.Contains(cacheSet))
+            {
+                entries.Add(new PlanEntry
+                {
+                    Key = key,
+                    SourceKey = sourceKey,
+                    Label = label,
+                    TargetId = state.TargetId,
+                    Existing = state,
+                    Action = PlannedAction.Skip,
+                    SkipTier = SkipTier.Approval,
+                    Reason = "a cache change is tagged against this record and is waiting for approval",
+                    SourceFingerprint = fingerprint,
+                    PayloadHash = payloadHash,
+                });
+                continue;
+            }
 
             // A record held, failed or deleted earlier stays where it is until an operator releases it or the source
             // changes (design.md section 7.4). Without a fingerprint column, only a release can unblock it.
@@ -633,7 +686,12 @@ public static class PlanFormatting
         ArgumentNullException.ThrowIfNull(e);
         var action = e.Action switch
         {
-            PlannedAction.Skip => e.SkipTier == SkipTier.Fingerprint ? "skip (tier 1)" : "skip (tier 2)",
+            PlannedAction.Skip => e.SkipTier switch
+            {
+                SkipTier.Fingerprint => "skip (tier 1)",
+                SkipTier.Approval => "skip (awaiting approval)",
+                _ => "skip (tier 2)",
+            },
             PlannedAction.Create => "create",
             PlannedAction.UpdateMetadata => "update metadata",
             PlannedAction.UpdatePayload => "update payload",

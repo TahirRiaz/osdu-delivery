@@ -117,6 +117,15 @@ if (options.RunTrace.Enabled)
     builder.Services.AddHostedService<RunTraceReaper>();
 }
 
+// ---- Cache rollout: an approved cache change rewrites the manifest rows built from the value that moved, which
+// for one corrected reference value can be millions of them. This service marks them for redelivery in bounded
+// batches from the change's own cursor, so the estate drains at a set pace instead of in one statement, and a
+// restart resumes rather than starting over. Metadata only: a cached value never re-uploads a payload.
+if (options.CacheRollout.Enabled)
+{
+    builder.Services.AddHostedService<CacheUpdateRolloutService>();
+}
+
 // ---- Managed sync: keeps the shadow catalog current from git. A background service pulls each registered repo
 // source's branch tip on its interval and runs the same catalog sync the CLI's `db sync` runs.
 builder.Services.AddHostedService<RepoSyncService>();

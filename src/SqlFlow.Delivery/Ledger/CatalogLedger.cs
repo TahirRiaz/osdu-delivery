@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Delivery.Identity;
@@ -18,6 +19,15 @@ namespace SqlFlow.Delivery.Ledger;
 /// </summary>
 public sealed class CatalogLedger : ILedger
 {
+    /// <summary>Cached item ids or set ids per lookup, well inside the parameter ceiling of one command.</summary>
+    private const int LookupChunk = 500;
+
+    /// <summary>
+    /// Cache sets this ledger has already resolved, by hash. A run stages hundreds of thousands of records across
+    /// a handful of distinct dependency sets, so this turns the trail into a few queries rather than one per record.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _cacheSets = new(StringComparer.Ordinal);
+
     private const int MaxLogLength = 200_000;
 
     private const int ChunkSize = 500;
@@ -194,6 +204,7 @@ public sealed class CatalogLedger : ILedger
                 entity.PendingPayloadLocation = record.PendingPayloadLocation;
                 entity.PendingMetadata = record.PendingMetadata;
                 entity.PendingPayload = record.PendingPayload;
+                entity.CacheSetId = record.CacheSetId;
                 entity.Blocked = false;
                 entity.UpdatedUtc = now;
                 staged++;
@@ -395,6 +406,7 @@ public sealed class CatalogLedger : ILedger
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
     }
+
 
     private static void ApplyCompletion(DeliveryRecord entity, RecordCompletion completion, DateTime now)
     {
@@ -1117,11 +1129,409 @@ public sealed class CatalogLedger : ILedger
         }
     }
 
+    public async Task<long> EnsureCacheSetAsync(IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(usages);
+        var entries = Canonical(usages);
+        var hash = SetHash(entries);
+        if (_cacheSets.TryGetValue(hash, out var known))
+        {
+            return known;
+        }
+
+        var now = Now;
+        await using var db = Open();
+        var existing = await db.DeliveryCacheSets.FirstOrDefaultAsync(c => c.SetHash == hash, ct).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            existing.LastSeenUtc = now;
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            _cacheSets[hash] = existing.SetId;
+            return existing.SetId;
+        }
+
+        var set = new DeliveryCacheSet
+        {
+            SetHash = hash,
+            EntryCount = entries.Count,
+            FirstSeenUtc = now,
+            LastSeenUtc = now,
+        };
+        db.DeliveryCacheSets.Add(set);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        foreach (var usage in entries)
+        {
+            db.DeliveryCacheSetEntries.Add(new DeliveryCacheSetEntry
+            {
+                SetId = set.SetId,
+                TypeName = usage.TypeName,
+                ItemId = Truncate(usage.ItemId, 512)!,
+                Path = Truncate(usage.Path, 400)!,
+                Kind = KindText(usage.Kind),
+                ValueHash = usage.ValueHash,
+                ValueText = usage.Display,
+            });
+        }
+
+        try
+        {
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateException)
+        {
+            // Two workers of one run can mint the same set at the same time; the unique hash decides, and the
+            // loser reads the winner's id rather than failing a staging batch over a race.
+            var winner = await db.DeliveryCacheSets.AsNoTracking().FirstOrDefaultAsync(c => c.SetHash == hash, ct).ConfigureAwait(false);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            _cacheSets[hash] = winner.SetId;
+            return winner.SetId;
+        }
+
+        _cacheSets[hash] = set.SetId;
+        return set.SetId;
+    }
+
+    public async Task<IReadOnlyList<CacheUse>> ListCacheSetAsync(long setId, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
+            .Where(e => e.SetId == setId)
+            .OrderBy(e => e.TypeName).ThenBy(e => e.Path)
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows.Select(e => new CacheUse(e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)).ToList();
+    }
+
+    public async Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
+        ArgumentNullException.ThrowIfNull(itemIds);
+        if (itemIds.Count == 0)
+        {
+            return [];
+        }
+
+        await using var db = Open();
+        var found = new List<CacheSetUse>();
+        foreach (var chunk in itemIds.Chunk(LookupChunk))
+        {
+            var ids = chunk.ToList();
+            var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
+                .Where(e => e.TypeName == typeName && ids.Contains(e.ItemId))
+                .ToListAsync(ct).ConfigureAwait(false);
+            found.AddRange(rows.Select(e => new CacheSetUse(e.SetId, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)));
+        }
+
+        return found;
+    }
+
+    public async Task<long> CountRecordsInSetsAsync(IReadOnlyList<long> setIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(setIds);
+        if (setIds.Count == 0)
+        {
+            return 0;
+        }
+
+        await using var db = Open();
+        long total = 0;
+        foreach (var chunk in setIds.Chunk(LookupChunk))
+        {
+            var ids = chunk.ToList();
+            total += await db.DeliveryRecords.AsNoTracking()
+                .Where(r => r.CacheSetId != null && ids.Contains(r.CacheSetId!.Value))
+                .LongCountAsync(ct).ConfigureAwait(false);
+        }
+
+        return total;
+    }
+
+    public async Task<int> TagUpdatesAsync(IReadOnlyList<UpdateTag> tags, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tags);
+        if (tags.Count == 0)
+        {
+            return 0;
+        }
+
+        var written = 0;
+        var gate = new List<long>();
+        await using var db = Open();
+        foreach (var tag in tags)
+        {
+            var open = await db.DeliveryUpdateTags.FirstOrDefaultAsync(
+                t => t.TypeName == tag.TypeName && t.ItemId == tag.ItemId && t.Path == tag.Path
+                     && (t.Status == "pending" || t.Status == "approved" || t.Status == "rolling"),
+                ct).ConfigureAwait(false);
+            if (open is not null)
+            {
+                // The same value moved again. An approval was for what someone looked at, so a further move
+                // reopens the question rather than riding on the old decision.
+                var moved = !string.Equals(open.NewValue, Truncate(tag.NewValue, 400), StringComparison.Ordinal);
+                open.NewValue = Truncate(tag.NewValue, 400);
+                open.ToVersion = tag.ToVersion;
+                open.Change = tag.Change;
+                open.DetectedUtc = nowUtc;
+                open.SetIds = string.Join(',', tag.SetIds);
+                open.AffectedRecords = tag.AffectedRecords;
+                if (moved && open.Status != "pending" && open.Mode.Equals("approve", StringComparison.OrdinalIgnoreCase))
+                {
+                    open.Status = "pending";
+                    open.DecidedUtc = null;
+                    open.DecidedBy = null;
+                    gate.AddRange(tag.SetIds);
+                }
+
+                continue;
+            }
+
+            var approved = tag.Mode.Equals("auto", StringComparison.OrdinalIgnoreCase);
+            db.DeliveryUpdateTags.Add(new DeliveryUpdateTag
+            {
+                Kind = tag.Kind,
+                TypeName = tag.TypeName,
+                ItemId = Truncate(tag.ItemId, 512)!,
+                Path = Truncate(tag.Path, 400)!,
+                Change = tag.Change,
+                OldValue = Truncate(tag.OldValue, 400),
+                NewValue = Truncate(tag.NewValue, 400),
+                FromVersion = tag.FromVersion,
+                ToVersion = tag.ToVersion,
+                Mode = tag.Mode,
+                Status = approved ? "approved" : "pending",
+                SetIds = string.Join(',', tag.SetIds),
+                AffectedRecords = tag.AffectedRecords,
+                DetectedUtc = nowUtc,
+                DecidedUtc = approved ? nowUtc : null,
+                DecidedBy = approved ? "system:auto" : null,
+            });
+            written++;
+            if (!approved)
+            {
+                gate.AddRange(tag.SetIds);
+            }
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await SetGateAsync(db, gate, gated: true, ct).ConfigureAwait(false);
+        return written;
+    }
+
+    public async Task<IReadOnlyList<long>> GatedCacheSetsAsync(CancellationToken ct = default)
+    {
+        await using var db = Open();
+        return await db.DeliveryCacheSets.AsNoTracking().Where(c => c.Gated).Select(c => c.SetId).ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var rows = await TagQuery(db, status)
+            .OrderByDescending(t => t.TagId)
+            .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows.Select(ToTag).ToList();
+    }
+
+    public async Task<int> CountTagsAsync(string? status, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        return await TagQuery(db, status).CountAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> DecideTagsAsync(IReadOnlyList<long> tagIds, bool approve, string actor, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tagIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        if (tagIds.Count == 0)
+        {
+            return 0;
+        }
+
+        await using var db = Open();
+        var rows = await db.DeliveryUpdateTags.Where(t => tagIds.Contains(t.TagId) && t.Status == "pending").ToListAsync(ct).ConfigureAwait(false);
+        foreach (var row in rows)
+        {
+            row.Status = approve ? "approved" : "rejected";
+            row.DecidedUtc = nowUtc;
+            row.DecidedBy = actor;
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await ReleaseUngatedAsync(db, rows.SelectMany(r => ParseSets(r.SetIds)).Distinct().ToList(), ct).ConfigureAwait(false);
+        return rows.Count;
+    }
+
+    public async Task<UpdateRolloutBatch> RollOutTagAsync(long tagId, int batchSize, DateTime nowUtc, CancellationToken ct = default)
+    {
+        var size = Math.Clamp(batchSize, 1, 100_000);
+        await using var db = Open();
+        var tag = await db.DeliveryUpdateTags.FirstOrDefaultAsync(t => t.TagId == tagId, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException($"Update tag {tagId} is not in the ledger.");
+        if (tag.Status is not ("approved" or "rolling"))
+        {
+            return new UpdateRolloutBatch(tagId, 0, tag.Processed, tag.AffectedRecords, tag.Status == "applied");
+        }
+
+        var sets = ParseSets(tag.SetIds);
+        if (sets.Count == 0)
+        {
+            tag.Status = "applied";
+            tag.CompletedUtc = nowUtc;
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            return new UpdateRolloutBatch(tagId, 0, tag.Processed, tag.AffectedRecords, true);
+        }
+
+        // One bounded page of records, in key order from where the last pass stopped: a change over millions of
+        // records never becomes one statement, and a pass that is interrupted resumes instead of starting over.
+        var cursor = tag.Cursor;
+        var keys = await db.DeliveryRecords.AsNoTracking()
+            .Where(r => r.CacheSetId != null && sets.Contains(r.CacheSetId!.Value) && (cursor == null || r.DeliveryKey.CompareTo(cursor!.Value) > 0))
+            .OrderBy(r => r.DeliveryKey)
+            .Select(r => r.DeliveryKey)
+            .Take(size)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        if (keys.Count > 0)
+        {
+            // A cache change rewrites the manifest row, never the payload: forgetting the metadata hash and the
+            // fingerprint is what makes the next plan render and send the document again, and the curves that
+            // were uploaded with it stay where they are. This is the same marking a metadata redelivery makes.
+            var note = $"redelivery of metadata requested by cache change {tag.TagId}";
+            await db.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey))
+                .ExecuteUpdateAsync(
+                    u => u.SetProperty(r => r.MetadataHash, (string?)null)
+                          .SetProperty(r => r.SourceFingerprint, (string?)null)
+                          .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                          .SetProperty(r => r.LastError, note)
+                          .SetProperty(r => r.UpdatedUtc, nowUtc),
+                    ct)
+                .ConfigureAwait(false);
+            tag.Cursor = keys[^1];
+            tag.Processed += keys.Count;
+        }
+
+        tag.StartedUtc ??= nowUtc;
+        tag.Status = keys.Count < size ? "applied" : "rolling";
+        if (tag.Status == "applied")
+        {
+            tag.CompletedUtc = nowUtc;
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return new UpdateRolloutBatch(tagId, keys.Count, tag.Processed, tag.AffectedRecords, tag.Status == "applied");
+    }
+
+    public async Task<IReadOnlyList<UpdateTag>> ListRolloutQueueAsync(int max, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var rows = await db.DeliveryUpdateTags.AsNoTracking()
+            .Where(t => t.Status == "approved" || t.Status == "rolling")
+            .OrderBy(t => t.DecidedUtc ?? t.DetectedUtc)
+            .Take(Math.Clamp(max, 1, 1000))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows.Select(ToTag).ToList();
+    }
+
+    /// <summary>Gates or releases sets in one statement; the set table is small, the record table is never touched.</summary>
+    private static async Task SetGateAsync(CatalogDbContext db, IReadOnlyList<long> setIds, bool gated, CancellationToken ct)
+    {
+        if (setIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var chunk in setIds.Distinct().Chunk(LookupChunk))
+        {
+            var ids = chunk.ToList();
+            await db.DeliveryCacheSets.Where(c => ids.Contains(c.SetId) && c.Gated != gated)
+                .ExecuteUpdateAsync(u => u.SetProperty(c => c.Gated, gated), ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Releases the sets no undecided tag covers any more.</summary>
+    private static async Task ReleaseUngatedAsync(CatalogDbContext db, IReadOnlyList<long> setIds, CancellationToken ct)
+    {
+        if (setIds.Count == 0)
+        {
+            return;
+        }
+
+        var pending = await db.DeliveryUpdateTags.AsNoTracking().Where(t => t.Status == "pending").Select(t => t.SetIds).ToListAsync(ct).ConfigureAwait(false);
+        var stillGated = pending.SelectMany(ParseSets).ToHashSet();
+        await SetGateAsync(db, setIds.Where(id => !stillGated.Contains(id)).ToList(), gated: false, ct).ConfigureAwait(false);
+    }
+
+    private static IQueryable<DeliveryUpdateTag> TagQuery(CatalogDbContext db, string? status)
+    {
+        var query = db.DeliveryUpdateTags.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            var s = status.Trim().ToLowerInvariant();
+            query = query.Where(t => t.Status == s);
+        }
+
+        return query;
+    }
+
+    /// <summary>The set's entries in a stable order, without duplicates: two renders reading the same values hash alike.</summary>
+    private static IReadOnlyList<Snapshots.CacheUsage> Canonical(IReadOnlyList<Snapshots.CacheUsage> usages)
+        => usages
+            .GroupBy(u => (u.TypeName, u.ItemId, u.Path, u.Kind))
+            .Select(g => g.First())
+            .OrderBy(u => u.TypeName, StringComparer.Ordinal)
+            .ThenBy(u => u.ItemId, StringComparer.Ordinal)
+            .ThenBy(u => u.Path, StringComparer.Ordinal)
+            .ThenBy(u => u.Kind)
+            .ToList();
+
+    private static string SetHash(IReadOnlyList<Snapshots.CacheUsage> entries)
+        => Hashing.ContentHash.Of(string.Join('\n', entries.Select(e => $"{e.TypeName}|{e.ItemId}|{e.Path}|{KindText(e.Kind)}|{e.ValueHash}")));
+
+    private static string KindText(Snapshots.CacheUsageKind kind) => kind == Snapshots.CacheUsageKind.Match ? "match" : "value";
+
+    private static Snapshots.CacheUsageKind ToKind(string kind)
+        => kind.Equals("match", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Match : Snapshots.CacheUsageKind.Value;
+
+    private static List<long> ParseSets(string setIds)
+        => setIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(v => long.TryParse(v, CultureInfo.InvariantCulture, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .ToList();
+
+    private static UpdateTag ToTag(DeliveryUpdateTag t) => new()
+    {
+        TagId = t.TagId,
+        Kind = t.Kind,
+        TypeName = t.TypeName,
+        ItemId = t.ItemId,
+        Path = t.Path,
+        Change = t.Change,
+        OldValue = t.OldValue,
+        NewValue = t.NewValue,
+        FromVersion = t.FromVersion,
+        ToVersion = t.ToVersion,
+        Mode = t.Mode,
+        Status = t.Status,
+        SetIds = ParseSets(t.SetIds),
+        AffectedRecords = t.AffectedRecords,
+        Processed = t.Processed,
+        DetectedUtc = t.DetectedUtc,
+        DecidedUtc = t.DecidedUtc,
+        DecidedBy = t.DecidedBy,
+        StartedUtc = t.StartedUtc,
+        CompletedUtc = t.CompletedUtc,
+    };
+
     public async Task<IReadOnlyList<SourceWatermark>> GetWatermarksAsync(Guid flowId, string scope, CancellationToken ct = default)
     {
         await using var db = Open();
         var rows = await db.DeliveryWatermarks.AsNoTracking().Where(w => w.FlowId == flowId && w.Scope == scope).ToListAsync(ct).ConfigureAwait(false);
-        return rows.Select(w => new SourceWatermark(w.FlowId, w.Scope, w.TableName, w.Version, w.RecordedUtc)).ToList();
+        return rows.Select(w => new SourceWatermark(w.FlowId, w.Scope, w.TableName, w.Version, w.RecordedUtc, w.ContextHash)).ToList();
     }
 
     public async Task SetWatermarksAsync(IEnumerable<SourceWatermark> watermarks, CancellationToken ct = default)
@@ -1138,6 +1548,7 @@ public sealed class CatalogLedger : ILedger
             }
 
             entity.Version = w.Version;
+            entity.ContextHash = w.ContextHash;
             entity.RecordedUtc = w.RecordedUtc;
         }
 
@@ -1548,6 +1959,7 @@ public sealed class CatalogLedger : ILedger
         PendingMetadata = r.PendingMetadata,
         PendingPayload = r.PendingPayload,
         Blocked = r.Blocked,
+        CacheSetId = r.CacheSetId,
         CreatedUtc = r.CreatedUtc,
         UpdatedUtc = r.UpdatedUtc,
     };

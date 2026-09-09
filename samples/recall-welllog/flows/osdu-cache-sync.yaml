@@ -37,6 +37,9 @@ target:
 
 cache:
   makeCurrent: true
+  # A changed cached value rewrites the documents built from it, so by default the affected records are tagged and
+  # wait for someone to approve the update. Per type this can be relaxed where the change is always a correction.
+  onChange: approve
   types:
     - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
       name: UnitOfMeasure
@@ -53,6 +56,9 @@ cache:
     - kind: "osdu:wks:master-data--Wellbore:*"
       name: Wellbore
       entityType: master-data--Wellbore
+      # A wellbore that gains an alias or is renamed is still the same wellbore, and the mapping only writes its
+      # id, so these changes carry themselves rather than queueing a decision.
+      onChange: auto
       fields:
         - data.FacilityName
         # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a

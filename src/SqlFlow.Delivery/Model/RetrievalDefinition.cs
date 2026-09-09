@@ -91,6 +91,9 @@ public sealed record RetrievalCache
     /// <summary>The snapshot store to write to; null uses the repository layout's <c>snapshots</c> directory.</summary>
     public string? SnapshotsDirectory { get; init; }
 
+    /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>
+    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Approve;
+
     /// <summary>The capture spec form, which is what the snapshot engine and the CLI's spec file both run.</summary>
     public ReferenceCaptureSpec ToCaptureSpec() => new() { Types = [.. Types] };
 }

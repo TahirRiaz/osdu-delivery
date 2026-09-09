@@ -41,6 +41,9 @@ public enum SkipTier
 
     /// <summary>Tier 2: rendered and compared; the content hashes matched.</summary>
     ContentHash,
+
+    /// <summary>Not a change gate: a cache change is tagged against the record and nobody has approved it yet.</summary>
+    Approval,
 }
 
 public sealed record ChangeDecision(PlannedAction Action, SkipTier SkipTier, bool DeliverMetadata, bool DeliverPayload, string Reason)

@@ -115,6 +115,13 @@ public sealed class DeliveryRecord
     /// <summary>The completed steps of the pending delivery and what they returned (a JSON object keyed by step).</summary>
     public string? PendingStepJson { get; set; }
 
+    /// <summary>
+    /// The cache values this record was built from, as the id of the set it shares with every other record that
+    /// read the same values (<see cref="DeliveryCacheSet"/>). One column rather than a row per dependency: at
+    /// estate scale the records number in the hundreds of millions and the distinct sets in the thousands.
+    /// </summary>
+    public long? CacheSetId { get; set; }
+
     public string? PendingRenderContext { get; set; }
 
     public string? PendingSourceFingerprint { get; set; }
@@ -222,6 +229,12 @@ public sealed class DeliverySourceWatermark
     public string TableName { get; set; } = string.Empty;
 
     public long Version { get; set; }
+
+    /// <summary>
+    /// The render context the last run of this scope used. The whole-run gate compares it, so a cache, mapping or
+    /// schema version that moved re-renders the scope even when no source table advanced.
+    /// </summary>
+    public string? ContextHash { get; set; }
 
     public DateTime RecordedUtc { get; set; }
 }
@@ -397,6 +410,116 @@ public sealed class DeliverySnapshotItem
     public string Terms { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// One distinct combination of cached values that records were built from: the set of (type, cached record, path,
+/// value) a render consumed. Records share sets heavily (every log that resolved metres and the same wellbore
+/// shares one), so the estate's dependency trail is a few thousand sets rather than a row per record per value.
+/// A record points at its set; a cache change finds the sets that hold the changed value and, through them, the
+/// records to update.
+/// </summary>
+public sealed class DeliveryCacheSet
+{
+    public long SetId { get; set; }
+
+    /// <summary>Content hash of the set's entries: the identity a render computes without a round trip.</summary>
+    public string SetHash { get; set; } = string.Empty;
+
+    public int EntryCount { get; set; }
+
+    /// <summary>
+    /// Set while a change to one of these values is tagged and unapproved. The planner reads the gated sets once
+    /// per run and skips their records, so holding records back never means writing to them.
+    /// </summary>
+    public bool Gated { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>One cached value inside a set: what was read, and what it read at the time.</summary>
+public sealed class DeliveryCacheSetEntry
+{
+    public long SetId { get; set; }
+
+    /// <summary>The cached type's short name (UnitOfMeasure).</summary>
+    public string TypeName { get; set; } = string.Empty;
+
+    /// <summary>The cached record's OSDU id.</summary>
+    public string ItemId { get; set; } = string.Empty;
+
+    /// <summary>What the mapping read: <c>id</c>, <c>Name</c>, <c>NameAlias.AliasName</c>.</summary>
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>match (the value the source resolved by) or value (a value written into the document).</summary>
+    public string Kind { get; set; } = "value";
+
+    public string ValueHash { get; set; } = string.Empty;
+
+    /// <summary>The value as it was consumed, truncated for display.</summary>
+    public string ValueText { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One change to the cache that delivered records were built from, and what happens about it. A tag is written per
+/// change, not per record: a corrected unit name is one decision covering every record that read it, with the count
+/// of what it affects. Under <c>approve</c> the affected sets are gated until someone decides; under <c>auto</c> it
+/// is approved as written. Either way the update is rolled out in batches from <see cref="Cursor"/>, so a change
+/// touching millions of records drains at a controlled rate instead of flooding the estate.
+/// </summary>
+public sealed class DeliveryUpdateTag
+{
+    public long TagId { get; set; }
+
+    /// <summary>What caused the tag; <c>cache</c> today.</summary>
+    public string Kind { get; set; } = "cache";
+
+    public string TypeName { get; set; } = string.Empty;
+
+    public string ItemId { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>changed (the value moved), removed (the cached record is gone) or unmatched (what it matched by is gone).</summary>
+    public string Change { get; set; } = "changed";
+
+    public string? OldValue { get; set; }
+
+    public string? NewValue { get; set; }
+
+    public string? FromVersion { get; set; }
+
+    public string ToVersion { get; set; } = string.Empty;
+
+    /// <summary>auto or approve, as the cache declared for this type when the tag was written.</summary>
+    public string Mode { get; set; } = "approve";
+
+    /// <summary>pending, approved, rejected, rolling or applied.</summary>
+    public string Status { get; set; } = "pending";
+
+    /// <summary>The cache sets holding the changed value, comma separated; the records are found through them.</summary>
+    public string SetIds { get; set; } = string.Empty;
+
+    /// <summary>How many delivered records were built from the old value when the change was found.</summary>
+    public long AffectedRecords { get; set; }
+
+    /// <summary>How many of them the rollout has marked for redelivery so far.</summary>
+    public long Processed { get; set; }
+
+    /// <summary>Where the rollout got to, in delivery-key order, so a pass resumes rather than restarts.</summary>
+    public Guid? Cursor { get; set; }
+
+    public DateTime DetectedUtc { get; set; }
+
+    public DateTime? DecidedUtc { get; set; }
+
+    public string? DecidedBy { get; set; }
+
+    public DateTime? StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+}
+
 /// <summary>The EF model of the delivery ledger, in the <c>delivery</c> schema of the catalog database.</summary>
 /// <summary>One retrieval run: the window it covered, where its files went, and its outcome.</summary>
 public sealed class DeliveryRetrieval
@@ -490,6 +613,8 @@ public static class DeliveryModel
 
             // Worker and intake paths.
             e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc });
+            // The rollout walks one set's records in key order; the filtered index keeps untagged records out of it.
+            e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey }).HasFilter("[CacheSetId] IS NOT NULL");
             e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
             e.HasIndex(r => r.LeaseOwner);
             e.HasIndex(r => new { r.FlowId, r.LastSubmissionId });
@@ -547,6 +672,7 @@ public static class DeliveryModel
             e.ToTable("SourceWatermark", SchemaName);
             e.HasKey(w => new { w.FlowId, w.Scope, w.TableName });
             e.Property(w => w.Scope).HasMaxLength(400);
+            e.Property(w => w.ContextHash).HasMaxLength(64);
             e.Property(w => w.TableName).HasMaxLength(400);
         });
 
@@ -616,6 +742,51 @@ public static class DeliveryModel
             e.Property(s => s.RelativePath).HasMaxLength(1000).IsRequired();
             e.Property(s => s.SummaryJson).IsRequired();
             e.HasIndex(s => new { s.RepoId, s.Kind, s.Name }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryCacheSet>(e =>
+        {
+            e.ToTable("CacheSet", SchemaName);
+            e.HasKey(c => c.SetId);
+            e.Property(c => c.SetHash).HasMaxLength(64).IsRequired();
+            e.HasIndex(c => c.SetHash).IsUnique();
+            // The planner reads this every run: a filtered index keeps it to the handful of gated sets.
+            e.HasIndex(c => c.Gated).HasFilter("[Gated] = 1");
+        });
+
+        modelBuilder.Entity<DeliveryCacheSetEntry>(e =>
+        {
+            e.ToTable("CacheSetEntry", SchemaName);
+            e.Property(c => c.TypeName).HasMaxLength(200).IsRequired();
+            e.Property(c => c.ItemId).HasMaxLength(512).IsRequired();
+            e.Property(c => c.Path).HasMaxLength(400).IsRequired();
+            e.Property(c => c.Kind).HasMaxLength(16).IsRequired();
+            e.Property(c => c.ValueHash).HasMaxLength(64).IsRequired();
+            e.Property(c => c.ValueText).HasMaxLength(400).IsRequired();
+            e.HasKey(c => new { c.SetId, c.TypeName, c.ItemId, c.Path, c.Kind });
+            // The impact query: which sets hold this cached value.
+            e.HasIndex(c => new { c.TypeName, c.ItemId });
+        });
+
+        modelBuilder.Entity<DeliveryUpdateTag>(e =>
+        {
+            e.ToTable("UpdateTag", SchemaName);
+            e.HasKey(t => t.TagId);
+            e.Property(t => t.Kind).HasMaxLength(16).IsRequired();
+            e.Property(t => t.TypeName).HasMaxLength(200).IsRequired();
+            e.Property(t => t.ItemId).HasMaxLength(512).IsRequired();
+            e.Property(t => t.Path).HasMaxLength(400).IsRequired();
+            e.Property(t => t.Change).HasMaxLength(16).IsRequired();
+            e.Property(t => t.OldValue).HasMaxLength(400);
+            e.Property(t => t.NewValue).HasMaxLength(400);
+            e.Property(t => t.FromVersion).HasMaxLength(64);
+            e.Property(t => t.ToVersion).HasMaxLength(64).IsRequired();
+            e.Property(t => t.Mode).HasMaxLength(16).IsRequired();
+            e.Property(t => t.Status).HasMaxLength(16).IsRequired();
+            e.Property(t => t.DecidedBy).HasMaxLength(200);
+            e.Property(t => t.SetIds).IsRequired();
+            e.HasIndex(t => t.Status);
+            e.HasIndex(t => new { t.TypeName, t.ItemId, t.Path, t.Status });
         });
 
         modelBuilder.Entity<DeliveryCacheDefinition>(e =>

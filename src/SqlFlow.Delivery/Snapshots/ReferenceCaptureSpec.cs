@@ -4,6 +4,20 @@ using SqlFlow.Core;
 
 namespace SqlFlow.Delivery.Snapshots;
 
+/// <summary>
+/// What a change to a cached value does to the records that were built from it. The cache is an input to every
+/// document it touches, so a changed value means delivered records no longer match what the cache says; the only
+/// question is whether that update goes out on its own or waits for someone to approve it.
+/// </summary>
+public enum CacheChangeMode
+{
+    /// <summary>Tag the affected records and wait: nothing reaches OSDU until an operator approves the tag.</summary>
+    Approve,
+
+    /// <summary>Tag the affected records and let the next run carry them, no approval step.</summary>
+    Auto,
+}
+
 /// <summary>What to capture into a reference snapshot: one entry per reference or master-data type.</summary>
 public sealed record ReferenceCaptureSpec
 {
@@ -79,6 +93,13 @@ public sealed record ReferenceTypeSpec
     /// <summary>Optional search query narrowing the capture (default *).</summary>
     [JsonPropertyName("query")]
     public string Query { get; init; } = "*";
+
+    /// <summary>
+    /// What a change to this type's cached values does to the records built from them: wait for approval
+    /// (the default, because a reference change rewrites delivered documents) or update on the next run.
+    /// </summary>
+    [JsonPropertyName("onChange")]
+    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Approve;
 
     /// <summary>Rejects a type that captures nothing, or two paths cached under one name.</summary>
     public void Validate()

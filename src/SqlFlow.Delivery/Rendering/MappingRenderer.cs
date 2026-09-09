@@ -151,9 +151,10 @@ public sealed class MappingRenderer
             document["tags"] = tags;
         }
 
+        var usages = new List<CacheUsage>();
         foreach (var property in _mapping.Properties)
         {
-            RenderInto(document, property, record.Row, record, string.Empty, holds);
+            RenderInto(document, property, record.Row, record, string.Empty, holds, usages);
         }
 
         if (document["data"] is JsonObject data)
@@ -180,18 +181,19 @@ public sealed class MappingRenderer
             Canonical = canonical,
             MetadataHash = metadataHash,
             Holds = holds,
+            CacheUsages = Distinct(usages),
         };
     }
 
     /// <summary>Renders one scalar property against a row, for fixtures and diagnostics. Null means omitted.</summary>
-    public JsonNode? RenderScalar(MappingProperty property, SourceRow row, string pathPrefix, List<string> holds)
+    public JsonNode? RenderScalar(MappingProperty property, SourceRow row, string pathPrefix, List<string> holds, List<CacheUsage>? usages = null)
     {
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(row);
         ArgumentNullException.ThrowIfNull(holds);
         var fullPath = Join(pathPrefix, property.Target);
         var schemaProperty = _schema.Resolve(fullPath);
-        var raw = Transforms.Apply(property, row, this, fullPath, holds, out var omit);
+        var raw = Transforms.Apply(property, row, this, fullPath, holds, usages, out var omit);
         if (omit || raw is null)
         {
             return null;
@@ -277,7 +279,7 @@ public sealed class MappingRenderer
         return _mapping.Parameters.TryGetValue(name, out var declared) ? declared.Default : null;
     }
 
-    private void RenderInto(JsonObject root, MappingProperty property, SourceRow row, SourceRecord record, string pathPrefix, List<string> holds)
+    private void RenderInto(JsonObject root, MappingProperty property, SourceRow row, SourceRecord record, string pathPrefix, List<string> holds, List<CacheUsage> usages)
     {
         var fullPath = Join(pathPrefix, property.Target);
         if (property.Collection)
@@ -291,7 +293,7 @@ public sealed class MappingRenderer
                 var item = new JsonObject();
                 foreach (var child in ChildProperties(property, fullPath))
                 {
-                    RenderInto(item, child, itemRow, record, fullPath, holds);
+                    RenderInto(item, child, itemRow, record, fullPath, holds, usages);
                 }
 
                 if (item.Count > 0)
@@ -313,7 +315,7 @@ public sealed class MappingRenderer
             var obj = new JsonObject();
             foreach (var child in ChildProperties(property, fullPath))
             {
-                RenderInto(obj, child, row, record, fullPath, holds);
+                RenderInto(obj, child, row, record, fullPath, holds, usages);
             }
 
             if (obj.Count > 0)
@@ -324,11 +326,32 @@ public sealed class MappingRenderer
             return;
         }
 
-        var value = RenderScalar(property, row, pathPrefix, holds);
+        var value = RenderScalar(property, row, pathPrefix, holds, usages);
         if (value is not null)
         {
             SetPath(root, property.Target, value);
         }
+    }
+
+    /// <summary>One row per cached path a record actually consumed; a value read twice is one dependency.</summary>
+    private static IReadOnlyList<CacheUsage> Distinct(List<CacheUsage> usages)
+    {
+        if (usages.Count <= 1)
+        {
+            return usages;
+        }
+
+        var seen = new HashSet<(string, string, string, CacheUsageKind)>();
+        var unique = new List<CacheUsage>(usages.Count);
+        foreach (var usage in usages)
+        {
+            if (seen.Add((usage.TypeName, usage.ItemId, usage.Path, usage.Kind)))
+            {
+                unique.Add(usage);
+            }
+        }
+
+        return unique;
     }
 
     private IReadOnlyList<MappingProperty> ChildProperties(MappingProperty property, string fullPath)
@@ -469,6 +492,9 @@ public sealed record RenderResult
 
     /// <summary>Reasons the record cannot be delivered as it stands. Empty means deliverable.</summary>
     public required IReadOnlyList<string> Holds { get; init; }
+
+    /// <summary>What the render consumed from the cache: the dependency trail a later cache version is checked against.</summary>
+    public IReadOnlyList<CacheUsage> CacheUsages { get; init; } = [];
 
     public bool IsHeld => Holds.Count > 0 || Key is null;
 }

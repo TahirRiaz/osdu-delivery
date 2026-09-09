@@ -162,11 +162,13 @@ target:
 cache:                               # optional: the OSDU cache this flow keeps current for the mappings
   makeCurrent: true                  # the minted snapshot becomes what `references: pinned` resolves to
   snapshots: ../snapshots            # optional store; the nearest `snapshots` directory by default
+  onChange: approve                  # default for the types below: approve (wait for a decision) or auto
   types:
     - kind: "osdu:wks:master-data--Wellbore:1.0.0"   # optional when the flow retrieves exactly one kind
       name: Wellbore                 # optional: derived from the entity type in the kind
       entityType: master-data--Wellbore              # optional: derived from the kind
       query: "*"                     # optional; {parameter} tokens
+      onChange: auto                 # optional per-type override of cache.onChange
       fields:                        # the paths to cache; a path crosses arrays implicitly
         - data.FacilityName
         - path: data.NameAlias.AliasName
@@ -186,10 +188,24 @@ schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 | `target.rollRecords` | A new file every this many records: `part-00001.jsonl[.gz]`, `part-00002...` under a directory named after the kind. |
 | `cache.types` | The OSDU types this flow keeps cached for the mappings to resolve against ([design.md](design.md) section 6.2). A retrieve run sweeps each in full and mints a reference snapshot version merged onto the current one, so a version always describes the whole cache. |
 | `cache.types[].fields` | The paths to cache, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAlias.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
+| `cache.onChange` | What a changed cached value does to the records already built from it. `approve` (the default) tags them and holds them back until someone approves the update in the GUI; `auto` tags them and lets the next run carry the new document. Set per flow and overridden per type, because a code list that is corrected in place and a master-data name that is edited daily do not deserve the same treatment. |
 
 The cache sweep is independent of `source.incremental`: the window governs which records land as files, while the
-cache is captured in full, because a cache holding only the last hour's changes cannot answer a lookup. The GUI's
-OSDU cache page shows what each flow declares, what the current snapshot holds, and searches the cached values.
+cache is captured in full, because a cache holding only the last hour's changes cannot answer a lookup.
+
+A refresh does not only mint a version. Every delivered manifest row points at the set of cached values it was
+built from, so the refresh compares the new version against the one it replaces and raises one tag per changed
+value: the cached record, the path, the value before and after, and how many delivered records it reaches. A tag
+under `approve` holds those records back (a plan skips them, so OSDU keeps the documents it has) until someone
+approves or rejects it; a tag under `auto` is approved as it is written. If a value moves again after approval but
+before the rollout carried it, the tag reopens, because the approval was for the value someone looked at.
+
+An approved change is carried out in batches by the control plane (`ControlPlane:CacheRollout`: `BatchSize`
+records per batch, `BatchesPerPass` batches every `PollSeconds`), so a change reaching millions of records drains
+at a set pace rather than in one statement, and resumes where it stopped after a restart. The redelivery is
+metadata only: a cached value that changed rewrites the manifest row and never re-uploads its payload. The GUI's
+OSDU cache page shows all of it: what each flow declares, what the current snapshot holds, and the changes with
+their record counts and rollout progress.
 
 A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
 record count and uncompressed bytes, and per kind the records storage could not read back. The ledger's

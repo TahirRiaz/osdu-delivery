@@ -40,7 +40,8 @@ internal static class SqlServerLedgerBulk
             [PendingPayloadHash] nvarchar(64) NULL,
             [PendingPayloadLocation] nvarchar(2000) NULL,
             [PendingMetadata] bit NOT NULL,
-            [PendingPayload] bit NOT NULL);
+            [PendingPayload] bit NOT NULL,
+            [CacheSetId] bigint NULL);
         """;
 
     private const string PendingMergeSql = """
@@ -55,14 +56,14 @@ internal static class SqlServerLedgerBulk
                 [PendingRenderContext] = s.[PendingRenderContext], [PendingSourceFingerprint] = s.[PendingSourceFingerprint],
                 [PendingMetadataHash] = s.[PendingMetadataHash], [PendingPayloadHash] = s.[PendingPayloadHash],
                 [PendingPayloadLocation] = s.[PendingPayloadLocation], [PendingMetadata] = s.[PendingMetadata], [PendingPayload] = s.[PendingPayload],
-                [Blocked] = 0, [UpdatedUtc] = @now
+                [CacheSetId] = s.[CacheSetId], [Blocked] = 0, [UpdatedUtc] = @now
         WHEN NOT MATCHED BY TARGET THEN
             INSERT ([DeliveryKey], [FlowId], [SourceKey], [Label], [MappingName], [TargetId], [Status], [LastSubmissionId], [AttemptCount],
                     [PendingDocumentRef], [WorkBatch], [PendingRenderContext], [PendingSourceFingerprint], [PendingMetadataHash], [PendingPayloadHash],
-                    [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [Blocked], [CreatedUtc], [UpdatedUtc])
+                    [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [CacheSetId], [Blocked], [CreatedUtc], [UpdatedUtc])
             VALUES (s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[Label], s.[MappingName], s.[TargetId], N'pending', s.[LastSubmissionId], 0,
                     s.[PendingDocumentRef], s.[WorkBatch], s.[PendingRenderContext], s.[PendingSourceFingerprint], s.[PendingMetadataHash], s.[PendingPayloadHash],
-                    s.[PendingPayloadLocation], s.[PendingMetadata], s.[PendingPayload], 0, @now, @now);
+                    s.[PendingPayloadLocation], s.[PendingMetadata], s.[PendingPayload], s.[CacheSetId], 0, @now, @now);
         SELECT @@ROWCOUNT;
         """;
 
@@ -212,13 +213,14 @@ internal static class SqlServerLedgerBulk
         table.Columns.Add("PendingPayloadLocation", typeof(string));
         table.Columns.Add("PendingMetadata", typeof(bool));
         table.Columns.Add("PendingPayload", typeof(bool));
+        table.Columns.Add("CacheSetId", typeof(long));
         foreach (var r in records)
         {
             table.Rows.Add(
                 r.DeliveryKey.Value, r.FlowId, Truncate(r.SourceKey, 400), Value(Truncate(r.Label, 400)), r.MappingName, Value(r.TargetId),
                 Value(r.LastSubmissionId), Value(r.PendingDocumentRef), Value(r.WorkBatch), Value(r.PendingRenderContext),
                 Value(r.PendingSourceFingerprint), Value(r.PendingMetadataHash), Value(r.PendingPayloadHash), Value(r.PendingPayloadLocation),
-                r.PendingMetadata, r.PendingPayload);
+                r.PendingMetadata, r.PendingPayload, Value(r.CacheSetId));
         }
 
         return table;

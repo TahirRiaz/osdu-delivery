@@ -138,6 +138,42 @@ namespace SqlFlow.Catalog.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CacheSet",
+                schema: "delivery",
+                columns: table => new
+                {
+                    SetId = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    SetHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    EntryCount = table.Column<int>(type: "int", nullable: false),
+                    Gated = table.Column<bool>(type: "bit", nullable: false),
+                    FirstSeenUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+                    LastSeenUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CacheSet", x => x.SetId);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CacheSetEntry",
+                schema: "delivery",
+                columns: table => new
+                {
+                    SetId = table.Column<long>(type: "bigint", nullable: false),
+                    TypeName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    ItemId = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
+                    Path = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false),
+                    Kind = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    ValueHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    ValueText = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CacheSetEntry", x => new { x.SetId, x.TypeName, x.ItemId, x.Path, x.Kind });
+                });
+
+            migrationBuilder.CreateTable(
                 name: "ComputeTask",
                 schema: "catalog",
                 columns: table => new
@@ -420,6 +456,7 @@ namespace SqlFlow.Catalog.Migrations
                     WorkBatch = table.Column<int>(type: "int", nullable: true),
                     TargetStateJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
                     PendingStepJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    CacheSetId = table.Column<long>(type: "bigint", nullable: true),
                     PendingRenderContext = table.Column<string>(type: "nvarchar(max)", nullable: true),
                     PendingSourceFingerprint = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
                     PendingMetadataHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
@@ -723,6 +760,7 @@ namespace SqlFlow.Catalog.Migrations
                     Scope = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false),
                     TableName = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false),
                     Version = table.Column<long>(type: "bigint", nullable: false),
+                    ContextHash = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
                     RecordedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
                 },
                 constraints: table =>
@@ -761,6 +799,39 @@ namespace SqlFlow.Catalog.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Submission", x => x.SubmissionId);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "UpdateTag",
+                schema: "delivery",
+                columns: table => new
+                {
+                    TagId = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    Kind = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    TypeName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    ItemId = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
+                    Path = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false),
+                    Change = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    OldValue = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: true),
+                    NewValue = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: true),
+                    FromVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
+                    ToVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    Mode = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    SetIds = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    AffectedRecords = table.Column<long>(type: "bigint", nullable: false),
+                    Processed = table.Column<long>(type: "bigint", nullable: false),
+                    Cursor = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    DetectedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+                    DecidedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
+                    DecidedBy = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
+                    StartedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
+                    CompletedUtc = table.Column<DateTime>(type: "datetime2", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_UpdateTag", x => x.TagId);
                 });
 
             migrationBuilder.CreateTable(
@@ -952,6 +1023,26 @@ namespace SqlFlow.Catalog.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_CacheSet_Gated",
+                schema: "delivery",
+                table: "CacheSet",
+                column: "Gated",
+                filter: "[Gated] = 1");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CacheSet_SetHash",
+                schema: "delivery",
+                table: "CacheSet",
+                column: "SetHash",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CacheSetEntry_TypeName_ItemId",
+                schema: "delivery",
+                table: "CacheSetEntry",
+                columns: new[] { "TypeName", "ItemId" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ComputeTask_EnqueuedUtc",
                 schema: "catalog",
                 table: "ComputeTask",
@@ -1079,6 +1170,13 @@ namespace SqlFlow.Catalog.Migrations
                 schema: "catalog",
                 table: "Pipeline",
                 columns: new[] { "RepoId", "Wave" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Record_CacheSetId_DeliveryKey",
+                schema: "delivery",
+                table: "Record",
+                columns: new[] { "CacheSetId", "DeliveryKey" },
+                filter: "[CacheSetId] IS NOT NULL");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Record_FlowId_Label",
@@ -1378,6 +1476,18 @@ namespace SqlFlow.Catalog.Migrations
                 columns: new[] { "FlowId", "Status" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_UpdateTag_Status",
+                schema: "delivery",
+                table: "UpdateTag",
+                column: "Status");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_UpdateTag_TypeName_ItemId_Path_Status",
+                schema: "delivery",
+                table: "UpdateTag",
+                columns: new[] { "TypeName", "ItemId", "Path", "Status" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_User_ExternalObjectId",
                 schema: "catalog",
                 table: "User",
@@ -1432,6 +1542,14 @@ namespace SqlFlow.Catalog.Migrations
 
             migrationBuilder.DropTable(
                 name: "CacheDefinition",
+                schema: "delivery");
+
+            migrationBuilder.DropTable(
+                name: "CacheSet",
+                schema: "delivery");
+
+            migrationBuilder.DropTable(
+                name: "CacheSetEntry",
                 schema: "delivery");
 
             migrationBuilder.DropTable(
@@ -1532,6 +1650,10 @@ namespace SqlFlow.Catalog.Migrations
 
             migrationBuilder.DropTable(
                 name: "Submission",
+                schema: "delivery");
+
+            migrationBuilder.DropTable(
+                name: "UpdateTag",
                 schema: "delivery");
 
             migrationBuilder.DropTable(

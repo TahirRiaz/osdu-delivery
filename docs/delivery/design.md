@@ -276,6 +276,54 @@ so the GUI's OSDU cache page shows what each flow declares, what the snapshot ho
 searches the cached values. Those rows are a read model; the snapshot in the store stays
 the authority a render resolves against, which is what keeps a plan working offline.
 
+**What a new version does to what is already delivered.** A cache is an input to every
+document built from it, so a changed value means delivered records no longer match what
+the cache says. Answering "which ones" by re-rendering the estate is both slow and mute
+about the reason, so every render records what it consumed: which cached record, which
+path, and the value it read.
+
+That trail has to survive the shape of the estate, which is hundreds of millions of
+manifest rows and rising. A row per record per consumed value would be billions of rows
+to write, index and query, so the trail is stored by **dependency set** instead
+(`delivery.CacheSet`, `delivery.CacheSetEntry`): one row per distinct combination of
+cached values, which every record reading the same values shares. A well log estate
+resolves the same handful of units, curve types and wellbores over and over, so the sets
+number in the thousands while the records number in the billions. A render computes its
+set's hash in memory and puts one `CacheSetId` column on the manifest row, so staging a
+million records writes no dependency rows at all, and the impact query runs over the sets,
+never over the records.
+
+A refresh compares the new version against the one it replaces, and for the items that
+moved it asks which sets hold their values. A set is touched when a value a record wrote
+into its document now reads differently, when the cached record it used is gone, or when
+the value it matched by no longer resolves; anything else the change does not touch,
+including a record that only ever read the id of an item whose name changed.
+
+**Who decides.** Each changed value becomes one tag (`delivery.UpdateTag`): the cached
+record, the path, the value before and after, and how many delivered records it reaches.
+One decision covers all of them, because asking an operator to approve twelve million rows
+is not asking anything. The cached type's `onChange` says what the tag means: `auto`
+approves it as it is written; `approve` holds the affected sets until an operator decides.
+The gate is real, and it has to be: the render context moved with the cache version, so
+tier 1 would otherwise re-render and send exactly the update being held back. A plan reads
+the gated set ids once (a handful of numbers), sees a record whose set is gated ahead of
+every change tier, and skips it. Holding a million records back never writes to a million
+rows.
+
+**How it is carried out.** An approved change is rolled out in bounded batches by a
+control-plane service (`ControlPlane:CacheRollout`), which marks a page of the affected
+records for redelivery in delivery-key order from the tag's own cursor, then stops until
+the next tick. A change over millions of records drains at a set pace instead of in one
+statement, an interrupted rollout resumes where it stopped rather than starting over, and
+the marking is metadata only: a corrected reference value rewrites the manifest row and
+never re-uploads the payload that was delivered with it.
+
+**And the run has to happen.** The whole-run gate (tier 0) used to skip a run when no
+source table advanced, which is the case a cache refresh produces: the source is exactly
+where it was, and everything about how it renders has changed. The watermark now carries
+the render context of the run that wrote it, so a moved cache, mapping or schema version
+plans the scope rather than skipping it.
+
 ### 6.3 Two hashes, decided independently
 
 The metadata document and the payload are delivered by different calls and change at very

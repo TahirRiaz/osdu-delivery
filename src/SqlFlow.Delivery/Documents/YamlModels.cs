@@ -457,6 +457,8 @@ internal sealed class RetrievalCacheYaml
     public bool? MakeCurrent { get; set; }
 
     public string? Snapshots { get; set; }
+
+    public string? OnChange { get; set; }
 }
 
 internal sealed class CachedTypeYaml
@@ -468,6 +470,8 @@ internal sealed class CachedTypeYaml
     public string? Kind { get; set; }
 
     public string? Query { get; set; }
+
+    public string? OnChange { get; set; }
 
     // A path ("data.Code") or a mapping of path and as ({ path: data.NameAlias.AliasName, as: Alias }).
     public List<object>? Fields { get; set; }

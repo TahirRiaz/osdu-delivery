@@ -164,14 +164,18 @@ public sealed class SubmissionIntake
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(counts);
         var now = _time.GetUtcNow().UtcDateTime;
-        if (flow.Change.UseSourceVersions && manifest.SourceVersions.Count > 0)
-        {
-            var scope = Planner.ScopeKey(parameters);
-            await _ledger.SetWatermarksAsync(manifest.SourceVersions.Select(kv => new SourceWatermark(flow.Id, scope, kv.Key, kv.Value, now)), ct).ConfigureAwait(false);
-        }
-
         var submission = await _ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Submission {submissionId} is not in the ledger.");
+        if (flow.Change.UseSourceVersions && manifest.SourceVersions.Count > 0)
+        {
+            // The watermark carries the render context this scope was planned under, so the next run's tier-0 gate
+            // can tell "nothing changed" from "the source is the same but the cache, mapping or schema moved".
+            var scope = Planner.ScopeKey(parameters);
+            var contextHash = Hashing.ContentHash.Of(submission.RenderContext);
+            await _ledger.SetWatermarksAsync(
+                manifest.SourceVersions.Select(kv => new SourceWatermark(flow.Id, scope, kv.Key, kv.Value, now, contextHash)), ct).ConfigureAwait(false);
+        }
+
         submission = submission with
         {
             Status = counts.Planned == 0 ? SubmissionStatus.Completed : SubmissionStatus.Planned,
@@ -256,7 +260,12 @@ public sealed class SubmissionIntake
 
                         writer ??= await WorkBatchWriter.OpenAsync(_stores, workRoot, submission.SubmissionId, nextBatch, ct).ConfigureAwait(false);
                         var reference = await writer.WriteAsync(new WorkItem(entry.Key.Value.Value, entry.TargetId!, entry.Render!.Canonical), ct).ConfigureAwait(false);
-                        pending.Add(PendingState(flow, submission, header.Mapping, entry, reference, nextBatch));
+                        // The values this document was built from become one set id on the record: no row per
+                        // dependency, and the id is resolved once per distinct combination for the whole run.
+                        var cacheSet = entry.Render!.CacheUsages.Count == 0
+                            ? (long?)null
+                            : await _ledger.EnsureCacheSetAsync(entry.Render.CacheUsages, ct).ConfigureAwait(false);
+                        pending.Add(PendingState(flow, submission, header.Mapping, entry, reference, nextBatch) with { CacheSetId = cacheSet });
                         if (pending.Count >= batchRecords)
                         {
                             staged += await CloseBatchAsync(flow, submission, writer, pending, ct).ConfigureAwait(false);
@@ -307,7 +316,8 @@ public sealed class SubmissionIntake
     }
 
     /// <summary>Commits the batch file, stages its records in the ledger and registers the batch. Returns the records staged.</summary>
-    private async Task<int> CloseBatchAsync(FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, CancellationToken ct)
+    private async Task<int> CloseBatchAsync(
+        FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, CancellationToken ct)
     {
         await writer.DisposeAsync().ConfigureAwait(false);
         var staged = await _ledger.UpsertPendingAsync(pending, ct).ConfigureAwait(false);

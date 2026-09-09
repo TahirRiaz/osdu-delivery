@@ -38,6 +38,8 @@ public sealed class ControlPlaneOptions
 
     public RunTraceRetentionOptions RunTrace { get; set; } = new();
 
+    public CacheRolloutOptions CacheRollout { get; set; } = new();
+
     /// <summary>The largest request body the API accepts, in megabytes. Set explicitly (never the server default) so a
     /// submission manifest listing many records, or a large scoped request, is bounded on purpose. Default 64.</summary>
     public int MaxRequestBodyMegabytes { get; set; } = 64;
@@ -109,6 +111,8 @@ public sealed class ControlPlaneOptions
             throw new InvalidOperationException(
                 "ControlPlane:Worker:PollMilliseconds must be at least 250, so a misconfigured value cannot spin the drain loop against the catalog.");
         }
+
+        CacheRollout.Validate();
 
         if (Reaper.PollSeconds < 1)
         {
@@ -405,6 +409,46 @@ public sealed class ReaperOptions
 /// stats and its error message) is never touched, so the history and every failure reason stay complete and only
 /// the heavy, unread detail is reclaimed. The manual GUI trigger runs the exact same prune on demand.
 /// </summary>
+/// <summary>
+/// How fast an approved cache change is carried out to the estate. A corrected reference value can reach millions
+/// of manifest rows, and marking them all at once would hold the delivery table and flood OSDU behind it, so the
+/// rollout works in bounded batches: <see cref="BatchSize"/> records per batch, at most <see cref="BatchesPerPass"/>
+/// batches per tick, one tick every <see cref="PollSeconds"/>. The defaults drain roughly ten thousand records a
+/// minute, which an estate absorbs without noticing; raise them for a backlog, lower them for a busy window.
+/// </summary>
+public sealed class CacheRolloutOptions
+{
+    /// <summary>Turns the automatic rollout off. Approved changes then wait, and the GUI still shows what is queued.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Records marked for redelivery per batch.</summary>
+    public int BatchSize { get; set; } = 5_000;
+
+    /// <summary>Batches per tick, across all approved changes.</summary>
+    public int BatchesPerPass { get; set; } = 2;
+
+    /// <summary>Seconds between ticks.</summary>
+    public int PollSeconds { get; set; } = 60;
+
+    public void Validate()
+    {
+        if (BatchSize < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:CacheRollout:BatchSize must be positive.");
+        }
+
+        if (BatchesPerPass < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:CacheRollout:BatchesPerPass must be positive.");
+        }
+
+        if (PollSeconds < 1)
+        {
+            throw new InvalidOperationException("ControlPlane:CacheRollout:PollSeconds must be positive.");
+        }
+    }
+}
+
 public sealed class RunTraceRetentionOptions
 {
     /// <summary>Turns the automatic pruning sweep off. Off means the two trace tables grow unbounded until someone
@@ -510,7 +554,8 @@ public sealed class ManagedSyncOptions
     public bool Enabled { get; set; } = true;
 
     public int PollSeconds { get; set; } = 30;
-}
+
+}
 
 /// <summary>
 /// The notification pipeline: detects failed runs in the catalog and sends

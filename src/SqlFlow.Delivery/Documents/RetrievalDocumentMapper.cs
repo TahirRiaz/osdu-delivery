@@ -110,6 +110,7 @@ internal static partial class RetrievalMapper
             throw new FlowValidationException($"{source}: cache declares no types. Remove the cache section, or list the types to cache under cache.types.");
         }
 
+        var defaultMode = FlowMapper.ParseEnum(cache.OnChange, CacheChangeMode.Approve, "cache.onChange", source);
         var types = new List<ReferenceTypeSpec>();
         for (var i = 0; i < declared.Count; i++)
         {
@@ -134,6 +135,7 @@ internal static partial class RetrievalMapper
                 EntityType = entityType,
                 Kind = kind,
                 Query = string.IsNullOrWhiteSpace(type.Query) ? "*" : type.Query!.Trim(),
+                OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
                 Fields = MapCachedFields(type.Fields, $"{where}.fields", source),
             };
 
@@ -157,6 +159,7 @@ internal static partial class RetrievalMapper
         return new RetrievalCache
         {
             Types = types,
+            OnChange = defaultMode,
             MakeCurrent = cache.MakeCurrent ?? true,
             SnapshotsDirectory = string.IsNullOrWhiteSpace(cache.Snapshots) ? null : cache.Snapshots!.Trim(),
         };

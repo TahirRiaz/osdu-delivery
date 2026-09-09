@@ -63,6 +63,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /mappings`, `/mappings/{id}`, `GET /snapshots` | read | What the repositories hold. |
 | `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records the current snapshot holds for it. |
 | `GET /cache/items` | read | The cached records, paged, filtered by `type` and searched with `search` over every value they hold. |
+| `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each with what it reaches and how far the rollout has carried it. |
+| `POST /cache/tags/decide` | operate | Approves or rejects changes (`tagIds`, `approve`). Approving hands the change to the batched rollout; rejecting leaves OSDU as it is. |
+| `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload, `run` true queues the deliver run); queue a verify run scoped to it. |
@@ -122,9 +125,12 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   outcome; a row opens the platform run.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents and snapshots the repositories hold.
-- **OSDU cache** (Workspace): the reference and master data the mappings resolve against. What each retrieval flow
-  declares it caches and at which paths, how many records the current snapshot holds, and a search over the cached
-  values by id, code, name or alias. Read-only: the definition lives in the flow document in git.
+- **OSDU cache** (Workspace): the reference and master data every delivered document is built from. What each
+  retrieval flow declares it caches and at which paths, how many records the current snapshot holds, a search over
+  the cached values by id, code, name or alias, and the Updates tab: the delivered records whose cached values have
+  moved, each with the value before and after, how many delivered records it reaches and how far the rollout has
+  carried it, approved or rejected in bulk. The definitions are read-only because they live in the flow document
+  in git; the decision on a change is the one thing made here.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
   The trigger dialog offers the operations the flow's kind runs.

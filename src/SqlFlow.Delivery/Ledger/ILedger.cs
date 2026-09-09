@@ -197,6 +197,13 @@ public sealed record RecordState
     /// </summary>
     public bool Blocked { get; init; }
 
+    /// <summary>
+    /// The cache values this record was built from, as the id of the set it shares with every record that read the
+    /// same values. A plan compares it against the gated sets to know whether an unapproved cache change is holding
+    /// this record back.
+    /// </summary>
+    public long? CacheSetId { get; init; }
+
     public DateTime CreatedUtc { get; init; }
 
     public DateTime UpdatedUtc { get; init; }
@@ -271,7 +278,77 @@ public sealed record RecordCompletion
 }
 
 /// <summary>Tier-0 watermark: the Delta commit version of a source table for one flow scope (design.md section 6.6).</summary>
-public sealed record SourceWatermark(Guid FlowId, string Scope, string Table, long Version, DateTime RecordedUtc);
+public sealed record SourceWatermark(Guid FlowId, string Scope, string Table, long Version, DateTime RecordedUtc, string? ContextHash = null);
+
+/// <summary>One stored dependency of a cache set: which cached path it holds, and what it held.</summary>
+public sealed record CacheUse(string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
+
+/// <summary>A cache set that holds one cached value, for the impact query.</summary>
+public sealed record CacheSetUse(long SetId, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
+
+/// <summary>What one rollout pass did, and what is left of the tag.</summary>
+public sealed record UpdateRolloutBatch(long TagId, long Marked, long Processed, long Affected, bool Completed);
+
+/// <summary>One cache change and what happens about it, covering every record built from the value that moved.</summary>
+public sealed record UpdateTag
+{
+    public long TagId { get; init; }
+
+    public string Kind { get; init; } = "cache";
+
+    public required string TypeName { get; init; }
+
+    public required string ItemId { get; init; }
+
+    public required string Path { get; init; }
+
+    /// <summary>changed, removed or unmatched.</summary>
+    public required string Change { get; init; }
+
+    public string? OldValue { get; init; }
+
+    public string? NewValue { get; init; }
+
+    public string? FromVersion { get; init; }
+
+    public required string ToVersion { get; init; }
+
+    /// <summary>auto or approve.</summary>
+    public required string Mode { get; init; }
+
+    /// <summary>pending, approved, rejected, rolling or applied.</summary>
+    public string Status { get; init; } = "pending";
+
+    /// <summary>The cache sets holding the value that moved.</summary>
+    public IReadOnlyList<long> SetIds { get; init; } = [];
+
+    public long AffectedRecords { get; init; }
+
+    public long Processed { get; init; }
+
+    public DateTime DetectedUtc { get; init; }
+
+    public DateTime? DecidedUtc { get; init; }
+
+    public string? DecidedBy { get; init; }
+
+    public DateTime? StartedUtc { get; init; }
+
+    public DateTime? CompletedUtc { get; init; }
+
+    /// <summary>A tag waits for a decision only under approve; auto is decided as it is written.</summary>
+    public bool WaitsForApproval => Mode.Equals("approve", StringComparison.OrdinalIgnoreCase) && Status.Equals("pending", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Records still to be marked for redelivery.</summary>
+    public long Remaining => Math.Max(0, AffectedRecords - Processed);
+
+    public string Describe() => Change switch
+    {
+        "removed" => $"{TypeName} '{ItemId}' is no longer in the cache (it held {Path} = '{OldValue}')",
+        "unmatched" => $"{TypeName} '{ItemId}' no longer matches by {Path} = '{OldValue}'",
+        _ => $"{TypeName} '{ItemId}': {Path} changed from '{OldValue}' to '{NewValue}'",
+    };
+}
 
 /// <summary>The compact known-state row Databricks reads at the start of a run (design.md section 6.7).</summary>
 public sealed record KnownState(DeliveryKey DeliveryKey, string SourceKey, string? SourceFingerprint, string? MetadataHash, string? PayloadHash, RecordStatus Status, string? TargetId, long? TargetVersion);
@@ -677,6 +754,56 @@ public interface ILedger
 
     /// <summary>The known state of every record of the flow, streamed in key order in pages, for publications of any size.</summary>
     IAsyncEnumerable<KnownState> StreamKnownStateAsync(Guid flowId, int pageSize = 10_000, CancellationToken ct = default);
+
+    /// <summary>
+    /// The id of the cache set holding exactly these values, creating it the first time it is seen. A render hands
+    /// over what it consumed and gets back one number to put on the record, so no matter how many records a run
+    /// stages, the dependency trail costs one row per distinct combination rather than one per record.
+    /// </summary>
+    Task<long> EnsureCacheSetAsync(IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default);
+
+    /// <summary>The values behind one set, for a record's history page.</summary>
+    Task<IReadOnlyList<CacheUse>> ListCacheSetAsync(long setId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The sets that hold a cached value of the given items, with the value each of them holds. This is the impact
+    /// query: it runs over the sets, never over the records, so it stays the same size as the cache.
+    /// </summary>
+    Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default);
+
+    /// <summary>How many delivered records were built from these sets.</summary>
+    Task<long> CountRecordsInSetsAsync(IReadOnlyList<long> setIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// Writes the tags a cache change produced, one per change rather than one per record, and gates the sets an
+    /// unapproved change touches. Returns how many tags were new; a change already open for the same value updates
+    /// the standing tag, and reopens it when the value moved again after an approval.
+    /// </summary>
+    Task<int> TagUpdatesAsync(IReadOnlyList<UpdateTag> tags, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>The gated sets, which a plan reads once per run to know which records are held back.</summary>
+    Task<IReadOnlyList<long>> GatedCacheSetsAsync(CancellationToken ct = default);
+
+    /// <summary>The tags in a status, newest first.</summary>
+    Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, CancellationToken ct = default);
+
+    Task<int> CountTagsAsync(string? status, CancellationToken ct = default);
+
+    /// <summary>
+    /// Decides tags: approving lets the rollout carry the change out, rejecting leaves the delivered documents
+    /// alone. Either way the sets stop being gated unless another undecided tag still covers them.
+    /// </summary>
+    Task<int> DecideTagsAsync(IReadOnlyList<long> tagIds, bool approve, string actor, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Carries one batch of an approved tag: marks up to <paramref name="batchSize"/> of its records for
+    /// redelivery in key order from the tag's cursor, advances the cursor and reports what is left. A change over
+    /// millions of records is drained a batch at a time by a caller that decides the pace.
+    /// </summary>
+    Task<UpdateRolloutBatch> RollOutTagAsync(long tagId, int batchSize, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>The approved tags with rollout still to do, oldest decision first.</summary>
+    Task<IReadOnlyList<UpdateTag>> ListRolloutQueueAsync(int max, CancellationToken ct = default);
 
     Task<IReadOnlyList<SourceWatermark>> GetWatermarksAsync(Guid flowId, string scope, CancellationToken ct = default);
 

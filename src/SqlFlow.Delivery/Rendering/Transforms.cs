@@ -17,7 +17,8 @@ public static partial class Transforms
     private static readonly string[] DefaultMatchBy = ["id", "Code", "Name"];
 
     /// <summary>Applies the property's transform. Returns the raw value, or null when omitted.</summary>
-    public static object? Apply(MappingProperty property, SourceRow row, MappingRenderer renderer, string path, List<string> holds, out bool omit)
+    public static object? Apply(
+        MappingProperty property, SourceRow row, MappingRenderer renderer, string path, List<string> holds, List<CacheUsage>? usages, out bool omit)
     {
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(row);
@@ -103,10 +104,15 @@ public static partial class Transforms
                         return null;
                     }
 
-                    var resolved = ResolveCached(config, renderer, text, path, holds, out omit);
+                    var resolved = ResolveCached(config, renderer, text, path, holds, usages, out omit);
                     if (resolved.Failed)
                     {
                         return null;
+                    }
+
+                    if (resolved.Item is not null)
+                    {
+                        Record(usages, resolved, "id", resolved.Item.Id, CacheUsageKind.Value);
                     }
 
                     // An OSDU relationship carries the id with its version separator, matched or passed through.
@@ -120,7 +126,7 @@ public static partial class Transforms
                         return null;
                     }
 
-                    var resolved = ResolveCached(config, renderer, text, path, holds, out omit);
+                    var resolved = ResolveCached(config, renderer, text, path, holds, usages, out omit);
                     if (resolved.Failed)
                     {
                         return null;
@@ -144,6 +150,7 @@ public static partial class Transforms
                             out omit);
                     }
 
+                    Record(usages, resolved, select, cached.Text, CacheUsageKind.Value);
                     return cached.Node.DeepClone();
                 }
 
@@ -231,7 +238,8 @@ public static partial class Transforms
     /// through, then match it against the cached type by each field in turn. Both the reference transform (which
     /// wants the id) and the lookup transform (which wants a cached value) resolve through here.
     /// </summary>
-    private static CachedHit ResolveCached(TransformConfig config, MappingRenderer renderer, string text, string path, List<string> holds, out bool omit)
+    private static CachedHit ResolveCached(
+        TransformConfig config, MappingRenderer renderer, string text, string path, List<string> holds, List<CacheUsage>? usages, out bool omit)
     {
         omit = false;
         var typeName = config.Type ?? throw new FlowValidationException($"{path}: the reference and lookup transforms need config.type.");
@@ -277,12 +285,24 @@ public static partial class Transforms
         {
             if (type.Match(field, value) is { } hit)
             {
+                // The value that matched is a dependency too: if the cache stops holding it, this record
+                // stops resolving, which is a change worth catching before a run holds it.
+                usages?.Add(new CacheUsage(typeName, hit.Id, ReferenceField.Normalize(field), value, CacheUsageKind.Match));
                 return new CachedHit(typeName, type, hit, null);
             }
         }
 
         Miss(config.OnMiss, $"{path}: no {typeName} matches '{text}' by {string.Join("/", matchBy)} in reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
         return CachedHit.Missed(typeName);
+    }
+
+    /// <summary>Records one dependency of the render on the cache.</summary>
+    private static void Record(List<CacheUsage>? usages, CachedHit resolved, string path, string value, CacheUsageKind kind)
+    {
+        if (usages is not null && resolved.Item is not null)
+        {
+            usages.Add(new CacheUsage(resolved.TypeName, resolved.Item.Id, ReferenceField.Normalize(path), value, kind));
+        }
     }
 
     private static IReadOnlyList<string> CachedNames(MappingRenderer renderer, string typeName)

@@ -82,6 +82,12 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliveryCacheDefinition> DeliveryCacheDefinitions => Set<DeliveryCacheDefinition>();
 
+    public DbSet<DeliveryCacheSet> DeliveryCacheSets => Set<DeliveryCacheSet>();
+
+    public DbSet<DeliveryCacheSetEntry> DeliveryCacheSetEntries => Set<DeliveryCacheSetEntry>();
+
+    public DbSet<DeliveryUpdateTag> DeliveryUpdateTags => Set<DeliveryUpdateTag>();
+
     public DbSet<DeliverySnapshotItem> DeliverySnapshotItems => Set<DeliverySnapshotItem>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();

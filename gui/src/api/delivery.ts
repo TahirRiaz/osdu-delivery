@@ -250,6 +250,46 @@ export interface DeliveryCachedItem {
   fields: Record<string, unknown>;
 }
 
+/** One cache change and what happens about it: it covers every delivered record built from the value that moved. */
+export interface DeliveryUpdateTag {
+  tagId: number;
+  kind: string;
+  typeName: string;
+  itemId: string;
+  path: string;
+  /** changed, removed or unmatched. */
+  change: string;
+  oldValue: string | null;
+  newValue: string | null;
+  fromVersion: string | null;
+  toVersion: string;
+  /** auto or approve. */
+  mode: string;
+  /** pending, approved, rolling, rejected or applied. */
+  status: string;
+  summary: string;
+  /** Delivered records built from the old value. */
+  affectedRecords: number;
+  /** How many of them the rollout has marked for redelivery. */
+  processed: number;
+  remaining: number;
+  detectedUtc: string;
+  decidedUtc: string | null;
+  decidedBy: string | null;
+  startedUtc: string | null;
+  completedUtc: string | null;
+}
+
+/** One cached value a record was built from. */
+export interface DeliveryCacheUse {
+  typeName: string;
+  itemId: string;
+  path: string;
+  /** match (what it resolved by) or value (what went into the document). */
+  kind: string;
+  value: string;
+}
+
 /** A schema or reference snapshot version as the sync found it. */
 export interface DeliverySnapshot {
   id: string;
@@ -461,6 +501,14 @@ export const deliveryApi = {
   /** The cached records themselves, filtered by type and searched over every value they hold. */
   cachedItems: (query: PageQuery & { repoId?: string; type?: string; search?: string }) =>
     get<PagedResult<DeliveryCachedItem>>("/api/v1/delivery/cache/items", query as QueryParams),
+  /** The cache changes delivered records were built from, by status: pending, approved, rolling, rejected, applied. */
+  updateTags: (query: PageQuery & { status?: string }) =>
+    get<PagedResult<DeliveryUpdateTag>>("/api/v1/delivery/cache/tags", query as QueryParams),
+  /** Approves or rejects tags; approving lets the next run carry the new document to OSDU. */
+  decideTags: (tagIds: number[], approve: boolean) =>
+    post<{ decided: number; approved: boolean }>("/api/v1/delivery/cache/tags/decide", { tagIds, approve }),
+  /** What one record read out of the cache when it was rendered. */
+  recordCacheUses: (key: string) => get<DeliveryCacheUse[]>(`/api/v1/delivery/records/${key}/cache`),
   /** The manifest notification: queues the deliver run for a drop. */
   submit: (request: DeliverySubmissionRequest) => post<DeliverySubmissionAccepted>("/api/v1/delivery/submissions", request),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */

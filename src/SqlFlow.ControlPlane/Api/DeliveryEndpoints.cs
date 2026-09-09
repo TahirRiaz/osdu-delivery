@@ -88,6 +88,23 @@ public sealed record DeliveryCacheDefinitionDto(
     Guid Id, Guid RepoId, string FlowName, string RelativePath, string Name, string EntityType, string Kind, string? Query,
     JsonElement Fields, bool MakeCurrent, long Items, string? Version, DateTime? CapturedUtc, DateTime FirstSeenUtc, DateTime LastSeenUtc);
 
+/// <summary>
+/// One cache change and what happens about it: the cached record and path that moved, the value before and after,
+/// how many delivered manifest rows it reaches, and how far the rollout has carried it.
+/// </summary>
+public sealed record DeliveryUpdateTagDto(
+    long TagId, string Kind, string TypeName, string ItemId, string Path, string Change, string? OldValue, string? NewValue,
+    string? FromVersion, string ToVersion, string Mode, string Status, string Summary, long AffectedRecords, long Processed,
+    long Remaining, DateTime DetectedUtc, DateTime? DecidedUtc, string? DecidedBy, DateTime? StartedUtc, DateTime? CompletedUtc);
+
+/// <summary>A decision on a set of tags: approve lets the next run carry the update, reject leaves OSDU as it is.</summary>
+public sealed record DeliveryTagDecisionRequest(IReadOnlyList<long> TagIds, bool Approve);
+
+public sealed record DeliveryTagDecisionResult(int Decided, bool Approved);
+
+/// <summary>One cached value a record was built from, for its history page.</summary>
+public sealed record DeliveryCacheUseDto(string TypeName, string ItemId, string Path, string Kind, string Value);
+
 /// <summary>One cached record: its OSDU id and the values captured at the declared paths.</summary>
 public sealed record DeliveryCachedItemDto(long ItemId, Guid SnapshotId, string TypeName, string EntityType, string RecordId, JsonElement Fields);
 
@@ -180,6 +197,8 @@ public static class DeliveryEndpoints
         delivery.MapGet("/snapshots", ListSnapshotsAsync).WithName("ListDeliverySnapshots");
         delivery.MapGet("/cache", ListCacheDefinitionsAsync).WithName("ListDeliveryCacheDefinitions");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
+        delivery.MapGet("/cache/tags", ListUpdateTagsAsync).WithName("ListDeliveryUpdateTags");
+        delivery.MapGet("/records/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
         return group;
     }
 
@@ -190,6 +209,7 @@ public static class DeliveryEndpoints
         delivery.MapPost("/submissions", SubmitAsync).WithName("SubmitDeliveryDrop");
         delivery.MapPost("/flows/{pipelineId:guid}/release", ReleaseFlowAsync).WithName("ReleaseDeliveryFlowRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/probe", ProbeAsync).WithName("ProbeDeliveryTarget");
+        delivery.MapPost("/cache/tags/decide", DecideUpdateTagsAsync).WithName("DecideDeliveryUpdateTags");
         delivery.MapPost("/records/{key:guid}/release", ReleaseRecordAsync).WithName("ReleaseDeliveryRecord");
         delivery.MapPost("/records/{key:guid}/redeliver", RedeliverAsync).WithName("RedeliverDeliveryRecord");
         delivery.MapPost("/records/{key:guid}/verify", VerifyRecordAsync).WithName("VerifyDeliveryRecord");
@@ -582,6 +602,58 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>(
             items.Select(i => new DeliveryCachedItemDto(i.ItemId, i.SnapshotId, i.TypeName, i.EntityType, i.RecordId, ParseJson(i.FieldsJson))).ToList(),
             p, size, total));
+    }
+
+    /// <summary>
+    /// The cache changes delivered records were built from: one row per change with what it reaches, filtered by
+    /// status (pending, approved, rolling, rejected, applied).
+    /// </summary>
+    private static async Task<Ok<PagedResult<DeliveryUpdateTagDto>>> ListUpdateTagsAsync(
+        string? status, int? page, int? pageSize, ILedger ledger, CancellationToken ct)
+    {
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var tags = await ledger.ListTagsAsync(status, size, (p - 1) * size, ct).ConfigureAwait(false);
+        var total = await ledger.CountTagsAsync(status, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<DeliveryUpdateTagDto>(tags.Select(ToDto).ToList(), p, size, total));
+    }
+
+    /// <summary>Approves or rejects tags. Approving releases the records so the next run carries the new document.</summary>
+    private static async Task<Results<Ok<DeliveryTagDecisionResult>, ProblemHttpResult>> DecideUpdateTagsAsync(
+        DeliveryTagDecisionRequest request, ILedger ledger, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+    {
+        if (request is null || request.TagIds.Count == 0)
+        {
+            return TypedResults.Problem(title: "No tags", detail: "Name at least one tag to decide.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (request.TagIds.Count > 1000)
+        {
+            return TypedResults.Problem(title: "Too many tags", detail: "At most 1000 tags can be decided in one call.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var decided = await ledger.DecideTagsAsync(request.TagIds, request.Approve, RequestActor.Of(user) ?? "unknown", clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryTagDecisionResult(decided, request.Approve));
+    }
+
+    /// <summary>What one record read out of the cache when it was rendered, through the set it shares.</summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheUseDto>>, ProblemHttpResult>> ListRecordCacheUsesAsync(
+        Guid key, ILedger ledger, CancellationToken ct)
+    {
+        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        if (record is null)
+        {
+            return NotFound("record", key);
+        }
+
+        if (record.CacheSetId is not { } setId)
+        {
+            return TypedResults.Ok<IReadOnlyList<DeliveryCacheUseDto>>([]);
+        }
+
+        var uses = await ledger.ListCacheSetAsync(setId, ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheUseDto>>(uses
+            .Select(u => new DeliveryCacheUseDto(u.TypeName, u.ItemId, u.Path, u.Kind.ToString().ToLowerInvariant(), u.ValueText))
+            .ToList());
     }
 
     // ---- Interventions -------------------------------------------------------------------------------------------
@@ -1103,6 +1175,11 @@ public static class DeliveryEndpoints
     private static DeliveryMappingDto ToDto(DeliveryMapping m) => new(
         m.Id, m.RepoId, m.Reference, m.Name, m.Version, m.Kind, m.RelativePath, m.ContentHash, m.Status, m.Message, ParseJson(m.SummaryJson),
         m.FirstSeenUtc, m.LastSeenUtc);
+
+    private static DeliveryUpdateTagDto ToDto(UpdateTag t) => new(
+        t.TagId, t.Kind, t.TypeName, t.ItemId, t.Path, t.Change, t.OldValue, t.NewValue, t.FromVersion, t.ToVersion, t.Mode,
+        t.Status, t.Describe(), t.AffectedRecords, t.Processed, t.Remaining, t.DetectedUtc, t.DecidedUtc, t.DecidedBy,
+        t.StartedUtc, t.CompletedUtc);
 
     private static DeliverySnapshotDto ToDto(DeliverySnapshot s) => new(
         s.Id, s.RepoId, s.Kind, s.Name, s.Version, s.CapturedUtc, s.Current, s.RelativePath, ParseJson(s.SummaryJson), s.FirstSeenUtc, s.LastSeenUtc);

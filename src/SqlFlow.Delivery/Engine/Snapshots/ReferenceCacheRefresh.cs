@@ -39,19 +39,42 @@ public sealed class ReferenceCacheRefresher
         var builder = new SnapshotBuilder(store, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>());
 
         var spec = Resolve(cache, values);
+
+        // The version being replaced, read before the capture writes the new one: it is what the delivered estate
+        // was built from, and the only thing the new version can be compared against.
+        var previousVersion = await store.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
+        var previous = previousVersion is null ? null : await store.LoadReferencesAsync(previousVersion, ct).ConfigureAwait(false);
+
         using var osdu = new OsduConnection(flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets);
         var snapshot = await builder.ReferencesFromOsduAsync(osdu, spec, cache.MakeCurrent, ct).ConfigureAwait(false);
 
-        var types = spec.Types
-            .Select(t => snapshot.Type(t.Name))
-            .Where(t => t is not null)
-            .Select(t => new CachedTypeOutcome(t!.Name, t.EntityType, t.Items.Count, t.FieldNames))
-            .ToList();
+        var types = new List<CachedTypeOutcome>();
+        var impacts = new List<CacheImpactResult>();
+        foreach (var typeSpec in spec.Types)
+        {
+            if (snapshot.Type(typeSpec.Name) is not { } type)
+            {
+                continue;
+            }
+
+            var impact = _context.Ledger is null
+                ? new CacheImpactResult(type.Name, 0, 0, 0, 0)
+                : await new CacheImpactAnalyzer(_context.Ledger, _context.Time, _logger)
+                    .AnalyzeAsync(previous?.Type(type.Name), type, typeSpec.OnChange, previousVersion, snapshot.Version, ct)
+                    .ConfigureAwait(false);
+            impacts.Add(impact);
+            types.Add(new CachedTypeOutcome(
+                type.Name, type.EntityType, type.Items.Count, type.FieldNames, ModeText(typeSpec.OnChange), impact.ChangedItems, impact.Changes, impact.AffectedRecords));
+        }
+
         _logger.LogInformation(
-            "Cache refreshed into reference snapshot {Version}: {Types} type(s), {Items} item(s){Current}, store {Store}.",
-            snapshot.Version, types.Count, types.Sum(t => t.Items), cache.MakeCurrent ? " (now current)" : string.Empty, root);
-        return new ReferenceCacheOutcome(snapshot.Version, snapshot.CapturedUtc.UtcDateTime, cache.MakeCurrent, root, types);
+            "Cache refreshed into reference snapshot {Version}: {Types} type(s), {Items} item(s){Current}, store {Store}. {Changed} cached value(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
+            snapshot.Version, types.Count, types.Sum(t => t.Items), cache.MakeCurrent ? " (now current)" : string.Empty, root,
+            impacts.Sum(i => i.ChangedItems), impacts.Sum(i => i.AffectedRecords), impacts.Sum(i => i.Changes));
+        return new ReferenceCacheOutcome(snapshot.Version, previousVersion, snapshot.CapturedUtc.UtcDateTime, cache.MakeCurrent, root, types);
     }
+
+    private static string ModeText(CacheChangeMode mode) => mode == CacheChangeMode.Auto ? "auto" : "approve";
 
     /// <summary>The capture spec with the run's parameter values substituted into each type's query.</summary>
     private static ReferenceCaptureSpec Resolve(RetrievalCache cache, IReadOnlyDictionary<string, string> values)
@@ -65,10 +88,15 @@ public sealed class ReferenceCacheRefresher
 
 /// <summary>What a cache refresh produced, reported on the run and recorded in the catalog.</summary>
 public sealed record ReferenceCacheOutcome(
-    string Version, DateTime CapturedUtc, bool Current, string Store, IReadOnlyList<CachedTypeOutcome> Types)
+    string Version, string? PreviousVersion, DateTime CapturedUtc, bool Current, string Store, IReadOnlyList<CachedTypeOutcome> Types)
 {
     public long Items => Types.Sum(t => t.Items);
+
+    /// <summary>Delivered records the refresh found no longer matching the cache.</summary>
+    public long AffectedRecords => Types.Sum(t => t.AffectedRecords);
 }
 
-/// <summary>One cached type as the refresh left it.</summary>
-public sealed record CachedTypeOutcome(string Name, string EntityType, int Items, IReadOnlyList<string> Fields);
+/// <summary>One cached type as the refresh left it, with what its changes did to the delivered estate.</summary>
+public sealed record CachedTypeOutcome(
+    string Name, string EntityType, int Items, IReadOnlyList<string> Fields, string OnChange = "approve", int ChangedItems = 0,
+    int Changes = 0, long AffectedRecords = 0);
