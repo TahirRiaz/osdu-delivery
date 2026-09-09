@@ -24,6 +24,11 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public const string DefaultProbePath = "/api/storage/v2/info";
     public const string DefaultDeletePath = "/api/storage/v2/records/{id}:delete";
     public const string DefaultPurgePath = "/api/storage/v2/records/{id}";
+    public const string DefaultPurgeVersionsPath = "/api/storage/v2/records/{id}/versions";
+    public const string DefaultBulkDeletePath = "/api/storage/v2/records/delete";
+
+    /// <summary>Record ids the storage service accepts in one bulk soft delete request.</summary>
+    public const int MaxBulkDelete = 500;
 
     public const string RecordsStep = "records";
 
@@ -202,12 +207,99 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DefaultProbePath, ct);
 
+    public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
+        => RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options), targetId, scope, ct);
+
     /// <summary>
-    /// Storage service semantics (openapi storage v2): <c>POST /records/{id}:delete</c> is the logical, revertible
-    /// delete; <c>DELETE /records/{id}</c> purges the record and all its versions and cannot be undone. Both answer 204.
+    /// The reversible scope goes through the storage service's bulk soft delete (openapi storage v2,
+    /// <c>POST /records/delete</c>), which takes up to <see cref="MaxBulkDelete"/> ids per request and answers 204
+    /// when it deleted them all or 207 when it did not. A 207, and a status that rejects the whole request, fall
+    /// back to removing that chunk one record at a time, so every record still reports its own outcome instead of
+    /// sharing a guess. The two purges have no bulk endpoint and always go one at a time.
     /// </summary>
-    public Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
-        => RecordWriter.DeleteAsync(_client, _options.DeletePath ?? DefaultDeletePath, _options.PurgePath ?? DefaultPurgePath, targetId, purge, ct);
+    public async Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(removals);
+        if (scope != RemovalScope.Record || removals.Count <= 1)
+        {
+            return await OneByOneAsync(removals, scope, ct).ConfigureAwait(false);
+        }
+
+        var results = new List<RemovalResult>(removals.Count);
+        foreach (var chunk in removals.Chunk(MaxBulkDelete))
+        {
+            ct.ThrowIfCancellationRequested();
+            results.AddRange(await BulkSoftDeleteAsync(chunk, ct).ConfigureAwait(false));
+        }
+
+        return results;
+    }
+
+    private async Task<IReadOnlyList<RemovalResult>> BulkSoftDeleteAsync(IReadOnlyList<RecordRemoval> chunk, CancellationToken ct)
+    {
+        var url = _client.Url(_options.BulkDeletePath ?? DefaultBulkDeletePath);
+        var body = new JsonArray(chunk.Select(r => (JsonNode?)JsonValue.Create(r.TargetId)).ToArray());
+        HttpFetchResult result;
+        try
+        {
+            result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 207, 404 }, ct).ConfigureAwait(false);
+        }
+        catch (HttpStatusException)
+        {
+            // The service refused the request as a whole; ask it record by record which ones it objects to.
+            return await OneByOneAsync(chunk, RemovalScope.Record, ct).ConfigureAwait(false);
+        }
+
+        if ((int)result.Status is 207 or 404)
+        {
+            return await OneByOneAsync(chunk, RemovalScope.Record, ct).ConfigureAwait(false);
+        }
+
+        return chunk
+            .Select(r => new RemovalResult(r, new DeleteOutcome(true, false, "removed from OSDU (reversible, in bulk)"), null))
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<RemovalResult>> OneByOneAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct)
+    {
+        var results = new List<RemovalResult>(removals.Count);
+        foreach (var removal in removals)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var outcome = await DeleteAsync(removal.TargetId, scope, removal.TargetState, ct).ConfigureAwait(false);
+                results.Add(new RemovalResult(removal, outcome, null));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                results.Add(new RemovalResult(removal, null, ex));
+            }
+        }
+
+        return results;
+    }
+}
+
+/// <summary>The three removal endpoints of one flow's target, defaulted per protocol and overridable per flow.</summary>
+internal sealed record RemovalPaths(string Delete, string PurgeVersions, string Purge)
+{
+    public static RemovalPaths From(ProtocolOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return new RemovalPaths(
+            options.DeletePath ?? OsduRecordProtocol.DefaultDeletePath,
+            options.PurgeVersionsPath ?? OsduRecordProtocol.DefaultPurgeVersionsPath,
+            options.PurgePath ?? OsduRecordProtocol.DefaultPurgePath);
+    }
+
+    public string For(RemovalScope scope) => scope switch
+    {
+        RemovalScope.Record => Delete,
+        RemovalScope.History => PurgeVersions,
+        RemovalScope.Everything => Purge,
+        _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+    };
 }
 
 /// <summary>The record write, read-back, probe and delete shared by the OSDU protocols.</summary>
@@ -299,16 +391,32 @@ internal static class RecordWriter
         }
     }
 
-    /// <summary>The storage service delete: logical through <c>{id}:delete</c>, physical through <c>DELETE {id}</c>.</summary>
-    public static async Task<DeleteOutcome> DeleteAsync(OsduHttpClient client, string deletePath, string purgePath, string targetId, bool purge, CancellationToken ct)
+    /// <summary>
+    /// The storage service's three removals (openapi storage v2), each a different endpoint and a different
+    /// promise: <c>POST /records/{id}:delete</c> stops the record resolving and OSDU can revert it;
+    /// <c>DELETE /records/{id}/versions</c> destroys every earlier version and leaves the latest live;
+    /// <c>DELETE /records/{id}</c> destroys the record and all of its versions. All three answer 204, and a record
+    /// that is already gone (404) is reported as such rather than as a failure.
+    /// </summary>
+    public static async Task<DeleteOutcome> DeleteAsync(OsduHttpClient client, RemovalPaths paths, string targetId, RemovalScope scope, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(paths);
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
-        var url = purge ? client.Url(purgePath, targetId) : client.Url(deletePath, targetId);
-        var method = purge ? HttpMethod.Delete : HttpMethod.Post;
+        var url = client.Url(paths.For(scope), targetId);
+        var method = scope == RemovalScope.Record ? HttpMethod.Post : HttpMethod.Delete;
         var result = await client.SendJsonAsync(method, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
-        return (int)result.Status == 404
-            ? new DeleteOutcome(false, true, "record not found in OSDU")
-            : new DeleteOutcome(true, false, purge ? "purged (all versions)" : "logically deleted");
+        if ((int)result.Status == 404)
+        {
+            return new DeleteOutcome(false, true, "record not found in OSDU");
+        }
+
+        return new DeleteOutcome(true, false, scope switch
+        {
+            RemovalScope.Record => "removed from OSDU (reversible)",
+            RemovalScope.History => "earlier versions purged; the latest version is still live",
+            RemovalScope.Everything => "purged from OSDU (the record and every version)",
+            _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        });
     }
 
     /// <summary>Copies the OSDU-owned data keys (design.md section 7.6) from the current record into the document.</summary>

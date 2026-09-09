@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, CircleAlert, Eraser, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { BookOpenCheck, CircleAlert, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +24,7 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { prettyJson } from "./DeliveryFlowPanel";
+import { RemovalDialog } from "./RemovalDialog";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 /** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
@@ -128,7 +129,8 @@ export default function DeliveryRecordPage() {
 function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [confirm, setConfirm] = useState<"redeliver" | "delete" | "purge" | null>(null);
+  const [confirm, setConfirm] = useState<"redeliver" | null>(null);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskLabel, setTaskLabel] = useState("");
 
@@ -191,17 +193,6 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
     onSuccess: (accepted) => { setTaskLabel("Read back from OSDU"); setTaskId(accepted.taskId); },
     onError: fail,
   });
-  const remove = useMutation({
-    mutationFn: (purge: boolean) => deliveryApi.remove(deliveryKey, purge),
-    onSuccess: (accepted, purge) => {
-      setConfirm(null);
-      setTaskLabel(purge ? "Purge from OSDU" : "Delete from OSDU");
-      setTaskId(accepted.taskId);
-      toast.success("Removal queued on a node.");
-    },
-    onError: (error) => { setConfirm(null); fail(error); },
-  });
-
   if (query.isError) {
     return (
       <Page data-testid="page-delivery-record">
@@ -221,7 +212,7 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   }
 
   const record = detail.record;
-  const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending || remove.isPending;
+  const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const taskState = task.data;
 
@@ -271,23 +262,12 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
               variant="outline"
               size="sm"
               className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => setConfirm("delete")}
-              disabled={busy || !canActOnTarget}
+              onClick={() => setRemoveOpen(true)}
+              disabled={busy || !canActOnTarget || detail.pipelineId === null}
               data-testid="record-delete"
             >
               <Trash2 />
-              Delete from OSDU
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => setConfirm("purge")}
-              disabled={busy || !canActOnTarget}
-              data-testid="record-purge"
-            >
-              <Eraser />
-              Purge
+              Remove from OSDU
             </Button>
           </>
         )}
@@ -381,26 +361,21 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
         onConfirm={() => redeliver.mutate()}
         onClose={() => setConfirm(null)}
       />
-      <ConfirmDialog
-        open={confirm === "delete"}
-        title="Delete from OSDU"
-        message="Logically delete the record in OSDU (revertible on the OSDU side) and block it here until its source changes or it is released. A node performs the call and records it under your name."
-        confirmLabel="Delete"
-        danger
-        busy={remove.isPending}
-        onConfirm={() => remove.mutate(false)}
-        onClose={() => setConfirm(null)}
-      />
-      <ConfirmDialog
-        open={confirm === "purge"}
-        title="Purge from OSDU"
-        message="Purge the record and every version of it from OSDU. This cannot be undone on the OSDU side. The record stays blocked here until released."
-        confirmLabel="Purge"
-        danger
-        busy={remove.isPending}
-        onConfirm={() => remove.mutate(true)}
-        onClose={() => setConfirm(null)}
-      />
+      {detail.pipelineId !== null && (
+        <RemovalDialog
+          open={removeOpen}
+          onClose={() => setRemoveOpen(false)}
+          pipelineId={detail.pipelineId}
+          flowName={detail.flowName ?? "this flow"}
+          selection={{ kind: "keys", keys: [deliveryKey] }}
+          singleLabel={record.label ?? record.sourceKey}
+          onQueued={(accepted) => {
+            setTaskLabel(accepted.scope === "history" ? "Purge history in OSDU" : accepted.scope === "everything" ? "Purge from OSDU" : "Remove from OSDU");
+            setTaskId(accepted.taskId);
+            toast.success("Removal queued on a node.");
+          }}
+        />
+      )}
     </Page>
   );
 }

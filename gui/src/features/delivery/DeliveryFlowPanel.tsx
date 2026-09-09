@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Radar, Send, Unlock } from "lucide-react";
+import { Radar, Send, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { isApiError } from "../../api/client";
 import {
   DELIVERY_RECORD_STATUSES, deliveryApi,
-  type DeliveryRecord, type DeliveryRecordStatus, type DeliverySubmission,
+  type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
 } from "../../api/delivery";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
@@ -26,6 +26,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
+import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { SubmitDropDialog } from "./SubmitDropDialog";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
@@ -66,8 +67,9 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  // A submission page links here scoped to its records; clearing the chip widens the list again.
+  // A submission or run page links here scoped to the records it touched; clearing the chip widens the list again.
   const submissionFilter = searchParams.get("submission");
+  const runFilter = searchParams.get("run");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>(ALL);
   const [drifted, setDrifted] = useState(false);
@@ -75,6 +77,39 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [submitOpen, setSubmitOpen] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [probeTaskId, setProbeTaskId] = useState<string | null>(null);
+  // Ticked rows survive paging and filter changes because the page owns them, not the table. `allMatching` is the
+  // other selection: not a list of keys but the filter itself, resolved when the removal runs.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [allMatching, setAllMatching] = useState(false);
+  const [matched, setMatched] = useState(0);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [removalTaskId, setRemovalTaskId] = useState<string | null>(null);
+
+  const filter = useMemo<DeliveryRecordFilter>(() => ({
+    search: search.trim() === "" ? undefined : search.trim(),
+    mode: contains ? "contains" : undefined,
+    status: status === ALL ? undefined : (status as DeliveryRecordStatus),
+    drifted: drifted || undefined,
+    submissionId: submissionFilter ?? undefined,
+    runId: runFilter ?? undefined,
+  }), [search, contains, status, drifted, submissionFilter, runFilter]);
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setAllMatching(false);
+  }, []);
+
+  // A filter change makes the ticked keys mean something different from what the operator sees, and an
+  // all-matching selection would silently re-aim at the new filter. Both are dropped.
+  const filterKey = JSON.stringify(filter);
+  const [shownFilter, setShownFilter] = useState(filterKey);
+  if (filterKey !== shownFilter) {
+    setShownFilter(filterKey);
+    clearSelection();
+  }
+
+  const onPageLoaded = useCallback((_rows: DeliveryRecord[], total: number) => setMatched(total), []);
+  const removal = useComputeTask(removalTaskId);
 
   const stats = useQuery({
     queryKey: ["delivery", "stats", pipelineId],
@@ -88,6 +123,15 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     refetchInterval: 10000,
   });
   const probe = useComputeTask(probeTaskId);
+
+  // A removal that finished on a node changed the ledger for every record it touched: refetch the list and the
+  // stats once the task settles, so the page shows what it did without a manual reload.
+  const finishedRemoval = isTerminalTask(removal.data) ? removal.data!.taskId : null;
+  useEffect(() => {
+    if (finishedRemoval !== null) {
+      void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+    }
+  }, [finishedRemoval, queryClient]);
 
   const probeTarget = useMutation({
     mutationFn: () => deliveryApi.probe(pipelineId),
@@ -204,24 +248,75 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 submission {submissionFilter.slice(0, 8)}: clear
               </Button>
             )}
+            {runFilter && (
+              <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("run"); return next; })} data-testid="delivery-records-clear-run">
+                run {runFilter.slice(0, 8)}: clear
+              </Button>
+            )}
           </FilterBar>
           <PagedTable
-            queryKey={["delivery", "records", pipelineId, search, status, drifted, contains, submissionFilter]}
-            fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, {
-              page,
-              pageSize,
-              search: search.trim() === "" ? undefined : search.trim(),
-              mode: contains ? "contains" : undefined,
-              status: status === ALL ? undefined : (status as DeliveryRecordStatus),
-              drifted: drifted || undefined,
-              submissionId: submissionFilter ?? undefined,
-            })}
+            queryKey={["delivery", "records", pipelineId, search, status, drifted, contains, submissionFilter, runFilter]}
+            fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, { page, pageSize, ...filter })}
             columns={recordColumns}
             rowKey={(row) => row.deliveryKey}
             onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
-            pollMs={10000}
+            pollMs={selected.size > 0 || allMatching ? undefined : 10000}
+            onPageLoaded={onPageLoaded}
+            selection={{ selected, onChange: (next) => { setSelected(next); setAllMatching(false); } }}
+            toolbar={(selected.size > 0 || allMatching) && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-border bg-accent/40 px-3 py-1.5" data-testid="delivery-selection-bar">
+                <span className="text-[13px] font-medium tabular-nums" data-testid="delivery-selection-count">
+                  {allMatching
+                    ? `All ${matched.toLocaleString()} matching records selected`
+                    : `${selected.size.toLocaleString()} selected`}
+                </span>
+                {!allMatching && matched > selected.size && (
+                  <Button variant="link" size="sm" className="h-6 px-0 text-[13px]" onClick={() => setAllMatching(true)} data-testid="delivery-select-all-matching">
+                    Select all {matched.toLocaleString()} matching
+                  </Button>
+                )}
+                <Button variant="link" size="sm" className="h-6 px-0 text-[13px] text-muted-foreground" onClick={clearSelection} data-testid="delivery-clear-selection">
+                  Clear
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto h-7 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => setRemoveOpen(true)}
+                  data-testid="delivery-remove-selected"
+                >
+                  <Trash2 />
+                  Remove from OSDU
+                </Button>
+              </div>
+            )}
             emptyMessage="No records match. A flow's records appear here once its first submission has been planned."
             data-testid="delivery-records-table"
+          />
+          {removalTaskId !== null && (
+            <Card className="gap-2 rounded-lg p-3" data-testid="delivery-removal-result">
+              <div className="flex items-center gap-2 text-[13px] font-medium">
+                Removal
+                <Badge variant="outline">{removal.data?.status ?? "queued"}</Badge>
+                {removal.data?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{removal.data.claimedByNode}</span>}
+              </div>
+              {removal.data?.error && <p className="text-[13px] text-destructive">{removal.data.error}</p>}
+              {isTerminalTask(removal.data) && removal.data?.resultJson && (
+                <CodeView value={prettyJson(removal.data.resultJson)} language="json" height={260} data-testid="delivery-removal-json" />
+              )}
+            </Card>
+          )}
+          <RemovalDialog
+            open={removeOpen}
+            onClose={() => setRemoveOpen(false)}
+            pipelineId={pipelineId}
+            flowName={flowName}
+            selection={selectionFor(allMatching, filter, matched, selected)}
+            onQueued={(accepted) => {
+              clearSelection();
+              setRemovalTaskId(accepted.taskId);
+              toast.success(`Removal of ${accepted.records.toLocaleString()} record(s) queued on a node.`);
+            }}
           />
         </>
       )}
@@ -249,6 +344,17 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
       />
     </div>
   );
+}
+
+/**
+ * The selection the removal dialog acts on. Ticked keys travel as keys; "all matching" travels as the filter
+ * itself with the count that was shown, so the removal covers records no page ever rendered and the API can
+ * refuse it if that count has moved.
+ */
+function selectionFor(
+  allMatching: boolean, filter: DeliveryRecordFilter, matched: number, selected: ReadonlySet<string>,
+): RemovalSelection {
+  return allMatching ? { kind: "filter", filter, expected: matched } : { kind: "keys", keys: [...selected] };
 }
 
 const submissionColumns: Column<DeliverySubmission>[] = [

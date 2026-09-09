@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { type CSSProperties, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -7,10 +7,10 @@ import type { PagedResult } from "../api/types";
 import { isApiError } from "../api/client";
 import { pollingInterval } from "../hooks/usePolling";
 import { CorrelationError } from "./CorrelationError";
-import { DataTable, type Column, type TableGrouping } from "./DataTable";
+import { DataTable, type Column, type RowSelection, type TableGrouping } from "./DataTable";
 
 // Re-exported so the pages keep importing the table types from here (their single table entry point).
-export type { Column, TableGrouping } from "./DataTable";
+export type { Column, RowSelection, TableGrouping } from "./DataTable";
 
 interface PagedTableProps<T> {
   /** Cache identity for the query; include every filter value so a filter change is a new query. */
@@ -25,6 +25,12 @@ interface PagedTableProps<T> {
   rowSx?: (row: T) => CSSProperties | undefined;
   emptyMessage: string;
   grouping?: TableGrouping<T>;
+  /** Adds a leading checkbox column; the page owns the selected set so it survives paging. */
+  selection?: RowSelection<T>;
+  /** Rendered inside the bordered surface above the table: where a selection toolbar goes. */
+  toolbar?: ReactNode;
+  /** Called with the rows and total of each page as it arrives, for pages that act on the whole match. */
+  onPageLoaded?: (rows: T[], total: number) => void;
   "data-testid"?: string;
 }
 
@@ -35,7 +41,8 @@ interface PagedTableProps<T> {
  * directly instead.
  */
 export function PagedTable<T>({
-  queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, grouping, "data-testid": testId,
+  queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, grouping, selection, toolbar,
+  onPageLoaded, "data-testid": testId,
 }: PagedTableProps<T>) {
   const [page, setPage] = useState(0); // rendered 0-based; the API is 1-based
   const [pageSize, setPageSize] = useState(50);
@@ -58,6 +65,15 @@ export function PagedTable<T>({
     refetchInterval: pollMs ? pollingInterval(pollMs) : undefined,
   });
 
+  // The page a caller acts on in bulk: reported after render, so a parent can hold the rows it is showing (to
+  // select them all, say) without this component owning that state.
+  const loaded = query.data;
+  useEffect(() => {
+    if (loaded !== undefined) {
+      onPageLoaded?.(loaded.items, loaded.total);
+    }
+  }, [loaded, onPageLoaded]);
+
   if (query.isError) {
     return isApiError(query.error)
       ? <CorrelationError error={query.error} />
@@ -79,6 +95,8 @@ export function PagedTable<T>({
       rowSx={rowSx}
       emptyMessage={emptyMessage}
       grouping={grouping}
+      selection={selection}
+      toolbar={toolbar}
       data-testid={testId ?? "paged-table"}
       footer={(
         <div className="flex items-center justify-between gap-4 border-t border-border px-3 py-1.5">

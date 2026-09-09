@@ -162,20 +162,34 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     /// <summary>
     /// Wellbore DDMS semantics (openapi wellbore_ddms, DELETE /ddms/v3/welllogs/{record_id}): a logical deletion of
     /// the record by default, a physical one with <c>?purge=true</c>; no recursive delete of owned entities; 204.
+    /// The DDMS has no operation on a record's versions, and versions belong to the storage service for every kind
+    /// of record, so <see cref="RemovalScope.History"/> goes to storage's version purge
+    /// (<c>protocolOptions.purgeVersionsPath</c>) and leaves the DDMS record itself untouched, which is exactly
+    /// what that scope promises.
     /// </summary>
-    public async Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
+    public async Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        if (scope == RemovalScope.History)
+        {
+            return await RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options), targetId, scope, ct).ConfigureAwait(false);
+        }
+
         var url = _client.Url(_options.DeletePath ?? DefaultDeletePath, targetId);
-        if (purge)
+        if (scope == RemovalScope.Everything)
         {
             url = new Uri(url + (string.IsNullOrEmpty(url.Query) ? "?purge=true" : "&purge=true"));
         }
 
         var result = await _client.SendJsonAsync(HttpMethod.Delete, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
-        return (int)result.Status == 404
-            ? new DeleteOutcome(false, true, "record not found in OSDU")
-            : new DeleteOutcome(true, false, purge ? "purged" : "logically deleted");
+        if ((int)result.Status == 404)
+        {
+            return new DeleteOutcome(false, true, "record not found in OSDU");
+        }
+
+        return new DeleteOutcome(true, false, scope == RemovalScope.Everything
+            ? "purged from OSDU (the record and every version)"
+            : "removed from OSDU (reversible)");
     }
 
     /// <summary>

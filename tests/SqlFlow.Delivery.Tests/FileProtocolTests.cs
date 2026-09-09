@@ -191,12 +191,12 @@ public class FileProtocolTests
             var record = JsonNode.Parse(handler.Calls[0].Body!)!.AsArray();
             Assert.Equal(["ds-a", "ds-b"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
 
-            var logical = await protocol.DeleteAsync(RecordId, purge: false, state);
+            var logical = await protocol.DeleteAsync(RecordId, RemovalScope.Record, state);
             Assert.True(logical.Deleted);
             Assert.Equal(2, handler.Calls.Count);
             Assert.EndsWith(":delete", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
 
-            var purged = await protocol.DeleteAsync(RecordId, purge: true, state);
+            var purged = await protocol.DeleteAsync(RecordId, RemovalScope.Everything, state);
             Assert.True(purged.Deleted);
             Assert.Contains("1 dataset record(s)", purged.Detail, StringComparison.Ordinal);
             Assert.Equal(5, handler.Calls.Count);

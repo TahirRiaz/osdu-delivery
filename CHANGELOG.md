@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Removal of delivered records at three scopes, named for what they take rather than for the verb: `record`
+  (`POST /records/{id}:delete`, reversible in OSDU), `history` (`DELETE /records/{id}/versions`, the earlier
+  versions destroyed and the latest left live) and `everything` (`DELETE /records/{id}`, the record and every
+  version). OSDU has no call that removes only the latest version, so none is offered.
+- Bulk removal: `POST /api/v1/delivery/flows/{pipelineId}/records/remove` takes either explicit `keys` or the
+  listing `filter` whose every match goes (resolved on the node when the removal runs, up to 25,000 records),
+  with `expected` refused on 409 when the set has moved; `.../remove/preview` answers what it would act on. The
+  reversible scope batches through the storage service's bulk soft delete (`POST /records/delete`), falling back
+  to one request per record on a 207 so every record reports its own outcome.
+- The records list filters by `runId` (through the attempts that run wrote), ticks rows, offers "select all N
+  matching", and opens one removal dialog that names the target endpoint and data partition, shows the three
+  scopes with the call each makes, and gates the permanent ones behind typing the partition back. A run page
+  links to the records it touched, and `GET /api/v1/delivery/flows/{pipelineId}/target` is where the GUI reads
+  the target from.
+
 - Streaming intake at any drop size: root rows and child scopes stream through a merge join (partitioned drops)
   or a disk-backed hash spill, rendering runs on a bounded pipeline, and the rendered documents go to work batch
   files on the flow's work location (`source.work`); the ledger keys pending records to a batch and a byte range

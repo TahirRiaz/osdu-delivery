@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -708,7 +709,7 @@ public sealed class CatalogLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(query);
         await using var db = Open();
-        var rows = Filter(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query);
+        var rows = Filter(db, db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query);
         var list = await rows
             .OrderByDescending(r => r.UpdatedUtc)
             .Skip(Math.Max(0, query.Offset))
@@ -722,7 +723,20 @@ public sealed class CatalogLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(query);
         await using var db = Open();
-        return await Filter(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query).CountAsync(ct).ConfigureAwait(false);
+        return await Filter(db, db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query).CountAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        await using var db = Open();
+        var keys = await Filter(db, db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query)
+            .OrderBy(r => r.DeliveryKey)
+            .Select(r => r.DeliveryKey)
+            .Take(Math.Clamp(max, 1, RemovalLimits.MaxSelection))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return keys.Select(k => new DeliveryKey(k)).ToList();
     }
 
     public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default)
@@ -756,7 +770,7 @@ public sealed class CatalogLedger : ILedger
         return rows.Where(r => (r.TargetId != null && r.TargetId.StartsWith(t)) || r.SourceKey.StartsWith(t) || (r.Label != null && r.Label.StartsWith(t)));
     }
 
-    private static IQueryable<DeliveryRecord> Filter(IQueryable<DeliveryRecord> rows, RecordQuery query)
+    private static IQueryable<DeliveryRecord> Filter(CatalogDbContext db, IQueryable<DeliveryRecord> rows, RecordQuery query)
     {
         if (query.Status is { } status)
         {
@@ -769,9 +783,21 @@ public sealed class CatalogLedger : ILedger
             rows = rows.Where(r => r.LastSubmissionId == submissionId);
         }
 
+        if (query.RunId is { } runId)
+        {
+            // The attempt table is indexed on RunId, so this is a semi-join over that index rather than a scan.
+            var touched = db.DeliveryAttempts.AsNoTracking().Where(a => a.RunId == runId).Select(a => a.DeliveryKey);
+            rows = rows.Where(r => touched.Contains(r.DeliveryKey));
+        }
+
         if (query.Drifted)
         {
             rows = rows.Where(r => r.LastVerifyOutcome == "drifted" || r.LastVerifyOutcome == "missing");
+        }
+
+        if (query.EverDelivered is { } everDelivered)
+        {
+            rows = everDelivered ? rows.Where(r => r.LastDeliveredUtc != null) : rows.Where(r => r.LastDeliveredUtc == null);
         }
 
         if (!string.IsNullOrWhiteSpace(query.Search))
@@ -954,27 +980,68 @@ public sealed class CatalogLedger : ILedger
         };
     }
 
-    public async Task MarkDeletedAsync(DeliveryKey key, bool purged, string worker, DateTime nowUtc, CancellationToken ct = default)
+    public async Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(keys);
         ArgumentException.ThrowIfNullOrWhiteSpace(worker);
-        await using var db = Open();
-        var entity = await db.DeliveryRecords.FirstOrDefaultAsync(r => r.DeliveryKey == key.Value, ct).ConfigureAwait(false)
-            ?? throw new DeliveryException($"Record {key} is not in the ledger.");
+        if (keys.Count == 0)
+        {
+            return;
+        }
 
-        var note = purged ? $"purged from OSDU by {worker}" : $"deleted from OSDU (logical) by {worker}";
+        var note = scope switch
+        {
+            RemovalScope.Record => $"removed from OSDU (reversible) by {worker}",
+            RemovalScope.History => $"earlier versions purged from OSDU by {worker}; the latest version is still live",
+            RemovalScope.Everything => $"purged from OSDU (the record and every version) by {worker}",
+            _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        };
+
+        // A removal of many records settles in chunks: one query for the rows and one save for the whole chunk,
+        // rather than a round trip per record.
+        foreach (var chunk in keys.Chunk(ChunkSize))
+        {
+            await using var db = Open();
+            var ids = chunk.Select(k => k.Value).ToList();
+            var entities = await db.DeliveryRecords.Where(r => ids.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false);
+            if (entities.Count != chunk.Length)
+            {
+                var missing = ids.Except(entities.Select(e => e.DeliveryKey)).First();
+                throw new DeliveryException($"Record {missing} is not in the ledger.");
+            }
+
+            foreach (var entity in entities)
+            {
+                MarkRemoved(db, entity, scope, worker, note, nowUtc);
+            }
+
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private static void MarkRemoved(CatalogDbContext db, DeliveryRecord entity, RemovalScope scope, string worker, string note, DateTime nowUtc)
+    {
         db.DeliveryAttempts.Add(new DeliveryAttempt
         {
-            DeliveryKey = key.Value,
+            DeliveryKey = entity.DeliveryKey,
             SubmissionId = entity.LastSubmissionId,
             Worker = worker,
             StartedUtc = nowUtc,
             CompletedUtc = nowUtc,
-            Outcome = StatusText.Of(AttemptOutcome.Deleted),
-            Phase = "delete",
+            Outcome = StatusText.Of(scope == RemovalScope.History ? AttemptOutcome.HistoryPurged : AttemptOutcome.Deleted),
+            Phase = scope == RemovalScope.History ? "purge-history" : "delete",
             TargetVersion = entity.TargetVersion,
             Error = note,
             ResultJson = entity.TargetStateJson,
         });
+
+        // A history purge leaves the record live in OSDU at the version the ledger already holds, so its custody
+        // state is still true and must not be disturbed: the attempt above is the whole of what happened.
+        if (scope == RemovalScope.History)
+        {
+            entity.UpdatedUtc = nowUtc;
+            return;
+        }
 
         entity.Status = StatusText.Of(RecordStatus.Deleted);
         entity.Blocked = true;
@@ -999,7 +1066,6 @@ public sealed class CatalogLedger : ILedger
         entity.PendingPayloadLocation = null;
         entity.LastError = note;
         entity.UpdatedUtc = nowUtc;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<KnownState>> KnownStateAsync(Guid flowId, CancellationToken ct = default)

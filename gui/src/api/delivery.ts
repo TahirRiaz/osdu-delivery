@@ -162,7 +162,7 @@ export interface DeliveryAttempt {
   worker: string;
   startedUtc: string;
   completedUtc: string;
-  outcome: "delivered" | "skipped" | "failed" | "held" | "deleted";
+  outcome: "delivered" | "skipped" | "failed" | "held" | "deleted" | "historypurged";
   phase: string;
   metadataHash: string | null;
   payloadHash: string | null;
@@ -293,8 +293,70 @@ export interface DeliveryRecordListQuery extends PageQuery {
   mode?: "prefix" | "contains";
   status?: DeliveryRecordStatus;
   submissionId?: string;
+  /** Only records the given platform run touched, resolved through that run's attempts. */
+  runId?: string;
   /** Only delivered records whose last verify found drift or a missing record. */
   drifted?: boolean;
+}
+
+/**
+ * How much of a record a removal takes away in OSDU. The three are different endpoints with different promises,
+ * not degrees of one thing: only "record" can be undone, and only "history" leaves the record live.
+ */
+export type RemovalScope = "record" | "history" | "everything";
+
+/** Where a flow's records live, and the exact call each removal scope would make against them. */
+export interface DeliveryTarget {
+  pipelineId: string;
+  flowName: string;
+  /** The endpoint as the flow declares it, secret references included: that reference names the environment. */
+  endpoint: string;
+  dataPartition: string | null;
+  protocol: string;
+  authType: string;
+  recordPath: string;
+  historyPath: string;
+  everythingPath: string;
+}
+
+/** The listing a removal is aimed at: the same filter the records list is built from. */
+export interface DeliveryRecordFilter {
+  status?: DeliveryRecordStatus;
+  search?: string;
+  mode?: "prefix" | "contains";
+  submissionId?: string;
+  runId?: string;
+  drifted?: boolean;
+}
+
+/**
+ * A removal of one or many records. The records are named by `keys` or by `filter` (every record it matches),
+ * never both. `expected` is the count the operator was shown: the API refuses the removal when the filter no
+ * longer resolves to it, rather than running against a set that changed underneath them.
+ */
+export interface DeliveryRemovalRequest {
+  scope: RemovalScope;
+  keys?: string[];
+  filter?: DeliveryRecordFilter;
+  expected?: number;
+}
+
+/** What a removal would act on, and from where: the contents of the confirmation. */
+export interface DeliveryRemovalPreview {
+  scope: RemovalScope;
+  records: number;
+  inOsdu: number;
+  neverDelivered: number;
+  capped: boolean;
+  target: DeliveryTarget;
+}
+
+/** A removal was queued on a node. */
+export interface DeliveryRemovalAccepted {
+  taskId: string;
+  status: RunStatus;
+  scope: RemovalScope;
+  records: number;
 }
 
 export interface DeliveryActivityListQuery extends PageQuery {
@@ -372,8 +434,14 @@ export const deliveryApi = {
   verify: (key: string) => post<DeliveryRunAccepted>(`/api/v1/delivery/records/${key}/verify`),
   /** Queues a read-back of the record as OSDU holds it; poll the task for the document. */
   read: (key: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/records/${key}/read`),
-  /** Queues the removal of the record from OSDU (a logical delete, or a purge). */
-  remove: (key: string, purge = false) => post<ComputeTaskAccepted>(`/api/v1/delivery/records/${key}/delete`, { purge }),
+  /** Where the flow's records live, and which call each removal scope makes against them. */
+  target: (pipelineId: string) => get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`),
+  /** What a removal would act on, without removing anything: the confirmation's contents. */
+  previewRemoval: (pipelineId: string, request: DeliveryRemovalRequest) =>
+    post<DeliveryRemovalPreview>(`/api/v1/delivery/flows/${pipelineId}/records/remove/preview`, request),
+  /** Queues the removal of the selected records, or of every record the filter matches, on a node. */
+  removeRecords: (pipelineId: string, request: DeliveryRemovalRequest) =>
+    post<DeliveryRemovalAccepted>(`/api/v1/delivery/flows/${pipelineId}/records/remove`, request),
   prune: (olderThanDays: number) => post<DeliveryPruneResult>("/api/v1/delivery/ledger/prune", { olderThanDays }),
 };
 

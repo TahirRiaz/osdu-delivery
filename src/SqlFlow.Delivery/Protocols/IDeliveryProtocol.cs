@@ -198,11 +198,37 @@ public interface IDeliveryProtocol
     Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default);
 
     /// <summary>
-    /// Removes the record from OSDU: a logical (revertible) delete by default, a physical purge when
-    /// <paramref name="purge"/> is set. A record that is already gone is not an error. <paramref name="targetState"/>
-    /// carries the identifiers of what else the record owns (its dataset records), for protocols that remove those too.
+    /// Removes the record from OSDU to the extent <paramref name="scope"/> asks for. A record that is already gone
+    /// is not an error. <paramref name="targetState"/> carries the identifiers of what else the record owns (its
+    /// dataset records), for protocols that remove those too.
     /// </summary>
-    Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default);
+    Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes several records. Outcomes align with <paramref name="removals"/>; one that failed carries its failure
+    /// instead of throwing, so one bad record never sinks the set. The default removes them one at a time; a protocol
+    /// whose service takes a list overrides this for the scopes that service can batch.
+    /// </summary>
+    async Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(removals);
+        var results = new List<RemovalResult>(removals.Count);
+        foreach (var removal in removals)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var outcome = await DeleteAsync(removal.TargetId, scope, removal.TargetState, ct).ConfigureAwait(false);
+                results.Add(new RemovalResult(removal, outcome, null));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                results.Add(new RemovalResult(removal, null, ex));
+            }
+        }
+
+        return results;
+    }
 
     /// <summary>Reads the record back as the target holds it, or null when the target has no such record.</summary>
     Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default);
@@ -215,3 +241,54 @@ public interface IDeliveryProtocol
 public sealed record ProbeOutcome(bool Reachable, int Status, string Detail, string Path);
 
 public sealed record DeleteOutcome(bool Deleted, bool AlreadyGone, string Detail);
+
+/// <summary>
+/// How much of a record a removal takes away in OSDU (openapi storage v2). The three are genuinely different
+/// operations against different endpoints, not degrees of one: only <see cref="Record"/> can be undone, and only
+/// <see cref="History"/> leaves the record live.
+/// </summary>
+public enum RemovalScope
+{
+    /// <summary>
+    /// <c>POST /records/{id}:delete</c>: the record stops resolving in OSDU. Nothing is destroyed and OSDU can
+    /// revert it. This is the only reversible scope.
+    /// </summary>
+    Record,
+
+    /// <summary>
+    /// <c>DELETE /records/{id}/versions</c>: every earlier version is destroyed permanently and the latest version
+    /// stays live and retrievable. The record itself is untouched, so the ledger keeps it delivered.
+    /// </summary>
+    History,
+
+    /// <summary>
+    /// <c>DELETE /records/{id}</c>: the record and every one of its versions are destroyed permanently. Cannot be
+    /// undone.
+    /// </summary>
+    Everything,
+}
+
+/// <summary>What bounds one removal, wherever it is driven from.</summary>
+public static class RemovalLimits
+{
+    /// <summary>
+    /// The most records one removal can select by filter. It bounds the task payload, the work a single node takes
+    /// on, and the blast radius of a mis-aimed filter; a larger removal is several removals.
+    /// </summary>
+    public const int MaxSelection = 25_000;
+
+    /// <summary>Records resolved, removed and written back per round trip.</summary>
+    public const int Chunk = 500;
+
+    /// <summary>Per-record results carried back in a removal's task result before it is summarised instead.</summary>
+    public const int MaxReported = 200;
+}
+
+/// <summary>One record a removal is to act on: its OSDU id and what earlier deliveries registered alongside it.</summary>
+public sealed record RecordRemoval(DeliveryKey Key, string TargetId, IReadOnlyDictionary<string, string>? TargetState);
+
+/// <summary>What a batched removal did to one record: its outcome, or the failure that stopped it.</summary>
+public sealed record RemovalResult(RecordRemoval Removal, DeleteOutcome? Outcome, Exception? Failure)
+{
+    public bool Succeeded => Failure is null && Outcome is not null;
+}

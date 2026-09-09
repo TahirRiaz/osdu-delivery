@@ -14,6 +14,7 @@ using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.ControlPlane.Api;
 
@@ -105,7 +106,34 @@ public sealed record DeliveryRedeliverRequest(string? Scope = null, bool Run = t
 
 public sealed record DeliveryRedeliverResult(int Marked, Guid? RunId);
 
-public sealed record DeliveryDeleteRequest(bool Purge = false);
+/// <summary>
+/// Where a flow's records actually live: the endpoint and data partition every removal in the GUI names before it
+/// runs, with the exact call each scope makes. The endpoint is reported as the flow declares it, secret references
+/// and all, because that reference is what identifies the environment; no credential or header value is exposed.
+/// </summary>
+public sealed record DeliveryTargetDto(
+    Guid PipelineId, string FlowName, string Endpoint, string? DataPartition, string Protocol, string AuthType,
+    string RecordPath, string HistoryPath, string EverythingPath);
+
+/// <summary>The listing a removal is aimed at, the same filter the records list is built from.</summary>
+public sealed record DeliveryRecordFilterDto(
+    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false);
+
+/// <summary>
+/// A removal of one or many records. <c>scope</c> is record, history or everything. The records are named either
+/// by <c>keys</c> or by <c>filter</c> (every record the listing matches), never both. <c>expected</c> is the count
+/// the operator was shown: when it no longer matches what the filter resolves to, the removal is refused rather
+/// than run against a set that changed underneath them.
+/// </summary>
+public sealed record DeliveryRemovalRequest(
+    string? Scope, IReadOnlyList<Guid>? Keys, DeliveryRecordFilterDto? Filter, int? Expected);
+
+/// <summary>A removal was queued on a node: the task to watch, and how many records it will act on.</summary>
+public sealed record DeliveryRemovalAccepted(Guid TaskId, string Status, string Scope, int Records);
+
+/// <summary>What a removal would act on, for the confirmation the operator sees before asking for it.</summary>
+public sealed record DeliveryRemovalPreview(
+    string Scope, int Records, int InOsdu, int NeverDelivered, bool Capped, DeliveryTargetDto Target);
 
 public sealed record DeliveryPruneRequest(int OlderThanDays);
 
@@ -128,6 +156,7 @@ public static class DeliveryEndpoints
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
+        delivery.MapGet("/flows/{pipelineId:guid}/target", GetTargetAsync).WithName("GetDeliveryTarget");
         delivery.MapGet("/flows/{pipelineId:guid}/submissions", ListSubmissionsAsync).WithName("ListDeliverySubmissions");
         delivery.MapGet("/flows/{pipelineId:guid}/retrievals", ListRetrievalsAsync).WithName("ListDeliveryRetrievals");
         delivery.MapGet("/records/{key:guid}", GetRecordAsync).WithName("GetDeliveryRecord");
@@ -156,6 +185,8 @@ public static class DeliveryEndpoints
         delivery.MapPost("/records/{key:guid}/verify", VerifyRecordAsync).WithName("VerifyDeliveryRecord");
         delivery.MapPost("/records/{key:guid}/read", ReadRecordAsync).WithName("ReadDeliveryRecordBack");
         delivery.MapPost("/records/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
+        delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
+        delivery.MapPost("/flows/{pipelineId:guid}/records/remove/preview", PreviewRemovalAsync).WithName("PreviewDeliveryRemoval");
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization("admin");
         return group;
     }
@@ -179,7 +210,7 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
-        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, bool? drifted, int? page, int? pageSize,
+        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, int? page, int? pageSize,
         CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
@@ -188,33 +219,51 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        RecordStatus? statusFilter = null;
-        if (!string.IsNullOrWhiteSpace(status))
+        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true));
+        if (query is null)
         {
-            if (!Enum.TryParse<RecordStatus>(status, ignoreCase: true, out var parsed))
-            {
-                return TypedResults.Problem(
-                    detail: $"status must be one of {string.Join(", ", Enum.GetNames<RecordStatus>().Select(n => n.ToLowerInvariant()))}.",
-                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
-            }
-
-            statusFilter = parsed;
+            return invalid!;
         }
 
         var (p, size) = PageRequest.Normalize(page, pageSize);
-        var query = new RecordQuery
-        {
-            Status = statusFilter,
-            Search = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
-            Mode = string.Equals(mode, "contains", StringComparison.OrdinalIgnoreCase) ? SearchMode.Contains : SearchMode.Prefix,
-            SubmissionId = submissionId,
-            Drifted = drifted == true,
-            Offset = (p - 1) * size,
-            Max = size,
-        };
+        query = query with { Offset = (p - 1) * size, Max = size };
         var items = await ledger.ListAsync(flow.FlowId, query, ct).ConfigureAwait(false);
         var total = await ledger.CountAsync(flow.FlowId, query, ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryRecordDto>(items.Select(ToDto).ToList(), p, size, total));
+    }
+
+    /// <summary>The listing filter of a request, or the problem to answer with when it names something unknown.</summary>
+    private static (RecordQuery? Query, ProblemHttpResult? Problem) BuildQuery(DeliveryRecordFilterDto filter)
+    {
+        RecordStatus? status = null;
+        if (!string.IsNullOrWhiteSpace(filter.Status))
+        {
+            if (!Enum.TryParse<RecordStatus>(filter.Status, ignoreCase: true, out var parsed))
+            {
+                return (null, TypedResults.Problem(
+                    detail: $"status must be one of {string.Join(", ", Enum.GetNames<RecordStatus>().Select(n => n.ToLowerInvariant()))}.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid request"));
+            }
+
+            status = parsed;
+        }
+
+        return (new RecordQuery
+        {
+            Status = status,
+            Search = string.IsNullOrWhiteSpace(filter.Search) ? null : filter.Search.Trim(),
+            Mode = string.Equals(filter.Mode, "contains", StringComparison.OrdinalIgnoreCase) ? SearchMode.Contains : SearchMode.Prefix,
+            SubmissionId = filter.SubmissionId,
+            RunId = filter.RunId,
+            Drifted = filter.Drifted,
+        }, null);
+    }
+
+    private static async Task<Results<Ok<DeliveryTargetDto>, ProblemHttpResult>> GetTargetAsync(
+        Guid pipelineId, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        return flow is null ? problem! : TypedResults.Ok(ToTargetDto(flow));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliverySubmissionDto>>, ProblemHttpResult>> ListSubmissionsAsync(
@@ -575,8 +624,12 @@ public static class DeliveryEndpoints
             new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") }, user, ct).ConfigureAwait(false);
     }
 
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> DeleteRecordAsync(
-        Guid key, DeliveryDeleteRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
+    /// <summary>
+    /// One record's removal. It is the many-record path with a selection of one, so a single delete and a bulk
+    /// delete are the same operation, the same ledger writes and the same result shape.
+    /// </summary>
+    private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> DeleteRecordAsync(
+        Guid key, DeliveryRemovalRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
         ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
@@ -585,12 +638,178 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var arguments = new Dictionary<string, string>(StringComparer.Ordinal)
+        if (!RemovalScopes.TryParse(request?.Scope, out var scope))
         {
-            ["deliveryKey"] = key.ToString("D"),
-            ["purge"] = (request?.Purge ?? false) ? "true" : "false",
-        };
-        return await EnqueueOperationAsync(db, dispatcher, flow, DeleteRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+            return BadScope(request?.Scope);
+        }
+
+        return await EnqueueRemovalAsync(db, dispatcher, flow, scope, KeyArguments([key]), 1, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A removal of the records an operator selected, or of every record their listing matches. The filter form
+    /// resolves on the node at the moment the removal runs; what is checked here is that the count the operator was
+    /// shown is still the count the filter yields, so a set that changed underneath them stops the removal instead
+    /// of quietly widening it.
+    /// </summary>
+    private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> RemoveRecordsAsync(
+        Guid pipelineId, DeliveryRemovalRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
+        IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        if (request is null || !RemovalScopes.TryParse(request.Scope, out var scope))
+        {
+            return BadScope(request?.Scope);
+        }
+
+        if (request.Keys is { Count: > 0 })
+        {
+            if (request.Filter is not null)
+            {
+                return TypedResults.Problem(
+                    detail: "A removal names its records either by keys or by filter, not both.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+            }
+
+            if (request.Keys.Count > RemovalLimits.MaxSelection)
+            {
+                return TypedResults.Problem(
+                    detail: $"A removal takes at most {RemovalLimits.MaxSelection} records at a time; {request.Keys.Count} were selected.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Too many records");
+            }
+
+            return await EnqueueRemovalAsync(db, dispatcher, flow, scope, KeyArguments(request.Keys), request.Keys.Count, user, ct).ConfigureAwait(false);
+        }
+
+        if (request.Filter is null)
+        {
+            return TypedResults.Problem(
+                detail: "A removal needs either keys or a filter; the request carries neither.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        var (query, invalid) = BuildQuery(request.Filter);
+        if (query is null)
+        {
+            return invalid!;
+        }
+
+        var matched = await ledger.CountAsync(flow.FlowId, query, ct).ConfigureAwait(false);
+        if (matched == 0)
+        {
+            return TypedResults.Problem(
+                detail: "The filter matches no records, so there is nothing to remove.",
+                statusCode: StatusCodes.Status409Conflict, title: "Nothing selected");
+        }
+
+        if (matched > RemovalLimits.MaxSelection)
+        {
+            return TypedResults.Problem(
+                detail: $"The filter matches {matched} records; a removal takes at most {RemovalLimits.MaxSelection} at a time. Narrow the filter and remove in parts.",
+                statusCode: StatusCodes.Status409Conflict, title: "Too many records");
+        }
+
+        if (request.Expected is { } expected && expected != matched)
+        {
+            return TypedResults.Problem(
+                detail: $"The filter matched {expected} records when it was shown and matches {matched} now. Nothing was removed; check the list and confirm again.",
+                statusCode: StatusCodes.Status409Conflict, title: "The selection changed");
+        }
+
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["filter"] = RemovalFilter.ToJson(query) };
+        return await EnqueueRemovalAsync(db, dispatcher, flow, scope, arguments, matched, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>What a removal would take away, and from where: the confirmation's contents, computed not guessed.</summary>
+    private static async Task<Results<Ok<DeliveryRemovalPreview>, ProblemHttpResult>> PreviewRemovalAsync(
+        Guid pipelineId, DeliveryRemovalRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        if (request is null || !RemovalScopes.TryParse(request.Scope, out var scope))
+        {
+            return BadScope(request?.Scope);
+        }
+
+        // A record is given its OSDU id when it is planned, so an id proves nothing about what OSDU holds. What the
+        // operator needs to know is how many of the selection were ever actually delivered.
+        int records;
+        int neverDelivered;
+        if (request.Keys is { Count: > 0 })
+        {
+            var found = await ledger.GetRecordsAsync(flow.FlowId, request.Keys.Select(k => new DeliveryKey(k)), ct).ConfigureAwait(false);
+            records = request.Keys.Count;
+            neverDelivered = records - found.Values.Count(r => r.LastDeliveredUtc is not null);
+        }
+        else
+        {
+            if (request.Filter is null)
+            {
+                return TypedResults.Problem(
+                    detail: "A removal preview needs either keys or a filter; the request carries neither.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+            }
+
+            var (query, invalid) = BuildQuery(request.Filter);
+            if (query is null)
+            {
+                return invalid!;
+            }
+
+            records = await ledger.CountAsync(flow.FlowId, query, ct).ConfigureAwait(false);
+            neverDelivered = await ledger.CountAsync(flow.FlowId, query with { EverDelivered = false }, ct).ConfigureAwait(false);
+        }
+
+        return TypedResults.Ok(new DeliveryRemovalPreview(
+            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered,
+            records > RemovalLimits.MaxSelection, ToTargetDto(flow)));
+    }
+
+    private static ProblemHttpResult BadScope(string? scope)
+        => TypedResults.Problem(
+            detail: $"'{scope ?? "(none)"}' is not a removal scope. Use record (reversible), history (earlier versions only) or everything (the record and every version).",
+            statusCode: StatusCodes.Status400BadRequest, title: "Invalid removal scope");
+
+    private static Dictionary<string, string> KeyArguments(IReadOnlyList<Guid> keys)
+        => new(StringComparer.Ordinal) { ["deliveryKeys"] = string.Join(',', keys.Select(k => k.ToString("D"))) };
+
+    private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> EnqueueRemovalAsync(
+        CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, RemovalScope scope, Dictionary<string, string> arguments,
+        int records, ClaimsPrincipal user, CancellationToken ct)
+    {
+        arguments["scope"] = RemovalScopes.Wire(scope);
+        var queued = await EnqueueOperationAsync(db, dispatcher, flow, DeleteRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        if (queued.Result is not Accepted<ComputeTaskAccepted> accepted || accepted.Value is null)
+        {
+            return (ProblemHttpResult)queued.Result;
+        }
+
+        return TypedResults.Accepted(
+            accepted.Location,
+            new DeliveryRemovalAccepted(accepted.Value.TaskId, accepted.Value.Status, RemovalScopes.Wire(scope), records));
+    }
+
+    /// <summary>
+    /// The flow's target as the GUI names it before a removal. The data partition is read from the flow's headers,
+    /// which is where OSDU takes it; no other header is reported, since a header can carry a credential reference.
+    /// </summary>
+    private static DeliveryTargetDto ToTargetDto(FlowContext flow)
+    {
+        var target = flow.Flow.Target;
+        target.Headers.TryGetValue("data-partition-id", out var partition);
+        var paths = RemovalEndpoints.Of(target);
+        return new DeliveryTargetDto(
+            flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, target.Protocol.ToString(),
+            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything);
     }
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ProbeAsync(

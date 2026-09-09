@@ -283,41 +283,102 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
-    /// Removes a record from OSDU through the flow's protocol (logical delete, or a purge), then records it in the
-    /// ledger. The record stays blocked from redelivery until the source changes or an operator releases it.
+    /// Removes records from OSDU through the flow's protocol, to the extent the scope asks for, and records what
+    /// happened to each one in the ledger. One record and ten thousand take the same path: the selection is
+    /// resolved to keys, the records are removed in chunks (batched into one request where the protocol and the
+    /// scope allow it), and every record gets its own ledger attempt naming the scope and the operator. A record
+    /// the flow never delivered has nothing in OSDU to remove and is reported as skipped rather than failing the
+    /// removal; a record OSDU has already lost settles the ledger just as a removal would, because the state the
+    /// operator asked for is the state OSDU is in.
     /// </summary>
-    public Task<DeleteOutcome> DeleteAsync(DeliveryKey key, bool purge, CancellationToken ct = default)
-        => TrackAsync("delete", new { key = key.ToString(), purge }, key, async () =>
+    public Task<RemovalSummary> RemoveAsync(RemovalSelection selection, RemovalScope scope, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        var single = selection.Keys is { Count: 1 } only ? only[0] : (DeliveryKey?)null;
+        return TrackAsync("delete", selection.Describe(scope), single, async () =>
         {
             var ledger = RequireLedger();
-            var record = await ledger.GetRecordAsync(Flow.Id, key, ct).ConfigureAwait(false)
-                ?? throw new DeliveryException($"Record {key} is not in the ledger for flow '{Flow.Name}'.");
-            if (record.TargetId is null)
+            var keys = selection.Keys
+                ?? await ledger.ListKeysAsync(Flow.Id, selection.Filter!, RemovalLimits.MaxSelection, ct).ConfigureAwait(false);
+            var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
+            var results = new List<RemovalRecordResult>(keys.Count);
+
+            foreach (var chunk in keys.Chunk(RemovalLimits.Chunk))
             {
-                throw new DeliveryException($"Record {key} has no OSDU id; nothing to delete.");
+                ct.ThrowIfCancellationRequested();
+                var records = await ledger.GetRecordsAsync(Flow.Id, chunk, ct).ConfigureAwait(false);
+                var removals = new List<RecordRemoval>(chunk.Length);
+                foreach (var key in chunk)
+                {
+                    if (!records.TryGetValue(key, out var record))
+                    {
+                        results.Add(RemovalRecordResult.Skipped(key, null, null, null, "the record is not in this flow's ledger", null));
+                    }
+                    else if (record.TargetId is null)
+                    {
+                        results.Add(RemovalRecordResult.Skipped(key, record.SourceKey, record.Label, null, "the record has no OSDU id: it was never delivered", record.LastSubmissionId));
+                    }
+                    else
+                    {
+                        removals.Add(new RecordRemoval(key, record.TargetId, JsonMerge.ToValues(record.TargetStateJson)));
+                    }
+                }
+
+                if (removals.Count == 0)
+                {
+                    continue;
+                }
+
+                var outcomes = await protocol.DeleteBatchAsync(removals, scope, ct).ConfigureAwait(false);
+
+                // The ledger settles the whole chunk in one write, and only for the records the target actually
+                // answered for: a record whose call failed keeps the state it had, so a retry of the removal is
+                // still the removal of a record that is still there.
+                var settled = outcomes.Where(o => o.Succeeded).Select(o => o.Removal.Key).ToList();
+                await ledger.MarkRemovedAsync(settled, scope, Actor, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                foreach (var outcome in outcomes)
+                {
+                    results.Add(await AnnounceRemovalAsync(outcome, scope, records[outcome.Removal.Key], ct).ConfigureAwait(false));
+                }
             }
 
-            var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
-            var outcome = await protocol.DeleteAsync(record.TargetId, purge, JsonMerge.ToValues(record.TargetStateJson), ct).ConfigureAwait(false);
-            await ledger.MarkDeletedAsync(key, purge, Actor, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            await _context.Listener.OnEventAsync(new DeliveryEvent
-            {
-                AtUtc = _context.Time.GetUtcNow().UtcDateTime,
-                FlowId = Flow.Id,
-                FlowName = Flow.Name,
-                Kind = "record.deleted",
-                SubmissionId = record.LastSubmissionId,
-                DeliveryKey = key,
-                SourceKey = record.SourceKey,
-                Label = record.Label,
-                TargetId = record.TargetId,
-                TargetVersion = record.TargetVersion,
-                Worker = Actor,
-                Phase = "delete",
-                Detail = outcome.Detail,
-            }, ct).ConfigureAwait(false);
-            return (outcome, $"{record.TargetId}: {outcome.Detail}", record.LastSubmissionId);
+            var summary = RemovalSummary.Of(scope, keys.Count, results);
+            return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null);
         }, ct);
+    }
+
+    /// <summary>Announces one record's removal, now that the ledger holds it, and says what it did.</summary>
+    private async Task<RemovalRecordResult> AnnounceRemovalAsync(RemovalResult outcome, RemovalScope scope, RecordState record, CancellationToken ct)
+    {
+        var key = outcome.Removal.Key;
+        if (outcome.Failure is { } failure)
+        {
+            return RemovalRecordResult.Failed(key, record.SourceKey, record.Label, record.TargetId, HeaderRedaction.RedactMessage(failure.Message), record.LastSubmissionId);
+        }
+
+        var result = outcome.Outcome!;
+        var now = _context.Time.GetUtcNow().UtcDateTime;
+        await _context.Listener.OnEventAsync(new DeliveryEvent
+        {
+            AtUtc = now,
+            FlowId = Flow.Id,
+            FlowName = Flow.Name,
+            Kind = scope == RemovalScope.History ? "record.history-purged" : "record.deleted",
+            SubmissionId = record.LastSubmissionId,
+            DeliveryKey = key,
+            SourceKey = record.SourceKey,
+            Label = record.Label,
+            TargetId = record.TargetId,
+            TargetVersion = record.TargetVersion,
+            Worker = Actor,
+            Phase = scope == RemovalScope.History ? "purge-history" : "delete",
+            Detail = result.Detail,
+        }, ct).ConfigureAwait(false);
+
+        return result.AlreadyGone
+            ? RemovalRecordResult.AlreadyGone(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId)
+            : RemovalRecordResult.Removed(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId);
+    }
 
     /// <summary>
     /// The intake, spread across the fleet when the flow declares a fan-out, the drop is partitioned, and the

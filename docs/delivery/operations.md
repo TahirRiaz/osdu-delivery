@@ -52,7 +52,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | --- | --- | --- |
 | `POST /submissions` | operate | The manifest notification: `{ pipelineId or flow (+ repoId), drop, parameters, force }`. Queues the deliver run and answers 202 with its id. |
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. |
-| `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `drifted`. |
+| `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `runId` (the records that run touched, through its attempts), `drifted`. |
+| `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
@@ -63,7 +64,10 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload, `run` true queues the deliver run); queue a verify run scoped to it. |
-| `POST /records/{key}/read`, `/delete` | operate | Queue a read-back, or a removal (`purge` true for a purge), on a node. |
+| `POST /records/{key}/read` | operate | Queue a read-back of the record as OSDU holds it, on a node. |
+| `POST /records/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
+| `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
+| `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
 | `POST /ledger/prune` | admin | Age out attempts older than `olderThanDays`, keeping the latest per record. |
 
 Runs carry the delivery parameters on the platform's trigger (`POST /api/v1/runs`): `operation`, `force`,
@@ -71,14 +75,45 @@ Runs carry the delivery parameters on the platform's trigger (`POST /api/v1/runs
 records them, the delivery counts are projected onto it when the run completes, and its result (the operation's
 outcome as JSON) and its fan-out membership (root, slot, count) are on the run detail.
 
+## Removing records from OSDU
+
+OSDU offers three removals and they are not degrees of one thing (openapi storage v2). The API, the node
+operation and the GUI all name them the same way:
+
+| Scope | Call | What goes | Reversible |
+| --- | --- | --- | --- |
+| `record` | `POST /records/{id}:delete`, or `POST /records/delete` for a set | The record stops resolving. Nothing is destroyed. | Yes, in OSDU |
+| `history` | `DELETE /records/{id}/versions` | Every earlier version. The latest stays live. | No |
+| `everything` | `DELETE /records/{id}` | The record and every version. | No |
+
+There is no OSDU call that removes only the latest version and promotes the previous one, so the GUI does not
+offer one.
+
+A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
+so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers
+records no page ever rendered. One removal takes at most 25,000 records; a larger one is several removals.
+Records are removed in chunks of 500, batched into a single request where the protocol and the scope allow it
+(only the reversible scope has a bulk endpoint), and each record gets its own ledger attempt. A record OSDU has
+already lost is reported as already gone, not as a failure, and a record with no OSDU id at all is skipped.
+
+The `record` and `everything` scopes mark the record deleted and blocked here; `history` leaves it delivered,
+because OSDU still holds it at the version the ledger knows. The task result carries the counts and up to 200
+per-record outcomes (failures first); every record's outcome is in its own attempt regardless.
+
 ## The GUI
 
 - **Delivery** (Operate): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission.
 - **A flow's page** (Pipelines): the Delivery tab (stats, submit a drop, probe the target, release blocked),
-  the Records tab (search and filters, every row opens the record), the Submissions tab.
+  the Records tab (search and filters, every row opens the record), the Submissions tab. Rows tick: a selection
+  bar offers "select all N matching" and Remove from OSDU, so a removal can be aimed at exactly the ticked rows
+  or at the whole filtered set. A run page links here filtered to the records that run touched.
 - **A record's page**: custody state, hashes, versions, the pending document, the render context; the
-  history of attempts and interventions; Verify, Redeliver, Read back, Release, Delete and Purge.
+  history of attempts and interventions; Verify, Redeliver, Read back, Release and Remove from OSDU.
+- **The removal dialog**: one surface for both. It names the target first (endpoint as declared, data partition,
+  protocol, auth) because that is which OSDU the records are about to leave, then the three scopes side by side
+  with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The
+  two permanent scopes ask the operator to type the data partition back before the button enables.
 - **A submission's page**: counts, the runs that carried it, its work batches, its attempts, a link to its
   records.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and

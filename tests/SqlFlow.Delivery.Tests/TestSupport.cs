@@ -143,12 +143,17 @@ public sealed class FakeProtocol : IDeliveryProtocol
         return Task.FromResult(VerifyWith?.Invoke(targetId) ?? new VerifyResult(VerifyOutcome.Match, expectedVersion, null));
     }
 
-    public List<(string TargetId, bool Purge)> Deletes { get; } = [];
+    public List<(string TargetId, RemovalScope Scope)> Deletes { get; } = [];
 
-    public Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
+    /// <summary>Target ids the fake target no longer holds, so a removal of them reports them already gone.</summary>
+    public HashSet<string> Gone { get; } = new(StringComparer.Ordinal);
+
+    public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
-        Deletes.Add((targetId, purge));
-        return Task.FromResult(new DeleteOutcome(true, false, purge ? "purged" : "logically deleted"));
+        Deletes.Add((targetId, scope));
+        return Task.FromResult(Gone.Contains(targetId)
+            ? new DeleteOutcome(false, true, "record not found in OSDU")
+            : new DeleteOutcome(true, false, scope.ToString().ToLowerInvariant()));
     }
 
     /// <summary>The records the fake target holds, by target id, for read-backs.</summary>
@@ -261,7 +266,7 @@ public static class Samples
     /// <summary>The platform file stores plus the delivery writers, exactly as the hosts register them.</summary>
     public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()], [new LocalFileReader()]);
 
-    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null)
+    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null)
     {
         var stores = Stores();
         var loader = new DeliveryDocumentLoader();
@@ -273,7 +278,7 @@ public static class Samples
             ledger,
             time ?? TimeProvider.System,
             NullLoggerFactory.Instance,
-            new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
+            protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
             CompositeDeliveryListener.Empty);
     }
 

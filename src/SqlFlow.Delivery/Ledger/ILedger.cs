@@ -1,4 +1,5 @@
 using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -33,7 +34,12 @@ public enum AttemptOutcome
     Skipped,
     Failed,
     Held,
+
+    /// <summary>The record was removed from OSDU, reversibly or by a purge of everything.</summary>
     Deleted,
+
+    /// <summary>The record's earlier versions were purged; the record itself is still delivered and live.</summary>
+    HistoryPurged,
 }
 
 public enum VerifyOutcome
@@ -381,8 +387,22 @@ public sealed record RecordQuery
     /// <summary>Only records touched by this submission.</summary>
     public Guid? SubmissionId { get; init; }
 
+    /// <summary>
+    /// Only records the given platform run touched, resolved through the attempts that run wrote. Records carry no
+    /// run of their own: a record is delivered by many runs over its life, and the attempt is the thing that
+    /// belongs to one.
+    /// </summary>
+    public Guid? RunId { get; init; }
+
     /// <summary>Only delivered records whose last verify found drift or a missing record.</summary>
     public bool Drifted { get; init; }
+
+    /// <summary>
+    /// Filters on whether the ledger has ever recorded a delivery for the record. A record is given its OSDU id
+    /// when it is planned, not when it lands, so an id is no evidence that OSDU holds anything: this is what
+    /// separates the records a removal will really take from the ones it will find were never there.
+    /// </summary>
+    public bool? EverDelivered { get; init; }
 
     public int Max { get; init; } = 100;
 
@@ -637,8 +657,21 @@ public interface ILedger
     /// </summary>
     Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default);
 
-    /// <summary>Records that a record was removed from OSDU: status deleted, hashes forgotten, an attempt written.</summary>
-    Task MarkDeletedAsync(DeliveryKey key, bool purged, string worker, DateTime nowUtc, CancellationToken ct = default);
+    /// <summary>
+    /// Records what a removal did to a set of records, in one round trip. <see cref="RemovalScope.Record"/> and
+    /// <see cref="RemovalScope.Everything"/> take the record out of OSDU, so the ledger marks it deleted and
+    /// blocked and forgets the hashes; <see cref="RemovalScope.History"/> leaves the record live, so its custody
+    /// state is untouched and only the attempt is written. Either way every record gets its own attempt, saying
+    /// which scope ran and who asked for it, because that attempt is how the removal is audited afterwards.
+    /// </summary>
+    Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// The keys of every record a listing matches, in key order, up to <paramref name="max"/>. Key order is what
+    /// makes this safe to act on: a removal changes the records it touches, and the newest-first order the listing
+    /// pages in would shuffle rows between pages while the removal ran.
+    /// </summary>
+    Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default);
 
     Task<IReadOnlyList<KnownState>> KnownStateAsync(Guid flowId, CancellationToken ct = default);
 

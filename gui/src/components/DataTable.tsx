@@ -1,6 +1,7 @@
 import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
@@ -39,6 +40,18 @@ export interface TableGrouping<T> {
   transform?: (rows: T[]) => T[];
 }
 
+/**
+ * Row selection for the tables whose rows an action operates on in bulk. The selected set is held by the page,
+ * not the table, so it survives paging and filter changes and the page can act on rows that are no longer
+ * rendered. Keys are what `rowKey` returns, stringified. Rows `isSelectable` rejects render a disabled box, so a
+ * row an action cannot touch says so instead of silently ignoring the click.
+ */
+export interface RowSelection<T> {
+  selected: ReadonlySet<string>;
+  onChange: (next: ReadonlySet<string>) => void;
+  isSelectable?: (row: T) => boolean;
+}
+
 interface DataTableProps<T> {
   columns: Column<T>[];
   /** The rows to render; `undefined` means loading, which draws skeleton rows. */
@@ -51,6 +64,10 @@ interface DataTableProps<T> {
   rowSx?: (row: T) => CSSProperties | undefined;
   emptyMessage: string;
   grouping?: TableGrouping<T>;
+  /** Adds a leading checkbox column; the page owns the selected set. Not combined with grouping. */
+  selection?: RowSelection<T>;
+  /** Rendered inside the bordered surface, above the table: the selection toolbar lives here. */
+  toolbar?: ReactNode;
   /** Rendered inside the bordered surface, below the table (the PagedTable pagination lives here). */
   footer?: ReactNode;
   /** The width below which the table SCROLLS instead of compressing, in pixels. The table is w-full by
@@ -96,7 +113,7 @@ const alignClass = (align: Column<never>["align"]) =>
  * directly, so there is one table code path instead of several hand-rolled shells.
  */
 export function DataTable<T>({
-  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, footer, minWidth,
+  columns, rows, rowKey, onRowClick, rowClickable, rowSx, emptyMessage, grouping, selection, toolbar, footer, minWidth,
   skeletonRows = 5, "data-testid": testId,
 }: DataTableProps<T>) {
   // Node ids the user has FLIPPED from their level's default (expanded or collapsed), keyed by the path of
@@ -120,6 +137,62 @@ export function DataTable<T>({
 
   const clickable = (row: T) => onRowClick !== undefined && (rowClickable?.(row) ?? true);
 
+  // The rows on this page a selection may take, and how many of them are already in it: what the header box
+  // toggles, and what makes it checked, indeterminate or empty.
+  const selectableKeys = selection === undefined || rows === undefined
+    ? []
+    : rows.filter((row) => selection.isSelectable?.(row) ?? true).map((row) => String(rowKey(row)));
+  const selectedOnPage = selectableKeys.filter((key) => selection?.selected.has(key)).length;
+
+  const toggleRow = (key: string, checked: boolean) => {
+    if (selection === undefined) {
+      return;
+    }
+
+    const next = new Set(selection.selected);
+    if (checked) {
+      next.add(key);
+    } else {
+      next.delete(key);
+    }
+
+    selection.onChange(next);
+  };
+
+  const togglePage = (checked: boolean) => {
+    if (selection === undefined) {
+      return;
+    }
+
+    const next = new Set(selection.selected);
+    for (const key of selectableKeys) {
+      if (checked) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+    }
+
+    selection.onChange(next);
+  };
+
+  // The checkbox cell swallows the click so selecting a row never also navigates to it.
+  const selectCell = (row: T) => {
+    const key = String(rowKey(row));
+    const enabled = selection!.isSelectable?.(row) ?? true;
+    return (
+      <TableCell className="w-9 px-3 py-1.5" onClick={(event) => event.stopPropagation()}>
+        <Checkbox
+          checked={selection!.selected.has(key)}
+          disabled={!enabled}
+          onCheckedChange={(checked) => toggleRow(key, checked === true)}
+          aria-label={enabled ? "Select row" : "This row cannot be selected"}
+          data-testid="row-select"
+        />
+      </TableCell>
+    );
+  };
+
   // A leaf (data) row: the actual record. Its first cell is indented to `depth` so it nests visibly under its
   // parent node in the tree; the remaining cells align to the grid columns like any flat row.
   const dataRow = (row: T, depth: number) => {
@@ -131,7 +204,9 @@ export function DataTable<T>({
         className={cn(canClick && "cursor-pointer hover:bg-accent/50")}
         style={rowSx?.(row)}
         data-testid="table-row"
+        data-selected={selection?.selected.has(String(rowKey(row))) ? "true" : undefined}
       >
+        {selection !== undefined && selectCell(row)}
         {columns.map((column, i) => (
           <TableCell
             key={column.id}
@@ -160,7 +235,7 @@ export function DataTable<T>({
       data-testid={nodeTestId}
       aria-expanded={!isCollapsed}
     >
-      <TableCell colSpan={columns.length} className="px-3 py-1">
+      <TableCell colSpan={columns.length + (selection === undefined ? 0 : 1)} className="px-3 py-1">
         <div className="flex items-center gap-1" style={{ paddingLeft: TREE_INDENT * depth }}>
           <ChevronDown
             className={cn(
@@ -202,9 +277,23 @@ export function DataTable<T>({
     <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={testId}>
       {/* The ui Table brings its own overflow-x container; minWidth is what actually gives a wide table
           something to scroll, since a w-full table would otherwise just compress its columns to fit. */}
+      {toolbar}
       <Table style={minWidth === undefined ? undefined : { minWidth }}>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
+              {selection !== undefined && (
+                <TableHead className="w-9 px-3">
+                  <Checkbox
+                    checked={selectedOnPage > 0 && selectedOnPage === selectableKeys.length
+                      ? true
+                      : selectedOnPage > 0 ? "indeterminate" : false}
+                    disabled={selectableKeys.length === 0}
+                    onCheckedChange={(checked) => togglePage(checked === true)}
+                    aria-label="Select every row on this page"
+                    data-testid="select-page"
+                  />
+                </TableHead>
+              )}
               {columns.map((column) => (
                 <TableHead
                   key={column.id}
@@ -222,6 +311,7 @@ export function DataTable<T>({
           <TableBody>
             {rows === undefined && Array.from({ length: skeletonRows }, (_, i) => (
               <TableRow key={`skeleton-${i}`}>
+                {selection !== undefined && <TableCell className="w-9 px-3 py-2"><Skeleton className="size-4" /></TableCell>}
                 {columns.map((column) => (
                   <TableCell key={column.id} className="px-3 py-2">
                     <Skeleton className="h-4 w-full" />
@@ -231,7 +321,7 @@ export function DataTable<T>({
             ))}
             {rows !== undefined && rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={columns.length} className="border-0 p-0">
+                <TableCell colSpan={columns.length + (selection === undefined ? 0 : 1)} className="border-0 p-0">
                   <EmptyState title={emptyMessage} data-testid="empty-message" />
                 </TableCell>
               </TableRow>

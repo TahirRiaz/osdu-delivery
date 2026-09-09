@@ -286,8 +286,21 @@ public sealed record ProtocolOptions
     /// <summary>Path template for the logical (revertible) delete. Default depends on the protocol.</summary>
     public string? DeletePath { get; init; }
 
-    /// <summary>Path template for the physical purge. Default depends on the protocol.</summary>
+    /// <summary>Path template for the physical purge of the record and all its versions. Default depends on the protocol.</summary>
     public string? PurgePath { get; init; }
+
+    /// <summary>
+    /// Path template for the physical purge of a record's earlier versions, the latest one left live (openapi
+    /// storage v2, <c>DELETE /records/{id}/versions</c>). Versions are owned by the storage service for every kind
+    /// of record, so this defaults to the storage path even for protocols that deliver through another service.
+    /// </summary>
+    public string? PurgeVersionsPath { get; init; }
+
+    /// <summary>
+    /// Path of the storage service's bulk soft delete (<c>POST /records/delete</c>), which takes a list of record
+    /// ids in one request. Used only for the reversible scope; the purges have no bulk endpoint.
+    /// </summary>
+    public string? BulkDeletePath { get; init; }
 
     /// <summary>Path of the service's info endpoint the probe calls. Default depends on the protocol.</summary>
     public string? ProbePath { get; init; }

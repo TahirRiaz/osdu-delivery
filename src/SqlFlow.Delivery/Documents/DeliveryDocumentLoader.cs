@@ -360,6 +360,8 @@ internal static class FlowMapper
             VerifyPath = o.VerifyPath,
             DeletePath = o.DeletePath,
             PurgePath = o.PurgePath,
+            PurgeVersionsPath = o.PurgeVersionsPath,
+            BulkDeletePath = o.BulkDeletePath,
             ProbePath = o.ProbePath,
             Payload = o.Payload,
             SessionThresholdChunks = o.SessionThresholdChunks ?? 1,

@@ -209,15 +209,17 @@ internal static class FileUploads
             : [];
 
     /// <summary>
-    /// Storage semantics for the record (a revertible delete, or a purge of every version); a purge also deletes the
-    /// dataset records the target state names and their files (openapi file v2, DELETE files/{id}/metadata). A
-    /// logical delete leaves the datasets in place, so the record can be restored whole. A dataset already gone is
-    /// not an error.
+    /// Storage semantics for the record itself, plus the dataset records the record owns. Only
+    /// <see cref="RemovalScope.Everything"/> takes the datasets and their files with it (openapi file v2,
+    /// DELETE files/{id}/metadata): the reversible removal leaves them in place so OSDU can restore the record
+    /// whole, and a history purge only touches the record's own earlier versions. A dataset already gone is not an
+    /// error.
     /// </summary>
-    public static async Task<DeleteOutcome> DeleteRecordAndDatasetsAsync(OsduHttpClient client, ProtocolOptions options, string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct)
+    public static async Task<DeleteOutcome> DeleteRecordAndDatasetsAsync(OsduHttpClient client, ProtocolOptions options, string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct)
     {
-        var outcome = await RecordWriter.DeleteAsync(client, options.DeletePath ?? OsduRecordProtocol.DefaultDeletePath, options.PurgePath ?? OsduRecordProtocol.DefaultPurgePath, targetId, purge, ct).ConfigureAwait(false);
-        if (!purge)
+        ArgumentNullException.ThrowIfNull(options);
+        var outcome = await RecordWriter.DeleteAsync(client, RemovalPaths.From(options), targetId, scope, ct).ConfigureAwait(false);
+        if (scope != RemovalScope.Everything)
         {
             return outcome;
         }

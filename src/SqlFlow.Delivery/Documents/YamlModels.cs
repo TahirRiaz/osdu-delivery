@@ -165,6 +165,10 @@ internal sealed class ProtocolOptionsYaml
 
     public string? PurgePath { get; set; }
 
+    public string? PurgeVersionsPath { get; set; }
+
+    public string? BulkDeletePath { get; set; }
+
     public string? ProbePath { get; set; }
 
     public string? Payload { get; set; }

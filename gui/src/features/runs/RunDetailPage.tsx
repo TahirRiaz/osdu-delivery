@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Navigate, useParams } from "react-router-dom";
+import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CircleAlert, Info, RotateCcw, Terminal } from "lucide-react";
@@ -62,6 +62,7 @@ export default function RunDetailPage() {
 }
 
 function RunDetailContent({ runId }: { runId: string }) {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const panel = usePanel();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -203,6 +204,11 @@ function RunDetailContent({ runId }: { runId: string }) {
               <Terminal />
               Trace
             </Button>
+            {run.flowKind === "delivery" && (
+              <Button variant="outline" size="sm" onClick={() => navigate(`/pipelines/${run.pipelineId}?tab=records&run=${run.runId}`)} data-testid="run-records">
+                Records of this run
+              </Button>
+            )}
             {cancellable
               ? (
                 <Button

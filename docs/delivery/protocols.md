@@ -20,7 +20,8 @@ Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct);
 Task<IReadOnlyList<DeliveryOutcome>> DeliverBatchAsync(IReadOnlyList<DeliveryWork> works, CancellationToken ct);
 Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct);
 Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct);
-Task<DeleteOutcome> DeleteAsync(string targetId, bool purge, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct);
+Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct);
+Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct);
 Task<ProbeOutcome> ProbeAsync(CancellationToken ct);
 ```
 
@@ -50,7 +51,11 @@ a workflow run id. See [design.md](design.md) section 16.3.
 - A batch the service refuses as a whole (a 4xx) is retried record by record, so one bad document holds
   itself and not its neighbours.
 - Verify: `GET {endpoint}{verifyPath}` (default `/api/storage/v2/records/{id}`), compare `version`.
-- Delete: `POST {id}:delete` is the logical, revertible delete; `DELETE {id}` purges every version.
+- Remove: `POST {id}:delete` stops the record resolving and is revertible in OSDU; `DELETE {id}/versions`
+  purges the earlier versions and leaves the latest live; `DELETE {id}` purges the record and every version.
+  A set of records at the reversible scope goes through `POST /records/delete` (up to 500 ids per request);
+  a 207, or a status that rejects the request, falls back to one request per record so each reports its own
+  outcome. The paths are `deletePath`, `purgeVersionsPath`, `purgePath` and `bulkDeletePath`.
 
 ## `osduWellLog`
 
@@ -114,8 +119,8 @@ A metadata-only change rewrites the record with the dataset ids of its earlier d
 state); a payload change uploads and registers new datasets and rewrites the record to point at them. An
 empty file, or one above `reliability.maxRequestBodyBytes`, holds the record before anything is sent. Purge
 deletes the dataset records and their files (`DELETE {fileDeletePath}`, default
-`/api/file/v2/files/{id}/metadata`) with the record; a logical delete leaves them, so the record can be
-restored whole. Verify and read back go to storage.
+`/api/file/v2/files/{id}/metadata`) with the record; the reversible removal leaves them, so the record can be
+restored whole, and a history purge touches only the record's own earlier versions. Verify and read back go to storage.
 
 ## `osduManifest`
 
@@ -144,7 +149,7 @@ workflow run.
    on its own evidence: present with a version, delivered; absent, failed with the run named, and re-submitted
    in a new run on the next try. Step `records` returns the record id and version.
 
-Verify, read back and delete go to storage, and purge deletes the datasets and their files through the file
+Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file
 service, as for `osduFile`.
 
 ## Retry, hold, fail

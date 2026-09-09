@@ -46,8 +46,9 @@ the runs that carried it.
 
 ### `delivery.Attempt`: append-only, one row per delivery try
 
-Worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`), the phase delivered
-(`metadata`, `payload`, `metadata+payload`, `delete`, `none`), the hashes established, the version returned,
+Worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
+phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `none`), the hashes
+established, the version returned,
 the redacted error, the platform `RunId` the attempt happened in, the `WorkBatch` it was drained from, and
 `ResultJson`: every step the protocol took (name, timing, status, what the target returned, whether an earlier
 try had completed it) and the values returned. Render-time holds are written by the intake with worker
@@ -113,7 +114,8 @@ the sync.
                             │ backoff          ├──▶ held    (data problem or non-retryable status; Blocked)
                             └──────────────────┤
                                                └──▶ failed  (retry budget exhausted; Blocked)
-   operator delete ──▶ deleted (Blocked; OSDU no longer holds it)
+   operator removal ──▶ deleted (Blocked; OSDU no longer holds it) [scope record or everything]
+                   └─▶ (no change)                                  [scope history: OSDU still holds it]
    operator release ──▶ pending (when a rendered document is still there) or unblocked for the next plan
 ```
 
@@ -128,9 +130,15 @@ deliver run scoped to the record, so the redelivery happens at once and is recor
 It never bypasses the render: the document sent is always the one the pinned mapping produces from the
 current source.
 
-**Delete** removes the record from OSDU through the flow's protocol (logical, or a purge), writes a `delete`
-attempt, forgets the hashes and version, and blocks the record. If the source still presents the record and an
-operator releases it, the next plan creates it again; that is ownership, not an accident.
+**Removal** takes the record out of OSDU through the flow's protocol, to one of three depths (see
+[operations](operations.md#removing-records-from-osdu)). `record` and `everything` write a `delete` attempt,
+forget the hashes and version, and block the record. If the source still presents the record and an operator
+releases it, the next plan creates it again; that is ownership, not an accident.
+
+`history` is the exception: it destroys the record's earlier versions and leaves the record itself live in OSDU
+at the version the ledger already holds. Its custody state is therefore still true and is not disturbed; the
+purge is written as a `purge-history` attempt and nothing else changes. Every removal, at every depth, names the
+scope and the operator on the attempt and in the activity trail.
 
 ## Leasing
 
