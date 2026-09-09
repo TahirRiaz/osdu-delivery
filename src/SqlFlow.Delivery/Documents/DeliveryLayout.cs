@@ -29,6 +29,19 @@ public sealed record DeliveryLayout(string MappingsDirectory, string SnapshotsRo
             Locate(baseDirectory, flow.Render.SnapshotsDirectory, SnapshotsDirectoryName));
     }
 
+    /// <summary>
+    /// The snapshot store a document at <paramref name="sourcePath"/> writes to and reads from: the directory it
+    /// declares, or the nearest <c>snapshots</c> directory above it. A retrieval flow that maintains the cache
+    /// resolves its store exactly as a delivery flow that renders against it does.
+    /// </summary>
+    public static string ResolveSnapshots(string? sourcePath, string? declared)
+    {
+        var baseDirectory = sourcePath is { } path
+            ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory()
+            : Directory.GetCurrentDirectory();
+        return Locate(baseDirectory, declared, SnapshotsDirectoryName);
+    }
+
     private static string Locate(string baseDirectory, string? declared, string name)
     {
         if (!string.IsNullOrWhiteSpace(declared))

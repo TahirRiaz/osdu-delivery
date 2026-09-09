@@ -124,6 +124,9 @@ public enum MappingTransform
     /// <summary>Resolve a reference-data or master-data record id from the reference snapshot.</summary>
     Reference,
 
+    /// <summary>Read a value out of the cached record the source value matches (design.md section 6.2).</summary>
+    Lookup,
+
     /// <summary>Compute the id of a record this system also delivers (design.md section 5.3).</summary>
     DeliveredReference,
 
@@ -198,6 +201,9 @@ public sealed record TransformConfig
 
     /// <summary>Fields of the reference item compared against the (mapped) source value, in order.</summary>
     public IReadOnlyList<string> MatchBy { get; init; } = [];
+
+    /// <summary>For Lookup: the cached path to read out of the matched item (default the record id).</summary>
+    public string? Select { get; init; }
 
     /// <summary>Normalisation applied before matching a reference.</summary>
     public IReadOnlyDictionary<string, string> ValueMap { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

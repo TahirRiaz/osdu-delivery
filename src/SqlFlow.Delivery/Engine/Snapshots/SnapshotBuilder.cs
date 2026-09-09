@@ -11,60 +11,11 @@ using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
-/// <summary>What to capture into a reference snapshot: one entry per reference or master-data type.</summary>
-public sealed record ReferenceCaptureSpec
-{
-    [JsonPropertyName("types")]
-    public required List<ReferenceTypeSpec> Types { get; init; }
-
-    private static readonly JsonSerializerOptions Options = new()
-    {
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true,
-    };
-
-    public static ReferenceCaptureSpec Parse(string json, string source)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<ReferenceCaptureSpec>(json, Options) ?? throw new FlowValidationException($"{source}: empty capture spec.");
-        }
-        catch (JsonException ex)
-        {
-            throw new FlowValidationException($"{source}: invalid capture spec - {ex.Message}", ex);
-        }
-    }
-}
-
-public sealed record ReferenceTypeSpec
-{
-    /// <summary>The short name mappings use (UnitOfMeasure).</summary>
-    [JsonPropertyName("name")]
-    public required string Name { get; init; }
-
-    /// <summary>The OSDU entity type (reference-data--UnitOfMeasure).</summary>
-    [JsonPropertyName("entityType")]
-    public required string EntityType { get; init; }
-
-    /// <summary>The search kind pattern (osdu:wks:reference-data--UnitOfMeasure:*).</summary>
-    [JsonPropertyName("kind")]
-    public required string Kind { get; init; }
-
-    /// <summary>Data fields to capture for matching (data.Code, data.Name, data.ID). The id is always captured.</summary>
-    [JsonPropertyName("fields")]
-    public List<string> Fields { get; init; } = ["data.Code", "data.Name", "data.ID"];
-
-    /// <summary>Optional search query narrowing the capture (default *).</summary>
-    [JsonPropertyName("query")]
-    public string Query { get; init; } = "*";
-}
-
 /// <summary>
 /// The <c>snapshot</c> verb's engine (design.md section 11): captures schema and reference snapshots from OSDU, or
 /// from local files for offline work, and mints immutable versions in the store.
 /// </summary>
-public sealed class SnapshotBuilder
+public sealed partial class SnapshotBuilder
 {
     private readonly ISnapshotStore _store;
     private readonly TimeProvider _time;
@@ -142,63 +93,120 @@ public sealed class SnapshotBuilder
         var types = new List<ReferenceType>();
         foreach (var typeSpec in spec.Types)
         {
-            var items = new List<ReferenceItem>();
-            string? cursor = null;
-            var fieldNames = typeSpec.Fields.Select(f => f.StartsWith("data.", StringComparison.Ordinal) ? f[5..] : f).ToList();
-            do
-            {
-                var body = new JsonObject
-                {
-                    ["kind"] = typeSpec.Kind,
-                    ["query"] = typeSpec.Query,
-                    ["limit"] = 1000,
-                    ["returnedFields"] = new JsonArray(typeSpec.Fields.Select(f => (JsonNode)JsonValue.Create(f)).Prepend(JsonValue.Create("id")).ToArray()),
-                };
-                if (cursor is not null)
-                {
-                    body["cursor"] = cursor;
-                }
-
-                var page = await osdu.PostJsonAsync("/api/search/v2/query_with_cursor", body, ct).ConfigureAwait(false);
-                if (page["results"] is JsonArray results)
-                {
-                    foreach (var hit in results.OfType<JsonObject>())
-                    {
-                        var id = hit["id"]?.GetValue<string>();
-                        if (string.IsNullOrWhiteSpace(id))
-                        {
-                            continue;
-                        }
-
-                        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        if (hit["data"] is JsonObject data)
-                        {
-                            foreach (var name in fieldNames)
-                            {
-                                if (data[name] is JsonValue v)
-                                {
-                                    fields[name] = v.TryGetValue<string>(out var s) ? s : v.ToJsonString();
-                                }
-                            }
-                        }
-
-                        items.Add(new ReferenceItem(id, fields));
-                    }
-                }
-
-                cursor = page["cursor"]?.GetValue<string>();
-            }
-            while (!string.IsNullOrEmpty(cursor));
-
-            _logger.LogInformation("Captured {Count} {Type} item(s).", items.Count, typeSpec.Name);
-            types.Add(new ReferenceType(typeSpec.Name, typeSpec.EntityType, items.OrderBy(i => i.Id, StringComparer.Ordinal)));
+            types.Add(await CaptureTypeAsync(osdu, typeSpec, ct).ConfigureAwait(false));
         }
 
         var captured = _time.GetUtcNow();
-        var snapshot = new ReferenceSnapshot(Storage.FileSnapshotStore.MintVersion(captured), captured, types);
+        var version = Storage.FileSnapshotStore.MintVersion(captured);
+
+        // A capture covers the types it declares, which may be part of the estate. Merging onto the current
+        // snapshot keeps a version meaning "the whole cache as of this capture", so a mapping that resolves a type
+        // this spec does not mention still finds it.
+        var current = await CurrentAsync(ct).ConfigureAwait(false);
+        var snapshot = current is null
+            ? new ReferenceSnapshot(version, captured, types)
+            : current.With(version, captured, types);
+
         await _store.SaveReferencesAsync(snapshot, makeCurrent, ct).ConfigureAwait(false);
-        _logger.LogInformation("Reference snapshot {Version} saved with {Count} type(s){Current}.", snapshot.Version, types.Count, makeCurrent ? " (current)" : string.Empty);
+        _logger.LogInformation(
+            "Reference snapshot {Version} saved with {Count} type(s), {Refreshed} of them refreshed{Current}.",
+            snapshot.Version, snapshot.Types.Count, types.Count, makeCurrent ? " (current)" : string.Empty);
         return snapshot;
+    }
+
+    /// <summary>The snapshot a refresh builds on: the current version, or null when the store holds none.</summary>
+    private async Task<ReferenceSnapshot?> CurrentAsync(CancellationToken ct)
+    {
+        var version = await _store.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
+        return version is null ? null : await _store.LoadReferencesAsync(version, ct).ConfigureAwait(false);
+    }
+}
+
+/// <summary>Pages one type out of the OSDU search index and caches the declared paths of every hit.</summary>
+public sealed partial class SnapshotBuilder
+{
+    private const int SearchPageSize = 1000;
+
+    /// <summary>Captures one reference type: every hit of its search kind, projected onto the paths it declares.</summary>
+    public async Task<ReferenceType> CaptureTypeAsync(OsduConnection osdu, ReferenceTypeSpec typeSpec, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(osdu);
+        ArgumentNullException.ThrowIfNull(typeSpec);
+        typeSpec.Validate();
+
+        var items = new List<ReferenceItem>();
+        var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
+        string? cursor = null;
+        do
+        {
+            var body = new JsonObject
+            {
+                ["kind"] = typeSpec.Kind,
+                ["query"] = typeSpec.Query,
+                ["limit"] = SearchPageSize,
+                ["returnedFields"] = new JsonArray(typeSpec.Fields
+                    .Select(f => (JsonNode)JsonValue.Create(f.Path))
+                    .Prepend(JsonValue.Create("id"))
+                    .ToArray()),
+            };
+            if (cursor is not null)
+            {
+                body["cursor"] = cursor;
+            }
+
+            var page = await osdu.PostJsonAsync("/api/search/v2/query_with_cursor", body, ct).ConfigureAwait(false);
+            if (page["results"] is JsonArray results)
+            {
+                foreach (var hit in results.OfType<JsonObject>())
+                {
+                    if (Project(hit, typeSpec.Fields, coverage) is { } item)
+                    {
+                        items.Add(item);
+                    }
+                }
+            }
+
+            cursor = page["cursor"]?.GetValue<string>();
+        }
+        while (!string.IsNullOrEmpty(cursor));
+
+        foreach (var field in typeSpec.Fields.Where(f => coverage[f.Name] == 0))
+        {
+            // Silence here used to look like bad source data at render time, so an empty path is reported at capture.
+            _logger.LogWarning(
+                "Reference type {Type}: no item carried '{Path}', so nothing is cached under '{Name}'. Check the path against the kind {Kind}.",
+                typeSpec.Name, field.Path, field.Name, typeSpec.Kind);
+        }
+
+        _logger.LogInformation(
+            "Captured {Count} {Type} item(s) with {Fields}.",
+            items.Count, typeSpec.Name, string.Join(", ", typeSpec.Fields.Select(f => $"{f.Name}={coverage[f.Name]}")));
+        return new ReferenceType(typeSpec.Name, typeSpec.EntityType, items.OrderBy(i => i.Id, StringComparer.Ordinal));
+    }
+
+    /// <summary>Projects one search hit onto the declared paths, keeping whatever shape each path yields.</summary>
+    private static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields, Dictionary<string, int> coverage)
+    {
+        var id = hit["id"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var values = new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase);
+        foreach (var field in fields)
+        {
+            var hits = JsonPathReader.SelectNodes(hit, field.Path);
+            if (hits.Count == 0)
+            {
+                continue;
+            }
+
+            values[field.Name] = ReferenceValue.OfMany(hits);
+            coverage[field.Name]++;
+        }
+
+        return new ReferenceItem(id, values);
     }
 }
 

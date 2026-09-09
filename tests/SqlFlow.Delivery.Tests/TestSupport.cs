@@ -331,7 +331,9 @@ public static class TestSchema
                     "Unit": { "type": "string", "x-osdu-relationship": [ { "GroupType": "reference-data", "EntityType": "UnitOfMeasure" } ] },
                     "When": { "type": "string", "format": "date-time" },
                     "Curves": { "type": "array", "items": { "type": "object", "properties": { "CurveID": { "type": "string" }, "TopDepth": { "type": "number" } } } },
-                    "Nested": { "type": "object", "properties": { "Inner": { "type": "string" } } }
+                    "Nested": { "type": "object", "properties": { "Inner": { "type": "string" } } },
+                    "Aliases": { "type": "array", "items": { "type": "string" } },
+                    "Symbol": { "type": "string" }
                   },
                   "required": ["Depth"]
                 }
@@ -350,12 +352,12 @@ public static class TestSchema
     [
         new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
         [
-            new ReferenceItem("dev:reference-data--UnitOfMeasure:m", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = "m", ["Name"] = "metre" }),
-            new ReferenceItem("dev:reference-data--UnitOfMeasure:ft", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = "ft", ["Name"] = "foot" }),
+            ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:m", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = "m", ["Name"] = "metre" }),
+            ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:ft", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = "ft", ["Name"] = "foot" }),
         ]),
         new ReferenceType("Wellbore", "master-data--Wellbore",
         [
-            new ReferenceItem("dev:master-data--Wellbore:abc", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["FacilityName"] = "NO 1/1-A" }),
+            ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["FacilityName"] = "NO 1/1-A" }),
         ]),
     ]);
 

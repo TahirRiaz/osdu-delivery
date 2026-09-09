@@ -1,6 +1,9 @@
 // Vendored from SQLFlow (https://github.com/TahirRiaz/sqlflow-v3, commit ddd4ea12160bda044f75dcad2bbec5099c3a7263)
-// src/SqlFlow.Acquire/Runtime/JsonPathReader.cs. Namespace and exception type changed; behaviour unchanged.
+// src/SqlFlow.Acquire/Runtime/JsonPathReader.cs. Namespace and exception type changed; the JsonElement behaviour is
+// unchanged. SelectNodes was added here for the reference cache, which walks JsonNode trees and needs a property
+// step to reach through an array of objects.
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SqlFlow.Delivery.Json;
 
@@ -156,6 +159,90 @@ public static class JsonPathReader
         JsonValueKind.Null or JsonValueKind.Undefined => null,
         _ => element.GetRawText(),
     };
+
+    /// <summary>
+    /// Every node a path selects from a <see cref="JsonNode"/> tree, in document order. A property step applied to
+    /// an array steps into each element, so <c>data.NameAlias.AliasName</c> reaches through an array of objects
+    /// without an explicit wildcard; <c>[*]</c> and <c>[n]</c> stay available where a path must be explicit. Null
+    /// elements are skipped, so the result holds only nodes that exist.
+    /// </summary>
+    public static IReadOnlyList<JsonNode> SelectNodes(JsonNode? root, string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (root is null)
+        {
+            return [];
+        }
+
+        IReadOnlyList<JsonNode> current = [root];
+        foreach (var segment in Parse(path))
+        {
+            current = StepNodes(current, segment);
+            if (current.Count == 0)
+            {
+                return [];
+            }
+        }
+
+        return current;
+    }
+
+    /// <summary>True when the path names a single property with no traversal, which needs no evaluation to resolve.</summary>
+    public static bool IsSingleProperty(string path)
+    {
+        var segments = Parse(path);
+        return segments.Count == 1 && segments[0].Kind == SegmentKind.Property;
+    }
+
+    private static IReadOnlyList<JsonNode> StepNodes(IReadOnlyList<JsonNode> nodes, PathSegment segment)
+    {
+        var next = new List<JsonNode>();
+        foreach (var node in nodes)
+        {
+            switch (segment.Kind)
+            {
+                case SegmentKind.Property:
+                    StepProperty(node, segment.Name!, next);
+                    break;
+                case SegmentKind.Index when node is JsonArray array && segment.Index >= 0 && segment.Index < array.Count:
+                    if (array[segment.Index] is { } indexed)
+                    {
+                        next.Add(indexed);
+                    }
+
+                    break;
+                case SegmentKind.Wildcard when node is JsonArray array:
+                    next.AddRange(array.Where(item => item is not null)!);
+                    break;
+                case SegmentKind.Wildcard when node is JsonObject obj:
+                    next.AddRange(obj.Select(kv => kv.Value).Where(value => value is not null)!);
+                    break;
+            }
+        }
+
+        return next;
+    }
+
+    /// <summary>Reads a property, stepping into arrays so a path crosses an array of objects implicitly.</summary>
+    private static void StepProperty(JsonNode node, string name, List<JsonNode> into)
+    {
+        switch (node)
+        {
+            case JsonObject obj when obj[name] is { } child:
+                into.Add(child);
+                break;
+            case JsonArray array:
+                foreach (var item in array)
+                {
+                    if (item is not null)
+                    {
+                        StepProperty(item, name, into);
+                    }
+                }
+
+                break;
+        }
+    }
 
     private static IReadOnlyList<PathSegment> Parse(string path)
     {

@@ -573,6 +573,7 @@ internal static class MappingMapper
                 Default = config.Default,
                 Type = config.Type,
                 MatchBy = config.MatchBy ?? [],
+                Select = config.Select,
                 ValueMap = new Dictionary<string, string>(config.ValueMap ?? [], StringComparer.OrdinalIgnoreCase),
                 OnMiss = FlowMapper.ParseEnum(config.OnMiss, ReferenceMiss.Hold, $"{where}.config.onMiss", source),
                 System = config.System,

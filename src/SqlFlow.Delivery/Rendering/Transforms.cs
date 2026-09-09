@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Rendering;
 
@@ -13,6 +14,8 @@ namespace SqlFlow.Delivery.Rendering;
 /// </summary>
 public static partial class Transforms
 {
+    private static readonly string[] DefaultMatchBy = ["id", "Code", "Name"];
+
     /// <summary>Applies the property's transform. Returns the raw value, or null when omitted.</summary>
     public static object? Apply(MappingProperty property, SourceRow row, MappingRenderer renderer, string path, List<string> holds, out bool omit)
     {
@@ -100,52 +103,48 @@ public static partial class Transforms
                         return null;
                     }
 
-                    var typeName = config.Type ?? throw new FlowValidationException($"{path}: reference transform needs config.type.");
-                    var type = renderer.References.Type(typeName);
-                    if (type is null)
+                    var resolved = ResolveCached(config, renderer, text, path, holds, out omit);
+                    if (resolved.Failed)
                     {
-                        holds.Add($"{path}: reference type '{typeName}' is not in reference snapshot {renderer.Context.ReferenceSnapshotVersion}");
-                        omit = true;
                         return null;
                     }
 
-                    var value = text.Trim();
-                    if (config.Delimiter is { } splitOn)
-                    {
-                        // A unit carried inside a compound value ("23.5 M"): split first, then resolve the part.
-                        var parts = splitOn == " " ? Whitespace().Split(value) : value.Split(splitOn, StringSplitOptions.None);
-                        var index = config.Index ?? 0;
-                        if (index < 0 || index >= parts.Length || parts[index].Trim().Length == 0)
-                        {
-                            omit = true;
-                            return null;
-                        }
+                    // An OSDU relationship carries the id with its version separator, matched or passed through.
+                    return resolved.PassedThrough ?? WithVersionSeparator(resolved.Item!.Id);
+                }
 
-                        value = parts[index].Trim();
+            case MappingTransform.Lookup:
+                {
+                    if (text is null)
+                    {
+                        return null;
                     }
 
-                    if (config.ValueMap.TryGetValue(value, out var normalized))
+                    var resolved = ResolveCached(config, renderer, text, path, holds, out omit);
+                    if (resolved.Failed)
                     {
-                        value = normalized;
+                        return null;
                     }
 
-                    // Already a well-formed OSDU reference: pass through untouched.
-                    if (OsduId().IsMatch(value))
+                    var select = string.IsNullOrWhiteSpace(config.Select) ? "id" : config.Select!;
+                    if (resolved.Item is null)
                     {
-                        return value.EndsWith(':') ? value : value + ":";
+                        // The source already carried an OSDU id, so only the id itself can be answered from it.
+                        return ReferenceField.IsId(select)
+                            ? resolved.PassedThrough
+                            : Miss(config.OnMiss, $"{path}: '{text}' is already an OSDU id, so '{select}' cannot be read from the cache", holds, out omit);
                     }
 
-                    var matchBy = config.MatchBy.Count > 0 ? config.MatchBy : ["id", "Code", "Name"];
-                    foreach (var field in matchBy)
+                    if (resolved.Type!.Value(resolved.Item, select) is not { } cached)
                     {
-                        var hit = type.Match(field, value);
-                        if (hit is not null)
-                        {
-                            return hit.Id.EndsWith(':') ? hit.Id : hit.Id + ":";
-                        }
+                        return Miss(
+                            config.OnMiss,
+                            $"{path}: {resolved.TypeName} '{resolved.Item.Id}' caches nothing at '{select}' in reference snapshot {renderer.Context.ReferenceSnapshotVersion}. Cached: {string.Join(", ", CachedNames(renderer, resolved.TypeName))}",
+                            holds,
+                            out omit);
                     }
 
-                    return Miss(config.OnMiss, $"{path}: no {typeName} matches '{text}' by {string.Join("/", matchBy)} in reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
+                    return cached.Node.DeepClone();
                 }
 
             case MappingTransform.DeliveredReference:
@@ -225,6 +224,81 @@ public static partial class Transforms
             default:
                 throw new FlowValidationException($"{path}: transform '{property.Transform}' is not supported.");
         }
+    }
+
+    /// <summary>
+    /// The one path from a source value to a cached record: normalise it (split, map), pass a well-formed OSDU id
+    /// through, then match it against the cached type by each field in turn. Both the reference transform (which
+    /// wants the id) and the lookup transform (which wants a cached value) resolve through here.
+    /// </summary>
+    private static CachedHit ResolveCached(TransformConfig config, MappingRenderer renderer, string text, string path, List<string> holds, out bool omit)
+    {
+        omit = false;
+        var typeName = config.Type ?? throw new FlowValidationException($"{path}: the reference and lookup transforms need config.type.");
+        var type = renderer.References.Type(typeName);
+        if (type is null)
+        {
+            holds.Add($"{path}: reference type '{typeName}' is not in reference snapshot {renderer.Context.ReferenceSnapshotVersion}");
+            omit = true;
+            return CachedHit.Missed(typeName);
+        }
+
+        var value = text.Trim();
+        if (config.Delimiter is { } splitOn)
+        {
+            // A unit carried inside a compound value ("23.5 M"): split first, then resolve the part.
+            var parts = splitOn == " " ? Whitespace().Split(value) : value.Split(splitOn, StringSplitOptions.None);
+            var index = config.Index ?? 0;
+            if (index < 0 || index >= parts.Length || parts[index].Trim().Length == 0)
+            {
+                omit = true;
+                return CachedHit.Missed(typeName);
+            }
+
+            value = parts[index].Trim();
+        }
+
+        if (config.ValueMap.TryGetValue(value, out var normalized))
+        {
+            value = normalized;
+        }
+
+        // Already a well-formed OSDU reference: it identifies the record without a lookup.
+        if (OsduId().IsMatch(value))
+        {
+            var byId = type.Match("id", value.TrimEnd(':'));
+            return byId is not null
+                ? new CachedHit(typeName, type, byId, null)
+                : new CachedHit(typeName, type, null, WithVersionSeparator(value));
+        }
+
+        var matchBy = config.MatchBy.Count > 0 ? config.MatchBy : DefaultMatchBy;
+        foreach (var field in matchBy)
+        {
+            if (type.Match(field, value) is { } hit)
+            {
+                return new CachedHit(typeName, type, hit, null);
+            }
+        }
+
+        Miss(config.OnMiss, $"{path}: no {typeName} matches '{text}' by {string.Join("/", matchBy)} in reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
+        return CachedHit.Missed(typeName);
+    }
+
+    private static IReadOnlyList<string> CachedNames(MappingRenderer renderer, string typeName)
+    {
+        var type = renderer.References.Type(typeName);
+        return type is null ? ["id"] : type.FieldNames.Prepend("id").ToList();
+    }
+
+    private static string WithVersionSeparator(string id) => id.EndsWith(':') ? id : id + ":";
+
+    /// <summary>What a resolve produced: the cached item, an id the source already carried, or nothing.</summary>
+    private readonly record struct CachedHit(string TypeName, ReferenceType? Type, ReferenceItem? Item, string? PassedThrough)
+    {
+        public bool Failed => Item is null && PassedThrough is null;
+
+        public static CachedHit Missed(string typeName) => new(typeName, null, null, null);
     }
 
     private static object? Miss(ReferenceMiss onMiss, string reason, List<string> holds, out bool omit)

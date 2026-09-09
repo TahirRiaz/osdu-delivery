@@ -79,16 +79,22 @@ public static class Preflight
                 }
             }
 
-            // 2. Every reference type the mapping resolves against exists in the reference snapshot.
-            if (property.Transform == MappingTransform.Reference)
+            // 2. Every reference type the mapping resolves against exists in the cache, with the fields it matches
+            //    and selects by. A path the cache does not hold would miss on every record, so it is caught here.
+            if (property.Transform is MappingTransform.Reference or MappingTransform.Lookup)
             {
+                var transformName = property.Transform == MappingTransform.Lookup ? "lookup" : "reference";
                 if (string.IsNullOrWhiteSpace(property.Config.Type))
                 {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' uses the reference transform without config.type."));
+                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' uses the {transformName} transform without config.type."));
                 }
-                else if (!references.HasType(property.Config.Type))
+                else if (references.Type(property.Config.Type) is not { } cached)
                 {
                     issues.Add(ValidationIssue.Error($"{where}: property '{path}' resolves against reference type '{property.Config.Type}', which reference snapshot '{references.Version}' does not contain. Available: {string.Join(", ", references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal))}."));
+                }
+                else
+                {
+                    CheckCachedFields(property, cached, references.Version, path, where, transformName, issues);
                 }
             }
 
@@ -199,6 +205,46 @@ public static class Preflight
         throw new FlowValidationException(
             $"{where}: preflight failed with {errors.Count} error(s):" + Environment.NewLine
             + string.Join(Environment.NewLine, errors.Select(e => "  - " + e.Message)));
+    }
+
+    /// <summary>
+    /// The fields a property matches by, and the value it selects, against what the cached type actually holds. A
+    /// type that holds none of the fields can never match, which is an error; a single missing field is a warning,
+    /// because a mapping may list fields that only some snapshots carry.
+    /// </summary>
+    private static void CheckCachedFields(
+        MappingProperty property, ReferenceType cached, string version, string path, string where, string transformName, List<ValidationIssue> issues)
+    {
+        var matchBy = property.Config.MatchBy;
+        if (matchBy.Count > 0)
+        {
+            var known = matchBy.Where(cached.HasField).ToList();
+            if (known.Count == 0)
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{where}: property '{path}' matches {cached.Name} by {string.Join("/", matchBy)}, and reference snapshot '{version}' caches none of those. Cached: {string.Join(", ", cached.FieldNames.Prepend("id"))}."));
+            }
+            else
+            {
+                foreach (var field in matchBy.Where(f => !cached.HasField(f)))
+                {
+                    issues.Add(ValidationIssue.Warning(
+                        $"{where}: property '{path}' matches {cached.Name} by '{field}', which reference snapshot '{version}' does not cache. Cached: {string.Join(", ", cached.FieldNames.Prepend("id"))}."));
+                }
+            }
+        }
+
+        if (property.Transform != MappingTransform.Lookup)
+        {
+            return;
+        }
+
+        var select = string.IsNullOrWhiteSpace(property.Config.Select) ? "id" : property.Config.Select!;
+        if (!cached.MeansRecordId(select) && cached.Items.All(item => cached.Value(item, select) is null))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{where}: property '{path}' reads '{select}' out of {cached.Name}, which reference snapshot '{version}' does not cache. Cached: {string.Join(", ", cached.FieldNames.Prepend("id"))}."));
+        }
     }
 
     private static void CheckExamples(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)

@@ -8,6 +8,7 @@ using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Retrieval;
+using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Execution;
@@ -132,7 +133,10 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         }
 
         var result = await runner.RunAsync(runId, actor, parameters.Force, ct).ConfigureAwait(false);
-        return RetrieveOutcome.From(result);
+        var cache = flow.Cache is null
+            ? null
+            : await new ReferenceCacheRefresher(context, log).RefreshAsync(flow, values, ct).ConfigureAwait(false);
+        return RetrieveOutcome.From(result, cache);
     }
 
     private static void LogStart(ILogger log, string flow, string operation, string parameters, string actor, Guid runId)
@@ -158,14 +162,15 @@ public sealed record RetrieveOutcome(
     int Files,
     long Bytes,
     bool NothingToDo,
-    IReadOnlyList<RetrievedKind> Kinds)
+    IReadOnlyList<RetrievedKind> Kinds,
+    ReferenceCacheOutcome? Cache = null)
 {
-    public static RetrieveOutcome From(RetrievalResult result)
+    public static RetrieveOutcome From(RetrievalResult result, ReferenceCacheOutcome? cache = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         return new RetrieveOutcome(
             RunParameters.RetrieveOperation, result.RetrievalId, result.Location, result.ManifestLocation, result.Window?.Field, result.Window?.From, result.Window?.To,
-            result.Records, result.Files, result.Bytes, result.NothingToDo, result.Kinds);
+            result.Records, result.Files, result.Bytes, result.NothingToDo, result.Kinds, cache);
     }
 }
 

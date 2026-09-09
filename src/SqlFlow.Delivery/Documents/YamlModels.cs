@@ -386,6 +386,8 @@ internal sealed class TransformConfigYaml
 
     public List<string>? MatchBy { get; set; }
 
+    public string? Select { get; set; }
+
     public Dictionary<string, string>? ValueMap { get; set; }
 
     public string? OnMiss { get; set; }
@@ -443,7 +445,32 @@ internal sealed class RetrievalYaml
 
     public RetrievalTargetYaml? Target { get; set; }
 
+    public RetrievalCacheYaml? Cache { get; set; }
+
     public FlowReliabilityYaml? Reliability { get; set; }
+}
+
+internal sealed class RetrievalCacheYaml
+{
+    public List<CachedTypeYaml>? Types { get; set; }
+
+    public bool? MakeCurrent { get; set; }
+
+    public string? Snapshots { get; set; }
+}
+
+internal sealed class CachedTypeYaml
+{
+    public string? Name { get; set; }
+
+    public string? EntityType { get; set; }
+
+    public string? Kind { get; set; }
+
+    public string? Query { get; set; }
+
+    // A path ("data.Code") or a mapping of path and as ({ path: data.NameAlias.AliasName, as: Alias }).
+    public List<object>? Fields { get; set; }
 }
 
 internal sealed class RetrievalSourceYaml

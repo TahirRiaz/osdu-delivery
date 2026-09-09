@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Hashing;
@@ -197,7 +198,12 @@ public sealed class MappingRenderer
         }
 
         var type = schemaProperty?.Type ?? SchemaType.Any;
-        if (type == SchemaType.Array && schemaProperty?.ItemScalarType is { } itemType && raw is not JsonArray)
+        if (raw is JsonArray set)
+        {
+            return CoerceSet(set, type, schemaProperty?.ItemScalarType, fullPath, holds);
+        }
+
+        if (type == SchemaType.Array && schemaProperty?.ItemScalarType is { } itemType)
         {
             // A scalar bound to an array of scalars becomes a one-element array.
             var single = Coerce(raw, itemType, fullPath, holds);
@@ -206,6 +212,52 @@ public sealed class MappingRenderer
 
         return Coerce(raw, type, fullPath, holds);
     }
+
+    /// <summary>
+    /// Writes a set of values (a cached field holding several, say) into the target. An array of scalars takes every
+    /// element; a scalar target takes a set of one and holds the record on a set of more, because silently keeping
+    /// the first would deliver an arbitrary value.
+    /// </summary>
+    private static JsonNode? CoerceSet(JsonArray set, SchemaType type, SchemaType? itemScalarType, string fullPath, List<string> holds)
+    {
+        if (type is SchemaType.Array && itemScalarType is { } itemType)
+        {
+            var items = new JsonArray();
+            foreach (var element in set)
+            {
+                if (element is not null && Coerce(Native(element), itemType, fullPath, holds) is { } coerced)
+                {
+                    items.Add(coerced);
+                }
+            }
+
+            return items.Count > 0 ? items : null;
+        }
+
+        if (type is SchemaType.Array or SchemaType.Object or SchemaType.Any)
+        {
+            return set.DeepClone();
+        }
+
+        if (set.Count == 1 && set[0] is { } only)
+        {
+            return Coerce(Native(only), type, fullPath, holds);
+        }
+
+        holds.Add($"{fullPath}: {set.Count} values were selected but the schema type is {type.ToString().ToLowerInvariant()}; select one value or bind an array");
+        return null;
+    }
+
+    /// <summary>A JSON node as the CLR value the scalar coercions expect, so a cached node coerces like a source value.</summary>
+    private static object Native(JsonNode node) => node is JsonValue value
+        ? value.GetValueKind() switch
+        {
+            JsonValueKind.String => value.GetValue<string>(),
+            JsonValueKind.True or JsonValueKind.False => value.GetValue<bool>(),
+            JsonValueKind.Number => value.GetValue<double>(),
+            _ => node,
+        }
+        : node;
 
     internal ReferenceSnapshot References => _references;
 
